@@ -112,16 +112,24 @@ Seed версионирован ключом `tk20_seed_version`, поэтому
 
 ## Деплой на VPS в локальной сети без внешнего домена
 
-Для чистого Debian 12/13 добавлен режим `LAN_ONLY=true`. Он:
+Для чистого Debian 12/13 добавлен LAN-режим. Он:
 
-- клонирует проект из приватного Git через отдельный read-only deploy key;
+- клонирует проект из публичного GitHub по HTTPS или из приватного Git через отдельный read-only deploy key;
 - устанавливает Docker, Nginx, UFW, Fail2ban и автоматические security updates;
 - оставляет Node.js-контейнер доступным только на `127.0.0.1:3000`;
 - разрешает SSH и веб-доступ только из `LAN_CIDR`;
 - создаёт локальный HTTPS-сертификат для IP или внутреннего DNS-имени;
 - не устанавливает Certbot и не требует публичного DNS.
 
-Однострочная команда LAN-деплоя из корня локальной копии проекта:
+Отдельный скрипт публичного деплоя использует репозиторий `https://github.com/Tuma58/planner_pegas.git`, ветку `main`, адрес VPS как `LAN_HOST` и локальный TLS-сертификат по умолчанию. Однострочная команда для запуска с компьютера администратора:
+
+```bash
+git clone --depth 1 https://github.com/Tuma58/planner_pegas.git && cd planner_pegas && VPS_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 bash ./deploy/deploy-public-lan.sh
+```
+
+Если репозиторий уже клонирован, выполните из его корня только часть команды, начиная с `VPS_HOST=...`. При необходимости переопределите `VPS_USER`, `SSH_PORT`, `LAN_HOST`, `LAN_TLS`, `REPO_URL` или `REPO_BRANCH`. SSH-ключ для входа на сам VPS должен быть заранее настроен и проверен в локальном `known_hosts`.
+
+Однострочная команда для приватного репозитория:
 
 ```bash
 LAN_ONLY=true VPS_HOST=192.168.10.50 LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 REPO_URL=git@github.com:ORG/PRIVATE_REPOSITORY.git REPO_BRANCH=main DEPLOY_KEY="$HOME/.ssh/pegas-vps/deploy_key" KNOWN_HOSTS_FILE="$HOME/.ssh/pegas-vps/git_known_hosts" bash ./deploy/deploy-to-vps.sh
@@ -129,7 +137,7 @@ LAN_ONLY=true VPS_HOST=192.168.10.50 LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.
 
 После деплоя приложение откроется на `https://192.168.10.50`. Публичный сертификат `/etc/pegas-planner/lan-tls.crt` нужно установить в доверенные на рабочих компьютерах. Отключить TLS можно только явно через `LAN_TLS=false`; этот вариант не рекомендуется, поскольку логин и пароль будут передаваться по HTTP.
 
-Полная пошаговая инструкция по приватному репозиторию, deploy key, сертификатам Windows/macOS/Linux, первому запуску и обновлениям находится в [docs/DEPLOY_LAN_VPS.md](docs/DEPLOY_LAN_VPS.md).
+Полная пошаговая инструкция по сертификатам Windows/macOS/Linux, первому запуску, приватному репозиторию и обновлениям находится в [docs/DEPLOY_LAN_VPS.md](docs/DEPLOY_LAN_VPS.md).
 
 `LOCAL_ONLY=true` и `LAN_ONLY=true` — разные режимы: первый запускает Node.js на текущем компьютере, второй устанавливает production-контур на удалённый VPS внутри локальной сети.
 

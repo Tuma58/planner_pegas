@@ -4,6 +4,11 @@ umask 027
 
 [[ "${EUID}" -eq 0 ]] || { echo "Обновление необходимо запускать через sudo" >&2; exit 1; }
 source /etc/pegas-planner/deploy.env
+REPO_ACCESS="${REPO_ACCESS:-private}"
+[[ "$REPO_ACCESS" == "public" || "$REPO_ACCESS" == "private" ]] || {
+  echo "Некорректный REPO_ACCESS в deploy.env" >&2
+  exit 2
+}
 
 DEPLOY_KEY="/etc/pegas-planner/deploy_key"
 GIT_KNOWN_HOSTS="/etc/pegas-planner/known_hosts"
@@ -37,7 +42,15 @@ cd "$APP_DIR"
 }
 
 current_commit="$(git rev-parse HEAD)"
-GIT_SSH_COMMAND="$git_ssh" git fetch --prune origin "$REPO_BRANCH"
+if [[ "$REPO_ACCESS" == "private" ]]; then
+  [[ -s "$DEPLOY_KEY" && -s "$GIT_KNOWN_HOSTS" ]] || {
+    echo "Не найдены deploy key или known_hosts для приватного репозитория" >&2
+    exit 2
+  }
+  GIT_SSH_COMMAND="$git_ssh" git fetch --prune origin "$REPO_BRANCH"
+else
+  git fetch --prune origin "$REPO_BRANCH"
+fi
 target_commit="$(git rev-parse "origin/$REPO_BRANCH")"
 
 if [[ "$current_commit" == "$target_commit" ]]; then
@@ -50,7 +63,7 @@ git merge-base --is-ancestor "$current_commit" "$target_commit" || {
 }
 
 /usr/local/sbin/pegas-planner-backup
-GIT_SSH_COMMAND="$git_ssh" git merge --ff-only "$target_commit"
+git merge --ff-only "$target_commit"
 deployment_changed=1
 docker compose config --quiet
 docker compose build --pull

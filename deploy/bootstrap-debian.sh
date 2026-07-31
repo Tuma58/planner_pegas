@@ -8,13 +8,21 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 DEPLOY_MODE="${DEPLOY_MODE:-public}"
+REPO_ACCESS="${REPO_ACCESS:-private}"
 LAN_TLS="${LAN_TLS:-true}"
 [[ "$DEPLOY_MODE" == "public" || "$DEPLOY_MODE" == "lan" ]] || {
   echo "DEPLOY_MODE должен быть public или lan" >&2
   exit 2
 }
+[[ "$REPO_ACCESS" == "public" || "$REPO_ACCESS" == "private" ]] || {
+  echo "REPO_ACCESS должен быть public или private" >&2
+  exit 2
+}
 
-required=(REPO_URL STAGED_DEPLOY_KEY STAGED_KNOWN_HOSTS)
+required=(REPO_URL)
+if [[ "$REPO_ACCESS" == "private" ]]; then
+  required+=(STAGED_DEPLOY_KEY STAGED_KNOWN_HOSTS)
+fi
 if [[ "$DEPLOY_MODE" == "public" ]]; then
   required+=(APP_DOMAIN ADMIN_EMAIL)
 else
@@ -47,14 +55,21 @@ else
 fi
 [[ "$REPO_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "Некорректная ветка" >&2; exit 2; }
 [[ "$DEPLOY_SSH_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "Некорректный SSH-порт" >&2; exit 2; }
-[[ "$REPO_URL" == git@*:* || "$REPO_URL" == ssh://* ]] || {
-  echo "REPO_URL должен быть SSH URL приватного репозитория" >&2
-  exit 2
-}
-[[ -s "$STAGED_DEPLOY_KEY" && -s "$STAGED_KNOWN_HOSTS" ]] || {
-  echo "Deploy key или known_hosts не переданы" >&2
-  exit 2
-}
+if [[ "$REPO_ACCESS" == "private" ]]; then
+  [[ "$REPO_URL" == git@*:* || "$REPO_URL" == ssh://* ]] || {
+    echo "Для private-режима REPO_URL должен быть SSH URL" >&2
+    exit 2
+  }
+  [[ -s "$STAGED_DEPLOY_KEY" && -s "$STAGED_KNOWN_HOSTS" ]] || {
+    echo "Deploy key или known_hosts не переданы" >&2
+    exit 2
+  }
+else
+  [[ "$REPO_URL" == https://* ]] || {
+    echo "Для public-режима REPO_URL должен быть HTTPS URL" >&2
+    exit 2
+  }
+fi
 existing_deployment=0
 if [[ -e "$APP_DIR/.git" ]]; then
   existing_deployment=1
@@ -106,26 +121,33 @@ fi
 systemctl enable --now docker
 
 install -m 0700 -d "$DEPLOY_CONFIG_DIR"
-install -m 0600 "$STAGED_DEPLOY_KEY" "$DEPLOY_KEY"
-install -m 0600 "$STAGED_KNOWN_HOSTS" "$GIT_KNOWN_HOSTS"
-rm -f "$STAGED_DEPLOY_KEY" "$STAGED_KNOWN_HOSTS"
+git_ssh=""
+if [[ "$REPO_ACCESS" == "private" ]]; then
+  install -m 0600 "$STAGED_DEPLOY_KEY" "$DEPLOY_KEY"
+  install -m 0600 "$STAGED_KNOWN_HOSTS" "$GIT_KNOWN_HOSTS"
+  rm -f "$STAGED_DEPLOY_KEY" "$STAGED_KNOWN_HOSTS"
 
-git_host=""
-if [[ "$REPO_URL" =~ ^git@([^:]+): ]]; then
-  git_host="${BASH_REMATCH[1]}"
-elif [[ "$REPO_URL" =~ ^ssh://([^@/]+@)?([^/:]+) ]]; then
-  git_host="${BASH_REMATCH[2]}"
+  git_host=""
+  if [[ "$REPO_URL" =~ ^git@([^:]+): ]]; then
+    git_host="${BASH_REMATCH[1]}"
+  elif [[ "$REPO_URL" =~ ^ssh://([^@/]+@)?([^/:]+) ]]; then
+    git_host="${BASH_REMATCH[2]}"
+  fi
+  [[ -n "$git_host" ]] || { echo "Не удалось определить Git-хост" >&2; exit 2; }
+  ssh-keygen -F "$git_host" -f "$GIT_KNOWN_HOSTS" >/dev/null || {
+    echo "В known_hosts нет проверенного ключа для $git_host" >&2
+    exit 2
+  }
+
+  git_ssh="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$GIT_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
 fi
-[[ -n "$git_host" ]] || { echo "Не удалось определить Git-хост" >&2; exit 2; }
-ssh-keygen -F "$git_host" -f "$GIT_KNOWN_HOSTS" >/dev/null || {
-  echo "В known_hosts нет проверенного ключа для $git_host" >&2
-  exit 2
-}
-
-git_ssh="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$GIT_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
 install -m 0755 -d "$(dirname "$APP_DIR")"
 if [[ "$existing_deployment" -eq 0 ]]; then
-  GIT_SSH_COMMAND="$git_ssh" git clone --branch "$REPO_BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
+  if [[ "$REPO_ACCESS" == "private" ]]; then
+    GIT_SSH_COMMAND="$git_ssh" git clone --branch "$REPO_BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
+  else
+    git clone --branch "$REPO_BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
+  fi
 fi
 
 install -m 0750 -d "$APP_DIR/data" "$APP_DIR/data/backups" "$APP_DIR/.secrets"
@@ -149,6 +171,7 @@ chmod 0600 "$APP_DIR/.env"
 cat > "$DEPLOY_CONFIG_DIR/deploy.env" <<EOF
 APP_DIR=$APP_DIR
 REPO_BRANCH=$REPO_BRANCH
+REPO_ACCESS=$REPO_ACCESS
 DEPLOY_MODE=$DEPLOY_MODE
 EOF
 if [[ "$DEPLOY_MODE" == "public" ]]; then
