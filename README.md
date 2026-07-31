@@ -117,17 +117,21 @@ Seed версионирован ключом `tk20_seed_version`, поэтому
 - клонирует проект из публичного GitHub по HTTPS или из приватного Git через отдельный read-only deploy key;
 - устанавливает Docker, Nginx, UFW, Fail2ban и автоматические security updates;
 - оставляет Node.js-контейнер доступным только на `127.0.0.1:3000`;
-- разрешает SSH и веб-доступ только из `LAN_CIDR`;
+- ограничивает SSH начальной подсетью `LAN_CIDR`, а веб-доступ — списком подсетей из настроек администратора;
 - создаёт локальный HTTPS-сертификат для IP или внутреннего DNS-имени;
 - не устанавливает Certbot и не требует публичного DNS.
 
-Отдельный скрипт публичного деплоя использует репозиторий `https://github.com/Tuma58/planner_pegas.git`, ветку `main`, адрес VPS как `LAN_HOST` и локальный TLS-сертификат по умолчанию. Однострочная команда для запуска с компьютера администратора:
+Отдельный скрипт публичного деплоя использует репозиторий `https://github.com/Tuma58/planner_pegas.git`, ветку `main` и локальный TLS-сертификат по умолчанию. Команда выполняется с компьютера администратора и сама устанавливает на чистый VPS минимальные зависимости `ca-certificates` и `curl`; остальные зависимости устанавливает bootstrap:
 
 ```bash
-git clone --depth 1 https://github.com/Tuma58/planner_pegas.git && cd planner_pegas && VPS_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 bash ./deploy/deploy-public-lan.sh
+ssh root@192.168.10.50 "apt-get update && apt-get install -y ca-certificates curl && curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Tuma58/planner_pegas/main/deploy/deploy-public-lan.sh | env LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 bash"
 ```
 
-Если репозиторий уже клонирован, выполните из его корня только часть команды, начиная с `VPS_HOST=...`. При необходимости переопределите `VPS_USER`, `SSH_PORT`, `LAN_HOST`, `LAN_TLS`, `REPO_URL` или `REPO_BRANCH`. SSH-ключ для входа на сам VPS должен быть заранее настроен и проверен в локальном `known_hosts`.
+Замените IP и подсеть на свои. `LAN_CIDR` задаёт первоначальную разрешённую веб-подсеть и ограничение SSH в UFW. После первого входа веб-подсети управляются в разделе «Настройки → Сеть и доступ» без повторного деплоя. Текущий адрес администратора нельзя удалить из списка — это защищает от случайной блокировки. При необходимости перед `bash` можно передать `SSH_PORT`, `LAN_TLS`, `REPO_URL` или `REPO_BRANCH`. SSH-ключ для входа на VPS должен быть заранее настроен, а ключ хоста проверен в локальном `known_hosts`.
+
+Bootstrap явно устанавливает необходимые пакеты: Docker Engine и Compose plugin, Git, OpenSSH server/client, Nginx, UFW, Fail2ban, `util-linux` (`flock`), SQLite CLI, OpenSSL, curl, CA-сертификаты и unattended security updates.
+
+При обновлении старой установки, где первоначальная подсеть ещё не записана в `.env`, доступ временно сохраняется для всех адресов. Сразу после обновления задайте фактические CIDR в «Настройки → Сеть и доступ». Новая установка получает первоначальный список из `LAN_CIDR` автоматически.
 
 Однострочная команда для приватного репозитория:
 
@@ -135,7 +139,7 @@ git clone --depth 1 https://github.com/Tuma58/planner_pegas.git && cd planner_pe
 LAN_ONLY=true VPS_HOST=192.168.10.50 LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 REPO_URL=git@github.com:ORG/PRIVATE_REPOSITORY.git REPO_BRANCH=main DEPLOY_KEY="$HOME/.ssh/pegas-vps/deploy_key" KNOWN_HOSTS_FILE="$HOME/.ssh/pegas-vps/git_known_hosts" bash ./deploy/deploy-to-vps.sh
 ```
 
-После деплоя приложение откроется на `https://192.168.10.50`. Публичный сертификат `/etc/pegas-planner/lan-tls.crt` нужно установить в доверенные на рабочих компьютерах. Отключить TLS можно только явно через `LAN_TLS=false`; этот вариант не рекомендуется, поскольку логин и пароль будут передаваться по HTTP.
+После деплоя приложение откроется на `https://192.168.10.50`. Публичный сертификат `/etc/pegas-planner/lan-tls.crt` нужно установить в доверенные на рабочих компьютерах. UFW оставляет веб-порты доступными для проверки приложением, а планер отклоняет запросы вне списка разрешённых CIDR до показа страницы входа. Отключить TLS можно только явно через `LAN_TLS=false`; этот вариант не рекомендуется, поскольку логин и пароль будут передаваться по HTTP.
 
 Полная пошаговая инструкция по сертификатам Windows/macOS/Linux, первому запуску, приватному репозиторию и обновлениям находится в [docs/DEPLOY_LAN_VPS.md](docs/DEPLOY_LAN_VPS.md).
 

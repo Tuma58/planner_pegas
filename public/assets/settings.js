@@ -107,6 +107,44 @@ async function saveGeneral() {
   } catch (error) { toast(error.message, 'error'); }
 }
 
+function renderNetwork() {
+  const allowedSubnets = state.admin.settings.networkAccess?.allowedSubnets || [];
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Сеть и доступ</h1>
+      <p>Подсети, из которых разрешено открывать планер и страницу входа.</p></div>
+      <button class="button" id="saveNetwork">Сохранить</button></div>
+    <div class="card"><h2>Разрешённые подсети</h2>
+      <label class="field">По одной IPv4- или IPv6-подсети в строке
+        <textarea id="allowedSubnets" rows="9" spellcheck="false"
+          placeholder="192.168.10.0/24&#10;10.20.0.0/16">${escapeHtml(allowedSubnets.join('\n'))}</textarea>
+      </label>
+      <p class="muted">Текущий адрес: <span class="mono">${escapeHtml(state.admin.network?.currentIp || 'не определён')}</span>.
+        Он должен входить хотя бы в одну сохраняемую подсеть — защита от случайной потери доступа.</p>
+      <p class="muted">Изменение применяется сразу ко всему веб-интерфейсу и API. Ограничение SSH на VPS управляется отдельно системным firewall.</p>
+    </div>
+    <div class="card"><h2>Примеры CIDR</h2>
+      <div class="code">192.168.10.0/24 — адреса 192.168.10.1–192.168.10.254<br>
+10.20.0.15/32 — только один компьютер<br>
+2001:db8:1234::/64 — IPv6-подсеть</div>
+    </div>
+  </section>`;
+  byId('saveNetwork').onclick = saveNetwork;
+}
+
+async function saveNetwork() {
+  const allowedSubnets = byId('allowedSubnets').value.split('\n')
+    .map(item => item.trim()).filter(Boolean);
+  try {
+    await api('/api/admin/settings', {
+      method: 'PUT', body: JSON.stringify({ networkAccess: { allowedSubnets } })
+    });
+    state.admin.settings.networkAccess = { allowedSubnets };
+    toast('Сетевой доступ обновлён');
+    await loadAdmin();
+    renderNetwork();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
 function renderDictionaries() {
   const { zones, vehicleTypes, routeRates } = state.admin.reference;
   content.innerHTML = `<section>
@@ -503,6 +541,7 @@ async function render() {
     else if (state.section === 'fleet') renderFleet();
     else if (state.section === 'customers') renderCustomers();
     else if (state.section === 'users') await renderUsers();
+    else if (state.section === 'network') renderNetwork();
     else if (state.section === 'integration') renderIntegration();
     else if (state.section === 'outbox') renderOutbox();
   } catch (error) {

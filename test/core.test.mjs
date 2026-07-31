@@ -8,6 +8,7 @@ import { openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
 import { importTelematics, importTripsFrom1C, reportSnapshot } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
+import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
@@ -27,6 +28,29 @@ test('матрица ролей не дает обычной роли админ
   assert.equal(hasPermission({ active: 1, role: 'logist' }, 'users:write'), false);
   assert.equal(hasPermission({ active: 1, role: 'logist' }, 'trips:write'), true);
   assert.equal(permissionsFor('unknown').length, 0);
+});
+
+test('сетевой allowlist нормализует CIDR и проверяет IPv4/IPv6', () => {
+  assert.deepEqual(normalizeAllowedSubnets([
+    '192.168.10.44/24', '192.168.10.0/24', '2001:db8:1234::1/64'
+  ]), ['192.168.10.0/24', '2001:db8:1234:0:0:0:0:0/64']);
+  assert.equal(ipInSubnets('192.168.10.55', ['192.168.10.0/24']), true);
+  assert.equal(ipInSubnets('192.168.11.55', ['192.168.10.0/24']), false);
+  assert.equal(ipInSubnets('::ffff:192.168.10.55', ['192.168.10.0/24']), true);
+  assert.equal(ipInSubnets('2001:db8:1234::abcd', ['2001:db8:1234::/64']), true);
+  assert.equal(parseCidr('10.20.30.40').normalized, '10.20.30.40/32');
+  assert.throws(() => normalizeAllowedSubnets([]), /хотя бы одну/);
+  assert.throws(() => parseCidr('192.168.1.0/33'), /вне диапазона/);
+});
+
+test('первоначальная подсеть деплоя сохраняется в настройках БД', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-network-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  }, { initialAllowedSubnets: ['192.168.50.27/24'] });
+  t.after(() => db.close());
+  assert.deepEqual(settingsObject(db).networkAccess.allowedSubnets, ['192.168.50.0/24']);
 });
 
 test('SQLite создается со справочниками, администратором и outbox', t => {
@@ -49,6 +73,7 @@ test('SQLite создается со справочниками, админис�
   assert.equal(settingsObject(db).general.horizonStart, '2026-07-01');
   assert.equal(settingsObject(db).calculation.vatRate, 0.22);
   assert.equal(settingsObject(db).calculation.insuranceAndRoadsPerKm, 6);
+  assert.deepEqual(settingsObject(db).networkAccess.allowedSubnets, ['127.0.0.1/32', '::1/128']);
 
   const itemId = queueOutbox(db, 'trips', 'trip-1', 'create', { id: 'trip-1' });
   const item = db.prepare('SELECT * FROM outbox WHERE id=?').get(itemId);

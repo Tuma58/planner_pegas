@@ -2,7 +2,9 @@ import { config } from './config.mjs';
 import { openDatabase } from './db.mjs';
 import { startIntegrationScheduler } from './odata.mjs';
 
-const db = openDatabase(config.databasePath, config.admin);
+const db = openDatabase(config.databasePath, config.admin, {
+  initialAllowedSubnets: config.initialAllowedSubnets
+});
 startIntegrationScheduler(db, config.appSecret);
 console.log('Служба обмена 1С запущена');
 

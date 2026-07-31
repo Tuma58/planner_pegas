@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, openDatabase, queueOutbox, settingsObject } from './db.mjs';
+import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { ROLE_LABELS, hasPermission, permissionsFor } from './permissions.mjs';
 import {
   encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
@@ -14,7 +15,9 @@ import {
   importTelematics, importTripsFrom1C, reportSnapshot, resolveZone
 } from './planner-service.mjs';
 
-const db = openDatabase(config.databasePath, config.admin);
+const db = openDatabase(config.databasePath, config.admin, {
+  initialAllowedSubnets: config.initialAllowedSubnets
+});
 if (config.embeddedSyncWorker) startIntegrationScheduler(db, config.appSecret);
 const loginAttempts = new Map();
 
@@ -37,6 +40,19 @@ function requestIp(request) {
   const loopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
   const forwarded = loopback ? String(request.headers['x-real-ip'] || '') : '';
   return forwarded && /^[0-9a-f:.]{3,64}$/i.test(forwarded) ? forwarded : peer;
+}
+
+function networkAccessAllowed(request, pathname) {
+  const peer = request.socket.remoteAddress || '';
+  if (pathname === '/api/health' && !request.headers['x-real-ip'] &&
+      ipInSubnets(peer, ['127.0.0.1/32', '::1/128'])) return true;
+  const allowedSubnets = settingsObject(db).networkAccess?.allowedSubnets || [];
+  return ipInSubnets(requestIp(request), allowedSubnets);
+}
+
+function plannerSettings() {
+  const { networkAccess: _networkAccess, ...settings } = settingsObject(db);
+  return settings;
 }
 
 async function readJson(request, limit = 1_000_000) {
@@ -263,7 +279,7 @@ async function api(request, response, url) {
     const user = requireUser(request, response);
     if (!user) return;
     return json(response, 200, {
-      user: publicUser(user), settings: settingsObject(db), reference: allReferenceData(),
+      user: publicUser(user), settings: plannerSettings(), reference: allReferenceData(),
       vehicles: listVehicles(), trips: listTrips(url.searchParams.get('date') || ''),
       orders: listOrders(), dispositions: listDispositions(),
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all()
@@ -743,6 +759,7 @@ async function api(request, response, url) {
         ORDER BY c.trip_count DESC`).all(),
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
       periodSnapshots: db.prepare('SELECT * FROM period_snapshots ORDER BY period_start DESC').all(),
+      network: { currentIp: requestIp(request) },
       integration: integrationPublic(),
       mappings: db.prepare('SELECT * FROM integration_mappings ORDER BY entity').all(),
       jobs: db.prepare('SELECT * FROM sync_jobs ORDER BY started_at DESC LIMIT 30').all(),
@@ -753,10 +770,23 @@ async function api(request, response, url) {
     const user = requirePermission(request, response, 'settings:write');
     if (!user) return;
     const body = await readJson(request);
+    if (body.networkAccess !== undefined) {
+      let allowedSubnets;
+      try {
+        allowedSubnets = normalizeAllowedSubnets(body.networkAccess.allowedSubnets);
+      } catch (error) {
+        return errorJson(response, 422, error.message);
+      }
+      if (!ipInSubnets(requestIp(request), allowedSubnets)) {
+        return errorJson(response, 422,
+          'Текущий IP должен входить хотя бы в одну подсеть, иначе вы потеряете доступ');
+      }
+      body.networkAccess = { allowedSubnets };
+    }
     const update = db.prepare(`INSERT INTO settings(key,value_json,updated_by,updated_at)
       VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
-    for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons', 'orderOptions']) {
+    for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons', 'orderOptions', 'networkAccess']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));
@@ -933,6 +963,9 @@ export const server = http.createServer(async (request, response) => {
   response.setHeader('Content-Security-Policy',
     "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   try {
+    if (!networkAccessAllowed(request, url.pathname)) {
+      return errorJson(response, 403, 'Подключение из вашей сети запрещено администратором');
+    }
     if (url.pathname.startsWith('/api/')) await api(request, response, url);
     else staticFile(request, response, url);
   } catch (error) {

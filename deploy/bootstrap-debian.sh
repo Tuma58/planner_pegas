@@ -87,6 +87,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg git openssl sqlite3 \
+  openssh-server openssh-client util-linux \
   nginx \
   ufw fail2ban unattended-upgrades apt-listchanges
 if [[ "$DEPLOY_MODE" == "public" ]]; then
@@ -162,10 +163,15 @@ chown -R 1000:1000 "$APP_DIR/data" "$APP_DIR/.secrets"
 chmod 0700 "$APP_DIR/.secrets"
 chmod 0400 "$APP_DIR/.secrets/app_secret" "$APP_DIR/.secrets/admin_password"
 cookie_secure=false
+initial_allowed_subnets="0.0.0.0/0,::/0"
 if [[ "$DEPLOY_MODE" == "public" || "$LAN_TLS" == "true" ]]; then
   cookie_secure=true
 fi
-printf 'ADMIN_USERNAME=admin\nCOOKIE_SECURE=%s\n' "$cookie_secure" > "$APP_DIR/.env"
+if [[ "$DEPLOY_MODE" == "lan" ]]; then
+  initial_allowed_subnets="$LAN_CIDR"
+fi
+printf 'ADMIN_USERNAME=admin\nCOOKIE_SECURE=%s\nINITIAL_ALLOWED_SUBNETS=%s\n' \
+  "$cookie_secure" "$initial_allowed_subnets" > "$APP_DIR/.env"
 chmod 0600 "$APP_DIR/.env"
 
 cat > "$DEPLOY_CONFIG_DIR/deploy.env" <<EOF
@@ -294,9 +300,9 @@ if [[ "$DEPLOY_MODE" == "public" ]]; then
   ufw allow 443/tcp comment HTTPS
 else
   ufw allow from "$LAN_CIDR" to any port "$DEPLOY_SSH_PORT" proto tcp comment LAN-SSH
-  ufw allow from "$LAN_CIDR" to any port 80 proto tcp comment LAN-HTTP
+  ufw allow 80/tcp comment Planner-HTTP
   if [[ "$LAN_TLS" == "true" ]]; then
-    ufw allow from "$LAN_CIDR" to any port 443 proto tcp comment LAN-HTTPS
+    ufw allow 443/tcp comment Planner-HTTPS
   fi
 fi
 ufw --force enable

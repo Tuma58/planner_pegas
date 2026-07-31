@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { hashPassword } from './security.mjs';
+import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
@@ -157,13 +158,13 @@ INSERT OR IGNORE INTO integration_connectors(id,name) VALUES('telematics','Те�
 
 const asJson = value => JSON.stringify(value);
 
-export function openDatabase(databasePath, admin) {
+export function openDatabase(databasePath, admin, options = {}) {
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
   migrateColumns(db);
-  seed(db, admin);
+  seed(db, admin, options);
   return db;
 }
 
@@ -188,11 +189,18 @@ function migrateColumns(db) {
   ensure('trips', 'source_system', "TEXT NOT NULL DEFAULT 'planner'");
 }
 
-function seed(db, admin) {
+function seed(db, admin, options) {
   db.exec('BEGIN IMMEDIATE');
   try {
     const putSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value_json) VALUES(?,?)');
     for (const [key, value] of Object.entries(defaultSettings)) putSetting.run(key, asJson(value));
+    if (options.initialAllowedSubnets?.length &&
+        !db.prepare(`SELECT 1 FROM app_meta WHERE key='network_access_initialized'`).get()) {
+      const allowedSubnets = normalizeAllowedSubnets(options.initialAllowedSubnets);
+      db.prepare(`UPDATE settings SET value_json=?,updated_at=CURRENT_TIMESTAMP WHERE key='networkAccess'`)
+        .run(asJson({ allowedSubnets }));
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('network_access_initialized','1')`).run();
+    }
 
     const putZone = db.prepare('INSERT OR IGNORE INTO zones(id,name,color,sort_order) VALUES(?,?,?,?)');
     zones.forEach(([name, color], index) => putZone.run(randomUUID(), name, color, index));

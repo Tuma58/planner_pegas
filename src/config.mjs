@@ -26,6 +26,8 @@ export const config = {
   isProduction: process.env.NODE_ENV === 'production',
   secureCookies: booleanEnv('COOKIE_SECURE', process.env.NODE_ENV === 'production'),
   embeddedSyncWorker: process.env.SYNC_WORKER_EMBEDDED !== 'false',
+  initialAllowedSubnets: String(process.env.INITIAL_ALLOWED_SUBNETS || '0.0.0.0/0,::/0')
+    .split(',').map(item => item.trim()).filter(Boolean),
   admin: {
     username: process.env.ADMIN_USERNAME || 'admin',
     password: secret('ADMIN_PASSWORD', 'ChangeMe-2026!'),
