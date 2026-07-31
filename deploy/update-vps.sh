@@ -70,9 +70,15 @@ docker compose build --pull
 docker compose up -d --remove-orphans
 
 healthy=0
+planner_container="$(docker compose ps -q planner)"
+[[ -n "$planner_container" ]] || { docker compose logs --tail=150; false; }
 for _ in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
+  health_status="$(docker inspect --format '{{.State.Health.Status}}' "$planner_container" 2>/dev/null || true)"
+  if [[ "$health_status" == "healthy" ]]; then
     healthy=1
+    break
+  fi
+  if [[ "$health_status" == "unhealthy" ]]; then
     break
   fi
   sleep 2

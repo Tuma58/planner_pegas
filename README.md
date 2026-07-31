@@ -131,6 +131,12 @@ ssh root@192.168.10.50 "apt-get update && apt-get install -y ca-certificates cur
 
 Bootstrap явно устанавливает необходимые пакеты: Docker Engine и Compose plugin, Git, OpenSSH server/client, Nginx, UFW, Fail2ban, `util-linux` (`flock`), SQLite CLI, OpenSSL, curl, CA-сертификаты и unattended security updates.
 
+Перед клонированием и сборкой проекта bootstrap запускает отдельный Docker runtime preflight. Если Docker установлен внутри несовместимого Proxmox LXC и AppArmor блокирует `net.ipv4.ip_unprivileged_port_start`, установка останавливается с инструкциями для хоста Proxmox. Поддерживаемое исправление — обновить `lxc-pve` до `6.0.5-2` или новее, включить `nesting=1,keyctl=1` и перезапустить CT. Скрипт намеренно не отключает AppArmor и не откатывает `runc`.
+
+После исправления хоста ту же команду деплоя можно запускать повторно: установка идемпотентна. Если на Proxmox без подписки `apt update` возвращает `401 Unauthorized`, отключите Ceph Enterprise и репозитории старого Debian release через `Node → Updates → Repositories`, оставив соответствующий текущему выпуску `pve-no-subscription`.
+
+Готовность приложения проверяется через встроенный Docker healthcheck, а не HTTP-запросом с хоста. Это важно при включённом списке разрешённых подсетей: служебный адрес Docker bridge не должен добавляться в пользовательский allowlist только ради deploy-проверки.
+
 При обновлении старой установки, где первоначальная подсеть ещё не записана в `.env`, доступ временно сохраняется для всех адресов. Сразу после обновления задайте фактические CIDR в «Настройки → Сеть и доступ». Новая установка получает первоначальный список из `LAN_CIDR` автоматически.
 
 Однострочная команда для приватного репозитория:

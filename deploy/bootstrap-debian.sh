@@ -121,6 +121,49 @@ if [[ ! -e /etc/docker/daemon.json ]]; then
 fi
 systemctl enable --now docker
 
+runtime_log="$(mktemp /tmp/pegas-docker-runtime.XXXXXX)"
+runtime_container="pegas-runtime-check-$$"
+if ! docker run --name "$runtime_container" --rm hello-world >"$runtime_log" 2>&1; then
+  docker rm -f "$runtime_container" >/dev/null 2>&1 || true
+  cat "$runtime_log" >&2
+  virtualization="$(systemd-detect-virt 2>/dev/null || true)"
+  if grep -Fq 'net.ipv4.ip_unprivileged_port_start' "$runtime_log" &&
+      grep -Fq 'permission denied' "$runtime_log"; then
+    cat >&2 <<EOF
+
+ОШИБКА СОВМЕСТИМОСТИ DOCKER: обнаружено окружение ${virtualization:-unknown}.
+Docker установлен, но внешний AppArmor-профиль запрещает запуск контейнеров.
+Это исправляется на хосте виртуализации, а не внутри гостевой Debian.
+
+Для Proxmox LXC выполните НА ХОСТЕ Proxmox:
+  1. Обновите пакет lxc-pve до версии 6.0.5-2 или новее.
+  2. Включите для CT функции nesting=1,keyctl=1.
+  3. Полностью остановите и снова запустите CT.
+
+Пример (замените 110 на фактический CTID):
+  apt-get update && apt-get install --only-upgrade -y lxc-pve
+  pct set 110 -features nesting=1,keyctl=1
+  pct shutdown 110
+  pct start 110
+
+Если apt сообщает 401 для enterprise.proxmox.com, сначала отключите
+Enterprise/Ceph Enterprise без подписки и старые репозитории другого Debian release.
+Не отключайте AppArmor и не откатывайте runc: это снижает безопасность хоста.
+После исправления запустите ту же команду деплоя повторно.
+EOF
+  else
+    cat >&2 <<EOF
+
+Docker runtime не прошёл обязательную проверку. Деплой остановлен до клонирования
+и запуска приложения. Исправьте ошибку Docker выше и повторите ту же команду.
+Тип виртуализации: ${virtualization:-unknown}
+EOF
+  fi
+  rm -f -- "$runtime_log"
+  exit 1
+fi
+rm -f -- "$runtime_log"
+
 install -m 0700 -d "$DEPLOY_CONFIG_DIR"
 git_ssh=""
 if [[ "$REPO_ACCESS" == "private" ]]; then
@@ -194,9 +237,15 @@ docker compose build --pull
 docker compose up -d --remove-orphans
 
 healthy=0
+planner_container="$(docker compose ps -q planner)"
+[[ -n "$planner_container" ]] || { docker compose logs --tail=150; exit 1; }
 for _ in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
+  health_status="$(docker inspect --format '{{.State.Health.Status}}' "$planner_container" 2>/dev/null || true)"
+  if [[ "$health_status" == "healthy" ]]; then
     healthy=1
+    break
+  fi
+  if [[ "$health_status" == "unhealthy" ]]; then
     break
   fi
   sleep 2
