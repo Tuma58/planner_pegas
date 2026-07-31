@@ -1,0 +1,1457 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PegasLogistic · диспетчерская</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%2316324a'/%3E%3Cpath fill='%237fd6c0' d='M3 14c3.5-1 6-3 8-7 .4 3 .1 5-1 7 2 .3 4-.2 6-2-.5 2.4-2 4.2-4.3 5.2 1.3 1 3 1.4 5.3 1.1-2.6 1.9-5.6 2.4-8.6 1.3C6.2 18.9 4.3 16.9 3 14z'/%3E%3Ccircle cx='16.5' cy='7.5' r='.9' fill='%2316324a'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --navy:#16324a; --navy2:#1f425f; --teal:#2e7d6b; --ink:#16222e;
+    --paper:#eaeff4; --card:#ffffff; --line:#d5dde5; --muted:#68788a; --soft:#f4f7fa;
+    --z-dom:#2e7d6b; --z-msk:#3b6ea5; --z-sam:#c77f3b; --z-chr:#6f8f43; --z-pit:#5f7fa8;
+    --z-zol:#9c5c8c; --z-vos:#b1483e; --z-ural:#6f66a8; --z-yug:#c99a3a; --z-zap:#4a9a97;
+    --ok:#2e7d6b; --warn:#c98a2a; --bad:#b1483e; --plan:#7f8fa6;
+    --shadow:0 1px 3px rgba(20,40,60,.10),0 1px 2px rgba(20,40,60,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:ui-sans-serif,system-ui,"Segoe UI",Roboto,Arial,sans-serif;
+    background:var(--paper); color:var(--ink);
+    font-variant-numeric:tabular-nums; font-size:13px; line-height:1.4;
+  }
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+  .app{display:flex;flex-direction:column;height:100vh}
+
+  /* ── Top rail ── */
+  .rail{background:var(--navy);color:#fff;display:flex;align-items:center;gap:18px;padding:0 16px;height:52px;flex:none}
+  .brand{display:flex;align-items:center;gap:9px}
+  .brand .mark{display:flex;align-items:center;color:#7fd6c0}
+  .brand b{font-size:15px;letter-spacing:.04em;font-weight:800}
+  .brand b::first-letter{color:#7fd6c0}
+  .brand .tagline{font-size:11px;color:#9fb4c6;letter-spacing:.03em;align-self:flex-end;padding-bottom:2px}
+  .roles{display:flex;gap:2px;margin-left:8px}
+  .role{border:0;background:transparent;color:#b9c9d6;padding:7px 13px;border-radius:7px 7px 0 0;
+    font-size:12px;font-weight:600;cursor:pointer;letter-spacing:.02em;position:relative;top:2px}
+  .role:hover{color:#fff;background:rgba(255,255,255,.06)}
+  .role.on{background:var(--paper);color:var(--navy)}
+  .rail .right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .presence{display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#57d08a;box-shadow:0 0 0 3px rgba(87,208,138,.2)}
+  .who{font-size:11px;color:#9fb4c6}
+  .chip-on{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.1);
+    padding:3px 9px;border-radius:20px;font-size:11px}
+  .sync{font-size:11px;color:#8fb;opacity:.85;display:flex;align-items:center;gap:5px}
+
+  /* ── Toolbar ── */
+  .tools{background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;
+    gap:14px;padding:8px 16px;flex:none;flex-wrap:wrap}
+  .seg{display:flex;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{border:0;background:#fff;padding:6px 11px;font-size:12px;cursor:pointer;color:var(--muted);font-weight:600}
+  .seg button.on{background:var(--navy);color:#fff}
+  .horizon{font-weight:700;color:var(--navy);font-size:13px}
+  .legend{display:flex;gap:10px;margin-left:auto;flex-wrap:wrap}
+  .lg{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
+  .sw{width:11px;height:11px;border-radius:3px}
+
+  /* ── Layout ── */
+  .body{flex:1;display:flex;min-height:0}
+  .board{flex:1;overflow:auto;position:relative}
+  .panel{width:340px;flex:none;background:var(--card);border-left:1px solid var(--line);
+    overflow:auto;padding:14px}
+
+  /* ── Calendar grid ── */
+  .cal{position:relative;min-width:max-content}
+  .calhead{display:flex;position:sticky;top:0;z-index:6;background:var(--soft);border-bottom:1px solid var(--line)}
+  .fixhead{width:230px;flex:none;position:sticky;left:0;z-index:7;background:var(--soft);
+    border-right:1px solid var(--line);display:flex;align-items:center;padding:0 12px;font-size:11px;
+    text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700;height:44px}
+  .day{width:var(--cw);flex:none;text-align:center;border-right:1px solid var(--line);padding:5px 0;height:44px}
+  .day .dn{font-weight:700;font-size:13px;color:var(--navy)}
+  .day .dm{font-size:10px;color:var(--muted);text-transform:uppercase}
+  .day.we{background:#e4ebf1}
+  .row{display:flex;border-bottom:1px solid var(--line);position:relative;height:46px}
+  .row:hover{background:#f7fafc}
+  .fixcell{width:230px;flex:none;position:sticky;left:0;z-index:5;background:var(--card);
+    border-right:1px solid var(--line);display:flex;align-items:center;gap:8px;padding:0 12px}
+  .row:hover .fixcell{background:#f7fafc}
+  .tbadge{width:6px;height:30px;border-radius:3px;flex:none}
+  .tinfo{min-width:0}
+  .tplate{font-weight:700;font-size:12.5px;letter-spacing:.02em}
+  .tmeta{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+  .track{position:relative;flex:1;height:46px}
+  .grid-bg{position:absolute;inset:0;display:flex;pointer-events:none}
+  .gcell{width:var(--cw);flex:none;border-right:1px solid #eef2f6}
+  .gcell.we{background:#f2f6f9}
+  .leg{position:absolute;top:7px;height:32px;border-radius:6px;color:#fff;padding:3px 7px;
+    font-size:10.5px;overflow:hidden;cursor:pointer;box-shadow:var(--shadow);border:1px solid rgba(0,0,0,.08);
+    display:flex;flex-direction:column;justify-content:center;transition:transform .06s}
+  .leg:hover{transform:translateY(-1px);filter:brightness(1.05);z-index:3}
+  .leg b{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15}
+  .leg .sub{opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9.5px}
+  .leg.done{opacity:.62}
+  .leg.rej{background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.18),rgba(0,0,0,.18) 5px,transparent 5px,transparent 10px)!important;outline:2px solid #b1483e;outline-offset:-2px}
+  .leg.rej b{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.7)}
+  .leg.conflict{outline:2px solid #e0533c;outline-offset:-2px;box-shadow:0 0 0 3px rgba(224,83,60,.28);z-index:3;animation:cfpulse 1.6s ease-in-out infinite}
+  @keyframes cfpulse{0%,100%{box-shadow:0 0 0 3px rgba(224,83,60,.28)}50%{box-shadow:0 0 0 5px rgba(224,83,60,.14)}}
+  .leg .cflag{position:absolute;top:-7px;left:-5px;background:#e0533c;color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:0 3px;line-height:14px;z-index:4}
+  .conflict-chip{background:#e0533c;color:#fff;font-size:12px;font-weight:700;padding:6px 11px;border-radius:8px;white-space:nowrap}
+  .rowconflict{color:#e0533c;font-weight:800;margin-left:5px;cursor:help}
+  .cfbanner{background:#fdecea;border:1px solid #f3b8b0;color:#a5342a;border-radius:8px;padding:9px 11px;font-size:12.5px;font-weight:600;margin:10px 0}
+  .sughint{font-size:11px;color:var(--muted);margin:8px 0 5px;font-weight:600}
+  .sugtruck{display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font-size:12px;cursor:pointer;background:#fff}
+  .sugtruck:hover{border-color:var(--teal);background:#f3faf7}
+  .sugtruck.sel{border-color:var(--teal);background:#eaf7f1;box-shadow:0 0 0 1px var(--teal)}
+  .sugtag{font-size:11px;font-weight:700}
+  .toolbtn{border:1px solid var(--line);background:#fff;color:var(--navy);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer}
+  .toolbtn:hover{background:var(--soft);border-color:var(--teal)}
+  .sheetmask{position:fixed;inset:0;background:rgba(16,34,50,.55);display:none;align-items:center;justify-content:center;z-index:80;padding:24px}
+  .sheetmask.on{display:flex}
+  .sheet{background:#fff;border-radius:14px;width:min(1000px,96vw);height:min(80vh,820px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.35)}
+  .sheet-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap}
+  .sheet-head h2{margin:0;font-size:14px;color:var(--navy);text-transform:uppercase;letter-spacing:.04em}
+  .sheet-head input,.sheet-head select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px}
+  .sheet-head input{min-width:200px;flex:1}
+  .sheet-count{font-size:11px;color:var(--muted);font-weight:600;white-space:nowrap}
+  .sheet-head #cl_close{margin-left:auto;border:1px solid var(--line);background:#fff;border-radius:8px;width:34px;height:34px;cursor:pointer;font-weight:700;color:var(--muted)}
+  .sheet-head #cl_close:hover{background:#fdeeee;color:var(--bad);border-color:#e6b3b0}
+  .sheet-body{flex:1;overflow:auto}
+  .ctable{width:100%;border-collapse:collapse;font-size:12.5px}
+  .ctable th{position:sticky;top:0;background:var(--soft);text-align:left;padding:9px 12px;font-size:11px;
+    text-transform:uppercase;letter-spacing:.03em;color:var(--muted);border-bottom:1px solid var(--line);z-index:1}
+  .ctable th.num,.ctable td.num{text-align:right}
+  .ctable td{padding:7px 12px;border-bottom:1px solid #eef2f6}
+  .ctable tr:hover td{background:#f7fafc}
+  .zchip{color:#fff;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap}
+  .leg .st{position:absolute;top:3px;right:4px;width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.9)}
+  .now{position:absolute;top:0;bottom:0;width:0;border-left:2px dashed #3355aa;z-index:4}
+  .now::before{content:"сегодня";position:absolute;top:-1px;left:3px;font-size:9px;color:#fff;font-weight:700;background:#3355aa;padding:1px 4px;border-radius:0 0 4px 0}
+  .empty-hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#b7c3cd;font-size:11px;pointer-events:none}
+
+  /* ── Panel bits ── */
+  .ph{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--navy);font-weight:700;
+    margin:2px 0 10px;display:flex;align-items:center;gap:8px}
+  .ph .tag{font-size:10px;background:var(--soft);color:var(--muted);padding:2px 7px;border-radius:10px;letter-spacing:0;text-transform:none}
+  label.f{display:block;font-size:11px;color:var(--muted);margin:9px 0 3px;font-weight:600}
+  select,input{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:7px;font-size:13px;
+    font-family:inherit;background:#fff;color:var(--ink)}
+  input:focus,select:focus{outline:2px solid #9fc3e0;outline-offset:-1px;border-color:#9fc3e0}
+  .btn{width:100%;border:0;background:var(--teal);color:#fff;padding:9px;border-radius:8px;font-weight:700;
+    font-size:13px;cursor:pointer;margin-top:12px;letter-spacing:.02em}
+  .btn:hover{filter:brightness(1.06)}
+  .btn.alt{background:var(--navy)}
+  .btn.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+  .calc{background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:10px;margin-top:12px}
+  .calc .r{display:flex;justify-content:space-between;font-size:12px;padding:2px 0}
+  .calc .r b{font-weight:700}
+  .calc .big{font-size:17px;color:var(--navy);font-weight:800}
+  .calc .neg{color:var(--bad)}
+  .kpi{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+  .kc{background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:9px 10px}
+  .kc .l{font-size:10.5px;color:var(--muted);font-weight:600}
+  .kc .v{font-size:16px;font-weight:800;color:var(--navy);margin-top:2px}
+  .kc.good .v{color:var(--teal)}
+  .kc.bad .v{color:var(--bad)}
+  .list{margin-top:6px}
+  .li{display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);
+    border-radius:8px;margin-bottom:6px;font-size:12px;background:#fff}
+  .li .pl{font-weight:700}
+  .li .mi{color:var(--muted);font-size:11px}
+  .li .rt{margin-left:auto;font-weight:700}
+  .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:700;color:#fff}
+  .b-plan{background:#7f8fa6}.b-run{background:#3b6ea5}.b-unl{background:#c98a2a}
+  .b-done{background:#2e7d6b}.b-pay{background:#20624f}.b-rej{background:#b1483e}
+  .hint{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5}
+  .orders .li{cursor:pointer}
+  .orders .li:hover{border-color:var(--teal);background:#f3faf7}
+
+  /* ── Modal ── */
+  .mask{position:fixed;inset:0;background:rgba(16,34,50,.5);display:none;align-items:center;justify-content:center;z-index:50}
+  .mask.on{display:flex}
+  .modal{background:#fff;border-radius:12px;width:400px;max-width:92vw;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+  .modal h3{margin:0 0 4px;color:var(--navy);font-size:15px}
+  .modal .msub{color:var(--muted);font-size:12px;margin-bottom:8px}
+  .modal .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .modal .actions{display:flex;gap:8px;margin-top:14px}
+  .status-pick{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .sp{border:1px solid var(--line);border-radius:20px;padding:5px 11px;font-size:12px;cursor:pointer;background:#fff;font-weight:600}
+  .sp.on{color:#fff;border-color:transparent}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;
+    padding:9px 16px;border-radius:9px;font-size:12px;opacity:0;transition:opacity .25s;z-index:60;box-shadow:var(--shadow)}
+  .toast.on{opacity:1}
+  @media (max-width:860px){.panel{display:none}}
+  /* Состав ТС */
+  .fhead{display:flex;align-items:center;gap:12px;padding:12px 16px;position:sticky;top:0;
+    background:var(--card);border-bottom:1px solid var(--line);z-index:3}
+  .fhead h2{margin:0;font-size:14px;color:var(--navy);text-transform:uppercase;letter-spacing:.05em}
+  .ftag{font-size:11px;background:var(--soft);color:var(--muted);padding:3px 10px;border-radius:12px;font-weight:600}
+  .addbtn{margin-left:auto;border:0;background:var(--teal);color:#fff;padding:8px 14px;border-radius:8px;font-weight:700;cursor:pointer}
+  .addbtn:hover{filter:brightness(1.06)}
+  .ftable{width:100%;border-collapse:collapse;font-size:12.5px;background:#fff}
+  .ftable th{position:sticky;top:53px;background:var(--soft);text-align:left;padding:8px 10px;font-size:11px;
+    text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:1px solid var(--line);z-index:2}
+  .ftable td{padding:4px 8px;border-bottom:1px solid var(--line)}
+  .ftable tr:hover td{background:#f7fafc}
+  .ftable input,.ftable select{padding:5px 7px;border:1px solid transparent;background:transparent;border-radius:6px;
+    font-size:12.5px;font-family:inherit;color:var(--ink);width:auto}
+  .ftable input:hover,.ftable select:hover{border-color:var(--line);background:#fff}
+  .ftable input:focus,.ftable select:focus{border-color:#9fc3e0;background:#fff;outline:none}
+  select.st-work{color:var(--teal);font-weight:700}
+  select.st-rep{color:var(--warn);font-weight:700}
+  select.st-out{color:var(--muted)}
+  select.st-nodrv{color:#b06a2a;font-weight:700}
+  .li.ord{cursor:pointer}
+  .li.ord:hover{border-color:var(--teal);background:#f3faf7}
+  .li.ord.sel{border-color:var(--teal);background:#eaf7f1;box-shadow:0 0 0 1px var(--teal)}
+  .xbtn{border:1px solid var(--line);background:#fff;color:var(--bad);border-radius:6px;padding:3px 9px;cursor:pointer;font-weight:700}
+  .xbtn:hover{background:#fdeeee;border-color:#e6b3b0}
+  .match-card{border:1px solid var(--line);border-radius:9px;padding:9px 10px;margin-bottom:7px;background:#fff}
+  .match-card.repos{background:#fbfaf4;border-style:dashed}
+  .match-card .top{display:flex;align-items:center;gap:8px;font-size:12px}
+  .match-card .free{font-size:11px;color:var(--muted);margin-top:3px}
+  .statelbl{font-weight:700;font-size:12px}
+  .rsn{font-size:9.5px;color:var(--muted);margin-left:5px;background:var(--soft);padding:1px 6px;border-radius:8px}
+  .cum{margin-left:10px;color:var(--navy);font-weight:700}
+  .rt.neg{color:var(--bad)}
+  /* Отчёт руководителя */
+  .cascade{display:flex;align-items:center;gap:0;flex-wrap:wrap;padding:16px}
+  .cbox{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 15px;min-width:128px;text-align:center;box-shadow:var(--shadow)}
+  .cbox .cn{font-size:22px;font-weight:800;color:var(--navy);line-height:1}
+  .cbox .cl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-top:4px}
+  .carrow{display:flex;flex-direction:column;justify-content:center;align-items:center;padding:0 12px;min-width:118px}
+  .carrow .cf{font-size:10px;color:var(--muted)}
+  .carrow .ck{font-size:14px;font-weight:800;color:var(--muted)}
+  .carrow .ct{font-size:9.5px;color:var(--muted)}
+  .carrow.ok .ck{color:var(--teal)} .carrow.warn .ck{color:var(--warn)} .carrow.bad .ck{color:var(--bad)}
+  .rgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 16px}
+  .rcard{background:#fff;border:1px solid var(--line);border-radius:11px;padding:14px}
+  .rcard h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--navy)}
+  .rtable{width:100%;border-collapse:collapse;font-size:12.5px}
+  .rtable th{text-align:left;font-size:10.5px;text-transform:uppercase;color:var(--muted);padding:4px 6px;border-bottom:1px solid var(--line)}
+  .rtable td{padding:6px}
+  .rtable td.num,.rtable th.num{text-align:right}
+  .rtable td.muted{color:var(--muted);font-size:11px}
+  .rtable tr.tot td{font-weight:800;border-top:2px solid var(--navy)}
+  .dotc{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:7px;vertical-align:middle}
+  .mdrow{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid #eef2f6;font-size:12.5px}
+  .mdrow b{font-weight:700}.mdrow .neg{color:var(--bad)}
+  .mdrow.big{font-size:14px;border-bottom:0;margin-top:4px}.mdrow.big b{font-size:16px}
+  @media (max-width:760px){.rgrid{grid-template-columns:1fr}}
+  .row.dim{opacity:.5}
+  .rowstate{font-weight:700}
+  .leg .hres{position:absolute;top:0;bottom:0;width:8px;cursor:col-resize;z-index:2}
+  .leg .hres.l{left:0;border-radius:6px 0 0 6px}
+  .leg .hres.r{right:0;border-radius:0 6px 6px 0}
+  .leg .hres:hover{background:rgba(255,255,255,.35)}
+  .leg.dragging{z-index:9;box-shadow:0 6px 18px rgba(0,0,0,.28);filter:brightness(1.04);user-select:none}
+  .draglabel{position:fixed;background:var(--navy);color:#fff;padding:5px 9px;border-radius:7px;
+    font-size:11px;z-index:70;pointer-events:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.25)}
+  .datehint{font-size:11px;color:var(--muted);margin-top:6px;background:var(--soft);padding:5px 8px;border-radius:6px}
+  .datehint b{color:var(--navy)}
+  .splash{position:fixed;inset:0;z-index:100;background:radial-gradient(circle at 50% 40%,#1f425f,#16324a 70%);
+    display:flex;align-items:center;justify-content:center;transition:opacity .5s ease}
+  .splash.hide{opacity:0;pointer-events:none}
+  .splash-inner{text-align:center;color:#fff;animation:splashUp .6s ease}
+  @keyframes splashUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+  .splash-mark{display:inline-flex;color:#7fd6c0;animation:splashFloat 2.4s ease-in-out infinite}
+  @keyframes splashFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  .splash-name{font-size:30px;font-weight:800;letter-spacing:.04em;margin-top:10px}
+  .splash-name::first-letter{color:#7fd6c0}
+  .splash-sub{font-size:13px;color:#9fb4c6;letter-spacing:.05em;margin-top:4px}
+  .splash-bar{width:180px;height:3px;background:rgba(255,255,255,.15);border-radius:3px;margin:22px auto 0;overflow:hidden}
+  .splash-bar span{display:block;height:100%;width:40%;background:#7fd6c0;border-radius:3px;animation:splashLoad 1.1s ease-in-out infinite}
+  @keyframes splashLoad{0%{margin-left:-40%}100%{margin-left:100%}}
+  .foot{flex:none;height:26px;background:var(--navy);color:#9fb4c6;display:flex;align-items:center;
+    gap:12px;padding:0 16px;font-size:11px;letter-spacing:.02em}
+  .foot-brand{font-weight:700;color:#cfe0ec}
+  .foot-brand b{color:#7fd6c0;font-weight:800}
+  .foot-note{color:#7f93a5}
+  .fbrand{color:var(--teal);font-weight:800}
+  .prohead{width:134px;flex:none;position:sticky;right:0;z-index:8;background:var(--soft);border-left:1px solid var(--line);
+    display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding:0 10px;text-align:right;
+    font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);font-weight:700;height:44px}
+  .prohead span{font-size:9px;font-weight:600;text-transform:none;letter-spacing:0;margin-top:2px}
+  .profcell{width:134px;flex:none;position:sticky;right:0;z-index:5;background:var(--card);border-left:1px solid var(--line);
+    display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding:0 10px;text-align:right}
+  .row:hover .profcell{background:#f7fafc}
+  .pcur{font-weight:800;color:var(--navy);font-size:12.5px}
+  .pcur.neg{color:var(--bad)}
+  .pproj{font-size:11px;color:var(--teal);font-weight:700}
+  .pproj.neg{color:var(--bad)}
+  .offbar{position:absolute;top:7px;height:32px;border-radius:6px;display:flex;flex-direction:column;justify-content:center;
+    padding:3px 9px;font-size:10.5px;color:#5a4632;border:1px dashed rgba(90,70,50,.4);overflow:hidden}
+  .offbar.rep{background:repeating-linear-gradient(45deg,#f7e6cb,#f7e6cb 7px,#efd8b2 7px,#efd8b2 14px)}
+  .offbar.nodrv{background:repeating-linear-gradient(45deg,#ecdcef,#ecdcef 7px,#e1cce6 7px,#e1cce6 14px);color:#4a2f52;border-color:rgba(74,47,82,.4)}
+  .offbar b{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .offbar .offsub{opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9.5px}
+  .datefilter{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);font-weight:600}
+  .datefilter input[type=date]{padding:4px 6px;border:1px solid var(--line);border-radius:6px;font-size:11px;width:auto}
+  .datefilter button{border:1px solid var(--line);background:#fff;color:var(--navy);padding:5px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer}
+  .datefilter button:hover{background:var(--soft)}
+  .li.req{cursor:pointer}
+  .li.req:hover{border-color:var(--teal);background:#f3faf7}
+  .reqzone{color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px;white-space:nowrap}
+  .periodnav{display:flex;align-items:center;gap:8px}
+  .periodnav button{border:1px solid var(--line);background:#fff;color:var(--navy);width:28px;height:28px;
+    border-radius:7px;cursor:pointer;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .periodnav button:hover{background:var(--navy);color:#fff}
+  .periodnav .horizon{min-width:130px;text-align:center}
+</style>
+</head>
+<body>
+<div class="splash" id="splash">
+  <div class="splash-inner">
+    <span class="splash-mark">
+      <svg viewBox="0 0 24 24" width="64" height="64"><path fill="currentColor" d="M3 14c3.5-1 6-3 8-7 .4 3 .1 5-1 7 2 .3 4-.2 6-2-.5 2.4-2 4.2-4.3 5.2 1.3 1 3 1.4 5.3 1.1-2.6 1.9-5.6 2.4-8.6 1.3C6.2 18.9 4.3 16.9 3 14z"/><circle cx="16.5" cy="7.5" r="1" fill="#16324a"/></svg>
+    </span>
+    <div class="splash-name">PegasLogistic</div>
+    <div class="splash-sub">диспетчерская · холодовая цепь</div>
+    <div class="splash-bar"><span></span></div>
+  </div>
+</div>
+<div class="app">
+  <div class="rail">
+    <div class="brand"><span class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 14c3.5-1 6-3 8-7 .4 3 .1 5-1 7 2 .3 4-.2 6-2-.5 2.4-2 4.2-4.3 5.2 1.3 1 3 1.4 5.3 1.1-2.6 1.9-5.6 2.4-8.6 1.3C6.2 18.9 4.3 16.9 3 14z"/><circle cx="16.5" cy="7.5" r="1" fill="var(--navy)"/></svg>
+    </span><b>PegasLogistic</b><span class="tagline">диспетчерская · холодовая цепь</span></div>
+    <div class="roles" id="roles"></div>
+    <div class="right">
+      <div class="presence"><span class="dot"></span><span class="who" id="who">1 в сети</span></div>
+      <span class="chip-on" id="meChip">—</span>
+      <span class="sync" id="sync">✓ синхронно</span>
+    </div>
+  </div>
+
+  <div class="tools">
+    <div class="periodnav">
+      <button id="pprev" title="Предыдущий период">◀</button>
+      <span class="horizon" id="periodLabel">Август 2026</span>
+      <button id="pnext" title="Следующий период">▶</button>
+    </div>
+    <div class="seg" id="typeFilter">
+      <button data-t="all" class="on">Все</button>
+      <button data-t="Тушевоз">Тушевоз</button>
+      <button data-t="Паллет 33">Паллет 33</button>
+      <button data-t="Паллет 41">Паллет 41</button>
+      <button data-t="Допельшток">Допельшток</button>
+    </div>
+    <div class="datefilter">
+      <span>Период:</span>
+      <input type="date" id="vf"><span>–</span><input type="date" id="vt">
+      <button id="vreset">Месяц</button>
+    </div>
+    <button class="toolbtn" id="openClients">📇 Клиенты</button>
+    <span class="conflict-chip" id="conflictChip" style="display:none"></span>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="body">
+    <div class="board"><div class="cal" id="cal"></div></div>
+    <div class="panel" id="panel"></div>
+  </div>
+  <div class="foot">
+    <span class="foot-brand">PegasLogistic <b>v1.0</b></span>
+    <span class="foot-note">диспетчерская холодовой цепи · единое окно</span>
+  </div>
+</div>
+
+<div class="mask" id="mask"><div class="modal" id="modal"></div></div>
+<div class="sheetmask" id="clientsSheet">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2><span class="fbrand">PegasLogistic</span> · Справочник заказчиков</h2>
+      <input id="cl_search" placeholder="поиск по названию…">
+      <select id="cl_from"></select>
+      <select id="cl_to"></select>
+      <span class="sheet-count" id="cl_count"></span>
+      <button id="cl_close" title="Закрыть">✕</button>
+    </div>
+    <div class="sheet-body">
+      <table class="ctable">
+        <thead><tr><th>Заказчик</th><th>Откуда</th><th>Куда</th><th class="num">Рейсов (июль)</th><th class="num">Ср. ставка с НДС</th><th class="num">Рейсов/мес</th></tr></thead>
+        <tbody id="cl_tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============ ДАННЫЕ ============ */
+const ZONES=["Дом","Москва","Самара","Черноземье","Питер","Золотое кольцо","Восток","Урал","Юг","Запад"];
+const ZC={"Дом":"var(--z-dom)","Москва":"var(--z-msk)","Самара":"var(--z-sam)","Черноземье":"var(--z-chr)",
+  "Питер":"var(--z-pit)","Золотое кольцо":"var(--z-zol)","Восток":"var(--z-vos)","Урал":"var(--z-ural)",
+  "Юг":"var(--z-yug)","Запад":"var(--z-zap)"};
+const D={ "Дом":{ "Москва":640,"Самара":420,"Черноземье":515,"Питер":1360,"Золотое кольцо":430,"Восток":2835,"Урал":720,"Юг":640,"Запад":1000},
+  "Москва":{"Самара":1060,"Черноземье":518,"Питер":708,"Золотое кольцо":420,"Восток":3260,"Урал":1160,"Юг":1080,"Запад":380},
+  "Самара":{"Черноземье":900,"Восток":2400,"Урал":460,"Юг":830},"Черноземье":{"Питер":1200,"Юг":580},
+  "Питер":{"Золотое кольцо":1100},"Золотое кольцо":{"Восток":2900},"Восток":{"Урал":1900} };
+function km(a,b){ if(a===b) return 150; if(D[a]&&D[a][b]!=null) return D[a][b]; if(D[b]&&D[b][a]!=null) return D[b][a]; return 700; }
+const REV={"Дом|Москва":84878,"Москва|Дом":90018,"Москва|Самара":126939,"Самара|Дом":27014,
+  "Дом|Черноземье":70654,"Черноземье|Дом":84449,"Москва|Восток":464562,"Восток|Москва":182682,
+  "Дом|Золотое кольцо":81797,"Золотое кольцо|Дом":71505,"Москва|Черноземье":95000,"Черноземье|Москва":88000,
+  "Дом|Самара":60000,"Дом|Питер":191031,"Питер|Москва":60770};
+const COST=55, NDS=0.22, SPD=600, HND=0.5;
+function rev(a,b){ return REV[a+"|"+b] || Math.round(km(a,b)*95*1.22/1); }
+function transit(k){ return +(k/SPD+HND).toFixed(2); }
+
+const TRUCKS=[
+  {p:"т875ат58",t:"Тушевоз",d:"Конихин И.Н.",trailer:"ао6753 58",zone:"Дом",status:"work"},
+  {p:"т695ат58",t:"Паллет 41",d:"Алмаев А.А.",trailer:"ао6752 58",zone:"Дом",status:"work"},
+  {p:"р271ск58",t:"Тушевоз",d:"Сомов П.В.",trailer:"ао5510 58",zone:"Дом",status:"work"},
+  {p:"т281ае58",t:"Паллет 41",d:"Андриянов А.В.",trailer:"ао5636 58",zone:"Дом",status:"work"},
+  {p:"т944ав58",t:"Тушевоз",d:"Горячев А.Ю.",trailer:"ао5643 58",zone:"Дом",status:"work"},
+  {p:"р382оа58",t:"Тушевоз",d:"Лунёв К.С.",trailer:"ао5521 58",zone:"Дом",status:"work"},
+  {p:"т947ук58",t:"Паллет 33",d:"Иванов А.Ю.",trailer:"ао5641 58",zone:"Дом",status:"work"},
+  {p:"т958ат58",t:"Допельшток",d:"Сорокин В.С.",trailer:"ао6851 58",zone:"Дом",status:"work"},
+  {p:"т945ав58",t:"Тушевоз",d:"Грушин В.А.",trailer:"ао5637 58",zone:"Дом",status:"work"},
+  {p:"р274ун58",t:"Паллет 41",d:"Луценко Д.В.",trailer:"ао6844 58",zone:"Дом",status:"work"},
+  {p:"т046ав58",t:"Паллет 33",d:"Шаров И.С.",trailer:"ао6850 58",zone:"Дом",status:"work"},
+  {p:"т932ав58",t:"Тушевоз",d:"Гаврилов П.А.",trailer:"ао5642 58",zone:"Дом",status:"work"},
+  {p:"т938ав58",t:"Допельшток",d:"Будкин С.О.",trailer:"ао5644 58",zone:"Дом",status:"work"},
+  {p:"к410ах58",t:"Тушевоз",d:"Ерёмин Д.А.",trailer:"ао5701 58",zone:"Дом",status:"work"},
+  {p:"о215ро58",t:"Паллет 33",d:"Титов Р.М.",trailer:"ао5702 58",zone:"Дом",status:"work"},
+  {p:"н770ес58",t:"Тушевоз",d:"Жуков С.П.",trailer:"ао5703 58",zone:"Дом",status:"work"}
+];
+const TEMPL={
+  "Тушевоз":[["Дом","Москва"],["Москва","Самара"],["Самара","Дом"]],
+  "Паллет 41":[["Москва","Восток"],["Восток","Москва"]],
+  "Паллет 33":[["Дом","Черноземье"],["Черноземье","Дом"]],
+  "Допельшток":[["Дом","Золотое кольцо"],["Золотое кольцо","Дом"]]
+};
+const CLIENTS_BY={"Дом|Москва":"ЧМПЗ АО","Москва|Дом":"ОЧАКОВО","Москва|Самара":"ТД Черкизово",
+  "Самара|Дом":"обратный груз","Дом|Черноземье":"Новые фермы","Черноземье|Дом":"Митфуд",
+  "Москва|Восток":"М Лоджистик","Восток|Москва":"Корса АО","Дом|Золотое кольцо":"Атяшевский МПК",
+  "Золотое кольцо|Дом":"Трейд-Сервис"};
+const LANES={"Дом":[{to:"Москва",client:"ЧМПЗ АО Пенза",rev:94866},{to:"Черноземье",client:"Новые фермы ООО",rev:63383},{to:"Питер",client:"ДАНИЛКИН АНДРЕЙ ВИКТОРОВИЧ ИП",rev:170000},{to:"Золотое кольцо",client:"Атяшевский МПК ООО",rev:86533}],
+  "Москва":[{to:"Дом",client:"Останкино - новый стандарт ООО",rev:113056},{to:"Самара",client:"ТД Черкизово ООО",rev:103104},{to:"Черноземье",client:"Останкино - новый стандарт ООО",rev:81620},{to:"Восток",client:"М Лоджистик (кросс-док)",rev:463909}],
+  "Самара":[{to:"Дом",client:"Колокольцева И.Е. ИП",rev:16926},{to:"Москва",client:"Останкино - новый стандарт ООО",rev:68400}],
+  "Черноземье":[{to:"Москва",client:"Знаменский СГЦ",rev:81344},{to:"Дом",client:"Митфуд ООО",rev:75000},{to:"Запад",client:"Знаменский СГЦ",rev:86250},{to:"Питер",client:"Знаменский СГЦ",rev:165000}],
+  "Питер":[{to:"Москва",client:"Коралл ООО",rev:78753},{to:"Золотое кольцо",client:"Коралл ООО",rev:91976},{to:"Дом",client:"ПЛАНЕТА КОЛБАС 58 ООО",rev:120000},{to:"Черноземье",client:"Коралл ООО",rev:135455}],
+  "Золотое кольцо":[{to:"Дом",client:"Трейд-Сервис ООО (Аби)",rev:92442},{to:"Москва",client:"Трейд-Сервис ООО (Аби)",rev:38158},{to:"Запад",client:"ММК ООО",rev:124000},{to:"Самара",client:"Трейд-Сервис ООО (Аби)",rev:115880}],
+  "Восток":[{to:"Москва",client:"Корса АО",rev:144944},{to:"Дом",client:"ПЛАНЕТА КОЛБАС 58 ООО",rev:120000}],
+  "Урал":[{to:"Самара",client:"Раевский мясокомбинат Альшей-мясо",rev:88500},{to:"Москва",client:"СТАНДАРТ ЛОГИСТИК ООО",rev:71000},{to:"Питер",client:"Раевский мясокомбинат Альшей-мясо",rev:200000}],
+  "Юг":[{to:"Питер",client:"ДАНИЛКИН АНДРЕЙ ВИКТОРОВИЧ ИП",rev:220000},{to:"Москва",client:"Традиции вкуса ООО",rev:92667},{to:"Дом",client:"Белоусов А.Л. ИП",rev:45000}],
+  "Запад":[{to:"Москва",client:"Останкинский мясоперерабатывающий комбинат ОАО",rev:35000}]};
+const CLIENTS_FULL=[
+["ЧМПЗ АО Пенза","Дом","Москва",422,94866,140.7],
+["ТД Черкизово ООО","Дом","Москва",172,71228,26.5],
+["Останкино - новый стандарт ООО","Москва","Дом",139,113056,46.3],
+["ТД Черкизово ООО","Москва","Самара",135,103104,45.0],
+["Атяшевский МПК ООО","Дом","Москва",120,89330,40.0],
+["М Лоджистик (кросс-док)","Москва","Самара",119,163681,18.3],
+["Останкино - новый стандарт ООО","Москва","Самара",107,142322,16.5],
+["М Лоджистик (кросс-док)","Москва","Восток",99,463909,15.2],
+["ТД Черкизово ООО","Москва","Дом",92,66929,14.2],
+["Останкино - новый стандарт ООО","Москва","Черноземье",92,81620,30.7],
+["Новые фермы ООО","Дом","Москва",87,72955,13.4],
+["Корса АО","Восток","Москва",85,144944,13.1],
+["Новые фермы ООО","Дом","Черноземье",69,63383,23.0],
+["Коралл ООО","Питер","Москва",60,78753,20.0],
+["М Лоджистик (кросс-док)","Москва","Дом",58,98155,8.9],
+["ОЧАКОВО МПБК АО","Москва","Дом",56,62268,18.7],
+["ТД Черкизово ООО","Питер","Москва",50,45008,16.7],
+["Останкинский мясоперерабатывающий комбинат ОАО","Запад","Москва",49,35000,16.3],
+["Митфуд ООО","Черноземье","Дом",49,75000,16.3],
+["Атяшевский МПК ООО","Дом","Черноземье",39,84897,13.0],
+["Царицыно ФТД АО","Москва","Питер",33,142606,11.0],
+["Знаменский СГЦ","Черноземье","Москва",32,81344,10.7],
+["Трейд-Сервис ООО (Аби)","Золотое кольцо","Дом",32,92442,10.7],
+["Новые фермы ООО","Дом","Восток",30,397900,4.6],
+["Колокольцева И.Е. ИП","Самара","Дом",27,16926,9.0],
+["ДАНИЛКИН АНДРЕЙ ВИКТОРОВИЧ ИП","Дом","Питер",26,170000,8.7],
+["ФИЛЬЕ ПРОПЕРТИ ООО","Черноземье","Дом",26,78004,8.7],
+["Вимм-Билль-Данн АО","Москва","Дом",25,77648,8.3],
+["ЧМПЗ АО Пенза","Дом","Питер",25,194873,8.3],
+["Иней ООО","Питер","Москва",24,52917,8.0],
+["ТД Черкизово ООО","Самара","Дом",22,42700,7.3],
+["Митфуд ООО","Москва","Дом",21,63810,7.0],
+["Атяшевский МПК ООО","Дом","Золотое кольцо",20,86533,6.7],
+["Птицефабрика Атемарская ОАО","Дом","Москва",20,75900,6.7],
+["ММК ООО","Золотое кольцо","Запад",20,124000,6.7],
+["ТД Черкизово ООО","Москва","Золотое кольцо",20,57246,6.7],
+["КАЧЕСТВЕННЫЙ ПРОДУКТ ООО","Черноземье","Москва",20,81000,6.7],
+["ЧМПЗ АО Москва","Москва","Самара",20,102480,6.7],
+["ТД РОСТ ООО","Москва","Питер",20,130113,6.7],
+["Царицыно ФТД АО","Москва","Урал",18,349402,6.0],
+["М Лоджистик (кросс-док)","Москва","Юг",18,159167,6.0],
+["ВОСХОД ООО","Черноземье","Москва",17,63059,5.7],
+["Коралл ООО","Питер","Золотое кольцо",17,91976,5.7],
+["Вердазернопродукт","Москва","Золотое кольцо",17,100970,5.7],
+["Выборжец ТД ООО","Питер","Москва",17,64709,5.7],
+["СМАРТ СЦЕНЫ ООО","Дом","Золотое кольцо",17,78000,5.7],
+["Атяшевский МПК ООО","Дом","Питер",16,206938,5.3],
+["Гольфстрим-2015 ООО","Москва","Дом",15,46400,5.0],
+["Атяшевский МПК ООО","Дом","Самара",15,87560,5.0],
+["Новые фермы ООО","Дом","Юг",14,150634,4.7],
+["Знаменский СГЦ","Черноземье","Запад",14,86250,4.7],
+["ОБЪЕДИНЁННЫЕ КОНДИТЕРЫ ООО","Москва","Самара",14,148750,4.7],
+["Митфуд ООО","Дом","Черноземье",13,54000,4.3],
+["Куриное Царство","Дом","Москва",13,61000,4.3],
+["ЦТС 23 ООО","Москва","Черноземье",13,73846,4.3],
+["Лента ООО","Москва","Дом",13,105295,4.3],
+["Трейд-Сервис ООО (Аби)","Золотое кольцо","Москва",12,38158,4.0],
+["Вердазернопродукт","Москва","Запад",12,97674,4.0],
+["ТД Черкизово ООО","Москва","Урал",12,155304,4.0],
+["Вимм-Билль-Данн АО","Москва","Запад",12,36905,4.0],
+["ЧМПЗ АО Пенза","Дом","Золотое кольцо",12,96000,4.0],
+["ОБЪЕДИНЁННЫЕ КОНДИТЕРЫ ООО","Москва","Дом",12,116854,4.0],
+["Знаменский СГЦ","Черноземье","Золотое кольцо",12,127000,4.0],
+["Шмиц Рус ООО","Самара","Дом",12,30333,4.0],
+["Останкино - новый стандарт ООО","Москва","Золотое кольцо",11,69318,3.7],
+["Знаменский СГЦ","Черноземье","Питер",11,165000,3.7],
+["ПЛАНЕТА КОЛБАС 58 ООО","Золотое кольцо","Дом",11,65000,3.7],
+["Эйч энд Эн Трейд ООО ДАНОН","Москва","Запад",11,40260,3.7],
+["КИТ ТК ООО","Москва","Дом",11,85615,3.7],
+["Мегас ООО","Москва","Дом",11,99318,1.7],
+["Коралл ООО","Питер","Черноземье",11,135455,3.7],
+["Элитмилк (Завод Пастухова)","Москва","Самара",11,34173,3.7],
+["ДАНИЛКИН АНДРЕЙ ВИКТОРОВИЧ ИП","Юг","Питер",10,220000,3.3],
+["Раевский мясокомбинат Альшей-мясо","Урал","Самара",10,88500,3.3],
+["Трейд-Сервис ООО (Аби)","Золотое кольцо","Самара",10,115880,3.3],
+["Птицефабрика Синявинская АО","Питер","Москва",10,61500,3.3],
+["Хлебпром ОАО","Москва","Дом",10,88000,3.3],
+["Гук Кирил Сергеевич ИП","Самара","Дом",10,30000,3.3],
+["Останкино - новый стандарт ООО","Самара","Москва",10,68400,3.3],
+["ТД РОСТ ООО","Москва","Самара",10,165080,3.3],
+["Азбука Качества - дом брендов (Завод Пастухова)","Москва","Самара",10,34026,3.3],
+["ТД Милк Каскад (Завод Пастухова)","Москва","Самара",10,55221,3.3],
+["Раевский мясокомбинат Альшей-мясо","Урал","Питер",10,200000,3.3],
+["КМПЗ ООО","Черноземье","Москва",9,83826,3.0],
+["ЧМПЗ АО Пенза","Дом","Самара",9,102636,3.0],
+["ПЛАНЕТА КОЛБАС 58 ООО","Питер","Дом",9,120000,3.0],
+["СТАНДАРТ ЛОГИСТИК ООО","Москва","Дом",9,111667,3.0],
+["ТД РОСТ ООО","Москва","Золотое кольцо",9,103429,3.0],
+["Дмитрогорский мясоперерабатывающий завод ООО","Москва","Питер",8,120000,2.7],
+["СТАНДАРТ ЛОГИСТИК ООО","Урал","Москва",8,71000,1.2],
+["ЧМПЗ АО Москва","Москва","Дом",8,66673,2.7],
+["Интернет Решения ООО","Золотое кольцо","Дом",8,60096,2.7],
+["Мясной дом ООО","Питер","Самара",8,143750,2.7],
+["ТД РОСТ ООО","Москва","Черноземье",8,69388,2.7],
+["ЦТС 23 ООО","Москва","Самара",8,157500,2.7],
+["Триумф (Завод Пастухова)","Москва","Самара",8,8954,2.7],
+["Вимм-Билль-Данн АО","Москва","Самара",8,158752,2.7],
+["Мазова Ольга Львовна ИП","Дом","Золотое кольцо",7,78000,2.3],
+["Гольфстрим-2015 ООО","Питер","Москва",7,54571,2.3],
+["Кировский Мясокомбинат АО","Урал","Москва",7,109571,2.3],
+["Интернет Решения ООО","Урал","Самара",7,45527,2.3],
+["ЯГОДЫ ПОВОЛЖЬЯ ООО","Москва","Самара",7,115000,2.3],
+["Зоринское МП ООО","Дом","Москва",7,89857,2.3],
+["Вимм-Билль-Данн АО","Москва","Юг",7,163366,2.3],
+["Дмитрогорский мясоперерабатывающий завод ООО","Москва","Золотое кольцо",6,92400,2.0],
+["М Лоджистик (кросс-док)","Москва","Золотое кольцо",6,60833,2.0],
+["Белоусов А.Л. ИП","Золотое кольцо","Дом",6,41667,2.0],
+["М Лоджистик (кросс-док)","Москва","Урал",6,255833,2.0],
+["Молвест Воронеж АО 4737","Черноземье","Питер",6,129096,2.0],
+["СТАНДАРТ ЛОГИСТИК ООО","Золотое кольцо","Дом",6,72500,2.0],
+["Знаменский СГЦ","Черноземье","Дом",6,127500,2.0],
+["КАНТАЛЬ-ОМК ООО","Самара","Москва",6,102583,2.0],
+["Борисик Александр Павлович ИП","Золотое кольцо","Москва",6,55000,2.0],
+["ГОЛДЛОГИСТИК","Москва","Дом",5,78600,1.7],
+["Агрофирма Выборжец АО","Питер","Москва",5,37000,1.7],
+["Белов Андрей Валентинович ИП","Дом","Золотое кольцо",5,78000,1.7],
+["ГИФТ ООО","Дом","Москва",5,62040,1.7],
+["Митфуд ООО","Питер","Дом",5,100000,1.7],
+["Ресурс-Волга ТК  ООО","Москва","Урал",5,128152,1.7],
+["Царицыно ФТД АО","Москва","Восток",5,467000,0.8],
+["Ресурс-Волга ТК  ООО","Москва","Питер",5,66000,1.7],
+["АВ-СТРЕЙДЖ ООО","Дом","Золотое кольцо",5,75400,1.7],
+["ПЛАНЕТА КОЛБАС 58 ООО","Москва","Дом",5,70000,1.7],
+["М Лоджистик (кросс-док)","Москва","Черноземье",5,74200,1.7],
+["Атмосфера ООО","Москва","Дом",5,41000,1.7],
+["Интернет Решения ООО","Питер","Москва",5,37293,1.7],
+["Турмясово МК","Золотое кольцо","Москва",5,106400,1.7],
+["ОБЪЕДИНЁННЫЕ КОНДИТЕРЫ ООО","Москва","Урал",5,185100,1.7],
+["Заречное ООО","Черноземье","Москва",5,65000,1.7],
+["Мегас ООО","Москва","Самара",5,115600,1.7],
+["Титан63","Самара","Дом",5,27800,1.7],
+["КМПЗ ООО","Черноземье","Дом",4,127417,1.3],
+["Вердазернопродукт","Москва","Черноземье",4,97036,1.3],
+["Пензенская кондитерская фабрика ЗАО","Москва","Дом",4,72125,0.6],
+["Дядина-Говядина ООО","Москва","Питер",4,143000,1.3],
+["Пензенская кондитерская фабрика ЗАО","Дом","Москва",4,55750,1.3],
+["Митфуд ООО","Дом","Самара",4,170000,1.3],
+["Молвест Воронеж АО 4737","Черноземье","Запад",4,75579,1.3],
+["Интернет Решения ООО","Москва","Дом",4,97902,1.3],
+["Эрманн ООО","Москва","Питер",4,105835,1.3],
+["Интернет Решения ООО","Москва","Самара",4,129387,1.3],
+["АГРОЭКО-ЮГ ООО","Черноземье","Москва",4,110000,1.3],
+["ЦТС 23 ООО","Москва","Восток",4,405000,0.6],
+["Коралл ООО","Питер","Запад",3,78600,1.0],
+["Царицыно ФТД АО","Москва","Золотое кольцо",3,42000,1.0],
+["Кировский Мясокомбинат АО","Урал","Самара",3,123070,1.0],
+["Дмитрогорский мясоперерабатывающий завод ООО","Москва","Самара",3,168000,1.0],
+["ЦТС 23 ООО","Питер","Москва",3,56667,1.0],
+["Молвест Воронеж АО 4737","Черноземье","Москва",3,52216,1.0],
+["Центр Логистика ООО 5539","Москва","Черноземье",3,83333,1.0],
+["ТРАНСКОМПАНИ ООО","Золотое кольцо","Москва",3,53333,1.0],
+["ПЕНЗАМОЛИНВЕСТ ООО","Дом","Москва",3,66000,1.0],
+["Дмитрогорский мясоперерабатывающий завод ООО","Москва","Юг",3,268400,1.0],
+["СТМ ООО (Агроэко)","Черноземье","Москва",3,116667,1.0],
+["Белоусов А.Л. ИП","Юг","Дом",3,45000,1.0],
+["Новые фермы ООО","Юг","Москва",3,100250,1.0],
+["Новые фермы ООО","Москва","Дом",3,66733,1.0],
+["Дмитрогорский мясоперерабатывающий завод ООО","Москва","Дом",3,159087,1.0],
+["Останкино - новый стандарт ООО","Москва","Урал",3,183333,1.0],
+["ТД РОСТ ООО","Москва","Урал",3,231800,1.0],
+["КМПЗ ООО","Черноземье","Юг",3,186231,1.0],
+["ПЛАНЕТА КОЛБАС 58 ООО","Восток","Дом",3,120000,1.0],
+["Форуминторг ООО","Дом","Москва",3,68000,1.0],
+["Тамбовский бекон ООО","Дом","Москва",3,78136,1.0],
+["АГРОЭКО-ЮГ ООО","Черноземье","Самара",3,191667,1.0],
+["Традиции вкуса ООО","Юг","Москва",3,92667,1.0],
+["СПК Новосибирск ООО","Восток","Москва",3,222333,1.0],
+["СИБАГРО АО","Восток","Москва",3,274167,0.5],
+["Атяшевский МПК ООО","Дом","Восток",3,526667,0.5]];
+
+const START=new Date(2026,7,1); // эпоха: 1 августа 2026
+const CW=44;
+document.documentElement.style.setProperty('--cw',CW+'px');
+const MONTHS=(()=>{ const a=[]; let d=new Date(START);
+  for(let i=0;i<12;i++){ const y=d.getFullYear(),m=d.getMonth(), len=new Date(y,m+1,0).getDate();
+    a.push({label:new Date(y,m,1).toLocaleDateString("ru-RU",{month:"long",year:"numeric"}),
+      startDay:Math.round((new Date(y,m,1)-START)/86400000), len});
+    d=new Date(y,m+1,1); } return a; })();
+const TOTAL=MONTHS.reduce((s,m)=>s+m.len,0);
+let periodIdx=0;
+function pStart(){ return MONTHS[periodIdx].startDay; }
+function pLen(){ return MONTHS[periodIdx].len; }
+function pEnd(){ return pStart()+pLen(); }
+function isoFromDay(d){ const dt=new Date(START); dt.setDate(dt.getDate()+Math.floor(d));
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'); }
+function dayFromISO(iso){ if(!iso) return 0; const dt=new Date(iso+'T00:00:00'); return Math.round((dt-START)/86400000); }
+const ISOMIN=isoFromDay(0), ISOMAX=isoFromDay(TOTAL);
+const STATUS=[["plan","Запланирован","b-plan"],["run","В пути","b-run"],["unl","Выгружен","b-unl"],
+  ["done","Завершён","b-done"],["pay","Оплачен","b-pay"],["rej","Отклонён","b-rej"]];
+const REASONS=["Поломка на маршруте","ДТП","Опоздание","Отказ клиента","Погодные условия","Нет груза","Проблема с водителем","Прочее"];
+const SLAB=Object.fromEntries(STATUS.map(s=>[s[0],s[1]]));
+const SCLASS=Object.fromEntries(STATUS.map(s=>[s[0],s[2]]));
+
+const ROLES=[
+  {id:"logist",name:"Логист"},{id:"res",name:"Ресурс"},{id:"disp",name:"Диспетчер"},
+  {id:"sales",name:"Отдел продаж"},{id:"acc",name:"Бухгалтерия"},{id:"boss",name:"Руководитель"}
+];
+
+/* ============ ХРАНИЛИЩЕ (общее для сотрудников) ============ */
+const mem={};
+const store={
+  async get(k){ try{ if(window.storage){ const r=await window.storage.get(k,true); return r?r.value:(k in mem?mem[k]:null);} }catch(e){} return (k in mem)?mem[k]:null; },
+  async set(k,v){ mem[k]=v; try{ if(window.storage){ await window.storage.set(k,v,true);} }catch(e){} },
+  async list(pre){ try{ if(window.storage){ const r=await window.storage.list(pre,true); return r?r.keys:[];} }catch(e){} return Object.keys(mem).filter(x=>x.startsWith(pre)); }
+};
+const PLAN_KEY="plan_v3", ORD_KEY="orders_v2", FLEET_KEY="fleet_v2";
+
+/* ============ СОСТОЯНИЕ ============ */
+let plan=[], orders=[], fleet=[], me=localStorage_role(), filterType="all",
+    lastPlanJSON="", lastOrdJSON="", lastFleetJSON="", pickedOrder=null, viewFrom=0, viewTo=31, curConflicts=new Set();
+/* конфликты: наложение рейсов по времени на одной сцепке (кроме отклонённых) */
+function computeConflicts(){
+  const set=new Set(), byTruck={};
+  plan.forEach(l=>{ if(l.status==='rej')return; (byTruck[l.truck]=byTruck[l.truck]||[]).push(l); });
+  Object.values(byTruck).forEach(legs=>{
+    for(let i=0;i<legs.length;i++) for(let j=i+1;j<legs.length;j++){
+      const A=legs[i],B=legs[j];
+      if(A.start < B.start+B.days-1e-6 && B.start < A.start+A.days-1e-6){ set.add(A.id); set.add(B.id); }
+    }
+  });
+  return set;
+}
+function plur(n,forms){ const a=Math.abs(n)%100,b=a%10;
+  return forms[(a>10&&a<20)?2:(b===1?0:(b>=2&&b<=4?1:2))]; }
+function localStorage_role(){ return "logist"; } // роль по умолчанию (localStorage запрещён в артефактах)
+
+function genSeed(){
+  const legs=[]; const L0=MONTHS[0].len;
+  TRUCKS.forEach((tr,ti)=>{
+    const tmpl=TEMPL[tr.t]; let day=(ti%3)*0.7; let k=0;
+    while(day<L0){
+      const [a,b]=tmpl[k%tmpl.length]; const dist=km(a,b); const du=transit(dist);
+      if(day+du>L0+0.5) break;
+      legs.push({id:"L"+ti+"_"+k, truck:tr.p, from:a, to:b, start:+day.toFixed(2), days:du,
+        km:dist, rev:rev(a,b), client:CLIENTS_BY[a+"|"+b]||"", status:(day<3?"done":(day<5?"run":"plan")) });
+      day+=du+0.15; k++;
+    }
+  });
+  return legs;
+}
+async function loadAll(seedIfEmpty){
+  let p=await store.get(PLAN_KEY);
+  if(p==null && seedIfEmpty){ plan=genSeed(); await store.set(PLAN_KEY, JSON.stringify(plan)); }
+  else { try{plan=JSON.parse(p||"[]")}catch(e){plan=[]} }
+  let o=await store.get(ORD_KEY);
+  try{orders=JSON.parse(o||"[]")}catch(e){orders=[]}
+  let fl=await store.get(FLEET_KEY);
+  if(fl==null && seedIfEmpty){ fleet=TRUCKS.map(t=>({...t})); await store.set(FLEET_KEY,JSON.stringify(fleet)); }
+  else { try{fleet=JSON.parse(fl||"[]")}catch(e){fleet=[]} }
+  if(!fleet.length) fleet=TRUCKS.map(t=>({...t}));
+  lastPlanJSON=JSON.stringify(plan); lastOrdJSON=JSON.stringify(orders); lastFleetJSON=JSON.stringify(fleet);
+}
+async function saveFleet(){ lastFleetJSON=JSON.stringify(fleet); await store.set(FLEET_KEY,lastFleetJSON); pingSync(); }
+async function savePlan(){ lastPlanJSON=JSON.stringify(plan); await store.set(PLAN_KEY,lastPlanJSON); pingSync(); }
+async function saveOrders(){ lastOrdJSON=JSON.stringify(orders); await store.set(ORD_KEY,lastOrdJSON); pingSync(); }
+
+/* presence */
+async function heartbeat(){
+  await store.set("presence_"+me, JSON.stringify({role:me,t:Date.now()}));
+  const keys=await store.list("presence_");
+  const now=Date.now(); let live=new Set();
+  for(const k of keys){ try{ const v=JSON.parse(await store.get(k)); if(now-v.t<25000) live.add(v.role);}catch(e){} }
+  live.add(me);
+  const names=[...live].map(r=>(ROLES.find(x=>x.id===r)||{}).name||r);
+  document.getElementById("who").textContent = live.size+" в сети · "+names.join(", ");
+}
+/* live-sync polling */
+async function poll(){
+  const p=await store.get(PLAN_KEY), o=await store.get(ORD_KEY), fl=await store.get(FLEET_KEY);
+  let changed=false;
+  if(p!=null && p!==lastPlanJSON){ try{plan=JSON.parse(p);lastPlanJSON=p;changed=true}catch(e){} }
+  if(o!=null && o!==lastOrdJSON){ try{orders=JSON.parse(o);lastOrdJSON=o;changed=true}catch(e){} }
+  if(fl!=null && fl!==lastFleetJSON){ try{fleet=JSON.parse(fl);lastFleetJSON=fl;changed=true}catch(e){} }
+  if(changed){ render(); flash("обновлено коллегой"); }
+}
+function pingSync(){ const s=document.getElementById("sync"); s.textContent="✓ сохранено"; setTimeout(()=>s.textContent="✓ синхронно",1200); }
+
+/* ============ РЕНДЕР КАЛЕНДАРЯ ============ */
+function fmtRub(n){ return Math.round(n).toLocaleString("ru-RU")+" ₽"; }
+function dayInfo(i){ const d=new Date(START); d.setDate(d.getDate()+i);
+  const we=(d.getDay()===0||d.getDay()===6);
+  return {n:d.getDate(), m:d.toLocaleDateString("ru-RU",{month:"short"}), we}; }
+
+function render(){
+  curConflicts=computeConflicts();
+  const chip=document.getElementById("conflictChip");
+  if(chip){ if(curConflicts.size){ chip.style.display=""; const n=curConflicts.size;
+      chip.textContent="⚠ "+n+" "+plur(n,["рейс в конфликте","рейса в конфликте","рейсов в конфликте"]); }
+    else chip.style.display="none"; }
+  renderRoles(); renderLegend(); renderCal(); renderPanel(); renderMeChip();
+}
+function renderMeChip(){ document.getElementById("meChip").textContent="Вы: "+(ROLES.find(r=>r.id===me).name); }
+function renderRoles(){
+  document.getElementById("roles").innerHTML=ROLES.map(r=>
+    `<button class="role ${r.id===me?'on':''}" data-r="${r.id}">${r.name}</button>`).join("");
+}
+function renderLegend(){
+  document.getElementById("legend").innerHTML=ZONES.map(z=>
+    `<span class="lg"><span class="sw" style="background:${ZC[z]}"></span>${z}</span>`).join("");
+}
+function nowOffsetDays(){ return (new Date()-START)/86400000; } // маркер «сегодня» — реальная дата
+function currentPeriodIdx(){ const d=nowOffsetDays();
+  for(let i=0;i<MONTHS.length;i++){ if(d < MONTHS[i].startDay+MONTHS[i].len) return Math.max(0,i); }
+  return MONTHS.length-1; }
+
+function renderCal(){
+  const cal=document.getElementById("cal");
+  if(me==="res"){ renderResourceBoard(); return; }
+  if(me==="boss"){ renderBossReport(); return; }
+  let head=`<div class="calhead"><div class="fixhead">Сцепка · водитель</div>`;
+  for(let i=viewFrom;i<viewTo;i++){ const di=dayInfo(i);
+    head+=`<div class="day ${di.we?'we':''}"><div class="dn">${di.n}</div><div class="dm">${di.m}</div></div>`; }
+  head+=`<div class="prohead">Прибыль ₽<span>тек. / прогноз мес.</span></div></div>`;
+  const clip=(a,b)=>[Math.max(a,viewFrom),Math.min(b,viewTo)];
+  const rows=fleet.filter(t=>(t.status||'work')!=='out' && (filterType==="all"||t.t===filterType)).map(tr=>{
+    const legs=plan.filter(l=>l.truck===tr.p);
+    let bg=`<div class="grid-bg">`;
+    for(let i=viewFrom;i<viewTo;i++){ const di=dayInfo(i); bg+=`<div class="gcell ${di.we?'we':''}"></div>`; }
+    bg+=`</div>`;
+    let blocks=legs.map(l=>{
+      const s=l.start, e=l.start+l.days;
+      if(e<=viewFrom||s>=viewTo) return "";
+      const vs=Math.max(s,viewFrom), ve=Math.min(e,viewTo);
+      const left=(vs-viewFrom)*CW, w=Math.max((ve-vs)*CW-3,20);
+      const prof=l.rev/(1+NDS)-l.km*COST;
+      const cls=(l.status==='done'||l.status==='pay')?'done':(l.status==='rej'?'rej':'');
+      const cf=curConflicts.has(l.id);
+      const sub=l.status==='rej'?('✕ '+(l.reason||'отклонён')):`${l.client||''} · ${fmtRub(prof)}`;
+      return `<div class="leg ${cls}${cf?' conflict':''}" data-leg="${l.id}"
+        style="left:${left}px;width:${w}px;background:${ZC[l.to]}" title="${cf?'⚠ Конфликт: наложение по времени · ':''}${l.from}→${l.to}">
+        ${cf?'<span class="cflag">⚠</span>':''}<span class="st"></span>
+        <b>${l.from}→${l.to}</b>
+        <span class="sub">${sub}</span></div>`;
+    }).join("");
+    const stt=truckState(tr);
+    if(stt.k==='rep'||stt.k==='nodrv'){
+      const from=tr.offFrom!=null?tr.offFrom:viewFrom, to=tr.offTo!=null?tr.offTo:viewTo;
+      const [vs,ve]=clip(from,to);
+      if(ve>vs){
+        const left=(vs-viewFrom)*CW, w=Math.max((ve-vs)*CW-3,44);
+        const per=tr.offFrom!=null?`${dstrShort(from)} – ${dstrShort(to)}`:'весь период';
+        blocks+=`<div class="offbar ${stt.k}" style="left:${left}px;width:${w}px" title="${stt.label} · ${per}">
+          <b>${stt.label} · ${stt.reason}</b><span class="offsub">${per}</span></div>`;
+      }
+    } else if(legs.length===0){ blocks+=`<div class="empty-hint">нет плана</div>`; }
+    const plegs=legs.filter(l=>l.start<viewTo && (l.start+l.days)>viewFrom);
+    const cur=plegs.reduce((s,l)=>s+(l.rev/(1+NDS)-l.km*COST),0);
+    const cd=plegs.reduce((s,l)=>s+l.days,0);
+    const proj=cd>0?(cur/cd)*pLen():0;
+    const rowCf=legs.some(l=>curConflicts.has(l.id));
+    return `<div class="row">
+      <div class="fixcell">
+        <span class="tbadge" style="background:${typeColor(tr.t)}"></span>
+        <div class="tinfo"><div class="tplate mono">${tr.p}${rowCf?'<span class="rowconflict" title="Конфликт расписания">⚠</span>':''}</div>
+          <div class="tmeta"><span class="rowstate" style="color:${stt.color}">${stt.label}</span>${stt.reason!=='—'?` · ${stt.reason}`:` · ${tr.d||'—'}`}</div></div>
+      </div>
+      <div class="track" data-truck="${tr.p}">${bg}${blocks}</div>
+      <div class="profcell">
+        <div class="pcur ${cur<0?'neg':''}">${fmtRub(cur)}</div>
+        <div class="pproj ${proj<0?'neg':''}">${fmtRub(proj)}</div>
+      </div>
+    </div>`;
+  }).join("");
+  const nd=nowOffsetDays();
+  const nowHtml=(nd>=viewFrom&&nd<viewTo)?`<div class="now" style="left:${230+(nd-viewFrom)*CW}px"></div>`:"";
+  cal.innerHTML=head+rows+nowHtml;
+
+  // клики / перетаскивание по плечам
+  if(me==="logist"){
+    enableDrag();
+    cal.querySelectorAll(".track").forEach(tr=>tr.ondblclick=(e)=>{
+      if(e.target.closest(".leg"))return;
+      const rect=tr.getBoundingClientRect(); const x=e.clientX-rect.left;
+      const day=Math.max(pStart(),Math.min(pEnd()-0.5, viewFrom+Math.round(x/CW*2)/2));
+      openAddLeg(tr.dataset.truck, day);
+    });
+  } else {
+    cal.querySelectorAll(".leg").forEach(el=>el.onclick=()=>openLeg(el.dataset.leg));
+  }
+}
+/* перетаскивание и растягивание плеча по календарю (роль логист) */
+function dstrShort(d){ const dt=new Date(START); dt.setDate(dt.getDate()+Math.floor(d));
+  return dt.toLocaleDateString("ru-RU",{day:'2-digit',month:'short'})+' '+String(Math.round((d%1)*24)).padStart(2,'0')+':00'; }
+function showDragLabel(x,y,s,e,extra){ let el=document.getElementById("draglabel");
+  if(!el){ el=document.createElement("div"); el.id="draglabel"; el.className="draglabel"; document.body.appendChild(el); }
+  el.style.left=(x+12)+"px"; el.style.top=(y-30)+"px";
+  el.innerHTML=`${dstrShort(s)} → ${dstrShort(e)} · <b>${(e-s).toFixed(1)} сут</b>${extra?`<span style="color:#ffd27a">${extra}</span>`:''}`; el.style.display="block"; }
+function hideDragLabel(){ const el=document.getElementById("draglabel"); if(el) el.style.display="none"; }
+function trackTruckAt(clientX, clientY){
+  const tracks=document.querySelectorAll(".track");
+  for(const tr of tracks){ const r=tr.getBoundingClientRect();
+    if(clientY>=r.top && clientY<=r.bottom) return tr.dataset.truck; }
+  return null;
+}
+function enableDrag(){
+  document.querySelectorAll(".leg").forEach(el=>{
+    el.insertAdjacentHTML("beforeend",'<span class="hres l"></span><span class="hres r"></span>');
+    el.style.cursor="grab";
+    let mode=null,startX=0,startY=0,orig=null,leg=null,moved=false,tgtTruck=null;
+    el.onpointerdown=(e)=>{
+      leg=plan.find(x=>x.id===el.dataset.leg); if(!leg)return;
+      if(e.target.classList.contains("hres")) mode=e.target.classList.contains("l")?"l":"r";
+      else mode="move";
+      startX=e.clientX; startY=e.clientY; orig={start:leg.start,days:leg.days}; moved=false; tgtTruck=null;
+      el.setPointerCapture(e.pointerId); el.classList.add("dragging"); el.style.cursor="grabbing";
+      e.preventDefault(); e.stopPropagation();
+    };
+    el.onpointermove=(e)=>{
+      if(mode===null)return;
+      if(Math.abs(e.clientX-startX)>3||Math.abs(e.clientY-startY)>3) moved=true;
+      const dd=Math.round(((e.clientX-startX)/CW)*2)/2;
+      let s=orig.start,d=orig.days;
+      if(mode==="move") s=Math.min(Math.max(pStart(),orig.start+dd),pEnd()-orig.days);
+      else if(mode==="r") d=Math.min(Math.max(0.5,orig.days+dd),pEnd()-orig.start);
+      else { const ns=Math.min(Math.max(pStart(),orig.start+dd),orig.start+orig.days-0.5); d=+(orig.days+(orig.start-ns)).toFixed(2); s=ns; }
+      el.style.left=((s-viewFrom)*CW)+"px"; el.style.width=Math.max(d*CW-3,20)+"px";
+      el.dataset._s=s; el.dataset._d=d;
+      // вертикальный перенос: подсветка целевой машины
+      let extra="";
+      if(mode==="move"){ el.style.pointerEvents="none"; tgtTruck=trackTruckAt(e.clientX,e.clientY); el.style.pointerEvents="";
+        if(tgtTruck && tgtTruck!==leg.truck) extra=" → "+tgtTruck; }
+      showDragLabel(e.clientX,e.clientY,s,s+d,extra);
+    };
+    el.onpointerup=async(e)=>{
+      if(mode===null)return; const wasMove=(mode==="move"); mode=null;
+      el.releasePointerCapture(e.pointerId); el.classList.remove("dragging"); el.style.cursor="grab"; hideDragLabel();
+      if(!moved){ openLeg(leg.id); return; }
+      const s=+el.dataset._s,d=+el.dataset._d;
+      let msg="сроки рейса обновлены";
+      if(wasMove && tgtTruck && tgtTruck!==leg.truck){ leg.truck=tgtTruck; msg="рейс перенесён на "+tgtTruck; }
+      if(!isNaN(s)&&!isNaN(d)){ leg.start=+s.toFixed(2); leg.days=+d.toFixed(2); }
+      await savePlan(); render();
+      if(curConflicts.has(leg.id)) flash("⚠ конфликт: наложение по времени на этой сцепке");
+      else flash(msg);
+    };
+  });
+}
+function typeColor(t){ return {"Тушевоз":"#3b6ea5","Паллет 33":"#6f8f43","Паллет 41":"#c77f3b","Допельшток":"#9c5c8c"}[t]||"#68788a"; }
+
+/* ============ ПАНЕЛЬ ПО РОЛЯМ ============ */
+function renderPanel(){
+  const p=document.getElementById("panel");
+  if(me==="logist") p.innerHTML=panelLogist();
+  else if(me==="res") p.innerHTML=panelResource();
+  else if(me==="disp") p.innerHTML=panelDisp();
+  else if(me==="sales") p.innerHTML=panelSales();
+  else if(me==="acc") p.innerHTML=panelAcc();
+  else p.innerHTML=panelBoss();
+  bindPanel();
+}
+
+/* — Логист: конструктор рейса — */
+function panelLogist(){
+  const opts=ZONES.map(z=>`<option>${z}</option>`).join("");
+  const trucks=fleet.filter(t=>(t.status||'work')==='work').map(t=>`<option value="${t.p}">${t.p} · ${t.t}</option>`).join("");
+  const ord=orders.length ? orders.map((o,i)=>`<div class="li ord ${pickedOrder===i?'sel':''}" data-oi="${i}">
+      <div style="flex:1;min-width:0"><div><b>${o.client}</b> · ${o.from}→${o.to}</div>
+      <div class="mi">окно ${dstrShort(o.start||0)} → ${dstrShort(o.end||2)}</div></div>
+      <span class="rt">${fmtRub(o.rev)}</span></div>`).join("")
+    : `<div class="hint">Новых заявок от продаж нет.</div>`;
+  return `<div class="ph">Заявки от продаж <span class="tag">${orders.length}</span></div>
+    <div class="list orders" id="ord_list">${ord}</div>
+    <div class="hint">Кликните заявку — её данные подставятся в конструктор. Выберите сцепку и поставьте в план; заявка уйдёт из портфеля.</div>
+    <div class="ph" style="margin-top:16px">Конструктор рейса <span class="tag">логист</span></div>
+    <label class="f">Сцепка</label><select id="c_truck">${trucks}</select>
+    <div id="c_suggest"></div>
+    <div class="row2" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div><label class="f">Зона откуда</label><select id="c_from">${opts}</select></div>
+      <div><label class="f">Зона куда</label><select id="c_to">${opts}</select></div>
+    </div>
+    <label class="f">Заказчик</label><input id="c_client" placeholder="напр. ЧМПЗ АО">
+    <label class="f">Выручка с НДС, ₽</label><input id="c_rev" type="number" placeholder="авто по плечу">
+    <label class="f">Дата старта рейса</label><input id="c_start" type="date" value="${isoFromDay(pStart())}" min="${ISOMIN}" max="${ISOMAX}">
+    <div class="calc" id="c_calc"></div>
+    <button class="btn" id="c_add">Поставить в план</button>
+    <div class="hint">Двойной клик по дорожке сцепки в календаре тоже открывает добавление рейса на выбранный день.</div>
+    <div class="ph" style="margin-top:16px">Калькуляция маршрута сцепки <span class="tag" id="c_rt_tag"></span></div>
+    <div id="c_route"></div>`;
+}
+/* — Диспетчер — */
+function panelDisp(){
+  const list=fleet.filter(f=>(f.status||'work')!=='out');
+  const groups={work:[],rep:[],nodrv:[],noord:[]};
+  list.forEach(f=>{ const s=truckState(f); if(groups[s.k]) groups[s.k].push({f,s}); });
+  const c=k=>groups[k].length;
+  const idle=[...groups.rep,...groups.nodrv,...groups.noord].map(g=>`<div class="li">
+    <span class="pl mono">${g.f.p}</span><span class="mi">${g.f.t}</span>
+    <span class="badge" style="margin-left:auto;background:${g.s.color}">${g.s.label} · ${g.s.reason}</span>
+    </div>`).join("")||`<div class="hint">Простаивающих сцепок нет — весь парк в работе.</div>`;
+  const active=plan.filter(l=>l.status!=="done"&&l.status!=="pay")
+    .sort((a,b)=>a.start-b.start).slice(0,10);
+  const li=active.map(l=>`<div class="li">
+    <span class="pl mono">${l.truck}</span><span class="mi">${l.from}→${l.to}</span>
+    <span class="badge ${SCLASS[l.status]}" style="margin-left:auto">${SLAB[l.status]}</span>
+    </div>`).join("")||`<div class="hint">Активных рейсов нет.</div>`;
+  return `<div class="ph">Диспозиция парка <span class="tag">диспетчер</span></div>
+    <div class="kpi">
+      <div class="kc good"><div class="l">В работе</div><div class="v">${c('work')}</div></div>
+      <div class="kc"><div class="l">В ремонте · КТГ</div><div class="v">${c('rep')}</div></div>
+      <div class="kc"><div class="l">Без водителя · КВЛ</div><div class="v">${c('nodrv')}</div></div>
+      <div class="kc bad"><div class="l">Без заказа · КИП</div><div class="v">${c('noord')}</div></div>
+    </div>
+    <div class="ph" style="margin-top:6px">Простаивают · причина и ответственный</div>
+    <div class="list">${idle}</div>
+    <div class="ph" style="margin-top:14px">Рейсы в работе</div>
+    <div class="list">${li}</div>
+    <div class="hint">Кликните плечо в календаре, чтобы сменить статус рейса. Причина простоя берётся из справочника (роль Ресурс) и наличия плана.</div>`;
+}
+/* — Отдел продаж — */
+function suggestReturn(zone){
+  const lanes=LANES[zone];
+  if(lanes && lanes.length){ const best=lanes[0]; return {to:best.to, client:best.client, rev:best.rev}; }
+  const to=zone==="Дом"?"Москва":"Дом";
+  return {to, client:"", rev:Math.round(rev(zone,to))};
+}
+function autoRequests(){
+  const reqs=[];
+  fleet.filter(f=>(f.status||'work')==='work').forEach(f=>{
+    const legs=plan.filter(l=>l.truck===f.p).sort((a,b)=>(a.start+a.days)-(b.start+b.days));
+    if(!legs.length) return;
+    const last=legs[legs.length-1], endDay=last.start+last.days;
+    if(endDay < pEnd()-0.3){
+      const sug=suggestReturn(last.to);
+      reqs.push({truck:f.p,type:f.t,zone:last.to,day:endDay,winTo:Math.min(endDay+2,pEnd()),
+        sugTo:sug.to,sugClient:sug.client,sugRev:sug.rev});
+    }
+  });
+  return reqs.sort((a,b)=>a.day-b.day);
+}
+function panelSales(){
+  const opts=ZONES.map(z=>`<option>${z}</option>`).join("");
+  const reqs=autoRequests();
+  const reqList=reqs.length ? reqs.map(r=>`<div class="li req" data-zone="${r.zone}" data-day="${isoFromDay(r.day)}" data-winto="${isoFromDay(r.winTo)}" data-to="${r.sugTo}" data-client="${r.sugClient}" data-rev="${r.sugRev}">
+      <div style="flex:1;min-width:0"><div><span class="mono" style="font-weight:700">${r.truck}</span> · ${r.type}</div>
+      <div class="mi">освободится в «${r.zone}» ${dstrShort(r.day)} — нужен груз</div>
+      <div class="mi">→ ${r.zone}→${r.sugTo}${r.sugClient?', '+r.sugClient:''} · ${fmtRub(r.sugRev)} · окно до ${dstrShort(r.winTo)}</div></div>
+      <span class="reqzone" style="background:${ZC[r.zone]}">${r.zone}</span></div>`).join("")
+    : `<div class="hint">Нет сцепок, ожидающих обратной загрузки.</div>`;
+  const back=orders.map((o,i)=>`<div class="li" data-ord="${i}">
+    <div style="flex:1;min-width:0"><div><b>${o.client}</b> · ${o.from}→${o.to}</div>
+    <div class="mi">окно ${dstrShort(o.start||0)} → ${dstrShort(o.end||2)}</div></div>
+    <span class="rt">${fmtRub(o.rev)}</span></div>`).join("")||`<div class="hint">Заявок пока нет.</div>`;
+  return `<div class="ph">Запросы от логистики <span class="tag">${reqs.length}</span></div>
+    <div class="list" id="req_list">${reqList}</div>
+    <div class="hint">Автоматически по дате окончания рейса: сцепка освобождается — нужен обратный груз. Клик подставит зону и дату в новую заявку.</div>
+    <div class="ph" style="margin-top:16px">Новая заявка <span class="tag">продажи</span></div>
+    <label class="f">Заказчик</label><input id="o_client" placeholder="наименование">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div><label class="f">Откуда</label><select id="o_from">${opts}</select></div>
+      <div><label class="f">Куда</label><select id="o_to">${opts}</select></div>
+    </div>
+    <label class="f">Ставка с НДС, ₽</label><input id="o_rev" type="number" placeholder="0">
+    <label class="f">Временные рамки заказа — начало → завершение</label>
+    <div class="row2" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <input id="o_start" type="date" value="${isoFromDay(pStart())}" min="${ISOMIN}" max="${ISOMAX}">
+      <input id="o_end" type="date" value="${isoFromDay(pStart()+2)}" min="${ISOMIN}" max="${ISOMAX}"></div>
+    <div id="o_dates" class="datehint"></div>
+    <button class="btn" id="o_add">Добавить в портфель</button>
+    <div class="ph" style="margin-top:16px">Портфель заявок <span class="tag">${orders.length}</span></div>
+    <div class="list orders">${back}</div>
+    <div class="hint">Логист видит эти заявки в своём планировщике и ставит их в план с назначением сцепки. Портфель виден всем.</div>`;
+}
+/* — Бухгалтерия — */
+function panelAcc(){
+  const fin=plan.filter(l=>l.status==="done"||l.status==="pay");
+  const inv=fin.filter(l=>l.status==="done"); const paid=fin.filter(l=>l.status==="pay");
+  const debt=inv.reduce((s,l)=>s+l.rev,0);
+  const li=fin.sort((a,b)=>a.start-b.start).slice(0,16).map(l=>`<div class="li">
+    <span class="pl mono">${l.truck}</span><span class="mi">${l.client||l.from+'→'+l.to}</span>
+    <span class="rt">${fmtRub(l.rev)}</span>
+    <span class="badge ${l.status==='pay'?'b-pay':'b-done'}" data-pay="${l.id}" style="cursor:pointer">${l.status==='pay'?'Оплачен':'Выставить'}</span>
+    </div>`).join("")||`<div class="hint">Завершённых рейсов нет.</div>`;
+  return `<div class="ph">Расчёты с клиентами <span class="tag">бухгалтерия</span></div>
+    <div class="kpi">
+      <div class="kc bad"><div class="l">К оплате (долг)</div><div class="v">${fmtRub(debt)}</div></div>
+      <div class="kc good"><div class="l">Оплачено</div><div class="v">${fmtRub(paid.reduce((s,l)=>s+l.rev,0))}</div></div>
+    </div>
+    <div class="ph" style="margin-top:6px">Завершённые рейсы</div>
+    <div class="list">${li}</div>
+    <div class="hint">Клик по метке справа отмечает рейс оплаченным — статус увидят все.</div>`;
+}
+/* — Руководитель — */
+function panelBoss(){
+  const done=plan.filter(l=>l.status!=="plan");
+  const revN=plan.reduce((s,l)=>s+l.rev/(1+NDS),0);
+  const cost=plan.reduce((s,l)=>s+l.km*COST,0);
+  const prof=revN-cost; const days=plan.reduce((s,l)=>s+l.days,0);
+  const margin=revN?prof/revN:0;
+  const perDay=days?prof/days:0;
+  const neg=plan.filter(l=>l.rev/(1+NDS)-l.km*COST<0).length;
+  return `<div class="ph">Сводка плана <span class="tag">руководитель</span></div>
+    <div class="kpi">
+      <div class="kc"><div class="l">Рейсов в плане</div><div class="v">${plan.length}</div></div>
+      <div class="kc"><div class="l">Пробег, км</div><div class="v">${Math.round(plan.reduce((s,l)=>s+l.km,0)).toLocaleString('ru-RU')}</div></div>
+      <div class="kc"><div class="l">Выручка б.НДС</div><div class="v">${fmtRub(revN)}</div></div>
+      <div class="kc"><div class="l">Себестоимость</div><div class="v">${fmtRub(cost)}</div></div>
+      <div class="kc good"><div class="l">Опер. прибыль</div><div class="v">${fmtRub(prof)}</div></div>
+      <div class="kc good"><div class="l">Маржа</div><div class="v">${(margin*100).toFixed(1)}%</div></div>
+      <div class="kc good"><div class="l">Прибыль/сутки</div><div class="v">${fmtRub(perDay)}</div></div>
+      <div class="kc ${neg?'bad':''}"><div class="l">Убыточных плеч</div><div class="v">${neg}</div></div>
+    </div>
+    <div class="hint">Показатели пересчитываются в реальном времени по мере того, как логист строит план, а диспетчер обновляет статусы.</div>`;
+}
+
+/* — Ресурс: справочник Состав ТС (основная область) — */
+function renderResourceBoard(){
+  const cal=document.getElementById("cal");
+  const inWork=fleet.filter(f=>(f.status||'work')==='work').length;
+  const rows=fleet.map((f,i)=>{
+    const topts=["Тушевоз","Паллет 33","Паллет 41","Допельшток"].map(t=>`<option ${t===f.t?'selected':''}>${t}</option>`).join("");
+    const zopts=ZONES.map(z=>`<option ${z===(f.zone||'Дом')?'selected':''}>${z}</option>`).join("");
+    const sts=[["work","в работе"],["nodrv","без водителя"],["rep","в ремонте"],["out","выведен"]];
+    const sopts=sts.map(s=>`<option value="${s[0]}" ${(f.status||'work')===s[0]?'selected':''}>${s[1]}</option>`).join("");
+    const stt=truckState(f);
+    return `<tr data-i="${i}">
+      <td><input class="mono" data-k="p" value="${f.p||''}" style="font-weight:700;width:104px"></td>
+      <td><input class="mono" data-k="trailer" value="${f.trailer||''}" style="width:100px"></td>
+      <td><select data-k="t">${topts}</select></td>
+      <td><input data-k="d" value="${f.d||''}" style="width:158px"></td>
+      <td><select data-k="zone">${zopts}</select></td>
+      <td><select data-k="status" class="st-${f.status||'work'}">${sopts}</select></td>
+      <td><span class="statelbl" style="color:${stt.color}">${stt.label}</span>${stt.reason!=='—'?`<span class="rsn">${stt.reason}</span>`:''}</td>
+      <td>${(f.status==='rep'||f.status==='nodrv')?`<input type="date" data-off="from" value="${f.offFrom!=null?isoFromDay(f.offFrom):''}" style="width:116px"> <input type="date" data-off="to" value="${f.offTo!=null?isoFromDay(f.offTo):''}" style="width:116px">`:'<span style="color:var(--muted)">—</span>'}</td>
+      <td style="text-align:center"><button class="xbtn" data-del="${i}">✕</button></td>
+    </tr>`;
+  }).join("");
+  cal.innerHTML=`<div style="min-width:1020px">
+    <div class="fhead"><h2><span class="fbrand">PegasLogistic</span> · Состав ТС · справочник ресурса</h2>
+      <span class="ftag">${fleet.length} сцепок · ${inWork} в работе</span>
+      <button class="addbtn" id="addTruck">+ Добавить сцепку</button></div>
+    <table class="ftable">
+      <thead><tr><th>Тягач</th><th>Прицеп</th><th>Тип ТС</th><th>Водитель</th><th>База (геозона)</th><th>Статус</th><th>Состояние</th><th>Период недоступности</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  cal.querySelectorAll("tr[data-i]").forEach(tr=>{
+    const i=+tr.dataset.i;
+    tr.querySelectorAll("input,select").forEach(el=>el.onchange=async()=>{
+      if(el.dataset.off){ if(el.dataset.off==='from') fleet[i].offFrom=dayFromISO(el.value); else fleet[i].offTo=dayFromISO(el.value); await saveFleet(); return; }
+      if(!el.dataset.k) return;
+      fleet[i][el.dataset.k]=el.value; await saveFleet();
+      if(el.dataset.k==='status') renderResourceBoard();
+    });
+  });
+  cal.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{
+    if(fleet.length<=1){flash("нельзя удалить последнюю сцепку");return;}
+    fleet.splice(+b.dataset.del,1); await saveFleet(); renderResourceBoard(); flash("сцепка удалена");
+  });
+  document.getElementById("addTruck").onclick=async()=>{
+    fleet.push({p:"новая",t:"Тушевоз",d:"",trailer:"",zone:"Дом",status:"work"});
+    await saveFleet(); renderResourceBoard(); flash("сцепка добавлена — заполните данные");
+  };
+}
+/* где и когда сцепка освобождается */
+function freeInfo(plate){
+  const f=fleet.find(x=>x.p===plate)||{};
+  const legs=plan.filter(l=>l.truck===plate).sort((a,b)=>(a.start+a.days)-(b.start+b.days));
+  if(legs.length===0) return {zone:f.zone||"Дом", day:0};
+  const last=legs[legs.length-1];
+  return {zone:last.to, day:+(last.start+last.days).toFixed(2)};
+}
+/* подбор сцепок под груз: зона отправления + желаемая дата (день от эпохи) */
+function matchTrucks(zone, byDay, type){
+  const act=fleet.filter(f=>(f.status||'work')==='work' && (!type||type==='all'||f.t===type));
+  const rows=act.map(f=>({f, ...freeInfo(f.p)}));
+  const here=rows.filter(r=>r.zone===zone && r.day<=byDay+1).sort((a,b)=>a.day-b.day)
+    .map(r=>({...r,repos:false,dist:0}));
+  const elsewhere=rows.filter(r=>!(r.zone===zone && r.day<=byDay+1))
+    .map(r=>({...r,repos:true,dist:km(r.zone,zone)})).sort((a,b)=>a.dist-b.dist||a.day-b.day);
+  return here.concat(elsewhere).slice(0,5);
+}
+/* — Ресурс: панель подбора транспорта — */
+function panelResource(){
+  const opts=ZONES.map(z=>`<option ${z==="Москва"?"selected":""}>${z}</option>`).join("");
+  return `<div class="ph">Подбор транспорта <span class="tag">ресурс</span></div>
+    <label class="f">Нужна сцепка в геозоне</label><select id="m_zone">${opts}</select>
+    <label class="f">Готова не позднее (день горизонта 0–13)</label><input id="m_day" type="number" step="0.5" min="0" max="13" value="7">
+    <label class="f">Тип ТС</label>
+    <select id="m_type"><option value="all">любой</option><option>Тушевоз</option><option>Паллет 33</option><option>Паллет 41</option><option>Допельшток</option></select>
+    <button class="btn" id="m_go">Подобрать</button>
+    <div id="m_res" class="list" style="margin-top:12px"></div>
+    <div class="hint">Подбор смотрит план каждой сцепки: где и когда она освобождается после выгрузки. Точное совпадение по зоне — сверху, с перегоном — ниже.</div>`;
+}
+function runMatch(){
+  const Z=document.getElementById("m_zone").value, byDay=+document.getElementById("m_day").value,
+    ty=document.getElementById("m_type").value;
+  const act=fleet.filter(f=>(f.status||'work')==='work' && (ty==='all'||f.t===ty));
+  const rows=act.map(f=>({f, ...freeInfo(f.p)}));
+  const here=rows.filter(r=>r.zone===Z && r.day<=byDay).sort((a,b)=>a.day-b.day);
+  const elsewhere=rows.filter(r=>!(r.zone===Z && r.day<=byDay))
+    .map(r=>({...r,dist:km(r.zone,Z)})).sort((a,b)=>a.dist-b.dist||a.day-b.day).slice(0,6);
+  const dstr=(d)=>{const dt=new Date(START);dt.setDate(dt.getDate()+Math.floor(d));
+    return dt.toLocaleDateString("ru-RU",{day:"2-digit",month:"short"})+" "+String(Math.round((d%1)*24)).padStart(2,"0")+":00";};
+  const card=(r,repos)=>`<div class="match-card ${repos?'repos':''}">
+     <div class="top"><span class="mono" style="font-weight:700">${r.f.p}</span>
+       <span class="badge" style="background:${typeColor(r.f.t)}">${r.f.t}</span>
+       ${repos?`<span style="margin-left:auto;color:var(--warn);font-weight:700">перегон ${r.dist} км</span>`
+              :`<span style="margin-left:auto;color:var(--teal);font-weight:700">в зоне</span>`}</div>
+     <div class="free">${r.f.d||'без водителя'} · ${r.f.trailer||''} · свободна в «${r.zone}» с ${dstr(r.day)}</div></div>`;
+  let html=`<div class="ph" style="margin:2px 0 6px">В зоне «${Z}» <span class="tag">${here.length}</span></div>`;
+  html+= here.length? here.map(r=>card(r,false)).join("") : `<div class="hint">Нет свободных в этой зоне к сроку.</div>`;
+  html+=`<div class="ph" style="margin:12px 0 6px">С перегоном <span class="tag">${elsewhere.length}</span></div>`+elsewhere.map(r=>card(r,true)).join("");
+  document.getElementById("m_res").innerHTML=html;
+}
+
+/* состояние сцепки по каскаду КТГ/КВЛ/КИП */
+function truckState(f){
+  const st=f.status||'work';
+  if(st==='out') return {k:'out',label:'Выведен',reason:'—',dept:'—',color:'#9aa7b3'};
+  if(st==='rep') return {k:'rep',label:'В ремонте',reason:'КТГ',dept:'ТОиР',color:'var(--warn)'};
+  if(st==='nodrv' || !f.d || !String(f.d).trim()) return {k:'nodrv',label:'Без водителя',reason:'КВЛ',dept:'Упр. водителями',color:'#b06a2a'};
+  const has=plan.some(l=>l.truck===f.p);
+  if(!has) return {k:'noord',label:'Без заказа',reason:'КИП',dept:'Логистика',color:'#8a6ea8'};
+  return {k:'work',label:'В работе',reason:'—',dept:'—',color:'var(--teal)'};
+}
+/* каскад использования парка + машино-дни + упущенная прибыль */
+function utilization(){
+  const list=fleet.filter(f=>(f.status||'work')!=='out'); const N=list.length, H=pLen(), P0=pStart(), P1=pEnd();
+  let rep=0,nod=0,noo=0,work=0, md={work:0,rep:0,nod:0,noo:0};
+  list.forEach(f=>{
+    const s=truckState(f);
+    if(s.k==='rep'){rep++;md.rep+=H;return;}
+    if(s.k==='nodrv'){nod++;md.nod+=H;return;}
+    if(s.k==='noord'){noo++;md.noo+=H;return;}
+    work++;
+    const legs=plan.filter(l=>l.truck===f.p);
+    for(let d=P0;d<P1;d++){ const c=legs.some(l=>(d+0.5)>l.start&&(d+0.5)<(l.start+l.days));
+      if(c) md.work++; else md.noo++; }
+  });
+  const tech=N-rep, line=tech-nod, inwork=line-noo;
+  const ktg=N?tech/N:0, kvl=tech?line/tech:0, kip=line?inwork/line:0, overall=N?inwork/N:0;
+  const perLegs=plan.filter(l=>l.start<P1 && (l.start+l.days)>P0);
+  const pd=perLegs.reduce((s,l)=>s+l.days,0), pf=perLegs.reduce((s,l)=>s+(l.rev/(1+NDS)-l.km*COST),0);
+  const perDay=pd?pf/pd:0, cal=N*H, norm=cal*0.951, fact=md.work, lost=Math.max(0,(norm-fact))*perDay;
+  return {N,H,rep,nod,noo,work,tech,line,inwork,ktg,kvl,kip,overall,md,perDay,cal,norm,fact,lost};
+}
+/* — Руководитель: отчёт использования (основная область) — */
+function renderBossReport(){
+  const u=utilization(), cal=document.getElementById("cal");
+  const P=x=>(x*100).toFixed(1)+'%', rub=n=>Math.round(n).toLocaleString("ru-RU")+" ₽";
+  const box=(n,l,acc)=>`<div class="cbox"><div class="cn" style="${acc?'color:var(--teal)':''}">${Number(n).toFixed(1)}</div><div class="cl">${l}</div></div>`;
+  const arrow=(dept,name,coef,t)=>{const cls=coef>=t?'ok':(coef>=t-0.015?'warn':'bad');
+    return `<div class="carrow ${cls}"><div class="cf">${dept}</div><div class="ck">${name} ${P(coef)}</div><div class="ct">норма ${Math.round(t*100)}%</div></div>`;};
+  const dt=[["В ремонте","КТГ · ТОиР",u.md.rep,'var(--warn)'],
+    ["Без водителя","КВЛ · Упр. водителями",u.md.nod,'#b06a2a'],
+    ["Без рейса","КИП · Логистика",u.md.noo,'#8a6ea8']];
+  const dtT=u.md.rep+u.md.nod+u.md.noo;
+  const dtRows=dt.map(d=>`<tr><td><span class="dotc" style="background:${d[3]}"></span>${d[0]}</td>
+    <td class="muted">${d[1]}</td><td class="num">${d[2].toFixed(0)}</td><td class="num">${dtT?((d[2]/dtT)*100).toFixed(0):0}%</td></tr>`).join("");
+  cal.innerHTML=`<div style="min-width:880px;padding-bottom:24px">
+    <div class="fhead"><h2><span class="fbrand">PegasLogistic</span> · Отчёт руководителя · использование парка</h2>
+      <span class="ftag">горизонт ${u.H} дней · каскад КТГ × КВЛ × КИП</span></div>
+    <div class="cascade">
+      ${box(u.N,'Списочный состав')}${arrow('ТОиР','КТГ',u.ktg,0.97)}
+      ${box(u.tech,'Технически исправны')}${arrow('Упр. водителями','КВЛ',u.kvl,0.99)}
+      ${box(u.line,'Выпущены на линию')}${arrow('Логистика','КИП',u.kip,0.99)}
+      ${box(u.inwork,'В работе',true)}
+      <div class="cbox" style="border-style:dashed"><div class="cn" style="color:var(--teal)">${P(u.overall)}</div><div class="cl">от списка · норма 95,1%</div></div>
+    </div>
+    <div class="rgrid">
+      <div class="rcard"><h3>Простой по причинам · машино-дни за горизонт</h3>
+        <table class="rtable"><thead><tr><th>Причина</th><th>Ответственный</th><th class="num">Маш-дни</th><th class="num">Доля</th></tr></thead>
+        <tbody>${dtRows}<tr class="tot"><td>Итого простой</td><td></td><td class="num">${dtT.toFixed(0)}</td><td class="num">100%</td></tr></tbody></table></div>
+      <div class="rcard"><h3>Машино-дни и упущенная прибыль</h3>
+        <div class="mdrow"><span>Календарный ресурс (списочный × ${u.H})</span><b>${u.cal.toFixed(0)}</b></div>
+        <div class="mdrow"><span>Плановые машино-дни (норма 95,1%)</span><b>${u.norm.toFixed(0)}</b></div>
+        <div class="mdrow"><span>Фактические в работе</span><b>${u.fact.toFixed(0)}</b></div>
+        <div class="mdrow"><span>Отклонение от нормы</span><b class="${u.fact<u.norm?'neg':''}">${(u.fact-u.norm).toFixed(0)}</b></div>
+        <div class="mdrow"><span>Прибыль на машино-день</span><b>${rub(u.perDay)}</b></div>
+        <div class="mdrow big"><span>Упущенная прибыль за период</span><b class="neg">${rub(u.lost)}</b></div></div>
+    </div>
+    <div class="hint" style="padding:0 16px">База каждого уровня — результат предыдущего, а не списочный состав: каждый отдел отвечает только за свой коэффициент перехода. Показатели считаются вживую по справочнику «Состав ТС» (роль Ресурс) и плану (роль Логист).</div>
+  </div>`;
+}
+
+/* ============ ПРИВЯЗКА ПАНЕЛИ ============ */
+function bindPanel(){
+  if(me==="res"){ document.getElementById("m_go").onclick=runMatch; }
+  if(me==="logist"){
+    const f=document.getElementById("c_from"), t=document.getElementById("c_to"),
+      rv=document.getElementById("c_rev"), calc=document.getElementById("c_calc");
+    t.selectedIndex=1;
+    const upd=()=>{
+      const a=f.value,b=t.value,k=km(a,b);
+      const r=rv.value?+rv.value:rev(a,b);
+      if(!rv.value) rv.placeholder=r.toLocaleString("ru-RU");
+      const net=r/(1+NDS), cost=k*COST, prof=net-cost, du=transit(k), pd=prof/du;
+      calc.innerHTML=`<div class="r"><span>Пробег</span><b>${k.toLocaleString('ru-RU')} км</b></div>
+        <div class="r"><span>Транзит</span><b>${du.toFixed(1)} сут</b></div>
+        <div class="r"><span>Выручка б.НДС</span><b>${fmtRub(net)}</b></div>
+        <div class="r"><span>Себестоимость</span><b>${fmtRub(cost)}</b></div>
+        <div class="r"><span>Прибыль</span><b class="${prof<0?'neg':''}">${fmtRub(prof)}</b></div>
+        <div class="r"><span>Прибыль/сутки</span><b class="big ${pd<0?'neg':''}">${fmtRub(pd)}</b></div>`;
+    };
+    f.onchange=upd; t.onchange=upd; rv.oninput=upd; upd();
+    const csug=document.getElementById("c_suggest"), truckSel0=document.getElementById("c_truck");
+    function showSuggest(o){
+      const cand=matchTrucks(o.from, o.start!=null?o.start:pStart(), null);
+      if(!cand.length){ csug.innerHTML=""; return; }
+      csug.innerHTML=`<div class="sughint">Подходящие сцепки в «${o.from}» к ${dstrShort(o.start!=null?o.start:pStart())}:</div>`+
+        cand.map(c=>`<div class="sugtruck" data-p="${c.f.p}">
+          <span class="mono" style="font-weight:700">${c.f.p}</span>
+          <span class="mi">${c.f.t}</span>
+          <span class="sugtag" style="margin-left:auto;${c.repos?'color:var(--warn)':'color:var(--teal)'}">${c.repos?'перегон '+c.dist+' км':'в зоне'} · ${dstrShort(c.day)}</span>
+        </div>`).join("");
+      // предвыбор лучшей
+      if(cand[0]) truckSel0.value=cand[0].f.p;
+      csug.querySelectorAll(".sugtruck").forEach(el=>el.onclick=()=>{
+        truckSel0.value=el.dataset.p;
+        csug.querySelectorAll(".sugtruck").forEach(x=>x.classList.remove("sel")); el.classList.add("sel");
+        flash("сцепка "+el.dataset.p+" выбрана");
+      });
+    }
+    document.querySelectorAll("#ord_list .ord").forEach(el=>el.onclick=()=>{
+      const i=+el.dataset.oi, o=orders[i]; if(!o)return;
+      f.value=o.from; t.value=o.to;
+      document.getElementById("c_client").value=o.client||"";
+      document.getElementById("c_rev").value=o.rev||"";
+      document.getElementById("c_start").value=isoFromDay(o.start!=null?o.start:pStart());
+      pickedOrder=i; upd(); showSuggest(o);
+      document.querySelectorAll("#ord_list .ord").forEach(x=>x.classList.remove("sel")); el.classList.add("sel");
+      flash("заявка загружена — подобраны сцепки, проверьте и поставьте в план");
+    });
+    document.getElementById("c_add").onclick=async()=>{
+      const truck=document.getElementById("c_truck").value, a=f.value,b=t.value;
+      if(!truck){flash("нет доступных сцепок");return;}
+      const r=rv.value?+rv.value:rev(a,b), k=km(a,b);
+      const start=Math.max(0,Math.min(pEnd()-0.5, dayFromISO(document.getElementById("c_start").value)));
+      plan.push({id:"L"+Date.now(), truck, from:a,to:b,start,days:transit(k),km:k,rev:r,
+        client:document.getElementById("c_client").value||"", status:"plan"});
+      await savePlan();
+      if(pickedOrder!=null && orders[pickedOrder]){ orders.splice(pickedOrder,1); pickedOrder=null; await saveOrders(); }
+      render(); flash("рейс добавлен в план · "+truck);
+    };
+    const truckSel=document.getElementById("c_truck");
+    const renderRoute=()=>{
+      const tp=truckSel.value, legs=plan.filter(l=>l.truck===tp).sort((a,b)=>a.start-b.start);
+      document.getElementById("c_rt_tag").textContent=legs.length+" плеч";
+      let cum=0, days=0;
+      const rows=legs.map(l=>{ const pr=l.rev/(1+NDS)-l.km*COST; cum+=pr; days+=l.days;
+        return `<div class="li"><span class="mi">${l.from}→${l.to}</span>
+          <span class="rt ${pr<0?'neg':''}" style="margin-left:auto">${fmtRub(pr)}</span>
+          <span class="cum">Σ ${fmtRub(cum)}</span></div>`; }).join("");
+      document.getElementById("c_route").innerHTML= legs.length ?
+        rows+`<div class="calc"><div class="r"><span>Плеч в маршруте</span><b>${legs.length}</b></div>
+          <div class="r"><span>Транзит цепи</span><b>${days.toFixed(1)} сут</b></div>
+          <div class="r"><span>Прибыль нарастающим</span><b class="big ${cum<0?'neg':''}">${fmtRub(cum)}</b></div>
+          <div class="r"><span>Прибыль за сутки</span><b>${fmtRub(days?cum/days:0)}</b></div></div>`
+        : `<div class="hint">У сцепки нет запланированных рейсов.</div>`;
+    };
+    truckSel.addEventListener("change",renderRoute); renderRoute();
+  }
+  if(me==="sales"){
+    const os=document.getElementById("o_start"), oe=document.getElementById("o_end"), od=document.getElementById("o_dates");
+    const showOD=()=>{ let s=dayFromISO(os.value), e=dayFromISO(oe.value); if(e<=s)e=s+1;
+      od.innerHTML=`${dstrShort(s)} → ${dstrShort(e)} · <b>${(e-s).toFixed(1)} сут</b>`; };
+    os.onchange=showOD; oe.onchange=showOD; showOD();
+    document.querySelectorAll("#req_list .req").forEach(el=>el.onclick=()=>{
+      document.getElementById("o_from").value=el.dataset.zone;
+      document.getElementById("o_to").value=el.dataset.to;
+      document.getElementById("o_client").value=el.dataset.client||"";
+      document.getElementById("o_rev").value=el.dataset.rev||"";
+      os.value=el.dataset.day; oe.value=el.dataset.winto; showOD();
+      flash("черновик заявки заполнен — проверьте заказчика и ставку");
+    });
+    document.getElementById("o_add").onclick=async()=>{
+      const c=document.getElementById("o_client").value.trim();
+      if(!c){flash("укажите заказчика");return;}
+      const fr=document.getElementById("o_from").value, to=document.getElementById("o_to").value;
+      let s=dayFromISO(os.value), e=dayFromISO(oe.value); if(e<=s)e=s+1;
+      orders.push({client:c,from:fr,to:to,rev:+document.getElementById("o_rev").value||rev(fr,to),start:s,end:e});
+      await saveOrders(); render(); flash("заявка в портфеле");
+    };
+  }
+  if(me==="acc"){
+    document.querySelectorAll("[data-pay]").forEach(el=>el.onclick=async()=>{
+      const l=plan.find(x=>x.id===el.dataset.pay); if(!l)return;
+      l.status=l.status==="pay"?"done":"pay"; await savePlan(); render();
+      flash(l.status==="pay"?"отмечен оплаченным":"снята отметка оплаты");
+    });
+  }
+}
+
+/* ============ МОДАЛЬНЫЕ ОКНА ============ */
+function openLeg(id){
+  const l=plan.find(x=>x.id===id); if(!l)return;
+  const net=l.rev/(1+NDS), prof=net-l.km*COST;
+  const canStatus=(me==="disp"||me==="logist");
+  const inConflict=curConflicts.has(l.id);
+  const picks=STATUS.map(s=>`<span class="sp ${l.status===s[0]?'on':''}" data-s="${s[0]}"
+     style="${l.status===s[0]?'background:'+({plan:'#7f8fa6',run:'#3b6ea5',unl:'#c98a2a',done:'#2e7d6b',pay:'#20624f',rej:'#b1483e'}[s[0]]):''}">${s[1]}</span>`).join("");
+  const reasonBlock = (l.status==='rej' && canStatus) ? `<label class="f">Причина отклонения</label>
+    <select id="l_reason">${REASONS.map(r=>`<option ${l.reason===r?'selected':''}>${r}</option>`).join("")}</select>` : '';
+  const m=document.getElementById("modal");
+  m.innerHTML=`<h3>${l.from} → ${l.to}</h3>
+    <div class="msub mono">${l.truck} · ${l.client||'без заказчика'}</div>
+    ${inConflict?`<div class="cfbanner">⚠ Конфликт расписания: этот рейс пересекается по времени с другим на сцепке ${l.truck}. Сдвиньте даты или перенесите на другую машину.</div>`:''}
+    <div class="calc">
+      <div class="r"><span>Пробег</span><b>${l.km.toLocaleString('ru-RU')} км</b></div>
+      <div class="r"><span>Транзит</span><b>${l.days.toFixed(1)} сут</b></div>
+      <div class="r"><span>Выручка б.НДС</span><b>${fmtRub(net)}</b></div>
+      <div class="r"><span>Прибыль</span><b class="${prof<0?'neg':''} big">${fmtRub(prof)}</b></div>
+    </div>
+    ${canStatus?`<label class="f">Статус рейса</label><div class="status-pick">${picks}</div>`:''}
+    ${reasonBlock}
+    ${me==="logist"?`<label class="f">Даты рейса — начало → завершение</label>
+      <div class="row2"><input id="e_start" type="date" value="${isoFromDay(l.start)}" min="${ISOMIN}" max="${ISOMAX}">
+      <input id="e_end" type="date" value="${isoFromDay(l.start+l.days)}" min="${ISOMIN}" max="${ISOMAX}"></div>
+      <div id="e_dates" class="datehint"></div>`:''}
+    <div class="actions">
+      ${me==="logist"?`<button class="btn ghost" id="delLeg">Удалить рейс</button>`:''}
+      <button class="btn" id="closeM">Готово</button>
+    </div>`;
+  showMask(true);
+  const rsel=document.getElementById("l_reason");
+  if(rsel) rsel.onchange=async()=>{ l.reason=rsel.value; await savePlan(); };
+  if(me==="logist"){
+    const es=document.getElementById("e_start"), ee=document.getElementById("e_end"), ed=document.getElementById("e_dates");
+    const showDates=()=>{ let s=dayFromISO(es.value), e=dayFromISO(ee.value); if(e<=s)e=s+1;
+      if(ed) ed.innerHTML=`${dstrShort(s)} → ${dstrShort(e)} · <b>${(e-s).toFixed(1)} сут</b>`; };
+    if(es&&ee){ const applyTime=async()=>{ let s=dayFromISO(es.value), e=dayFromISO(ee.value);
+      if(e<=s) e=s+1; l.start=s; l.days=e-s; await savePlan(); render(); };
+      es.onchange=()=>{showDates();applyTime();}; ee.onchange=()=>{showDates();applyTime();}; showDates(); }
+  }
+  m.querySelectorAll(".sp").forEach(sp=>sp.onclick=async()=>{ l.status=sp.dataset.s; await savePlan(); render(); openLeg(id); });
+  const del=document.getElementById("delLeg");
+  if(del) del.onclick=async()=>{ plan=plan.filter(x=>x.id!==id); await savePlan(); render(); showMask(false); flash("рейс удалён"); };
+  document.getElementById("closeM").onclick=()=>showMask(false);
+}
+function openAddLeg(truck, startDay){
+  const opts=ZONES.map(z=>`<option>${z}</option>`).join("");
+  const m=document.getElementById("modal");
+  m.innerHTML=`<h3>Новый рейс</h3><div class="msub mono">${truck} · старт день ${startDay}</div>
+    <div class="row2"><div><label class="f">Откуда</label><select id="a_from">${opts}</select></div>
+    <div><label class="f">Куда</label><select id="a_to">${opts}</select></div></div>
+    <label class="f">Заказчик</label><input id="a_client">
+    <label class="f">Выручка с НДС, ₽ (пусто = авто)</label><input id="a_rev" type="number">
+    <div class="calc" id="a_calc"></div>
+    <div class="actions"><button class="btn ghost" id="a_cancel">Отмена</button>
+    <button class="btn" id="a_ok">Добавить</button></div>`;
+  showMask(true);
+  const fa=document.getElementById("a_from"), ta=document.getElementById("a_to"); ta.selectedIndex=1;
+  const rv=document.getElementById("a_rev"), calc=document.getElementById("a_calc");
+  const upd=()=>{ const k=km(fa.value,ta.value); const r=rv.value?+rv.value:rev(fa.value,ta.value);
+    const prof=r/(1+NDS)-k*COST;
+    calc.innerHTML=`<div class="r"><span>Пробег</span><b>${k} км</b></div><div class="r"><span>Прибыль</span><b class="${prof<0?'neg':''}">${fmtRub(prof)}</b></div>`; };
+  fa.onchange=upd;ta.onchange=upd;rv.oninput=upd;upd();
+  document.getElementById("a_cancel").onclick=()=>showMask(false);
+  document.getElementById("a_ok").onclick=async()=>{
+    const k=km(fa.value,ta.value);
+    plan.push({id:"L"+Date.now(),truck,from:fa.value,to:ta.value,start:startDay,days:transit(k),km:k,
+      rev:rv.value?+rv.value:rev(fa.value,ta.value),client:document.getElementById("a_client").value||"",status:"plan"});
+    await savePlan(); render(); showMask(false); flash("рейс добавлен");
+  };
+}
+function showMask(on){ document.getElementById("mask").classList.toggle("on",on); }
+document.getElementById("mask").onclick=(e)=>{ if(e.target.id==="mask") showMask(false); };
+
+/* ============ ПРОЧЕЕ ============ */
+let toastT;
+function flash(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("on");
+  clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove("on"),1800); }
+document.getElementById("roles").onclick=(e)=>{ const b=e.target.closest(".role"); if(!b)return;
+  me=b.dataset.r; render(); heartbeat(); };
+document.getElementById("typeFilter").onclick=(e)=>{ const b=e.target.closest("button"); if(!b)return;
+  filterType=b.dataset.t; document.querySelectorAll("#typeFilter button").forEach(x=>x.classList.toggle("on",x===b)); renderCal(); };
+(function initClientsSheet(){
+  const overlay=document.getElementById("clientsSheet"), tbody=document.getElementById("cl_tbody");
+  const search=document.getElementById("cl_search"), selF=document.getElementById("cl_from"),
+    selT=document.getElementById("cl_to"), count=document.getElementById("cl_count");
+  selF.innerHTML=`<option value="">откуда: все</option>`+ZONES.map(z=>`<option>${z}</option>`).join("");
+  selT.innerHTML=`<option value="">куда: все</option>`+ZONES.map(z=>`<option>${z}</option>`).join("");
+  function draw(){
+    const q=(search.value||"").toLowerCase().trim(), zf=selF.value, zt=selT.value;
+    const rows=CLIENTS_FULL.filter(c=>(!q||c[0].toLowerCase().includes(q))&&(!zf||c[1]===zf)&&(!zt||c[2]===zt));
+    count.textContent=rows.length+" из "+CLIENTS_FULL.length;
+    tbody.innerHTML=rows.map(c=>`<tr>
+      <td>${c[0]}</td>
+      <td><span class="zchip" style="background:${ZC[c[1]]||'#889'}">${c[1]}</span></td>
+      <td><span class="zchip" style="background:${ZC[c[2]]||'#889'}">${c[2]}</span></td>
+      <td class="num">${c[3]}</td>
+      <td class="num">${(c[4]).toLocaleString('ru-RU')} ₽</td>
+      <td class="num">${c[5]}</td></tr>`).join("")
+      || `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Ничего не найдено</td></tr>`;
+  }
+  search.oninput=draw; selF.onchange=draw; selT.onchange=draw;
+  document.getElementById("openClients").onclick=()=>{ draw(); overlay.classList.add("on"); search.focus(); };
+  document.getElementById("cl_close").onclick=()=>overlay.classList.remove("on");
+  overlay.onclick=(e)=>{ if(e.target===overlay) overlay.classList.remove("on"); };
+})();
+(function initDateFilter(){
+  const vf=document.getElementById("vf"), vt=document.getElementById("vt");
+  vf.min=ISOMIN; vf.max=ISOMAX; vt.min=ISOMIN; vt.max=ISOMAX;
+  const apply=()=>{ let f=vf.value?dayFromISO(vf.value):pStart(), t=vt.value?dayFromISO(vt.value)+1:pEnd();
+    f=Math.max(0,Math.min(f,TOTAL-1)); t=Math.max(f+1,Math.min(t,TOTAL));
+    viewFrom=f; viewTo=t; renderCal(); };
+  vf.onchange=apply; vt.onchange=apply;
+  document.getElementById("vreset").onclick=()=>{ viewFrom=pStart(); viewTo=pEnd(); vf.value=""; vt.value=""; renderCal(); };
+})();
+function capfirst(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
+function goPeriod(i){ periodIdx=Math.max(0,Math.min(MONTHS.length-1,i));
+  viewFrom=pStart(); viewTo=pEnd();
+  const vf=document.getElementById("vf"), vt=document.getElementById("vt"); if(vf){vf.value="";vt.value="";}
+  const lbl=document.getElementById("periodLabel"); if(lbl) lbl.textContent=capfirst(MONTHS[periodIdx].label);
+  render(); }
+document.getElementById("pprev").onclick=()=>goPeriod(periodIdx-1);
+document.getElementById("pnext").onclick=()=>goPeriod(periodIdx+1);
+
+/* ============ СТАРТ ============ */
+(async function(){
+  await loadAll(true);
+  goPeriod(currentPeriodIdx());
+  await heartbeat();
+  setInterval(poll, 4000);
+  setInterval(heartbeat, 10000);
+  const sp=document.getElementById("splash");
+  if(sp){ setTimeout(()=>{ sp.classList.add("hide"); setTimeout(()=>sp.remove(),550); }, 1100); }
+})();
+</script>
+</body>
+</html>

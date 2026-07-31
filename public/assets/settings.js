@@ -1,0 +1,535 @@
+import { api, escapeHtml, formatDate, logout, toast } from './api.js';
+
+const state = { section: 'general', admin: null, users: null };
+const byId = id => document.getElementById(id);
+const content = byId('settingsContent');
+
+function showModal(html) {
+  byId('modalRoot').innerHTML = `<div class="modal-backdrop"><div class="modal">${html}</div></div>`;
+  document.querySelector('.modal-backdrop').onclick = event => {
+    if (event.target.classList.contains('modal-backdrop')) closeModal();
+  };
+  document.querySelectorAll('[data-close]').forEach(button => button.onclick = closeModal);
+}
+
+function closeModal() {
+  byId('modalRoot').innerHTML = '';
+}
+
+function roleLabel(role) {
+  return state.users?.roles?.[role] || role;
+}
+
+function statusBadge(status) {
+  const tone = status === 'done' || status === 'sent' || status === 'work' ? 'ok'
+    : status === 'failed' ? 'bad' : 'warn';
+  return `<span class="badge ${tone}">${escapeHtml(status)}</span>`;
+}
+
+function renderGeneral() {
+  const { general, calculation, statuses, rejectionReasons, orderOptions } = state.admin.settings;
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Настройки планера</h1>
+      <p>Параметры, которые раньше были зашиты непосредственно в HTML.</p></div>
+      <button class="button" id="saveGeneral">Сохранить</button></div>
+    <div class="card"><h2>Общие</h2><div class="fields three">
+      <label class="field">Название компании<input id="companyName" value="${escapeHtml(general.companyName)}"></label>
+      <label class="field">Название приложения<input id="appName" value="${escapeHtml(general.appName)}"></label>
+      <label class="field">Часовой пояс<input id="timezone" value="${escapeHtml(general.timezone)}"></label>
+      <label class="field">Начало горизонта<input id="horizonStart" type="date" value="${general.horizonStart}"></label>
+      <label class="field">Горизонт, месяцев<input id="horizonMonths" type="number" min="1" max="36" value="${general.horizonMonths}"></label>
+      <label class="field">Ширина дня, px<input id="plannerCellWidth" type="number" min="28" max="100" value="${general.plannerCellWidth}"></label>
+    </div></div>
+    <div class="card"><h2>Экономика и нормативы</h2><div class="fields three">
+      <label class="field">Себестоимость, ₽/км<input id="costPerKm" type="number" min="0" step=".01" value="${calculation.costPerKm}"></label>
+      <label class="field">Страхование, Платон и дороги, ₽/км<input id="insuranceAndRoadsPerKm" type="number" min="0" step=".01" value="${calculation.insuranceAndRoadsPerKm}"></label>
+      <label class="field">Водитель, ₽/сутки рейса<input id="driverPerTripDay" type="number" min="0" value="${calculation.driverPerTripDay}"></label>
+      <label class="field">Рефустановка, ₽/сутки рейса<input id="refrigerationPerTripDay" type="number" min="0" value="${calculation.refrigerationPerTripDay}"></label>
+      <label class="field">Лизинг/амортизация, ₽/машино-день<input id="leasePerVehicleDay" type="number" min="0" value="${calculation.leasePerVehicleDay}"></label>
+      <label class="field">Накладные, ₽/машино-день<input id="overheadPerVehicleDay" type="number" min="0" value="${calculation.overheadPerVehicleDay}"></label>
+      <label class="field">Ставка НДС<input id="vatRate" type="number" min="0" max="1" step=".01" value="${calculation.vatRate}"></label>
+      <label class="field">НДС для ИП<input id="individualEntrepreneurVatRate" type="number" min="0" max="1" step=".01" value="${calculation.individualEntrepreneurVatRate}"></label>
+      <label class="field">Суточный пробег, км<input id="dailyMileageKm" type="number" min="1" value="${calculation.dailyMileageKm}"></label>
+      <label class="field">Погрузка/выгрузка, суток<input id="handlingDays" type="number" min="0" step=".1" value="${calculation.handlingDays}"></label>
+      <label class="field">Целевая утилизация<input id="utilizationTarget" type="number" min="0" max="1" step=".001" value="${calculation.utilizationTarget}"></label>
+    </div></div>
+    <div class="card"><h2>Статусы рейса</h2>
+      <div class="table-wrap"><table><thead><tr><th>Код</th><th>Название</th><th>Цвет</th></tr></thead>
+      <tbody>${statuses.map(([id, name, color]) => `<tr data-status="${escapeHtml(id)}"><td class="mono">${escapeHtml(id)}</td>
+        <td><input data-status-name value="${escapeHtml(name)}"></td><td><input data-status-color type="color" value="${escapeHtml(color)}"></td></tr>`).join('')}</tbody></table></div>
+    </div>
+    <div class="card"><h2>Причины отклонения</h2>
+      <label class="field">По одной причине в строке<textarea id="rejectionReasons">${escapeHtml(rejectionReasons.join('\n'))}</textarea></label>
+    </div>
+    <div class="card"><h2>Параметры заявок</h2><div class="fields">
+      <label class="field">Температурные режимы, по одному в строке<textarea id="temperatureModes">${escapeHtml(orderOptions.temperatureModes.join('\n'))}</textarea></label>
+      <label class="field">Типы кузова, по одному в строке<textarea id="bodyTypes">${escapeHtml(orderOptions.bodyTypes.join('\n'))}</textarea></label>
+      <label class="field">Этапы заявки, по одному в строке<textarea id="orderStages">${escapeHtml(orderOptions.stages.join('\n'))}</textarea></label>
+    </div></div>
+  </section>`;
+  byId('saveGeneral').onclick = saveGeneral;
+}
+
+async function saveGeneral() {
+  const numeric = id => Number(byId(id).value);
+  const payload = {
+    general: {
+      companyName: byId('companyName').value.trim(), appName: byId('appName').value.trim(),
+      timezone: byId('timezone').value.trim(), horizonStart: byId('horizonStart').value,
+      horizonMonths: numeric('horizonMonths'), plannerCellWidth: numeric('plannerCellWidth')
+    },
+    calculation: {
+      costPerKm: numeric('costPerKm'), vatRate: numeric('vatRate'),
+      insuranceAndRoadsPerKm: numeric('insuranceAndRoadsPerKm'),
+      driverPerTripDay: numeric('driverPerTripDay'),
+      refrigerationPerTripDay: numeric('refrigerationPerTripDay'),
+      leasePerVehicleDay: numeric('leasePerVehicleDay'),
+      overheadPerVehicleDay: numeric('overheadPerVehicleDay'),
+      individualEntrepreneurVatRate: numeric('individualEntrepreneurVatRate'),
+      dailyMileageKm: numeric('dailyMileageKm'), handlingDays: numeric('handlingDays'),
+      utilizationTarget: numeric('utilizationTarget')
+    },
+    orderOptions: {
+      temperatureModes: byId('temperatureModes').value.split('\n').map(item => item.trim()).filter(Boolean),
+      bodyTypes: byId('bodyTypes').value.split('\n').map(item => item.trim()).filter(Boolean),
+      stages: byId('orderStages').value.split('\n').map(item => item.trim()).filter(Boolean)
+    },
+    statuses: [...document.querySelectorAll('[data-status]')].map(row => [
+      row.dataset.status, row.querySelector('[data-status-name]').value.trim(),
+      row.querySelector('[data-status-color]').value
+    ]),
+    rejectionReasons: byId('rejectionReasons').value.split('\n').map(item => item.trim()).filter(Boolean)
+  };
+  try {
+    await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) });
+    Object.assign(state.admin.settings, payload);
+    toast('Настройки сохранены');
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+function renderDictionaries() {
+  const { zones, vehicleTypes, routeRates } = state.admin.reference;
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Справочники</h1>
+      <p>Зоны, типы ТС и нормативные маршруты, перенесенные из прототипа.</p></div>
+      <button class="button" id="saveDictionaries">Сохранить</button></div>
+    <div class="card"><h2>Геозоны</h2><div class="table-wrap"><table><thead><tr><th>Порядок</th><th>Зона</th><th>Цвет</th><th>Координаты</th><th>Города и регионы</th><th>ID 1С</th></tr></thead>
+      <tbody>${zones.map(zone => `<tr data-zone="${zone.id}"><td>${zone.sort_order + 1}</td><td><input data-zone-name value="${escapeHtml(zone.name)}"></td>
+      <td><input data-zone-color type="color" value="${escapeHtml(zone.color)}"></td>
+      <td><div class="actions"><input data-zone-lat type="number" step=".01" value="${zone.latitude ?? ''}" placeholder="широта">
+      <input data-zone-lon type="number" step=".01" value="${zone.longitude ?? ''}" placeholder="долгота"></div></td>
+      <td><textarea data-zone-aliases rows="2">${escapeHtml((zone.aliases || []).join('\n'))}</textarea></td>
+      <td class="mono muted">${escapeHtml(zone.external_id || 'не связан')}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="card"><h2>Типы транспортных средств</h2><div class="actions">
+      ${vehicleTypes.map(type => `<label class="field" data-type="${type.id}"><input data-type-name value="${escapeHtml(type.name)}"></label>`).join('')}</div></div>
+    <div class="card"><h2>Расстояния и ставки по умолчанию</h2>
+      <div class="table-wrap"><table><thead><tr><th>Откуда</th><th>Куда</th><th>Км</th><th>Ставка с НДС</th></tr></thead>
+      <tbody>${routeRates.map(rate => `<tr data-rate="${rate.id}"><td>${escapeHtml(rate.from_name)}</td><td>${escapeHtml(rate.to_name)}</td>
+      <td><input data-rate-km type="number" min="0" value="${rate.distance_km}"></td>
+      <td><input data-rate-value type="number" min="0" value="${rate.default_rate_vat}"></td></tr>`).join('')}</tbody></table></div>
+    </div>
+  </section>`;
+  byId('saveDictionaries').onclick = saveDictionaries;
+}
+
+function renderFleet() {
+  const vehicles = state.admin.vehicles;
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Состав транспортных средств</h1>
+      <p>Сцепки, водители, текущая зона и доступность.</p></div>
+      <button class="button" id="newVehicle">+ Добавить ТС</button></div>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Тягач</th><th>Прицеп</th><th>Тип</th><th>Водитель</th><th>Зона</th><th>Статус</th><th></th></tr></thead>
+      <tbody>${vehicles.map(vehicle => `<tr><td class="mono"><strong>${escapeHtml(vehicle.plate)}</strong></td>
+        <td class="mono">${escapeHtml(vehicle.trailer_plate || '—')}</td><td>${escapeHtml(vehicle.type_name)}</td>
+        <td>${escapeHtml(vehicle.driver_name || '—')}</td><td>${escapeHtml(vehicle.zone_name || '—')}</td>
+        <td>${statusBadge(vehicle.status)}</td><td><button class="button ghost small" data-edit-vehicle="${vehicle.id}">Изменить</button></td>
+      </tr>`).join('')}</tbody></table></div></div>
+  </section>`;
+  byId('newVehicle').onclick = () => editVehicle();
+  document.querySelectorAll('[data-edit-vehicle]').forEach(button =>
+    button.onclick = () => editVehicle(vehicles.find(vehicle => vehicle.id === button.dataset.editVehicle)));
+}
+
+function editVehicle(vehicle = null) {
+  const types = state.admin.reference.vehicleTypes.map(type =>
+    `<option value="${type.id}" ${vehicle?.type_id === type.id ? 'selected' : ''}>${escapeHtml(type.name)}</option>`).join('');
+  const zones = state.admin.reference.zones.map(zone =>
+    `<option value="${zone.id}" ${vehicle?.zone_id === zone.id ? 'selected' : ''}>${escapeHtml(zone.name)}</option>`).join('');
+  const statuses = [['work', 'В работе'], ['no_driver', 'Без водителя'], ['repair', 'В ремонте'], ['out', 'Выведен']];
+  showModal(`<form id="vehicleForm"><h2>${vehicle ? 'Редактирование ТС' : 'Новое ТС'}</h2>
+    <div class="fields">
+      <label class="field">Госномер<input name="plate" value="${escapeHtml(vehicle?.plate || '')}" required></label>
+      <label class="field">Прицеп<input name="trailerPlate" value="${escapeHtml(vehicle?.trailer_plate || '')}"></label>
+      <label class="field">Тип<select name="typeId">${types}</select></label>
+      <label class="field">Водитель<input name="driverName" value="${escapeHtml(vehicle?.driver_name || '')}"></label>
+      <label class="field">Зона<select name="zoneId">${zones}</select></label>
+      <label class="field">Статус<select name="status">${statuses.map(([id, label]) =>
+        `<option value="${id}" ${vehicle?.status === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+    </div>
+    <div class="form-grid">
+      <label class="field">Недоступно с<input name="unavailableFrom" type="date" value="${vehicle?.unavailable_from || ''}"></label>
+      <label class="field">Недоступно до<input name="unavailableTo" type="date" value="${vehicle?.unavailable_to || ''}"></label>
+    </div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Сохранить</button></div></form>`);
+  byId('vehicleForm').onsubmit = async event => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(event.currentTarget));
+    try {
+      await api(vehicle ? `/api/vehicles/${vehicle.id}` : '/api/vehicles', {
+        method: vehicle ? 'PATCH' : 'POST', body: JSON.stringify(payload)
+      });
+      closeModal(); toast(vehicle ? 'ТС обновлено' : 'ТС добавлено');
+      await loadAdmin(); renderFleet();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+function renderCustomers() {
+  const customers = state.admin.customers || [];
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Заказчики</h1>
+      <p>Маршруты, средняя ставка и плановая частота перевозок.</p></div>
+      <button class="button" id="newCustomer">+ Добавить</button></div>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>Заказчик</th><th>Маршрут</th><th>Рейсов</th><th>Средняя ставка</th><th>Рейсов/мес.</th><th></th></tr></thead>
+      <tbody>${customers.map(item => `<tr>
+        <td><strong>${escapeHtml(item.name)}</strong></td>
+        <td>${escapeHtml(item.from_name || '—')} → ${escapeHtml(item.to_name || '—')}</td>
+        <td>${item.trip_count}</td><td>${Number(item.average_rate_vat).toLocaleString('ru-RU')} ₽</td>
+        <td>${item.trips_per_month}</td>
+        <td><button class="button ghost small" data-edit-customer="${item.id}">Изменить</button></td>
+      </tr>`).join('')}</tbody></table></div></div>
+  </section>`;
+  byId('newCustomer').onclick = () => editCustomer();
+  document.querySelectorAll('[data-edit-customer]').forEach(button =>
+    button.onclick = () => editCustomer(customers.find(item => item.id === button.dataset.editCustomer)));
+}
+
+function editCustomer(customer = null) {
+  const zoneOptions = selected => state.admin.reference.zones.map(zone =>
+    `<option value="${zone.id}" ${selected === zone.id ? 'selected' : ''}>${escapeHtml(zone.name)}</option>`).join('');
+  showModal(`<form id="customerForm"><h2>${customer ? 'Редактирование заказчика' : 'Новый заказчик'}</h2>
+    <label class="field">Название<input name="name" value="${escapeHtml(customer?.name || '')}" required></label>
+    <div class="form-grid">
+      <label class="field">Откуда<select name="fromZoneId">${zoneOptions(customer?.from_zone_id)}</select></label>
+      <label class="field">Куда<select name="toZoneId">${zoneOptions(customer?.to_zone_id)}</select></label>
+    </div>
+    <div class="fields three">
+      <label class="field">Рейсов<input name="tripCount" type="number" min="0" value="${customer?.trip_count || 0}"></label>
+      <label class="field">Средняя ставка<input name="averageRateVat" type="number" min="0" value="${customer?.average_rate_vat || 0}"></label>
+      <label class="field">Рейсов в месяц<input name="tripsPerMonth" type="number" min="0" step=".1" value="${customer?.trips_per_month || 0}"></label>
+    </div>
+    <div class="modal-actions">
+      ${customer ? '<button type="button" class="button danger" id="deleteCustomer">Удалить</button>' : ''}
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Сохранить</button>
+    </div></form>`);
+  byId('customerForm').onsubmit = async event => {
+    event.preventDefault();
+    try {
+      await api(customer ? `/api/customers/${customer.id}` : '/api/customers', {
+        method: customer ? 'PATCH' : 'POST',
+        body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+      });
+      closeModal(); toast('Заказчик сохранен'); await loadAdmin(); renderCustomers();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  if (customer) byId('deleteCustomer').onclick = async () => {
+    if (!confirm('Удалить заказчика?')) return;
+    try {
+      await api(`/api/customers/${customer.id}`, { method: 'DELETE' });
+      closeModal(); toast('Заказчик удален'); await loadAdmin(); renderCustomers();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+async function saveDictionaries() {
+  const payload = {
+    zones: [...document.querySelectorAll('[data-zone]')].map(row => ({
+      id: row.dataset.zone, name: row.querySelector('[data-zone-name]').value,
+      color: row.querySelector('[data-zone-color]').value,
+      latitude: row.querySelector('[data-zone-lat]').value,
+      longitude: row.querySelector('[data-zone-lon]').value,
+      aliases: row.querySelector('[data-zone-aliases]').value.split('\n').map(item => item.trim()).filter(Boolean)
+    })),
+    vehicleTypes: [...document.querySelectorAll('[data-type]')].map(row => ({
+      id: row.dataset.type, name: row.querySelector('[data-type-name]').value
+    })),
+    routeRates: [...document.querySelectorAll('[data-rate]')].map(row => ({
+      id: row.dataset.rate, distanceKm: Number(row.querySelector('[data-rate-km]').value),
+      defaultRateVat: Number(row.querySelector('[data-rate-value]').value)
+    }))
+  };
+  try {
+    await api('/api/admin/reference', { method: 'PUT', body: JSON.stringify(payload) });
+    toast('Справочники сохранены');
+    await loadAdmin();
+    renderDictionaries();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+async function ensureUsers() {
+  if (!state.users) state.users = await api('/api/admin/users');
+}
+
+async function renderUsers() {
+  await ensureUsers();
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Пользователи</h1>
+      <p>Создание учетных записей, изменение ролей и блокировка доступа.</p></div>
+      <button class="button" id="newUser">+ Создать</button></div>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>Пользователь</th><th>Логин</th><th>Роль</th><th>Состояние</th><th>Создан</th><th></th></tr></thead>
+      <tbody>${state.users.items.map(user => `<tr>
+        <td><strong>${escapeHtml(user.full_name)}</strong><br><small class="muted">${escapeHtml(user.email || '')}</small></td>
+        <td class="mono">${escapeHtml(user.username)}</td><td>${escapeHtml(roleLabel(user.role))}</td>
+        <td>${user.active ? '<span class="badge ok">активен</span>' : '<span class="badge bad">отключен</span>'}</td>
+        <td>${formatDate(user.created_at, { day: '2-digit', month: '2-digit', year: 'numeric' })}</td>
+        <td><button class="button ghost small" data-edit-user="${user.id}">Изменить</button></td>
+      </tr>`).join('')}</tbody></table></div></div>
+  </section>`;
+  byId('newUser').onclick = () => editUser();
+  document.querySelectorAll('[data-edit-user]').forEach(button =>
+    button.onclick = () => editUser(state.users.items.find(user => user.id === button.dataset.editUser)));
+}
+
+function editUser(user = null) {
+  const roleOptions = Object.entries(state.users.roles).map(([id, label]) =>
+    `<option value="${id}" ${user?.role === id ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('');
+  showModal(`<form id="userForm"><h2>${user ? 'Редактирование пользователя' : 'Новый пользователь'}</h2>
+    <div class="fields">
+      <label class="field">ФИО<input name="fullName" value="${escapeHtml(user?.full_name || '')}" required></label>
+      <label class="field">Логин<input name="username" value="${escapeHtml(user?.username || '')}" required></label>
+      <label class="field">Email<input name="email" type="email" value="${escapeHtml(user?.email || '')}"></label>
+      <label class="field">Роль<select name="role">${roleOptions}</select></label>
+    </div>
+    <label class="field">${user ? 'Новый пароль (оставьте пустым, чтобы не менять)' : 'Временный пароль'}
+      <input name="password" type="password" minlength="10" ${user ? '' : 'required'} autocomplete="new-password">
+    </label>
+    <label class="check"><input name="active" type="checkbox" ${user?.active === 0 ? '' : 'checked'}> Доступ разрешен</label>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Сохранить</button></div>
+  </form>`);
+  byId('userForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    values.active = form.elements.active.checked;
+    if (!values.password) delete values.password;
+    try {
+      await api(user ? `/api/admin/users/${user.id}` : '/api/admin/users', {
+        method: user ? 'PATCH' : 'POST', body: JSON.stringify(values)
+      });
+      state.users = null;
+      closeModal();
+      toast(user ? 'Пользователь обновлен' : 'Пользователь создан');
+      await renderUsers();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+function mappingData(mapping) {
+  try { return JSON.parse(mapping.field_map_json); } catch { return {}; }
+}
+
+function renderIntegration() {
+  const cfg = state.admin.integration;
+  const mappings = state.admin.mappings;
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Интеграция с 1С</h1>
+      <p>Загрузка по OData и управляемая обратная запись через очередь.</p></div>
+      <button class="button" id="saveIntegration">Сохранить</button></div>
+    <div class="card"><h2>Подключение OData</h2>
+      <div class="fields">
+        <label class="field">URL публикации OData<input id="baseUrl" type="url" placeholder="https://1c.example.ru/base/odata/standard.odata" value="${escapeHtml(cfg.baseUrl)}"></label>
+        <label class="field">Пользователь 1С<input id="odataUsername" value="${escapeHtml(cfg.username)}" autocomplete="off"></label>
+        <label class="field">Пароль ${cfg.hasPassword ? '(сохранен)' : ''}<input id="odataPassword" type="password" placeholder="${cfg.hasPassword ? 'оставьте пустым, чтобы не менять' : ''}" autocomplete="new-password"></label>
+        <label class="field">Интервал загрузки, минут<input id="pullIntervalMin" type="number" min="5" value="${cfg.pullIntervalMin}"></label>
+      </div>
+      <label class="check"><input id="integrationEnabled" type="checkbox" ${cfg.enabled ? 'checked' : ''}> Включить фоновую загрузку</label>
+      <div class="actions"><button class="button ghost" id="testIntegration" type="button">Проверить подключение</button>
+        <button class="button secondary" id="runSync" type="button">Загрузить сейчас</button>
+        <span class="muted">Последняя успешная: ${cfg.lastSuccessAt ? formatDate(cfg.lastSuccessAt, { dateStyle: 'short', timeStyle: 'short' }) : 'еще не выполнялась'}</span></div>
+    </div>
+    <div class="card"><h2>Телематика / мониторинг</h2>
+      <div class="fields">
+        <label class="field">URL API<input id="telematicsUrl" type="url" value="${escapeHtml(cfg.telematics?.baseUrl || '')}"></label>
+        <label class="field">Токен ${cfg.telematics?.hasToken ? '(сохранен)' : ''}<input id="telematicsToken" type="password"
+          placeholder="${cfg.telematics?.hasToken ? 'оставьте пустым, чтобы не менять' : ''}" autocomplete="new-password"></label>
+      </div>
+      <label class="check"><input id="telematicsEnabled" type="checkbox" ${cfg.telematics?.enabled ? 'checked' : ''}> Включить коннектор</label>
+      <p class="muted">Контракт входных данных: rideId, km, status, unloadedAt. Фактический пробег сохраняется отдельно и участвует в рейсе.</p>
+    </div>
+    <div class="card"><h2>Импорт по контракту PegasLogistic v1.0</h2>
+      <p class="muted">Для 1С поддерживаются геозоны или города из справочника. Повторная передача того же id обновляет рейс и не создает дубль.</p>
+      <label class="field">JSON-массив<textarea id="contractImport" rows="8"
+        placeholder='[{"id":"1С-0001","zoneFrom":"Пенза","zoneTo":"Москва","truck":"а001аа58","client":"ЧМПЗ АО","depDate":"2026-07-05","doneDate":"2026-07-06","revenue":95000,"status":"plan"}]'></textarea></label>
+      <div class="actions">
+        <button class="button secondary" id="import1c" type="button">Импортировать из 1С</button>
+        <button class="button ghost" id="importTelematics" type="button">Импортировать телематику</button>
+      </div>
+    </div>
+    <div class="card"><h2>Сопоставление сущностей</h2>
+      <p class="muted">Имена наборов и полей зависят от конфигурации 1С. Поля задаются JSON: локальное поле → поле OData.</p>
+      ${mappings.map(mapping => `<div class="mapping" data-mapping="${mapping.entity}">
+        <label class="field">Сущность<input value="${escapeHtml(mapping.entity)}" disabled></label>
+        <label class="field">Набор OData<input data-key="entitySet" value="${escapeHtml(mapping.entity_set)}"></label>
+        <label class="field">Направление<select data-key="direction">
+          ${['pull', 'push', 'both'].map(value => `<option ${mapping.direction === value ? 'selected' : ''}>${value}</option>`).join('')}
+        </select></label>
+        <label class="check"><input data-key="enabled" type="checkbox" ${mapping.enabled ? 'checked' : ''}> активно</label>
+        <label class="field">Фильтр OData<input data-key="filterQuery" value="${escapeHtml(mapping.filter_query)}"></label>
+        <label class="field">Карта полей JSON<textarea data-key="fieldMap">${escapeHtml(JSON.stringify(mappingData(mapping), null, 2))}</textarea></label>
+      </div>`).join('')}
+    </div>
+    <div class="card"><h2>Обратная запись в 1С</h2>
+      <div class="code">UI → SQLite (транзакция) → outbox → подтверждение → OData → аудит</div>
+      <label class="check"><input id="writeEnabled" type="checkbox" ${cfg.writeEnabled ? 'checked' : ''}> Разрешить обработчику отправлять одобренные изменения</label>
+      <label class="field">Политика отправки<select id="writePolicy">
+        <option value="manual" ${cfg.writePolicy === 'manual' ? 'selected' : ''}>Только после подтверждения администратором</option>
+        <option value="automatic" ${cfg.writePolicy === 'automatic' ? 'selected' : ''}>Автоматически (после приемочных испытаний)</option>
+      </select></label>
+      <p class="muted">Рекомендуется оставить ручной режим до настройки регистра IntegrationKey в 1С и проверки прав сервисного пользователя.</p>
+    </div>
+    <div class="card"><h2>Последние задания</h2>${jobsTable(state.admin.jobs)}</div>
+  </section>`;
+  byId('saveIntegration').onclick = saveIntegration;
+  byId('testIntegration').onclick = async () => {
+    try { await api('/api/admin/integration/test', { method: 'POST' }); toast('Подключение установлено'); }
+    catch (error) { toast(error.message, 'error'); }
+  };
+  byId('runSync').onclick = async () => {
+    try {
+      const result = await api('/api/admin/integration/sync', { method: 'POST' });
+      toast(`Синхронизация завершена: ${result.jobId || 'нет активных правил'}`);
+      await loadAdmin();
+      renderIntegration();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('import1c').onclick = () => runContractImport('1c');
+  byId('importTelematics').onclick = () => runContractImport('telematics');
+}
+
+async function runContractImport(kind) {
+  try {
+    const items = JSON.parse(byId('contractImport').value);
+    const result = await api(`/api/admin/integration/import/${kind}`, {
+      method: 'POST', body: JSON.stringify(items)
+    });
+    toast(kind === '1c'
+      ? `Импортировано: ${result.imported}, обновлено: ${result.updated}, пропущено: ${result.skipped}`
+      : `Сопоставлено: ${result.matched}, пробег: ${result.kmUpdated}, статусы: ${result.statusUpdated}`);
+    await loadAdmin();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+function jobsTable(jobs) {
+  if (!jobs.length) return '<p class="muted">Заданий еще не было.</p>';
+  return `<div class="table-wrap"><table><thead><tr><th>Запуск</th><th>Тип</th><th>Статус</th><th>Загружено</th><th>Ошибка</th></tr></thead>
+    <tbody>${jobs.map(job => `<tr><td>${formatDate(job.started_at, { dateStyle: 'short', timeStyle: 'short' })}</td>
+    <td>${escapeHtml(job.kind)}</td><td>${statusBadge(job.status)}</td><td>${job.pulled}</td>
+    <td class="danger">${escapeHtml(job.error_text || '')}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+async function saveIntegration() {
+  const mappings = [...document.querySelectorAll('[data-mapping]')].map(row => {
+    let fieldMap;
+    try { fieldMap = JSON.parse(row.querySelector('[data-key="fieldMap"]').value); }
+    catch { throw new Error(`Некорректный JSON в сопоставлении ${row.dataset.mapping}`); }
+    return {
+      entity: row.dataset.mapping,
+      entitySet: row.querySelector('[data-key="entitySet"]').value.trim(),
+      direction: row.querySelector('[data-key="direction"]').value,
+      filterQuery: row.querySelector('[data-key="filterQuery"]').value.trim(),
+      enabled: row.querySelector('[data-key="enabled"]').checked,
+      fieldMap
+    };
+  });
+  const payload = {
+    baseUrl: byId('baseUrl').value.trim(), username: byId('odataUsername').value.trim(),
+    password: byId('odataPassword').value, pullIntervalMin: Number(byId('pullIntervalMin').value),
+    enabled: byId('integrationEnabled').checked, writeEnabled: byId('writeEnabled').checked,
+    writePolicy: byId('writePolicy').value, mappings,
+    telematics: {
+      baseUrl: byId('telematicsUrl').value.trim(),
+      token: byId('telematicsToken').value,
+      enabled: byId('telematicsEnabled').checked
+    }
+  };
+  try {
+    await api('/api/admin/integration', { method: 'PUT', body: JSON.stringify(payload) });
+    toast('Интеграция сохранена');
+    await loadAdmin();
+    renderIntegration();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+function renderOutbox() {
+  const items = state.admin.outbox;
+  content.innerHTML = `<section>
+    <div class="section-head"><div><h1>Исходящие изменения</h1>
+      <p>Контролируемая очередь будущей записи в 1С.</p></div></div>
+    <div class="card">
+      ${items.length ? `<div class="table-wrap"><table><thead><tr><th>Создано</th><th>Сущность</th><th>Операция</th><th>Статус</th><th>Попытки</th><th>Ошибка</th><th></th></tr></thead>
+      <tbody>${items.map(item => `<tr><td>${formatDate(item.created_at, { dateStyle: 'short', timeStyle: 'short' })}</td>
+        <td>${escapeHtml(item.entity)}<br><small class="mono muted">${escapeHtml(item.entity_id)}</small></td>
+        <td>${escapeHtml(item.operation)}</td><td>${statusBadge(item.status)}</td><td>${item.attempts}</td>
+        <td class="danger">${escapeHtml(item.last_error || '')}</td><td><div class="actions">
+          ${item.status === 'pending_approval' ? `<button class="button small" data-outbox="${item.id}" data-action="approve">Одобрить</button>` : ''}
+          ${item.status === 'failed' ? `<button class="button small" data-outbox="${item.id}" data-action="retry">Повторить</button>` : ''}
+          ${!['sent', 'cancelled'].includes(item.status) ? `<button class="button ghost small" data-outbox="${item.id}" data-action="cancel">Отменить</button>` : ''}
+        </div></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Очередь пуста.</p>'}
+    </div>
+  </section>`;
+  document.querySelectorAll('[data-outbox]').forEach(button => button.onclick = async () => {
+    try {
+      await api(`/api/admin/outbox/${button.dataset.outbox}/${button.dataset.action}`, { method: 'POST' });
+      toast('Состояние очереди обновлено');
+      await loadAdmin();
+      renderOutbox();
+    } catch (error) { toast(error.message, 'error'); }
+  });
+}
+
+async function loadAdmin() {
+  state.admin = await api('/api/admin/settings');
+}
+
+async function render() {
+  try {
+    if (state.section === 'general') renderGeneral();
+    else if (state.section === 'dictionaries') renderDictionaries();
+    else if (state.section === 'fleet') renderFleet();
+    else if (state.section === 'customers') renderCustomers();
+    else if (state.section === 'users') await renderUsers();
+    else if (state.section === 'integration') renderIntegration();
+    else if (state.section === 'outbox') renderOutbox();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+byId('settingsNav').onclick = event => {
+  const button = event.target.closest('[data-section]');
+  if (!button) return;
+  state.section = button.dataset.section;
+  document.querySelectorAll('[data-section]').forEach(item =>
+    item.classList.toggle('active', item === button));
+  render();
+};
+byId('logout').onclick = logout;
+
+try {
+  const me = await api('/api/auth/me');
+  if (me.user.role !== 'admin') {
+    location.href = '/planner';
+  } else {
+    byId('profileName').textContent = me.user.fullName;
+    byId('avatar').textContent = me.user.fullName.charAt(0).toUpperCase();
+    await loadAdmin();
+    render();
+  }
+} catch (error) {
+  if (!error.message.includes('Требуется вход')) toast(error.message, 'error');
+}

@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup PegasLogistic SQLite database
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pegas-planner-backup
+User=root
+Nice=10

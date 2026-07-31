@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Настройки · PegasLogistic</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/planner">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 14c3.5-1 6-3 8-7 .4 3 .1 5-1 7 2 .3 4-.2 6-2-.5 2.4-2 4.2-4.3 5.2 1.3 1 3 1.4 5.3 1.1-2.6 1.9-5.6 2.4-8.6 1.3C6.2 18.9 4.3 16.9 3 14z"/></svg>
+      PegasLogistic
+    </a>
+    <nav class="topnav"><a href="/planner">Планер</a><a class="active" href="/settings">Настройки</a></nav>
+    <div class="profile">
+      <div class="profile-copy"><strong id="profileName">—</strong><small>Администратор</small></div>
+      <span class="avatar" id="avatar">A</span>
+      <button class="icon-button" id="logout">Выйти</button>
+    </div>
+  </header>
+  <main class="page settings-layout">
+    <nav class="settings-nav" id="settingsNav">
+      <button class="active" data-section="general">Планер</button>
+      <button data-section="dictionaries">Справочники</button>
+      <button data-section="fleet">Состав ТС</button>
+      <button data-section="customers">Заказчики</button>
+      <button data-section="users">Пользователи</button>
+      <button data-section="integration">Интеграции</button>
+      <button data-section="outbox">Исходящие изменения</button>
+    </nav>
+    <div class="settings-content" id="settingsContent">
+      <div class="empty-state">Загрузка настроек…</div>
+    </div>
+  </main>
+  <div id="modalRoot"></div>
+  <script type="module" src="/assets/settings.js"></script>
+</body>
+</html>

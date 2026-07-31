@@ -1,0 +1,17 @@
+{
+  "name": "pegas-logistic-planner",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Планер PegasLogistic с RBAC, SQLite и обменом с 1С по OData",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.mjs",
+    "start:worker": "node --env-file-if-exists=.env src/sync-worker.mjs",
+    "dev": "NODE_ENV=development node --env-file-if-exists=.env --watch src/server.mjs",
+    "db:init": "node --env-file-if-exists=.env scripts/init-db.mjs",
+    "test": "node --test"
+  }
+}

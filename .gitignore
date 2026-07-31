@@ -1,0 +1,10 @@
+.env
+data/*.db
+data/*.db-*
+data/backups/
+data/local/
+.secrets/
+node_modules/
+.DS_Store
+.claude/
+CLAUDE.md

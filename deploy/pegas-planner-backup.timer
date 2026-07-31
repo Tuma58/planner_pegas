@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily PegasLogistic database backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
