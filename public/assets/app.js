@@ -1,4 +1,5 @@
 import { api, escapeHtml, formatDate, logout, money, setupTheme, toast } from './api.js';
+import { renderGeoMap } from './map.js';
 
 const state = {
   data: null,
@@ -342,6 +343,32 @@ function openExceptions() {
     }));
 }
 
+function openGeoMap() {
+  // День по умолчанию: сегодня, если попадает в открытый месяц, иначе 1-е число месяца.
+  const monthEnd = addMonths(state.month, 1);
+  let day = new Date();
+  if (day < state.month || day >= monthEnd) day = new Date(state.month);
+  const dayMs = 86_400_000;
+  const rerender = () => {
+    const dayIso = day.toISOString().slice(0, 10);
+    byId('geoLabel').textContent = new Intl.DateTimeFormat('ru-RU', {
+      day: 'numeric', month: 'long', timeZone: 'UTC'
+    }).format(day);
+    byId('geoBody').innerHTML = renderGeoMap(state.data, dayIso);
+  };
+  showModal(`<h2>🗺 Карта геозон</h2>
+    <div class="period-nav" style="margin:8px 0 12px">
+      <button class="button ghost small" id="geoPrev">←</button>
+      <strong id="geoLabel"></strong>
+      <button class="button ghost small" id="geoNext">→</button>
+    </div>
+    <div id="geoBody"></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+  byId('geoPrev').onclick = () => { day = new Date(day.getTime() - dayMs); rerender(); };
+  byId('geoNext').onclick = () => { day = new Date(day.getTime() + dayMs); rerender(); };
+  rerender();
+}
+
 function calculation(fromId, toId, revenue = 0, customerName = '') {
   const settings = state.data.settings.calculation;
   const rate = state.data.reference.routeRates.find(item =>
@@ -371,8 +398,8 @@ function vehicleOptions(selected) {
     `<option value="${vehicle.id}" ${vehicle.id === selected ? 'selected' : ''}>${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)}</option>`).join('');
 }
 
-function showModal(content) {
-  byId('modalRoot').innerHTML = `<div class="modal-backdrop"><div class="modal">${content}</div></div>`;
+function showModal(content, variant = '') {
+  byId('modalRoot').innerHTML = `<div class="modal-backdrop"><div class="modal ${variant}">${content}</div></div>`;
   byId('modalRoot').querySelector('.modal-backdrop').onclick = event => {
     if (event.target.classList.contains('modal-backdrop')) closeModal();
   };
@@ -691,6 +718,7 @@ byId('logout').onclick = logout;
 setupTheme();
 byId('customersButton').onclick = showCustomers;
 byId('exceptionsChip').onclick = openExceptions;
+byId('geoButton').onclick = openGeoMap;
 byId('periodPrev').onclick = () => {
   if (!byId('periodPrev').disabled) state.month = addMonths(state.month, -1);
   renderTimeline();
