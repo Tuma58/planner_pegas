@@ -25,6 +25,10 @@ export const config = {
   appSecret: secret('APP_SECRET', 'development-only-secret-change-before-production'),
   isProduction: process.env.NODE_ENV === 'production',
   secureCookies: booleanEnv('COOKIE_SECURE', process.env.NODE_ENV === 'production'),
+  // За reverse-proxy (nginx → опубликованный порт Docker) соединение приходит с адреса
+  // docker-шлюза, а не с 127.0.0.1, поэтому X-Forwarded-Proto/X-Real-IP нужно доверять явно.
+  // Порт приложения слушает только nginx, поэтому подделать заголовки может лишь он.
+  trustProxy: booleanEnv('TRUST_PROXY', process.env.NODE_ENV === 'production'),
   embeddedSyncWorker: process.env.SYNC_WORKER_EMBEDDED !== 'false',
   initialAllowedSubnets: String(process.env.INITIAL_ALLOWED_SUBNETS || '0.0.0.0/0,::/0')
     .split(',').map(item => item.trim()).filter(Boolean),

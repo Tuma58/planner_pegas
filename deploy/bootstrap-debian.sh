@@ -291,6 +291,7 @@ cat > /etc/nginx/snippets/pegas-planner-proxy.conf <<EOF
         limit_req zone=pegas_login burst=$RATE_LIMIT_BURST nodelay;
         proxy_pass http://127.0.0.1:3000;
         include proxy_params;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
@@ -298,6 +299,7 @@ cat > /etc/nginx/snippets/pegas-planner-proxy.conf <<EOF
     location / {
         proxy_pass http://127.0.0.1:3000;
         include proxy_params;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 60s;

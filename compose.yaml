@@ -17,6 +17,7 @@ services:
       ADMIN_PASSWORD_FILE: "/run/secrets/admin_password"
       SYNC_WORKER_EMBEDDED: "false"
       COOKIE_SECURE: "${COOKIE_SECURE:-true}"
+      TRUST_PROXY: "${TRUST_PROXY:-true}"
       INITIAL_ALLOWED_SUBNETS: "${INITIAL_ALLOWED_SUBNETS:-0.0.0.0/0,::/0}"
     secrets:
       - app_secret

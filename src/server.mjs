@@ -35,10 +35,15 @@ const json = (response, status, data, extraHeaders = {}) => {
 const errorJson = (response, status, message, details) =>
   json(response, status, { error: message, ...(details ? { details } : {}) });
 
-function requestIp(request) {
+function trustedForwarding(request) {
   const peer = request.socket.remoteAddress || '';
   const loopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
-  const forwarded = loopback ? String(request.headers['x-real-ip'] || '') : '';
+  return config.trustProxy || loopback;
+}
+
+function requestIp(request) {
+  const peer = request.socket.remoteAddress || '';
+  const forwarded = trustedForwarding(request) ? String(request.headers['x-real-ip'] || '') : '';
   return forwarded && /^[0-9a-f:.]{3,64}$/i.test(forwarded) ? forwarded : peer;
 }
 
@@ -103,9 +108,8 @@ function mutationOriginAllowed(request) {
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return true;
   const origin = request.headers.origin;
   if (!origin) return true;
-  const peer = request.socket.remoteAddress || '';
-  const loopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
-  const forwarded = loopback ? String(request.headers['x-forwarded-proto'] || '').toLowerCase() : '';
+  const forwarded = trustedForwarding(request)
+    ? String(request.headers['x-forwarded-proto'] || '').toLowerCase() : '';
   const scheme = ['http', 'https'].includes(forwarded)
     ? forwarded
     : (request.socket.encrypted ? 'https' : 'http');

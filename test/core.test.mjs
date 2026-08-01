@@ -161,6 +161,27 @@ test('production-конфигурация читает Docker secrets из фа�
   });
 });
 
+test('trustProxy включён по умолчанию в production и переопределяется через TRUST_PROXY', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-trustproxy-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const appSecretFile = path.join(directory, 'app_secret');
+  fs.writeFileSync(appSecretFile, 'c'.repeat(64), { mode: 0o400 });
+  const projectRoot = path.resolve(import.meta.dirname, '..');
+  const { TRUST_PROXY: _ignored, NODE_ENV: _env, ...baseEnv } = process.env;
+  const read = extraEnv => {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+      `import { config } from './src/config.mjs'; process.stdout.write(String(config.trustProxy));`], {
+      cwd: projectRoot, encoding: 'utf8',
+      env: { ...baseEnv, APP_SECRET_FILE: appSecretFile, ...extraEnv }
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  assert.equal(read({ NODE_ENV: 'production' }), 'true');
+  assert.equal(read({ NODE_ENV: 'production', TRUST_PROXY: 'false' }), 'false');
+  assert.equal(read({ NODE_ENV: 'development' }), 'false');
+});
+
 test('LAN production допускает явное отключение Secure cookie только через настройку', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-lan-config-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
