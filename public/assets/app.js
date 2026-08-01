@@ -93,18 +93,34 @@ function renderTimeline() {
   byId('periodLabel').textContent = new Intl.DateTimeFormat('ru-RU', {
     month: 'long', year: 'numeric', timeZone: 'UTC'
   }).format(state.month);
+  const todayIndex = Math.floor((Date.now() - state.month.getTime()) / 86_400_000);
+  const isToday = index => index === todayIndex;
   const headerDays = Array.from({ length: days }, (_, index) => {
     const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
     const weekend = [0, 6].includes(date.getUTCDay());
-    return `<div class="day-cell ${weekend ? 'weekend' : ''}"><strong>${index + 1}</strong>
+    return `<div class="day-cell ${weekend ? 'weekend' : ''} ${isToday(index) ? 'today' : ''}"><strong>${index + 1}</strong>
       <small>${new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(date)}</small></div>`;
   }).join('');
+  const dispositionKinds = {
+    repair: 'В ремонте', no_driver: 'Без водителя', shift: 'Пересменка', out: 'Выведен'
+  };
   const rows = vehicles.map(vehicle => {
     const vehicleTrips = visibleTrips.filter(trip => trip.vehicle_id === vehicle.id);
     const grid = Array.from({ length: days }, (_, index) => {
       const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
-      return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''}"></div>`;
+      return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''}"></div>`;
     }).join('');
+    const dispositionBlocks = (state.data.dispositions || [])
+      .filter(item => item.vehicle_id === vehicle.id &&
+        new Date(item.starts_at) < monthEnd && new Date(item.ends_at) > state.month)
+      .map(item => {
+        const visibleStart = new Date(Math.max(new Date(item.starts_at), state.month));
+        const visibleEnd = new Date(Math.min(new Date(item.ends_at), monthEnd));
+        const left = Math.max(0, daysBetween(state.month, visibleStart)) * dayWidth;
+        const width = Math.max(10, daysBetween(visibleStart, visibleEnd) * dayWidth - 2);
+        return `<span class="dispo" data-disposition="${item.id}" style="left:${left}px;width:${width}px"
+          title="${dispositionKinds[item.kind] || item.kind}${item.note ? ` · ${escapeHtml(item.note)}` : ''}"></span>`;
+      }).join('');
     const trips = vehicleTrips.map(trip => {
       const visibleStart = new Date(Math.max(new Date(trip.starts_at), state.month));
       const visibleEnd = new Date(Math.min(new Date(trip.ends_at), monthEnd));
@@ -122,18 +138,208 @@ function renderTimeline() {
         <span class="vehicle-title"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
         <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}</small></span>
       </div>
-      <div class="track" style="width:${days * dayWidth}px"><div class="track-grid">${grid}</div>${trips}</div>
+      <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px"><div class="track-grid">${grid}</div>${dispositionBlocks}${trips}</div>
     </div>`;
   }).join('');
   byId('timeline').innerHTML = vehicles.length
     ? `<div class="timeline-head"><div class="vehicle-cell">Сцепка · водитель</div>${headerDays}</div>${rows}`
     : '<div class="empty-state">Нет ТС по выбранному фильтру</div>';
   document.querySelectorAll('[data-trip]').forEach(button =>
-    button.addEventListener('click', () => openTrip(state.data.trips.find(trip => trip.id === button.dataset.trip))));
+    button.addEventListener('click', () => {
+      if (button.dataset.suppress) { delete button.dataset.suppress; return; }
+      openTrip(state.data.trips.find(trip => trip.id === button.dataset.trip));
+    }));
+  document.querySelectorAll('[data-disposition]').forEach(block =>
+    block.addEventListener('click', () => openDisposition(
+      (state.data.dispositions || []).find(item => item.id === block.dataset.disposition))));
+  enableTripDrag(dayWidth);
+  enableDispositionDraw(dayWidth);
   const horizonStart = monthStart(new Date(`${state.data.settings.general.horizonStart}T00:00:00Z`));
   const horizonEnd = addMonths(horizonStart, Number(state.data.settings.general.horizonMonths || 12) - 1);
   byId('periodPrev').disabled = state.month <= horizonStart;
   byId('periodNext').disabled = state.month >= horizonEnd;
+}
+
+function showDragLabel(x, y, text) {
+  let element = document.getElementById('draglabel');
+  if (!element) {
+    element = document.createElement('div');
+    element.id = 'draglabel';
+    element.className = 'draglabel';
+    document.body.append(element);
+  }
+  element.style.left = `${x + 12}px`;
+  element.style.top = `${y - 32}px`;
+  element.innerHTML = text;
+  element.style.display = 'block';
+}
+
+function hideDragLabel() {
+  const element = document.getElementById('draglabel');
+  if (element) element.style.display = 'none';
+}
+
+// Перетаскивание рейсов по канве (перенос по дням/сцепкам, ручки изменения длительности) — по ТК 21.
+function enableTripDrag(dayWidth) {
+  if (!can('trips:write')) return;
+  const dayMs = 86_400_000;
+  document.querySelectorAll('.trip').forEach(element => {
+    const trip = state.data.trips.find(item => item.id === element.dataset.trip);
+    if (!trip || trip.status === 'rejected') return;
+    element.insertAdjacentHTML('beforeend', '<span class="hres l"></span><span class="hres r"></span>');
+    const durationDays = Math.max(1, Math.round(daysBetween(trip.starts_at, trip.ends_at)));
+    let mode = null, startX = 0, moved = false, deltaDays = 0, targetVehicle = null;
+    let originLeft = 0, originWidth = 0;
+    element.addEventListener('pointerdown', event => {
+      mode = event.target.classList.contains('hres')
+        ? (event.target.classList.contains('l') ? 'l' : 'r') : 'move';
+      startX = event.clientX; moved = false; deltaDays = 0; targetVehicle = null;
+      originLeft = parseFloat(element.style.left); originWidth = parseFloat(element.style.width);
+      element.setPointerCapture(event.pointerId);
+      element.classList.add('dragging');
+      event.preventDefault();
+    });
+    element.addEventListener('pointermove', event => {
+      if (!mode) return;
+      const dx = event.clientX - startX;
+      if (Math.abs(dx) > 3) moved = true;
+      if (!moved) return;
+      deltaDays = Math.round(dx / dayWidth);
+      if (mode === 'move') {
+        element.style.left = `${originLeft + deltaDays * dayWidth}px`;
+        element.style.pointerEvents = 'none';
+        const track = document.elementFromPoint(event.clientX, event.clientY)?.closest('.track');
+        element.style.pointerEvents = '';
+        targetVehicle = track?.dataset.vehicle && track.dataset.vehicle !== trip.vehicle_id
+          ? track.dataset.vehicle : null;
+      } else if (mode === 'r') {
+        deltaDays = Math.max(deltaDays, 1 - durationDays);
+        element.style.width = `${Math.max(28, originWidth + deltaDays * dayWidth)}px`;
+      } else {
+        deltaDays = Math.min(deltaDays, durationDays - 1);
+        element.style.left = `${originLeft + deltaDays * dayWidth}px`;
+        element.style.width = `${Math.max(28, originWidth - deltaDays * dayWidth)}px`;
+      }
+      const shiftStart = mode !== 'r' ? deltaDays : 0;
+      const shiftEnd = mode !== 'l' ? deltaDays : 0;
+      const from = new Date(Date.parse(trip.starts_at) + shiftStart * dayMs);
+      const to = new Date(Date.parse(trip.ends_at) + shiftEnd * dayMs);
+      const plate = targetVehicle
+        ? state.data.vehicles.find(vehicle => vehicle.id === targetVehicle)?.plate : '';
+      showDragLabel(event.clientX, event.clientY,
+        `${formatDate(from)} → ${formatDate(to)}${plate ? `<span> · на ${escapeHtml(plate)}</span>` : ''}`);
+    });
+    element.addEventListener('pointerup', async event => {
+      if (!mode) return;
+      const finished = mode;
+      mode = null;
+      element.releasePointerCapture(event.pointerId);
+      element.classList.remove('dragging');
+      hideDragLabel();
+      if (!moved) return;
+      element.dataset.suppress = '1';
+      const shift = value => new Date(Date.parse(value) + deltaDays * dayMs).toISOString();
+      let payload = null;
+      if (finished === 'move' && (deltaDays || targetVehicle)) {
+        payload = { startsAt: shift(trip.starts_at), endsAt: shift(trip.ends_at) };
+        if (targetVehicle) payload.vehicleId = targetVehicle;
+      } else if (finished === 'r' && deltaDays) {
+        payload = { endsAt: shift(trip.ends_at) };
+      } else if (finished === 'l' && deltaDays) {
+        payload = { startsAt: shift(trip.starts_at) };
+      }
+      if (!payload) { renderTimeline(); return; }
+      try {
+        await api(`/api/trips/${trip.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+        toast(targetVehicle ? 'Рейс перенесён на другую сцепку' : 'Сроки рейса обновлены');
+        await reload();
+      } catch (error) {
+        toast(error.message, 'error');
+        renderTimeline();
+      }
+    });
+  });
+}
+
+// Рисование интервала недоступности мышью по пустой области строки ТС — по ТК 21.
+function enableDispositionDraw(dayWidth) {
+  if (!can('fleet:write')) return;
+  const dayMs = 86_400_000;
+  document.querySelectorAll('.track').forEach(track => {
+    track.addEventListener('pointerdown', event => {
+      if (event.target.closest('.trip') || event.target.closest('.dispo')) return;
+      const rect = track.getBoundingClientRect();
+      const startDay = Math.floor((event.clientX - rect.left) / dayWidth);
+      const selection = document.createElement('span');
+      selection.className = 'draw-select';
+      track.append(selection);
+      let range = [startDay, startDay + 1];
+      const update = day => {
+        range = [Math.min(startDay, day), Math.max(startDay, day) + 1];
+        selection.style.left = `${range[0] * dayWidth}px`;
+        selection.style.width = `${(range[1] - range[0]) * dayWidth - 2}px`;
+      };
+      update(startDay);
+      track.setPointerCapture(event.pointerId);
+      const onMove = moveEvent => update(Math.floor((moveEvent.clientX - rect.left) / dayWidth));
+      const onUp = () => {
+        track.removeEventListener('pointermove', onMove);
+        track.removeEventListener('pointerup', onUp);
+        selection.remove();
+        openDisposition(null, {
+          vehicle_id: track.dataset.vehicle,
+          starts_at: new Date(state.month.getTime() + range[0] * dayMs).toISOString(),
+          ends_at: new Date(state.month.getTime() + range[1] * dayMs).toISOString()
+        });
+      };
+      track.addEventListener('pointermove', onMove);
+      track.addEventListener('pointerup', onUp);
+    });
+  });
+}
+
+function renderLegend() {
+  byId('legend').innerHTML = state.data.reference.zones.map(zone =>
+    `<span class="lg"><span class="sw" style="background:${zone.color}"></span>${escapeHtml(zone.name)}</span>`).join('');
+}
+
+async function refreshExceptions() {
+  try {
+    state.exceptions = await api('/api/exceptions');
+    const chip = byId('exceptionsChip');
+    chip.textContent = `⚠ Требует решения ${state.exceptions.count}`;
+    chip.classList.remove('hidden');
+    chip.classList.toggle('warn', state.exceptions.count > 0);
+  } catch { /* нет права planner:read — чип остаётся скрытым */ }
+}
+
+function openExceptions() {
+  const data = state.exceptions;
+  if (!data) return;
+  const section = (title, items, badge) => items.length
+    ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(trip =>
+        `<button class="list-item" data-ex-trip="${trip.id}"><span>
+          <strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
+          <small class="muted mono">${escapeHtml(trip.vehicle_plate || '')} · ${formatDate(trip.starts_at)} · ${escapeHtml(trip.customer_name)}</small></span>
+          <span class="badge ${badge}">${title}</span></button>`).join('')}</div>`
+    : '';
+  const unavailable = (data.unavailableVehicles || []).length
+    ? `<h3>ТС вне работы</h3><div class="list">${data.unavailableVehicles.map(row =>
+        `<div class="list-item"><span>${{ repair: 'В ремонте', no_driver: 'Без водителя', out: 'Выведены' }[row.status] || row.status}</span>
+         <span class="badge warn">${row.count}</span></div>`).join('')}</div>`
+    : '';
+  showModal(`<h2>Требует решения</h2>
+    ${data.count === 0 ? '<p class="muted">Проблем нет — план чист.</p>' : ''}
+    ${section('Критичный', data.critical, 'bad')}
+    ${section('Конфликт', data.conflicts, 'warn')}
+    ${section('Отклонён', data.rejected, 'bad')}
+    ${unavailable}
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+  document.querySelectorAll('[data-ex-trip]').forEach(button =>
+    button.addEventListener('click', () => {
+      const trip = state.data.trips.find(item => item.id === button.dataset.exTrip);
+      if (trip) { closeModal(); openTrip(trip); }
+    }));
 }
 
 function calculation(fromId, toId, revenue = 0, customerName = '') {
@@ -389,15 +595,16 @@ function openVehicle(vehicle) {
   };
 }
 
-function openDisposition(item = null) {
+function openDisposition(item = null, prefill = null) {
   const kinds = [
     ['repair', 'В ремонте'], ['no_driver', 'Без водителя'],
     ['shift', 'Пересменка'], ['out', 'Выведен']
   ];
-  const start = item?.starts_at || new Date().toISOString();
-  const end = item?.ends_at || new Date(Date.now() + 86_400_000).toISOString();
+  const source = item || prefill;
+  const start = source?.starts_at || new Date().toISOString();
+  const end = source?.ends_at || new Date(Date.now() + 86_400_000).toISOString();
   showModal(`<form id="dispositionForm"><h2>${item ? 'Интервал недоступности' : 'Новый интервал'}</h2>
-    <label class="field">Сцепка<select name="vehicleId">${vehicleOptions(item?.vehicle_id)}</select></label>
+    <label class="field">Сцепка<select name="vehicleId">${vehicleOptions(source?.vehicle_id)}</select></label>
     <label class="field">Причина<select name="kind">${kinds.map(([id, label]) =>
       `<option value="${id}" ${item?.kind === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     <div class="form-grid">
@@ -474,13 +681,16 @@ async function reload() {
   byId('syncState').textContent = '● синхронно';
   setupUser();
   setupFilters();
+  renderLegend();
   renderTimeline();
   renderSidePanel();
+  refreshExceptions();
 }
 
 byId('logout').onclick = logout;
 setupTheme();
 byId('customersButton').onclick = showCustomers;
+byId('exceptionsChip').onclick = openExceptions;
 byId('periodPrev').onclick = () => {
   if (!byId('periodPrev').disabled) state.month = addMonths(state.month, -1);
   renderTimeline();
@@ -495,8 +705,10 @@ try {
   state.month = monthStart(new Date(`${state.data.settings.general.horizonStart}T00:00:00Z`));
   setupUser();
   setupFilters();
+  renderLegend();
   renderTimeline();
   renderSidePanel();
+  refreshExceptions();
 } catch (error) {
   if (!error.message.includes('Требуется вход')) toast(error.message, 'error');
 }
