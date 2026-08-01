@@ -43,7 +43,8 @@ function trustedForwarding(request) {
 
 function requestIp(request) {
   const peer = request.socket.remoteAddress || '';
-  const forwarded = trustedForwarding(request) ? String(request.headers['x-real-ip'] || '') : '';
+  const forwarded = trustedForwarding(request)
+    ? String(request.headers['x-real-ip'] || '').split(',')[0].trim() : '';
   return forwarded && /^[0-9a-f:.]{3,64}$/i.test(forwarded) ? forwarded : peer;
 }
 
@@ -108,8 +109,9 @@ function mutationOriginAllowed(request) {
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return true;
   const origin = request.headers.origin;
   if (!origin) return true;
+  // X-Forwarded-Proto может прийти списком ("https, https") при дублях у прокси — берём первый элемент.
   const forwarded = trustedForwarding(request)
-    ? String(request.headers['x-forwarded-proto'] || '').toLowerCase() : '';
+    ? String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() : '';
   const scheme = ['http', 'https'].includes(forwarded)
     ? forwarded
     : (request.socket.encrypted ? 'https' : 'http');

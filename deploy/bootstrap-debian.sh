@@ -324,20 +324,23 @@ cat > /etc/nginx/snippets/pegas-planner-proxy.conf <<EOF
     server_tokens off;
     client_max_body_size 10m;
 
+    # Заголовки задаются явно и ровно один раз: include proxy_params дублировал бы их,
+    # а Node склеивает дубли в "https, https". Host = \$http_host, чтобы сохранить
+    # нестандартный порт клиента (проброс вида :4567 → :443) для проверки Origin.
     location = /api/auth/login {
 ${login_limit}
         proxy_pass http://127.0.0.1:3000;
-        include proxy_params;
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location / {
         proxy_pass http://127.0.0.1:3000;
-        include proxy_params;
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 60s;
     }
