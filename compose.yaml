@@ -50,6 +50,9 @@ services:
           cpus: "${WORKER_CPU_LIMIT:-0.5}"
           pids: 128
     command: ["node", "src/sync-worker.mjs"]
+    # HEALTHCHECK из Dockerfile проверяет HTTP:3000 — у воркера нет HTTP-сервера, отключаем.
+    healthcheck:
+      disable: true
     environment:
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       APP_SECRET_FILE: "/run/secrets/app_secret"
