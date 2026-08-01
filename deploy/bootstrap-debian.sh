@@ -228,13 +228,14 @@ chown -R 1000:1000 "$APP_DIR/data" "$APP_DIR/.secrets"
 chmod 0700 "$APP_DIR/.secrets"
 chmod 0400 "$APP_DIR/.secrets/app_secret" "$APP_DIR/.secrets/admin_password"
 cookie_secure=false
-initial_allowed_subnets="0.0.0.0/0,::/0"
 if [[ "$DEPLOY_MODE" == "public" || "$LAN_TLS" == "true" ]]; then
   cookie_secure=true
 fi
-if [[ "$DEPLOY_MODE" == "lan" ]]; then
-  initial_allowed_subnets="$LAN_CIDR"
-fi
+# При первом запуске доступ открыт со всех подсетей, чтобы администратор гарантированно вошёл
+# (LAN_CIDR ограничивает только SSH в UFW). Веб-подсети ограничиваются после первого входа в
+# «Настройки → Сеть и доступ». Значение влияет лишь на инициализацию БД (guard network_access_initialized),
+# при повторных деплоях пользовательский список не перезаписывается.
+initial_allowed_subnets="${INITIAL_ALLOWED_SUBNETS:-0.0.0.0/0,::/0}"
 printf 'ADMIN_USERNAME=admin\nCOOKIE_SECURE=%s\nINITIAL_ALLOWED_SUBNETS=%s\n' \
   "$cookie_secure" "$initial_allowed_subnets" > "$APP_DIR/.env"
 chmod 0600 "$APP_DIR/.env"

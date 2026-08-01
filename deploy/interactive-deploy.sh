@@ -100,14 +100,14 @@ fi
 section "Сеть и подсети"
 if [[ "$DEPLOY_MODE" == "lan" ]]; then
   ask LAN_HOST "LAN хост (IP или внутреннее DNS-имя)" "" '^[A-Za-z0-9.-]+$'
-  ask LAN_CIDR "LAN подсеть (CIDR: web-allowlist и ограничение SSH)" "" '^[0-9A-Fa-f:./]+$'
+  ask LAN_CIDR "LAN подсеть (CIDR: ограничение SSH в UFW)" "" '^[0-9A-Fa-f:./]+$'
   ask LAN_TLS "Включить локальный TLS (true/false)" "true" '^(true|false)$'
-  initial_subnets="$LAN_CIDR"
 else
   ask APP_DOMAIN "Публичный домен" "" '^[A-Za-z0-9.-]+$'
   ask ADMIN_EMAIL "Email для Let's Encrypt" "" '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'
-  initial_subnets="0.0.0.0/0,::/0"
 fi
+# При первом запуске веб-доступ открыт со всех подсетей — ограничивается после первого входа.
+initial_subnets="${INITIAL_ALLOWED_SUBNETS:-0.0.0.0/0,::/0}"
 ask DEPLOY_SSH_PORT "SSH-порт" "22" '^[0-9]{1,5}$'
 
 section "Учётные данные администратора"
@@ -159,6 +159,9 @@ else
 fi
 kv "SSH-порт" "$DEPLOY_SSH_PORT"
 kv "Стартовый web-allowlist" "$initial_subnets"
+if [[ "$initial_subnets" == "0.0.0.0/0,::/0" ]]; then
+  kv "" "(открыт для всех — ограничьте после первого входа)"
+fi
 section "Сертификаты и TLS"
 kv "Сертификат" "$cert_desc"
 kv "Secure cookie" "$cookie_secure"
