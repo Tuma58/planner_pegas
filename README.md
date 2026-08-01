@@ -110,76 +110,78 @@ Seed версионирован ключом `tk20_seed_version`, поэтому
 
 Не рекомендуется делать синхронную запись в 1С прямо из HTTP-запроса пользователя: недоступность 1С не должна блокировать работу диспетчерской.
 
-## Деплой на VPS в локальной сети без внешнего домена
+## Деплой на VPS / Proxmox LXC
 
-Для чистого Debian 12/13 добавлен LAN-режим. Он:
+Установка рассчитана на чистый Debian 12/13, в том числе в контейнере Proxmox LXC. Приложение и служба обмена запускаются в read-only Docker-контейнерах без Linux capabilities, с лимитами ресурсов и корректным PID 1; порт приложения доступен только на `127.0.0.1:3000` за Nginx, а внешний доступ ограничен списком подсетей из настроек администратора.
 
-- клонирует проект из публичного GitHub по HTTPS или из приватного Git через отдельный read-only deploy key;
-- устанавливает Docker, Nginx, UFW, Fail2ban и автоматические security updates;
-- оставляет Node.js-контейнер доступным только на `127.0.0.1:3000`;
-- ограничивает SSH начальной подсетью `LAN_CIDR`, а веб-доступ — списком подсетей из настроек администратора;
-- создаёт локальный HTTPS-сертификат для IP или внутреннего DNS-имени;
-- не устанавливает Certbot и не требует публичного DNS.
+### Деплой одной командой (интерактивный мастер)
 
-### Интерактивный мастер (на самом VPS)
-
-Если удобнее ввести параметры пошагово, а не через переменные окружения, на целевом VPS от root запускается интерактивный мастер:
+На чистом VPS/LXC выполните **от root** — команда обновит пакетный индекс, установит git, склонирует репозиторий и запустит мастер:
 
 ```bash
-sudo bash deploy/interactive-deploy.sh
+apt-get update && apt-get install -y git && git clone https://github.com/Tuma58/planner_pegas.git /opt/pegas-planner && bash /opt/pegas-planner/deploy/interactive-deploy.sh
 ```
 
-Мастер спрашивает режим (lan/public), репозиторий и ветку, подсети, SSH-порт, учётные данные администратора, каталог приложения, расписание и срок хранения бэкапов, параметры nginx rate-limit и Fail2ban. Затем показывает сводку по разделам (режим, сеть и подсети, сертификаты, учётные данные, безопасность) и запрашивает подтверждение перед запуском `bootstrap-debian.sh`.
-
-- Пароль администратора по умолчанию генерируется автоматически; при желании его можно ввести вручную (скрытый ввод, минимум 12 символов).
-- Любую переменную можно задать заранее в окружении — мастер её не переспросит (пригодно для автоматизации).
-- `DRY_RUN=1 bash deploy/interactive-deploy.sh` печатает сводку и **не** запускает деплой — безопасный предпросмотр.
-
-Пример неинтерактивного предпросмотра:
+Тот же запуск с рабочей станции (флаг `-t` даёт мастеру интерактивный терминал):
 
 ```bash
-DRY_RUN=1 DEPLOY_MODE=lan LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 sudo -E bash deploy/interactive-deploy.sh
+ssh -t root@192.168.10.50 "apt-get update && apt-get install -y git && git clone https://github.com/Tuma58/planner_pegas.git /opt/pegas-planner && bash /opt/pegas-planner/deploy/interactive-deploy.sh"
 ```
 
-Неинтерактивный путь через переменные окружения и однострочники ниже полностью сохранён.
+Мастер пошагово спрашивает и проверяет параметры, показывает сводку по разделам (режим, сеть и подсети, сертификаты, учётные данные, безопасность, каталог/бэкапы) и запускает установку только после подтверждения. По завершении выводит URL, логин `admin` и пароль (также сохраняются на VPS в `/root/pegas-planner-initial-credentials.txt`, права `0600`). В мастере настраиваются:
 
-### Однострочник (с компьютера администратора)
+- режим: `lan` (локальный TLS без внешнего домена) или `public` (домен + Let's Encrypt);
+- репозиторий, ветка и доступ public/private (read-only deploy key);
+- сеть: `LAN_HOST`/`LAN_CIDR` либо домен и email; SSH-порт;
+- учётные данные администратора — пароль генерируется или вводится вручную (скрытый ввод, ≥12 символов);
+- каталог приложения, расписание и срок хранения бэкапов;
+- защита: nginx rate-limit и параметры Fail2ban.
 
-Отдельный скрипт публичного деплоя использует репозиторий `https://github.com/Tuma58/planner_pegas.git`, ветку `main` и локальный TLS-сертификат по умолчанию. Команда выполняется с компьютера администратора и сама устанавливает на чистый VPS минимальные зависимости `ca-certificates` и `curl`; остальные зависимости устанавливает bootstrap:
+Предпросмотр без установки (`DRY_RUN=1` печатает итоговую сводку и выходит):
+
+```bash
+DRY_RUN=1 DEPLOY_MODE=lan LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 bash /opt/pegas-planner/deploy/interactive-deploy.sh
+```
+
+Мастер не переспрашивает переменные, уже заданные в окружении, поэтому интерактивный ввод и автоматизация свободно комбинируются. Повторную установку/обновление выполняйте командой `pegas-planner-update` (см. ниже), а не повторным `git clone`.
+
+### Неинтерактивные однострочники (переменные окружения)
+
+LAN-режим из публичного репозитория — команда с рабочей станции ставит на чистый VPS только `ca-certificates` и `curl`, остальное делает bootstrap:
 
 ```bash
 ssh root@192.168.10.50 "apt-get update && apt-get install -y ca-certificates curl && curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Tuma58/planner_pegas/main/deploy/deploy-public-lan.sh | env LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 bash"
 ```
 
-Замените IP и подсеть на свои. `LAN_CIDR` задаёт первоначальную разрешённую веб-подсеть и ограничение SSH в UFW. После первого входа веб-подсети управляются в разделе «Настройки → Сеть и доступ» без повторного деплоя. Текущий адрес администратора нельзя удалить из списка — это защищает от случайной блокировки. При необходимости перед `bash` можно передать `SSH_PORT`, `LAN_TLS`, `REPO_URL` или `REPO_BRANCH`. SSH-ключ для входа на VPS должен быть заранее настроен, а ключ хоста проверен в локальном `known_hosts`.
-
-Bootstrap явно устанавливает необходимые пакеты: Docker Engine и Compose plugin, Git, OpenSSH server/client, Nginx, UFW, Fail2ban, `util-linux` (`flock`), SQLite CLI, OpenSSL, curl, CA-сертификаты и unattended security updates.
-
-Перед клонированием и сборкой проекта bootstrap запускает отдельный Docker runtime preflight. Если Docker установлен внутри несовместимого Proxmox LXC и AppArmor блокирует `net.ipv4.ip_unprivileged_port_start`, установка останавливается с инструкциями для хоста Proxmox. Поддерживаемое исправление — обновить `lxc-pve` до `6.0.5-2` или новее, включить `nesting=1,keyctl=1` и перезапустить CT. Скрипт намеренно не отключает AppArmor и не откатывает `runc`.
-
-После исправления хоста ту же команду деплоя можно запускать повторно: установка идемпотентна. Если на Proxmox без подписки `apt update` возвращает `401 Unauthorized`, отключите Ceph Enterprise и репозитории старого Debian release через `Node → Updates → Repositories`, оставив соответствующий текущему выпуску `pve-no-subscription`.
-
-Готовность приложения проверяется через встроенный Docker healthcheck, а не HTTP-запросом с хоста. Это важно при включённом списке разрешённых подсетей: служебный адрес Docker bridge не должен добавляться в пользовательский allowlist только ради deploy-проверки.
-
-Контейнеры запускаются с корректным PID 1 (`init: true`) и с лимитами ресурсов, безопасными для небольшого LXC. По умолчанию `planner` ограничен 512 МБ и 1.0 CPU, `sync-worker` — 256 МБ и 0.5 CPU. Значения переопределяются переменными окружения перед `docker compose up` (или в `.env` каталога приложения): `PLANNER_MEM_LIMIT`, `PLANNER_CPU_LIMIT`, `WORKER_MEM_LIMIT`, `WORKER_CPU_LIMIT`. Node учитывает cgroup-лимит памяти автоматически, поэтому отдельный `--max-old-space-size` не нужен. Приложение штатно завершает работу по `SIGTERM`, закрывая HTTP-сервер и SQLite, что делает `docker stop` и обновления чистыми.
-
-Дополнительно параметризованы (передаются в `bootstrap-debian.sh` через окружение или задаются в мастере; дефолты повторяют прежнее поведение): каталог приложения `APP_DIR` и ветка `REPO_BRANCH`; пароль администратора `ADMIN_PASSWORD` (если не задан — генерируется); расписание и срок хранения бэкапов `BACKUP_ONCALENDAR` (systemd OnCalendar) и `BACKUP_RETENTION_DAYS`; лимит логина nginx `RATE_LIMIT_RATE`/`RATE_LIMIT_BURST`; параметры Fail2ban `F2B_MAXRETRY`/`F2B_FINDTIME`/`F2B_BANTIME`. Расписание бэкапа применяется через systemd drop-in override (`/etc/systemd/system/pegas-planner-backup.timer.d/override.conf`), поэтому переустановка базового юнита при обновлении его не затирает.
-
-При обновлении старой установки, где первоначальная подсеть ещё не записана в `.env`, доступ временно сохраняется для всех адресов. Сразу после обновления задайте фактические CIDR в «Настройки → Сеть и доступ». Новая установка получает первоначальный список из `LAN_CIDR` автоматически.
-
-Однострочная команда для приватного репозитория:
+LAN-режим из приватного репозитория — с рабочей станции, через read-only deploy key:
 
 ```bash
 LAN_ONLY=true VPS_HOST=192.168.10.50 LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 REPO_URL=git@github.com:ORG/PRIVATE_REPOSITORY.git REPO_BRANCH=main DEPLOY_KEY="$HOME/.ssh/pegas-vps/deploy_key" KNOWN_HOSTS_FILE="$HOME/.ssh/pegas-vps/git_known_hosts" bash ./deploy/deploy-to-vps.sh
 ```
 
-После деплоя приложение откроется на `https://192.168.10.50`. Публичный сертификат `/etc/pegas-planner/lan-tls.crt` нужно установить в доверенные на рабочих компьютерах. UFW оставляет веб-порты доступными для проверки приложением, а планер отклоняет запросы вне списка разрешённых CIDR до показа страницы входа. Отключить TLS можно только явно через `LAN_TLS=false`; этот вариант не рекомендуется, поскольку логин и пароль будут передаваться по HTTP.
+`LAN_CIDR` задаёт первоначальную разрешённую веб-подсеть и ограничение SSH в UFW. После первого входа веб-подсети управляются в «Настройки → Сеть и доступ» без повторного деплоя; текущий адрес администратора нельзя удалить из списка (защита от самоблокировки). Дополнительно можно передать `SSH_PORT`, `LAN_TLS`, `REPO_URL`, `REPO_BRANCH`. Для входа на VPS SSH-ключ должен быть заранее настроен, а host key VPS — проверен в локальном `known_hosts`.
 
-Полная пошаговая инструкция по сертификатам Windows/macOS/Linux, первому запуску, приватному репозиторию и обновлениям находится в [docs/DEPLOY_LAN_VPS.md](docs/DEPLOY_LAN_VPS.md).
+После деплоя приложение откроется на `https://LAN_HOST`. Сертификат `/etc/pegas-planner/lan-tls.crt` установите в доверенные на рабочих ПК (пошагово для Windows/macOS/Linux — в docs). `LAN_TLS=false` отключает TLS и не рекомендуется — логин и пароль пойдут по HTTP.
 
-`LOCAL_ONLY=true` и `LAN_ONLY=true` — разные режимы: первый запускает Node.js на текущем компьютере, второй устанавливает production-контур на удалённый VPS внутри локальной сети.
+`LOCAL_ONLY=true` и `LAN_ONLY=true` — разные режимы: первый запускает Node.js на текущем компьютере, второй ставит production-контур на удалённый VPS.
+
+### Особенности Proxmox LXC
+
+Перед сборкой bootstrap выполняет отдельный Docker runtime preflight. Если Docker внутри несовместимого LXC блокируется внешним AppArmor-профилем (`net.ipv4.ip_unprivileged_port_start`), установка останавливается с инструкцией **для хоста Proxmox**: обновить `lxc-pve` до `6.0.5-2` или новее, включить для CT `nesting=1,keyctl=1` и перезапустить контейнер. Скрипт намеренно не отключает AppArmor и не откатывает `runc`. Установка идемпотентна — после исправления хоста повторите ту же команду. Если на Proxmox без подписки `apt update` возвращает `401 Unauthorized`, отключите Enterprise/Ceph Enterprise репозитории через `Node → Updates → Repositories`, оставив `pve-no-subscription` текущего выпуска.
+
+Контейнеры получают корректный PID 1 (`init: true`) и лимиты ресурсов, безопасные для небольшого LXC: `planner` — 512 МБ / 1.0 CPU, `sync-worker` — 256 МБ / 0.5 CPU. Значения переопределяются в `.env` каталога приложения: `PLANNER_MEM_LIMIT`, `PLANNER_CPU_LIMIT`, `WORKER_MEM_LIMIT`, `WORKER_CPU_LIMIT` (Node учитывает cgroup-лимит памяти сам). Готовность проверяется встроенным Docker healthcheck, а не HTTP-запросом с хоста, поэтому служебный адрес Docker bridge не нужно добавлять в пользовательский allowlist. Приложение штатно завершается по `SIGTERM`, закрывая HTTP-сервер и SQLite, что делает `docker stop` и обновления чистыми.
+
+Bootstrap ставит: Docker Engine и Compose plugin, Git, OpenSSH server/client, Nginx, UFW, Fail2ban, `util-linux` (`flock`), SQLite CLI, OpenSSL, curl, CA-сертификаты, unattended security updates (для режима `public` — ещё Certbot).
+
+Параметры, вынесенные в окружение/мастер (дефолты повторяют прежнее поведение): каталог `APP_DIR` и ветка `REPO_BRANCH`; пароль администратора `ADMIN_PASSWORD` (если не задан — генерируется); расписание и срок хранения бэкапов `BACKUP_ONCALENDAR` (systemd OnCalendar) и `BACKUP_RETENTION_DAYS`; nginx `RATE_LIMIT_RATE`/`RATE_LIMIT_BURST`; Fail2ban `F2B_MAXRETRY`/`F2B_FINDTIME`/`F2B_BANTIME`. Расписание бэкапа применяется через systemd drop-in override (`/etc/systemd/system/pegas-planner-backup.timer.d/override.conf`), поэтому переустановка базового юнита при обновлении его не затирает.
+
+При обновлении старой установки, где первоначальная подсеть ещё не записана в `.env`, доступ временно сохраняется для всех адресов — сразу после обновления задайте фактические CIDR в «Настройки → Сеть и доступ». Новая установка получает список из `LAN_CIDR` автоматически.
+
+Полная пошаговая инструкция (сертификаты Windows/macOS/Linux, первый вход, приватный репозиторий, обновления) — в [docs/DEPLOY_LAN_VPS.md](docs/DEPLOY_LAN_VPS.md).
 
 ## Деплой на VPS с публичным доменом
+
+Тот же результат даёт интерактивный мастер в режиме `public` (спросит домен и email для Let's Encrypt). Ниже — неинтерактивный путь через переменные окружения.
 
 Bootstrap рассчитан на чистый Debian 12/13 с публичным доменом. Он устанавливает Docker из официального репозитория, Nginx, Let's Encrypt, UFW, Fail2ban, unattended-upgrades, SQLite CLI и Git. Приложение и worker запускаются в read-only контейнерах без Linux capabilities, а порт приложения доступен только через `127.0.0.1`.
 
@@ -228,9 +230,12 @@ cd /opt/pegas-planner
 docker compose ps
 docker compose logs --tail=200 planner
 docker compose logs --tail=200 sync-worker
-sudo /usr/local/sbin/pegas-planner-backup
-systemctl status pegas-planner-backup.timer
+sudo /usr/local/sbin/pegas-planner-backup          # разовый бэкап
+systemctl status pegas-planner-backup.timer        # расписание бэкапа
+systemctl list-timers pegas-planner-backup.timer   # ближайший запуск
 ```
+
+Расписание бэкапа задано в `/etc/systemd/system/pegas-planner-backup.timer.d/override.conf` (`OnCalendar`), срок хранения — в `/etc/pegas-planner/deploy.env` (`BACKUP_RETENTION_DAYS`). После правки выполните `systemctl daemon-reload`.
 
 Для нескольких экземпляров API необходимо заменить SQLite на PostgreSQL либо оставить ровно один writer.
 

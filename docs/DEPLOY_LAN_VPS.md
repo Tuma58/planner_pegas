@@ -225,6 +225,9 @@ ssh root@192.168.10.50 'cd /opt/pegas-planner && docker compose logs --tail=200 
 ssh root@192.168.10.50 'cd /opt/pegas-planner && docker compose logs --tail=200 sync-worker'
 ssh root@192.168.10.50 /usr/local/sbin/pegas-planner-backup
 ssh root@192.168.10.50 'ls -lh /opt/pegas-planner/data/backups'
+ssh root@192.168.10.50 'systemctl list-timers pegas-planner-backup.timer'
 ```
+
+Расписание бэкапа задаётся в мастере/окружении (`BACKUP_ONCALENDAR`) и применяется через drop-in `/etc/systemd/system/pegas-planner-backup.timer.d/override.conf`; срок хранения (`BACKUP_RETENTION_DAYS`) хранится в `/etc/pegas-planner/deploy.env`. После ручной правки любого из них выполните `systemctl daemon-reload`.
 
 Локальные копии на VPS не заменяют внешнее резервное хранение. Регулярно выгружайте `data/backups/` и `.secrets/` в зашифрованное хранилище. Без `APP_SECRET` невозможно расшифровать сохранённые секреты интеграции с 1С.
