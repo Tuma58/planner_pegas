@@ -116,17 +116,19 @@ Seed версионирован ключом `tk20_seed_version`, поэтому
 
 ### Деплой одной командой (интерактивный мастер)
 
-На чистом VPS/LXC выполните **от root** — команда обновит пакетный индекс, установит git, склонирует репозиторий и запустит мастер:
+На чистом VPS/LXC выполните **от root**. Установщик `install.sh` сам поставит git, склонирует репозиторий (или обновит уже существующий каталог) и запустит мастер — команду можно запускать повторно:
 
 ```bash
-apt-get update && apt-get install -y git && git clone https://github.com/Tuma58/planner_pegas.git /opt/pegas-planner && bash /opt/pegas-planner/deploy/interactive-deploy.sh
+apt-get update && apt-get install -y ca-certificates curl && curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Tuma58/planner_pegas/main/deploy/install.sh | bash
 ```
 
 Тот же запуск с рабочей станции (флаг `-t` даёт мастеру интерактивный терминал):
 
 ```bash
-ssh -t root@192.168.10.50 "apt-get update && apt-get install -y git && git clone https://github.com/Tuma58/planner_pegas.git /opt/pegas-planner && bash /opt/pegas-planner/deploy/interactive-deploy.sh"
+ssh -t root@192.168.10.50 "apt-get update && apt-get install -y ca-certificates curl && curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Tuma58/planner_pegas/main/deploy/install.sh | bash"
 ```
+
+Установщик идемпотентен: если `/opt/pegas-planner` уже существует и это тот же репозиторий, он обновляется fast-forward, а не вызывает ошибку. Каталог и ветку можно переопределить переменными `APP_DIR` и `REPO_BRANCH`.
 
 Мастер пошагово спрашивает и проверяет параметры, показывает сводку по разделам (режим, сеть и подсети, сертификаты, учётные данные, безопасность, каталог/бэкапы) и запускает установку только после подтверждения. По завершении выводит URL, логин `admin` и пароль (также сохраняются на VPS в `/root/pegas-planner-initial-credentials.txt`, права `0600`). В мастере настраиваются:
 
@@ -143,7 +145,7 @@ ssh -t root@192.168.10.50 "apt-get update && apt-get install -y git && git clone
 DRY_RUN=1 DEPLOY_MODE=lan LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 bash /opt/pegas-planner/deploy/interactive-deploy.sh
 ```
 
-Мастер не переспрашивает переменные, уже заданные в окружении, поэтому интерактивный ввод и автоматизация свободно комбинируются. Повторную установку/обновление выполняйте командой `pegas-planner-update` (см. ниже), а не повторным `git clone`.
+Мастер не переспрашивает переменные, уже заданные в окружении, поэтому интерактивный ввод и автоматизация свободно комбинируются. Повторный запуск установщика безопасен (каталог обновляется, а не пересоздаётся); для штатного обновления уже работающей установки используйте `pegas-planner-update` (см. ниже) — она делает бэкап, health-check и откат при ошибке.
 
 ### Неинтерактивные однострочники (переменные окружения)
 
