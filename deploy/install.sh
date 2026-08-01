@@ -51,7 +51,9 @@ else
 fi
 
 # Запускаем мастер, сохраняя реальный терминал на stdin даже при запуске через `curl ... | bash`.
-if [[ -e /dev/tty ]]; then
+# Узел /dev/tty существует всегда — проверяем, что он реально открывается (при запуске
+# по ssh без -t управляющего терминала нет, и редирект уронил бы скрипт).
+if ( : </dev/tty ) 2>/dev/null; then
   exec bash "$APP_DIR/deploy/interactive-deploy.sh" </dev/tty
 else
   exec bash "$APP_DIR/deploy/interactive-deploy.sh"
