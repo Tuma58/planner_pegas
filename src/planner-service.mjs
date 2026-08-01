@@ -175,7 +175,62 @@ export function reportSnapshot(db, fromValue, toValue) {
     Number(calculation.leasePerVehicleDay || 0) + Number(calculation.overheadPerVehicleDay || 0);
   const fixed = fixedPerVehicleDay * vehicleCount * days;
   const operationalProfit = contribution - fixed;
+
+  // Утилизация парка по машино-дням (каскад КТГ×КВЛ×КИП из ТК 21):
+  // КТГ — техническая готовность (без ремонта), КВЛ — выход на линию (есть водитель),
+  // КИП — использование (в рейсе). День относится к состоянию по своей середине.
+  const fleet = db.prepare(`SELECT id FROM vehicles WHERE status<>'out'`).all();
+  const dispositionRows = db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at
+    FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(to, from);
+  const tripRows = db.prepare(`SELECT vehicle_id,starts_at,ends_at FROM trips
+    WHERE status<>'rejected' AND starts_at<? AND ends_at>?`).all(to, from);
+  const byVehicleDispositions = Map.groupBy(dispositionRows, row => row.vehicle_id);
+  const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
+  const dayCount = Math.round(days);
+  const fromMs = Date.parse(from);
+  const machineDays = { work: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
+  const covers = (row, momentMs) => Date.parse(row.starts_at) <= momentMs && momentMs < Date.parse(row.ends_at);
+  for (const vehicle of fleet) {
+    const vehicleDispositions = byVehicleDispositions.get(vehicle.id) || [];
+    const vehicleTrips = byVehicleTrips.get(vehicle.id) || [];
+    for (let day = 0; day < dayCount; day += 1) {
+      const midpoint = fromMs + (day + 0.5) * 86_400_000;
+      const disposition = vehicleDispositions.find(row => covers(row, midpoint));
+      if (disposition) {
+        if (disposition.kind === 'repair') machineDays.repair += 1;
+        else if (disposition.kind === 'no_driver') machineDays.noDriver += 1;
+        else if (disposition.kind === 'shift') machineDays.shift += 1;
+        else machineDays.out += 1;
+      } else if (vehicleTrips.some(row => covers(row, midpoint))) {
+        machineDays.work += 1;
+      } else {
+        machineDays.idle += 1;
+      }
+    }
+  }
+  const calendarDays = fleet.length * dayCount;
+  const techDays = calendarDays - machineDays.repair - machineDays.out;
+  const lineDays = techDays - machineDays.noDriver - machineDays.shift;
+  const utilizationTarget = Number(calculation.utilizationTarget ?? 0.951);
+  const tripDaysTotal = trips.reduce((sum, trip) =>
+    sum + Math.max(0, (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 86_400_000), 0);
+  const marginPerTripDay = tripDaysTotal ? contribution / tripDaysTotal : 0;
+  const normDays = calendarDays * utilizationTarget;
+  const lostProfit = Math.max(0, normDays - machineDays.work) * marginPerTripDay;
+  const utilization = {
+    vehicles: fleet.length, days: dayCount, calendarDays, machineDays,
+    techDays, lineDays, workDays: machineDays.work, idleDays: machineDays.idle,
+    ktg: calendarDays ? techDays / calendarDays : 0,
+    kvl: techDays ? lineDays / techDays : 0,
+    kip: lineDays ? machineDays.work / lineDays : 0,
+    overall: calendarDays ? machineDays.work / calendarDays : 0,
+    utilizationTarget, normDays: Math.round(normDays),
+    marginPerTripDay: Math.round(marginPerTripDay),
+    lostProfit: Math.round(lostProfit)
+  };
+
   return {
+    utilization,
     from, to, days, trips: trips.length, vehicles: vehicleCount,
     factRevenue: Math.round(factRevenue), netRevenue: Math.round(netRevenue),
     contribution: Math.round(contribution), fixed: Math.round(fixed),

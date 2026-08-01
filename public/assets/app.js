@@ -1,11 +1,13 @@
 import { api, escapeHtml, formatDate, logout, money, setupTheme, toast } from './api.js';
 import { renderGeoMap } from './map.js';
+import { renderBoss } from './boss.js';
 
 const state = {
   data: null,
   month: null,
   type: 'all',
   panel: null,
+  view: 'gantt',
   permissions: new Set()
 };
 
@@ -302,6 +304,45 @@ function enableDispositionDraw(dayWidth) {
 function renderLegend() {
   byId('legend').innerHTML = state.data.reference.zones.map(zone =>
     `<span class="lg"><span class="sw" style="background:${zone.color}"></span>${escapeHtml(zone.name)}</span>`).join('');
+}
+
+// Главные экраны (перенос ролевых экранов ТК 21), доступ по правам.
+const MAIN_VIEWS = [
+  { id: 'gantt', title: 'Гант', show: () => true },
+  { id: 'boss', title: 'Руководитель', show: () => can('reports:read') }
+];
+
+function renderViewTabs() {
+  const views = MAIN_VIEWS.filter(view => view.show());
+  byId('viewTabs').innerHTML = views.length > 1
+    ? views.map(view =>
+        `<button data-view="${view.id}" class="${view.id === state.view ? 'active' : ''}">${view.title}</button>`).join('')
+    : '';
+  byId('viewTabs').onclick = event => {
+    const button = event.target.closest('[data-view]');
+    if (!button) return;
+    state.view = button.dataset.view;
+    if (state.view === 'boss') state.bossWarm = true;
+    renderViewTabs();
+    renderMain();
+  };
+}
+
+function renderMain() {
+  const ganttOnly = ['periodPrev', 'periodLabel', 'periodNext'];
+  const isGantt = state.view === 'gantt';
+  byId('typeFilter').classList.toggle('hidden', !isGantt);
+  byId('legend').classList.toggle('hidden', !isGantt);
+  ganttOnly.forEach(id => byId(id).classList.toggle('hidden', !isGantt));
+  byId('sidepanel').classList.toggle('hidden', !isGantt);
+  document.querySelector('.planner-layout').classList.toggle('full', !isGantt);
+  if (isGantt) {
+    renderTimeline();
+    renderSidePanel();
+  } else if (state.view === 'boss') {
+    byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
+    renderBoss(byId('timeline'), { state, onReload: reload });
+  }
 }
 
 async function refreshExceptions() {
@@ -709,8 +750,8 @@ async function reload() {
   setupUser();
   setupFilters();
   renderLegend();
-  renderTimeline();
-  renderSidePanel();
+  renderViewTabs();
+  renderMain();
   refreshExceptions();
 }
 
@@ -734,8 +775,8 @@ try {
   setupUser();
   setupFilters();
   renderLegend();
-  renderTimeline();
-  renderSidePanel();
+  renderViewTabs();
+  renderMain();
   refreshExceptions();
 } catch (error) {
   if (!error.message.includes('Требуется вход')) toast(error.message, 'error');

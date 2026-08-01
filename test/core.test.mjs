@@ -108,6 +108,20 @@ test('контракты 1С и телематики идемпотентны, �
   assert.ok(report.netRevenue > 0);
   assert.ok(report.fixed > 0);
   assert.equal(report.vehicles, 128);
+
+  // Утилизация: каскад КТГ×КВЛ×КИП по машино-дням.
+  assert.equal(report.utilization.calendarDays, 128 * 31);
+  assert.ok(report.utilization.workDays > 0);
+  assert.ok(report.utilization.ktg > 0 && report.utilization.ktg <= 1);
+  assert.equal(report.utilization.machineDays.repair, 0);
+  const vehicleRow = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('disp-util-1',?,'repair','2026-07-05T00:00:00Z','2026-07-15T00:00:00Z')`).run(vehicleRow.id);
+  const withRepair = reportSnapshot(db, '2026-07-01', '2026-08-01');
+  assert.equal(withRepair.utilization.machineDays.repair, 10);
+  assert.equal(withRepair.utilization.techDays, 128 * 31 - 10);
+  assert.ok(withRepair.utilization.ktg < 1);
+  assert.ok(withRepair.utilization.lostProfit >= 0);
 });
 
 test('OData upsert принимает поля ТК 20 и короткие статусы', t => {
