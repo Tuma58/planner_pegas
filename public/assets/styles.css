@@ -403,6 +403,59 @@ tbody tr:hover td { background: var(--hover); }
 .mdrow.big b { font-size: 16px; }
 @media (max-width: 760px) { .rgrid { grid-template-columns: 1fr; } }
 
+/* Доска продаж (ТК 21) */
+.saleswrap { padding: 14px 16px; }
+.salekpis { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.skpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; }
+.skl { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.skv { font-size: 18px; font-weight: 800; color: var(--ink); }
+.salesboard { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.scol { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.scolh { font-size: var(--fs-base); font-weight: 800; color: var(--ink); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }
+.scolh span { background: var(--soft); color: var(--muted); border-radius: 10px; padding: 1px 8px; font-size: var(--fs-xs); }
+.reqzone { color: #fff; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 10px; white-space: nowrap; }
+.list-item.req { cursor: pointer; }
+.list-item.req:hover { border-color: var(--teal); background: var(--hover); }
+.stepper { display: flex; align-items: center; gap: 3px; margin-top: 5px; }
+.stp { width: 14px; height: 5px; border-radius: 3px; background: var(--line); }
+.stp.on { background: var(--teal); }
+.stpl { margin-left: 6px; font-size: 10px; color: var(--muted); }
+.feas { background: var(--soft); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; margin: 10px 0; }
+.feas-t { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; margin-bottom: 5px; }
+.feas-row { display: flex; justify-content: space-between; font-size: var(--fs-sm); padding: 2px 0; }
+.feas-row.ok b { color: var(--teal); }
+.feas-row.bad b { color: var(--bad); }
+.sugtruck.sel, .sugtruck:hover { border-color: var(--teal); }
+@media (max-width: 900px) { .salesboard { grid-template-columns: 1fr; } }
+
+/* Календарь ресурса (ТК 21) */
+.resboard { padding: 12px 16px; min-width: max-content; }
+.reshead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+.dbadges { display: flex; gap: 6px; flex-wrap: wrap; }
+.dbadge { display: flex; flex-direction: column; align-items: center; gap: 1px; border: 1px solid var(--line); background: var(--card); border-radius: 9px; padding: 5px 10px; cursor: pointer; border-bottom: 3px solid var(--dc, var(--line)); }
+.dbadge .dbn { font-size: 15px; font-weight: 800; color: var(--ink); }
+.dbadge .dbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .02em; }
+.dbadge.on { background: var(--navy); border-color: var(--navy); }
+.dbadge.on .dbn, .dbadge.on .dbl { color: #fff; }
+.dbadge.clear { justify-content: center; font-size: var(--fs-xs); color: var(--muted); }
+.resctl { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.resctl input[type="date"] { width: auto; min-height: 32px; }
+.rgridwrap { border: 1px solid var(--line); border-radius: 10px; overflow: auto; background: var(--card); }
+.rrow { display: flex; align-items: stretch; border-bottom: 1px solid var(--grid); min-width: max-content; }
+.rrow.dim { opacity: .35; }
+.rrow.rhead { position: sticky; top: 0; z-index: 4; background: var(--soft); font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
+.rfix { position: sticky; left: 0; z-index: 3; width: 200px; flex: none; padding: 6px 10px; background: var(--card); border-right: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; }
+.rrow.rhead .rfix { background: var(--soft); }
+.rfix small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rtrack { position: relative; height: 40px; flex: none; }
+.rtrack.rdays { display: flex; height: auto; }
+.rday { width: 30px; flex: none; text-align: center; padding: 6px 0; border-right: 1px solid var(--grid); }
+.rday.we { background: var(--gridwe); }
+.rstate { position: sticky; right: 0; z-index: 3; width: 120px; flex: none; display: flex; flex-direction: column; justify-content: center; align-items: flex-end; padding: 0 10px; text-align: right; background: var(--card); border-left: 1px solid var(--line); font-size: var(--fs-sm); font-weight: 700; }
+.rrow.rhead .rstate { background: var(--soft); font-weight: 700; }
+.tripu { position: absolute; top: 16px; height: 8px; border-radius: 4px; background: var(--teal); opacity: .55; }
+.dbar { position: absolute; top: 6px; bottom: 6px; border-radius: 6px; color: #fff; display: flex; align-items: center; padding: 0 7px; font-size: 10px; cursor: pointer; overflow: hidden; white-space: nowrap; }
+
 /* Печатные отчёты (ТК 21) */
 .report h3 { margin: 0 0 4px; font-size: 16px; color: var(--ink); }
 .report h4 { margin: 14px 0 6px; font-size: var(--fs-base); color: var(--ink); }

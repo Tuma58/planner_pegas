@@ -2,6 +2,8 @@ import { api, escapeHtml, formatDate, logout, money, setupTheme, toast } from '.
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
+import { assignDialog, renderSales } from './sales.js';
+import { renderResource } from './resource.js';
 
 const state = {
   data: null,
@@ -310,6 +312,8 @@ function renderLegend() {
 // Главные экраны (перенос ролевых экранов ТК 21), доступ по правам.
 const MAIN_VIEWS = [
   { id: 'gantt', title: 'Гант', show: () => true },
+  { id: 'sales', title: 'Продажи', show: () => can('orders:write') },
+  { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') }
 ];
 
@@ -343,6 +347,13 @@ function renderMain() {
   } else if (state.view === 'boss') {
     byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
     renderBoss(byId('timeline'), { state, onReload: reload, openReport });
+  } else if (state.view === 'sales') {
+    renderSales(byId('timeline'), {
+      state, can, onReload: reload,
+      openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload)
+    });
+  } else if (state.view === 'resource') {
+    renderResource(byId('timeline'), { state, openDisposition });
   }
 }
 
