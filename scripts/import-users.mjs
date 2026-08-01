@@ -16,12 +16,12 @@ if (!Array.isArray(users)) {
 
 const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA busy_timeout=5000');
-const upsert = db.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,active)
-  VALUES(?,?,?,?,?,?,?)
+const upsert = db.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,roles,active)
+  VALUES(?,?,?,?,?,?,?,?)
   ON CONFLICT(username) DO UPDATE SET
     full_name=excluded.full_name, email=excluded.email,
     password_hash=excluded.password_hash, role=excluded.role,
-    active=excluded.active, updated_at=CURRENT_TIMESTAMP`);
+    roles=excluded.roles, active=excluded.active, updated_at=CURRENT_TIMESTAMP`);
 
 let imported = 0;
 let skipped = 0;
@@ -32,6 +32,7 @@ try {
       skipped++;
       continue;
     }
+    // roles — JSON-массив мульти-ролей; старые выгрузки без него получают массив из role.
     upsert.run(
       user.id || randomUUID(),
       user.username,
@@ -39,6 +40,7 @@ try {
       user.email ?? null,
       user.password_hash,
       user.role,
+      user.roles || JSON.stringify([user.role]),
       user.active === 0 ? 0 : 1
     );
     imported++;

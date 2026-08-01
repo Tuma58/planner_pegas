@@ -319,10 +319,11 @@ async function renderUsers() {
       <p>Создание учетных записей, изменение ролей и блокировка доступа.</p></div>
       <button class="button" id="newUser">+ Создать</button></div>
     <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Пользователь</th><th>Логин</th><th>Роль</th><th>Состояние</th><th>Создан</th><th></th></tr></thead>
+      <thead><tr><th>Пользователь</th><th>Логин</th><th>Роли</th><th>Состояние</th><th>Создан</th><th></th></tr></thead>
       <tbody>${state.users.items.map(user => `<tr>
         <td><strong>${escapeHtml(user.full_name)}</strong><br><small class="muted">${escapeHtml(user.email || '')}</small></td>
-        <td class="mono">${escapeHtml(user.username)}</td><td>${escapeHtml(roleLabel(user.role))}</td>
+        <td class="mono">${escapeHtml(user.username)}</td>
+        <td>${(user.roles || [user.role]).map(role => `<span class="badge">${escapeHtml(roleLabel(role))}</span>`).join(' ')}</td>
         <td>${user.active ? '<span class="badge ok">активен</span>' : '<span class="badge bad">отключен</span>'}</td>
         <td>${formatDate(user.created_at, { day: '2-digit', month: '2-digit', year: 'numeric' })}</td>
         <td><button class="button ghost small" data-edit-user="${user.id}">Изменить</button></td>
@@ -334,15 +335,18 @@ async function renderUsers() {
 }
 
 function editUser(user = null) {
-  const roleOptions = Object.entries(state.users.roles).map(([id, label]) =>
-    `<option value="${id}" ${user?.role === id ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('');
+  // Мульти-роли: чекбоксы вместо select — пользователю можно назначить несколько ролей.
+  const userRoles = user ? (user.roles || [user.role]) : ['logist'];
+  const roleChecks = Object.entries(state.users.roles).map(([id, label]) =>
+    `<label class="check"><input type="checkbox" name="roles" value="${id}" ${userRoles.includes(id) ? 'checked' : ''}>
+     ${escapeHtml(label)}</label>`).join('');
   showModal(`<form id="userForm"><h2>${user ? 'Редактирование пользователя' : 'Новый пользователь'}</h2>
     <div class="fields">
       <label class="field">ФИО<input name="fullName" value="${escapeHtml(user?.full_name || '')}" required></label>
       <label class="field">Логин<input name="username" value="${escapeHtml(user?.username || '')}" required></label>
       <label class="field">Email<input name="email" type="email" value="${escapeHtml(user?.email || '')}"></label>
-      <label class="field">Роль<select name="role">${roleOptions}</select></label>
     </div>
+    <fieldset class="roles-set"><legend>Роли (можно несколько — права объединяются)</legend>${roleChecks}</fieldset>
     <label class="field">${user ? 'Новый пароль (оставьте пустым, чтобы не менять)' : 'Временный пароль'}
       <input name="password" type="password" minlength="10" ${user ? '' : 'required'} autocomplete="new-password">
     </label>
@@ -354,6 +358,8 @@ function editUser(user = null) {
     event.preventDefault();
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form));
+    values.roles = [...form.querySelectorAll('input[name="roles"]:checked')].map(input => input.value);
+    if (!values.roles.length) { toast('Выберите хотя бы одну роль', 'error'); return; }
     values.active = form.elements.active.checked;
     if (!values.password) delete values.password;
     try {
@@ -562,7 +568,7 @@ byId('logout').onclick = logout;
 
 try {
   const me = await api('/api/auth/me');
-  if (me.user.role !== 'admin') {
+  if (!(me.user.roles || [me.user.role]).includes('admin')) {
     location.href = '/planner';
   } else {
     byId('profileName').textContent = me.user.fullName;

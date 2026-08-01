@@ -30,6 +30,18 @@ test('матрица ролей не дает обычной роли админ
   assert.equal(permissionsFor('unknown').length, 0);
 });
 
+test('мульти-роли: права объединяются, лишние не появляются', () => {
+  const combo = { active: 1, role: 'sales', roles: '["sales","accountant"]' };
+  assert.equal(hasPermission(combo, 'orders:write'), true);    // от продаж
+  assert.equal(hasPermission(combo, 'payments:write'), true);  // от бухгалтерии
+  assert.equal(hasPermission(combo, 'users:write'), false);    // админского нет
+  assert.equal(hasPermission({ ...combo, active: 0 }, 'orders:write'), false);
+  // roles-массивом (как в publicUser) — тоже работает
+  assert.equal(hasPermission({ active: 1, roles: ['logist', 'manager'] }, 'reports:read'), true);
+  // битый JSON — фолбэк на одиночную роль
+  assert.equal(hasPermission({ active: 1, role: 'logist', roles: '{oops' }, 'trips:write'), true);
+});
+
 test('сетевой allowlist нормализует CIDR и проверяет IPv4/IPv6', () => {
   assert.deepEqual(normalizeAllowedSubnets([
     '192.168.10.44/24', '192.168.10.0/24', '2001:db8:1234::1/64'
@@ -190,8 +202,8 @@ test('перенос пользователей: export-users → import-users �
   assert.equal(check.prepare('SELECT COUNT(*) count FROM users').get().count, 2);
   // admin не задублирован, его хэш заменён на перенесённый (старый пароль снова действует)
   assert.equal(check.prepare(`SELECT password_hash FROM users WHERE username='admin'`).get().password_hash, oldHash);
-  const petrov = check.prepare(`SELECT role,password_hash,active FROM users WHERE username='petrov'`).get();
-  assert.deepEqual({ ...petrov }, { role: 'logist', password_hash: 'HASH-PETROV', active: 1 });
+  const petrov = check.prepare(`SELECT role,roles,password_hash,active FROM users WHERE username='petrov'`).get();
+  assert.deepEqual({ ...petrov }, { role: 'logist', roles: '["logist"]', password_hash: 'HASH-PETROV', active: 1 });
 });
 
 test('production-конфигурация читает Docker secrets из файлов', t => {

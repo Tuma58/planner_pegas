@@ -28,6 +28,26 @@ export function permissionsFor(role) {
   return ROLE_PERMISSIONS[role] || [];
 }
 
+// Роли пользователя: JSON-массив в user.roles (мульти-роли) с фолбэком на user.role.
+export function rolesOf(user) {
+  if (user?.roles) {
+    try {
+      const parsed = Array.isArray(user.roles) ? user.roles : JSON.parse(user.roles);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch { /* некорректный JSON — используем одиночную роль */ }
+  }
+  return user?.role ? [user.role] : [];
+}
+
+// Объединение прав всех ролей пользователя.
+export function permissionsForRoles(roles) {
+  return [...new Set(roles.flatMap(role => permissionsFor(role)))];
+}
+
+export function roleLabelsFor(roles) {
+  return roles.map(role => ROLE_LABELS[role] || role).join(' + ');
+}
+
 export function hasPermission(user, permission) {
-  return Boolean(user?.active && permissionsFor(user.role).includes(permission));
+  return Boolean(user?.active && permissionsForRoles(rolesOf(user)).includes(permission));
 }

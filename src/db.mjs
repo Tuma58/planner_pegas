@@ -187,6 +187,9 @@ function migrateColumns(db) {
   ensure('trips', 'actual_distance_km', 'REAL');
   ensure('trips', 'unloaded_at', 'TEXT');
   ensure('trips', 'source_system', "TEXT NOT NULL DEFAULT 'planner'");
+  // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
+  ensure('users', 'roles', 'TEXT');
+  db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);
 }
 
 function seed(db, admin, options) {
@@ -230,8 +233,8 @@ function seed(db, admin, options) {
 
     if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
       db.prepare(`
-        INSERT INTO users(id,username,full_name,password_hash,role)
-        VALUES(?,?,?,?, 'admin')`
+        INSERT INTO users(id,username,full_name,password_hash,role,roles)
+        VALUES(?,?,?,?, 'admin', '["admin"]')`
       ).run(randomUUID(), admin.username, admin.fullName, hashPassword(admin.password));
     }
     applyTk20Seed(db, zoneId, typeId);

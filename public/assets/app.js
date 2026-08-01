@@ -37,7 +37,7 @@ function setupUser() {
   byId('profileName').textContent = user.fullName;
   byId('profileRole').textContent = user.roleLabel;
   byId('avatar').textContent = user.fullName.trim().charAt(0).toUpperCase();
-  byId('settingsLink').classList.toggle('hidden', user.role !== 'admin');
+  byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
 }
 
 function setupFilters() {
@@ -531,7 +531,9 @@ function openNewTrip(order = null) {
 function openTrip(trip) {
   const editable = can('trips:write');
   const statusEditable = editable || can('trip-status:write') || can('payments:write');
-  const allowedStatuses = state.data.user.role === 'accountant'
+  // Набор статусов — по правам (с мульти-ролями права объединяются):
+  // только payments:write → доступна лишь отметка оплаты.
+  const allowedStatuses = !editable && !can('trip-status:write') && can('payments:write')
     ? state.data.settings.statuses.filter(([id]) => [trip.status, 'paid'].includes(id))
     : state.data.settings.statuses;
   const statuses = allowedStatuses.map(([id, label]) =>

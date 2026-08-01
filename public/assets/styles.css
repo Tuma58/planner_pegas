@@ -211,6 +211,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .fields.three { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
 .check { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
 .check input { width: 18px; min-height: 18px; }
+.roles-set { border: 1px solid var(--line); border-radius: 9px; padding: 6px 12px 10px; margin: 10px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.roles-set legend { color: var(--muted); font-size: var(--fs-sm); font-weight: 700; padding: 0 4px; }
+.roles-set .check { margin: 4px 0; }
 .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
 table { width: 100%; border-collapse: collapse; background: var(--card); }
 th { padding: 9px 10px; background: var(--soft); color: var(--muted); font-size: 10px; text-align: left; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }

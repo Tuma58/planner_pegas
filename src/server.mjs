@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, openDatabase, queueOutbox, settingsObject } from './db.mjs';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
-import { ROLE_LABELS, hasPermission, permissionsFor } from './permissions.mjs';
+import { ROLE_LABELS, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import {
   encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
@@ -73,10 +73,11 @@ async function readJson(request, limit = 1_000_000) {
 }
 
 function publicUser(user) {
+  const roles = rolesOf(user);
   return {
     id: user.id, username: user.username, fullName: user.full_name, email: user.email || '',
-    role: user.role, roleLabel: ROLE_LABELS[user.role], active: Boolean(user.active),
-    permissions: permissionsFor(user.role)
+    role: user.role, roles, roleLabel: roleLabelsFor(roles), active: Boolean(user.active),
+    permissions: permissionsForRoles(roles)
   };
 }
 
@@ -702,25 +703,36 @@ async function api(request, response, url) {
     if (!user) return;
     return json(response, 200, {
       roles: ROLE_LABELS,
-      items: db.prepare(`SELECT id,username,full_name,email,role,active,created_at,updated_at
+      items: db.prepare(`SELECT id,username,full_name,email,role,roles,active,created_at,updated_at
         FROM users ORDER BY active DESC,full_name`).all()
+        .map(item => ({ ...item, roles: rolesOf(item) }))
     });
   }
+  // Роли из тела запроса: массив roles (мульти-роли) либо legacy-строка role.
+  // Возвращает null при некорректном наборе.
+  const parseRoles = body => {
+    const raw = body.roles !== undefined ? body.roles : (body.role !== undefined ? [body.role] : undefined);
+    if (raw === undefined) return undefined;
+    if (!Array.isArray(raw) || !raw.length) return null;
+    const unique = [...new Set(raw)];
+    return unique.every(role => ROLE_LABELS[role]) ? unique : null;
+  };
   if (request.method === 'POST' && pathname === '/api/admin/users') {
     const user = requirePermission(request, response, 'users:write');
     if (!user) return;
     const body = await readJson(request);
-    if (!body.username || !body.fullName || !ROLE_LABELS[body.role]) {
-      return errorJson(response, 422, 'Логин, имя и корректная роль обязательны');
+    const roles = parseRoles(body);
+    if (!body.username || !body.fullName || !roles) {
+      return errorJson(response, 422, 'Логин, имя и хотя бы одна корректная роль обязательны');
     }
     if (typeof body.password !== 'string' || body.password.length < 10) {
       return errorJson(response, 422, 'Пароль должен содержать не менее 10 символов');
     }
     const id = randomUUID();
-    db.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,active)
-      VALUES(?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,roles,active)
+      VALUES(?,?,?,?,?,?,?,?)`).run(
       id, body.username.trim(), body.fullName.trim(), body.email || null,
-      hashPassword(body.password || ''), body.role, body.active === false ? 0 : 1);
+      hashPassword(body.password || ''), roles[0], JSON.stringify(roles), body.active === false ? 0 : 1);
     audit(db, user, 'create', 'user', id, { ...body, password: undefined }, requestIp(request));
     return json(response, 201, { id });
   }
@@ -732,21 +744,24 @@ async function api(request, response, url) {
     const current = db.prepare('SELECT * FROM users WHERE id=?').get(match[0]);
     if (!current) return errorJson(response, 404, 'Пользователь не найден');
     if (match[0] === user.id && body.active === false) return errorJson(response, 422, 'Нельзя отключить собственную учетную запись');
-    if (body.role !== undefined && !ROLE_LABELS[body.role]) return errorJson(response, 422, 'Неизвестная роль');
+    const nextRoles = parseRoles(body);
+    if (nextRoles === null) return errorJson(response, 422, 'Нужна хотя бы одна корректная роль');
     if (body.password !== undefined && String(body.password).length < 10) {
       return errorJson(response, 422, 'Пароль должен содержать не менее 10 символов');
     }
-    const removesActiveAdmin = current.role === 'admin' && current.active &&
-      (body.active === false || (body.role !== undefined && body.role !== 'admin'));
+    const currentRoles = rolesOf(current);
+    const removesActiveAdmin = currentRoles.includes('admin') && current.active &&
+      (body.active === false || (nextRoles !== undefined && !nextRoles.includes('admin')));
     if (removesActiveAdmin) {
-      const otherAdmins = db.prepare(`SELECT COUNT(*) count FROM users
-        WHERE role='admin' AND active=1 AND id<>?`).get(match[0]).count;
+      const otherAdmins = db.prepare(`SELECT COUNT(*) count FROM users, json_each(users.roles)
+        WHERE json_each.value='admin' AND users.active=1 AND users.id<>?`).get(match[0]).count;
       if (!otherAdmins) return errorJson(response, 422, 'В системе должен остаться хотя бы один активный администратор');
     }
-    db.prepare(`UPDATE users SET username=?,full_name=?,email=?,role=?,active=?,
+    const finalRoles = nextRoles ?? currentRoles;
+    db.prepare(`UPDATE users SET username=?,full_name=?,email=?,role=?,roles=?,active=?,
       password_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       body.username ?? current.username, body.fullName ?? current.full_name,
-      body.email ?? current.email, body.role ?? current.role,
+      body.email ?? current.email, finalRoles[0], JSON.stringify(finalRoles),
       body.active === undefined ? current.active : Number(Boolean(body.active)),
       body.password ? hashPassword(body.password) : current.password_hash, match[0]);
     if (body.password || body.active === false) db.prepare('DELETE FROM sessions WHERE user_id=?').run(match[0]);
