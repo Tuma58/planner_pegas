@@ -48,6 +48,21 @@ F2B_MAXRETRY="${F2B_MAXRETRY:-5}"
 F2B_BANTIME="${F2B_BANTIME:-1h}"
 F2B_FINDTIME="${F2B_FINDTIME:-10m}"
 
+# По умолчанию деплой минимальный: зависимости + запуск + TLS, без hardening.
+# HARDENING=true включает весь набор; отдельные ENABLE_* переопределяют точечно.
+HARDENING="${HARDENING:-false}"
+ENABLE_UFW="${ENABLE_UFW:-$HARDENING}"
+ENABLE_FAIL2BAN="${ENABLE_FAIL2BAN:-$HARDENING}"
+ENABLE_SSH_HARDENING="${ENABLE_SSH_HARDENING:-$HARDENING}"
+ENABLE_UNATTENDED_UPGRADES="${ENABLE_UNATTENDED_UPGRADES:-$HARDENING}"
+ENABLE_NGINX_HARDENING="${ENABLE_NGINX_HARDENING:-$HARDENING}"
+ENABLE_DOCKER_HARDENING="${ENABLE_DOCKER_HARDENING:-$HARDENING}"
+USERS_IMPORT_FILE="${USERS_IMPORT_FILE:-/root/pegas-users.json}"
+for flag in HARDENING ENABLE_UFW ENABLE_FAIL2BAN ENABLE_SSH_HARDENING \
+    ENABLE_UNATTENDED_UPGRADES ENABLE_NGINX_HARDENING ENABLE_DOCKER_HARDENING; do
+  [[ "${!flag}" == "true" || "${!flag}" == "false" ]] || { echo "$flag должен быть true или false" >&2; exit 2; }
+done
+
 source /etc/os-release
 [[ "${ID:-}" == "debian" ]] || { echo "Поддерживается только Debian" >&2; exit 2; }
 [[ "${VERSION_ID:-}" == "12" || "${VERSION_ID:-}" == "13" ]] || {
@@ -105,11 +120,13 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg git openssl sqlite3 \
-  openssh-server openssh-client util-linux \
-  nginx \
-  ufw fail2ban unattended-upgrades apt-listchanges
+# Базовый набор — всегда. Пакеты hardening ставятся только при включённых флагах.
+base_packages=(ca-certificates curl gnupg git openssl sqlite3
+  openssh-server openssh-client util-linux nginx)
+[[ "$ENABLE_UFW" == "true" ]] && base_packages+=(ufw)
+[[ "$ENABLE_FAIL2BAN" == "true" ]] && base_packages+=(fail2ban)
+[[ "$ENABLE_UNATTENDED_UPGRADES" == "true" ]] && base_packages+=(unattended-upgrades apt-listchanges)
+apt-get install -y --no-install-recommends "${base_packages[@]}"
 if [[ "$DEPLOY_MODE" == "public" ]]; then
   apt-get install -y --no-install-recommends certbot python3-certbot-nginx
 fi
@@ -135,9 +152,13 @@ apt-get install -y --no-install-recommends \
 install -m 0755 -d /etc/docker
 if [[ ! -e /etc/docker/daemon.json ]]; then
   install -m 0644 /dev/null /etc/docker/daemon.json
-  printf '%s\n' \
-    '{"live-restore":true,"no-new-privileges":true,"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"5"}}' \
-    > /etc/docker/daemon.json
+  # log-лимиты и live-restore — всегда (защита диска); no-new-privileges — только при hardening.
+  if [[ "$ENABLE_DOCKER_HARDENING" == "true" ]]; then
+    daemon_json='{"live-restore":true,"no-new-privileges":true,"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"5"}}'
+  else
+    daemon_json='{"live-restore":true,"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"5"}}'
+  fi
+  printf '%s\n' "$daemon_json" > /etc/docker/daemon.json
 fi
 systemctl enable --now docker
 
@@ -255,6 +276,11 @@ fi
 # BACKUP_ONCALENDAR содержит пробелы и '*', поэтому пишется в кавычках — deploy.env читается через source.
 printf 'BACKUP_ONCALENDAR="%s"\nBACKUP_RETENTION_DAYS=%s\n' \
   "$BACKUP_ONCALENDAR" "$BACKUP_RETENTION_DAYS" >> "$DEPLOY_CONFIG_DIR/deploy.env"
+# Флаги hardening — их читает purge для точного отката установленного.
+printf 'HARDENING=%s\nENABLE_UFW=%s\nENABLE_FAIL2BAN=%s\nENABLE_SSH_HARDENING=%s\nENABLE_UNATTENDED_UPGRADES=%s\nENABLE_NGINX_HARDENING=%s\nENABLE_DOCKER_HARDENING=%s\n' \
+  "$HARDENING" "$ENABLE_UFW" "$ENABLE_FAIL2BAN" "$ENABLE_SSH_HARDENING" \
+  "$ENABLE_UNATTENDED_UPGRADES" "$ENABLE_NGINX_HARDENING" "$ENABLE_DOCKER_HARDENING" \
+  >> "$DEPLOY_CONFIG_DIR/deploy.env"
 chmod 0600 "$DEPLOY_CONFIG_DIR/deploy.env"
 
 cd "$APP_DIR"
@@ -279,16 +305,27 @@ done
 [[ "$healthy" -eq 1 ]] || { docker compose logs --tail=150; exit 1; }
 
 rm -f /etc/nginx/sites-enabled/default
-cat > /etc/nginx/conf.d/pegas-rate-limit.conf <<EOF
+# heredoc без кавычек: подставляем лимиты, а nginx-переменные экранируем через \$.
+# rate-limit и security-заголовки — только при ENABLE_NGINX_HARDENING.
+login_limit=""
+security_headers=""
+if [[ "$ENABLE_NGINX_HARDENING" == "true" ]]; then
+  cat > /etc/nginx/conf.d/pegas-rate-limit.conf <<EOF
 limit_req_zone \$binary_remote_addr zone=pegas_login:10m rate=$RATE_LIMIT_RATE;
 EOF
-# heredoc без кавычек: подставляем $RATE_LIMIT_BURST, а nginx-переменные экранируем через \$.
+  login_limit="        limit_req zone=pegas_login burst=$RATE_LIMIT_BURST nodelay;"
+  security_headers="    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy same-origin always;
+    add_header Permissions-Policy \"camera=(), microphone=(), geolocation=()\" always;"
+else
+  rm -f /etc/nginx/conf.d/pegas-rate-limit.conf
+fi
 cat > /etc/nginx/snippets/pegas-planner-proxy.conf <<EOF
     server_tokens off;
     client_max_body_size 10m;
 
     location = /api/auth/login {
-        limit_req zone=pegas_login burst=$RATE_LIMIT_BURST nodelay;
+${login_limit}
         proxy_pass http://127.0.0.1:3000;
         include proxy_params;
         proxy_set_header Host \$http_host;
@@ -305,9 +342,7 @@ cat > /etc/nginx/snippets/pegas-planner-proxy.conf <<EOF
         proxy_read_timeout 60s;
     }
 
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy same-origin always;
-    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+${security_headers}
 EOF
 
 if [[ "$DEPLOY_MODE" == "lan" && "$LAN_TLS" == "true" ]]; then
@@ -352,7 +387,7 @@ else
     nginx_host="$LAN_HOST"
   fi
   hsts=""
-  if [[ "$DEPLOY_MODE" == "public" ]]; then
+  if [[ "$DEPLOY_MODE" == "public" && "$ENABLE_NGINX_HARDENING" == "true" ]]; then
     hsts='    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;'
   fi
   cat > /etc/nginx/sites-available/pegas-planner.conf <<EOF
@@ -370,22 +405,25 @@ nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
 
-ufw default deny incoming
-ufw default allow outgoing
-if [[ "$DEPLOY_MODE" == "public" ]]; then
-  ufw allow "$DEPLOY_SSH_PORT/tcp" comment SSH
-  ufw allow 80/tcp comment HTTP
-  ufw allow 443/tcp comment HTTPS
-else
-  ufw allow from "$LAN_CIDR" to any port "$DEPLOY_SSH_PORT" proto tcp comment LAN-SSH
-  ufw allow 80/tcp comment Planner-HTTP
-  if [[ "$LAN_TLS" == "true" ]]; then
-    ufw allow 443/tcp comment Planner-HTTPS
+if [[ "$ENABLE_UFW" == "true" ]]; then
+  ufw default deny incoming
+  ufw default allow outgoing
+  if [[ "$DEPLOY_MODE" == "public" ]]; then
+    ufw allow "$DEPLOY_SSH_PORT/tcp" comment SSH
+    ufw allow 80/tcp comment HTTP
+    ufw allow 443/tcp comment HTTPS
+  else
+    ufw allow from "$LAN_CIDR" to any port "$DEPLOY_SSH_PORT" proto tcp comment LAN-SSH
+    ufw allow 80/tcp comment Planner-HTTP
+    if [[ "$LAN_TLS" == "true" ]]; then
+      ufw allow 443/tcp comment Planner-HTTPS
+    fi
   fi
+  ufw --force enable
 fi
-ufw --force enable
 
-cat > /etc/fail2ban/jail.d/pegas-sshd.local <<EOF
+if [[ "$ENABLE_FAIL2BAN" == "true" ]]; then
+  cat > /etc/fail2ban/jail.d/pegas-sshd.local <<EOF
 [sshd]
 enabled = true
 port = $DEPLOY_SSH_PORT
@@ -393,20 +431,24 @@ maxretry = $F2B_MAXRETRY
 findtime = $F2B_FINDTIME
 bantime = $F2B_BANTIME
 EOF
-systemctl enable --now fail2ban
-systemctl restart fail2ban
-
-dpkg-reconfigure -f noninteractive unattended-upgrades
-systemctl enable --now unattended-upgrades
-
-ssh_authorized=""
-if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-  ssh_authorized="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.ssh/authorized_keys"
-else
-  ssh_authorized="/root/.ssh/authorized_keys"
+  systemctl enable --now fail2ban
+  systemctl restart fail2ban
 fi
-if [[ -s "$ssh_authorized" ]]; then
-  cat > /etc/ssh/sshd_config.d/90-pegas-hardening.conf <<'EOF'
+
+if [[ "$ENABLE_UNATTENDED_UPGRADES" == "true" ]]; then
+  dpkg-reconfigure -f noninteractive unattended-upgrades
+  systemctl enable --now unattended-upgrades
+fi
+
+if [[ "$ENABLE_SSH_HARDENING" == "true" ]]; then
+  ssh_authorized=""
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    ssh_authorized="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.ssh/authorized_keys"
+  else
+    ssh_authorized="/root/.ssh/authorized_keys"
+  fi
+  if [[ -s "$ssh_authorized" ]]; then
+    cat > /etc/ssh/sshd_config.d/90-pegas-hardening.conf <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin prohibit-password
@@ -414,10 +456,11 @@ MaxAuthTries 5
 X11Forwarding no
 AllowTcpForwarding no
 EOF
-  sshd -t
-  systemctl reload ssh
-else
-  echo "ВНИМАНИЕ: парольный SSH не отключен — authorized_keys не найден." >&2
+    sshd -t
+    systemctl reload ssh
+  else
+    echo "ВНИМАНИЕ: парольный SSH не отключен — authorized_keys не найден." >&2
+  fi
 fi
 
 if [[ "$DEPLOY_MODE" == "public" ]]; then
@@ -440,6 +483,19 @@ EOF
 systemctl daemon-reload
 systemctl enable --now pegas-planner-backup.timer
 
+# Авто-импорт учётных записей после очистки VPS: purge-vps.sh выгружает их в
+# USERS_IMPORT_FILE, чистый деплой подхватывает файл и импортирует один раз.
+if [[ -s "$USERS_IMPORT_FILE" ]]; then
+  echo "Найден файл пользователей $USERS_IMPORT_FILE — импортирую"
+  if docker compose exec -T planner node scripts/import-users.mjs < "$USERS_IMPORT_FILE"; then
+    mv "$USERS_IMPORT_FILE" "$USERS_IMPORT_FILE.imported"
+    chmod 0600 "$USERS_IMPORT_FILE.imported"
+    echo "Пользователи импортированы; файл переименован в $USERS_IMPORT_FILE.imported"
+  else
+    echo "ВНИМАНИЕ: импорт пользователей не удался; файл оставлен: $USERS_IMPORT_FILE" >&2
+  fi
+fi
+
 credentials_file="/root/pegas-planner-initial-credentials.txt"
 if [[ "$DEPLOY_MODE" == "public" ]]; then
   deployment_url="https://$APP_DOMAIN"
@@ -461,3 +517,9 @@ fi
 echo "Начальные реквизиты сохранены в $credentials_file"
 echo "Пароль администратора: $admin_password"
 echo "Смените пароль после первого входа."
+if [[ "$ENABLE_UFW" != "true" || "$ENABLE_FAIL2BAN" != "true" || "$ENABLE_SSH_HARDENING" != "true" ]]; then
+  echo
+  echo "ВНИМАНИЕ: деплой выполнен в минимальном режиме — firewall (UFW), Fail2ban и"
+  echo "SSH-hardening НЕ настроены. Сервер защищён только TLS и изоляцией контейнеров."
+  echo "Для включения защиты повторите деплой с HARDENING=true (или отдельными ENABLE_*)."
+fi

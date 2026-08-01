@@ -123,7 +123,9 @@ sudo bash deploy/interactive-deploy.sh
 - **Пароль администратора** — по умолчанию генерируется; можно ввести свой (скрытый ввод, минимум 12 символов).
 - **Предпросмотр без запуска**: `DRY_RUN=1 bash deploy/interactive-deploy.sh` печатает итоговую сводку и завершает работу, ничего не устанавливая.
 - **Предзаданные переменные окружения** мастер не переспрашивает — можно смешивать интерактив и автоматизацию.
-- Дополнительно настраиваются: `APP_DIR`, `REPO_BRANCH`, расписание и срок хранения бэкапов (`BACKUP_ONCALENDAR`, `BACKUP_RETENTION_DAYS`), лимит логина nginx (`RATE_LIMIT_RATE`, `RATE_LIMIT_BURST`) и Fail2ban (`F2B_MAXRETRY`, `F2B_FINDTIME`, `F2B_BANTIME`).
+- Дополнительно настраиваются: `APP_DIR`, `REPO_BRANCH`, расписание и срок хранения бэкапов (`BACKUP_ONCALENDAR`, `BACKUP_RETENTION_DAYS`).
+- **По умолчанию деплой минимальный** — firewall (UFW), Fail2ban, SSH-hardening, автообновления и nginx rate-limit не настраиваются. Их включает вопрос мастера про hardening (`HARDENING=true`) либо отдельные флаги `ENABLE_UFW`, `ENABLE_FAIL2BAN`, `ENABLE_SSH_HARDENING`, `ENABLE_UNATTENDED_UPGRADES`, `ENABLE_NGINX_HARDENING`, `ENABLE_DOCKER_HARDENING`. При включённом hardening настраиваются и его параметры (`RATE_LIMIT_RATE`, `RATE_LIMIT_BURST`, `F2B_MAXRETRY`, `F2B_FINDTIME`, `F2B_BANTIME`).
+- **Очистка и чистый деплой**: `bash deploy/purge-vps.sh` удаляет установку, автоматически выгрузив пользователей в `/root/pegas-users.json`; следующий деплой импортирует их автоматически. `PURGE_PACKAGES=true` дополнительно удаляет пакеты.
 
 ## 5. Доверие локальному сертификату
 

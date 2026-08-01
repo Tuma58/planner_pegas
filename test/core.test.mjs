@@ -135,6 +135,51 @@ test('OData upsert принимает поля ТК 20 и короткие ст�
   assert.equal(trip.source_system, '1c');
 });
 
+test('перенос пользователей: export-users → import-users сохраняет хэши и обновляет по username', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-users-transfer-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const projectRoot = path.resolve(import.meta.dirname, '..');
+  const sourcePath = path.join(directory, 'source.db');
+  const targetPath = path.join(directory, 'target.db');
+
+  const source = openDatabase(sourcePath, {
+    username: 'admin', password: 'Old-admin-password-2026', fullName: 'Старый админ'
+  });
+  const oldHash = source.prepare(`SELECT password_hash FROM users WHERE username='admin'`).get().password_hash;
+  source.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,active)
+    VALUES('u-logist','petrov','Петров','p@x.ru','HASH-PETROV','logist',1)`).run();
+  source.close();
+
+  const target = openDatabase(targetPath, {
+    username: 'admin', password: 'New-admin-password-2026', fullName: 'Новый админ'
+  });
+  target.close();
+
+  const exported = spawnSync(process.execPath, ['scripts/export-users.mjs'], {
+    cwd: projectRoot, encoding: 'utf8', env: { ...process.env, DATABASE_PATH: sourcePath }
+  });
+  assert.equal(exported.status, 0, exported.stderr);
+  const users = JSON.parse(exported.stdout);
+  assert.equal(users.length, 2);
+
+  const imported = spawnSync(process.execPath, ['scripts/import-users.mjs'], {
+    cwd: projectRoot, encoding: 'utf8', input: exported.stdout,
+    env: { ...process.env, DATABASE_PATH: targetPath }
+  });
+  assert.equal(imported.status, 0, imported.stderr);
+  assert.match(imported.stdout, /Импортировано пользователей: 2/);
+
+  const check = openDatabase(targetPath, {
+    username: 'admin', password: 'Unused-password-2026', fullName: 'X'
+  });
+  t.after(() => check.close());
+  assert.equal(check.prepare('SELECT COUNT(*) count FROM users').get().count, 2);
+  // admin не задублирован, его хэш заменён на перенесённый (старый пароль снова действует)
+  assert.equal(check.prepare(`SELECT password_hash FROM users WHERE username='admin'`).get().password_hash, oldHash);
+  const petrov = check.prepare(`SELECT role,password_hash,active FROM users WHERE username='petrov'`).get();
+  assert.deepEqual({ ...petrov }, { role: 'logist', password_hash: 'HASH-PETROV', active: 1 });
+});
+
 test('production-конфигурация читает Docker secrets из файлов', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-secrets-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

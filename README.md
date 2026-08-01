@@ -130,6 +130,8 @@ ssh -t root@192.168.10.50 "apt-get update && apt-get install -y ca-certificates 
 
 Установщик идемпотентен: если `/opt/pegas-planner` уже существует и это тот же репозиторий, он обновляется fast-forward, а не вызывает ошибку. Каталог и ветку можно переопределить переменными `APP_DIR` и `REPO_BRANCH`.
 
+**По умолчанию деплой минимальный**: устанавливаются зависимости, настраивается nginx-прокси с TLS-сертификатом и запускается проект. Firewall (UFW), Fail2ban, SSH-hardening, автоматические security-обновления и nginx rate-limit по умолчанию **не настраиваются** — это продвинутые опции (см. ниже). Всегда включены: TLS, авто-бэкапы БД, лимиты Docker-логов и изоляция контейнеров (read-only, cap_drop).
+
 Мастер пошагово спрашивает и проверяет параметры, показывает сводку по разделам (режим, сеть и подсети, сертификаты, учётные данные, безопасность, каталог/бэкапы) и запускает установку только после подтверждения. По завершении выводит URL, логин `admin` и пароль (также сохраняются на VPS в `/root/pegas-planner-initial-credentials.txt`, права `0600`). В мастере настраиваются:
 
 - режим: `lan` (локальный TLS без внешнего домена) или `public` (домен + Let's Encrypt);
@@ -137,7 +139,24 @@ ssh -t root@192.168.10.50 "apt-get update && apt-get install -y ca-certificates 
 - сеть: `LAN_HOST`/`LAN_CIDR` либо домен и email; SSH-порт;
 - учётные данные администратора — пароль генерируется или вводится вручную (скрытый ввод, ≥12 символов);
 - каталог приложения, расписание и срок хранения бэкапов;
-- защита: nginx rate-limit и параметры Fail2ban.
+- продвинутые опции безопасности — один вопрос `HARDENING` (по умолчанию `false`).
+
+### Продвинутые опции безопасности
+
+Единый флаг `HARDENING=true` включает весь набор: UFW (firewall), Fail2ban, SSH-hardening (отключение парольного входа), unattended-upgrades, nginx rate-limit и security-заголовки, Docker `no-new-privileges`. Точечное управление — отдельными флагами, каждый наследует значение `HARDENING`:
+
+| Флаг | Что включает |
+|---|---|
+| `ENABLE_UFW` | firewall UFW (deny incoming, allow SSH/HTTP/HTTPS; в LAN SSH только из `LAN_CIDR`) |
+| `ENABLE_FAIL2BAN` | Fail2ban для SSH (`F2B_MAXRETRY`, `F2B_FINDTIME`, `F2B_BANTIME`) |
+| `ENABLE_SSH_HARDENING` | отключение парольного SSH (только при наличии `authorized_keys`) |
+| `ENABLE_UNATTENDED_UPGRADES` | автоматические security-обновления |
+| `ENABLE_NGINX_HARDENING` | rate-limit логина (`RATE_LIMIT_RATE`/`RATE_LIMIT_BURST`), security-заголовки, HSTS |
+| `ENABLE_DOCKER_HARDENING` | `no-new-privileges` в daemon.json |
+
+Пример: минимальный деплой, но с firewall — `ENABLE_UFW=true bash deploy/interactive-deploy.sh`.
+
+**Внимание:** в минимальном режиме сервер защищён только TLS и изоляцией контейнеров; firewall открыт, парольный SSH не отключён. Для сервера, доступного из интернета, настоятельно рекомендуется `HARDENING=true`.
 
 Предпросмотр без установки (`DRY_RUN=1` печатает итоговую сводку и выходит):
 
@@ -244,6 +263,30 @@ systemctl list-timers pegas-planner-backup.timer   # ближайший запу
 Локальные копии на VPS не заменяют внешнее резервное хранилище. Настройте выгрузку каталога `data/backups/` и файлов `.secrets/` в зашифрованное off-site хранилище; без `APP_SECRET` восстановить сохраненный пароль подключения к 1С невозможно.
 
 После настройки адреса 1С дополнительно ограничьте исходящий сетевой доступ worker до DNS/NTP, Git/Docker registries для обновлений и конкретного OData-хоста 1С. Bootstrap не может сделать это автоматически, поскольку адрес 1С при первом деплое неизвестен.
+
+## Очистка VPS и чистый деплой
+
+Скрипт `deploy/purge-vps.sh` полностью удаляет установку для чистого деплоя. Перед удалением он **автоматически выгружает учётные записи пользователей** (логины, роли, хэши паролей) в `/root/pegas-users.json`; следующий деплой находит этот файл и импортирует пользователей автоматически — пароли сохраняются, повторная регистрация не нужна.
+
+```bash
+bash /opt/pegas-planner/deploy/purge-vps.sh
+```
+
+По умолчанию удаляются следы проекта: контейнеры, образы, volumes, каталоги (`/opt/pegas-planner`, `/etc/pegas-planner`), nginx-конфиги, systemd-юниты, jail Fail2ban и SSH-hardening-конфиг. Пакеты (Docker, nginx и т.д.) остаются. `PURGE_PACKAGES=true` дополнительно удаляет и пакеты (второе подтверждение). `FORCE=1` пропускает подтверждения. Активный UFW намеренно не сбрасывается автоматически (риск потерять SSH) — скрипт выводит команду для ручного сброса.
+
+Полный цикл «очистка → чистый деплой с переносом пользователей»:
+
+```bash
+bash /opt/pegas-planner/deploy/purge-vps.sh && curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Tuma58/planner_pegas/main/deploy/install.sh | bash
+```
+
+Ручной перенос пользователей между установками (без очистки):
+
+```bash
+cd /opt/pegas-planner
+docker compose exec -T planner node scripts/export-users.mjs > users.json   # выгрузка
+docker compose exec -T planner node scripts/import-users.mjs < users.json   # загрузка (UPSERT по логину)
+```
 
 ## Структура
 

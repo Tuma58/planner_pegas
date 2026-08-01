@@ -119,12 +119,19 @@ ask APP_DIR "Каталог приложения" "/opt/pegas-planner" '^/[A-Za-
 ask BACKUP_ONCALENDAR "Расписание бэкапа (systemd OnCalendar)" "*-*-* 02:30:00" '^[0-9A-Za-z:*/,. -]+$'
 ask BACKUP_RETENTION_DAYS "Хранить бэкапы, дней" "14" '^[0-9]{1,4}$'
 
-section "Защита"
-ask RATE_LIMIT_RATE "nginx лимит логина (напр. 10r/m)" "10r/m" '^[0-9]{1,5}r/[sm]$'
-ask RATE_LIMIT_BURST "nginx всплеск логина (burst)" "5" '^[0-9]{1,4}$'
-ask F2B_MAXRETRY "Fail2ban: попыток до бана" "5" '^[0-9]{1,3}$'
-ask F2B_FINDTIME "Fail2ban: окно поиска" "10m" '^[0-9]{1,7}[smhdw]?$'
-ask F2B_BANTIME "Fail2ban: время бана" "1h" '^[0-9]{1,7}[smhdw]?$'
+section "Продвинутые опции (безопасность)"
+echo "  ${dim}По умолчанию деплой минимальный: зависимости, запуск и TLS — без firewall и hardening.${reset}"
+ask HARDENING "Включить hardening (UFW, Fail2ban, SSH-hardening, rate-limit, авто-обновления)?" "false" '^(true|false)$'
+if [[ "$HARDENING" == "true" ]]; then
+  ask RATE_LIMIT_RATE "nginx лимит логина (напр. 10r/m)" "10r/m" '^[0-9]{1,5}r/[sm]$'
+  ask RATE_LIMIT_BURST "nginx всплеск логина (burst)" "5" '^[0-9]{1,4}$'
+  ask F2B_MAXRETRY "Fail2ban: попыток до бана" "5" '^[0-9]{1,3}$'
+  ask F2B_FINDTIME "Fail2ban: окно поиска" "10m" '^[0-9]{1,7}[smhdw]?$'
+  ask F2B_BANTIME "Fail2ban: время бана" "1h" '^[0-9]{1,7}[smhdw]?$'
+else
+  echo "  ${dim}Точечное включение компонентов — через env: ENABLE_UFW, ENABLE_FAIL2BAN,${reset}"
+  echo "  ${dim}ENABLE_SSH_HARDENING, ENABLE_UNATTENDED_UPGRADES, ENABLE_NGINX_HARDENING, ENABLE_DOCKER_HARDENING.${reset}"
+fi
 
 # Что произойдёт с сертификатами и cookie
 if [[ "$DEPLOY_MODE" == "public" ]]; then
@@ -170,9 +177,14 @@ kv "URL входа" "$url"
 kv "Логин" "admin"
 kv "Пароль" "$admin_password_source"
 section "Безопасность и обслуживание"
-kv "nginx rate-limit" "$RATE_LIMIT_RATE (burst $RATE_LIMIT_BURST)"
-kv "Fail2ban" "maxretry=$F2B_MAXRETRY findtime=$F2B_FINDTIME bantime=$F2B_BANTIME"
-kv "UFW / hardening SSH" "включаются автоматически"
+if [[ "$HARDENING" == "true" ]]; then
+  kv "Hardening" "ВКЛЮЧЁН (UFW, Fail2ban, SSH, rate-limit, авто-обновления)"
+  kv "nginx rate-limit" "$RATE_LIMIT_RATE (burst $RATE_LIMIT_BURST)"
+  kv "Fail2ban" "maxretry=$F2B_MAXRETRY findtime=$F2B_FINDTIME bantime=$F2B_BANTIME"
+else
+  kv "Hardening" "выключен (минимальный деплой)"
+  kv "" "(firewall/Fail2ban/SSH-hardening НЕ настраиваются)"
+fi
 kv "Каталог приложения" "$APP_DIR"
 kv "Бэкап" "$BACKUP_ONCALENDAR, хранить $BACKUP_RETENTION_DAYS дн."
 echo "${bold}═══════════════════════════════${reset}"
