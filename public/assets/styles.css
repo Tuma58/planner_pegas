@@ -412,6 +412,10 @@ tbody tr:hover td { background: var(--hover); }
 .skpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; }
 .skl { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
 .skv { font-size: 18px; font-weight: 800; color: var(--ink); }
+.salesfilter { display: flex; align-items: center; gap: 8px; margin-left: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; flex-wrap: wrap; }
+.salesfilter select, .salesfilter input[type="date"] { width: auto; min-height: 32px; padding: 5px 8px; }
+.skv small { font-size: var(--fs-xs); font-weight: 600; }
+@media (max-width: 900px) { .salesfilter { margin-left: 0; } }
 .salesboard { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 .scol { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
 .scolh { font-size: var(--fs-base); font-weight: 800; color: var(--ink); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }

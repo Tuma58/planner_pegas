@@ -91,9 +91,23 @@ export function renderSales(container, context) {
   const { state, can } = context;
   const data = state.data;
   const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
-  const requests = autoRequests(data, state.month, monthEnd);
-  const orders = data.orders;
+  // Фильтр доски: геозона + диапазон дат (хранится в state, переживает перерисовки).
+  const filter = state.salesFilter || (state.salesFilter = { zone: '', from: '', to: '' });
+  const inDateRange = iso => {
+    const day = String(iso).slice(0, 10);
+    return (!filter.from || day >= filter.from) && (!filter.to || day <= filter.to);
+  };
+  const allRequests = autoRequests(data, state.month, monthEnd);
+  const requests = allRequests.filter(request =>
+    (!filter.zone || request.zone.name === filter.zone) && inDateRange(request.freeAt));
+  const allOrders = data.orders;
+  // Заявка проходит фильтр, если зона участвует в маршруте, а окно погрузки пересекает диапазон.
+  const orders = allOrders.filter(order =>
+    (!filter.zone || order.from_name === filter.zone || order.to_name === filter.zone) &&
+    (!filter.from || String(order.window_to).slice(0, 10) >= filter.from) &&
+    (!filter.to || String(order.window_from).slice(0, 10) <= filter.to));
   const assigned = orders.filter(order => order.trip_id).length;
+  const filterActive = filter.zone || filter.from || filter.to;
   const zoneOptions = data.reference.zones.map(zone => `<option value="${zone.id}">${escapeHtml(zone.name)}</option>`).join('');
   const orderOptions = data.settings.orderOptions || {};
   const temps = (orderOptions.temperatureModes || []).map(item => `<option>${escapeHtml(item)}</option>`).join('');
@@ -132,10 +146,22 @@ export function renderSales(container, context) {
 
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
-      <div class="skpi"><span class="skl">Потребность от логистики</span><span class="skv">${requests.length}</span></div>
-      <div class="skpi"><span class="skl">Потребность клиента</span><span class="skv">${orders.length}</span></div>
+      <div class="skpi"><span class="skl">Потребность от логистики</span><span class="skv">${requests.length}${filterActive ? `<small class="muted"> / ${allRequests.length}</small>` : ''}</span></div>
+      <div class="skpi"><span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span></div>
       <div class="skpi"><span class="skl">Назначено ТС</span><span class="skv">${assigned}</span></div>
       <div class="skpi"><span class="skl">Осталось назначить</span><span class="skv">${Math.max(0, orders.length - assigned)}</span></div>
+      <div class="salesfilter">
+        <span class="skl">Фильтр</span>
+        <select id="salesFilterZone">
+          <option value="">Все геозоны</option>
+          ${data.reference.zones.map(zone =>
+            `<option value="${escapeHtml(zone.name)}" ${filter.zone === zone.name ? 'selected' : ''}>${escapeHtml(zone.name)}</option>`).join('')}
+        </select>
+        <input type="date" id="salesFilterFrom" value="${filter.from}" title="С даты">
+        <span class="muted">–</span>
+        <input type="date" id="salesFilterTo" value="${filter.to}" title="По дату">
+        ${filterActive ? '<button class="button ghost small" id="salesFilterReset">✕ Сброс</button>' : ''}
+      </div>
     </div>
     <div class="salesboard">
       <div class="scol">
@@ -170,6 +196,24 @@ export function renderSales(container, context) {
       </div>
     </div>
   </div>`;
+
+  const rerender = () => renderSales(container, context);
+  container.querySelector('#salesFilterZone').onchange = event => {
+    filter.zone = event.currentTarget.value;
+    rerender();
+  };
+  container.querySelector('#salesFilterFrom').onchange = event => {
+    filter.from = event.currentTarget.value;
+    rerender();
+  };
+  container.querySelector('#salesFilterTo').onchange = event => {
+    filter.to = event.currentTarget.value;
+    rerender();
+  };
+  container.querySelector('#salesFilterReset')?.addEventListener('click', () => {
+    state.salesFilter = { zone: '', from: '', to: '' };
+    rerender();
+  });
 
   const feasibility = () => {
     const fromId = container.querySelector('#salesFrom').value;
