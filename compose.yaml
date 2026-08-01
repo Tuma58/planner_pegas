@@ -2,6 +2,13 @@ services:
   planner:
     build: .
     restart: unless-stopped
+    init: true
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          memory: "${PLANNER_MEM_LIMIT:-512m}"
+          cpus: "${PLANNER_CPU_LIMIT:-1.0}"
     ports:
       - "127.0.0.1:3000:3000"
     environment:
@@ -28,10 +35,19 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 15s
+      start_interval: 3s
 
   sync-worker:
     build: .
     restart: unless-stopped
+    init: true
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          memory: "${WORKER_MEM_LIMIT:-256m}"
+          cpus: "${WORKER_CPU_LIMIT:-0.5}"
     command: ["node", "src/sync-worker.mjs"]
     environment:
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"

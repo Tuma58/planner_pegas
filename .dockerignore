@@ -1,0 +1,20 @@
+# Секреты и данные — не должны попадать в build-контекст
+.secrets/
+data/
+.env
+.env.*
+
+# История и служебные каталоги
+.git/
+.gitignore
+.claude/
+CLAUDE.md
+.DS_Store
+
+# Не нужно образу (Dockerfile копирует только package.json, src, public, scripts)
+docs/
+deploy/
+test/
+*.md
+Диспетчерская.html
+node_modules/

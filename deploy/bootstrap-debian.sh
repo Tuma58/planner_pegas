@@ -39,6 +39,15 @@ DEPLOY_CONFIG_DIR="/etc/pegas-planner"
 DEPLOY_KEY="$DEPLOY_CONFIG_DIR/deploy_key"
 GIT_KNOWN_HOSTS="$DEPLOY_CONFIG_DIR/known_hosts"
 
+# Опциональные параметры (дефолты повторяют прежнее поведение).
+BACKUP_ONCALENDAR="${BACKUP_ONCALENDAR:-*-*-* 02:30:00}"
+BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+RATE_LIMIT_RATE="${RATE_LIMIT_RATE:-10r/m}"
+RATE_LIMIT_BURST="${RATE_LIMIT_BURST:-5}"
+F2B_MAXRETRY="${F2B_MAXRETRY:-5}"
+F2B_BANTIME="${F2B_BANTIME:-1h}"
+F2B_FINDTIME="${F2B_FINDTIME:-10m}"
+
 source /etc/os-release
 [[ "${ID:-}" == "debian" ]] || { echo "Поддерживается только Debian" >&2; exit 2; }
 [[ "${VERSION_ID:-}" == "12" || "${VERSION_ID:-}" == "13" ]] || {
@@ -55,6 +64,17 @@ else
 fi
 [[ "$REPO_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "Некорректная ветка" >&2; exit 2; }
 [[ "$DEPLOY_SSH_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "Некорректный SSH-порт" >&2; exit 2; }
+oncalendar_re='^[0-9A-Za-z:*/,. -]+$'
+[[ "$BACKUP_ONCALENDAR" =~ $oncalendar_re ]] || { echo "Некорректный BACKUP_ONCALENDAR" >&2; exit 2; }
+{ [[ "$BACKUP_RETENTION_DAYS" =~ ^[0-9]{1,4}$ ]] && (( BACKUP_RETENTION_DAYS >= 1 )); } || { echo "BACKUP_RETENTION_DAYS должен быть числом ≥ 1" >&2; exit 2; }
+[[ "$RATE_LIMIT_RATE" =~ ^[0-9]{1,5}r/[sm]$ ]] || { echo "RATE_LIMIT_RATE должен быть в формате Nr/s или Nr/m" >&2; exit 2; }
+[[ "$RATE_LIMIT_BURST" =~ ^[0-9]{1,4}$ ]] || { echo "RATE_LIMIT_BURST должен быть числом" >&2; exit 2; }
+[[ "$F2B_MAXRETRY" =~ ^[0-9]{1,3}$ ]] || { echo "F2B_MAXRETRY должен быть числом" >&2; exit 2; }
+[[ "$F2B_BANTIME" =~ ^[0-9]{1,7}[smhdw]?$ ]] || { echo "Некорректный F2B_BANTIME" >&2; exit 2; }
+[[ "$F2B_FINDTIME" =~ ^[0-9]{1,7}[smhdw]?$ ]] || { echo "Некорректный F2B_FINDTIME" >&2; exit 2; }
+if [[ -n "${ADMIN_PASSWORD:-}" ]]; then
+  (( ${#ADMIN_PASSWORD} >= 12 )) || { echo "ADMIN_PASSWORD должен быть не короче 12 символов" >&2; exit 2; }
+fi
 if [[ "$REPO_ACCESS" == "private" ]]; then
   [[ "$REPO_URL" == git@*:* || "$REPO_URL" == ssh://* ]] || {
     echo "Для private-режима REPO_URL должен быть SSH URL" >&2
@@ -198,7 +218,9 @@ install -m 0750 -d "$APP_DIR/data" "$APP_DIR/data/backups" "$APP_DIR/.secrets"
 if [[ ! -s "$APP_DIR/.secrets/app_secret" ]]; then
   openssl rand -hex 48 > "$APP_DIR/.secrets/app_secret"
 fi
-if [[ ! -s "$APP_DIR/.secrets/admin_password" ]]; then
+if [[ -n "${ADMIN_PASSWORD:-}" ]]; then
+  printf '%s' "$ADMIN_PASSWORD" > "$APP_DIR/.secrets/admin_password"
+elif [[ ! -s "$APP_DIR/.secrets/admin_password" ]]; then
   openssl rand -hex 16 > "$APP_DIR/.secrets/admin_password"
 fi
 admin_password="$(tr -d '\r\n' < "$APP_DIR/.secrets/admin_password")"
@@ -229,6 +251,9 @@ else
   printf 'LAN_HOST=%s\nLAN_CIDR=%s\nLAN_TLS=%s\n' \
     "$LAN_HOST" "$LAN_CIDR" "$LAN_TLS" >> "$DEPLOY_CONFIG_DIR/deploy.env"
 fi
+# BACKUP_ONCALENDAR содержит пробелы и '*', поэтому пишется в кавычках — deploy.env читается через source.
+printf 'BACKUP_ONCALENDAR="%s"\nBACKUP_RETENTION_DAYS=%s\n' \
+  "$BACKUP_ONCALENDAR" "$BACKUP_RETENTION_DAYS" >> "$DEPLOY_CONFIG_DIR/deploy.env"
 chmod 0600 "$DEPLOY_CONFIG_DIR/deploy.env"
 
 cd "$APP_DIR"
@@ -253,26 +278,27 @@ done
 [[ "$healthy" -eq 1 ]] || { docker compose logs --tail=150; exit 1; }
 
 rm -f /etc/nginx/sites-enabled/default
-cat > /etc/nginx/conf.d/pegas-rate-limit.conf <<'EOF'
-limit_req_zone $binary_remote_addr zone=pegas_login:10m rate=10r/m;
+cat > /etc/nginx/conf.d/pegas-rate-limit.conf <<EOF
+limit_req_zone \$binary_remote_addr zone=pegas_login:10m rate=$RATE_LIMIT_RATE;
 EOF
-cat > /etc/nginx/snippets/pegas-planner-proxy.conf <<'EOF'
+# heredoc без кавычек: подставляем $RATE_LIMIT_BURST, а nginx-переменные экранируем через \$.
+cat > /etc/nginx/snippets/pegas-planner-proxy.conf <<EOF
     server_tokens off;
     client_max_body_size 10m;
 
     location = /api/auth/login {
-        limit_req zone=pegas_login burst=5 nodelay;
+        limit_req zone=pegas_login burst=$RATE_LIMIT_BURST nodelay;
         proxy_pass http://127.0.0.1:3000;
         include proxy_params;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location / {
         proxy_pass http://127.0.0.1:3000;
         include proxy_params;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 60s;
     }
 
@@ -360,9 +386,9 @@ cat > /etc/fail2ban/jail.d/pegas-sshd.local <<EOF
 [sshd]
 enabled = true
 port = $DEPLOY_SSH_PORT
-maxretry = 5
-findtime = 10m
-bantime = 1h
+maxretry = $F2B_MAXRETRY
+findtime = $F2B_FINDTIME
+bantime = $F2B_BANTIME
 EOF
 systemctl enable --now fail2ban
 systemctl restart fail2ban
@@ -401,6 +427,13 @@ install -m 0750 "$APP_DIR/deploy/update-vps.sh" /usr/local/sbin/pegas-planner-up
 install -m 0750 "$APP_DIR/deploy/backup-vps.sh" /usr/local/sbin/pegas-planner-backup
 install -m 0644 "$APP_DIR/deploy/pegas-planner-backup.service" /etc/systemd/system/
 install -m 0644 "$APP_DIR/deploy/pegas-planner-backup.timer" /etc/systemd/system/
+# Расписание задаётся drop-in override, а не правкой базового юнита: переживает переустановку .timer при обновлениях.
+install -m 0755 -d /etc/systemd/system/pegas-planner-backup.timer.d
+cat > /etc/systemd/system/pegas-planner-backup.timer.d/override.conf <<EOF
+[Timer]
+OnCalendar=
+OnCalendar=$BACKUP_ONCALENDAR
+EOF
 systemctl daemon-reload
 systemctl enable --now pegas-planner-backup.timer
 

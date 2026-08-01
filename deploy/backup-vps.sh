@@ -13,5 +13,6 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 target="$backup_dir/planner-$timestamp.db"
 sqlite3 "$database" ".timeout 10000" ".backup '$target'"
 gzip -9 "$target"
-find "$backup_dir" -type f -name 'planner-*.db.gz' -mtime +14 -delete
+retention_days="${BACKUP_RETENTION_DAYS:-14}"
+find "$backup_dir" -type f -name 'planner-*.db.gz' -mtime +"$retention_days" -delete
 echo "Резервная копия: $target.gz"

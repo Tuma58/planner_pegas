@@ -983,6 +983,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       console.warn('Первый вход: admin / ChangeMe-2026! — смените пароль в настройках.');
     }
   });
+
+  let shuttingDown = false;
+  const shutdown = signal => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Получен ${signal}, штатная остановка PegasLogistic`);
+    closeServer().then(() => process.exit(0));
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 export function closeServer() {

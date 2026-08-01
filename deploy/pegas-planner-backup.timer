@@ -2,6 +2,8 @@
 Description=Daily PegasLogistic database backup
 
 [Timer]
+# Значение по умолчанию; при деплое переопределяется drop-in override
+# /etc/systemd/system/pegas-planner-backup.timer.d/override.conf (BACKUP_ONCALENDAR).
 OnCalendar=*-*-* 02:30:00
 RandomizedDelaySec=20m
 Persistent=true
