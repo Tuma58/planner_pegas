@@ -108,6 +108,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #9fc3e0; border-c
 .segmented { display: flex; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; }
 .segmented button { border: 0; background: white; color: var(--muted); padding: 7px 10px; font-weight: 650; }
 .segmented button.active { background: var(--navy); color: white; }
+.panel-tabs { flex-wrap: wrap; margin-bottom: 12px; }
+.panel-tabs button { flex: 1 1 auto; }
 .toolbar-end { margin-left: auto; display: flex; gap: 8px; }
 .sync-state { color: var(--ok); font-size: 12px; }
 

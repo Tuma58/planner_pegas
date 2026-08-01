@@ -4,6 +4,7 @@ const state = {
   data: null,
   month: null,
   type: 'all',
+  panel: null,
   permissions: new Set()
 };
 
@@ -294,9 +295,23 @@ function renderSidePanel() {
     <div class="metric"><span>Рейсов</span><strong>${trips.length}</strong></div>
     <div class="metric"><span>Маржинальный доход</span><strong>${money(netRevenue - cost)}</strong></div>
   </div>`;
-  if (user.role === 'admin' || user.role === 'logist') {
+  // Панели доступны по правам, а не по роли: администратор с полным набором прав
+  // видит все вкладки, остальные роли — свою (вкладки скрыты, если панель одна).
+  const availablePanels = [
+    { id: 'planning', title: 'Планирование', show: can('trips:write') },
+    { id: 'fleet', title: 'Состав ТС', show: can('fleet:write') },
+    { id: 'orders', title: 'Заявки', show: can('orders:write') },
+    { id: 'summary', title: 'Сводка', show: true }
+  ].filter(panel => panel.show);
+  if (!availablePanels.some(panel => panel.id === state.panel)) state.panel = availablePanels[0].id;
+  const tabs = availablePanels.length > 1
+    ? `<div class="segmented panel-tabs">${availablePanels.map(panel =>
+        `<button data-panel="${panel.id}" class="${panel.id === state.panel ? 'active' : ''}">${panel.title}</button>`).join('')}</div>`
+    : '';
+
+  if (state.panel === 'planning') {
     const newOrders = orders.filter(order => order.status === 'new');
-    byId('sidepanel').innerHTML = `<h2>Планирование рейсов</h2><p class="muted">Создание и распределение заявок</p>
+    byId('sidepanel').innerHTML = `${tabs}<h2>Планирование рейсов</h2><p class="muted">Создание и распределение заявок</p>
       ${metrics}<button class="button full" id="newTrip">+ Добавить рейс</button>
       <h3>Новые заявки</h3><div class="list">${newOrders.slice(0, 8).map(order =>
         `<div class="list-item"><span><strong>${escapeHtml(order.from_name)} → ${escapeHtml(order.to_name)}</strong>
@@ -306,10 +321,10 @@ function renderSidePanel() {
     byId('newTrip').onclick = () => openNewTrip();
     document.querySelectorAll('[data-order]').forEach(button =>
       button.onclick = () => openNewTrip(orders.find(order => order.id === button.dataset.order)));
-  } else if (user.role === 'resource') {
+  } else if (state.panel === 'fleet') {
     const work = vehicles.filter(vehicle => vehicle.status === 'work').length;
     const dispositions = state.data.dispositions || [];
-    byId('sidepanel').innerHTML = `<h2>Состав ТС</h2><p class="muted">Доступность парка и водителей</p>
+    byId('sidepanel').innerHTML = `${tabs}<h2>Состав ТС</h2><p class="muted">Доступность парка и водителей</p>
       <div class="summary-grid"><div class="metric"><span>В работе</span><strong>${work}</strong></div>
       <div class="metric"><span>Всего</span><strong>${vehicles.length}</strong></div></div>
       <button class="button full" id="newDisposition">+ Период недоступности</button>
@@ -327,20 +342,24 @@ function renderSidePanel() {
     byId('newDisposition').onclick = () => openDisposition();
     document.querySelectorAll('[data-disposition]').forEach(button =>
       button.onclick = () => openDisposition(dispositions.find(item => item.id === button.dataset.disposition)));
-  } else if (user.role === 'sales') {
-    byId('sidepanel').innerHTML = `<h2>Портфель заявок</h2><p class="muted">Подготовка груза для логиста</p>
+  } else if (state.panel === 'orders') {
+    byId('sidepanel').innerHTML = `${tabs}<h2>Портфель заявок</h2><p class="muted">Подготовка груза для логиста</p>
       <button class="button full" id="newOrder">+ Новая заявка</button><h3>Ожидают планирования</h3>
       <div class="list">${orders.map(order => `<div class="list-item"><span><strong>${escapeHtml(order.customer_name)}</strong>
       <small class="muted">${escapeHtml(order.from_name)} → ${escapeHtml(order.to_name)}</small></span><b>${money(order.rate_vat)}</b></div>`).join('')}</div>`;
     byId('newOrder').onclick = openNewOrder;
   } else {
-    byId('sidepanel').innerHTML = `<h2>${escapeHtml(user.roleLabel)}</h2><p class="muted">Оперативная сводка по плану</p>${metrics}
+    const summaryTitle = availablePanels.length > 1 ? 'Сводка' : user.roleLabel;
+    byId('sidepanel').innerHTML = `${tabs}<h2>${escapeHtml(summaryTitle)}</h2><p class="muted">Оперативная сводка по плану</p>${metrics}
       <h3>Активные рейсы</h3><div class="list">${trips.filter(trip => ['run', 'unloaded', 'done'].includes(trip.status)).slice(0, 10).map(trip =>
         `<button class="list-item" data-open-trip="${trip.id}"><span><strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
         <small class="muted mono">${escapeHtml(trip.vehicle_plate)}</small></span><span class="badge">${escapeHtml(trip.status)}</span></button>`).join('')}</div>`;
     document.querySelectorAll('[data-open-trip]').forEach(button =>
       button.onclick = () => openTrip(trips.find(trip => trip.id === button.dataset.openTrip)));
   }
+
+  document.querySelectorAll('[data-panel]').forEach(button =>
+    button.onclick = () => { state.panel = button.dataset.panel; renderSidePanel(); });
 }
 
 function openVehicle(vehicle) {
