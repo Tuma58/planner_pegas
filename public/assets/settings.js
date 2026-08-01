@@ -1,4 +1,5 @@
-import { api, escapeHtml, formatDate, logout, toast } from './api.js';
+import { api, escapeHtml, formatDate, logout, setupTheme, toast } from './api.js';
+setupTheme();
 
 const state = { section: 'general', admin: null, users: null };
 const byId = id => document.getElementById(id);

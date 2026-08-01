@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Настройки · PegasLogistic</title>
   <link rel="stylesheet" href="/assets/styles.css">
+  <script>document.documentElement.dataset.theme = localStorage.getItem('pl_theme') || 'light';</script>
 </head>
 <body>
   <header class="topbar">
@@ -14,6 +15,7 @@
     </a>
     <nav class="topnav"><a href="/planner">Планер</a><a class="active" href="/settings">Настройки</a></nav>
     <div class="profile">
+      <button class="theme-toggle" id="themeToggle" title="Переключить тему">◐</button>
       <div class="profile-copy"><strong id="profileName">—</strong><small>Администратор</small></div>
       <span class="avatar" id="avatar">A</span>
       <button class="icon-button" id="logout">Выйти</button>

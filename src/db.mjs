@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { hashPassword } from './security.mjs';
 import { normalizeAllowedSubnets } from './network-access.mjs';
-import { defaultSettings, distances, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
+import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 
@@ -204,6 +204,17 @@ function seed(db, admin, options) {
 
     const putZone = db.prepare('INSERT OR IGNORE INTO zones(id,name,color,sort_order) VALUES(?,?,?,?)');
     zones.forEach(([name, color], index) => putZone.run(randomUUID(), name, color, index));
+
+    // Миграция палитры ТК 21: заменяем только прежние дефолтные цвета,
+    // изменённые администратором значения не трогаем. Идемпотентно по app_meta.
+    if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='zone_palette_v21'`).get()) {
+      const updateColor = db.prepare('UPDATE zones SET color=? WHERE name=? AND color=?');
+      zones.forEach(([name, color]) => {
+        const legacy = legacyZoneColors[name];
+        if (legacy) updateColor.run(color, name, legacy);
+      });
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('zone_palette_v21','1')`).run();
+    }
 
     const putType = db.prepare('INSERT OR IGNORE INTO vehicle_types(id,name) VALUES(?,?)');
     vehicleTypes.forEach(name => putType.run(randomUUID(), name));

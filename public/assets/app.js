@@ -1,4 +1,4 @@
-import { api, escapeHtml, formatDate, logout, money, toast } from './api.js';
+import { api, escapeHtml, formatDate, logout, money, setupTheme, toast } from './api.js';
 
 const state = {
   data: null,
@@ -479,6 +479,7 @@ async function reload() {
 }
 
 byId('logout').onclick = logout;
+setupTheme();
 byId('customersButton').onclick = showCustomers;
 byId('periodPrev').onclick = () => {
   if (!byId('periodPrev').disabled) state.month = addMonths(state.month, -1);

@@ -47,3 +47,25 @@ export async function logout() {
   await api('/api/auth/logout', { method: 'POST' });
   location.href = '/login.html';
 }
+
+export function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem('pl_theme', theme);
+}
+
+// Подключает кнопку #themeToggle и синхронизирует тему с сервером:
+// локальный кеш применяется до первой отрисовки (инлайн-скрипт в head),
+// серверное значение уточняется после загрузки.
+export function setupTheme() {
+  const button = document.getElementById('themeToggle');
+  if (button) {
+    button.onclick = () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      api('/api/preferences', { method: 'PUT', body: JSON.stringify({ theme: next }) }).catch(() => {});
+    };
+  }
+  api('/api/preferences').then(({ theme }) => {
+    if (theme && theme !== 'system' && theme !== document.documentElement.dataset.theme) applyTheme(theme);
+  }).catch(() => {});
+}
