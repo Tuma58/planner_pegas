@@ -220,6 +220,12 @@ export async function renderBoss(container, context) {
         <span class="cnl" style="margin-left:12px">План выручки</span>
         <input type="number" id="bossPlan" placeholder="цель, ₽" value="${revenuePlan || ''}" style="width:130px">
         <button class="button ghost small" id="bossClose" title="Зафиксировать период в истории">🏁 Закрыть период</button>
+        <select id="bossReportKind" style="margin-left:auto">
+          <option value="summary">Сводный</option><option value="util">Использование парка</option>
+          <option value="econ">Экономика по типам ТС</option><option value="clients">Экономика по клиентам</option>
+          <option value="rejected">Отклонённые рейсы</option><option value="history">История периодов</option>
+        </select>
+        <button class="button small" id="bossReport">📄 Сформировать</button>
       </div>
       ${cluster}
       ${immersive ? '<div class="wheel"><div class="wheelrim"><div class="wheelhub">PL</div></div></div>' : ''}
@@ -273,4 +279,6 @@ export async function renderBoss(container, context) {
       toast(`Период «${periodLabel}» закрыт`);
     } catch (error) { toast(error.message, 'error'); }
   };
+  document.getElementById('bossReport').onclick = () =>
+    context.openReport(document.getElementById('bossReportKind').value, from, to);
 }

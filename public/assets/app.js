@@ -1,6 +1,7 @@
 import { api, escapeHtml, formatDate, logout, money, setupTheme, toast } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
+import { buildReport } from './reports.js';
 
 const state = {
   data: null,
@@ -341,7 +342,23 @@ function renderMain() {
     renderSidePanel();
   } else if (state.view === 'boss') {
     byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
-    renderBoss(byId('timeline'), { state, onReload: reload });
+    renderBoss(byId('timeline'), { state, onReload: reload, openReport });
+  }
+}
+
+async function openReport(kind, from, to) {
+  showModal('<div class="empty-state">Формирование отчёта…</div>', 'wide');
+  try {
+    const content = await buildReport(kind, from, to, state.data);
+    showModal(`${content}
+      <div class="modal-actions no-print">
+        <button type="button" class="button ghost" id="reportPrint">Печать / PDF</button>
+        <button type="button" class="button" data-close>Закрыть</button>
+      </div>`, 'wide printable');
+    byId('reportPrint').onclick = () => window.print();
+  } catch (error) {
+    toast(error.message, 'error');
+    closeModal();
   }
 }
 

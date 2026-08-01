@@ -403,6 +403,20 @@ tbody tr:hover td { background: var(--hover); }
 .mdrow.big b { font-size: 16px; }
 @media (max-width: 760px) { .rgrid { grid-template-columns: 1fr; } }
 
+/* Печатные отчёты (ТК 21) */
+.report h3 { margin: 0 0 4px; font-size: 16px; color: var(--ink); }
+.report h4 { margin: 14px 0 6px; font-size: var(--fs-base); color: var(--ink); }
+.rsums { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.rsum { background: var(--soft); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: var(--fs-sm); color: var(--muted); }
+.rsum b { color: var(--ink); }
+@media print {
+  body * { visibility: hidden; }
+  .modal-backdrop, .modal.printable, .modal.printable * { visibility: visible; }
+  .modal-backdrop { position: static; padding: 0; background: none; display: block; }
+  .modal.printable { width: 100%; max-height: none; box-shadow: none; border-radius: 0; }
+  .no-print { display: none !important; }
+}
+
 @media (max-width: 900px) {
   .planner-layout { grid-template-columns: 1fr; }
   .sidepanel { border: 0; border-top: 1px solid var(--line); }
