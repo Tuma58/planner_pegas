@@ -187,11 +187,6 @@ function migrateColumns(db) {
   ensure('trips', 'actual_distance_km', 'REAL');
   ensure('trips', 'unloaded_at', 'TEXT');
   ensure('trips', 'source_system', "TEXT NOT NULL DEFAULT 'planner'");
-  // Жизненный цикл заявки: причина отклонения либо возврата из плана и момент возврата.
-  // Отклонённая заявка = status 'cancelled' с заполненной причиной; вернувшаяся из плана —
-  // снова 'new', но с непустым returned_at, чтобы продажи видели историю.
-  ensure('orders', 'rejection_reason', 'TEXT');
-  ensure('orders', 'returned_at', 'TEXT');
   // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
   ensure('users', 'roles', 'TEXT');
   db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);

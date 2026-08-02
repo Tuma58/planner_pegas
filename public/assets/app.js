@@ -351,7 +351,7 @@ function renderMain() {
     renderBoss(byId('timeline'), { state, onReload: reload, openReport });
   } else if (state.view === 'sales') {
     renderSales(byId('timeline'), {
-      state, can, onReload: reload, showModal, closeModal,
+      state, can, onReload: reload,
       openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload)
     });
   } else if (state.view === 'resource') {
@@ -395,14 +395,6 @@ function openExceptions() {
           <small class="muted mono">${escapeHtml(trip.vehicle_plate || '')} · ${formatDate(trip.starts_at)} · ${escapeHtml(trip.customer_name)}</small></span>
           <span class="badge ${badge}">${title}</span></button>`).join('')}</div>`
     : '';
-  // Заявки без перевозки: отклонённые продажами и вернувшиеся из плана.
-  const orderSection = (title, items, badge, note) => items.length
-    ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(order =>
-        `<div class="list-item"><span>
-          <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
-          <small class="muted" style="display:block">${note}: ${escapeHtml(order.rejection_reason || 'без причины')}</small></span>
-          <span class="badge ${badge}">${title}</span></div>`).join('')}</div>`
-    : '';
   const unavailable = (data.unavailableVehicles || []).length
     ? `<h3>ТС вне работы</h3><div class="list">${data.unavailableVehicles.map(row =>
         `<div class="list-item"><span>${{ repair: 'В ремонте', no_driver: 'Без водителя', out: 'Выведены' }[row.status] || row.status}</span>
@@ -413,8 +405,6 @@ function openExceptions() {
     ${section('Критичный', data.critical, 'bad')}
     ${section('Конфликт', data.conflicts, 'warn')}
     ${section('Отклонён', data.rejected, 'bad')}
-    ${orderSection('Заявка отклонена', data.rejectedOrders || [], 'bad', 'причина')}
-    ${orderSection('Вернулась из плана', data.returnedOrders || [], 'warn', 'причина возврата')}
     ${unavailable}
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
   document.querySelectorAll('[data-ex-trip]').forEach(button =>

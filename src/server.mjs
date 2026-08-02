@@ -155,11 +155,10 @@ function listTrips(search = '') {
     ORDER BY t.starts_at`).all(search, search, search);
 }
 
-// Отклонённые заявки тоже отдаются: доска продаж строит из них реестр «Отклонённые».
 function listOrders() {
   return db.prepare(`SELECT o.*,f.name from_name,t.name to_name
     FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
-    ORDER BY o.window_from`).all();
+    WHERE o.status<>'cancelled' ORDER BY o.window_from`).all();
 }
 
 function listDispositions() {
@@ -385,10 +384,6 @@ async function api(request, response, url) {
       temperatureMode: body.temperatureMode ?? current.temperature_mode,
       bodyType: body.bodyType ?? current.body_type
     });
-    // Отклонение рейса возвращает заявку в продажи, поэтому причина обязательна.
-    if (merged.status === 'rejected' && !String(merged.rejectionReason || '').trim()) {
-      return errorJson(response, 422, 'Укажите причину отклонения рейса');
-    }
     db.prepare(`UPDATE trips SET vehicle_id=?,order_id=?,customer_name=?,from_zone_id=?,to_zone_id=?,
       starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,rejection_reason=?,
       temperature_mode=?,body_type=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
@@ -396,18 +391,10 @@ async function api(request, response, url) {
       merged.startsAt, merged.endsAt, merged.distanceKm, merged.revenueVat, merged.status,
       merged.rejectionReason, merged.temperatureMode, merged.bodyType, user.id, match[0]);
     if (merged.orderId) {
-      if (merged.status === 'rejected') {
-        // Отмена, поломка на маршруте или невозможность перевозки: заявка возвращается
-        // в продажи как новая — связь с рейсом и ТС снимается, причина сохраняется.
-        db.prepare(`UPDATE orders SET status='new',stage=1,trip_id=NULL,assigned_vehicle_id=NULL,
-          rejection_reason=?,returned_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
-          WHERE id=?`).run(merged.rejectionReason || 'Отклонён без указания причины', merged.orderId);
-      } else {
-        const stage = ({ plan: 2, run: 3, unloaded: 4, done: 5, paid: 5 })[merged.status] || 2;
-        db.prepare(`UPDATE orders SET stage=?,status='planned',assigned_vehicle_id=?,
-          rejection_reason=NULL,returned_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-          stage, merged.vehicleId, merged.orderId);
-      }
+      const stage = ({ plan: 2, run: 3, unloaded: 4, done: 5, paid: 5, rejected: 1 })[merged.status] || 2;
+      db.prepare(`UPDATE orders SET stage=?,status=?,assigned_vehicle_id=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        stage, merged.status === 'rejected' ? 'new' : 'planned', merged.vehicleId, merged.orderId);
     }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
@@ -454,10 +441,7 @@ async function api(request, response, url) {
   }
   match = route(/^\/api\/orders\/([^/]+)$/, pathname);
   if (match && request.method === 'PATCH') {
-    // Отклонять заявку могут и продажи, и логисты — отказ возможен с обеих сторон процесса.
-    const actor = currentUser(request);
-    const permission = hasPermission(actor, 'orders:write') ? 'orders:write' : 'trips:write';
-    const user = requirePermission(request, response, permission);
+    const user = requirePermission(request, response, 'orders:write');
     if (!user) return;
     const body = await readJson(request);
     const current = db.prepare('SELECT * FROM orders WHERE id=?').get(match[0]);
@@ -467,30 +451,15 @@ async function api(request, response, url) {
     if (!Number.isFinite(starts) || !Number.isFinite(ends) || ends <= starts) {
       return errorJson(response, 422, 'Некорректное окно заявки');
     }
-    const nextStatus = body.status ?? current.status;
-    // Отклонение заявки без причины запрещено: реестр отклонённых должен объяснять отказ.
-    let rejectionReason = current.rejection_reason;
-    let returnedAt = current.returned_at;
-    if (nextStatus === 'cancelled') {
-      const reason = String(body.rejectionReason ?? '').trim();
-      if (!reason) return errorJson(response, 422, 'Укажите причину отклонения заявки');
-      rejectionReason = reason;
-      returnedAt = null;
-    } else if (nextStatus === 'new' && current.status === 'cancelled') {
-      // Возврат отклонённой заявки в работу очищает историю отказа.
-      rejectionReason = null;
-      returnedAt = null;
-    }
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,rate_vat=?,
       window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,
-      rejection_reason=?,returned_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       String(body.customerName ?? current.customer_name).trim(),
       body.fromZoneId ?? current.from_zone_id, body.toZoneId ?? current.to_zone_id,
       Number(body.rateVat ?? current.rate_vat), new Date(starts).toISOString(),
-      new Date(ends).toISOString(), nextStatus,
+      new Date(ends).toISOString(), body.status ?? current.status,
       String(body.temperatureMode ?? current.temperature_mode),
-      String(body.bodyType ?? current.body_type), Number(body.stage ?? current.stage),
-      rejectionReason, returnedAt, match[0]);
+      String(body.bodyType ?? current.body_type), Number(body.stage ?? current.stage), match[0]);
     queueOutbox(db, 'orders', match[0], 'update', orderOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'update', 'order', match[0], body, requestIp(request));
@@ -648,16 +617,9 @@ async function api(request, response, url) {
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
     const rejected = trips.filter(trip => trip.status === 'rejected');
     const conflictItems = trips.filter(trip => conflicts.has(trip.id));
-    const rejectedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
-      FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
-      WHERE o.status='cancelled' ORDER BY o.updated_at DESC`).all();
-    const returnedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
-      FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
-      WHERE o.status='new' AND o.returned_at IS NOT NULL ORDER BY o.returned_at DESC`).all();
     return json(response, 200, {
-      count: critical.length + rejected.length + conflictItems.length +
-        rejectedOrders.length + returnedOrders.length,
-      critical, rejected, conflicts: conflictItems, rejectedOrders, returnedOrders,
+      count: critical.length + rejected.length + conflictItems.length,
+      critical, rejected, conflicts: conflictItems,
       unavailableVehicles: db.prepare(`SELECT status,COUNT(*) count FROM vehicles
         WHERE status<>'work' GROUP BY status`).all()
     });

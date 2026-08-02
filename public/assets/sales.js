@@ -130,17 +130,13 @@ export function renderSales(container, context) {
   const allRequests = autoRequests(data, state.month, monthEnd);
   const requests = allRequests.filter(request =>
     (!filter.zone || request.zone.name === filter.zone) && inDateRange(request.freeAt));
+  const allOrders = data.orders;
   // Заявка проходит фильтр, если зона участвует в маршруте, а окно погрузки пересекает диапазон.
-  const matchesFilter = order =>
+  const orders = allOrders.filter(order =>
     (!filter.zone || order.from_name === filter.zone || order.to_name === filter.zone) &&
     (!filter.from || String(order.window_to).slice(0, 10) >= filter.from) &&
-    (!filter.to || String(order.window_from).slice(0, 10) <= filter.to);
-  // Активный портфель и реестр отклонённых разделены: отклонённая заявка = cancelled с причиной.
-  const allOrders = data.orders.filter(order => order.status !== 'cancelled');
-  const orders = allOrders.filter(matchesFilter);
-  const rejectedOrders = data.orders.filter(order => order.status === 'cancelled').filter(matchesFilter);
+    (!filter.to || String(order.window_from).slice(0, 10) <= filter.to));
   const assigned = orders.filter(order => order.trip_id).length;
-  const returned = orders.filter(order => order.returned_at).length;
   const filterActive = filter.zone || filter.from || filter.to;
   const zoneOptions = data.reference.zones.map(zone => `<option value="${zone.id}">${escapeHtml(zone.name)}</option>`).join('');
   const orderOptions = data.settings.orderOptions || {};
@@ -161,35 +157,22 @@ export function renderSales(container, context) {
   const stepper = stage => `<div class="stepper">${STAGES.map((_, index) =>
     `<span class="stp ${index <= stage ? 'on' : ''}"></span>`).join('')}<span class="stpl">${STAGES[stage] || STAGES[0]}</span></div>`;
 
-  const canReject = can('orders:write') || can('trips:write');
   const portfolio = orders.map(order => {
     const st = orderStage(order, data);
-    return `<div class="list-item ordrow ${order.returned_at ? 'returned' : ''}" data-order="${order.id}">
+    return `<div class="list-item ordrow" data-order="${order.id}">
       <span style="flex:1;min-width:0">
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
         ${st.plate ? ` · <span class="mono">${escapeHtml(st.plate)}</span>` : ''}
         <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
-        ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
         ${stepper(st.stage)}
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <b>${money(order.rate_vat)}</b>
         ${can('trips:write') ? `<button class="button ghost small ${st.hot ? 'danger' : ''}" data-assign="${order.id}">
           ${st.hot ? '⚠ Переназначить ТС' : (order.trip_id ? 'Сменить ТС' : 'Назначить ТС')}</button>` : ''}
-        ${canReject && !order.trip_id ? `<button class="button ghost small" data-reject="${order.id}">Отклонить</button>` : ''}
       </span>
     </div>`;
   }).join('') || '<p class="muted">Потребностей клиента пока нет — заполните форму слева.</p>';
-
-  // Реестр отклонённых: заявки, на которые ТС так и не назначили.
-  const rejectedList = rejectedOrders.map(order => `<div class="list-item ordrow rejected-order">
-      <span style="flex:1;min-width:0">
-        <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
-        <small class="muted" style="display:block">окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${money(order.rate_vat)}</small>
-        <small class="reject-note">✕ ${escapeHtml(order.rejection_reason || 'без причины')}</small>
-      </span>
-      ${canReject ? `<button class="button ghost small" data-restore="${order.id}">Вернуть в работу</button>` : ''}
-    </div>`).join('') || '<p class="muted">Отклонённых заявок нет.</p>';
 
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
@@ -197,8 +180,6 @@ export function renderSales(container, context) {
       <div class="skpi"><span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span></div>
       <div class="skpi"><span class="skl">Назначено ТС</span><span class="skv">${assigned}</span></div>
       <div class="skpi"><span class="skl">Осталось назначить</span><span class="skv">${Math.max(0, orders.length - assigned)}</span></div>
-      <div class="skpi"><span class="skl">Вернулись из плана</span><span class="skv">${returned}</span></div>
-      <div class="skpi"><span class="skl">Отклонённые</span><span class="skv">${rejectedOrders.length}</span></div>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <select id="salesFilterZone">
@@ -243,12 +224,6 @@ export function renderSales(container, context) {
         <div class="scolh" style="margin-top:14px">Портфель · потребности клиента <span>${orders.length}</span></div>
         <div class="list">${portfolio}</div>
       </div>
-    </div>
-    <div class="scol" style="margin-top:14px">
-      <div class="scolh">Реестр отклонённых заявок <span>${rejectedOrders.length}</span></div>
-      <div class="list">${rejectedList}</div>
-      <div class="geohint">Заявка попадает сюда, если ТС не назначено и указана причина отказа.
-        «Вернуть в работу» переводит её обратно в портфель как новую.</div>
     </div>
   </div>`;
 
@@ -334,58 +309,6 @@ export function renderSales(container, context) {
       const order = orders.find(item => item.id === button.dataset.assign);
       if (order) context.openAssign(order);
     }));
-
-  container.querySelectorAll('[data-reject]').forEach(button =>
-    button.addEventListener('click', event => {
-      event.stopPropagation();
-      const order = orders.find(item => item.id === button.dataset.reject);
-      if (order) rejectDialog(order, data, context);
-    }));
-
-  container.querySelectorAll('[data-restore]').forEach(button =>
-    button.addEventListener('click', async event => {
-      event.stopPropagation();
-      try {
-        await api(`/api/orders/${button.dataset.restore}`, {
-          method: 'PATCH', body: JSON.stringify({ status: 'new', stage: 0 })
-        });
-        toast('Заявка возвращена в работу');
-        await context.onReload();
-      } catch (error) { toast(error.message, 'error'); }
-    }));
-}
-
-// Отклонение заявки: причина обязательна — она попадёт в реестр и отчёт.
-function rejectDialog(order, data, context) {
-  const reasons = data.settings.rejectionReasons || [];
-  context.showModal(`<form id="rejectOrderForm">
-    <h2>Отклонить заявку</h2>
-    <p class="muted">${escapeHtml(order.customer_name)} · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
-      · ${money(order.rate_vat)}</p>
-    <label class="field">Причина отказа
-      <select name="rejectionReason" required>
-        <option value="">— выберите причину —</option>
-        ${reasons.map(reason => `<option>${escapeHtml(reason)}</option>`).join('')}
-      </select>
-    </label>
-    <div class="modal-actions">
-      <button type="button" class="button ghost" data-close>Отмена</button>
-      <button class="button danger">Отклонить</button>
-    </div>
-  </form>`);
-  document.getElementById('rejectOrderForm').onsubmit = async event => {
-    event.preventDefault();
-    const reason = new FormData(event.currentTarget).get('rejectionReason');
-    if (!reason) { toast('Выберите причину отказа', 'error'); return; }
-    try {
-      await api(`/api/orders/${order.id}`, {
-        method: 'PATCH', body: JSON.stringify({ status: 'cancelled', rejectionReason: reason })
-      });
-      context.closeModal();
-      toast('Заявка отклонена');
-      await context.onReload();
-    } catch (error) { toast(error.message, 'error'); }
-  };
 }
 
 // Модалка назначения ТС (маркетплейс-стиль из ТК 21).

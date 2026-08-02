@@ -94,38 +94,6 @@ test('SQLite создается со справочниками, админис�
   assert.deepEqual(JSON.parse(item.payload_json), { id: 'trip-1' });
 });
 
-test('отклонение рейса возвращает заявку в продажи как новую с причиной', t => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-return-test-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const db = openDatabase(path.join(directory, 'planner.db'), {
-    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
-  });
-  t.after(() => db.close());
-  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
-  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
-  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
-    window_from,window_to,status,stage,assigned_vehicle_id)
-    VALUES('o-1','Клиент',?,?,100000,'2026-07-10T08:00:00.000Z','2026-07-12T18:00:00.000Z',
-    'planned',2,?)`).run(zone.id, zone.id, vehicle.id);
-  db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
-    starts_at,ends_at,distance_km,revenue_vat,status)
-    VALUES('t-1',?,'o-1','Клиент',?,?,'2026-07-10T08:00:00.000Z','2026-07-11T08:00:00.000Z',
-    500,100000,'plan')`).run(vehicle.id, zone.id, zone.id);
-  db.prepare(`UPDATE orders SET trip_id='t-1' WHERE id='o-1'`).run();
-
-  // Поломка на маршруте: рейс отклонён — заявка обязана вернуться в продажи чистой.
-  db.prepare(`UPDATE trips SET status='rejected',rejection_reason='Поломка на маршруте' WHERE id='t-1'`).run();
-  db.prepare(`UPDATE orders SET status='new',stage=1,trip_id=NULL,assigned_vehicle_id=NULL,
-    rejection_reason=?,returned_at=CURRENT_TIMESTAMP WHERE id='o-1'`).run('Поломка на маршруте');
-
-  const order = db.prepare(`SELECT * FROM orders WHERE id='o-1'`).get();
-  assert.equal(order.status, 'new');
-  assert.equal(order.trip_id, null, 'связь с рейсом должна сниматься, иначе заявка выглядит назначенной');
-  assert.equal(order.assigned_vehicle_id, null);
-  assert.equal(order.rejection_reason, 'Поломка на маршруте');
-  assert.ok(order.returned_at, 'возврат помечается временем — продажи видят историю');
-});
-
 test('новые алиасы геозон доезжают до уже засеянной базы', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-alias-test-'));
   const databasePath = path.join(directory, 'planner.db');

@@ -9,7 +9,6 @@ export const REPORT_TITLES = {
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
-  'rejected-orders': 'Отклонённые заявки',
   history: 'История отчётных периодов'
 };
 
@@ -160,33 +159,6 @@ export async function buildReport(kind, from, to, data) {
           <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.customer_name || '—')}</td><td>${escapeHtml(trip.rejection_reason || 'не указана')}</td></tr>`).join('') ||
           '<tr><td colspan=5>Отклонённых нет</td></tr>'}</tbody></table>`;
-  } else if (kind === 'rejected-orders') {
-    // Заявки, по которым перевозка не состоялась: отклонены продажами/логистикой
-    // либо вернулись из плана (отмена, поломка, невозможность перевозки).
-    const rejected = (data.orders || []).filter(order => order.status === 'cancelled');
-    const returned = (data.orders || []).filter(order => order.status === 'new' && order.returned_at);
-    const byReason = {};
-    [...rejected, ...returned].forEach(order => {
-      const reason = order.rejection_reason || 'не указана';
-      byReason[reason] = (byReason[reason] || 0) + 1;
-    });
-    const summary = Object.entries(byReason).sort((a, b) => b[1] - a[1])
-      .map(([reason, count]) => `<span class="rsum">${escapeHtml(reason)}: <b>${count}</b></span>`).join('');
-    const rows = items => items.map(order => `<tr>
-      <td>${escapeHtml(order.customer_name)}</td>
-      <td>${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}</td>
-      <td>${formatDateTime(order.window_from)}</td>
-      <td class="num">${rub(order.rate_vat)}</td>
-      <td>${escapeHtml(order.rejection_reason || 'не указана')}</td></tr>`).join('');
-    body = `<div class="geohint">Отклонено заявок: <b>${rejected.length}</b> ·
-        вернулось из плана: <b>${returned.length}</b></div>
-      <div class="rsums">${summary || '—'}</div>
-      <h4>Отклонённые заявки</h4>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина</th></tr></thead>
-        <tbody>${rows(rejected) || '<tr><td colspan=5>Отклонённых заявок нет</td></tr>'}</tbody></table>
-      <h4>Вернулись из плана в продажи</h4>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина возврата</th></tr></thead>
-        <tbody>${rows(returned) || '<tr><td colspan=5>Возвратов нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'history') {
     const history = await api('/api/periods/history');
     const plans = Object.fromEntries((data.revenuePlans || []).map(plan => [plan.period_start, Number(plan.target_net)]));
