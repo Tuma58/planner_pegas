@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { importTelematics, importTripsFrom1C, reportSnapshot } from '../src/planner-service.mjs';
+import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -92,6 +92,26 @@ test('SQLite создается со справочниками, админис�
   const item = db.prepare('SELECT * FROM outbox WHERE id=?').get(itemId);
   assert.equal(item.status, 'pending_approval');
   assert.deepEqual(JSON.parse(item.payload_json), { id: 'trip-1' });
+});
+
+test('новые алиасы геозон доезжают до уже засеянной базы', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-alias-test-'));
+  const databasePath = path.join(directory, 'planner.db');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const admin = { username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор' };
+
+  const first = openDatabase(databasePath, admin);
+  // Имитируем установку, где справочник ещё не знает города из свежей выгрузки.
+  first.prepare(`DELETE FROM zone_aliases WHERE alias='Видное'`).run();
+  assert.equal(first.prepare(`SELECT COUNT(*) count FROM zone_aliases WHERE alias='Видное'`).get().count, 0);
+  first.close();
+
+  // Повторное открытие обязано вернуть алиас: сид справочников не должен зависеть
+  // от отметки tk20_seed_version, иначе импорт 1С теряет треть рейсов.
+  const second = openDatabase(databasePath, admin);
+  t.after(() => second.close());
+  assert.equal(second.prepare(`SELECT COUNT(*) count FROM zone_aliases WHERE alias='Видное'`).get().count, 1);
+  assert.equal(resolveZone(second, 'Видное')?.name, 'Москва');
 });
 
 test('контракты 1С и телематики идемпотентны, отчет использует новую экономику', t => {

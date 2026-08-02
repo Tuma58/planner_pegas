@@ -225,6 +225,17 @@ function seed(db, admin, options) {
     const zoneId = name => db.prepare('SELECT id FROM zones WHERE name=?').get(name).id;
     const typeId = name => db.prepare('SELECT id FROM vehicle_types WHERE name=?').get(name).id;
 
+    // Координаты и алиасы геозон обновляются при каждом открытии БД, а не только при первом
+    // засеве: справочник городов пополняется по мере новых выгрузок 1С и должен доезжать
+    // до уже работающих установок. INSERT OR IGNORE не трогает добавленные администратором.
+    const updateZoneGeo = db.prepare('UPDATE zones SET latitude=?,longitude=? WHERE id=?');
+    const putAlias = db.prepare('INSERT OR IGNORE INTO zone_aliases(id,zone_id,alias) VALUES(?,?,?)');
+    for (const [name, metadata] of Object.entries(zoneMetadata)) {
+      const id = zoneId(name);
+      updateZoneGeo.run(metadata.latitude, metadata.longitude, id);
+      metadata.aliases.forEach(alias => putAlias.run(randomUUID(), id, alias));
+    }
+
     const putRate = db.prepare(`
       INSERT OR IGNORE INTO route_rates(id,from_zone_id,to_zone_id,distance_km,default_rate_vat)
       VALUES(?,?,?,?,?)`);
@@ -287,14 +298,6 @@ function applyTk20Seed(db, zoneId, typeId) {
   updateSetting.run('general', asJson(general));
   updateSetting.run('calculation', asJson(defaultSettings.calculation));
   updateSetting.run('orderOptions', asJson(defaultSettings.orderOptions));
-
-  const updateZone = db.prepare('UPDATE zones SET latitude=?,longitude=? WHERE id=?');
-  const putAlias = db.prepare('INSERT OR IGNORE INTO zone_aliases(id,zone_id,alias) VALUES(?,?,?)');
-  for (const [name, metadata] of Object.entries(zoneMetadata)) {
-    const id = zoneId(name);
-    updateZone.run(metadata.latitude, metadata.longitude, id);
-    metadata.aliases.forEach(alias => putAlias.run(randomUUID(), id, alias));
-  }
 
   const legacyTrips = db.prepare(`SELECT COUNT(*) count FROM trips
     WHERE external_id IS NULL AND starts_at>='2026-08-01' AND starts_at<'2026-09-01'`).get().count;
