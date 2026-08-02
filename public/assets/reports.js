@@ -1,7 +1,7 @@
 // Печатные отчёты — перенос reportDoc из прототипа ТК 21 (6 видов).
 // Экономика и утилизация — с сервера (/api/reports), разрез по клиентам и
 // отклонённые — по данным bootstrap, история — /api/periods/history.
-import { api, escapeHtml } from './api.js';
+import { api, escapeHtml, formatDateTime } from './api.js';
 
 export const REPORT_TITLES = {
   summary: 'Сводный отчёт руководителя',
@@ -75,9 +75,9 @@ export async function buildReport(kind, from, to, data) {
           <td class="num">${row.netRevenue ? pct(row.operationalProfit / row.netRevenue) : '—'}</td></tr>`) ||
           '<tr><td colspan=6>Нет рейсов за период</td></tr>'}</tbody></table>
       <h4>Отклонённые рейсы за период: ${rejectedTrips.length}</h4>
-      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Дата</th><th>Причина</th></tr></thead>
+      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Причина</th></tr></thead>
         <tbody>${rejectedTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
-          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td><td>${fmtDay(trip.starts_at.slice(0, 10))}</td>
+          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.rejection_reason || '—')}</td></tr>`).join('') ||
           '<tr><td colspan=4>Отклонённых нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'util') {
@@ -154,9 +154,9 @@ export async function buildReport(kind, from, to, data) {
       .map(([reason, count]) => `<span class="rsum">${escapeHtml(reason)}: <b>${count}</b></span>`).join('');
     body = `<div class="geohint">Всего отклонено за период: <b>${rejectedTrips.length}</b></div>
       <div class="rsums">${summary || '—'}</div>
-      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Дата</th><th>Заказчик</th><th>Причина</th></tr></thead>
+      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th><th>Причина</th></tr></thead>
         <tbody>${rejectedTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
-          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td><td>${fmtDay(trip.starts_at.slice(0, 10))}</td>
+          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.customer_name || '—')}</td><td>${escapeHtml(trip.rejection_reason || 'не указана')}</td></tr>`).join('') ||
           '<tr><td colspan=5>Отклонённых нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'history') {

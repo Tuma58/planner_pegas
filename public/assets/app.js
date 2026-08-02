@@ -1,4 +1,4 @@
-import { api, escapeHtml, formatDate, logout, money, setupTheme, toast } from './api.js';
+import { api, escapeHtml, formatDate, formatDateTime, formValues, logout, money, setupTheme, toast } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
@@ -134,7 +134,8 @@ function renderTimeline() {
       const width = Math.max(28, daysBetween(visibleStart, visibleEnd) * dayWidth - 3);
       const color = trip.from_color || '#3b6ea5';
       return `<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''}"
-        data-trip="${trip.id}" style="left:${left}px;width:${width}px;background-color:${color}">
+        data-trip="${trip.id}" style="left:${left}px;width:${width}px;background-color:${color}"
+        title="${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}">
         <strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
         <small>${escapeHtml(trip.customer_name)}</small>
       </button>`;
@@ -233,7 +234,7 @@ function enableTripDrag(dayWidth) {
       const plate = targetVehicle
         ? state.data.vehicles.find(vehicle => vehicle.id === targetVehicle)?.plate : '';
       showDragLabel(event.clientX, event.clientY,
-        `${formatDate(from)} → ${formatDate(to)}${plate ? `<span> · на ${escapeHtml(plate)}</span>` : ''}`);
+        `${formatDateTime(from)} → ${formatDateTime(to)}${plate ? `<span> · на ${escapeHtml(plate)}</span>` : ''}`);
     });
     element.addEventListener('pointerup', async event => {
       if (!mode) return;
@@ -504,7 +505,7 @@ function openNewTrip(order = null) {
   </form>`);
   const form = byId('tripForm');
   const update = () => {
-    const values = Object.fromEntries(new FormData(form));
+    const values = formValues(form);
     const result = calculation(values.fromZoneId, values.toZoneId, values.revenueVat, values.customerName);
     byId('tripCalculation').innerHTML =
       `<span>${result.distance.toLocaleString('ru-RU')} км · ${result.days.toFixed(1)} сут.</span>
@@ -514,7 +515,7 @@ function openNewTrip(order = null) {
   update();
   form.onsubmit = async event => {
     event.preventDefault();
-    const values = Object.fromEntries(new FormData(form));
+    const values = formValues(form);
     const calc = calculation(values.fromZoneId, values.toZoneId, values.revenueVat, values.customerName);
     try {
       await api('/api/trips', { method: 'POST', body: JSON.stringify({
@@ -541,6 +542,8 @@ function openTrip(trip) {
   showModal(`<form id="editTripForm">
     <h2>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</h2>
     <p class="muted mono">${escapeHtml(trip.vehicle_plate)} · ${escapeHtml(trip.customer_name || 'без заказчика')}</p>
+    <p class="muted">${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)} ·
+      ${Math.round(daysBetween(trip.starts_at, trip.ends_at) * 24)} ч в рейсе</p>
     <div class="summary-grid">
       <div class="metric"><span>Пробег</span><strong>${Number(trip.distance_km).toLocaleString('ru-RU')} км</strong></div>
       <div class="metric"><span>Выручка с НДС</span><strong>${money(trip.revenue_vat)}</strong></div>
@@ -565,7 +568,7 @@ function openTrip(trip) {
     event.preventDefault();
     try {
       await api(`/api/trips/${trip.id}`, {
-        method: 'PATCH', body: JSON.stringify(Object.fromEntries(new FormData(form)))
+        method: 'PATCH', body: JSON.stringify(formValues(form))
       });
       closeModal(); toast('Рейс обновлен'); await reload();
     } catch (error) { toast(error.message, 'error'); }
@@ -686,7 +689,7 @@ function openVehicle(vehicle) {
     event.preventDefault();
     try {
       await api(`/api/vehicles/${vehicle.id}`, {
-        method: 'PATCH', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+        method: 'PATCH', body: JSON.stringify(formValues(event.currentTarget))
       });
       closeModal(); toast('Состав ТС обновлен'); await reload();
     } catch (error) { toast(error.message, 'error'); }
@@ -720,7 +723,7 @@ function openDisposition(item = null, prefill = null) {
     try {
       await api(item ? `/api/dispositions/${item.id}` : '/api/dispositions', {
         method: item ? 'PATCH' : 'POST',
-        body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+        body: JSON.stringify(formValues(event.currentTarget))
       });
       closeModal(); toast('Интервал сохранен'); await reload();
     } catch (error) { toast(error.message, 'error'); }
@@ -755,7 +758,7 @@ function openNewOrder() {
     event.preventDefault();
     try {
       await api('/api/orders', {
-        method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+        method: 'POST', body: JSON.stringify(formValues(event.currentTarget))
       });
       closeModal(); toast('Заявка создана'); await reload();
     } catch (error) { toast(error.message, 'error'); }

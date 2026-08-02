@@ -43,6 +43,28 @@ export function formatDate(value, options = { day: '2-digit', month: 'short' }) 
   return new Intl.DateTimeFormat('ru-RU', options).format(new Date(value));
 }
 
+// Планирование ведётся до минут: метки времени показываются вместе с часами.
+// Время трактуется как UTC — так же, как оно хранится и вводится в формах.
+export function formatDateTime(value) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC'
+  }).format(new Date(value));
+}
+
+// Значения формы с нормализацией полей datetime-local.
+// Браузер отдаёт их без часового пояса ("2026-07-14T09:30") и трактовал бы как локальное
+// время, а поля заполняются из UTC (isoInput) — без явного Z час съезжал бы на смещение зоны.
+export function formValues(form) {
+  const values = Object.fromEntries(new FormData(form));
+  for (const element of form.elements) {
+    if (element.type === 'datetime-local' && element.name && values[element.name]) {
+      const raw = String(values[element.name]);
+      values[element.name] = raw.length === 16 ? `${raw}:00.000Z` : `${raw}Z`;
+    }
+  }
+  return values;
+}
+
 export async function logout() {
   await api('/api/auth/logout', { method: 'POST' });
   location.href = '/login.html';

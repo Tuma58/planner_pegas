@@ -2,12 +2,32 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, escapeHtml, money, toast } from './api.js';
+import { api, escapeHtml, formValues, money, toast } from './api.js';
 
 export const STAGES = ['Заявка принята', 'Подтверждена', 'Назначена ТС', 'В пути', 'Выгружена', 'Документы'];
 
 const fmtDay = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
   .format(new Date(value));
+// Планирование ведётся с точностью до минут: окна погрузки и моменты освобождения
+// показываются вместе с временем суток.
+const fmtDateTime = value => new Intl.DateTimeFormat('ru-RU', {
+  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC'
+}).format(new Date(value));
+
+// Значение для <input type="datetime-local"> (UTC без секунд).
+const inputValue = value => new Date(value).toISOString().slice(0, 16);
+
+// Дефолты планирования: погрузка с 08:00, приём груза до 18:00,
+// подача под погрузку — через 2 часа после освобождения сцепки.
+const WORK_START_HOUR = 8;
+const WORK_END_HOUR = 18;
+const DISPATCH_LAG_MS = 2 * 3_600_000;
+
+function atHour(date, hour) {
+  const result = new Date(date);
+  result.setUTCHours(hour, 0, 0, 0);
+  return result;
+}
 
 function routeInfo(data, fromId, toId) {
   const rates = data.reference.routeRates;
@@ -45,7 +65,12 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     requests.push({
       vehicle, zone,
       freeAt: last.ends_at,
-      windowTo: new Date(Math.min(endsAt.getTime() + 2 * 86_400_000, monthEndDate.getTime())).toISOString(),
+      // Погрузка возможна не раньше подачи (норматив после выгрузки), окно — до конца вторых суток.
+      loadFrom: new Date(endsAt.getTime() + DISPATCH_LAG_MS).toISOString(),
+      windowTo: new Date(Math.min(
+        atHour(new Date(endsAt.getTime() + 2 * 86_400_000), WORK_END_HOUR).getTime(),
+        monthEndDate.getTime()
+      )).toISOString(),
       suggestTo: suggestion?.to_name || null,
       suggestToId: suggestion?.to_zone_id || null,
       suggestRate: suggestion?.default_rate_vat || 0,
@@ -68,23 +93,30 @@ export function orderStage(order, data) {
 }
 
 // Кандидаты на назначение: свободные в зоне отправления к началу окна, затем ближайшие.
+// Занятость определяется точным пересечением по времени — две заявки в один день
+// с разным временем погрузки не конфликтуют.
 export function matchVehicles(data, fromZoneName, windowFrom) {
+  const moment = Date.parse(windowFrom);
   const busy = new Set(data.trips
     .filter(trip => trip.status !== 'rejected' &&
-      Date.parse(trip.starts_at) < Date.parse(windowFrom) + 86_400_000 &&
-      Date.parse(trip.ends_at) > Date.parse(windowFrom))
+      Date.parse(trip.starts_at) <= moment && Date.parse(trip.ends_at) > moment)
     .map(trip => trip.vehicle_id));
   return data.vehicles
     .filter(vehicle => vehicle.status === 'work' && !busy.has(vehicle.id))
     .map(vehicle => {
       const lastTrip = data.trips
         .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-          Date.parse(trip.ends_at) <= Date.parse(windowFrom) + 86_400_000)
+          Date.parse(trip.ends_at) <= moment)
         .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
       const zoneName = lastTrip ? lastTrip.to_name : vehicle.zone_name;
-      return { vehicle, zoneName, inZone: zoneName === fromZoneName };
+      // Готовность к подаче: освободившейся сцепке нужен норматив на подачу под погрузку.
+      const readyAt = lastTrip ? Date.parse(lastTrip.ends_at) + DISPATCH_LAG_MS : null;
+      return {
+        vehicle, zoneName, inZone: zoneName === fromZoneName,
+        readyAt, ready: !readyAt || readyAt <= moment
+      };
     })
-    .sort((a, b) => Number(b.inZone) - Number(a.inZone));
+    .sort((a, b) => Number(b.inZone) - Number(a.inZone) || Number(b.ready) - Number(a.ready));
 }
 
 export function renderSales(container, context) {
@@ -117,7 +149,7 @@ export function renderSales(container, context) {
     `<div class="list-item req" data-req="${index}">
       <span style="flex:1;min-width:0">
         <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.vehicle.type_name)}
-        <small class="muted" style="display:block">освободится в «${escapeHtml(request.zone.name)}» ${fmtDay(request.freeAt)} — нужен груз</small>
+        <small class="muted" style="display:block">освободится в «${escapeHtml(request.zone.name)}» ${fmtDateTime(request.freeAt)} · подача с ${fmtDateTime(request.loadFrom)}</small>
         ${request.suggestTo ? `<small class="muted" style="display:block">→ ${escapeHtml(request.zone.name)}→${escapeHtml(request.suggestTo)}${request.suggestCustomer ? `, ${escapeHtml(request.suggestCustomer)}` : ''} · ${money(request.suggestRate)}</small>` : ''}
       </span>
       <span class="reqzone" style="background:${request.zone.color}">${escapeHtml(request.zone.name)}</span>
@@ -133,7 +165,7 @@ export function renderSales(container, context) {
       <span style="flex:1;min-width:0">
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
         ${st.plate ? ` · <span class="mono">${escapeHtml(st.plate)}</span>` : ''}
-        <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDay(order.window_from)}→${fmtDay(order.window_to)}</small>
+        <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${stepper(st.stage)}
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
@@ -182,10 +214,10 @@ export function renderSales(container, context) {
             <label class="field">Кузов<select name="bodyType">${bodies}</select></label>
           </div>
           <div class="form-grid">
-            <label class="field">Окно с<input name="windowFrom" id="salesWinFrom" type="date" required
-              value="${state.month.toISOString().slice(0, 10)}"></label>
-            <label class="field">Окно по<input name="windowTo" id="salesWinTo" type="date" required
-              value="${new Date(state.month.getTime() + 2 * 86_400_000).toISOString().slice(0, 10)}"></label>
+            <label class="field">Окно с<input name="windowFrom" id="salesWinFrom" type="datetime-local" required
+              value="${inputValue(atHour(state.month, WORK_START_HOUR))}"></label>
+            <label class="field">Окно по<input name="windowTo" id="salesWinTo" type="datetime-local" required
+              value="${inputValue(atHour(new Date(state.month.getTime() + 2 * 86_400_000), WORK_END_HOUR))}"></label>
           </div>
           <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate" type="number" min="0"></label>
           <div id="salesFeas" class="feas"></div>
@@ -223,14 +255,24 @@ export function renderSales(container, context) {
     const rateInput = container.querySelector('#salesRate');
     if (!rateInput.value) rateInput.placeholder = info.rate.toLocaleString('ru-RU');
     const fromName = data.reference.zones.find(zone => zone.id === fromId)?.name;
-    const candidates = matchVehicles(data, fromName, `${windowFrom}T00:00:00Z`);
+    // Значение datetime-local не содержит зоны — трактуем как UTC, как и остальные метки времени.
+    const startsAt = windowFrom ? `${windowFrom}:00.000Z` : null;
+    const candidates = startsAt ? matchVehicles(data, fromName, startsAt) : [];
     const best = candidates[0];
+    const arrival = startsAt
+      ? new Date(Date.parse(startsAt) + info.transit * 86_400_000).toISOString() : null;
+    const hours = Math.round(info.transit * 24);
     container.querySelector('#salesFeas').innerHTML = `
       <div class="feas-t">Осуществимость</div>
       <div class="feas-row"><span>Рыночная ставка</span><b>${money(info.rate)}</b></div>
-      <div class="feas-row"><span>Срок доставки</span><b>${info.transit.toFixed(1)} сут · ${info.distance.toLocaleString('ru-RU')} км</b></div>
+      <div class="feas-row"><span>Срок доставки</span><b>${hours} ч · ${info.distance.toLocaleString('ru-RU')} км</b></div>
+      ${arrival ? `<div class="feas-row"><span>Прибытие ~</span><b>${fmtDateTime(arrival)}</b></div>` : ''}
       <div class="feas-row ${best ? 'ok' : 'bad'}"><span>Свободная сцепка</span>
-        <b>${best ? `${escapeHtml(best.vehicle.plate)} · ${best.inZone ? 'в зоне' : escapeHtml(best.zoneName || 'перегон')}` : 'нет свободной к сроку'}</b></div>`;
+        <b>${best
+          ? `${escapeHtml(best.vehicle.plate)} · ${best.inZone ? 'в зоне' : escapeHtml(best.zoneName || 'перегон')}`
+          : 'нет свободной к сроку'}</b></div>
+      ${best && !best.ready
+        ? `<div class="feas-row bad"><span>Готова к подаче</span><b>${fmtDateTime(best.readyAt)}</b></div>` : ''}`;
   };
   ['salesFrom', 'salesTo', 'salesWinFrom'].forEach(id =>
     container.querySelector(`#${id}`).addEventListener('change', feasibility));
@@ -244,15 +286,15 @@ export function renderSales(container, context) {
       if (request.suggestToId) container.querySelector('#salesTo').value = request.suggestToId;
       container.querySelector('[name="customerName"]').value = request.suggestCustomer || '';
       container.querySelector('#salesRate').value = request.suggestRate || '';
-      container.querySelector('#salesWinFrom').value = request.freeAt.slice(0, 10);
-      container.querySelector('#salesWinTo').value = request.windowTo.slice(0, 10);
+      container.querySelector('#salesWinFrom').value = inputValue(request.loadFrom);
+      container.querySelector('#salesWinTo').value = inputValue(request.windowTo);
       feasibility();
       toast('Бронирование обратного груза заполнено');
     }));
 
   container.querySelector('#salesForm').onsubmit = async event => {
     event.preventDefault();
-    const values = Object.fromEntries(new FormData(event.currentTarget));
+    const values = formValues(event.currentTarget);
     if (!values.rateVat) {
       values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
     }
@@ -276,11 +318,12 @@ export function assignDialog(order, data, showModal, closeModal, onReload) {
   const candidates = matchVehicles(data, order.from_name, order.window_from);
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
   showModal(`<h2>Назначить ТС · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}</h2>
-    <p class="muted">${escapeHtml(order.customer_name)} · окно ${fmtDay(order.window_from)}→${fmtDay(order.window_to)} · ${escapeHtml(order.body_type || 'Реф')} ${escapeHtml(order.temperature_mode || '')}</p>
+    <p class="muted">${escapeHtml(order.customer_name)} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${escapeHtml(order.body_type || 'Реф')} ${escapeHtml(order.temperature_mode || '')}</p>
     <div class="list" style="max-height:220px;overflow:auto;margin-bottom:10px">
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">
         <strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
-        <small class="muted">${escapeHtml(candidate.vehicle.type_name)}</small>
+        <small class="muted">${escapeHtml(candidate.vehicle.type_name)}${candidate.readyAt
+          ? ` · свободна с ${fmtDateTime(candidate.readyAt)}` : ''}</small>
         <span class="badge ${candidate.inZone ? 'ok' : 'warn'}" style="margin-left:auto">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.zoneName || 'перегон')}</span>
       </button>`).join('') || '<p class="muted">Нет свободных к сроку — выберите вручную.</p>'}
     </div>
