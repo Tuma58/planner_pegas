@@ -1010,28 +1010,41 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json'
 };
 
+// Версия ассетов меняется при каждом старте сервера: HTML ссылается на
+// /assets/v<версия>/…, поэтому после деплоя браузеры (включая Safari с его
+// агрессивным кешем ES-модулей) получают новые URL и не смешивают версии.
+// Относительные import'ы внутри модулей наследуют версионированный путь.
+const ASSET_VERSION = Date.now().toString(36);
+const VERSIONED_ASSETS = /^\/assets\/v[a-z0-9]+\//;
+
 function staticFile(request, response, url) {
   let pathname = url.pathname === '/' ? '/login.html' : url.pathname;
   if (pathname === '/planner') pathname = '/app.html';
   if (pathname === '/settings') pathname = '/settings.html';
+  const versioned = VERSIONED_ASSETS.test(pathname);
+  if (versioned) pathname = pathname.replace(VERSIONED_ASSETS, '/assets/');
   const resolved = path.resolve(config.publicPath, `.${pathname}`);
   if (!resolved.startsWith(`${config.publicPath}${path.sep}`)) return errorJson(response, 403, 'Запрещено');
   if (!fs.existsSync(resolved)) return errorJson(response, 404, 'Страница не найдена');
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) return errorJson(response, 404, 'Страница не найдена');
-  // Ревалидация вместо max-age: после деплоя браузер не должен держать смесь
-  // старых и новых ES-модулей (ломает интерфейс до истечения кеша).
-  // ETag по mtime+size даёт 304 на неизменённые файлы — трафик минимален.
-  const etag = `"${Math.round(stat.mtimeMs).toString(36)}-${stat.size.toString(36)}"`;
+  const html = path.extname(resolved) === '.html';
+  // Версионированные URL уникальны для каждого деплоя — их можно кешировать намертво.
+  // HTML и неверсионированные пути ревалидируются каждый раз (no-cache + ETag → 304).
+  const cacheControl = versioned ? 'public, max-age=31536000, immutable' : 'no-cache';
+  const etag = `"${ASSET_VERSION}-${Math.round(stat.mtimeMs).toString(36)}-${stat.size.toString(36)}"`;
   if (request.headers['if-none-match'] === etag) {
-    response.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' });
+    response.writeHead(304, { ETag: etag, 'Cache-Control': cacheControl });
     return response.end();
   }
-  const content = fs.readFileSync(resolved);
+  let content = fs.readFileSync(resolved);
+  if (html) {
+    content = Buffer.from(content.toString('utf8').replaceAll('/assets/', `/assets/v${ASSET_VERSION}/`));
+  }
   response.writeHead(200, {
     'Content-Type': MIME[path.extname(resolved)] || 'application/octet-stream',
     'Content-Length': content.length,
-    'Cache-Control': 'no-cache',
+    'Cache-Control': cacheControl,
     ETag: etag
   });
   response.end(content);
