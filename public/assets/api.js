@@ -43,23 +43,63 @@ export function formatDate(value, options = { day: '2-digit', month: 'short' }) 
   return new Intl.DateTimeFormat('ru-RU', options).format(new Date(value));
 }
 
+// ── Часовой пояс предприятия ──────────────────────────────────────────────
+// В базе время хранится в UTC, а планируется и отображается в часовом поясе
+// предприятия (настройка «Настройки → Планер»), чтобы часы совпадали с 1С.
+let planningTimeZone = 'Europe/Moscow';
+
+export function setTimeZone(timeZone) {
+  if (!timeZone) return;
+  try {
+    new Intl.DateTimeFormat('ru-RU', { timeZone }).format(new Date());
+    planningTimeZone = timeZone;
+  } catch { /* некорректная зона в настройках — остаёмся на прежней */ }
+}
+
+export const timeZone = () => planningTimeZone;
+
+// Смещение зоны для конкретного момента (учитывает переход на летнее время).
+function offsetMs(date) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: planningTimeZone, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).formatToParts(date).map(part => [part.type, part.value]));
+  const shown = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour) % 24, Number(parts.minute), Number(parts.second));
+  return shown - date.getTime();
+}
+
+// UTC → значение для <input type="datetime-local"> (время предприятия).
+export function toLocalInput(value) {
+  const date = new Date(value);
+  return new Date(date.getTime() + offsetMs(date)).toISOString().slice(0, 16);
+}
+
+// Значение datetime-local (время предприятия) → ISO в UTC.
+// Второй проход уточняет смещение, если момент попал на границу перевода часов.
+export function fromLocalInput(value) {
+  const naive = Date.parse(`${String(value).slice(0, 16)}:00.000Z`);
+  if (!Number.isFinite(naive)) return null;
+  let utc = naive - offsetMs(new Date(naive));
+  utc = naive - offsetMs(new Date(utc));
+  return new Date(utc).toISOString();
+}
+
 // Планирование ведётся до минут: метки времени показываются вместе с часами.
-// Время трактуется как UTC — так же, как оно хранится и вводится в формах.
 export function formatDateTime(value) {
   return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC'
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: planningTimeZone
   }).format(new Date(value));
 }
 
-// Значения формы с нормализацией полей datetime-local.
-// Браузер отдаёт их без часового пояса ("2026-07-14T09:30") и трактовал бы как локальное
-// время, а поля заполняются из UTC (isoInput) — без явного Z час съезжал бы на смещение зоны.
+// Значения формы с нормализацией полей datetime-local: браузер отдаёт их без
+// часового пояса, трактуем как время предприятия и переводим в UTC.
 export function formValues(form) {
   const values = Object.fromEntries(new FormData(form));
   for (const element of form.elements) {
     if (element.type === 'datetime-local' && element.name && values[element.name]) {
-      const raw = String(values[element.name]);
-      values[element.name] = raw.length === 16 ? `${raw}:00.000Z` : `${raw}Z`;
+      values[element.name] = fromLocalInput(values[element.name]) ?? values[element.name];
     }
   }
   return values;

@@ -1,4 +1,4 @@
-import { api, escapeHtml, formatDate, formatDateTime, formValues, logout, money, setupTheme, toast } from './api.js';
+import { api, escapeHtml, formatDate, formatDateTime, formValues, logout, money, setTimeZone, setupTheme, timeZone, toLocalInput, toast } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
@@ -17,7 +17,7 @@ const state = {
 const byId = id => document.getElementById(id);
 const can = permission => state.permissions.has(permission);
 const daysBetween = (a, b) => (new Date(b) - new Date(a)) / 86_400_000;
-const isoInput = date => new Date(date).toISOString().slice(0, 16);
+const isoInput = date => toLocalInput(date);
 
 function monthStart(date) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
@@ -32,6 +32,7 @@ function monthDays(date) {
 }
 
 function setupUser() {
+  setTimeZone(state.data.settings.general.timezone);
   const user = state.data.user;
   state.permissions = new Set(user.permissions);
   byId('profileName').textContent = user.fullName;

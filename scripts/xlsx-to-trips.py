@@ -47,12 +47,18 @@ def normalize_place(value):
     return text
 
 
-def combine(date_value, time_value):
-    """Дата + время суток → ISO-8601 без часового пояса (трактуется как локальное время склада)."""
+def combine(date_value, time_value, tz):
+    """Дата + время из 1С (время предприятия) → ISO-8601 в UTC.
+
+    В базе время хранится в UTC, поэтому наивное время выгрузки трактуется
+    в часовом поясе предприятия и переводится: 13:00 MSK → 10:00Z.
+    """
     date = pd.to_datetime(date_value, format='%d.%m.%Y')
     parts = str(time_value or '0:00:00').split(':')
     hours, minutes = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
-    return (date + pd.Timedelta(hours=hours, minutes=minutes)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    local = (date + pd.Timedelta(hours=hours, minutes=minutes)).tz_localize(
+        tz, ambiguous=True, nonexistent='shift_forward')
+    return local.tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
 
 def main():
@@ -62,6 +68,8 @@ def main():
     parser.add_argument('--from', dest='date_from', required=True, help='дата выполнения не ранее, YYYY-MM-DD')
     parser.add_argument('--to', dest='date_to', required=True, help='дата выполнения не позднее, YYYY-MM-DD')
     parser.add_argument('--sheet', default=0, help='лист книги (индекс или имя)')
+    parser.add_argument('--tz', default='Europe/Moscow',
+                        help='часовой пояс предприятия, в котором указано время в выгрузке')
     args = parser.parse_args()
 
     frame = pd.read_excel(args.source, sheet_name=args.sheet)
@@ -74,8 +82,8 @@ def main():
 
     rows = []
     for _, row in selected.iterrows():
-        starts_at = combine(row[COLUMNS['depDate']], row[COLUMNS['depTime']])
-        ends_at = combine(row[COLUMNS['doneDate']], row[COLUMNS['doneTime']])
+        starts_at = combine(row[COLUMNS['depDate']], row[COLUMNS['depTime']], args.tz)
+        ends_at = combine(row[COLUMNS['doneDate']], row[COLUMNS['doneTime']], args.tz)
         rows.append({
             'id': str(row[COLUMNS['id']]).strip(),
             'truck': str(row[COLUMNS['truck']]).strip(),
@@ -97,6 +105,7 @@ def main():
     revenue = sum(item['revenue'] for item in rows)
     places = sorted({item['from'] for item in rows} | {item['to'] for item in rows})
     print(f'Отобрано рейсов: {len(rows)} из {len(frame)} (дата выполнения {args.date_from}…{args.date_to})')
+    print(f'Время выгрузки трактовано как {args.tz} и переведено в UTC')
     print(f'Сумма: {revenue:,.0f} | ТС: {len({r["truck"] for r in rows})} | заказчиков: {len({r["client"] for r in rows})}')
     print(f'Уникальных населённых пунктов после нормализации: {len(places)}')
     print(f'Записано: {args.output}')

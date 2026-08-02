@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, escapeHtml, formValues, money, toast } from './api.js';
+import { api, escapeHtml, formatDateTime, formValues, money, toLocalInput, toast } from './api.js';
 
 export const STAGES = ['Заявка принята', 'Подтверждена', 'Назначена ТС', 'В пути', 'Выгружена', 'Документы'];
 
@@ -10,12 +10,10 @@ const fmtDay = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month
   .format(new Date(value));
 // Планирование ведётся с точностью до минут: окна погрузки и моменты освобождения
 // показываются вместе с временем суток.
-const fmtDateTime = value => new Intl.DateTimeFormat('ru-RU', {
-  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC'
-}).format(new Date(value));
+const fmtDateTime = formatDateTime;
 
-// Значение для <input type="datetime-local"> (UTC без секунд).
-const inputValue = value => new Date(value).toISOString().slice(0, 16);
+// Значение для <input type="datetime-local"> — в часовом поясе предприятия.
+const inputValue = toLocalInput;
 
 // Дефолты планирования: погрузка с 08:00, приём груза до 18:00,
 // подача под погрузку — через 2 часа после освобождения сцепки.

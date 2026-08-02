@@ -16,7 +16,7 @@ const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} 
 const pct = value => `${(value * 100).toFixed(1)}%`;
 const isIP = name => /\bИП\b/iu.test(String(name || ''));
 const fmtDay = iso => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
-  .format(new Date(`${iso}T00:00:00Z`));
+  .format(new Date(`${iso}T12:00:00Z`));
 
 const inRange = (trip, from, to) =>
   trip.ends_at >= `${from}T00:00:00` && trip.ends_at < `${to}T23:59:59` &&
