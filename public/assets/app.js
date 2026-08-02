@@ -385,42 +385,135 @@ async function refreshExceptions() {
   } catch { /* нет права planner:read — чип остаётся скрытым */ }
 }
 
+// После выполненного действия проблема исчезает из реестра: данные перезагружаются,
+// шторка перерисовывается уже без решённой позиции (или закрывается, если проблем нет).
+async function resolveAndRefresh(action, successMessage) {
+  try {
+    await action();
+    toast(successMessage);
+    await reload();
+    await refreshExceptions();
+    if (state.exceptions?.count > 0 || (state.exceptions?.unavailableVehicles || []).length) openExceptions();
+    else closeModal();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
 function openExceptions() {
   const data = state.exceptions;
   if (!data) return;
-  const section = (title, items, badge) => items.length
+  const tripRow = (trip, badge, title, actions) => `<div class="list-item exrow">
+    <span style="flex:1;min-width:0">
+      <strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
+      <small class="muted" style="display:block"><span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
+        · ${formatDateTime(trip.starts_at)} · ${escapeHtml(trip.customer_name)}
+        ${trip.rejection_reason ? ` · ${escapeHtml(trip.rejection_reason)}` : ''}</small>
+    </span>
+    <span class="exactions"><span class="badge ${badge}">${title}</span>${actions}</span>
+  </div>`;
+  const section = (title, items, badge, actionsFor) => items.length
     ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(trip =>
-        `<button class="list-item" data-ex-trip="${trip.id}"><span>
-          <strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
-          <small class="muted mono">${escapeHtml(trip.vehicle_plate || '')} · ${formatDate(trip.starts_at)} · ${escapeHtml(trip.customer_name)}</small></span>
-          <span class="badge ${badge}">${title}</span></button>`).join('')}</div>`
+        tripRow(trip, badge, title, actionsFor(trip))).join('')}</div>`
     : '';
-  // Заявки без перевозки: отклонённые продажами и вернувшиеся из плана.
-  const orderSection = (title, items, badge, note) => items.length
-    ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(order =>
-        `<div class="list-item"><span>
+
+  const criticalActions = trip => `
+    ${can('trips:write') ? `<button class="button ghost small" data-ex-shift="${trip.id}"
+      title="Перенести начало рейса на конец интервала недоступности">Сдвинуть после простоя</button>` : ''}
+    <button class="button ghost small" data-ex-open="${trip.id}">Открыть</button>`;
+  const conflictActions = trip => `
+    <button class="button ghost small" data-ex-open="${trip.id}"
+      title="Откройте рейс и измените сроки или сцепку — конфликт уйдёт сам">Открыть</button>`;
+  const rejectedActions = trip => `
+    ${can('trips:write') ? `<button class="button ghost small" data-ex-restore="${trip.id}"
+      title="Вернуть рейс в план со статусом «План»">Восстановить</button>` : ''}
+    ${can('trips:write') ? `<button class="button ghost small" data-ex-remove="${trip.id}"
+      title="Убрать рейс из плана; связанная заявка уже возвращена в продажи">Убрать из плана</button>` : ''}
+    <button class="button ghost small" data-ex-open="${trip.id}">Открыть</button>`;
+
+  const orderSection = (title, items, badge, note, actionsFor) => items.length
+    ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(order => `<div class="list-item exrow">
+        <span style="flex:1;min-width:0">
           <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
-          <small class="muted" style="display:block">${note}: ${escapeHtml(order.rejection_reason || 'без причины')}</small></span>
-          <span class="badge ${badge}">${title}</span></div>`).join('')}</div>`
+          <small class="muted" style="display:block">${note}: ${escapeHtml(order.rejection_reason || 'без причины')}</small>
+        </span>
+        <span class="exactions"><span class="badge ${badge}">${title}</span>${actionsFor(order)}</span>
+      </div>`).join('')}</div>`
     : '';
+  const rejectedOrderActions = order => (can('orders:write') || can('trips:write'))
+    ? `<button class="button ghost small" data-ex-order-restore="${order.id}">Вернуть в работу</button>` : '';
+  const returnedOrderActions = () => `<button class="button ghost small" data-ex-to-sales
+    title="Перейти в продажи и назначить ТС заново">В продажи</button>`;
+
   const unavailable = (data.unavailableVehicles || []).length
     ? `<h3>ТС вне работы</h3><div class="list">${data.unavailableVehicles.map(row =>
         `<div class="list-item"><span>${{ repair: 'В ремонте', no_driver: 'Без водителя', out: 'Выведены' }[row.status] || row.status}</span>
-         <span class="badge warn">${row.count}</span></div>`).join('')}</div>`
+         <span class="badge warn">${row.count}</span></div>`).join('')}
+      <div class="geohint">Управляется в «Ресурсе» и карточках ТС; счётчик информационный.</div>`
     : '';
   showModal(`<h2>Требует решения</h2>
     ${data.count === 0 ? '<p class="muted">Проблем нет — план чист.</p>' : ''}
-    ${section('Критичный', data.critical, 'bad')}
-    ${section('Конфликт', data.conflicts, 'warn')}
-    ${section('Отклонён', data.rejected, 'bad')}
-    ${orderSection('Заявка отклонена', data.rejectedOrders || [], 'bad', 'причина')}
-    ${orderSection('Вернулась из плана', data.returnedOrders || [], 'warn', 'причина возврата')}
+    ${section('Критичный', data.critical, 'bad', criticalActions)}
+    ${section('Конфликт', data.conflicts, 'warn', conflictActions)}
+    ${section('Отклонён', data.rejected, 'bad', rejectedActions)}
+    ${orderSection('Заявка отклонена', data.rejectedOrders || [], 'bad', 'причина', rejectedOrderActions)}
+    ${orderSection('Вернулась из плана', data.returnedOrders || [], 'warn', 'причина возврата', returnedOrderActions)}
     ${unavailable}
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
-  document.querySelectorAll('[data-ex-trip]').forEach(button =>
+
+  const tripById = id => state.data.trips.find(item => item.id === id);
+  document.querySelectorAll('[data-ex-open]').forEach(button =>
     button.addEventListener('click', () => {
-      const trip = state.data.trips.find(item => item.id === button.dataset.exTrip);
+      const trip = tripById(button.dataset.exOpen);
       if (trip) { closeModal(); openTrip(trip); }
+    }));
+  // Критичный: перенос рейса за конец пересекающего интервала недоступности.
+  document.querySelectorAll('[data-ex-shift]').forEach(button =>
+    button.addEventListener('click', () => {
+      const trip = tripById(button.dataset.exShift);
+      if (!trip) return;
+      const blocker = (state.data.dispositions || [])
+        .filter(item => item.vehicle_id === trip.vehicle_id &&
+          Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
+          Date.parse(item.starts_at) < Date.parse(trip.ends_at))
+        .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+      if (!blocker) { toast('Интервал недоступности уже снят', 'error'); return; }
+      const duration = Date.parse(trip.ends_at) - Date.parse(trip.starts_at);
+      const startsAt = blocker.ends_at;
+      const endsAt = new Date(Date.parse(startsAt) + duration).toISOString();
+      resolveAndRefresh(
+        () => api(`/api/trips/${trip.id}`, { method: 'PATCH', body: JSON.stringify({ startsAt, endsAt }) }),
+        `Рейс перенесён на ${formatDateTime(startsAt)}`);
+    }));
+  // Отклонённый рейс: вернуть в план либо убрать из плана — обе развязки убирают проблему.
+  document.querySelectorAll('[data-ex-restore]').forEach(button =>
+    button.addEventListener('click', () => {
+      const trip = tripById(button.dataset.exRestore);
+      if (!trip) return;
+      resolveAndRefresh(
+        () => api(`/api/trips/${trip.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'plan', rejectionReason: null, vehicleId: trip.vehicle_id })
+        }),
+        'Рейс восстановлен в план');
+    }));
+  document.querySelectorAll('[data-ex-remove]').forEach(button =>
+    button.addEventListener('click', () => {
+      const trip = tripById(button.dataset.exRemove);
+      if (!trip || !confirm(`Убрать рейс ${trip.from_name} → ${trip.to_name} из плана?`)) return;
+      resolveAndRefresh(
+        () => api(`/api/trips/${trip.id}`, { method: 'DELETE' }),
+        'Рейс убран из плана');
+    }));
+  document.querySelectorAll('[data-ex-order-restore]').forEach(button =>
+    button.addEventListener('click', () =>
+      resolveAndRefresh(
+        () => api(`/api/orders/${button.dataset.exOrderRestore}`, {
+          method: 'PATCH', body: JSON.stringify({ status: 'new', stage: 0 })
+        }),
+        'Заявка возвращена в работу')));
+  document.querySelectorAll('[data-ex-to-sales]').forEach(button =>
+    button.addEventListener('click', () => {
+      closeModal();
+      document.querySelector('[data-view="sales"]')?.click();
     }));
 }
 

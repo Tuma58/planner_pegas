@@ -357,7 +357,8 @@ async function api(request, response, url) {
       trip.startsAt, trip.endsAt, trip.distanceKm, trip.revenueVat, trip.status,
       trip.rejectionReason, trip.temperatureMode, trip.bodyType, user.id, user.id);
     if (trip.orderId) db.prepare(`UPDATE orders SET status='planned',stage=2,trip_id=?,
-      assigned_vehicle_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id, trip.vehicleId, trip.orderId);
+      assigned_vehicle_id=?,rejection_reason=NULL,returned_at=NULL,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id, trip.vehicleId, trip.orderId);
     const automatic = integrationPublic().writePolicy === 'automatic';
     queueOutbox(db, 'trips', id, 'create', tripOutboxPayload(id), automatic);
     audit(db, user, 'create', 'trip', id, trip, requestIp(request));
@@ -472,6 +473,10 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Некорректное окно заявки');
     }
     const nextStatus = body.status ?? current.status;
+    // Стадия конвейера: фиксируем момент перехода (по нему видно, сколько заявка ждёт)
+    // и отдельно — подтверждение продажами для реестра в отчёте.
+    const nextStage = Number(body.stage ?? current.stage);
+    const stageChanged = nextStage !== Number(current.stage);
     // Отклонение заявки без причины запрещено: реестр отклонённых должен объяснять отказ.
     let rejectionReason = current.rejection_reason;
     let returnedAt = current.returned_at;
@@ -484,11 +489,11 @@ async function api(request, response, url) {
       // Возврат отклонённой заявки в работу очищает историю отказа.
       rejectionReason = null;
       returnedAt = null;
+    } else if (stageChanged && nextStage >= 1) {
+      // Заявка двинулась по конвейеру — возврат из плана отработан, пометка снимается.
+      rejectionReason = null;
+      returnedAt = null;
     }
-    // Стадия конвейера: фиксируем момент перехода (по нему видно, сколько заявка ждёт)
-    // и отдельно — подтверждение продажами для реестра в отчёте.
-    const nextStage = Number(body.stage ?? current.stage);
-    const stageChanged = nextStage !== Number(current.stage);
     const confirmedAt = current.confirmed_at ||
       (stageChanged && nextStage >= 1 ? new Date().toISOString() : null);
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,rate_vat=?,
@@ -538,8 +543,12 @@ async function api(request, response, url) {
           tripId, vehicle.id, order.id, order.customer_name, order.from_zone_id, order.to_zone_id,
           startsAt, endsAt, distance, order.rate_vat, order.temperature_mode, order.body_type, user.id, user.id);
       }
+      // Назначение ТС решает и «возврат из плана»: пометка снимается, запись
+      // уходит из «Требует решения» по факту решения.
       db.prepare(`UPDATE orders SET status='planned',stage=2,assigned_vehicle_id=?,trip_id=?,
-        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(vehicle.id, tripId, order.id);
+        rejection_reason=NULL,returned_at=NULL,
+        stage_changed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(vehicle.id, tripId, order.id);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');

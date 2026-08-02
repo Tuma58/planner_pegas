@@ -280,6 +280,9 @@ tbody tr:hover td { background: var(--hover); }
 
 /* Чип «Требует решения» */
 #exceptionsChip.warn { border-color: var(--warn); color: var(--warn); }
+/* Строки реестра исключений: бейдж + кнопки-решения справа */
+.exrow .exactions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+.exrow .exactions .button { margin-left: 0; }
 
 /* Широкая модалка (карта, отчёты, кабина) */
 .modal.wide { width: min(1200px, 96vw); }
