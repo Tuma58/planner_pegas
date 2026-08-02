@@ -154,6 +154,7 @@ export function renderSales(container, context) {
 
   // Карточка конвейера: стадия, чей ход, сколько ждёт и кнопка действия.
   // Сначала задачи текущего пользователя, затем самые залежавшиеся — видно узкое место.
+  const canReject = can('orders:write') || can('trips:write');
   const withStep = orders.map(order => ({ order, step: pipelineStep(order, data, can) }));
   const visible = (onlyMine ? withStep.filter(item => item.step.mine) : withStep)
     .sort((a, b) => Number(b.step.mine) - Number(a.step.mine) || b.step.sinceMs - a.step.sinceMs);
@@ -174,13 +175,11 @@ export function renderSales(container, context) {
       ? `<button class="button small danger" data-act="assign" data-order="${order.id}">⚠ Переназначить ТС</button>` : '';
     return `<div class="list-item ordrow pipe-${step.tone}" data-order="${order.id}">
       <span style="flex:1;min-width:0">
-        <span class="pipe-head">${waiting}${since}
-          <b class="pipe-stage">${escapeHtml(step.label)}</b></span>
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
         ${step.plate ? ` · <span class="mono">${escapeHtml(step.plate)}</span>` : ''}
         <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
-        ${stepper(step.stage)}
+        <div class="stepper-row">${stepper(step.stage)}<span class="pipe-inline">${waiting}${since}</span></div>
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <b>${money(order.rate_vat)}</b>
@@ -206,11 +205,6 @@ export function renderSales(container, context) {
       <div class="skpi"><span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span></div>
       <div class="skpi"><span class="skl">Назначено ТС</span><span class="skv">${assigned}</span></div>
       <div class="skpi"><span class="skl">Осталось назначить</span><span class="skv">${Math.max(0, orders.length - assigned)}</span></div>
-      <div class="skpi"><span class="skl">Вернулись из плана</span><span class="skv">${returned}</span></div>
-      <div class="skpi"><span class="skl">Отклонённые</span><span class="skv">${rejectedOrders.length}</span></div>
-      <button class="skpi task-kpi ${onlyMine ? 'on' : ''}" id="salesMyTasks"
-        title="Показать только заявки, ожидающие вашего действия">
-        <span class="skl">Мои задачи</span><span class="skv">${tasks.length}</span></button>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <select id="salesFilterZone">
@@ -252,15 +246,17 @@ export function renderSales(container, context) {
           <div id="salesFeas" class="feas"></div>
           <button class="button full">Забронировать</button>
         </form>
-        <div class="scolh" style="margin-top:14px">Портфель · потребности клиента <span>${orders.length}</span></div>
+        <div class="scolh" style="margin-top:14px">Портфель · потребности клиента <span>${orders.length}</span>
+          <button type="button" class="mine-toggle ${onlyMine ? 'on' : ''}" id="salesMyTasks"
+            title="Показать только заявки, ожидающие вашего действия">мои: ${tasks.length}</button></div>
         <div class="list">${portfolio}</div>
+        <details class="rejected-details" ${state.salesRejectedOpen ? 'open' : ''} id="salesRejected">
+          <summary>Отклонённые заявки <span class="scount">${rejectedOrders.length}</span></summary>
+          <div class="list" style="margin-top:8px">${rejectedList}</div>
+          <div class="geohint">Заявка попадает сюда, если ТС не назначено и указана причина отказа.
+            «Вернуть в работу» переводит её обратно в портфель как новую.</div>
+        </details>
       </div>
-    </div>
-    <div class="scol" style="margin-top:14px">
-      <div class="scolh">Реестр отклонённых заявок <span>${rejectedOrders.length}</span></div>
-      <div class="list">${rejectedList}</div>
-      <div class="geohint">Заявка попадает сюда, если ТС не назначено и указана причина отказа.
-        «Вернуть в работу» переводит её обратно в портфель как новую.</div>
     </div>
   </div>`;
 
@@ -344,6 +340,9 @@ export function renderSales(container, context) {
     state.salesOnlyMine = !state.salesOnlyMine;
     rerender();
   };
+  container.querySelector('#salesRejected').addEventListener('toggle', event => {
+    state.salesRejectedOpen = event.currentTarget.open;
+  });
 
   // Единая точка выполнения шага конвейера: действие сотрудника переводит заявку
   // на следующую стадию и тем самым ставит задачу следующей роли.
