@@ -1016,12 +1016,23 @@ function staticFile(request, response, url) {
   if (pathname === '/settings') pathname = '/settings.html';
   const resolved = path.resolve(config.publicPath, `.${pathname}`);
   if (!resolved.startsWith(`${config.publicPath}${path.sep}`)) return errorJson(response, 403, 'Запрещено');
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return errorJson(response, 404, 'Страница не найдена');
+  if (!fs.existsSync(resolved)) return errorJson(response, 404, 'Страница не найдена');
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) return errorJson(response, 404, 'Страница не найдена');
+  // Ревалидация вместо max-age: после деплоя браузер не должен держать смесь
+  // старых и новых ES-модулей (ломает интерфейс до истечения кеша).
+  // ETag по mtime+size даёт 304 на неизменённые файлы — трафик минимален.
+  const etag = `"${Math.round(stat.mtimeMs).toString(36)}-${stat.size.toString(36)}"`;
+  if (request.headers['if-none-match'] === etag) {
+    response.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' });
+    return response.end();
+  }
   const content = fs.readFileSync(resolved);
   response.writeHead(200, {
     'Content-Type': MIME[path.extname(resolved)] || 'application/octet-stream',
     'Content-Length': content.length,
-    'Cache-Control': config.isProduction ? 'public, max-age=3600' : 'no-cache'
+    'Cache-Control': 'no-cache',
+    ETag: etag
   });
   response.end(content);
 }
