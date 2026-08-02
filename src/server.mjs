@@ -403,14 +403,10 @@ async function api(request, response, url) {
           rejection_reason=?,returned_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
           WHERE id=?`).run(merged.rejectionReason || 'Отклонён без указания причины', merged.orderId);
       } else {
-        // Статус рейса двигает стадию конвейера: отмечаем момент перехода,
-        // чтобы следующая роль видела, сколько задача у неё ждёт.
-        const stage = ({ plan: 2, run: 3, unloaded: 4, done: 4, paid: 5 })[merged.status] ?? 2;
+        const stage = ({ plan: 2, run: 3, unloaded: 4, done: 5, paid: 5 })[merged.status] || 2;
         db.prepare(`UPDATE orders SET stage=?,status='planned',assigned_vehicle_id=?,
-          rejection_reason=NULL,returned_at=NULL,
-          stage_changed_at=CASE WHEN stage<>? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
-          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-          stage, merged.vehicleId, stage, merged.orderId);
+          rejection_reason=NULL,returned_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+          stage, merged.vehicleId, merged.orderId);
       }
     }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
@@ -485,24 +481,16 @@ async function api(request, response, url) {
       rejectionReason = null;
       returnedAt = null;
     }
-    // Стадия конвейера: фиксируем момент перехода (по нему видно, сколько заявка ждёт)
-    // и отдельно — подтверждение продажами для реестра в отчёте.
-    const nextStage = Number(body.stage ?? current.stage);
-    const stageChanged = nextStage !== Number(current.stage);
-    const confirmedAt = current.confirmed_at ||
-      (stageChanged && nextStage >= 1 ? new Date().toISOString() : null);
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,rate_vat=?,
       window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,
-      rejection_reason=?,returned_at=?,confirmed_at=?,
-      stage_changed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
-      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      rejection_reason=?,returned_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       String(body.customerName ?? current.customer_name).trim(),
       body.fromZoneId ?? current.from_zone_id, body.toZoneId ?? current.to_zone_id,
       Number(body.rateVat ?? current.rate_vat), new Date(starts).toISOString(),
       new Date(ends).toISOString(), nextStatus,
       String(body.temperatureMode ?? current.temperature_mode),
-      String(body.bodyType ?? current.body_type), nextStage,
-      rejectionReason, returnedAt, confirmedAt, stageChanged ? 1 : 0, match[0]);
+      String(body.bodyType ?? current.body_type), Number(body.stage ?? current.stage),
+      rejectionReason, returnedAt, match[0]);
     queueOutbox(db, 'orders', match[0], 'update', orderOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'update', 'order', match[0], body, requestIp(request));

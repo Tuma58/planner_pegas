@@ -3,9 +3,8 @@
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
 import { api, escapeHtml, formatDateTime, formValues, money, toLocalInput, toast } from './api.js';
-import { STAGES, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 
-export { STAGES, orderStage };
+export const STAGES = ['Заявка принята', 'Подтверждена', 'Назначена ТС', 'В пути', 'Выгружена', 'Документы'];
 
 const fmtDay = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
   .format(new Date(value));
@@ -79,6 +78,18 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
   return requests.sort((a, b) => a.freeAt.localeCompare(b.freeAt));
 }
 
+export function orderStage(order, data) {
+  if (order.trip_id) {
+    const trip = data.trips.find(item => item.id === order.trip_id);
+    if (trip) {
+      if (trip.status === 'rejected') return { stage: 1, hot: true, plate: trip.vehicle_plate };
+      const map = { plan: 2, run: 3, unloaded: 4, done: 5, paid: 5 };
+      return { stage: map[trip.status] || 2, plate: trip.vehicle_plate };
+    }
+  }
+  return { stage: Number(order.stage) || 0 };
+}
+
 // Кандидаты на назначение: свободные в зоне отправления к началу окна, затем ближайшие.
 // Занятость определяется точным пересечением по времени — две заявки в один день
 // с разным временем погрузки не конфликтуют.
@@ -130,8 +141,6 @@ export function renderSales(container, context) {
   const rejectedOrders = data.orders.filter(order => order.status === 'cancelled').filter(matchesFilter);
   const assigned = orders.filter(order => order.trip_id).length;
   const returned = orders.filter(order => order.returned_at).length;
-  const tasks = myTasks(orders, data, can);
-  const onlyMine = Boolean(state.salesOnlyMine);
   const filterActive = filter.zone || filter.from || filter.to;
   const zoneOptions = data.reference.zones.map(zone => `<option value="${zone.id}">${escapeHtml(zone.name)}</option>`).join('');
   const orderOptions = data.settings.orderOptions || {};
@@ -152,43 +161,25 @@ export function renderSales(container, context) {
   const stepper = stage => `<div class="stepper">${STAGES.map((_, index) =>
     `<span class="stp ${index <= stage ? 'on' : ''}"></span>`).join('')}<span class="stpl">${STAGES[stage] || STAGES[0]}</span></div>`;
 
-  // Карточка конвейера: стадия, чей ход, сколько ждёт и кнопка действия.
-  // Сначала задачи текущего пользователя, затем самые залежавшиеся — видно узкое место.
-  const withStep = orders.map(order => ({ order, step: pipelineStep(order, data, can) }));
-  const visible = (onlyMine ? withStep.filter(item => item.step.mine) : withStep)
-    .sort((a, b) => Number(b.step.mine) - Number(a.step.mine) || b.step.sinceMs - a.step.sinceMs);
-
-  const portfolio = visible.map(({ order, step }) => {
-    const waiting = step.waitingRole
-      ? (step.mine ? '<span class="pipe-badge mine">Ваш ход</span>'
-        : `<span class="pipe-badge">Ждёт: ${escapeHtml(step.waitingRole)}</span>`)
-      : '<span class="pipe-badge done">Закрыта</span>';
-    const since = step.sinceMs > 3_600_000 && step.waitingRole
-      ? `<span class="pipe-since ${step.sinceMs > 2 * 86_400_000 ? 'stale' : ''}">${waitingLabel(step.sinceMs)}</span>` : '';
-    const action = step.action && step.mine
-      ? `<button class="button small" data-act="${step.action.kind}" data-order="${order.id}"
-          ${step.action.status ? `data-status="${step.action.status}"` : ''}
-          title="${escapeHtml(step.action.hint || '')}">${escapeHtml(step.action.label)}</button>`
-      : '';
-    const reassign = step.hot && can('trips:write')
-      ? `<button class="button small danger" data-act="assign" data-order="${order.id}">⚠ Переназначить ТС</button>` : '';
-    return `<div class="list-item ordrow pipe-${step.tone}" data-order="${order.id}">
+  const canReject = can('orders:write') || can('trips:write');
+  const portfolio = orders.map(order => {
+    const st = orderStage(order, data);
+    return `<div class="list-item ordrow ${order.returned_at ? 'returned' : ''}" data-order="${order.id}">
       <span style="flex:1;min-width:0">
-        <span class="pipe-head">${waiting}${since}
-          <b class="pipe-stage">${escapeHtml(step.label)}</b></span>
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
-        ${step.plate ? ` · <span class="mono">${escapeHtml(step.plate)}</span>` : ''}
+        ${st.plate ? ` · <span class="mono">${escapeHtml(st.plate)}</span>` : ''}
         <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
-        ${stepper(step.stage)}
+        ${stepper(st.stage)}
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <b>${money(order.rate_vat)}</b>
-        ${reassign || action}
-        ${step.canReject ? `<button class="button ghost small" data-act="reject" data-order="${order.id}">Отклонить</button>` : ''}
+        ${can('trips:write') ? `<button class="button ghost small ${st.hot ? 'danger' : ''}" data-assign="${order.id}">
+          ${st.hot ? '⚠ Переназначить ТС' : (order.trip_id ? 'Сменить ТС' : 'Назначить ТС')}</button>` : ''}
+        ${canReject && !order.trip_id ? `<button class="button ghost small" data-reject="${order.id}">Отклонить</button>` : ''}
       </span>
     </div>`;
-  }).join('') || `<p class="muted">${onlyMine ? 'Задач для вас нет — конвейер ждёт другие роли.' : 'Потребностей клиента пока нет — заполните форму слева.'}</p>`;
+  }).join('') || '<p class="muted">Потребностей клиента пока нет — заполните форму слева.</p>';
 
   // Реестр отклонённых: заявки, на которые ТС так и не назначили.
   const rejectedList = rejectedOrders.map(order => `<div class="list-item ordrow rejected-order">
@@ -208,9 +199,6 @@ export function renderSales(container, context) {
       <div class="skpi"><span class="skl">Осталось назначить</span><span class="skv">${Math.max(0, orders.length - assigned)}</span></div>
       <div class="skpi"><span class="skl">Вернулись из плана</span><span class="skv">${returned}</span></div>
       <div class="skpi"><span class="skl">Отклонённые</span><span class="skv">${rejectedOrders.length}</span></div>
-      <button class="skpi task-kpi ${onlyMine ? 'on' : ''}" id="salesMyTasks"
-        title="Показать только заявки, ожидающие вашего действия">
-        <span class="skl">Мои задачи</span><span class="skv">${tasks.length}</span></button>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <select id="salesFilterZone">
@@ -340,41 +328,18 @@ export function renderSales(container, context) {
     } catch (error) { toast(error.message, 'error'); }
   };
 
-  container.querySelector('#salesMyTasks').onclick = () => {
-    state.salesOnlyMine = !state.salesOnlyMine;
-    rerender();
-  };
-
-  // Единая точка выполнения шага конвейера: действие сотрудника переводит заявку
-  // на следующую стадию и тем самым ставит задачу следующей роли.
-  container.querySelectorAll('[data-act]').forEach(button =>
-    button.addEventListener('click', async event => {
+  container.querySelectorAll('[data-assign]').forEach(button =>
+    button.addEventListener('click', event => {
       event.stopPropagation();
-      const order = orders.find(item => item.id === button.dataset.order);
-      if (!order) return;
-      const kind = button.dataset.act;
-      if (kind === 'assign') return context.openAssign(order);
-      if (kind === 'reject') return rejectDialog(order, data, context);
-      button.disabled = true;
-      try {
-        if (kind === 'confirm') {
-          await api(`/api/orders/${order.id}`, {
-            method: 'PATCH', body: JSON.stringify({ stage: 1 })
-          });
-          toast('Подтверждено — задача передана логисту');
-        } else if (kind === 'trip-status') {
-          if (!order.trip_id) throw new Error('У заявки нет рейса');
-          await api(`/api/trips/${order.trip_id}`, {
-            method: 'PATCH', body: JSON.stringify({ status: button.dataset.status })
-          });
-          const next = { run: 'Рейс в пути', unloaded: 'Выгрузка отмечена', paid: 'Оплата отмечена' };
-          toast(next[button.dataset.status] || 'Статус обновлён');
-        }
-        await context.onReload();
-      } catch (error) {
-        button.disabled = false;
-        toast(error.message, 'error');
-      }
+      const order = orders.find(item => item.id === button.dataset.assign);
+      if (order) context.openAssign(order);
+    }));
+
+  container.querySelectorAll('[data-reject]').forEach(button =>
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      const order = orders.find(item => item.id === button.dataset.reject);
+      if (order) rejectDialog(order, data, context);
     }));
 
   container.querySelectorAll('[data-restore]').forEach(button =>

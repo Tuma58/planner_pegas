@@ -192,10 +192,6 @@ function migrateColumns(db) {
   // снова 'new', но с непустым returned_at, чтобы продажи видели историю.
   ensure('orders', 'rejection_reason', 'TEXT');
   ensure('orders', 'returned_at', 'TEXT');
-  // Конвейер: момент входа в текущую стадию (видно, сколько заявка ждёт действия)
-  // и подтверждение продажами — для реестра в отчёте руководителя.
-  ensure('orders', 'stage_changed_at', 'TEXT');
-  ensure('orders', 'confirmed_at', 'TEXT');
   // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
   ensure('users', 'roles', 'TEXT');
   db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);

@@ -2,7 +2,6 @@
 // Экономика и утилизация — с сервера (/api/reports), разрез по клиентам и
 // отклонённые — по данным bootstrap, история — /api/periods/history.
 import { api, escapeHtml, formatDateTime } from './api.js';
-import { pipelineStep, waitingLabel } from './pipeline.js';
 
 export const REPORT_TITLES = {
   summary: 'Сводный отчёт руководителя',
@@ -10,7 +9,7 @@ export const REPORT_TITLES = {
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
-  'rejected-orders': 'Реестр заявок',
+  'rejected-orders': 'Отклонённые заявки',
   history: 'История отчётных периодов'
 };
 
@@ -162,32 +161,10 @@ export async function buildReport(kind, from, to, data) {
           <td>${escapeHtml(trip.customer_name || '—')}</td><td>${escapeHtml(trip.rejection_reason || 'не указана')}</td></tr>`).join('') ||
           '<tr><td colspan=5>Отклонённых нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'rejected-orders') {
-    // Реестр заявок: подтверждённые в работе, отклонённые и вернувшиеся из плана —
-    // с причинами, плюс где конвейер стоит дольше всего.
-    const all = data.orders || [];
-    const rejected = all.filter(order => order.status === 'cancelled');
-    const returned = all.filter(order => order.status === 'new' && order.returned_at);
-    const confirmed = all.filter(order => order.status !== 'cancelled' && order.confirmed_at);
-    const byStage = {};
-    confirmed.forEach(order => {
-      const step = pipelineStep(order, data, () => false);
-      const bucket = (byStage[step.label] ||= { count: 0, waitMs: 0 });
-      bucket.count += 1;
-      bucket.waitMs += step.sinceMs;
-    });
-    const stageRows = Object.entries(byStage)
-      .sort((a, b) => b[1].waitMs / b[1].count - a[1].waitMs / a[1].count)
-      .map(([label, item]) => `<tr><td>${escapeHtml(label)}</td><td class="num">${item.count}</td>
-        <td class="num">${waitingLabel(item.waitMs / item.count)}</td></tr>`).join('');
-    const confirmedRows = confirmed.map(order => {
-      const step = pipelineStep(order, data, () => false);
-      return `<tr><td>${escapeHtml(order.customer_name)}</td>
-        <td>${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}</td>
-        <td>${formatDateTime(order.window_from)}</td>
-        <td class="num">${rub(order.rate_vat)}</td>
-        <td class="mono">${escapeHtml(step.plate || '—')}</td>
-        <td>${escapeHtml(step.label)}</td></tr>`;
-    }).join('');
+    // Заявки, по которым перевозка не состоялась: отклонены продажами/логистикой
+    // либо вернулись из плана (отмена, поломка, невозможность перевозки).
+    const rejected = (data.orders || []).filter(order => order.status === 'cancelled');
+    const returned = (data.orders || []).filter(order => order.status === 'new' && order.returned_at);
     const byReason = {};
     [...rejected, ...returned].forEach(order => {
       const reason = order.rejection_reason || 'не указана';
@@ -201,15 +178,9 @@ export async function buildReport(kind, from, to, data) {
       <td>${formatDateTime(order.window_from)}</td>
       <td class="num">${rub(order.rate_vat)}</td>
       <td>${escapeHtml(order.rejection_reason || 'не указана')}</td></tr>`).join('');
-    body = `<div class="geohint">Подтверждено: <b>${confirmed.length}</b> ·
-        отклонено: <b>${rejected.length}</b> · вернулось из плана: <b>${returned.length}</b></div>
+    body = `<div class="geohint">Отклонено заявок: <b>${rejected.length}</b> ·
+        вернулось из плана: <b>${returned.length}</b></div>
       <div class="rsums">${summary || '—'}</div>
-      <h4>Где конвейер ждёт дольше всего</h4>
-      <table class="rtable"><thead><tr><th>Стадия</th><th>Заявок</th><th>Среднее ожидание</th></tr></thead>
-        <tbody>${stageRows || '<tr><td colspan=3>Нет заявок в работе</td></tr>'}</tbody></table>
-      <h4>Подтверждённые заявки в работе</h4>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>ТС</th><th>Стадия</th></tr></thead>
-        <tbody>${confirmedRows || '<tr><td colspan=6>Подтверждённых заявок нет</td></tr>'}</tbody></table>
       <h4>Отклонённые заявки</h4>
       <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина</th></tr></thead>
         <tbody>${rows(rejected) || '<tr><td colspan=5>Отклонённых заявок нет</td></tr>'}</tbody></table>

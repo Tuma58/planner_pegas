@@ -94,38 +94,6 @@ test('SQLite создается со справочниками, админис�
   assert.deepEqual(JSON.parse(item.payload_json), { id: 'trip-1' });
 });
 
-test('конвейер: каждая стадия ждёт свою роль и своё право', async () => {
-  const { pipelineStep, myTasks } = await import('../public/assets/pipeline.js');
-  const data = { trips: [] };
-  const allow = permission => () => true && permission;
-  const expected = [
-    [0, 'Продажи', 'orders:write'],
-    [1, 'Логист', 'trips:write'],
-    [2, 'Диспетчер', 'trip-status:write'],
-    [3, 'Диспетчер', 'trip-status:write'],
-    [4, 'Бухгалтерия', 'payments:write']
-  ];
-  for (const [stage, role, permission] of expected) {
-    const step = pipelineStep({ stage, status: 'new' }, data, () => false);
-    assert.equal(step.waitingRole, role, `стадия ${stage} ждёт ${role}`);
-    assert.equal(step.permission, permission);
-    assert.equal(step.mine, false, 'без права действие недоступно');
-    // С нужным правом заявка становится задачей сотрудника.
-    const mineStep = pipelineStep({ stage, status: 'new' }, data, code => code === permission);
-    assert.equal(mineStep.mine, true);
-    assert.equal(mineStep.tone, 'mine');
-  }
-  // Последняя стадия закрыта: действий нет ни у кого.
-  const closed = pipelineStep({ stage: 5, status: 'planned' }, data, () => true);
-  assert.equal(closed.waitingRole, null);
-  assert.equal(closed.tone, 'done');
-  // Отклонённая заявка выделяется отдельным цветом и не попадает в задачи.
-  const rejected = pipelineStep({ stage: 0, status: 'cancelled' }, data, () => true);
-  assert.equal(rejected.tone, 'rejected');
-  assert.equal(myTasks([{ stage: 0, status: 'cancelled' }], data, () => true).length, 0);
-  assert.ok(allow);
-});
-
 test('отклонение рейса возвращает заявку в продажи как новую с причиной', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-return-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
