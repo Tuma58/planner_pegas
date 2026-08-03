@@ -159,7 +159,7 @@ export function renderLogist(container, context) {
       <div class="skpi"><span class="skl">В плане</span><span class="skv">${activeTrips.length - runCount}</span></div>
       <div class="skpi"><span class="skl">В пути</span><span class="skv">${runCount}</span></div>
       <div class="salesfilter" style="flex:1;min-width:220px">
-        <input id="logistSearch" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
+        <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
         ${can('trips:write') ? '<button class="button small" id="logistNewTrip">+ Рейс</button>' : ''}
       </div>
     </div>

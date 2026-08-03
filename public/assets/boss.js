@@ -220,7 +220,9 @@ export async function renderBoss(container, context) {
         <span class="cnl" style="margin-left:12px">План выручки</span>
         <input type="number" id="bossPlan" placeholder="цель, ₽" value="${revenuePlan || ''}" style="width:130px">
         <button class="button ghost small" id="bossClose" title="Зафиксировать период в истории">🏁 Закрыть период</button>
-        <select id="bossReportKind" style="margin-left:auto">
+        <input id="bossSearch" class="block-search" placeholder="Поиск по странице"
+          title="Фильтрует строки всех таблиц кабины" style="margin-left:auto;width:170px">
+        <select id="bossReportKind">
           <option value="summary">Сводный</option><option value="util">Использование парка</option>
           <option value="econ">Экономика по типам ТС</option><option value="clients">Экономика по клиентам</option>
           <option value="rejected">Отклонённые рейсы</option>
@@ -285,4 +287,15 @@ export async function renderBoss(container, context) {
   };
   document.getElementById('bossReport').onclick = () =>
     context.openReport(document.getElementById('bossReportKind').value, from, to);
+  // Поиск по странице: фильтрует строки всех таблиц кабины на месте
+  // (итоговые строки .tot остаются всегда).
+  const search = document.getElementById('bossSearch');
+  search.oninput = () => {
+    const needle = search.value.toLowerCase();
+    container.querySelectorAll('.rtable tbody tr').forEach(row => {
+      const keep = !needle || row.classList.contains('tot') ||
+        row.textContent.toLowerCase().includes(needle);
+      row.style.display = keep ? '' : 'none';
+    });
+  };
 }

@@ -46,15 +46,22 @@ function setupUser() {
 
 function setupFilters() {
   const types = ['all', ...state.data.reference.vehicleTypes.map(type => type.name)];
-  byId('typeFilter').innerHTML = types.map(type =>
+  byId('typeFilter').innerHTML = `${types.map(type =>
     `<button data-type="${escapeHtml(type)}" class="${type === state.type ? 'active' : ''}">
       ${type === 'all' ? 'Все ТС' : escapeHtml(type)}
-    </button>`).join('');
+    </button>`).join('')}
+    <input id="ganttSearch" class="block-search" placeholder="Поиск: ТС, водитель, заказчик, маршрут"
+      value="${escapeHtml(state.ganttQuery || '')}">`;
   byId('typeFilter').onclick = event => {
     const button = event.target.closest('[data-type]');
     if (!button) return;
     state.type = button.dataset.type;
     setupFilters();
+    renderTimeline();
+  };
+  const search = byId('ganttSearch');
+  search.oninput = () => {
+    state.ganttQuery = search.value;
     renderTimeline();
   };
 }
@@ -94,10 +101,18 @@ function renderTimeline() {
   const dayWidth = Number(state.data.settings.general.plannerCellWidth || 44);
   document.documentElement.style.setProperty('--planner-day-width', `${dayWidth}px`);
   const monthEnd = addMonths(state.month, 1);
-  const vehicles = state.data.vehicles.filter(vehicle =>
-    vehicle.status !== 'out' && (state.type === 'all' || vehicle.type_name === state.type));
   const visibleTrips = state.data.trips.filter(trip =>
     new Date(trip.starts_at) < monthEnd && new Date(trip.ends_at) > state.month);
+  // Поиск по странице: строка остаётся, если совпала сцепка (номер, водитель,
+  // тип) или любой её рейс месяца (маршрут, заказчик).
+  const ganttQuery = (state.ganttQuery || '').toLowerCase();
+  const vehicleMatches = vehicle =>
+    `${vehicle.plate} ${vehicle.driver_name || ''} ${vehicle.type_name || ''}`.toLowerCase().includes(ganttQuery) ||
+    visibleTrips.some(trip => trip.vehicle_id === vehicle.id &&
+      `${routeLabel(trip)} ${trip.customer_name || ''}`.toLowerCase().includes(ganttQuery));
+  const vehicles = state.data.vehicles.filter(vehicle =>
+    vehicle.status !== 'out' && (state.type === 'all' || vehicle.type_name === state.type) &&
+    (!ganttQuery || vehicleMatches(vehicle)));
   const conflicts = conflictIds(state.data.trips);
   const critical = criticalIds(state.data.trips, state.data.dispositions || []);
   byId('periodLabel').textContent = new Intl.DateTimeFormat('ru-RU', {

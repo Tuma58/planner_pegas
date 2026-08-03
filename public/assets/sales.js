@@ -111,19 +111,26 @@ export function renderSales(container, context) {
   const data = state.data;
   const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
   // Фильтр доски: геозона + диапазон дат (хранится в state, переживает перерисовки).
-  const filter = state.salesFilter || (state.salesFilter = { zone: '', from: '', to: '' });
+  const filter = state.salesFilter || (state.salesFilter = { zone: '', from: '', to: '', q: '' });
+  filter.q ||= '';
+  const query = filter.q.toLowerCase();
   const inDateRange = iso => {
     const day = String(iso).slice(0, 10);
     return (!filter.from || day >= filter.from) && (!filter.to || day <= filter.to);
   };
   const allRequests = autoRequests(data, state.month, monthEnd);
   const requests = allRequests.filter(request =>
-    (!filter.zone || request.zone.name === filter.zone) && inDateRange(request.freeAt));
-  // Заявка проходит фильтр, если зона участвует в маршруте, а окно погрузки пересекает диапазон.
+    (!filter.zone || request.zone.name === filter.zone) && inDateRange(request.freeAt) &&
+    (!query || `${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name} ${request.suggestCustomer || ''}`
+      .toLowerCase().includes(query)));
+  // Заявка проходит фильтр, если зона участвует в маршруте, окно погрузки
+  // пересекает диапазон, а текст поиска найден в заказчике или маршруте.
   const matchesFilter = order =>
     (!filter.zone || order.from_name === filter.zone || order.to_name === filter.zone) &&
     (!filter.from || String(order.window_to).slice(0, 10) >= filter.from) &&
-    (!filter.to || String(order.window_from).slice(0, 10) <= filter.to);
+    (!filter.to || String(order.window_from).slice(0, 10) <= filter.to) &&
+    (!query || `${order.customer_name} ${routeLabel(order)} ${order.rejection_reason || ''}`
+      .toLowerCase().includes(query));
   // Портфель продаж — заявки до назначения ТС: после назначения заявка уходит
   // к логисту в план и возвращается только при отклонении рейса.
   // Отклонённые (cancelled с причиной) — в отдельном реестре ниже.
@@ -137,7 +144,7 @@ export function renderSales(container, context) {
   const awaitingAssign = orders.filter(order => orderStage(order, data).stage === 1).length;
   const tasks = myTasks(orders, data, can);
   const onlyMine = Boolean(state.salesOnlyMine);
-  const filterActive = filter.zone || filter.from || filter.to;
+  const filterActive = filter.zone || filter.from || filter.to || filter.q;
   const zoneOptions = data.reference.zones.map(zone => `<option value="${zone.id}">${escapeHtml(zone.name)}</option>`).join('');
   const orderOptions = data.settings.orderOptions || {};
   const temps = (orderOptions.temperatureModes || []).map(item => `<option>${escapeHtml(item)}</option>`).join('');
@@ -246,6 +253,8 @@ export function renderSales(container, context) {
         ${kpiDrop('logist', inPlanOrders.map(orderRow).join(''))}</div>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
+        <input id="salesSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС"
+          value="${escapeHtml(filter.q)}">
         <select id="salesFilterZone">
           <option value="">Все геозоны</option>
           ${data.reference.zones.map(zone =>
@@ -315,6 +324,15 @@ export function renderSales(container, context) {
   </div>`;
 
   const rerender = () => renderSales(container, context);
+  const salesSearch = container.querySelector('#salesSearch');
+  salesSearch.oninput = () => {
+    filter.q = salesSearch.value;
+    const caret = salesSearch.selectionStart;
+    rerender();
+    const again = container.querySelector('#salesSearch');
+    again.focus();
+    again.setSelectionRange(caret, caret);
+  };
   container.querySelector('#salesFilterZone').onchange = event => {
     filter.zone = event.currentTarget.value;
     rerender();
@@ -328,7 +346,7 @@ export function renderSales(container, context) {
     rerender();
   };
   container.querySelector('#salesFilterReset')?.addEventListener('click', () => {
-    state.salesFilter = { zone: '', from: '', to: '' };
+    state.salesFilter = { zone: '', from: '', to: '', q: '' };
     rerender();
   });
 

@@ -188,7 +188,11 @@ export async function renderControl(container, context) {
   }
 
   const finished = trip => ['unloaded', 'done', 'paid'].includes(trip.status);
-  const matches = trip => ({
+  const query = (state.controlQuery || '').toLowerCase();
+  const matchesQuery = trip => !query ||
+    `${routeLabel(trip)} ${trip.vehicle_plate} ${trip.driver_name || ''} ${trip.customer_name || ''} ${trip.stops.map(stop => stop.point).join(' ')}`
+      .toLowerCase().includes(query);
+  const matches = trip => matchesQuery(trip) && ({
     all: true,
     run: trip.status === 'run',
     plan: trip.status === 'plan',
@@ -213,6 +217,8 @@ export async function renderControl(container, context) {
       <strong>Контроль выполнения рейсов</strong>
       ${FILTERS.map(([key, label]) => `<button class="button ghost small ${state.controlFilter === key ? 'active' : ''}"
         data-control-filter="${key}">${label} (${counts[key]})</button>`).join('')}
+      <input id="controlSearch" class="block-search" placeholder="Поиск: маршрут, ТС, водитель, пункт"
+        value="${escapeHtml(state.controlQuery || '')}">
       <span class="muted" style="margin-left:auto">окно: вчера — послезавтра · факты двигают конвейер заявки</span>
     </div>
     ${visible.map(trip => tripCard(trip, context, state.controlExpanded.has(trip.id))).join('')
@@ -224,6 +230,16 @@ export async function renderControl(container, context) {
     else await renderControl(container, context);
   };
 
+  // Поиск фильтрует карточки на месте (без перезапроса /api/control);
+  // сохранённый запрос применяется и при следующей полной отрисовке.
+  const search = container.querySelector('#controlSearch');
+  search.oninput = () => {
+    state.controlQuery = search.value;
+    const needle = search.value.toLowerCase();
+    container.querySelectorAll('.card').forEach(card => {
+      card.style.display = !needle || card.textContent.toLowerCase().includes(needle) ? '' : 'none';
+    });
+  };
   container.querySelectorAll('[data-control-filter]').forEach(button =>
     button.addEventListener('click', () => {
       state.controlFilter = button.dataset.controlFilter;

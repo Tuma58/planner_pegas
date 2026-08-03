@@ -112,8 +112,13 @@ export function renderResource(container, context) {
   }));
   const counts = {};
   withState.forEach(({ stateNow }) => { counts[stateNow.kind] = (counts[stateNow.kind] || 0) + 1; });
-  // Режим фильтрации: показывается список только активных строк выбранного состояния.
-  const visible = filter ? withState.filter(({ stateNow }) => stateNow.kind === filter) : withState;
+  // Режим фильтрации: состояние на день + текстовый поиск по сцепке.
+  const query = (state.resourceQuery || '').toLowerCase();
+  const visible = withState
+    .filter(({ stateNow }) => !filter || stateNow.kind === filter)
+    .filter(({ vehicle }) => !query ||
+      `${vehicle.plate} ${vehicle.trailer_plate || ''} ${vehicle.driver_name || ''} ${vehicle.type_name || ''}`
+        .toLowerCase().includes(query));
 
   const badges = DISP_KINDS.map(item =>
     `<button class="dbadge ${filter === item.kind ? 'on' : ''}" data-kind="${item.kind}" style="--dc:${item.color}">
@@ -176,7 +181,9 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     <div class="reshead">
       <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
       <div class="resctl">
-        ${filter ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
+        <input id="resourceSearch" class="block-search" placeholder="Поиск: тягач, прицеп, водитель"
+          value="${escapeHtml(state.resourceQuery || '')}">
+        ${filter || query ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
         <span class="muted" style="font-size:var(--fs-xs)">Состояние на день</span>
         <input type="date" id="resourceDay" value="${refDay}">
         ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
@@ -207,6 +214,15 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resourceDay').onchange = event => {
     state.resourceDay = event.currentTarget.value;
     renderResource(container, context);
+  };
+  const searchInput = container.querySelector('#resourceSearch');
+  searchInput.oninput = () => {
+    state.resourceQuery = searchInput.value;
+    const caret = searchInput.selectionStart;
+    renderResource(container, context);
+    const again = container.querySelector('#resourceSearch');
+    again.focus();
+    again.setSelectionRange(caret, caret);
   };
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {
