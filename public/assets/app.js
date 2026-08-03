@@ -162,10 +162,12 @@ function renderTimeline() {
       (state.data.dispositions || []).find(item => item.id === block.dataset.disposition))));
   enableTripDrag(dayWidth);
   enableDispositionDraw(dayWidth);
-  // При первом показе месяца с текущим днём канва прокручивается к «сегодня».
-  if (todayIndex >= 2 && todayIndex < days && state.autoScrolledMonth !== state.month.getTime()) {
+  // При первом показе месяца с текущим днём фокус на «сегодня −3 … +7 дней»:
+  // канва прокручивается так, чтобы слева было видно три прошедших дня,
+  // а неделя вперёд оставалась в кадре.
+  if (todayIndex >= 0 && todayIndex < days && state.autoScrolledMonth !== state.month.getTime()) {
     state.autoScrolledMonth = state.month.getTime();
-    document.querySelector('.board').scrollLeft = (todayIndex - 1) * dayWidth;
+    document.querySelector('.board').scrollLeft = Math.max(0, todayIndex - 3) * dayWidth;
   }
   const horizonStart = monthStart(new Date(`${state.data.settings.general.horizonStart}T00:00:00Z`));
   const horizonEnd = addMonths(horizonStart, Number(state.data.settings.general.horizonMonths || 12) - 1);
@@ -952,7 +954,8 @@ byId('scrollToday').onclick = () => {
     state.month = monthStart(new Date());
     renderTimeline();
   }
-  scrollToDay(Math.max(0, Math.floor((Date.now() - state.month.getTime()) / 86_400_000) - 1));
+  // Фокус «сегодня −3 … +7»: слева видны три прошедших дня.
+  scrollToDay(Math.max(0, Math.floor((Date.now() - state.month.getTime()) / 86_400_000) - 3));
 };
 
 // Перетаскивание канвы за шапку дней (drag-scroll) — как в настольных гантах.
@@ -985,7 +988,12 @@ board.addEventListener('wheel', event => {
 
 try {
   state.data = await api('/api/bootstrap');
-  state.month = monthStart(new Date(`${state.data.settings.general.horizonStart}T00:00:00Z`));
+  // Планер открывается на текущем месяце (фокус на «сегодня −3 … +7 дней»);
+  // если сегодня вне горизонта планирования — на начале горизонта.
+  const horizonStart = monthStart(new Date(`${state.data.settings.general.horizonStart}T00:00:00Z`));
+  const horizonEnd = addMonths(horizonStart, Number(state.data.settings.general.horizonMonths || 12));
+  const currentMonth = monthStart(new Date());
+  state.month = currentMonth >= horizonStart && currentMonth < horizonEnd ? currentMonth : horizonStart;
   setupUser();
   setupFilters();
   renderLegend();
