@@ -65,7 +65,11 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       ? blocking.find(item => Date.parse(item.ends_at) === blockEndMs) : null;
     const endsAt = new Date(Math.max(tripFreeMs, blockEndMs));
     if (!tripFreeMs && !blockEndMs) return;
-    if (endsAt >= monthEndDate || endsAt < monthStartDate) return;
+    // Уже простаивающие показываются независимо от месяца последнего рейса
+    // (июльские хвосты — самый долгий и дорогой простой); будущие
+    // освобождения — в пределах открытого месяца.
+    const idleMs = nowMs - endsAt.getTime();
+    if (idleMs <= 0 && (endsAt >= monthEndDate || endsAt < monthStartDate)) return;
     const zone = zoneByName[last?.to_name] || zoneByName[vehicle.zone_name];
     if (!zone) return;
     // Предложение обратного груза: самое доходное направление из зоны выгрузки.
@@ -79,13 +83,16 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     requests.push({
       vehicle, zone,
       freeAt: endsAt.toISOString(),
+      // Простой: сцепка уже стоит без загрузки (idleMs > 0) — приоритет продаж.
+      idleMs: Math.max(0, idleMs),
       // «Выйдет из ремонта / получит водителя» — пометка для менеджера.
       blockedKind: blocked?.kind || null,
       blockedUntil: blocked?.ends_at || null,
-      // Погрузка возможна не раньше подачи (норматив после выгрузки), окно — до конца вторых суток.
-      loadFrom: new Date(endsAt.getTime() + DISPATCH_LAG_MS).toISOString(),
+      // Погрузка возможна не раньше подачи (норматив после выгрузки);
+      // для уже простаивающих — от текущего момента. Окно — до конца вторых суток.
+      loadFrom: new Date(Math.max(endsAt.getTime(), nowMs) + DISPATCH_LAG_MS).toISOString(),
       windowTo: new Date(Math.min(
-        atHour(new Date(endsAt.getTime() + 2 * 86_400_000), WORK_END_HOUR).getTime(),
+        atHour(new Date(Math.max(endsAt.getTime(), nowMs) + 2 * 86_400_000), WORK_END_HOUR).getTime(),
         monthEndDate.getTime()
       )).toISOString(),
       suggestTo: suggestion?.to_name || null,
@@ -182,16 +189,41 @@ export function renderSales(container, context) {
     ? `<small style="display:block;color:var(--warn);font-weight:700">⚙ ${request.blockedKind === 'repair'
         ? 'выйдет из ремонта' : 'получит водителя'} ${fmtDateTime(request.blockedUntil)}
         в «${escapeHtml(request.zone.name)}» — требуется загрузка</small>` : '';
-  const requestList = requests.length ? requests.map((request, index) =>
-    `<div class="list-item req" data-req="${index}">
+  const idleLabel = ms => {
+    const days = Math.floor(ms / 86_400_000);
+    return days >= 1 ? `${days} дн` : `${Math.max(1, Math.floor(ms / 3_600_000))} ч`;
+  };
+  // Раздел разделён на два состояния: сцепки, которые УЖЕ стоят без загрузки
+  // (потерянные машино-дни, самые залежавшиеся сверху), и будущие освобождения
+  // открытого месяца (планирование загрузки заранее).
+  const idleRequests = requests.filter(request => request.idleMs > 0)
+    .sort((a, b) => b.idleMs - a.idleMs);
+  const upcomingRequests = requests.filter(request => !request.idleMs);
+  const idleDaysTotal = Math.round(idleRequests.reduce((sum, request) => sum + request.idleMs, 0) / 86_400_000);
+  const requestCard = request => {
+    const index = requests.indexOf(request);
+    const idleBadge = request.idleMs > 0
+      ? `<span class="badge ${request.idleMs > 2 * 86_400_000 ? 'bad' : 'warn'}"
+          title="Стоит без загрузки с ${fmtDateTime(request.freeAt)}">стоит ${idleLabel(request.idleMs)}</span>` : '';
+    return `<div class="list-item req" data-req="${index}">
       <span style="flex:1;min-width:0">
-        <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.vehicle.type_name)}
-        <small class="muted" style="display:block">освободится в «${escapeHtml(request.zone.name)}» ${fmtDateTime(request.freeAt)} · подача с ${fmtDateTime(request.loadFrom)}</small>
+        <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.vehicle.type_name)} ${idleBadge}
+        <small class="muted" style="display:block">${request.idleMs > 0 ? 'стоит' : 'освободится'} в «${escapeHtml(request.zone.name)}»
+          ${request.idleMs > 0 ? `с ${fmtDateTime(request.freeAt)}` : fmtDateTime(request.freeAt)} · подача с ${fmtDateTime(request.loadFrom)}</small>
         ${blockedNote(request)}
         ${request.suggestTo ? `<small class="muted" style="display:block">→ ${escapeHtml(request.zone.name)}→${escapeHtml(request.suggestTo)}${request.suggestCustomer ? `, ${escapeHtml(request.suggestCustomer)}` : ''} · ${money(request.suggestRate)}</small>` : ''}
       </span>
       <span class="reqzone" style="background:${request.zone.color}">${escapeHtml(request.zone.name)}</span>
-    </div>`).join('')
+    </div>`;
+  };
+  const requestList = requests.length
+    ? `${idleRequests.length ? `<div class="scolh" style="margin:2px 0 6px">Простаивают сейчас
+          <span>${idleRequests.length}</span>
+          <small class="muted" style="text-transform:none;font-weight:600">· потеряно ${idleDaysTotal} маш-дн</small></div>
+        ${idleRequests.map(requestCard).join('')}` : ''}
+      ${upcomingRequests.length ? `<div class="scolh" style="margin:10px 0 6px">Освободятся в этом месяце
+          <span>${upcomingRequests.length}</span></div>
+        ${upcomingRequests.map(requestCard).join('')}` : ''}`
     : '<p class="muted">Нет потребности — весь парк загружен.</p>';
 
   const stepper = stage => `<div class="stepper">${STAGES.map((_, index) =>
@@ -285,7 +317,9 @@ export function renderSales(container, context) {
   };
   const requestRow = (request, index) => `<div class="skpi-row" data-kpi-req="${index}">
       <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.zone.name)}
-        <small class="muted" style="display:block">освободится ${fmtDateTime(request.freeAt)}${request.blockedKind
+        <small class="muted" style="display:block">${request.idleMs > 0
+          ? `стоит ${Math.max(1, Math.floor(request.idleMs / 86_400_000))} дн с ${fmtDateTime(request.freeAt)}`
+          : `освободится ${fmtDateTime(request.freeAt)}`}${request.blockedKind
           ? ` · ⚙ ${request.blockedKind === 'repair' ? 'из ремонта' : 'получит водителя'}` : ''}</small></span></div>`;
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">

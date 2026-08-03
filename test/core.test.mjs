@@ -209,8 +209,11 @@ test('потребность от логистики: ремонт и «без �
     starts_at: iso(endMs - 86_400_000), ends_at: iso(endMs) });
   const data = {
     reference: { zones, routeRates: [] },
-    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3')],
-    trips: [trip('А1', now - 3_600_000), trip('А2', now - 3_600_000), trip('А3', now - 3_600_000)],
+    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3'), vehicle('А4')],
+    // А4 — «июльский хвост»: последний рейс закончился до начала месяца,
+    // сцепка простаивает дольше всех и обязана быть в потребности.
+    trips: [trip('А1', now - 3_600_000), trip('А2', now - 3_600_000), trip('А3', now - 3_600_000),
+      trip('А4', monthStart.getTime() - 5 * 86_400_000)],
     dispositions: [
       // А2: в ремонте ещё 3 дня — в потребность не попадает
       { vehicle_id: 'А2', kind: 'repair', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
@@ -226,6 +229,13 @@ test('потребность от логистики: ремонт и «без �
   const a3 = requests.find(request => request.vehicle.plate === 'А3');
   assert.equal(a3.blockedKind, 'no_driver', 'пометка «получит водителя»');
   assert.equal(a3.freeAt, data.dispositions[1].ends_at, 'момент освобождения — конец диспозиции');
+  assert.equal(a3.idleMs, 0, 'освобождение в будущем — не простой');
+  // Простой считается и по хвостам прошлого месяца.
+  const a4 = requests.find(request => request.vehicle.plate === 'А4');
+  assert.ok(a4, 'июльский хвост в потребности');
+  assert.ok(a4.idleMs > 5 * 86_400_000, 'простой отсчитан от конца последнего рейса');
+  const a1 = requests.find(request => request.vehicle.plate === 'А1');
+  assert.ok(a1.idleMs > 0 && a1.idleMs < 2 * 3_600_000, 'свежая — простой около часа');
 
   // Кандидаты на назначение: ТС в ремонте на момент погрузки не предлагается.
   const candidates = matchVehicles(data, 'Дом', iso(now + 3_600_000));
