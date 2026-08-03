@@ -394,7 +394,8 @@ function renderMain() {
   } else if (state.view === 'logist') {
     renderLogist(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip, openNewTrip,
-      openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload)
+      // Логист назначает сам — его подтверждение проходит автоматически.
+      openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload, { autoConfirm: true })
     });
   }
 }

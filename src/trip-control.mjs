@@ -191,9 +191,11 @@ export function resetDriverNotificationOnVehicleChange(db, tripId) {
 }
 
 // ── «ТС не выгружают»: затянувшаяся выгрузка на линии ──
-// Рейс на линии, плановое прибытие прошло более 6 часов назад, выгрузка не
-// отмечена. Первый алерт — продажам и логистам, далее ежечасные пинги
-// диспетчерам (особый контроль), пока рейс не выгружен или не снят.
+// Отсчёт идёт от ФАКТА прибытия под выгрузку (arrived_at, отмечает диспетчер):
+// рейс без этого факта считается «в пути» (опоздание), а не простоем —
+// иначе опаздывающая машина ошибочно попадала бы под выставление простоя.
+// Стоит более 6 часов: первый алерт — продажам и логистам, далее ежечасные
+// пинги диспетчерам (особый контроль), пока рейс не выгружен или не снят.
 export const UNLOAD_STUCK_MS = 6 * 3_600_000;
 
 export function checkStuckUnloading(db, nowMs = Date.now()) {
@@ -202,10 +204,10 @@ export function checkStuckUnloading(db, nowMs = Date.now()) {
     f.name from_name,z.name to_name FROM trips t
     JOIN vehicles v ON v.id=t.vehicle_id
     JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
-    WHERE t.status='run'`).all();
+    WHERE t.status='run' AND t.arrived_at IS NOT NULL`).all();
   const stamp = new Date(nowMs).toISOString();
   for (const trip of trips) {
-    const waitedMs = nowMs - Date.parse(trip.ends_at);
+    const waitedMs = nowMs - Date.parse(trip.arrived_at);
     if (waitedMs < UNLOAD_STUCK_MS) continue;
     if (!trip.unload_alert_at) {
       db.prepare(`UPDATE trips SET unload_alert_at=?,unload_ping_at=?,

@@ -410,12 +410,17 @@ test('«ТС не выгружают»: первый алерт один раз,
   const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
   const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
   const now = Date.parse('2026-08-10T20:00:00.000Z');
-  // Рейс на линии, плановое прибытие 7 часов назад — выгрузка застряла.
+  // Рейс на линии, план прибытия 7 часов назад, но факта прибытия НЕТ —
+  // это опоздание в пути, под контроль выгрузки не попадает.
   db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
     starts_at,ends_at,distance_km,revenue_vat,status)
     VALUES('st-1',?,'Клиент',?,?,'2026-08-09T06:00:00.000Z','2026-08-10T13:00:00.000Z',
     600,90000,'run')`).run(vehicle.id, zone.id, zone.id);
+  assert.equal(checkStuckUnloading(db, now).length, 0,
+    'без факта прибытия рейс считается в пути, а не на выгрузке');
 
+  // Диспетчер отметил прибытие 7 часов назад — теперь это застрявшая выгрузка.
+  db.prepare(`UPDATE trips SET arrived_at='2026-08-10T13:00:00.000Z' WHERE id='st-1'`).run();
   const first = checkStuckUnloading(db, now);
   assert.equal(first.length, 1);
   assert.equal(first[0].kind, 'first', 'первый алерт — продажам и логистам');

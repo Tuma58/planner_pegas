@@ -671,9 +671,17 @@ async function api(request, response, url) {
       db.exec('ROLLBACK');
       throw error;
     }
+    // Назначение из вкладки «Логист» подтверждается автоматически (логист
+    // назначил сам — подтверждать себя не нужно) и сразу уходит диспетчеру.
+    // Назначение из продаж логист обязан подтвердить вручную.
+    if (body.autoConfirm) {
+      applyDispatchStep(db, tripId, 'logist_confirm', user.id);
+      notify('dispatcher', `Логист назначил и подтвердил рейс ${routeText(order)} (${vehicle.plate}) — подготовьте выход (1С, задание водителю, линия)`, 'trip', tripId);
+    }
     queueOutbox(db, 'trips', tripId, order.trip_id ? 'update' : 'create', tripOutboxPayload(tripId),
       integrationPublic().writePolicy === 'automatic');
-    audit(db, user, 'assign', 'order', order.id, { vehicleId: vehicle.id, tripId }, requestIp(request));
+    audit(db, user, 'assign', 'order', order.id,
+      { vehicleId: vehicle.id, tripId, autoConfirm: Boolean(body.autoConfirm) }, requestIp(request));
     return json(response, 201, { tripId });
   }
 
@@ -826,6 +834,31 @@ async function api(request, response, url) {
       WHERE id=?`).run(match[0]);
     audit(db, user, 'notify_delay', 'trip', match[0], { delayMs }, requestIp(request));
     return json(response, 200, { ok: true, delayMs });
+  }
+
+  // ── Факт прибытия под выгрузку: с него отсчитываются выгрузка и простой ──
+  match = route(/^\/api\/trips\/([^/]+)\/arrived$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден');
+    if (trip.status !== 'run') return errorJson(response, 409, 'Рейс не на линии');
+    // Отсчёт «не выгружают» начинается заново от факта прибытия.
+    db.prepare(`UPDATE trips SET arrived_at=COALESCE(arrived_at,?),
+      unload_alert_at=NULL,unload_ping_at=NULL,
+      updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(new Date().toISOString(), user.id, match[0]);
+    // Факт прибытия — и на конечной стоянке контроля (для отчёта пунктуальности).
+    ensureTripStops(db, match[0]);
+    const stops = listTripStops(db, match[0]);
+    const last = stops[stops.length - 1];
+    if (last && !last.actual_arrival) {
+      db.prepare(`UPDATE trip_stops SET actual_arrival=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(new Date().toISOString(), user.id, last.id);
+    }
+    audit(db, user, 'arrived', 'trip', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
   }
 
   // ── Простой на выгрузке: выставление клиенту ──

@@ -21,7 +21,8 @@ function demurrageDialog(trip, data, context, stuckMs) {
   context.showModal(`<form id="demurrageForm">
     <h2>Выставить простой клиенту</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
-      · ${escapeHtml(trip.customer_name || 'без заказчика')} · план прибытия ${formatDateTime(trip.ends_at)}</p>
+      · ${escapeHtml(trip.customer_name || 'без заказчика')}
+      · прибыл ${formatDateTime(trip.arrived_at || trip.ends_at)}</p>
     <div class="form-grid">
       <label class="field">Часы простоя<input name="hours" type="number" min="1" step="1" value="${prefillHours}" required></label>
       <label class="field">Ставка, ₽/ч с НДС<input name="ratePerHour" type="number" min="0" value="${rate}" required></label>
@@ -201,7 +202,9 @@ export async function renderDispatcher(container, context) {
   const waitingLogist = planned.filter(trip => !trip.logist_confirmed_at);
   const preparing = planned.filter(trip => trip.logist_confirmed_at);
   const nowMs = Date.now();
-  const stuckMsOf = trip => nowMs - Date.parse(trip.ends_at);
+  // Выгрузка и простой отсчитываются только от ФАКТА прибытия (arrived_at):
+  // рейс без него — «в пути», даже если план прибытия прошёл (это опоздание).
+  const stuckMsOf = trip => trip.arrived_at ? nowMs - Date.parse(trip.arrived_at) : 0;
   const isStuck = trip => stuckMsOf(trip) > UNLOAD_STUCK_MS;
   // Особый контроль (не выгружают) — наверху списка линии.
   const online = data.trips.filter(trip => trip.status === 'run' && matches(trip))
@@ -230,18 +233,22 @@ export async function renderDispatcher(container, context) {
   const onlineCards = online.map(trip => {
     const delay = delayByTrip.get(trip.id) || 0;
     const stuck = isStuck(trip);
-    const late = !stuck && delay > LATE_MS;
-    // «Не выгружают > 6 ч» — особый контроль: алерты уже ушли продажам и
-    // логистам (сервер), диспетчерам пингуется каждый час; здесь —
-    // выставление простоя клиенту. Обычное опоздание — уведомление продаж.
+    const late = !trip.arrived_at && delay > LATE_MS;
+    // До факта прибытия рейс «в пути» (затянувшийся — опоздание, уведомление
+    // продаж). «Прибыл на выгрузку» начинает отсчёт выгрузки: свыше 6 часов —
+    // «не выгружают», особый контроль и выставление простоя клиенту.
     let statusBlock;
     if (stuck) {
       const stuckHours = Math.floor(stuckMsOf(trip) / 3_600_000);
-      statusBlock = `<span class="badge bad" title="Плановое прибытие прошло более 6 часов назад, выгрузка не отмечена — продажи и логисты уведомлены автоматически, диспетчерам пинг каждый час">🚨 не выгружают ${stuckHours} ч · особый контроль</span>
+      statusBlock = `<span class="badge bad" title="Прибыл ${formatDateTime(trip.arrived_at)}, выгрузка не отмечена более 6 часов — продажи и логисты уведомлены автоматически, диспетчерам пинг каждый час">🚨 не выгружают ${stuckHours} ч · особый контроль</span>
         ${Number(trip.demurrage_vat) > 0
           ? `<span class="badge warn" title="Простой добавлен к выручке рейса">простой выставлен: ${money(trip.demurrage_vat)}</span>`
           : (canAct ? `<button class="button small danger" data-demurrage="${trip.id}"
               title="Выставить клиенту простой на выгрузке (часы × ставка)">Выставить простой</button>` : '')}`;
+    } else if (trip.arrived_at) {
+      statusBlock = `<span class="badge ok" title="Факт прибытия отмечен — через 6 часов без выгрузки включится особый контроль">на выгрузке с ${formatDateTime(trip.arrived_at)}</span>
+        ${Number(trip.demurrage_vat) > 0
+          ? `<span class="badge warn">простой выставлен: ${money(trip.demurrage_vat)}</span>` : ''}`;
     } else if (late) {
       statusBlock = `<span class="badge bad" title="Расчётное прибытие позже плана — уведомите клиента о переносе">⏰ опоздание ${waitingLabel(delay)} · уведомите клиента</span>
         ${trip.delay_notified_at
@@ -256,6 +263,8 @@ export async function renderDispatcher(container, context) {
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         ${statusBlock}
         <span style="display:flex;gap:5px">
+          ${canAct && !trip.arrived_at ? `<button class="button ghost small" data-arrived="${trip.id}"
+            title="ТС встало под выгрузку — с этого момента отсчитываются выгрузка и простой">Прибыл на выгрузку</button>` : ''}
           ${canAct ? `<button class="button small" data-unload="${trip.id}" title="Груз выгружен — конвейер уйдёт бухгалтерии">Выгружен</button>` : ''}
           <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
         </span>
@@ -324,6 +333,18 @@ export async function renderDispatcher(container, context) {
       try {
         await api(`/api/trips/${button.dataset.notifyDelay}/notify-delay`, { method: 'POST' });
         toast('Продажи уведомлены — они предупредят клиента о задержке');
+        await context.onReload();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message, 'error');
+      }
+    }));
+  container.querySelectorAll('[data-arrived]').forEach(button =>
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/trips/${button.dataset.arrived}/arrived`, { method: 'POST' });
+        toast('Прибытие отмечено — пошёл отсчёт выгрузки');
         await context.onReload();
       } catch (error) {
         button.disabled = false;

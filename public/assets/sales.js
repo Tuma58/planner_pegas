@@ -692,7 +692,10 @@ function rejectDialog(order, data, context) {
 }
 
 // Модалка назначения ТС (маркетплейс-стиль из ТК 21).
-export function assignDialog(order, data, showModal, closeModal, onReload) {
+// options.autoConfirm — назначение из вкладки «Логист»: подтверждение
+// логистом проходит автоматически, рейс сразу уходит диспетчеру.
+// Из продаж — без опции: назначение обязан подтвердить логист.
+export function assignDialog(order, data, showModal, closeModal, onReload, options = {}) {
   const candidates = matchVehicles(data, order.from_name, order.window_from);
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
   showModal(`<h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>
@@ -719,10 +722,13 @@ export function assignDialog(order, data, showModal, closeModal, onReload) {
   document.getElementById('assignOk').onclick = async () => {
     try {
       await api(`/api/orders/${order.id}/assign`, {
-        method: 'POST', body: JSON.stringify({ vehicleId: select.value })
+        method: 'POST',
+        body: JSON.stringify({ vehicleId: select.value, autoConfirm: Boolean(options.autoConfirm) })
       });
       closeModal();
-      toast('ТС назначена — рейс проведён в план');
+      toast(options.autoConfirm
+        ? 'ТС назначена и подтверждена — рейс у диспетчера'
+        : 'ТС назначена — рейс проведён в план');
       await onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
