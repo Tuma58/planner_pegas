@@ -1005,7 +1005,9 @@ async function api(request, response, url) {
       item.vehicle_id === trip.vehicle_id &&
       Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
-    const rejected = trips.filter(trip => trip.status === 'rejected');
+    // Отклонённые рейсы убраны из оперативного реестра: их реестр с причинами —
+    // в отчёте руководителя «Отклонённые рейсы».
+    const rejected = [];
     const conflictItems = trips.filter(trip => conflicts.has(trip.id));
     // Опоздания идущих рейсов из оперативного реестра убраны по решению
     // пользователя (2026-08-03) — вернёмся к этому позже; расчёт остаётся

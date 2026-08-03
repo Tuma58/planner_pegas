@@ -130,8 +130,28 @@ function renderTimeline() {
   const dispositionKinds = {
     repair: 'В ремонте', no_driver: 'Без водителя', shift: 'Пересменка', out: 'Выведен'
   };
+  // Экономика сцепки за открытый месяц: текущая — по рейсам, уже
+  // завершившимся ко «вчера-сегодня», прогноз — включая запланированные.
+  const calc = state.data.settings.calculation;
+  const tripMargin = trip => {
+    const vat = /\bИП\b/iu.test(trip.customer_name)
+      ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22);
+    const net = trip.revenue_vat / (1 + vat);
+    const days = Math.max(0, daysBetween(trip.starts_at, trip.ends_at));
+    const variable = trip.distance_km *
+      (Number(calc.costPerKm || 0) + Number(calc.insuranceAndRoadsPerKm || 0)) +
+      days * (Number(calc.driverPerTripDay || 0) + Number(calc.refrigerationPerTripDay || 0));
+    return net - variable;
+  };
+  const thousands = value => `${Math.round(value / 1000).toLocaleString('ru-RU')} т₽`;
+  const nowMs = Date.now();
   const rows = vehicles.map(vehicle => {
     const vehicleTrips = visibleTrips.filter(trip => trip.vehicle_id === vehicle.id);
+    const monthTrips = vehicleTrips.filter(trip => trip.status !== 'rejected' &&
+      new Date(trip.ends_at) >= state.month && new Date(trip.ends_at) < monthEnd);
+    const factMargin = monthTrips.filter(trip => Date.parse(trip.ends_at) <= nowMs)
+      .reduce((sum, trip) => sum + tripMargin(trip), 0);
+    const forecastMargin = monthTrips.reduce((sum, trip) => sum + tripMargin(trip), 0);
     const grid = Array.from({ length: days }, (_, index) => {
       const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
       return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''}"></div>`;
@@ -162,8 +182,10 @@ function renderTimeline() {
     }).join('');
     return `<div class="vehicle-row">
       <div class="vehicle-cell"><span class="vehicle-stripe"></span>
-        <span class="vehicle-title"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
-        <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}</small></span>
+        <span class="vehicle-title res-vtitle"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
+        <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}</small>
+        <small title="Маржинальный доход сцепки за месяц: факт — по завершившимся рейсам, прогноз — включая запланированные">
+          МД: <b style="color:var(--ok)">${thousands(factMargin)}</b> · прогноз <b>${thousands(forecastMargin)}</b> · ${monthTrips.length} р.</small></span>
       </div>
       <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px"><div class="track-grid">${grid}</div>${dispositionBlocks}${trips}</div>
     </div>`;
@@ -372,11 +394,13 @@ function renderMain() {
     byId(id).classList.toggle('hidden', !timelineView));
   byId('typeFilter').classList.toggle('hidden', !isGantt);
   byId('legend').classList.toggle('hidden', !isGantt);
-  byId('sidepanel').classList.toggle('hidden', !timelineView);
-  document.querySelector('.planner-layout').classList.toggle('full', !timelineView);
+  // Правая панель осталась только у «Ресурса» (задания сотрудника):
+  // Гант — информационное пространство на всю ширину, оперативная
+  // сводка переехала на доску продаж.
+  byId('sidepanel').classList.toggle('hidden', !isResource);
+  document.querySelector('.planner-layout').classList.toggle('full', !isResource);
   if (isGantt) {
     renderTimeline();
-    renderSidePanel();
   } else if (state.view === 'boss') {
     byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
     renderBoss(byId('timeline'), { state, onReload: reload, openReport });
@@ -463,12 +487,8 @@ function openExceptions() {
   const conflictActions = trip => `
     <button class="button ghost small" data-ex-open="${trip.id}"
       title="Откройте рейс и измените сроки или сцепку — конфликт уйдёт сам">Открыть</button>`;
-  const rejectedActions = trip => `
-    ${can('trips:write') ? `<button class="button ghost small" data-ex-restore="${trip.id}"
-      title="Вернуть рейс в план со статусом «План»">Восстановить</button>` : ''}
-    ${can('trips:write') ? `<button class="button ghost small" data-ex-remove="${trip.id}"
-      title="Убрать рейс из плана; связанная заявка уже возвращена в продажи">Убрать из плана</button>` : ''}
-    <button class="button ghost small" data-ex-open="${trip.id}">Открыть</button>`;
+  // Отклонённые рейсы ушли из оперативного реестра — их реестр с причинами
+  // формирует отчёт руководителя «Отклонённые рейсы».
   // Опоздания в пути временно убраны из оперативного реестра (по решению
   // пользователя, вернёмся позже) — пунктуальность видна в отчёте
   // «Контроль выполнения рейсов».
@@ -499,7 +519,6 @@ function openExceptions() {
     ${delayedSection}
     ${section('Критичный', data.critical, 'bad', criticalActions)}
     ${section('Конфликт', data.conflicts, 'warn', conflictActions)}
-    ${section('Отклонён', data.rejected, 'bad', rejectedActions)}
     ${orderSection('Заявка отклонена', data.rejectedOrders || [], 'bad', 'причина', rejectedOrderActions)}
     ${orderSection('Вернулась из плана', data.returnedOrders || [], 'warn', 'причина возврата', returnedOrderActions)}
     ${unavailable}
@@ -528,26 +547,6 @@ function openExceptions() {
       resolveAndRefresh(
         () => api(`/api/trips/${trip.id}`, { method: 'PATCH', body: JSON.stringify({ startsAt, endsAt }) }),
         `Рейс перенесён на ${formatDateTime(startsAt)}`);
-    }));
-  // Отклонённый рейс: вернуть в план либо убрать из плана — обе развязки убирают проблему.
-  document.querySelectorAll('[data-ex-restore]').forEach(button =>
-    button.addEventListener('click', () => {
-      const trip = tripById(button.dataset.exRestore);
-      if (!trip) return;
-      resolveAndRefresh(
-        () => api(`/api/trips/${trip.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ status: 'plan', rejectionReason: null, vehicleId: trip.vehicle_id })
-        }),
-        'Рейс восстановлен в план');
-    }));
-  document.querySelectorAll('[data-ex-remove]').forEach(button =>
-    button.addEventListener('click', () => {
-      const trip = tripById(button.dataset.exRemove);
-      if (!trip || !confirm(`Убрать рейс ${trip.from_name} → ${trip.to_name} из плана?`)) return;
-      resolveAndRefresh(
-        () => api(`/api/trips/${trip.id}`, { method: 'DELETE' }),
-        'Рейс убран из плана');
     }));
   document.querySelectorAll('[data-ex-order-restore]').forEach(button =>
     button.addEventListener('click', () =>
@@ -755,82 +754,6 @@ function openTrip(trip) {
   };
 }
 
-function renderSidePanel() {
-  const { user, vehicles, trips, orders, settings } = state.data;
-  const calculationSettings = settings.calculation;
-  const netRevenue = trips.reduce((sum, trip) => {
-    const vat = /\bИП\b/iu.test(trip.customer_name)
-      ? Number(calculationSettings.individualEntrepreneurVatRate ?? 0.07)
-      : Number(calculationSettings.vatRate ?? 0.22);
-    return sum + trip.revenue_vat / (1 + vat);
-  }, 0);
-  const cost = trips.reduce((sum, trip) => {
-    const duration = Math.max(0, daysBetween(trip.starts_at, trip.ends_at));
-    return sum + trip.distance_km *
-      (Number(calculationSettings.costPerKm || 0) + Number(calculationSettings.insuranceAndRoadsPerKm || 0)) +
-      duration * (Number(calculationSettings.driverPerTripDay || 0) +
-        Number(calculationSettings.refrigerationPerTripDay || 0));
-  }, 0);
-  const metrics = `<div class="summary-grid">
-    <div class="metric"><span>Рейсов</span><strong>${trips.length}</strong></div>
-    <div class="metric"><span>Маржинальный доход</span><strong>${money(netRevenue - cost)}</strong></div>
-  </div>`;
-  // Панели доступны по правам, а не по роли: администратор с полным набором прав
-  // видит все вкладки, остальные роли — свою (вкладки скрыты, если панель одна).
-  // Гант — информационное пространство: панель «Планирование» переехала
-  // во вкладку «Логист» (назначение ТС, замена ТС, отклонение рейса).
-  const availablePanels = [
-    { id: 'fleet', title: 'Состав ТС', show: can('fleet:write') },
-    { id: 'orders', title: 'Заявки', show: can('orders:write') },
-    { id: 'summary', title: 'Сводка', show: true }
-  ].filter(panel => panel.show);
-  if (!availablePanels.some(panel => panel.id === state.panel)) state.panel = availablePanels[0].id;
-  const tabs = availablePanels.length > 1
-    ? `<div class="segmented panel-tabs">${availablePanels.map(panel =>
-        `<button data-panel="${panel.id}" class="${panel.id === state.panel ? 'active' : ''}">${panel.title}</button>`).join('')}</div>`
-    : '';
-
-  if (state.panel === 'fleet') {
-    const work = vehicles.filter(vehicle => vehicle.status === 'work').length;
-    const dispositions = state.data.dispositions || [];
-    byId('sidepanel').innerHTML = `${tabs}<h2>Состав ТС</h2><p class="muted">Доступность парка и водителей</p>
-      <div class="summary-grid"><div class="metric"><span>В работе</span><strong>${work}</strong></div>
-      <div class="metric"><span>Всего</span><strong>${vehicles.length}</strong></div></div>
-      <button class="button full" id="newDisposition">+ Период недоступности</button>
-      <h3>Ремонт, водитель, пересменка</h3>
-      <div class="list">${dispositions.slice(0, 12).map(item => `<button class="list-item" data-disposition="${item.id}">
-        <span><strong class="mono">${escapeHtml(item.vehicle_plate)}</strong>
-        <small class="muted">${escapeHtml(item.kind)} · ${formatDate(item.starts_at)} — ${formatDate(item.ends_at)}</small></span></button>`).join('')
-        || '<p class="muted">Интервалов нет</p>'}</div>
-      <h3>Парк</h3>
-      <div class="list">${vehicles.map(vehicle => `<button class="list-item" data-vehicle="${vehicle.id}"><span>
-        <strong class="mono">${escapeHtml(vehicle.plate)}</strong><small class="muted">${escapeHtml(vehicle.driver_name || 'без водителя')}</small>
-      </span><span class="badge ${vehicle.status === 'work' ? 'ok' : 'warn'}">${escapeHtml(vehicle.status)}</span></button>`).join('')}</div>`;
-    document.querySelectorAll('[data-vehicle]').forEach(button =>
-      button.onclick = () => openVehicle(vehicles.find(vehicle => vehicle.id === button.dataset.vehicle)));
-    byId('newDisposition').onclick = () => openDisposition();
-    document.querySelectorAll('[data-disposition]').forEach(button =>
-      button.onclick = () => openDisposition(dispositions.find(item => item.id === button.dataset.disposition)));
-  } else if (state.panel === 'orders') {
-    byId('sidepanel').innerHTML = `${tabs}<h2>Портфель заявок</h2><p class="muted">Подготовка груза для логиста</p>
-      <button class="button full" id="newOrder">+ Новая заявка</button><h3>Ожидают планирования</h3>
-      <div class="list">${orders.map(order => `<div class="list-item"><span><strong>${escapeHtml(order.customer_name)}</strong>
-      <small class="muted">${escapeHtml(order.from_name)} → ${escapeHtml(order.to_name)}</small></span><b>${money(order.rate_vat)}</b></div>`).join('')}</div>`;
-    byId('newOrder').onclick = openNewOrder;
-  } else {
-    const summaryTitle = availablePanels.length > 1 ? 'Сводка' : user.roleLabel;
-    byId('sidepanel').innerHTML = `${tabs}<h2>${escapeHtml(summaryTitle)}</h2><p class="muted">Оперативная сводка по плану</p>${metrics}
-      <h3>Активные рейсы</h3><div class="list">${trips.filter(trip => ['run', 'unloaded', 'done'].includes(trip.status)).slice(0, 10).map(trip =>
-        `<button class="list-item" data-open-trip="${trip.id}"><span><strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
-        <small class="muted mono">${escapeHtml(trip.vehicle_plate)}</small></span><span class="badge">${escapeHtml(trip.status)}</span></button>`).join('')}</div>`;
-    document.querySelectorAll('[data-open-trip]').forEach(button =>
-      button.onclick = () => openTrip(trips.find(trip => trip.id === button.dataset.openTrip)));
-  }
-
-  document.querySelectorAll('[data-panel]').forEach(button =>
-    button.onclick = () => { state.panel = button.dataset.panel; renderSidePanel(); });
-}
-
 // Карточка ТС: правка существующей сцепки или создание новой (vehicle = null).
 // after — возврат в вызвавший экран (например, в справочник ТС) после сохранения.
 function openVehicle(vehicle = null, after = null) {
@@ -979,35 +902,6 @@ function openDisposition(item = null, prefill = null) {
     try {
       await api(`/api/dispositions/${item.id}`, { method: 'DELETE' });
       closeModal(); toast('Интервал удален'); await reload();
-    } catch (error) { toast(error.message, 'error'); }
-  };
-}
-
-function openNewOrder() {
-  const start = new Date();
-  const end = new Date(Date.now() + 2 * 86_400_000);
-  showModal(`<form id="orderForm"><h2>Новая заявка</h2>
-    <label class="field">Заказчик<input name="customerName" required></label>
-    <div class="form-grid"><label class="field">Откуда<select name="fromZoneId">${zoneOptions()}</select></label>
-    <label class="field">Куда<select name="toZoneId">${zoneOptions()}</select></label></div>
-    <div class="form-grid">
-      <label class="field">Температурный режим<select name="temperatureMode">${state.data.settings.orderOptions.temperatureModes.map(item =>
-        `<option>${escapeHtml(item)}</option>`).join('')}</select></label>
-      <label class="field">Кузов<select name="bodyType">${state.data.settings.orderOptions.bodyTypes.map(item =>
-        `<option>${escapeHtml(item)}</option>`).join('')}</select></label>
-    </div>
-    <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" required></label>
-    <div class="form-grid"><label class="field">Окно с<input name="windowFrom" type="datetime-local" value="${isoInput(start)}"></label>
-    <label class="field">Окно до<input name="windowTo" type="datetime-local" value="${isoInput(end)}"></label></div>
-    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button">Создать</button></div>
-  </form>`);
-  byId('orderForm').onsubmit = async event => {
-    event.preventDefault();
-    try {
-      await api('/api/orders', {
-        method: 'POST', body: JSON.stringify(formValues(event.currentTarget))
-      });
-      closeModal(); toast('Заявка создана'); await reload();
     } catch (error) { toast(error.message, 'error'); }
   };
 }
