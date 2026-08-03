@@ -223,15 +223,14 @@ function seed(db, admin, options) {
     const putZone = db.prepare('INSERT OR IGNORE INTO zones(id,name,color,sort_order) VALUES(?,?,?,?)');
     zones.forEach(([name, color], index) => putZone.run(randomUUID(), name, color, index));
 
-    // Миграция палитры ТК 21: заменяем только прежние дефолтные цвета,
-    // изменённые администратором значения не трогаем. Идемпотентно по app_meta.
-    if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='zone_palette_v21'`).get()) {
+    // Миграция палитры зон (v22): заменяем только прежние дефолтные цвета любого
+    // поколения, изменённые администратором значения не трогаем. Идемпотентно по app_meta.
+    if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='zone_palette_v22'`).get()) {
       const updateColor = db.prepare('UPDATE zones SET color=? WHERE name=? AND color=?');
       zones.forEach(([name, color]) => {
-        const legacy = legacyZoneColors[name];
-        if (legacy) updateColor.run(color, name, legacy);
+        for (const legacy of legacyZoneColors[name] || []) updateColor.run(color, name, legacy);
       });
-      db.prepare(`INSERT INTO app_meta(key,value) VALUES('zone_palette_v21','1')`).run();
+      db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('zone_palette_v22','1')`).run();
     }
 
     const putType = db.prepare('INSERT OR IGNORE INTO vehicle_types(id,name) VALUES(?,?)');

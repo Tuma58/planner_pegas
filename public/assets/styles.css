@@ -2,16 +2,16 @@
   /* Палитра ТК 21 — приглушённая «промышленная» */
   --navy: #2b3a47;
   --navy-2: #374752;
-  --teal: #5f8b80;
+  --teal: #3f8a78;
   --ink: #2a343d;
   --paper: #eef1f3;
   --card: #ffffff;
   --line: #e1e5e9;
   --muted: #7b8691;
   --soft: #f4f6f8;
-  --ok: #5f8b80;
-  --warn: #ad9268;
-  --bad: #a5726a;
+  --ok: #3f8a78;
+  --warn: #bd8f42;
+  --bad: #b45f52;
   --plan: #8b96a1;
   --grid: #f0f2f5;
   --gridwe: #e9ecf0;
@@ -26,7 +26,7 @@
 [data-theme="dark"] {
   --navy: #161f28;
   --navy-2: #1e2832;
-  --teal: #6ea597;
+  --teal: #55b09a;
   --ink: #dfe6ec;
   --paper: #111720;
   --card: #1a232d;

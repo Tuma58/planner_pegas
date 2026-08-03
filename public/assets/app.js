@@ -343,13 +343,16 @@ function renderViewTabs() {
 }
 
 function renderMain() {
-  const ganttOnly = ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'];
   const isGantt = state.view === 'gantt';
+  const isResource = state.view === 'resource';
+  // Ресурс — тоже гант: ему нужны навигация по месяцу, прокрутка и боковая панель заданий.
+  const timelineView = isGantt || isResource;
+  ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'].forEach(id =>
+    byId(id).classList.toggle('hidden', !timelineView));
   byId('typeFilter').classList.toggle('hidden', !isGantt);
   byId('legend').classList.toggle('hidden', !isGantt);
-  ganttOnly.forEach(id => byId(id).classList.toggle('hidden', !isGantt));
-  byId('sidepanel').classList.toggle('hidden', !isGantt);
-  document.querySelector('.planner-layout').classList.toggle('full', !isGantt);
+  byId('sidepanel').classList.toggle('hidden', !timelineView);
+  document.querySelector('.planner-layout').classList.toggle('full', !timelineView);
   if (isGantt) {
     renderTimeline();
     renderSidePanel();
@@ -362,7 +365,7 @@ function renderMain() {
       openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload)
     });
   } else if (state.view === 'resource') {
-    renderResource(byId('timeline'), { state, openDisposition });
+    renderResource(byId('timeline'), { state, openDisposition, taskContainer: byId('sidepanel') });
   }
 }
 
@@ -907,11 +910,11 @@ byId('exceptionsChip').onclick = openExceptions;
 byId('geoButton').onclick = openGeoMap;
 byId('periodPrev').onclick = () => {
   if (!byId('periodPrev').disabled) state.month = addMonths(state.month, -1);
-  renderTimeline();
+  renderMain();
 };
 byId('periodNext').onclick = () => {
   if (!byId('periodNext').disabled) state.month = addMonths(state.month, 1);
-  renderTimeline();
+  renderMain();
 };
 
 // ── Горизонтальная прокрутка ганта ─────────────────────────────────────────
