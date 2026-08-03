@@ -17,7 +17,7 @@ const STEPS = [
   },
   {
     stage: 2, waitingRole: 'Диспетчер', permission: 'trip-status:write',
-    action: { label: 'Отправить в рейс', kind: 'trip-status', status: 'run', hint: 'ТС вышло на маршрут — факты по стоянкам на вкладке «Контроль»' }
+    action: { label: 'Подготовка выхода', kind: 'dispatch', hint: 'Чек-лист в блоке «Диспетчер»: 1С, задание водителю, контроль на линии' }
   },
   {
     stage: 3, waitingRole: 'Диспетчер', permission: 'trip-status:write',
@@ -54,7 +54,16 @@ export function orderStage(order, data) {
 // Полное состояние заявки в конвейере для отрисовки карточки.
 export function pipelineStep(order, data, can) {
   const current = orderStage(order, data);
-  const step = STEPS[Math.min(current.stage, STEPS.length - 1)];
+  let step = STEPS[Math.min(current.stage, STEPS.length - 1)];
+  // Стадия «Назначена ТС» проходит два звена: сначала логист подтверждает
+  // назначение, затем диспетчер ведёт чек-лист выхода на линию.
+  if (current.stage === 2 && current.trip && !current.trip.logist_confirmed_at) {
+    step = {
+      ...step, waitingRole: 'Логист', permission: 'trips:write',
+      action: { label: 'Подтвердить назначение', kind: 'logist-confirm',
+        hint: 'Проверить сцепку и сроки — рейс уйдёт диспетчеру' }
+    };
+  }
   const mine = Boolean(step.permission && can(step.permission));
   const since = order.stage_changed_at || order.updated_at || order.created_at;
   const sinceMs = since ? Math.max(0, Date.now() - parseServerTime(since)) : 0;

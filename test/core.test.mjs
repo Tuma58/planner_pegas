@@ -289,6 +289,49 @@ test('контроль рейса: факты на стоянках двигаю
   assert.equal(finalStops[1].actual_arrival, '2026-08-11T07:10:00.000Z');
 });
 
+test('диспетчеризация: шаги идут по порядку, выход на линию ведёт конвейер', async t => {
+  const { applyDispatchStep, resetDriverNotificationOnVehicleChange } = await import('../src/trip-control.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-dispatch-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,status,stage,assigned_vehicle_id)
+    VALUES('od-1','Клиент',?,?,100000,'2026-08-10T06:00:00.000Z','2026-08-12T18:00:00.000Z',
+    'planned',2,?)`).run(zone.id, zone.id, vehicle.id);
+  db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('td-1',?,'od-1','Клиент',?,?,'2026-08-10T06:00:00.000Z','2026-08-11T06:00:00.000Z',
+    640,100000,'plan')`).run(vehicle.id, zone.id, zone.id);
+  db.prepare(`UPDATE orders SET trip_id='td-1' WHERE id='od-1'`).run();
+
+  // Нарушение порядка: чек-лист диспетчера закрыт до подтверждения логиста.
+  assert.throws(() => applyDispatchStep(db, 'td-1', 'entered_1c'), /Назначение подтверждено логистом/);
+  applyDispatchStep(db, 'td-1', 'logist_confirm');
+  assert.throws(() => applyDispatchStep(db, 'td-1', 'driver_notified'), /учётную систему/);
+  applyDispatchStep(db, 'td-1', 'entered_1c');
+  applyDispatchStep(db, 'td-1', 'driver_notified');
+  // Выход на линию: рейс «В пути», стадия заявки 3, повтор шага идемпотентен.
+  const { statusChanged } = applyDispatchStep(db, 'td-1', 'on_line');
+  assert.equal(statusChanged, true);
+  const trip = db.prepare(`SELECT * FROM trips WHERE id='td-1'`).get();
+  assert.equal(trip.status, 'run');
+  assert.ok(trip.on_line_at);
+  assert.equal(db.prepare(`SELECT stage FROM orders WHERE id='od-1'`).get().stage, 3);
+  assert.equal(applyDispatchStep(db, 'td-1', 'on_line').statusChanged, false);
+
+  // Переназначение ТС отзывает задание водителю: шаг выполняется заново.
+  resetDriverNotificationOnVehicleChange(db, 'td-1');
+  const after = db.prepare(`SELECT * FROM trips WHERE id='td-1'`).get();
+  assert.equal(after.driver_notified_at, null);
+  assert.ok(after.entered_1c_at, 'внесение в 1С сохраняется');
+  assert.ok(after.on_line_at, 'контроль на линии сохраняется');
+});
+
 test('контроль рейса: расчётное прибытие сдвигается на накопленное опоздание', async () => {
   const { stopsWithEstimates, tripDelayMs } = await import('../src/trip-control.mjs');
   const stops = [

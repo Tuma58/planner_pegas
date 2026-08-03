@@ -213,6 +213,27 @@ function migrateColumns(db) {
   // и подтверждение продажами — для реестра в отчёте руководителя.
   ensure('orders', 'stage_changed_at', 'TEXT');
   ensure('orders', 'confirmed_at', 'TEXT');
+  // Шаги диспетчеризации рейса: подтверждение назначения логистом, затем
+  // чек-лист диспетчера — заказ внесён в учётную систему (1С ведётся отдельно),
+  // задание водителю отправлено, рейс на контроле на линии.
+  ensure('trips', 'logist_confirmed_at', 'TEXT');
+  ensure('trips', 'entered_1c_at', 'TEXT');
+  ensure('trips', 'driver_notified_at', 'TEXT');
+  ensure('trips', 'on_line_at', 'TEXT');
+  // Бэкфилл истории: рейсы, созданные до появления диспетчеризации, пришли из
+  // 1С (внесены и подтверждены по определению); идущие и завершённые уже
+  // на линии. Однократно, чтобы не завалить логиста и диспетчера прошлым.
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='dispatch_backfill_v1'`).get()) {
+    db.exec(`UPDATE trips SET
+        logist_confirmed_at=COALESCE(logist_confirmed_at,created_at),
+        entered_1c_at=COALESCE(entered_1c_at,created_at)
+      WHERE status<>'rejected';
+      UPDATE trips SET
+        driver_notified_at=COALESCE(driver_notified_at,created_at),
+        on_line_at=COALESCE(on_line_at,created_at)
+      WHERE status IN ('run','unloaded','done','paid');`);
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('dispatch_backfill_v1','1')`).run();
+  }
   // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
   ensure('users', 'roles', 'TEXT');
   db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);

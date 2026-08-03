@@ -23,7 +23,8 @@ function vehicleBusy(vehicleId, trip, data) {
 
 // Замена ТС на действующем маршруте: свободные в период рейса — сверху,
 // занятые показываются с причиной (заменить можно осознанно и на них).
-function replaceVehicleDialog(trip, data, context) {
+// Используется логистом и диспетчером (внештатные ситуации).
+export function replaceVehicleDialog(trip, data, context) {
   const candidates = data.vehicles
     .map(vehicle => ({ vehicle, busy: vehicle.id === trip.vehicle_id ? 'текущая' : vehicleBusy(vehicle.id, trip, data) }))
     .sort((a, b) => Number(Boolean(a.busy)) - Number(Boolean(b.busy)) || a.vehicle.plate.localeCompare(b.vehicle.plate));
@@ -54,7 +55,7 @@ function replaceVehicleDialog(trip, data, context) {
 }
 
 // Отклонение рейса: причина обязательна — заявка вернётся в продажи как новая.
-function rejectTripDialog(trip, data, context) {
+export function rejectTripDialog(trip, data, context) {
   const reasons = data.settings.rejectionReasons || [];
   context.showModal(`<form id="rejectTripForm">
     <h2>Отклонить рейс</h2>
@@ -131,9 +132,13 @@ export function renderLogist(container, context) {
   }).join('') || '<p class="muted">Очередь пуста — все подтверждённые заявки обеспечены ТС.</p>';
 
   const statusMeta = Object.fromEntries((data.settings.statuses || []).map(([id, label, color]) => [id, { label, color }]));
+  // Новые назначения ждут подтверждения логиста — только после него рейс
+  // уходит в блок «Диспетчер» на подготовку выхода.
+  const needConfirm = activeTrips.filter(trip => trip.status === 'plan' && !trip.logist_confirmed_at).length;
   const tripCards = activeTrips.map(trip => {
     const meta = statusMeta[trip.status] || { label: trip.status, color: 'var(--muted)' };
-    return `<div class="list-item ordrow">
+    const unconfirmed = trip.status === 'plan' && !trip.logist_confirmed_at;
+    return `<div class="list-item ordrow ${unconfirmed ? 'pipe-mine' : ''}">
       <span style="flex:1;min-width:0">
         <strong>${escapeHtml(routeLabel(trip))}</strong>
         · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
@@ -144,7 +149,9 @@ export function renderLogist(container, context) {
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <span class="badge" style="background:${meta.color};color:#fff">${escapeHtml(meta.label)}</span>
         <span style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
-          <button class="button small" data-replace="${trip.id}" title="Подобрать другую сцепку на этот маршрут">Заменить ТС</button>
+          ${unconfirmed && can('trips:write') ? `<button class="button small" data-confirm="${trip.id}"
+            title="Проверить сцепку и сроки — рейс уйдёт диспетчеру на подготовку выхода">Подтвердить назначение</button>` : ''}
+          <button class="button ${unconfirmed ? 'ghost ' : ''}small" data-replace="${trip.id}" title="Подобрать другую сцепку на этот маршрут">Заменить ТС</button>
           <button class="button ghost small" data-open="${trip.id}" title="Времена, статус, заявка">Карточка</button>
           <button class="button ghost small" data-reject-trip="${trip.id}" title="Причина обязательна; заявка вернётся в продажи">Отклонить</button>
         </span>
@@ -156,6 +163,7 @@ export function renderLogist(container, context) {
     <div class="salekpis">
       <div class="skpi"><span class="skl">Ждут назначения ТС</span><span class="skv">${queue.length}</span></div>
       <div class="skpi"><span class="skl">Возвраты из плана</span><span class="skv">${returned}</span></div>
+      <div class="skpi" title="Новые назначения: подтвердите — рейс уйдёт диспетчеру"><span class="skl">На подтверждении</span><span class="skv">${needConfirm}</span></div>
       <div class="skpi"><span class="skl">В плане</span><span class="skv">${activeTrips.length - runCount}</span></div>
       <div class="skpi"><span class="skl">В пути</span><span class="skv">${runCount}</span></div>
       <div class="salesfilter" style="flex:1;min-width:220px">
@@ -204,6 +212,16 @@ export function renderLogist(container, context) {
     button.addEventListener('click', () => {
       const order = data.orders.find(item => item.id === button.dataset.rejectOrder);
       if (order) rejectOrderDialog(order, data, context);
+    }));
+  container.querySelectorAll('[data-confirm]').forEach(button =>
+    button.addEventListener('click', async () => {
+      try {
+        await api(`/api/trips/${button.dataset.confirm}/step`, {
+          method: 'POST', body: JSON.stringify({ step: 'logist_confirm' })
+        });
+        toast('Назначение подтверждено — рейс у диспетчера');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
     }));
   container.querySelectorAll('[data-replace]').forEach(button =>
     button.addEventListener('click', () => {

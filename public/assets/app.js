@@ -5,7 +5,7 @@ import { buildReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales } from './sales.js';
 import { renderLogist } from './logist.js';
 import { renderResource } from './resource.js';
-import { renderControl } from './control.js';
+import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
 
 const state = {
@@ -341,7 +341,7 @@ const MAIN_VIEWS = [
   { id: 'gantt', title: 'Гант', show: () => true },
   { id: 'sales', title: 'Продажи', show: () => can('orders:write') },
   { id: 'logist', title: 'Логист', show: () => can('trips:write') },
-  { id: 'control', title: 'Контроль', show: () => true },
+  { id: 'dispatcher', title: 'Диспетчер', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') }
 ];
@@ -388,8 +388,8 @@ function renderMain() {
     renderResource(byId('timeline'), {
       state, openDisposition, openFleet: openFleetDirectory, taskContainer: byId('sidepanel')
     });
-  } else if (state.view === 'control') {
-    renderControl(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'dispatcher') {
+    renderDispatcher(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'logist') {
     renderLogist(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip, openNewTrip,
@@ -478,7 +478,7 @@ function openExceptions() {
           </span>
           <span class="exactions"><span class="badge bad">+${waitingLabel(trip.delay_ms)}</span>
             <button class="button ghost small" data-ex-control
-              title="Открыть контроль выполнения и отметить факты по стоянкам">Контроль</button></span>
+              title="Открыть блок «Диспетчер»: линия, выгрузка, внештатные ситуации">Диспетчер</button></span>
         </div>`).join('')}</div>`
     : '';
 
@@ -572,8 +572,7 @@ function openExceptions() {
   document.querySelectorAll('[data-ex-control]').forEach(button =>
     button.addEventListener('click', () => {
       closeModal();
-      state.controlFilter = 'delayed';
-      document.querySelector('[data-view="control"]')?.click();
+      document.querySelector('[data-view="dispatcher"]')?.click();
     }));
 }
 
@@ -727,16 +726,15 @@ function openTrip(trip) {
       ${trip.order_id && (editable || can('orders:write')) ? `<button type="button" class="button ghost" id="tripToOrder"
         title="Изменить потребность клиента: сумму, окно, пункты">Заявка</button>` : ''}
       <button type="button" class="button ghost" id="tripToControl"
-        title="Стоянки рейса: план, расчёт и факты прибытия/отправления">Контроль</button>
+        title="Подготовка выхода, линия и внештатные ситуации">Диспетчер</button>
       <button type="button" class="button ghost" data-close>Закрыть</button>
       ${statusEditable ? '<button class="button">Сохранить</button>' : ''}
     </div>
   </form>`);
   byId('tripToControl').onclick = () => {
     closeModal();
-    state.controlFilter = 'all';
-    (state.controlExpanded ||= new Set()).add(trip.id);
-    document.querySelector('[data-view="control"]')?.click();
+    state.dispatcherQuery = trip.vehicle_plate || '';
+    document.querySelector('[data-view="dispatcher"]')?.click();
   };
   // Блок логиста: правка потребности (сумма, окно) прямо из карточки рейса.
   const tripToOrder = byId('tripToOrder');

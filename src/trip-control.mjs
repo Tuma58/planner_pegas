@@ -138,6 +138,58 @@ export function stampStopsFromStatus(db, tripId, status) {
   }
 }
 
+// ── Диспетчеризация рейса ──
+// Порядок шагов после назначения ТС: логист подтверждает назначение,
+// затем диспетчер по чек-листу: заказ внесён в учётную систему (1С ведётся
+// отдельно от продукта), задание водителю отправлено, рейс выведен
+// на контроль на линии (это переводит рейс «В пути»).
+export const DISPATCH_STEPS = [
+  { step: 'logist_confirm', column: 'logist_confirmed_at', permission: 'trips:write',
+    label: 'Назначение подтверждено логистом' },
+  { step: 'entered_1c', column: 'entered_1c_at', permission: 'trip-status:write',
+    label: 'Заказ внесён в учётную систему' },
+  { step: 'driver_notified', column: 'driver_notified_at', permission: 'trip-status:write',
+    label: 'Задание водителю отправлено' },
+  { step: 'on_line', column: 'on_line_at', permission: 'trip-status:write',
+    label: 'Контроль на линии' }
+];
+
+// Выполнение шага с проверкой порядка. Возвращает { trip, statusChanged }.
+export function applyDispatchStep(db, tripId, step, userId) {
+  const index = DISPATCH_STEPS.findIndex(item => item.step === step);
+  if (index < 0) throw Object.assign(new Error('Неизвестный шаг диспетчеризации'), { status: 422 });
+  const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(tripId);
+  if (!trip) throw Object.assign(new Error('Рейс не найден'), { status: 404 });
+  if (trip.status === 'rejected') {
+    throw Object.assign(new Error('Рейс отклонён — шаги недоступны'), { status: 409 });
+  }
+  const meta = DISPATCH_STEPS[index];
+  if (trip[meta.column]) return { trip, statusChanged: false };
+  const previous = DISPATCH_STEPS[index - 1];
+  if (previous && !trip[previous.column]) {
+    throw Object.assign(new Error(`Сначала выполните шаг «${previous.label}»`), { status: 409 });
+  }
+  db.prepare(`UPDATE trips SET ${meta.column}=CURRENT_TIMESTAMP,updated_by=?,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(userId || null, tripId);
+  let statusChanged = false;
+  // Выход на линию = рейс «В пути»: стадия заявки и стоянки контроля двигаются
+  // той же логикой, что и ручная смена статуса.
+  if (step === 'on_line' && trip.status === 'plan') {
+    setTripStatus(db, trip, 'run', userId);
+    ensureTripStops(db, tripId);
+    stampStopsFromStatus(db, tripId, 'run');
+    statusChanged = true;
+  }
+  return { trip: db.prepare('SELECT * FROM trips WHERE id=?').get(tripId), statusChanged };
+}
+
+// Переназначение ТС отзывает отправленное водителю задание: новому водителю
+// его ещё не отправляли. Внесение в 1С и контроль на линии сохраняются.
+export function resetDriverNotificationOnVehicleChange(db, tripId) {
+  db.prepare(`UPDATE trips SET driver_notified_at=NULL,updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND status IN ('plan','run')`).run(tripId);
+}
+
 // Сводка для вкладки «Контроль» и отчёта: рейсы периода (плюс все идущие —
 // опоздавший рейс остаётся проблемой и после планового окончания) со
 // стоянками, расчётом и задержкой.

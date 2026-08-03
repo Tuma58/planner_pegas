@@ -15,7 +15,8 @@ import {
   importTelematics, importTripsFrom1C, reportSnapshot, resolveZone
 } from './planner-service.mjs';
 import {
-  controlSnapshot, ensureTripStops, listTripStops, stampStopsFromStatus,
+  DISPATCH_STEPS, applyDispatchStep, controlSnapshot, ensureTripStops, listTripStops,
+  resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
   stopsWithEstimates, syncTripFromStops, tripDelayMs
 } from './trip-control.mjs';
 
@@ -427,6 +428,11 @@ async function api(request, response, url) {
       ensureTripStops(db, match[0]);
       stampStopsFromStatus(db, match[0], merged.status);
     }
+    // Переназначение ТС: задание прежнему водителю отозвано — шаг
+    // «Задание водителю отправлено» выполняется заново.
+    if (merged.vehicleId !== current.vehicle_id) {
+      resetDriverNotificationOnVehicleChange(db, match[0]);
+    }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'update', 'trip', match[0], body, requestIp(request));
@@ -668,6 +674,27 @@ async function api(request, response, url) {
     db.prepare('DELETE FROM vehicle_dispositions WHERE id=?').run(match[0]);
     audit(db, user, 'delete', 'disposition', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
+  }
+
+  // ── Шаг диспетчеризации: подтверждение логиста и чек-лист диспетчера ──
+  match = route(/^\/api\/trips\/([^/]+)\/step$/, pathname);
+  if (match && request.method === 'POST') {
+    const body = await readJson(request);
+    const meta = DISPATCH_STEPS.find(item => item.step === body.step);
+    if (!meta) return errorJson(response, 422, 'Неизвестный шаг диспетчеризации');
+    const user = requirePermission(request, response, meta.permission);
+    if (!user) return;
+    try {
+      const { statusChanged } = applyDispatchStep(db, match[0], body.step, user.id);
+      if (statusChanged) {
+        queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
+          integrationPublic().writePolicy === 'automatic');
+      }
+      audit(db, user, 'dispatch_step', 'trip', match[0], { step: body.step }, requestIp(request));
+      return json(response, 200, { ok: true, statusChanged });
+    } catch (error) {
+      return errorJson(response, error.status || 500, error.message);
+    }
   }
 
   // ── Контроль выполнения рейса: стоянки с планом/расчётом/фактом ──
