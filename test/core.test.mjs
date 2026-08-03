@@ -399,6 +399,40 @@ test('диспетчеризация: шаги идут по порядку, в�
   assert.ok(after.on_line_at, 'контроль на линии сохраняется');
 });
 
+test('«ТС не выгружают»: первый алерт один раз, пинги диспетчерам ежечасно', async t => {
+  const { checkStuckUnloading } = await import('../src/trip-control.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-stuck-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  const now = Date.parse('2026-08-10T20:00:00.000Z');
+  // Рейс на линии, плановое прибытие 7 часов назад — выгрузка застряла.
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('st-1',?,'Клиент',?,?,'2026-08-09T06:00:00.000Z','2026-08-10T13:00:00.000Z',
+    600,90000,'run')`).run(vehicle.id, zone.id, zone.id);
+
+  const first = checkStuckUnloading(db, now);
+  assert.equal(first.length, 1);
+  assert.equal(first[0].kind, 'first', 'первый алерт — продажам и логистам');
+  assert.ok(first[0].waitedMs >= 7 * 3_600_000);
+  // Повторный прогон через 10 минут — тишина (час не прошёл).
+  assert.equal(checkStuckUnloading(db, now + 10 * 60_000).length, 0);
+  // Через час — ежечасный пинг диспетчерам, и так каждый час.
+  const hourly = checkStuckUnloading(db, now + 61 * 60_000);
+  assert.equal(hourly.length, 1);
+  assert.equal(hourly[0].kind, 'hourly');
+  assert.equal(checkStuckUnloading(db, now + 65 * 60_000).length, 0);
+  assert.equal(checkStuckUnloading(db, now + 122 * 60_000)[0]?.kind, 'hourly');
+  // Выгруженный рейс из-под контроля уходит.
+  db.prepare(`UPDATE trips SET status='unloaded' WHERE id='st-1'`).run();
+  assert.equal(checkStuckUnloading(db, now + 200 * 60_000).length, 0);
+});
+
 test('контроль рейса: расчётное прибытие сдвигается на накопленное опоздание', async () => {
   const { stopsWithEstimates, tripDelayMs } = await import('../src/trip-control.mjs');
   const stops = [

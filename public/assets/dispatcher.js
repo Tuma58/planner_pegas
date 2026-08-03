@@ -10,6 +10,41 @@ import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 
 const LATE_MS = 30 * 60_000;
+// «ТС не выгружают»: плановое прибытие прошло более 6 часов назад,
+// выгрузка не отмечена — особый контроль с выставлением простоя.
+const UNLOAD_STUCK_MS = 6 * 3_600_000;
+
+// Выставление простоя клиенту: часы сверх норматива × ставка из настроек.
+function demurrageDialog(trip, data, context, stuckMs) {
+  const rate = Number(data.settings.calculation.demurragePerHourVat || 1000);
+  const prefillHours = Math.max(1, Math.floor(stuckMs / 3_600_000));
+  context.showModal(`<form id="demurrageForm">
+    <h2>Выставить простой клиенту</h2>
+    <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
+      · ${escapeHtml(trip.customer_name || 'без заказчика')} · план прибытия ${formatDateTime(trip.ends_at)}</p>
+    <div class="form-grid">
+      <label class="field">Часы простоя<input name="hours" type="number" min="1" step="1" value="${prefillHours}" required></label>
+      <label class="field">Ставка, ₽/ч с НДС<input name="ratePerHour" type="number" min="0" value="${rate}" required></label>
+    </div>
+    <p class="muted">Сумма добавится к выручке рейса, продажи получат уведомление —
+      включить простой в счёт клиенту.</p>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button danger">Выставить</button>
+    </div></form>`);
+  document.getElementById('demurrageForm').onsubmit = async event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    try {
+      const { amount } = await api(`/api/trips/${trip.id}/demurrage`, {
+        method: 'POST', body: JSON.stringify(values)
+      });
+      context.closeModal();
+      toast(`Простой выставлен: ${amount.toLocaleString('ru-RU')} ₽ — продажи уведомлены`);
+      await context.onReload();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
 
 // Чек-лист диспетчера; подтверждение логиста — нулевое звено, выполняется
 // в блоке «Логист» и здесь показывается только как состояние.
@@ -165,8 +200,12 @@ export async function renderDispatcher(container, context) {
     .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
   const waitingLogist = planned.filter(trip => !trip.logist_confirmed_at);
   const preparing = planned.filter(trip => trip.logist_confirmed_at);
+  const nowMs = Date.now();
+  const stuckMsOf = trip => nowMs - Date.parse(trip.ends_at);
+  const isStuck = trip => stuckMsOf(trip) > UNLOAD_STUCK_MS;
+  // Особый контроль (не выгружают) — наверху списка линии.
   const online = data.trips.filter(trip => trip.status === 'run' && matches(trip))
-    .sort((a, b) => a.ends_at.localeCompare(b.ends_at));
+    .sort((a, b) => Number(isStuck(b)) - Number(isStuck(a)) || a.ends_at.localeCompare(b.ends_at));
 
   const tripHead = trip => `<span style="flex:1;min-width:0">
       <strong>${escapeHtml(routeLabel(trip))}</strong> · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
@@ -190,20 +229,32 @@ export async function renderDispatcher(container, context) {
 
   const onlineCards = online.map(trip => {
     const delay = delayByTrip.get(trip.id) || 0;
-    const late = delay > LATE_MS;
-    // Опоздание: подсказка уведомить клиента; кнопка шлёт авто-сообщение
-    // сотруднику продаж (тост + звук) — клиента предупреждают продажи.
-    const lateBlock = late
-      ? `<span class="badge bad" title="Расчётное прибытие позже плана — уведомите клиента о переносе">⏰ опоздание ${waitingLabel(delay)} · уведомите клиента</span>
+    const stuck = isStuck(trip);
+    const late = !stuck && delay > LATE_MS;
+    // «Не выгружают > 6 ч» — особый контроль: алерты уже ушли продажам и
+    // логистам (сервер), диспетчерам пингуется каждый час; здесь —
+    // выставление простоя клиенту. Обычное опоздание — уведомление продаж.
+    let statusBlock;
+    if (stuck) {
+      const stuckHours = Math.floor(stuckMsOf(trip) / 3_600_000);
+      statusBlock = `<span class="badge bad" title="Плановое прибытие прошло более 6 часов назад, выгрузка не отмечена — продажи и логисты уведомлены автоматически, диспетчерам пинг каждый час">🚨 не выгружают ${stuckHours} ч · особый контроль</span>
+        ${Number(trip.demurrage_vat) > 0
+          ? `<span class="badge warn" title="Простой добавлен к выручке рейса">простой выставлен: ${money(trip.demurrage_vat)}</span>`
+          : (canAct ? `<button class="button small danger" data-demurrage="${trip.id}"
+              title="Выставить клиенту простой на выгрузке (часы × ставка)">Выставить простой</button>` : '')}`;
+    } else if (late) {
+      statusBlock = `<span class="badge bad" title="Расчётное прибытие позже плана — уведомите клиента о переносе">⏰ опоздание ${waitingLabel(delay)} · уведомите клиента</span>
         ${trip.delay_notified_at
           ? `<span class="badge warn" title="Авто-сообщение продажам отправлено">продажи уведомлены ${formatDateTime(trip.delay_notified_at)}</span>`
           : (canAct ? `<button class="button small danger" data-notify-delay="${trip.id}"
-              title="Авто-сообщение сотруднику продаж: уведомить клиента о задержке">Уведомить продажи</button>` : '')}`
-      : `<span class="badge ok">на линии${trip.on_line_at ? ` с ${formatDateTime(trip.on_line_at)}` : ''}</span>`;
-    return `<div class="list-item ordrow ${late ? 'pipe-returned' : ''}">
+              title="Авто-сообщение сотруднику продаж: уведомить клиента о задержке">Уведомить продажи</button>` : '')}`;
+    } else {
+      statusBlock = `<span class="badge ok">на линии${trip.on_line_at ? ` с ${formatDateTime(trip.on_line_at)}` : ''}</span>`;
+    }
+    return `<div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}">
       ${tripHead(trip)}
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        ${lateBlock}
+        ${statusBlock}
         <span style="display:flex;gap:5px">
           ${canAct ? `<button class="button small" data-unload="${trip.id}" title="Груз выгружен — конвейер уйдёт бухгалтерии">Выгружен</button>` : ''}
           <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
@@ -278,5 +329,10 @@ export async function renderDispatcher(container, context) {
         button.disabled = false;
         toast(error.message, 'error');
       }
+    }));
+  container.querySelectorAll('[data-demurrage]').forEach(button =>
+    button.addEventListener('click', () => {
+      const trip = data.trips.find(item => item.id === button.dataset.demurrage);
+      if (trip) demurrageDialog(trip, data, context, stuckMsOf(trip));
     }));
 }

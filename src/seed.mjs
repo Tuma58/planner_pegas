@@ -145,7 +145,8 @@ export const defaultSettings = {
     individualEntrepreneurVatRate: 0.07,
     dailyMileageKm: 600,
     handlingDays: 0.5,
-    utilizationTarget: 0.951
+    utilizationTarget: 0.951,
+    demurragePerHourVat: 1000
   },
   orderOptions: {
     temperatureModes: ['−20…−18 °C (заморозка)', '0…+4 °C (охлаждение)', '+5…+12 °C', '+12…+25 °C', 'без режима'],

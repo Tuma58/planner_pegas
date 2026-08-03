@@ -15,8 +15,8 @@ import {
   importTelematics, importTripsFrom1C, reportSnapshot, resolveZone
 } from './planner-service.mjs';
 import {
-  DISPATCH_STEPS, applyDispatchStep, controlSnapshot, ensureTripStops, listTripStops,
-  resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
+  DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
+  listTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
   stopsWithEstimates, syncTripFromStops, tripDelayMs
 } from './trip-control.mjs';
 
@@ -233,6 +233,27 @@ function routeText(row) {
   const to = row.to_point || zoneName(row.to_zone_id);
   return `${from} → ${to}`;
 }
+
+// Сторож выгрузки: «ТС не выгружают более 6 часов» — первый алерт продажам
+// и логистам, затем ежечасные пинги диспетчерам, пока рейс не выгружен.
+function runUnloadWatch() {
+  try {
+    for (const event of checkStuckUnloading(db)) {
+      const hours = Math.floor(event.waitedMs / 3_600_000);
+      const label = `ТС ${event.trip.vehicle_plate} (${routeText(event.trip)}, ${event.trip.customer_name || 'без заказчика'})`;
+      if (event.kind === 'first') {
+        notify('sales', `${label} не выгружают более 6 ч — уведомите клиента; простой можно выставить в «Диспетчере»`, 'trip', event.trip.id);
+        notify('logist', `${label} стоит на выгрузке ${hours} ч — учтите при планировании следующих рейсов сцепки`, 'trip', event.trip.id);
+      } else {
+        notify('dispatcher', `Особый контроль: ${label} стоит на выгрузке уже ${hours} ч — проверьте статус и зафиксируйте простой`, 'trip', event.trip.id);
+      }
+    }
+  } catch (error) {
+    console.error('Сторож выгрузки:', error.message);
+  }
+}
+setInterval(runUnloadWatch, 10 * 60_000);
+setTimeout(runUnloadWatch, 15_000);
 
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
@@ -805,6 +826,28 @@ async function api(request, response, url) {
       WHERE id=?`).run(match[0]);
     audit(db, user, 'notify_delay', 'trip', match[0], { delayMs }, requestIp(request));
     return json(response, 200, { ok: true, delayMs });
+  }
+
+  // ── Простой на выгрузке: выставление клиенту ──
+  match = route(/^\/api\/trips\/([^/]+)\/demurrage$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден');
+    const hours = Math.max(0, Number(body.hours || 0));
+    const rate = Math.max(0, Number(body.ratePerHour || 0));
+    const amount = Math.round(hours * rate);
+    if (!amount) return errorJson(response, 422, 'Укажите часы простоя и ставку');
+    // Простой — часть выручки рейса: экономика и отчёты учитывают его сразу.
+    db.prepare(`UPDATE trips SET demurrage_vat=demurrage_vat+?,revenue_vat=revenue_vat+?,
+      updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(amount, amount, user.id, match[0]);
+    notify('sales', `По рейсу ${routeText(trip)} (${trip.customer_name || 'без заказчика'}) выставлен простой на выгрузке: ${hours} ч × ${rate.toLocaleString('ru-RU')} ₽ = ${amount.toLocaleString('ru-RU')} ₽ — включите в счёт клиенту`, 'trip', match[0]);
+    queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
+      integrationPublic().writePolicy === 'automatic');
+    audit(db, user, 'demurrage', 'trip', match[0], { hours, rate, amount }, requestIp(request));
+    return json(response, 200, { ok: true, amount });
   }
 
   // ── Контроль выполнения рейса: стоянки с планом/расчётом/фактом ──

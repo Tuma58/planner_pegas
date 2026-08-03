@@ -190,6 +190,36 @@ export function resetDriverNotificationOnVehicleChange(db, tripId) {
     WHERE id=? AND status IN ('plan','run')`).run(tripId);
 }
 
+// ── «ТС не выгружают»: затянувшаяся выгрузка на линии ──
+// Рейс на линии, плановое прибытие прошло более 6 часов назад, выгрузка не
+// отмечена. Первый алерт — продажам и логистам, далее ежечасные пинги
+// диспетчерам (особый контроль), пока рейс не выгружен или не снят.
+export const UNLOAD_STUCK_MS = 6 * 3_600_000;
+
+export function checkStuckUnloading(db, nowMs = Date.now()) {
+  const events = [];
+  const trips = db.prepare(`SELECT t.*,v.plate vehicle_plate,
+    f.name from_name,z.name to_name FROM trips t
+    JOIN vehicles v ON v.id=t.vehicle_id
+    JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
+    WHERE t.status='run'`).all();
+  const stamp = new Date(nowMs).toISOString();
+  for (const trip of trips) {
+    const waitedMs = nowMs - Date.parse(trip.ends_at);
+    if (waitedMs < UNLOAD_STUCK_MS) continue;
+    if (!trip.unload_alert_at) {
+      db.prepare(`UPDATE trips SET unload_alert_at=?,unload_ping_at=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(stamp, stamp, trip.id);
+      events.push({ kind: 'first', trip, waitedMs });
+    } else if (nowMs - Date.parse(trip.unload_ping_at || trip.unload_alert_at) >= 3_600_000) {
+      db.prepare(`UPDATE trips SET unload_ping_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(stamp, trip.id);
+      events.push({ kind: 'hourly', trip, waitedMs });
+    }
+  }
+  return events;
+}
+
 // Сводка для вкладки «Контроль» и отчёта: рейсы периода (плюс все идущие —
 // опоздавший рейс остаётся проблемой и после планового окончания) со
 // стоянками, расчётом и задержкой.
