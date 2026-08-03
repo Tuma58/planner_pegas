@@ -525,6 +525,16 @@ async function api(request, response, url) {
       String(body.temperatureMode ?? current.temperature_mode),
       String(body.bodyType ?? current.body_type), nextStage,
       rejectionReason, returnedAt, confirmedAt, stageChanged ? 1 : 0, match[0]);
+    // Заявка уже в плане у логиста: новая ставка — это выручка рейса,
+    // синхронизируем, пока рейс не закрыт оплатой.
+    if (current.trip_id && 'rateVat' in body &&
+        Number(body.rateVat) !== Number(current.rate_vat)) {
+      db.prepare(`UPDATE trips SET revenue_vat=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND status NOT IN ('paid','rejected')`)
+        .run(Number(body.rateVat), user.id, current.trip_id);
+      queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
+        integrationPublic().writePolicy === 'automatic');
+    }
     queueOutbox(db, 'orders', match[0], 'update', orderOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'update', 'order', match[0], body, requestIp(request));

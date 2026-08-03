@@ -2,7 +2,7 @@ import { api, escapeHtml, formatDate, formatDateTime, formValues, logout, money,
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
-import { assignDialog, renderSales } from './sales.js';
+import { assignDialog, editOrderDialog, renderSales } from './sales.js';
 import { renderResource } from './resource.js';
 import { renderControl } from './control.js';
 import { waitingLabel } from './pipeline.js';
@@ -364,7 +364,7 @@ function renderMain() {
     renderBoss(byId('timeline'), { state, onReload: reload, openReport });
   } else if (state.view === 'sales') {
     renderSales(byId('timeline'), {
-      state, can, onReload: reload, showModal, closeModal,
+      state, can, onReload: reload, showModal, closeModal, openTrip,
       openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload)
     });
   } else if (state.view === 'resource') {
@@ -700,6 +700,8 @@ function openTrip(trip) {
     </div>` : ''}
     <div class="modal-actions">
       ${editable ? '<button type="button" class="button danger" id="deleteTrip">Удалить</button>' : ''}
+      ${trip.order_id && (editable || can('orders:write')) ? `<button type="button" class="button ghost" id="tripToOrder"
+        title="Изменить потребность клиента: сумму, окно, пункты">Заявка</button>` : ''}
       <button type="button" class="button ghost" id="tripToControl"
         title="Стоянки рейса: план, расчёт и факты прибытия/отправления">Контроль</button>
       <button type="button" class="button ghost" data-close>Закрыть</button>
@@ -711,6 +713,14 @@ function openTrip(trip) {
     state.controlFilter = 'all';
     (state.controlExpanded ||= new Set()).add(trip.id);
     document.querySelector('[data-view="control"]')?.click();
+  };
+  // Блок логиста: правка потребности (сумма, окно) прямо из карточки рейса.
+  const tripToOrder = byId('tripToOrder');
+  if (tripToOrder) tripToOrder.onclick = () => {
+    const order = state.data.orders.find(item => item.id === trip.order_id);
+    if (!order) { toast('Заявка не найдена', 'error'); return; }
+    closeModal();
+    editOrderDialog(order, state.data, { showModal, closeModal, onReload: reload, openTrip });
   };
   const form = byId('editTripForm');
   form.onsubmit = async event => {

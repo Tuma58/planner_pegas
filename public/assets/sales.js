@@ -208,12 +208,42 @@ export function renderSales(container, context) {
       ${canReject ? `<button class="button ghost small" data-restore="${order.id}">Вернуть в работу</button>` : ''}
     </div>`).join('') || '<p class="muted">Отклонённых заявок нет.</p>';
 
+  // Плашки-KPI кликабельны: выпадающий список позиций категории,
+  // выбор заявки открывает редактирование (суммы, времена и остальное).
+  const inPlanOrders = data.orders
+    .filter(order => order.status !== 'cancelled' && !inSalesPortfolio(order, data))
+    .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
+  const kpiDrop = (key, rows) => state.salesKpiOpen === key
+    ? `<div class="skpi-drop">${rows || '<div class="skpi-row muted">Пусто</div>'}</div>` : '';
+  const orderRow = order => {
+    const trip = order.trip_id ? data.trips.find(item => item.id === order.trip_id) : null;
+    return `<div class="skpi-row" data-kpi-order="${order.id}">
+      <span style="flex:1;min-width:0"><strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
+        <small class="muted" style="display:block">окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}
+          ${trip ? ` · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>` : ''}</small></span>
+      <b>${money(order.rate_vat)}</b></div>`;
+  };
+  const requestRow = (request, index) => `<div class="skpi-row" data-kpi-req="${index}">
+      <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.zone.name)}
+        <small class="muted" style="display:block">освободится ${fmtDateTime(request.freeAt)}</small></span></div>`;
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
-      <div class="skpi"><span class="skl">Потребность от логистики</span><span class="skv">${requests.length}${filterActive ? `<small class="muted"> / ${allRequests.length}</small>` : ''}</span></div>
-      <div class="skpi"><span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span></div>
-      <div class="skpi"><span class="skl">Ждут назначения ТС</span><span class="skv">${awaitingAssign}</span></div>
-      <div class="skpi" title="Назначенные заявки уходят из портфеля к логисту в план (Гант) и возвращаются только при отклонении рейса"><span class="skl">В плане у логиста</span><span class="skv">${assigned}</span></div>
+      <div class="skpi clickable ${state.salesKpiOpen === 'requests' ? 'open' : ''}" data-kpi="requests"
+        title="Освобождающиеся сцепки — выбор заполняет форму бронирования">
+        <span class="skl">Потребность от логистики</span><span class="skv">${requests.length}${filterActive ? `<small class="muted"> / ${allRequests.length}</small>` : ''}</span>
+        ${kpiDrop('requests', requests.map(requestRow).join(''))}</div>
+      <div class="skpi clickable ${state.salesKpiOpen === 'portfolio' ? 'open' : ''}" data-kpi="portfolio"
+        title="Заявки портфеля — выбор открывает редактирование">
+        <span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span>
+        ${kpiDrop('portfolio', orders.map(orderRow).join(''))}</div>
+      <div class="skpi clickable ${state.salesKpiOpen === 'awaiting' ? 'open' : ''}" data-kpi="awaiting"
+        title="Подтверждённые без ТС — выбор открывает редактирование">
+        <span class="skl">Ждут назначения ТС</span><span class="skv">${awaitingAssign}</span>
+        ${kpiDrop('awaiting', orders.filter(order => orderStage(order, data).stage === 1).map(orderRow).join(''))}</div>
+      <div class="skpi clickable ${state.salesKpiOpen === 'logist' ? 'open' : ''}" data-kpi="logist"
+        title="Назначенные заявки в плане (Гант) — выбор открывает редактирование">
+        <span class="skl">В плане у логиста</span><span class="skv">${assigned}</span>
+        ${kpiDrop('logist', inPlanOrders.map(orderRow).join(''))}</div>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <select id="salesFilterZone">
@@ -381,18 +411,44 @@ export function renderSales(container, context) {
     container.querySelector(`#${id}`).addEventListener('change', feasibility));
   feasibility();
 
+  const fillRequestForm = request => {
+    container.querySelector('#salesFrom').value = request.zone.id;
+    if (request.suggestToId) container.querySelector('#salesTo').value = request.suggestToId;
+    container.querySelector('[name="customerName"]').value = request.suggestCustomer || '';
+    container.querySelector('#salesRate').value = request.suggestRate || '';
+    container.querySelector('#salesWinFrom').value = inputValue(request.loadFrom);
+    container.querySelector('#salesWinTo').value = inputValue(request.windowTo);
+    feasibility();
+    toast('Бронирование обратного груза заполнено');
+  };
   container.querySelectorAll('[data-req]').forEach(element =>
     element.addEventListener('click', () => {
       const request = requests[Number(element.dataset.req)];
-      if (!request) return;
-      container.querySelector('#salesFrom').value = request.zone.id;
-      if (request.suggestToId) container.querySelector('#salesTo').value = request.suggestToId;
-      container.querySelector('[name="customerName"]').value = request.suggestCustomer || '';
-      container.querySelector('#salesRate').value = request.suggestRate || '';
-      container.querySelector('#salesWinFrom').value = inputValue(request.loadFrom);
-      container.querySelector('#salesWinTo').value = inputValue(request.windowTo);
-      feasibility();
-      toast('Бронирование обратного груза заполнено');
+      if (request) fillRequestForm(request);
+    }));
+
+  // Плашки-KPI: клик раскрывает список категории; выбор заявки открывает
+  // редактирование, выбор сцепки — заполняет форму бронирования.
+  container.querySelectorAll('[data-kpi]').forEach(badge =>
+    badge.addEventListener('click', event => {
+      if (event.target.closest('.skpi-drop')) return;
+      const key = badge.dataset.kpi;
+      state.salesKpiOpen = state.salesKpiOpen === key ? null : key;
+      rerender();
+    }));
+  container.querySelectorAll('[data-kpi-order]').forEach(row =>
+    row.addEventListener('click', () => {
+      const order = data.orders.find(item => item.id === row.dataset.kpiOrder);
+      state.salesKpiOpen = null;
+      rerender();
+      if (order) editOrderDialog(order, data, context);
+    }));
+  container.querySelectorAll('[data-kpi-req]').forEach(row =>
+    row.addEventListener('click', () => {
+      const request = requests[Number(row.dataset.kpiReq)];
+      state.salesKpiOpen = null;
+      rerender();
+      if (request) fillRequestForm(request);
     }));
 
   container.querySelector('#salesForm').onsubmit = async event => {
@@ -468,26 +524,36 @@ export function renderSales(container, context) {
     }));
 }
 
-// Редактирование потребности в портфеле: те же поля, что и при бронировании.
-// Доступно, пока заявка у продаж/логиста (после назначения ТС её в портфеле нет).
-function editOrderDialog(order, data, context) {
+// Редактирование потребности: те же поля, что и при бронировании.
+// Вызывается из портфеля продаж, из выпадающих списков плашек-KPI
+// и из блока логиста (карточка рейса в Ганте). Для назначенной заявки
+// новая ставка синхронизируется с рейсом на сервере.
+export function editOrderDialog(order, data, context) {
   const zoneOptions = selected => data.reference.zones.map(zone =>
     `<option value="${zone.id}" ${zone.id === selected ? 'selected' : ''}>${escapeHtml(zone.name)}</option>`).join('');
   const orderOptions = data.settings.orderOptions || {};
   const options = (items, current) => (items || []).map(item =>
     `<option ${item === current ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('');
+  // Диалог вызывается и из продаж, и из блока логиста (Гант) — datalist
+  // пунктов встроен в модалку, чтобы не зависеть от разметки доски продаж.
+  const trip = order.trip_id ? data.trips.find(item => item.id === order.trip_id) : null;
   context.showModal(`<form id="editOrderForm">
     <h2>Изменить потребность</h2>
     <p class="muted">${escapeHtml(routeLabel(order))} · создана ${fmtDateTime(order.created_at)}</p>
+    ${trip ? `<p class="muted">В плане у логиста: <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
+      · рейс ${fmtDateTime(trip.starts_at)} → ${fmtDateTime(trip.ends_at)} — новая ставка обновит и рейс</p>` : ''}
     <label class="field">Заказчик
       <input name="customerName" list="salesCustomers" value="${escapeHtml(order.customer_name)}" required autocomplete="off">
     </label>
     <div class="form-grid">
-      <label class="field">Пункт погрузки<input name="fromPoint" id="editFromPoint" list="salesPlaces"
+      <label class="field">Пункт погрузки<input name="fromPoint" id="editFromPoint" list="editPlaces"
         value="${escapeHtml(order.from_point || '')}" autocomplete="off"></label>
-      <label class="field">Пункт выгрузки<input name="toPoint" id="editToPoint" list="salesPlaces"
+      <label class="field">Пункт выгрузки<input name="toPoint" id="editToPoint" list="editPlaces"
         value="${escapeHtml(order.to_point || '')}" autocomplete="off"></label>
     </div>
+    <datalist id="editPlaces">${data.reference.zones.flatMap(zone =>
+      [zone.name, ...(zone.aliases || [])]).sort()
+      .map(place => `<option value="${escapeHtml(place)}"></option>`).join('')}</datalist>
     <div class="form-grid">
       <label class="field">Геозона откуда<select name="fromZoneId" id="editFromZone">${zoneOptions(order.from_zone_id)}</select></label>
       <label class="field">Геозона куда<select name="toZoneId" id="editToZone">${zoneOptions(order.to_zone_id)}</select></label>
@@ -502,10 +568,18 @@ function editOrderDialog(order, data, context) {
     </div>
     <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Number(order.rate_vat) || 0}"></label>
     <div class="modal-actions">
+      ${trip && context.openTrip ? `<button type="button" class="button ghost" id="editOrderTrip"
+        title="Открыть карточку рейса: времена подачи, статус, удаление">Рейс</button>` : ''}
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button" type="submit">Сохранить</button>
     </div>
   </form>`);
+  if (trip && context.openTrip) {
+    document.getElementById('editOrderTrip').onclick = () => {
+      context.closeModal();
+      context.openTrip(trip);
+    };
+  }
   // Пункт определяет геозону по алиасам — как в форме бронирования.
   const zoneByPlace = place => {
     const needle = String(place || '').trim().toLowerCase();
