@@ -229,6 +229,7 @@ function normalizeTrip(body) {
     vehicleId: body.vehicleId, orderId: body.orderId || null,
     customerName: String(body.customerName || '').trim(),
     fromZoneId: body.fromZoneId, toZoneId: body.toZoneId,
+    fromPoint: String(body.fromPoint || '').trim(), toPoint: String(body.toPoint || '').trim(),
     startsAt: new Date(startsAt).toISOString(), endsAt: new Date(endsAt).toISOString(),
     distanceKm: Number(body.distanceKm || 0), revenueVat: Number(body.revenueVat || 0),
     status: body.status || 'plan', rejectionReason: body.rejectionReason || null,
@@ -350,12 +351,12 @@ async function api(request, response, url) {
     const trip = normalizeTrip(await readJson(request));
     const id = randomUUID();
     db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
-      starts_at,ends_at,distance_km,revenue_vat,status,rejection_reason,temperature_mode,
-      body_type,created_by,updated_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status,rejection_reason,
+      temperature_mode,body_type,created_by,updated_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, trip.vehicleId, trip.orderId, trip.customerName, trip.fromZoneId, trip.toZoneId,
-      trip.startsAt, trip.endsAt, trip.distanceKm, trip.revenueVat, trip.status,
-      trip.rejectionReason, trip.temperatureMode, trip.bodyType, user.id, user.id);
+      trip.fromPoint, trip.toPoint, trip.startsAt, trip.endsAt, trip.distanceKm, trip.revenueVat,
+      trip.status, trip.rejectionReason, trip.temperatureMode, trip.bodyType, user.id, user.id);
     if (trip.orderId) db.prepare(`UPDATE orders SET status='planned',stage=2,trip_id=?,
       assigned_vehicle_id=?,rejection_reason=NULL,returned_at=NULL,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id, trip.vehicleId, trip.orderId);
@@ -380,6 +381,7 @@ async function api(request, response, url) {
       vehicleId: body.vehicleId ?? current.vehicle_id, orderId: body.orderId ?? current.order_id,
       customerName: body.customerName ?? current.customer_name,
       fromZoneId: body.fromZoneId ?? current.from_zone_id, toZoneId: body.toZoneId ?? current.to_zone_id,
+      fromPoint: body.fromPoint ?? current.from_point, toPoint: body.toPoint ?? current.to_point,
       startsAt: body.startsAt ?? current.starts_at, endsAt: body.endsAt ?? current.ends_at,
       distanceKm: body.distanceKm ?? current.distance_km, revenueVat: body.revenueVat ?? current.revenue_vat,
       status: body.status ?? current.status, rejectionReason: body.rejectionReason ?? current.rejection_reason,
@@ -391,9 +393,10 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Укажите причину отклонения рейса');
     }
     db.prepare(`UPDATE trips SET vehicle_id=?,order_id=?,customer_name=?,from_zone_id=?,to_zone_id=?,
-      starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,rejection_reason=?,
+      from_point=?,to_point=?,starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,rejection_reason=?,
       temperature_mode=?,body_type=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       merged.vehicleId, merged.orderId, merged.customerName, merged.fromZoneId, merged.toZoneId,
+      merged.fromPoint, merged.toPoint,
       merged.startsAt, merged.endsAt, merged.distanceKm, merged.revenueVat, merged.status,
       merged.rejectionReason, merged.temperatureMode, merged.bodyType, user.id, match[0]);
     if (merged.orderId) {
@@ -446,10 +449,11 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Некорректное окно заявки');
     }
     const id = randomUUID();
-    db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
-      window_from,window_to,temperature_mode,body_type,stage,created_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(
-      id, body.customerName.trim(), body.fromZoneId, body.toZoneId, Number(body.rateVat || 0),
+    db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
+      rate_vat,window_from,window_to,temperature_mode,body_type,stage,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, body.customerName.trim(), body.fromZoneId, body.toZoneId,
+      String(body.fromPoint || '').trim(), String(body.toPoint || '').trim(), Number(body.rateVat || 0),
       new Date(windowFrom).toISOString(), new Date(windowTo).toISOString(),
       String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0), user.id);
     queueOutbox(db, 'orders', id, 'create', orderOutboxPayload(id),
@@ -496,13 +500,15 @@ async function api(request, response, url) {
     }
     const confirmedAt = current.confirmed_at ||
       (stageChanged && nextStage >= 1 ? new Date().toISOString() : null);
-    db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,rate_vat=?,
-      window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,
+    db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,from_point=?,to_point=?,
+      rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,
       rejection_reason=?,returned_at=?,confirmed_at=?,
       stage_changed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       String(body.customerName ?? current.customer_name).trim(),
       body.fromZoneId ?? current.from_zone_id, body.toZoneId ?? current.to_zone_id,
+      String(body.fromPoint ?? current.from_point ?? '').trim(),
+      String(body.toPoint ?? current.to_point ?? '').trim(),
       Number(body.rateVat ?? current.rate_vat), new Date(starts).toISOString(),
       new Date(ends).toISOString(), nextStatus,
       String(body.temperatureMode ?? current.temperature_mode),
@@ -538,9 +544,11 @@ async function api(request, response, url) {
           WHERE id=?`).run(vehicle.id, user.id, tripId);
       } else {
         db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
-          starts_at,ends_at,distance_km,revenue_vat,status,temperature_mode,body_type,created_by,updated_by)
-          VALUES(?,?,?,?,?,?,?,?,?,?, 'plan',?,?,?,?)`).run(
+          from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status,temperature_mode,
+          body_type,created_by,updated_by)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'plan',?,?,?,?)`).run(
           tripId, vehicle.id, order.id, order.customer_name, order.from_zone_id, order.to_zone_id,
+          order.from_point || '', order.to_point || '',
           startsAt, endsAt, distance, order.rate_vat, order.temperature_mode, order.body_type, user.id, user.id);
       }
       // Назначение ТС решает и «возврат из плана»: пометка снимается, запись

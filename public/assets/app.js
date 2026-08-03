@@ -1,4 +1,4 @@
-import { api, escapeHtml, formatDate, formatDateTime, formValues, logout, money, setTimeZone, setupTheme, timeZone, toLocalInput, toast } from './api.js';
+import { api, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
@@ -136,8 +136,8 @@ function renderTimeline() {
       const color = trip.from_color || '#3b6ea5';
       return `<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''}"
         data-trip="${trip.id}" style="left:${left}px;width:${width}px;background-color:${color}"
-        title="${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}">
-        <strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
+        title="${escapeHtml(routeLabel(trip))}&#10;Геозоны: ${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}">
+        <strong>${escapeHtml(routeLabel(trip))}</strong>
         <small>${escapeHtml(trip.customer_name)}</small>
       </button>`;
     }).join('');
@@ -408,7 +408,7 @@ function openExceptions() {
   if (!data) return;
   const tripRow = (trip, badge, title, actions) => `<div class="list-item exrow">
     <span style="flex:1;min-width:0">
-      <strong>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</strong>
+      <strong>${escapeHtml(routeLabel(trip))}</strong>
       <small class="muted" style="display:block"><span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
         · ${formatDateTime(trip.starts_at)} · ${escapeHtml(trip.customer_name)}
         ${trip.rejection_reason ? ` · ${escapeHtml(trip.rejection_reason)}` : ''}</small>
@@ -437,7 +437,7 @@ function openExceptions() {
   const orderSection = (title, items, badge, note, actionsFor) => items.length
     ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(order => `<div class="list-item exrow">
         <span style="flex:1;min-width:0">
-          <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
+          <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
           <small class="muted" style="display:block">${note}: ${escapeHtml(order.rejection_reason || 'без причины')}</small>
         </span>
         <span class="exactions"><span class="badge ${badge}">${title}</span>${actionsFor(order)}</span>
@@ -649,7 +649,8 @@ function openTrip(trip) {
   const statuses = allowedStatuses.map(([id, label]) =>
     `<option value="${id}" ${trip.status === id ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('');
   showModal(`<form id="editTripForm">
-    <h2>${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</h2>
+    <h2>${escapeHtml(routeLabel(trip))}</h2>
+    ${trip.from_point || trip.to_point ? `<p class="muted">Геозоны: ${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}</p>` : ''}
     <p class="muted mono">${escapeHtml(trip.vehicle_plate)} · ${escapeHtml(trip.customer_name || 'без заказчика')}</p>
     <p class="muted">${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)} ·
       ${Math.round(daysBetween(trip.starts_at, trip.ends_at) * 24)} ч в рейсе</p>

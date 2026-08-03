@@ -197,6 +197,10 @@ test('контракты 1С и телематики идемпотентны, �
   assert.equal(importTripsFrom1C(db, [{ ...row, revenue: 120000 }], user).updated, 1);
   const trip = db.prepare(`SELECT * FROM trips WHERE external_id='1c:1С-TEST-1'`).get();
   assert.equal(trip.revenue_vat, 120000);
+  // Пункты погрузки/выгрузки сохраняются: маршрут показывается «из пункта в пункт»,
+  // зона (Дом/Москва) остаётся каркасом аналитики.
+  assert.equal(trip.from_point, 'Пенза');
+  assert.equal(trip.to_point, '');
   assert.deepEqual(importTelematics(db, [{
     rideId: '1С-TEST-1', km: 650, status: 'done', unloadedAt: '2026-07-12T10:00:00Z'
   }], user), { matched: 1, kmUpdated: 1, statusUpdated: 1, skipped: 0 });

@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, escapeHtml, formatDateTime, formValues, money, toLocalInput, toast } from './api.js';
+import { api, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast } from './api.js';
 import { STAGES, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 
 export { STAGES, orderStage };
@@ -175,7 +175,7 @@ export function renderSales(container, context) {
       ? `<button class="button small danger" data-act="assign" data-order="${order.id}">⚠ Переназначить ТС</button>` : '';
     return `<div class="list-item ordrow pipe-${step.tone}" data-order="${order.id}">
       <span style="flex:1;min-width:0">
-        <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
+        <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         ${step.plate ? ` · <span class="mono">${escapeHtml(step.plate)}</span>` : ''}
         <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
@@ -192,7 +192,7 @@ export function renderSales(container, context) {
   // Реестр отклонённых: заявки, на которые ТС так и не назначили.
   const rejectedList = rejectedOrders.map(order => `<div class="list-item ordrow rejected-order">
       <span style="flex:1;min-width:0">
-        <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
+        <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         <small class="muted" style="display:block">окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${money(order.rate_vat)}</small>
         <small class="reject-note">✕ ${escapeHtml(order.rejection_reason || 'без причины')}</small>
       </span>
@@ -233,8 +233,17 @@ export function renderSales(container, context) {
             <datalist id="salesCustomers"></datalist>
           </label>
           <div class="form-grid">
-            <label class="field">Откуда<select name="fromZoneId" id="salesFrom">${zoneOptions}</select></label>
-            <label class="field">Куда<select name="toZoneId" id="salesTo">${zoneOptions}</select></label>
+            <label class="field">Пункт погрузки<input name="fromPoint" id="salesFromPoint" list="salesPlaces"
+              placeholder="город / посёлок" autocomplete="off"></label>
+            <label class="field">Пункт выгрузки<input name="toPoint" id="salesToPoint" list="salesPlaces"
+              placeholder="город / посёлок" autocomplete="off"></label>
+          </div>
+          <datalist id="salesPlaces">${data.reference.zones.flatMap(zone =>
+            [zone.name, ...(zone.aliases || [])]).sort()
+            .map(place => `<option value="${escapeHtml(place)}"></option>`).join('')}</datalist>
+          <div class="form-grid">
+            <label class="field">Геозона откуда<select name="fromZoneId" id="salesFrom">${zoneOptions}</select></label>
+            <label class="field">Геозона куда<select name="toZoneId" id="salesTo">${zoneOptions}</select></label>
           </div>
           <div class="form-grid">
             <label class="field">Темп. режим<select name="temperatureMode">${temps}</select></label>
@@ -296,6 +305,24 @@ export function renderSales(container, context) {
       fillCustomers(result.items);
     }).catch(() => { /* нет права customers:read — останется свободный ввод */ });
   }
+  // Ввод пункта автоматически определяет геозону по справочнику алиасов —
+  // менеджер думает городами, зональная структура заполняется сама.
+  const zoneByPlace = place => {
+    const needle = String(place || '').trim().toLowerCase();
+    if (!needle) return null;
+    return data.reference.zones.find(zone => zone.name.toLowerCase() === needle ||
+      (zone.aliases || []).some(alias => alias.toLowerCase() === needle)) || null;
+  };
+  [['salesFromPoint', 'salesFrom'], ['salesToPoint', 'salesTo']].forEach(([pointId, zoneId]) => {
+    container.querySelector(`#${pointId}`).addEventListener('change', event => {
+      const zone = zoneByPlace(event.currentTarget.value);
+      if (zone) {
+        container.querySelector(`#${zoneId}`).value = zone.id;
+        feasibility();
+      }
+    });
+  });
+
   // Выбор известного клиента подставляет его основное направление и рыночную ставку.
   container.querySelector('[name="customerName"]').addEventListener('change', event => {
     const name = event.currentTarget.value.trim();
@@ -428,7 +455,7 @@ function rejectDialog(order, data, context) {
   const reasons = data.settings.rejectionReasons || [];
   context.showModal(`<form id="rejectOrderForm">
     <h2>Отклонить заявку</h2>
-    <p class="muted">${escapeHtml(order.customer_name)} · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
+    <p class="muted">${escapeHtml(order.customer_name)} · ${escapeHtml(routeLabel(order))}
       · ${money(order.rate_vat)}</p>
     <label class="field">Причина отказа
       <select name="rejectionReason" required>
@@ -460,7 +487,7 @@ function rejectDialog(order, data, context) {
 export function assignDialog(order, data, showModal, closeModal, onReload) {
   const candidates = matchVehicles(data, order.from_name, order.window_from);
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
-  showModal(`<h2>Назначить ТС · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}</h2>
+  showModal(`<h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>
     <p class="muted">${escapeHtml(order.customer_name)} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${escapeHtml(order.body_type || 'Реф')} ${escapeHtml(order.temperature_mode || '')}</p>
     <div class="list" style="max-height:220px;overflow:auto;margin-bottom:10px">
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">

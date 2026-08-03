@@ -187,6 +187,12 @@ function migrateColumns(db) {
   ensure('trips', 'actual_distance_km', 'REAL');
   ensure('trips', 'unloaded_at', 'TEXT');
   ensure('trips', 'source_system', "TEXT NOT NULL DEFAULT 'planner'");
+  // Пункты погрузки/выгрузки: маршрут показывается «из пункта в пункт»
+  // (Пенза → Видное), геозоны остаются каркасом ставок, экономики и карты.
+  ensure('orders', 'from_point', "TEXT NOT NULL DEFAULT ''");
+  ensure('orders', 'to_point', "TEXT NOT NULL DEFAULT ''");
+  ensure('trips', 'from_point', "TEXT NOT NULL DEFAULT ''");
+  ensure('trips', 'to_point', "TEXT NOT NULL DEFAULT ''");
   // Жизненный цикл заявки: причина отклонения либо возврата из плана и момент возврата.
   // Отклонённая заявка = status 'cancelled' с заполненной причиной; вернувшаяся из плана —
   // снова 'new', но с непустым returned_at, чтобы продажи видели историю.

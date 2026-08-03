@@ -1,7 +1,7 @@
 // Печатные отчёты — перенос reportDoc из прототипа ТК 21 (6 видов).
 // Экономика и утилизация — с сервера (/api/reports), разрез по клиентам и
 // отклонённые — по данным bootstrap, история — /api/periods/history.
-import { api, escapeHtml, formatDateTime } from './api.js';
+import { api, escapeHtml, formatDateTime, routeLabel } from './api.js';
 import { pipelineStep, waitingLabel } from './pipeline.js';
 
 export const REPORT_TITLES = {
@@ -80,7 +80,7 @@ export async function buildReport(kind, from, to, data) {
       <h4>Отклонённые рейсы за период: ${rejectedTrips.length}</h4>
       <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Причина</th></tr></thead>
         <tbody>${rejectedTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
-          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td><td>${formatDateTime(trip.starts_at)}</td>
+          <td>${escapeHtml(routeLabel(trip))}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.rejection_reason || '—')}</td></tr>`).join('') ||
           '<tr><td colspan=4>Отклонённых нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'util') {
@@ -185,8 +185,8 @@ export async function buildReport(kind, from, to, data) {
       <h4>Наложения рейсов по одной сцепке (пересечение &gt; 6 ч)</h4>
       <table class="rtable"><thead><tr><th>ТС</th><th>Рейс 1</th><th>Рейс 2</th><th class="num">Пересечение</th></tr></thead>
         <tbody>${pairs.map(pair => `<tr><td class="mono">${escapeHtml(pair.a.vehicle_plate || '')}</td>
-          <td>${escapeHtml(pair.a.from_name)}→${escapeHtml(pair.a.to_name)} · ${formatDateTime(pair.a.starts_at)}</td>
-          <td>${escapeHtml(pair.b.from_name)}→${escapeHtml(pair.b.to_name)} · ${formatDateTime(pair.b.starts_at)}</td>
+          <td>${escapeHtml(routeLabel(pair.a))} · ${formatDateTime(pair.a.starts_at)}</td>
+          <td>${escapeHtml(routeLabel(pair.b))} · ${formatDateTime(pair.b.starts_at)}</td>
           <td class="num">${pair.hours} ч</td></tr>`).join('') ||
           '<tr><td colspan=4>Конфликтов за период не было</td></tr>'}</tbody></table>
       <h4>ТС с наибольшим числом конфликтов</h4>
@@ -195,7 +195,7 @@ export async function buildReport(kind, from, to, data) {
       <h4>Рейсы, пересекавшиеся с простоями (ремонт/без водителя)</h4>
       <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th></tr></thead>
         <tbody>${criticalTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
-          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td>
+          <td>${escapeHtml(routeLabel(trip))}</td>
           <td>${formatDateTime(trip.starts_at)}</td><td>${escapeHtml(trip.customer_name || '—')}</td></tr>`).join('') ||
           '<tr><td colspan=4>Таких рейсов не было</td></tr>'}</tbody></table>`;
   } else if (kind === 'rejected') {
@@ -210,7 +210,7 @@ export async function buildReport(kind, from, to, data) {
       <div class="rsums">${summary || '—'}</div>
       <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th><th>Причина</th></tr></thead>
         <tbody>${rejectedTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
-          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td><td>${formatDateTime(trip.starts_at)}</td>
+          <td>${escapeHtml(routeLabel(trip))}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.customer_name || '—')}</td><td>${escapeHtml(trip.rejection_reason || 'не указана')}</td></tr>`).join('') ||
           '<tr><td colspan=5>Отклонённых нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'rejected-orders') {
@@ -234,7 +234,7 @@ export async function buildReport(kind, from, to, data) {
     const confirmedRows = confirmed.map(order => {
       const step = pipelineStep(order, data, () => false);
       return `<tr><td>${escapeHtml(order.customer_name)}</td>
-        <td>${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}</td>
+        <td>${escapeHtml(routeLabel(order))}</td>
         <td>${formatDateTime(order.window_from)}</td>
         <td class="num">${rub(order.rate_vat)}</td>
         <td class="mono">${escapeHtml(step.plate || '—')}</td>
@@ -249,7 +249,7 @@ export async function buildReport(kind, from, to, data) {
       .map(([reason, count]) => `<span class="rsum">${escapeHtml(reason)}: <b>${count}</b></span>`).join('');
     const rows = items => items.map(order => `<tr>
       <td>${escapeHtml(order.customer_name)}</td>
-      <td>${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}</td>
+      <td>${escapeHtml(routeLabel(order))}</td>
       <td>${formatDateTime(order.window_from)}</td>
       <td class="num">${rub(order.rate_vat)}</td>
       <td>${escapeHtml(order.rejection_reason || 'не указана')}</td></tr>`).join('');

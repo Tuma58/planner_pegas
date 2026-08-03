@@ -110,6 +110,20 @@ export async function logout() {
   location.href = '/login.html';
 }
 
+// Маршрут «из пункта в пункт»: показываем конкретные пункты погрузки/выгрузки,
+// геозона — фолбэк (и остаётся каркасом ставок, экономики и карты).
+export function routeLabel(item) {
+  const from = item.from_point || item.from_name || '';
+  const to = item.to_point || item.to_name || '';
+  return `${from} → ${to}`;
+}
+
+// Зональная строка для подписи под маршрутом — только если отличается от пунктов.
+export function routeZones(item) {
+  if (!item.from_point && !item.to_point) return '';
+  return `${item.from_name} → ${item.to_name}`;
+}
+
 export function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem('pl_theme', theme);

@@ -40,11 +40,11 @@ export function importTripsFrom1C(db, rows, user) {
     VALUES(?,?,?,?,?,?, 'work',?)`);
   const findTrip = db.prepare('SELECT id FROM trips WHERE external_id=?');
   const insertTrip = db.prepare(`INSERT INTO trips(
-    id,vehicle_id,customer_name,from_zone_id,to_zone_id,starts_at,ends_at,
+    id,vehicle_id,customer_name,from_zone_id,to_zone_id,from_point,to_point,starts_at,ends_at,
     distance_km,revenue_vat,status,external_id,source_system,created_by,updated_by)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   const updateTrip = db.prepare(`UPDATE trips SET vehicle_id=?,customer_name=?,from_zone_id=?,to_zone_id=?,
-    starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,source_system='1c',
+    from_point=?,to_point=?,starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,source_system='1c',
     updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`);
 
   db.exec('BEGIN IMMEDIATE');
@@ -77,9 +77,14 @@ export function importTripsFrom1C(db, rows, user) {
         }
         const externalId = `1c:${row.id}`;
         const current = findTrip.get(externalId);
+        // Пункт из выгрузки сохраняется как есть: если это не имя зоны — маршрут
+        // будет показан «из пункта в пункт» при неизменной зональной аналитике.
+        const fromPoint = String(row.zoneFrom ?? row.from ?? '').trim();
+        const toPoint = String(row.zoneTo ?? row.to ?? '').trim();
         const values = [
-          vehicle.id, String(row.client || ''), from.id, to.id, startsAt, endsAt,
-          distance, Number(row.revenue || 0), TRIP_STATUS[row.status] || 'plan'
+          vehicle.id, String(row.client || ''), from.id, to.id,
+          fromPoint === from.name ? '' : fromPoint, toPoint === to.name ? '' : toPoint,
+          startsAt, endsAt, distance, Number(row.revenue || 0), TRIP_STATUS[row.status] || 'plan'
         ];
         if (current) {
           updateTrip.run(...values, user.id, current.id);
