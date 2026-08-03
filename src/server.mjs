@@ -1001,8 +1001,9 @@ async function api(request, response, url) {
         }
       }
     }
+    // «В работе (план)» — не недоступность: рейс поверх брони работы — норма.
     const critical = trips.filter(trip => trip.status !== 'rejected' && dispositions.some(item =>
-      item.vehicle_id === trip.vehicle_id &&
+      item.kind !== 'work' && item.vehicle_id === trip.vehicle_id &&
       Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
     // Отклонённые рейсы убраны из оперативного реестра: их реестр с причинами —

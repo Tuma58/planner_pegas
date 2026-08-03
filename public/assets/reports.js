@@ -171,7 +171,7 @@ export async function buildReport(kind, from, to, data) {
     }
     pairs.sort((x, y) => y.hours - x.hours);
     const criticalTrips = periodTrips.filter(trip => (data.dispositions || []).some(item =>
-      item.vehicle_id === trip.vehicle_id &&
+      item.kind !== 'work' && item.vehicle_id === trip.vehicle_id &&
       Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
     const topVehicles = new Map();

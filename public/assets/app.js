@@ -91,8 +91,9 @@ function conflictIds(trips) {
 }
 
 function criticalIds(trips, dispositions) {
+  // Плановая «работа» — не недоступность, критичность не создаёт.
   return new Set(trips.filter(trip => trip.status !== 'rejected' && dispositions.some(item =>
-    item.vehicle_id === trip.vehicle_id &&
+    item.kind !== 'work' && item.vehicle_id === trip.vehicle_id &&
     new Date(trip.starts_at) < new Date(item.ends_at) &&
     new Date(item.starts_at) < new Date(trip.ends_at))).map(trip => trip.id));
 }
@@ -540,7 +541,7 @@ function openExceptions() {
       const trip = tripById(button.dataset.exShift);
       if (!trip) return;
       const blocker = (state.data.dispositions || [])
-        .filter(item => item.vehicle_id === trip.vehicle_id &&
+        .filter(item => item.kind !== 'work' && item.vehicle_id === trip.vehicle_id &&
           Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
           Date.parse(item.starts_at) < Date.parse(trip.ends_at))
         .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
