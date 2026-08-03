@@ -162,6 +162,11 @@ function renderTimeline() {
       (state.data.dispositions || []).find(item => item.id === block.dataset.disposition))));
   enableTripDrag(dayWidth);
   enableDispositionDraw(dayWidth);
+  // При первом показе месяца с текущим днём канва прокручивается к «сегодня».
+  if (todayIndex >= 2 && todayIndex < days && state.autoScrolledMonth !== state.month.getTime()) {
+    state.autoScrolledMonth = state.month.getTime();
+    document.querySelector('.board').scrollLeft = (todayIndex - 1) * dayWidth;
+  }
   const horizonStart = monthStart(new Date(`${state.data.settings.general.horizonStart}T00:00:00Z`));
   const horizonEnd = addMonths(horizonStart, Number(state.data.settings.general.horizonMonths || 12) - 1);
   byId('periodPrev').disabled = state.month <= horizonStart;
@@ -336,7 +341,7 @@ function renderViewTabs() {
 }
 
 function renderMain() {
-  const ganttOnly = ['periodPrev', 'periodLabel', 'periodNext'];
+  const ganttOnly = ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'];
   const isGantt = state.view === 'gantt';
   byId('typeFilter').classList.toggle('hidden', !isGantt);
   byId('legend').classList.toggle('hidden', !isGantt);
@@ -905,6 +910,77 @@ byId('periodNext').onclick = () => {
   if (!byId('periodNext').disabled) state.month = addMonths(state.month, 1);
   renderTimeline();
 };
+
+// ── Горизонтальная прокрутка ганта ─────────────────────────────────────────
+const board = document.querySelector('.board');
+
+function dayWidthNow() {
+  return Number(state.data?.settings.general.plannerCellWidth || 44);
+}
+
+// Плавная прокрутка своими силами: нативный behavior:'smooth' доступен не везде.
+function smoothScrollTo(left) {
+  const start = board.scrollLeft;
+  const target = Math.max(0, Math.min(left, board.scrollWidth - board.clientWidth));
+  const delta = target - start;
+  if (!delta) return;
+  // В фоновой вкладке requestAnimationFrame заморожен — прокручиваем мгновенно.
+  if (document.hidden) { board.scrollLeft = target; return; }
+  const startedAt = performance.now();
+  const duration = 220;
+  const step = now => {
+    const t = Math.min(1, (now - startedAt) / duration);
+    board.scrollLeft = start + delta * (1 - (1 - t) ** 3);
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// Прокрутка к дню месяца (0-based), день оказывается у левого края видимой канвы.
+function scrollToDay(index) {
+  smoothScrollTo(Math.max(0, index * dayWidthNow() - 2));
+}
+
+byId('scrollLeft').onclick = () => smoothScrollTo(board.scrollLeft - 7 * dayWidthNow());
+byId('scrollRight').onclick = () => smoothScrollTo(board.scrollLeft + 7 * dayWidthNow());
+byId('scrollToday').onclick = () => {
+  const todayIndex = Math.floor((Date.now() - state.month.getTime()) / 86_400_000);
+  const days = monthDays(state.month);
+  if (todayIndex < 0 || todayIndex >= days) {
+    // Сегодня вне открытого месяца — сначала переключаем месяц.
+    state.month = monthStart(new Date());
+    renderTimeline();
+  }
+  scrollToDay(Math.max(0, Math.floor((Date.now() - state.month.getTime()) / 86_400_000) - 1));
+};
+
+// Перетаскивание канвы за шапку дней (drag-scroll) — как в настольных гантах.
+board.addEventListener('pointerdown', event => {
+  const head = event.target.closest('.timeline-head');
+  if (!head || event.target.closest('.vehicle-cell')) return;
+  const startX = event.clientX;
+  const startLeft = board.scrollLeft;
+  try { head.setPointerCapture(event.pointerId); } catch { /* синтетические события без capture */ }
+  head.classList.add('dragging-scroll');
+  const onMove = moveEvent => { board.scrollLeft = startLeft - (moveEvent.clientX - startX); };
+  const stop = () => {
+    head.removeEventListener('pointermove', onMove);
+    head.classList.remove('dragging-scroll');
+  };
+  head.addEventListener('pointermove', onMove);
+  head.addEventListener('pointerup', stop, { once: true });
+  head.addEventListener('pointercancel', stop, { once: true });
+});
+
+// Shift+колесо и тачпад работают нативно; обычное колесо над шапкой дней —
+// тоже горизонтально (вертикали у шапки нет).
+board.addEventListener('wheel', event => {
+  if (!event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) &&
+      event.target.closest('.timeline-head')) {
+    board.scrollLeft += event.deltaY;
+    event.preventDefault();
+  }
+}, { passive: false });
 
 try {
   state.data = await api('/api/bootstrap');
