@@ -70,7 +70,7 @@ function breakdownDialog(trip, data, context) {
         method: 'PATCH', body: JSON.stringify({ status: 'rejected', rejectionReason: 'Поломка на маршруте' })
       });
       context.closeModal();
-      toast('Рейс снят — заявка вернулась в продажи');
+      toast('Рейс снят — заявка вернулась в продажи (Поломка на маршруте)');
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -81,8 +81,8 @@ function customerRefusalDialog(trip, context) {
   context.showModal(`<h2>Отказ клиента</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
       · ${escapeHtml(trip.customer_name || 'без заказчика')}</p>
-    <p>Рейс будет снят, ТС освободится${trip.order_id
-      ? ', заявка вернётся в продажи с причиной «Отказ клиента»' : ''}.</p>
+    <p>Рейс будет снят, ТС освободится, заявка вернётся в продажи
+      с причиной «Отказ клиента»${trip.order_id ? '' : ' (для рейса из 1С будет создана заявка-возврат)'}.</p>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button type="button" class="button danger" id="refuseOk">Снять рейс</button>
@@ -93,7 +93,7 @@ function customerRefusalDialog(trip, context) {
         method: 'PATCH', body: JSON.stringify({ status: 'rejected', rejectionReason: 'Отказ клиента' })
       });
       context.closeModal();
-      toast('Рейс снят — отказ клиента зафиксирован');
+      toast('Рейс снят — заявка вернулась в продажи (Отказ клиента)');
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };

@@ -405,6 +405,27 @@ async function api(request, response, url) {
       merged.fromPoint, merged.toPoint,
       merged.startsAt, merged.endsAt, merged.distanceKm, merged.revenueVat, merged.status,
       merged.rejectionReason, merged.temperatureMode, merged.bodyType, user.id, match[0]);
+    if (merged.status === 'rejected' && !merged.orderId && current.status !== 'rejected') {
+      // Рейс без связанной заявки (например, загружен из 1С): при отклонении
+      // потребность не должна пропасть — в продажах создаётся заявка-возврат
+      // с пометкой и причиной, окно сдвигается в будущее, если рейс уже шёл.
+      const returnOrderId = randomUUID();
+      const nowMs = Date.now();
+      db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
+        rate_vat,window_from,window_to,temperature_mode,body_type,status,stage,
+        rejection_reason,returned_at,stage_changed_at,created_by)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,'new',1,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?)`).run(
+        returnOrderId, merged.customerName || 'Без заказчика', merged.fromZoneId, merged.toZoneId,
+        merged.fromPoint, merged.toPoint, merged.revenueVat,
+        new Date(Math.max(Date.parse(merged.startsAt), nowMs)).toISOString(),
+        new Date(Math.max(Date.parse(merged.endsAt), nowMs + 86_400_000)).toISOString(),
+        merged.temperatureMode, merged.bodyType,
+        merged.rejectionReason || 'Отклонён без указания причины', user.id);
+      queueOutbox(db, 'orders', returnOrderId, 'create', orderOutboxPayload(returnOrderId),
+        integrationPublic().writePolicy === 'automatic');
+      audit(db, user, 'create', 'order', returnOrderId,
+        { from: 'rejected-trip', tripId: match[0] }, requestIp(request));
+    }
     if (merged.orderId) {
       if (merged.status === 'rejected') {
         // Отмена, поломка на маршруте или невозможность перевозки: заявка возвращается

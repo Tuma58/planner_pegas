@@ -289,6 +289,40 @@ test('контроль рейса: факты на стоянках двигаю
   assert.equal(finalStops[1].actual_arrival, '2026-08-11T07:10:00.000Z');
 });
 
+test('отклонение рейса без заявки создаёт заявку-возврат в продажах', t => {
+  // Рейсы из 1С не связаны с заявками: потребность при отклонении не должна
+  // теряться — проверяем данные, из которых сервер строит заявку-возврат.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-orphan-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status,source_system)
+    VALUES('to-1',?,'Вердазернопродукт',?,?,'Кораблино','Рязань',
+    '2026-08-10T06:00:00.000Z','2026-08-11T06:00:00.000Z',300,60000,'plan','1c')`)
+    .run(vehicle.id, zone.id, zone.id);
+  // Повторяем серверный сценарий: rejected без order_id → INSERT заявки-возврата.
+  db.prepare(`UPDATE trips SET status='rejected',rejection_reason='Отказ клиента' WHERE id='to-1'`).run();
+  const trip = db.prepare(`SELECT * FROM trips WHERE id='to-1'`).get();
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
+    rate_vat,window_from,window_to,status,stage,rejection_reason,returned_at)
+    VALUES('or-1',?,?,?,?,?,?,?,?,'new',1,?,CURRENT_TIMESTAMP)`).run(
+    trip.customer_name, trip.from_zone_id, trip.to_zone_id, trip.from_point, trip.to_point,
+    trip.revenue_vat, trip.starts_at, trip.ends_at, trip.rejection_reason);
+  const order = db.prepare(`SELECT * FROM orders WHERE id='or-1'`).get();
+  assert.equal(order.status, 'new');
+  assert.equal(order.stage, 1, 'ждёт назначения ТС у логиста');
+  assert.equal(order.customer_name, 'Вердазернопродукт');
+  assert.equal(order.from_point, 'Кораблино');
+  assert.equal(order.rate_vat, 60000, 'ставка = выручка отклонённого рейса');
+  assert.ok(order.returned_at, 'помечена как возврат — продажи видят причину');
+  assert.equal(order.rejection_reason, 'Отказ клиента');
+});
+
 test('диспетчеризация: шаги идут по порядку, выход на линию ведёт конвейер', async t => {
   const { applyDispatchStep, resetDriverNotificationOnVehicleChange } = await import('../src/trip-control.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-dispatch-test-'));

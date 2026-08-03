@@ -61,7 +61,7 @@ export function rejectTripDialog(trip, data, context) {
     <h2>Отклонить рейс</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
       · ${escapeHtml(trip.customer_name || 'без заказчика')}</p>
-    ${trip.order_id ? '<p class="muted">Связанная заявка вернётся в продажи как новая с указанной причиной.</p>' : ''}
+    <p class="muted">Заявка вернётся в продажи как новая с указанной причиной${trip.order_id ? '' : ' (для рейса из 1С будет создана заявка-возврат)'}.</p>
     <label class="field">Причина отклонения
       <select name="rejectionReason" required>
         <option value="">— выберите причину —</option>
@@ -81,7 +81,7 @@ export function rejectTripDialog(trip, data, context) {
         method: 'PATCH', body: JSON.stringify({ status: 'rejected', rejectionReason: reason })
       });
       context.closeModal();
-      toast(trip.order_id ? 'Рейс отклонён — заявка вернулась в продажи' : 'Рейс отклонён');
+      toast('Рейс отклонён — заявка вернулась в продажи');
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
