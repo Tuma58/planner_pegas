@@ -91,23 +91,30 @@ export function renderLogist(container, context) {
   const { state, can } = context;
   const data = state.data;
   const query = (state.logistQuery || '').toLowerCase();
+  const zone = state.logistZone || '';
   const matches = text => !query || text.toLowerCase().includes(query);
+  // Фильтр по геозонам: строка проходит, если зона участвует в маршруте.
+  const zoneMatches = row => !zone || row.from_name === zone || row.to_name === zone;
 
   // Очередь на назначение: подтверждённые продажами заявки без ТС (стадия 1),
   // возвращённые из плана — с пометкой, залежавшиеся сверху.
   const queue = data.orders
     .filter(order => inSalesPortfolio(order, data) && orderStage(order, data).stage === 1)
-    .filter(order => matches(`${order.customer_name} ${routeLabel(order)}`))
+    .filter(order => zoneMatches(order) && matches(`${order.customer_name} ${routeLabel(order)}`))
     .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
 
   // Действующие маршруты: план и в пути; завершённые логисту не нужны.
   const activeTrips = data.trips
     .filter(trip => ['plan', 'run'].includes(trip.status))
-    .filter(trip => matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
+    .filter(trip => zoneMatches(trip) && matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
     .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
 
-  const returned = queue.filter(order => order.returned_at).length;
-  const runCount = activeTrips.filter(trip => trip.status === 'run').length;
+  const returnedOrders = queue.filter(order => order.returned_at);
+  const returned = returnedOrders.length;
+  const runTrips = activeTrips.filter(trip => trip.status === 'run');
+  const runCount = runTrips.length;
+  const planTrips = activeTrips.filter(trip => trip.status === 'plan');
+  const unconfirmedTrips = planTrips.filter(trip => !trip.logist_confirmed_at);
 
   const queueCards = queue.map(order => {
     const waiting = order.stage_changed_at
@@ -134,7 +141,28 @@ export function renderLogist(container, context) {
   const statusMeta = Object.fromEntries((data.settings.statuses || []).map(([id, label, color]) => [id, { label, color }]));
   // Новые назначения ждут подтверждения логиста — только после него рейс
   // уходит в блок «Диспетчер» на подготовку выхода.
-  const needConfirm = activeTrips.filter(trip => trip.status === 'plan' && !trip.logist_confirmed_at).length;
+  const needConfirm = unconfirmedTrips.length;
+
+  // Кликабельные плашки: выпадающий список позиций категории.
+  // Выбор заявки открывает назначение ТС, выбор рейса — его карточку,
+  // строка «на подтверждении» подтверждает назначение в один клик.
+  const kpiDrop = (key, rows) => state.logistKpiOpen === key
+    ? `<div class="skpi-drop">${rows || '<div class="skpi-row muted">Пусто</div>'}</div>` : '';
+  const orderRow = order => `<div class="skpi-row" data-lg-assign="${order.id}"
+      title="Открыть назначение ТС">
+      <span style="flex:1;min-width:0"><strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
+        <small class="muted" style="display:block">окно ${formatDateTime(order.window_from)} → ${formatDateTime(order.window_to)}
+          ${order.returned_at ? ` · ↩ ${escapeHtml(order.rejection_reason || 'возврат')}` : ''}</small></span>
+      <b>${money(order.rate_vat)}</b></div>`;
+  const tripRow = (trip, action) => `<div class="skpi-row" ${action}
+      <span style="flex:1;min-width:0"><strong>${escapeHtml(routeLabel(trip))}</strong> · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
+        <small class="muted" style="display:block">${escapeHtml(trip.customer_name || 'без заказчика')}
+          · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}</small></span>
+      <b>${money(trip.revenue_vat)}</b></div>`;
+  const confirmRows = unconfirmedTrips.map(trip =>
+    tripRow(trip, `data-lg-confirm="${trip.id}" title="Подтвердить назначение — рейс уйдёт диспетчеру">`)).join('');
+  const openTripRows = trips => trips.map(trip =>
+    tripRow(trip, `data-lg-trip="${trip.id}" title="Открыть карточку рейса">`)).join('');
   const tripCards = activeTrips.map(trip => {
     const meta = statusMeta[trip.status] || { label: trip.status, color: 'var(--muted)' };
     const unconfirmed = trip.status === 'plan' && !trip.logist_confirmed_at;
@@ -161,12 +189,32 @@ export function renderLogist(container, context) {
 
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
-      <div class="skpi"><span class="skl">Ждут назначения ТС</span><span class="skv">${queue.length}</span></div>
-      <div class="skpi"><span class="skl">Возвраты из плана</span><span class="skv">${returned}</span></div>
-      <div class="skpi" title="Новые назначения: подтвердите — рейс уйдёт диспетчеру"><span class="skl">На подтверждении</span><span class="skv">${needConfirm}</span></div>
-      <div class="skpi"><span class="skl">В плане</span><span class="skv">${activeTrips.length - runCount}</span></div>
-      <div class="skpi"><span class="skl">В пути</span><span class="skv">${runCount}</span></div>
-      <div class="salesfilter" style="flex:1;min-width:220px">
+      <div class="skpi clickable ${state.logistKpiOpen === 'queue' ? 'open' : ''}" data-kpi="queue"
+        title="Очередь на назначение — выбор открывает подбор ТС">
+        <span class="skl">Ждут назначения ТС</span><span class="skv">${queue.length}</span>
+        ${kpiDrop('queue', queue.map(orderRow).join(''))}</div>
+      <div class="skpi clickable ${state.logistKpiOpen === 'returned' ? 'open' : ''}" data-kpi="returned"
+        title="Возвраты из плана с причинами — выбор открывает подбор ТС">
+        <span class="skl">Возвраты из плана</span><span class="skv">${returned}</span>
+        ${kpiDrop('returned', returnedOrders.map(orderRow).join(''))}</div>
+      <div class="skpi clickable ${state.logistKpiOpen === 'confirm' ? 'open' : ''}" data-kpi="confirm"
+        title="Назначено в продажах — клик по рейсу подтверждает назначение">
+        <span class="skl">На подтверждении</span><span class="skv">${needConfirm}</span>
+        ${kpiDrop('confirm', confirmRows)}</div>
+      <div class="skpi clickable ${state.logistKpiOpen === 'plan' ? 'open' : ''}" data-kpi="plan"
+        title="Рейсы в плане — выбор открывает карточку">
+        <span class="skl">В плане</span><span class="skv">${planTrips.length}</span>
+        ${kpiDrop('plan', openTripRows(planTrips))}</div>
+      <div class="skpi clickable ${state.logistKpiOpen === 'run' ? 'open' : ''}" data-kpi="run"
+        title="Рейсы в пути — выбор открывает карточку">
+        <span class="skl">В пути</span><span class="skv">${runCount}</span>
+        ${kpiDrop('run', openTripRows(runTrips))}</div>
+      <div class="salesfilter" style="flex:1;min-width:260px">
+        <select id="logistZone" title="Фильтр по геозоне маршрута">
+          <option value="">Все геозоны</option>
+          ${data.reference.zones.map(item =>
+            `<option value="${escapeHtml(item.name)}" ${zone === item.name ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}
+        </select>
         <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
         ${can('trips:write') ? '<button class="button small" id="logistNewTrip">+ Рейс</button>' : ''}
       </div>
@@ -196,7 +244,44 @@ export function renderLogist(container, context) {
     again.focus();
     again.setSelectionRange(caret, caret);
   };
+  container.querySelector('#logistZone').onchange = event => {
+    state.logistZone = event.currentTarget.value;
+    renderLogist(container, context);
+  };
   container.querySelector('#logistNewTrip')?.addEventListener('click', () => context.openNewTrip());
+
+  const rerender = () => renderLogist(container, context);
+  container.querySelectorAll('[data-kpi]').forEach(badge =>
+    badge.addEventListener('click', event => {
+      if (event.target.closest('.skpi-drop')) return;
+      const key = badge.dataset.kpi;
+      state.logistKpiOpen = state.logistKpiOpen === key ? null : key;
+      rerender();
+    }));
+  container.querySelectorAll('[data-lg-assign]').forEach(row =>
+    row.addEventListener('click', () => {
+      const order = data.orders.find(item => item.id === row.dataset.lgAssign);
+      state.logistKpiOpen = null;
+      rerender();
+      if (order) context.openAssign(order);
+    }));
+  container.querySelectorAll('[data-lg-confirm]').forEach(row =>
+    row.addEventListener('click', async () => {
+      try {
+        await api(`/api/trips/${row.dataset.lgConfirm}/step`, {
+          method: 'POST', body: JSON.stringify({ step: 'logist_confirm' })
+        });
+        toast('Назначение подтверждено — рейс у диспетчера');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    }));
+  container.querySelectorAll('[data-lg-trip]').forEach(row =>
+    row.addEventListener('click', () => {
+      const trip = data.trips.find(item => item.id === row.dataset.lgTrip);
+      state.logistKpiOpen = null;
+      rerender();
+      if (trip) context.openTrip(trip);
+    }));
 
   container.querySelectorAll('[data-assign]').forEach(button =>
     button.addEventListener('click', () => {
