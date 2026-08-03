@@ -169,11 +169,14 @@ export function renderSales(container, context) {
     `<span class="stp ${index <= stage ? 'on' : ''}"></span>`).join('')}<span class="stpl">${STAGES[stage] || STAGES[0]}</span></div>`;
 
   // Карточка конвейера: стадия, чей ход, сколько ждёт и кнопка действия.
-  // Сначала задачи текущего пользователя, затем самые залежавшиеся — видно узкое место.
+  // Порядок предсказуемый: новые заявки сверху и НЕ мигрируют по списку после
+  // подтверждения — иначе при большом портфеле карточка «пропадает» из вида
+  // (пользователи искали её на прежнем месте и создавали дубли).
+  // Залежавшиеся видны по метке времени ожидания, задачи — по тумблеру «мои».
   const canReject = can('orders:write') || can('trips:write');
   const withStep = orders.map(order => ({ order, step: pipelineStep(order, data, can) }));
   const visible = (onlyMine ? withStep.filter(item => item.step.mine) : withStep)
-    .sort((a, b) => Number(b.step.mine) - Number(a.step.mine) || b.step.sinceMs - a.step.sinceMs);
+    .sort((a, b) => String(b.order.created_at).localeCompare(String(a.order.created_at)));
 
   const portfolio = visible.map(({ order, step }) => {
     const waiting = step.waitingRole
@@ -483,9 +486,19 @@ export function renderSales(container, context) {
     if (!values.rateVat) {
       values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
     }
+    // Защита от дублей: похожая заявка уже в портфеле (тот же заказчик,
+    // направление и пересекающееся окно) — вероятно, её просто не нашли в списке.
+    const duplicate = allOrders.find(order =>
+      order.customer_name.trim().toLowerCase() === String(values.customerName).trim().toLowerCase() &&
+      order.from_zone_id === values.fromZoneId && order.to_zone_id === values.toZoneId &&
+      Date.parse(order.window_from) < Date.parse(values.windowTo) &&
+      Date.parse(values.windowFrom) < Date.parse(order.window_to));
+    if (duplicate && !confirm(`Похожая заявка «${duplicate.customer_name}» с пересекающимся окном уже в портфеле (наверху списка). Создать ещё одну?`)) {
+      return;
+    }
     try {
       await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
-      toast('Забронировано — заявка в портфеле');
+      toast('Забронировано — заявка в портфеле (первая в списке)');
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
