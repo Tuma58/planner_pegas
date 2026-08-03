@@ -158,6 +158,109 @@ test('отклонение рейса возвращает заявку в пр�
   assert.ok(order.returned_at, 'возврат помечается временем — продажи видят историю');
 });
 
+test('контроль рейса: каркас стоянок наследует пункты и времена рейса', async t => {
+  const { ensureTripStops, listTripStops } = await import('../src/trip-control.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-stops-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('ts-1',?,'Клиент',?,?,'Пенза','Люберцы',
+    '2026-08-10T06:00:00.000Z','2026-08-11T06:00:00.000Z',640,100000,'plan')`)
+    .run(vehicle.id, zone.id, zone.id);
+
+  ensureTripStops(db, 'ts-1');
+  const stops = listTripStops(db, 'ts-1');
+  assert.equal(stops.length, 2, 'каркас — погрузка и выгрузка');
+  assert.equal(stops[0].kind, 'P');
+  assert.equal(stops[0].point, 'Пенза', 'погрузка в пункте отправления');
+  assert.equal(stops[0].planned_arrival, '2026-08-10T06:00:00.000Z');
+  assert.equal(stops[1].kind, 'D');
+  assert.equal(stops[1].point, 'Люберцы');
+  assert.equal(stops[1].planned_departure, '2026-08-11T06:00:00.000Z');
+  assert.equal(stops[1].distance_km, 640);
+  // Повторный вызов не плодит дубликатов.
+  ensureTripStops(db, 'ts-1');
+  assert.equal(listTripStops(db, 'ts-1').length, 2);
+});
+
+test('контроль рейса: факты на стоянках двигают статус рейса и стадию заявки', async t => {
+  const { ensureTripStops, listTripStops, stampStopsFromStatus, syncTripFromStops } =
+    await import('../src/trip-control.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-sync-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,status,stage,assigned_vehicle_id)
+    VALUES('oc-1','Клиент',?,?,100000,'2026-08-10T06:00:00.000Z','2026-08-12T18:00:00.000Z',
+    'planned',2,?)`).run(zone.id, zone.id, vehicle.id);
+  db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('tc-1',?,'oc-1','Клиент',?,?,'2026-08-10T06:00:00.000Z','2026-08-11T06:00:00.000Z',
+    640,100000,'plan')`).run(vehicle.id, zone.id, zone.id);
+  db.prepare(`UPDATE orders SET trip_id='tc-1' WHERE id='oc-1'`).run();
+  ensureTripStops(db, 'tc-1');
+  const [loading, unloading] = listTripStops(db, 'tc-1');
+
+  // Отправление с погрузки → рейс «В пути», конвейер передан диспетчеру (стадия 3).
+  db.prepare(`UPDATE trip_stops SET actual_departure='2026-08-10T08:30:00.000Z' WHERE id=?`)
+    .run(loading.id);
+  assert.equal(syncTripFromStops(db, 'tc-1'), 'run');
+  assert.equal(db.prepare(`SELECT status FROM trips WHERE id='tc-1'`).get().status, 'run');
+  assert.equal(db.prepare(`SELECT stage FROM orders WHERE id='oc-1'`).get().stage, 3);
+
+  // Прибытие и завершение работ на конечной → «Выгружен», стадия 4 (бухгалтерия).
+  db.prepare(`UPDATE trip_stops SET actual_arrival='2026-08-11T07:10:00.000Z',
+    work_finished_at='2026-08-11T08:00:00.000Z' WHERE id=?`).run(unloading.id);
+  assert.equal(syncTripFromStops(db, 'tc-1'), 'unloaded');
+  const trip = db.prepare(`SELECT * FROM trips WHERE id='tc-1'`).get();
+  assert.equal(trip.status, 'unloaded');
+  assert.ok(trip.unloaded_at, 'момент выгрузки фиксируется');
+  assert.equal(db.prepare(`SELECT stage FROM orders WHERE id='oc-1'`).get().stage, 4);
+
+  // Обратная связь: ручной статус «paid» не затирает уже проставленные факты.
+  stampStopsFromStatus(db, 'tc-1', 'paid');
+  const finalStops = listTripStops(db, 'tc-1');
+  assert.equal(finalStops[1].actual_arrival, '2026-08-11T07:10:00.000Z');
+});
+
+test('контроль рейса: расчётное прибытие сдвигается на накопленное опоздание', async () => {
+  const { stopsWithEstimates, tripDelayMs } = await import('../src/trip-control.mjs');
+  const stops = [
+    {
+      seq: 1, kind: 'P', planned_arrival: '2026-08-10T06:00:00.000Z',
+      planned_departure: '2026-08-10T08:00:00.000Z',
+      actual_arrival: '2026-08-10T06:00:00.000Z',
+      // Отправление с погрузки на 2 часа позже плана.
+      actual_departure: '2026-08-10T10:00:00.000Z'
+    },
+    {
+      seq: 2, kind: 'D', planned_arrival: '2026-08-11T04:00:00.000Z',
+      planned_departure: '2026-08-11T06:00:00.000Z'
+    }
+  ];
+  const nowMs = Date.parse('2026-08-10T11:00:00.000Z');
+  const estimated = stopsWithEstimates(stops, 'run', nowMs);
+  assert.equal(estimated[1].estimated_arrival, '2026-08-11T06:00:00.000Z',
+    'расчёт прибытия на выгрузку сдвинут на 2 часа опоздания');
+  assert.equal(tripDelayMs(estimated), 2 * 3_600_000);
+  // Без фактов и до планового времени расчёт совпадает с планом.
+  const clean = stopsWithEstimates(stops.map(({ actual_arrival, actual_departure, ...rest }) => rest),
+    'plan', nowMs);
+  assert.equal(clean[1].estimated_arrival, '2026-08-11T04:00:00.000Z');
+  assert.equal(tripDelayMs(clean), 0);
+});
+
 test('новые алиасы геозон доезжают до уже засеянной базы', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-alias-test-'));
   const databasePath = path.join(directory, 'planner.db');

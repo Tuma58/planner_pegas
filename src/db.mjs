@@ -97,6 +97,17 @@ CREATE TABLE IF NOT EXISTS vehicle_dispositions (
 );
 CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
   ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
+CREATE TABLE IF NOT EXISTS trip_stops (
+  id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'D' CHECK(kind IN ('P','D')),
+  point TEXT NOT NULL DEFAULT '',
+  planned_arrival TEXT, planned_departure TEXT,
+  actual_arrival TEXT, actual_departure TEXT,
+  work_started_at TEXT, work_finished_at TEXT,
+  distance_km REAL NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
+  updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_trip_stops_trip ON trip_stops(trip_id,seq);
 CREATE TABLE IF NOT EXISTS revenue_plans (
   period_start TEXT PRIMARY KEY, target_net REAL NOT NULL DEFAULT 0,
   updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

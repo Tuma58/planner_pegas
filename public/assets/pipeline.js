@@ -17,11 +17,11 @@ const STEPS = [
   },
   {
     stage: 2, waitingRole: 'Диспетчер', permission: 'trip-status:write',
-    action: { label: 'Отправить в рейс', kind: 'trip-status', status: 'run', hint: 'ТС вышло на маршрут' }
+    action: { label: 'Отправить в рейс', kind: 'trip-status', status: 'run', hint: 'ТС вышло на маршрут — факты по стоянкам на вкладке «Контроль»' }
   },
   {
     stage: 3, waitingRole: 'Диспетчер', permission: 'trip-status:write',
-    action: { label: 'Отметить выгрузку', kind: 'trip-status', status: 'unloaded', hint: 'Груз выгружен у получателя' }
+    action: { label: 'Отметить выгрузку', kind: 'trip-status', status: 'unloaded', hint: 'Груз выгружен у получателя — детали на вкладке «Контроль»' }
   },
   {
     stage: 4, waitingRole: 'Бухгалтерия', permission: 'payments:write',

@@ -4,6 +4,8 @@ import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
 import { assignDialog, renderSales } from './sales.js';
 import { renderResource } from './resource.js';
+import { renderControl } from './control.js';
+import { waitingLabel } from './pipeline.js';
 
 const state = {
   data: null,
@@ -322,6 +324,7 @@ function renderLegend() {
 const MAIN_VIEWS = [
   { id: 'gantt', title: 'Гант', show: () => true },
   { id: 'sales', title: 'Продажи', show: () => can('orders:write') },
+  { id: 'control', title: 'Контроль', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') }
 ];
@@ -366,6 +369,8 @@ function renderMain() {
     });
   } else if (state.view === 'resource') {
     renderResource(byId('timeline'), { state, openDisposition, taskContainer: byId('sidepanel') });
+  } else if (state.view === 'control') {
+    renderControl(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   }
 }
 
@@ -438,6 +443,20 @@ function openExceptions() {
     ${can('trips:write') ? `<button class="button ghost small" data-ex-remove="${trip.id}"
       title="Убрать рейс из плана; связанная заявка уже возвращена в продажи">Убрать из плана</button>` : ''}
     <button class="button ghost small" data-ex-open="${trip.id}">Открыть</button>`;
+  // Опоздание идущего рейса решается в «Контроле»: факт выгрузки закрывает проблему.
+  const delayedSection = (data.delayed || []).length
+    ? `<h3>Опоздание в пути (${data.delayed.length})</h3><div class="list">${data.delayed.map(trip =>
+        `<div class="list-item exrow">
+          <span style="flex:1;min-width:0">
+            <strong>${escapeHtml(routeLabel(trip))}</strong>
+            <small class="muted" style="display:block"><span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
+              · ${escapeHtml(trip.customer_name)} · план прибытия ${formatDateTime(trip.ends_at)}</small>
+          </span>
+          <span class="exactions"><span class="badge bad">+${waitingLabel(trip.delay_ms)}</span>
+            <button class="button ghost small" data-ex-control
+              title="Открыть контроль выполнения и отметить факты по стоянкам">Контроль</button></span>
+        </div>`).join('')}</div>`
+    : '';
 
   const orderSection = (title, items, badge, note, actionsFor) => items.length
     ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(order => `<div class="list-item exrow">
@@ -461,6 +480,7 @@ function openExceptions() {
     : '';
   showModal(`<h2>Требует решения</h2>
     ${data.count === 0 ? '<p class="muted">Проблем нет — план чист.</p>' : ''}
+    ${delayedSection}
     ${section('Критичный', data.critical, 'bad', criticalActions)}
     ${section('Конфликт', data.conflicts, 'warn', conflictActions)}
     ${section('Отклонён', data.rejected, 'bad', rejectedActions)}
@@ -524,6 +544,12 @@ function openExceptions() {
     button.addEventListener('click', () => {
       closeModal();
       document.querySelector('[data-view="sales"]')?.click();
+    }));
+  document.querySelectorAll('[data-ex-control]').forEach(button =>
+    button.addEventListener('click', () => {
+      closeModal();
+      state.controlFilter = 'delayed';
+      document.querySelector('[data-view="control"]')?.click();
     }));
 }
 
@@ -674,10 +700,18 @@ function openTrip(trip) {
     </div>` : ''}
     <div class="modal-actions">
       ${editable ? '<button type="button" class="button danger" id="deleteTrip">Удалить</button>' : ''}
+      <button type="button" class="button ghost" id="tripToControl"
+        title="Стоянки рейса: план, расчёт и факты прибытия/отправления">Контроль</button>
       <button type="button" class="button ghost" data-close>Закрыть</button>
       ${statusEditable ? '<button class="button">Сохранить</button>' : ''}
     </div>
   </form>`);
+  byId('tripToControl').onclick = () => {
+    closeModal();
+    state.controlFilter = 'all';
+    (state.controlExpanded ||= new Set()).add(trip.id);
+    document.querySelector('[data-view="control"]')?.click();
+  };
   const form = byId('editTripForm');
   form.onsubmit = async event => {
     event.preventDefault();

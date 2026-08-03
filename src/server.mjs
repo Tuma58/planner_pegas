@@ -14,6 +14,10 @@ import { processOutbox, runPull, startIntegrationScheduler, testConnection } fro
 import {
   importTelematics, importTripsFrom1C, reportSnapshot, resolveZone
 } from './planner-service.mjs';
+import {
+  controlSnapshot, ensureTripStops, listTripStops, stampStopsFromStatus,
+  stopsWithEstimates, syncTripFromStops, tripDelayMs
+} from './trip-control.mjs';
 
 const db = openDatabase(config.databasePath, config.admin, {
   initialAllowedSubnets: config.initialAllowedSubnets
@@ -360,6 +364,7 @@ async function api(request, response, url) {
     if (trip.orderId) db.prepare(`UPDATE orders SET status='planned',stage=2,trip_id=?,
       assigned_vehicle_id=?,rejection_reason=NULL,returned_at=NULL,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id, trip.vehicleId, trip.orderId);
+    ensureTripStops(db, id);
     const automatic = integrationPublic().writePolicy === 'automatic';
     queueOutbox(db, 'trips', id, 'create', tripOutboxPayload(id), automatic);
     audit(db, user, 'create', 'trip', id, trip, requestIp(request));
@@ -417,6 +422,11 @@ async function api(request, response, url) {
           stage, merged.vehicleId, stage, merged.orderId);
       }
     }
+    // Ручная смена статуса проставляет ключевые факты на стоянках контроля.
+    if (merged.status !== current.status && merged.status !== 'rejected') {
+      ensureTripStops(db, match[0]);
+      stampStopsFromStatus(db, match[0], merged.status);
+    }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'update', 'trip', match[0], body, requestIp(request));
@@ -429,6 +439,7 @@ async function api(request, response, url) {
     if (!current) return errorJson(response, 404, 'Рейс не найден');
     db.prepare(`UPDATE orders SET trip_id=NULL,assigned_vehicle_id=NULL,status='new',stage=1
       WHERE trip_id=?`).run(match[0]);
+    db.prepare('DELETE FROM trip_stops WHERE trip_id=?').run(match[0]);
     db.prepare('DELETE FROM trips WHERE id=?').run(match[0]);
     queueOutbox(db, 'trips', match[0], 'delete', { externalId: current.external_id },
       integrationPublic().writePolicy === 'automatic');
@@ -649,6 +660,98 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // ── Контроль выполнения рейса: стоянки с планом/расчётом/фактом ──
+  if (request.method === 'GET' && pathname === '/api/control') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    // По умолчанию — оперативное окно: вчера…послезавтра; отчёт передаёт свой период.
+    const now = Date.now();
+    const from = url.searchParams.get('from') || new Date(now - 86_400_000).toISOString();
+    const to = url.searchParams.get('to') || new Date(now + 2 * 86_400_000).toISOString();
+    if (!Number.isFinite(Date.parse(from)) || !Number.isFinite(Date.parse(to))) {
+      return errorJson(response, 422, 'Некорректный период контроля');
+    }
+    return json(response, 200, { items: controlSnapshot(db, from, to) });
+  }
+  match = route(/^\/api\/trips\/([^/]+)\/stops$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден');
+    if (!String(body.point || '').trim()) return errorJson(response, 422, 'Укажите пункт стоянки');
+    ensureTripStops(db, match[0]);
+    const stops = listTripStops(db, match[0]);
+    const plannedArrival = body.plannedArrival && Number.isFinite(Date.parse(body.plannedArrival))
+      ? new Date(Date.parse(body.plannedArrival)).toISOString() : null;
+    const plannedDeparture = body.plannedDeparture && Number.isFinite(Date.parse(body.plannedDeparture))
+      ? new Date(Date.parse(body.plannedDeparture)).toISOString() : null;
+    const id = randomUUID();
+    db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,planned_arrival,
+      planned_departure,distance_km,note,updated_by) VALUES(?,?,?,?,?,?,?,?,?,?)`).run(
+      id, match[0], 999, body.kind === 'P' ? 'P' : 'D', String(body.point).trim(),
+      plannedArrival, plannedDeparture, Math.max(0, Number(body.distanceKm || 0)),
+      String(body.note || '').trim(), user.id);
+    // Промежуточные стоянки — между погрузкой и конечной выгрузкой,
+    // по хронологии планового прибытия (без плана — в конец середины).
+    const middle = [...stops.slice(1, -1), { id, planned_arrival: plannedArrival }]
+      .sort((a, b) => String(a.planned_arrival || '9999').localeCompare(String(b.planned_arrival || '9999')));
+    const reseq = db.prepare('UPDATE trip_stops SET seq=? WHERE id=?');
+    [stops[0], ...middle, stops[stops.length - 1]].forEach((stop, index) => reseq.run(index + 1, stop.id));
+    audit(db, user, 'create', 'trip_stop', id, body, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/stops\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const current = db.prepare('SELECT * FROM trip_stops WHERE id=?').get(match[0]);
+    if (!current) return errorJson(response, 404, 'Стоянка не найдена');
+    const timeField = value => {
+      if (value === null || value === '') return null;
+      const parsed = Date.parse(value);
+      if (!Number.isFinite(parsed)) throw Object.assign(new Error('Некорректное время'), { status: 422 });
+      return new Date(parsed).toISOString();
+    };
+    const fields = {};
+    for (const [key, column] of [
+      ['plannedArrival', 'planned_arrival'], ['plannedDeparture', 'planned_departure'],
+      ['actualArrival', 'actual_arrival'], ['actualDeparture', 'actual_departure'],
+      ['workStartedAt', 'work_started_at'], ['workFinishedAt', 'work_finished_at']
+    ]) if (key in body) fields[column] = timeField(body[key]);
+    if ('point' in body) fields.point = String(body.point || '').trim();
+    if ('note' in body) fields.note = String(body.note || '').trim();
+    if ('distanceKm' in body) fields.distance_km = Math.max(0, Number(body.distanceKm || 0));
+    if (!Object.keys(fields).length) return errorJson(response, 422, 'Нет полей для обновления');
+    db.prepare(`UPDATE trip_stops SET ${Object.keys(fields).map(column => `${column}=?`).join(',')},
+      updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(...Object.values(fields), user.id, match[0]);
+    // Факты двигают конвейер: «В пути» после отправления с погрузки,
+    // «Выгружен» после прибытия и завершения работ на конечной.
+    const newStatus = syncTripFromStops(db, current.trip_id, user.id);
+    if (newStatus) {
+      queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
+        integrationPublic().writePolicy === 'automatic');
+    }
+    audit(db, user, 'update', 'trip_stop', match[0], body, requestIp(request));
+    return json(response, 200, { ok: true, tripStatus: newStatus });
+  }
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const current = db.prepare('SELECT * FROM trip_stops WHERE id=?').get(match[0]);
+    if (!current) return errorJson(response, 404, 'Стоянка не найдена');
+    const count = db.prepare('SELECT COUNT(*) n FROM trip_stops WHERE trip_id=?').get(current.trip_id).n;
+    if (count <= 2) return errorJson(response, 409, 'У рейса должны остаться погрузка и выгрузка');
+    db.prepare('DELETE FROM trip_stops WHERE id=?').run(match[0]);
+    listTripStops(db, current.trip_id).forEach((stop, index) =>
+      db.prepare('UPDATE trip_stops SET seq=? WHERE id=?').run(index + 1, stop.id));
+    audit(db, user, 'delete', 'trip_stop', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   if (request.method === 'GET' && pathname === '/api/exceptions') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
@@ -681,6 +784,14 @@ async function api(request, response, url) {
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
     const rejected = trips.filter(trip => trip.status === 'rejected');
     const conflictItems = trips.filter(trip => conflicts.has(trip.id));
+    // Опоздания идущих рейсов (расчёт по стоянкам контроля, порог 30 минут).
+    // Уходят сами по факту решения: рейс выгружен или отставание отыграно.
+    const delayed = listTrips().filter(trip => trip.status === 'run').map(trip => {
+      ensureTripStops(db, trip.id);
+      const stops = stopsWithEstimates(listTripStops(db, trip.id), trip.status);
+      return { ...trip, delay_ms: tripDelayMs(stops) };
+    }).filter(trip => trip.delay_ms > 30 * 60_000)
+      .sort((a, b) => b.delay_ms - a.delay_ms);
     // Заявки с истёкшим окном погрузки — тоже история: перевозку уже не выполнить.
     const rejectedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
       FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
@@ -691,8 +802,8 @@ async function api(request, response, url) {
       ORDER BY o.returned_at DESC`).all(nowIso);
     return json(response, 200, {
       count: critical.length + rejected.length + conflictItems.length +
-        rejectedOrders.length + returnedOrders.length,
-      critical, rejected, conflicts: conflictItems, rejectedOrders, returnedOrders,
+        rejectedOrders.length + returnedOrders.length + delayed.length,
+      critical, rejected, conflicts: conflictItems, rejectedOrders, returnedOrders, delayed,
       unavailableVehicles: db.prepare(`SELECT status,COUNT(*) count FROM vehicles
         WHERE status<>'work' GROUP BY status`).all()
     });

@@ -10,6 +10,7 @@ export const REPORT_TITLES = {
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
+  execution: 'Контроль выполнения рейсов',
   conflicts: 'История конфликтов',
   'rejected-orders': 'Реестр заявок',
   history: 'История отчётных периодов'
@@ -213,6 +214,52 @@ export async function buildReport(kind, from, to, data) {
           <td>${escapeHtml(routeLabel(trip))}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.customer_name || '—')}</td><td>${escapeHtml(trip.rejection_reason || 'не указана')}</td></tr>`).join('') ||
           '<tr><td colspan=5>Отклонённых нет</td></tr>'}</tbody></table>`;
+  } else if (kind === 'execution') {
+    // Дисциплина выполнения: план/факт прибытия по стоянкам контроля.
+    // Рейсы без диспетчерских отметок показываются отдельно — по ним
+    // пунктуальность оценить нельзя.
+    const LATE_MS = 30 * 60_000;
+    const { items } = await api(`/api/control?from=${from}T00:00:00.000Z&to=${to}T23:59:59.999Z`);
+    const rows = items.map(trip => {
+      const last = trip.stops[trip.stops.length - 1] || {};
+      const hasFacts = trip.stops.some(stop => stop.actual_arrival || stop.actual_departure);
+      const delay = hasFacts && last.actual_arrival && last.planned_arrival
+        ? Date.parse(last.actual_arrival) - Date.parse(last.planned_arrival) : null;
+      return { trip, last, hasFacts, delay };
+    });
+    const withFacts = rows.filter(row => row.delay != null);
+    const late = withFacts.filter(row => row.delay > LATE_MS);
+    const onTime = withFacts.length - late.length;
+    const avgLate = late.length
+      ? late.reduce((sum, row) => sum + row.delay, 0) / late.length : 0;
+    const byDirection = new Map();
+    late.forEach(row => byDirection.set(row.trip.to_name,
+      (byDirection.get(row.trip.to_name) || 0) + 1));
+    const directionRows = [...byDirection.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+      .map(([zone, count]) => `<tr><td>${escapeHtml(zone)}</td><td class="num">${count}</td></tr>`).join('');
+    const deviation = row => row.delay == null ? '<span class="muted">без отметок</span>'
+      : row.delay > LATE_MS ? `<span style="color:var(--bad);font-weight:700">+${waitingLabel(row.delay)}</span>`
+        : '<span style="color:var(--ok);font-weight:700">вовремя</span>';
+    body = `<div class="rsums">
+        <span class="rsum">Рейсов в периоде: <b>${rows.length}</b></span>
+        <span class="rsum">С отметками контроля: <b>${withFacts.length}</b></span>
+        <span class="rsum">Вовремя (±30 мин): <b>${withFacts.length ? pct(onTime / withFacts.length) : '—'}</b></span>
+        <span class="rsum">Опозданий: <b>${late.length}</b></span>
+        <span class="rsum">Средняя задержка: <b>${late.length ? waitingLabel(avgLate) : '—'}</b></span></div>
+      <div class="geohint">Факты отмечает диспетчер на вкладке «Контроль»; рейсы без отметок в пунктуальности не участвуют.</div>
+      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Заказчик</th>
+        <th>План прибытия</th><th>Факт прибытия</th><th class="num">Отклонение</th></tr></thead>
+        <tbody>${rows.sort((a, b) => (b.delay ?? -1) - (a.delay ?? -1)).map(row => `<tr>
+          <td class="mono">${escapeHtml(row.trip.vehicle_plate || '')}</td>
+          <td>${escapeHtml(routeLabel(row.trip))}</td>
+          <td>${escapeHtml(row.trip.customer_name || '—')}</td>
+          <td>${row.last.planned_arrival ? formatDateTime(row.last.planned_arrival) : '—'}</td>
+          <td>${row.last.actual_arrival ? formatDateTime(row.last.actual_arrival) : '—'}</td>
+          <td class="num">${deviation(row)}</td></tr>`).join('') ||
+          '<tr><td colspan=6>Рейсов за период нет</td></tr>'}</tbody></table>
+      <h4>Опоздания по направлениям</h4>
+      <table class="rtable"><thead><tr><th>Геозона назначения</th><th class="num">Опозданий</th></tr></thead>
+        <tbody>${directionRows || '<tr><td colspan=2>Опозданий не было</td></tr>'}</tbody></table>`;
   } else if (kind === 'rejected-orders') {
     // Реестр заявок: подтверждённые в работе, отклонённые и вернувшиеся из плана —
     // с причинами, плюс где конвейер стоит дольше всего.
