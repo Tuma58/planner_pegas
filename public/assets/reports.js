@@ -10,6 +10,7 @@ export const REPORT_TITLES = {
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
+  conflicts: 'История конфликтов',
   'rejected-orders': 'Реестр заявок',
   history: 'История отчётных периодов'
 };
@@ -146,6 +147,57 @@ export async function buildReport(kind, from, to, data) {
           <td class="num">${rub(row.revenue)}</td><td class="num">${rub(row.profit)}</td>
           <td class="num ${row.margin < 0 ? 'danger' : ''}">${pct(row.margin)}</td></tr>`).join('') ||
           '<tr><td colspan=6>Нет рейсов за период</td></tr>'}</tbody></table>`;
+  } else if (kind === 'conflicts') {
+    // История конфликтов за период: оперативный реестр «Требует решения»
+    // очищается от прошлого автоматически, а здесь конфликты воспроизводятся
+    // из данных рейсов на любую глубину.
+    const periodTrips = data.trips.filter(trip => trip.status !== 'rejected' && inRange(trip, from, to));
+    const byVehicle = new Map();
+    periodTrips.forEach(trip => {
+      if (!byVehicle.has(trip.vehicle_id)) byVehicle.set(trip.vehicle_id, []);
+      byVehicle.get(trip.vehicle_id).push(trip);
+    });
+    const pairs = [];
+    for (const vehicleTrips of byVehicle.values()) {
+      for (let i = 0; i < vehicleTrips.length; i += 1) {
+        for (let j = i + 1; j < vehicleTrips.length; j += 1) {
+          const a = vehicleTrips[i], b = vehicleTrips[j];
+          const overlap = Math.min(Date.parse(a.ends_at), Date.parse(b.ends_at)) -
+            Math.max(Date.parse(a.starts_at), Date.parse(b.starts_at));
+          if (overlap > 6 * 3_600_000) pairs.push({ a, b, hours: Math.round(overlap / 3_600_000) });
+        }
+      }
+    }
+    pairs.sort((x, y) => y.hours - x.hours);
+    const criticalTrips = periodTrips.filter(trip => (data.dispositions || []).some(item =>
+      item.vehicle_id === trip.vehicle_id &&
+      Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
+      Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
+    const topVehicles = new Map();
+    pairs.forEach(pair => topVehicles.set(pair.a.vehicle_plate,
+      (topVehicles.get(pair.a.vehicle_plate) || 0) + 1));
+    const topRows = [...topVehicles.entries()].sort((x, y) => y[1] - x[1]).slice(0, 10)
+      .map(([plate, count]) => `<tr><td class="mono">${escapeHtml(plate)}</td><td class="num">${count}</td></tr>`).join('');
+    body = `<div class="rsums">
+        <span class="rsum">Конфликтных пар: <b>${pairs.length}</b></span>
+        <span class="rsum">Рейсов на простое (критичных): <b>${criticalTrips.length}</b></span>
+        <span class="rsum">Рейсов за период: <b>${periodTrips.length}</b></span></div>
+      <h4>Наложения рейсов по одной сцепке (пересечение &gt; 6 ч)</h4>
+      <table class="rtable"><thead><tr><th>ТС</th><th>Рейс 1</th><th>Рейс 2</th><th class="num">Пересечение</th></tr></thead>
+        <tbody>${pairs.map(pair => `<tr><td class="mono">${escapeHtml(pair.a.vehicle_plate || '')}</td>
+          <td>${escapeHtml(pair.a.from_name)}→${escapeHtml(pair.a.to_name)} · ${formatDateTime(pair.a.starts_at)}</td>
+          <td>${escapeHtml(pair.b.from_name)}→${escapeHtml(pair.b.to_name)} · ${formatDateTime(pair.b.starts_at)}</td>
+          <td class="num">${pair.hours} ч</td></tr>`).join('') ||
+          '<tr><td colspan=4>Конфликтов за период не было</td></tr>'}</tbody></table>
+      <h4>ТС с наибольшим числом конфликтов</h4>
+      <table class="rtable"><thead><tr><th>ТС</th><th class="num">Конфликтов</th></tr></thead>
+        <tbody>${topRows || '<tr><td colspan=2>—</td></tr>'}</tbody></table>
+      <h4>Рейсы, пересекавшиеся с простоями (ремонт/без водителя)</h4>
+      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th></tr></thead>
+        <tbody>${criticalTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
+          <td>${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}</td>
+          <td>${formatDateTime(trip.starts_at)}</td><td>${escapeHtml(trip.customer_name || '—')}</td></tr>`).join('') ||
+          '<tr><td colspan=4>Таких рейсов не было</td></tr>'}</tbody></table>`;
   } else if (kind === 'rejected') {
     const byReason = {};
     rejectedTrips.forEach(trip => {

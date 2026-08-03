@@ -644,7 +644,11 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/exceptions') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
-    const trips = listTrips();
+    // Оперативный реестр — только актуальное: проблемы завершившихся рейсов и
+    // истёкших окон решить уже нельзя, они очищаются автоматически.
+    // История конфликтов за любой период доступна в отчёте «История конфликтов».
+    const nowIso = new Date().toISOString();
+    const trips = listTrips().filter(trip => trip.ends_at >= nowIso);
     const dispositions = listDispositions();
     const conflicts = new Set();
     const grouped = Map.groupBy(
@@ -669,12 +673,14 @@ async function api(request, response, url) {
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
     const rejected = trips.filter(trip => trip.status === 'rejected');
     const conflictItems = trips.filter(trip => conflicts.has(trip.id));
+    // Заявки с истёкшим окном погрузки — тоже история: перевозку уже не выполнить.
     const rejectedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
       FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
-      WHERE o.status='cancelled' ORDER BY o.updated_at DESC`).all();
+      WHERE o.status='cancelled' AND o.window_to>=? ORDER BY o.updated_at DESC`).all(nowIso);
     const returnedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
       FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
-      WHERE o.status='new' AND o.returned_at IS NOT NULL ORDER BY o.returned_at DESC`).all();
+      WHERE o.status='new' AND o.returned_at IS NOT NULL AND o.window_to>=?
+      ORDER BY o.returned_at DESC`).all(nowIso);
     return json(response, 200, {
       count: critical.length + rejected.length + conflictItems.length +
         rejectedOrders.length + returnedOrders.length,
