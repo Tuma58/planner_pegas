@@ -6,7 +6,10 @@
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
 import { api, escapeHtml, formatDateTime, money, routeLabel, toast } from './api.js';
+import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
+
+const LATE_MS = 30 * 60_000;
 
 // Чек-лист диспетчера; подтверждение логиста — нулевое звено, выполняется
 // в блоке «Логист» и здесь показывается только как состояние.
@@ -142,10 +145,17 @@ function checklistBlock(trip, canAct) {
   return `<div class="list" style="margin-top:6px">${rows}</div>`;
 }
 
-export function renderDispatcher(container, context) {
+export async function renderDispatcher(container, context) {
   const { state, can } = context;
   const data = state.data;
   const canAct = can('trip-status:write');
+  // Статус отслеживания «опоздание»: расчётная задержка по стоянкам контроля
+  // (план + накопленное отставание; для идущих — не раньше «сейчас»).
+  let delayByTrip = new Map();
+  try {
+    const { items } = await api('/api/control');
+    delayByTrip = new Map(items.map(item => [item.id, item.delay_ms || 0]));
+  } catch { /* без расчёта задержек карточки просто не показывают опоздание */ }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
     `${routeLabel(trip)} ${trip.vehicle_plate} ${trip.driver_name || ''} ${trip.customer_name || ''}`
@@ -178,16 +188,29 @@ export function renderDispatcher(container, context) {
       <span class="pipe-badge">Ждёт: Логист · подтверждение назначения</span>
     </div>`).join('');
 
-  const onlineCards = online.map(trip => `<div class="list-item ordrow">
+  const onlineCards = online.map(trip => {
+    const delay = delayByTrip.get(trip.id) || 0;
+    const late = delay > LATE_MS;
+    // Опоздание: подсказка уведомить клиента; кнопка шлёт авто-сообщение
+    // сотруднику продаж (тост + звук) — клиента предупреждают продажи.
+    const lateBlock = late
+      ? `<span class="badge bad" title="Расчётное прибытие позже плана — уведомите клиента о переносе">⏰ опоздание ${waitingLabel(delay)} · уведомите клиента</span>
+        ${trip.delay_notified_at
+          ? `<span class="badge warn" title="Авто-сообщение продажам отправлено">продажи уведомлены ${formatDateTime(trip.delay_notified_at)}</span>`
+          : (canAct ? `<button class="button small danger" data-notify-delay="${trip.id}"
+              title="Авто-сообщение сотруднику продаж: уведомить клиента о задержке">Уведомить продажи</button>` : '')}`
+      : `<span class="badge ok">на линии${trip.on_line_at ? ` с ${formatDateTime(trip.on_line_at)}` : ''}</span>`;
+    return `<div class="list-item ordrow ${late ? 'pipe-returned' : ''}">
       ${tripHead(trip)}
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        <span class="badge ok">на линии${trip.on_line_at ? ` с ${formatDateTime(trip.on_line_at)}` : ''}</span>
+        ${lateBlock}
         <span style="display:flex;gap:5px">
           ${canAct ? `<button class="button small" data-unload="${trip.id}" title="Груз выгружен — конвейер уйдёт бухгалтерии">Выгружен</button>` : ''}
           <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
         </span>
       </span>
-    </div>`).join('') || '<p class="muted">На линии никого нет.</p>';
+    </div>`;
+  }).join('') || '<p class="muted">На линии никого нет.</p>';
 
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
@@ -243,5 +266,17 @@ export function renderDispatcher(container, context) {
         toast('Выгрузка отмечена — конвейер передан бухгалтерии');
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
+    }));
+  container.querySelectorAll('[data-notify-delay]').forEach(button =>
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/trips/${button.dataset.notifyDelay}/notify-delay`, { method: 'POST' });
+        toast('Продажи уведомлены — они предупредят клиента о задержке');
+        await context.onReload();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message, 'error');
+      }
     }));
 }

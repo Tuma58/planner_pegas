@@ -784,6 +784,29 @@ async function api(request, response, url) {
     }
   }
 
+  // ── Опоздание на линии: уведомление продаж (клиента предупреждают они) ──
+  match = route(/^\/api\/trips\/([^/]+)\/notify-delay$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const trip = db.prepare(`SELECT t.*,f.name from_name,z.name to_name FROM trips t
+      JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
+      WHERE t.id=?`).get(match[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден');
+    ensureTripStops(db, match[0]);
+    const stops = stopsWithEstimates(listTripStops(db, match[0]), trip.status);
+    const delayMs = tripDelayMs(stops);
+    if (delayMs < 30 * 60_000) {
+      return errorJson(response, 409, 'Рейс идёт в графике — уведомление не требуется');
+    }
+    const hours = Math.max(1, Math.round(delayMs / 3_600_000));
+    notify('sales', `Рейс ${routeText(trip)} (${trip.vehicle_id ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(trip.vehicle_id)?.plate : ''}, ${trip.customer_name || 'без заказчика'}) опаздывает примерно на ${hours} ч — уведомите клиента о переносе прибытия`, 'trip', match[0]);
+    db.prepare(`UPDATE trips SET delay_notified_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).run(match[0]);
+    audit(db, user, 'notify_delay', 'trip', match[0], { delayMs }, requestIp(request));
+    return json(response, 200, { ok: true, delayMs });
+  }
+
   // ── Контроль выполнения рейса: стоянки с планом/расчётом/фактом ──
   if (request.method === 'GET' && pathname === '/api/control') {
     const user = requirePermission(request, response, 'planner:read');
