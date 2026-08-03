@@ -80,6 +80,18 @@ def main():
     done = pd.to_datetime(frame[COLUMNS['doneDate']], format='%d.%m.%Y', errors='coerce')
     selected = frame[(done >= args.date_from) & (done <= args.date_to)]
 
+    # Статус — по датам относительно текущего момента: завершившиеся рейсы — факт,
+    # начавшиеся — «в пути», будущие — план. Так августовская выгрузка открывает
+    # новый период смесью факта и плана без ручной правки.
+    now_utc = pd.Timestamp.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+    def status_for(starts_at, ends_at):
+        if ends_at <= now_utc:
+            return 'done'
+        if starts_at <= now_utc:
+            return 'run'
+        return 'plan'
+
     rows = []
     for _, row in selected.iterrows():
         starts_at = combine(row[COLUMNS['depDate']], row[COLUMNS['depTime']], args.tz)
@@ -96,7 +108,7 @@ def main():
             'depDate': starts_at,
             'doneDate': ends_at,
             'revenue': float(row[COLUMNS['revenue']] or 0),
-            'status': 'done',
+            'status': status_for(starts_at, ends_at),
         })
 
     with open(args.output, 'w', encoding='utf-8') as file:
@@ -106,6 +118,9 @@ def main():
     places = sorted({item['from'] for item in rows} | {item['to'] for item in rows})
     print(f'Отобрано рейсов: {len(rows)} из {len(frame)} (дата выполнения {args.date_from}…{args.date_to})')
     print(f'Время выгрузки трактовано как {args.tz} и переведено в UTC')
+    from collections import Counter
+    statuses = Counter(item['status'] for item in rows)
+    print('Статусы:', dict(statuses))
     print(f'Сумма: {revenue:,.0f} | ТС: {len({r["truck"] for r in rows})} | заказчиков: {len({r["client"] for r in rows})}')
     print(f'Уникальных населённых пунктов после нормализации: {len(places)}')
     print(f'Записано: {args.output}')

@@ -87,15 +87,17 @@ try {
   throw error;
 }
 
-// 4. Справочник заказчиков: статистика по фактическим рейсам периода.
+// 4. Справочник заказчиков: статистика накапливается по всем рейсам базы,
+// а не по периоду импорта — короткая свежая выгрузка не перетирает историю.
 let customersInserted = 0;
 let customersUpdated = 0;
 if (!keepCustomers) {
-  const months = Math.max(1, (Date.parse(periodEnd) - Date.parse(periodStart)) / 86_400_000 / 30.44);
+  const span = db.prepare(`SELECT MIN(starts_at) a, MAX(ends_at) b FROM trips`).get();
+  const months = Math.max(1, (Date.parse(span.b) - Date.parse(span.a)) / 86_400_000 / 30.44);
   const stats = db.prepare(`SELECT customer_name name, from_zone_id, to_zone_id,
       COUNT(*) trips, AVG(revenue_vat) average
-    FROM trips WHERE starts_at<=? AND ends_at>=? AND customer_name<>''
-    GROUP BY customer_name, from_zone_id, to_zone_id`).all(periodEnd, periodStart);
+    FROM trips WHERE customer_name<>''
+    GROUP BY customer_name, from_zone_id, to_zone_id`).all();
   db.exec('BEGIN IMMEDIATE');
   try {
     const find = db.prepare('SELECT id FROM customers WHERE name=? AND from_zone_id=? AND to_zone_id=?');

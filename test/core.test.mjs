@@ -82,7 +82,7 @@ test('SQLite создается со справочниками, админис�
   assert.equal(db.prepare('SELECT COUNT(*) count FROM trips').get().count, 1651);
   assert.equal(db.prepare('SELECT COUNT(*) count FROM customers').get().count, 109);
   // Алиасы расширены под выгрузки 1С (Подмосковье, сёла Пензы и Мордовии и др.).
-  assert.equal(db.prepare('SELECT COUNT(*) count FROM zone_aliases').get().count, 186);
+  assert.equal(db.prepare('SELECT COUNT(*) count FROM zone_aliases').get().count, 190);
   assert.equal(settingsObject(db).general.horizonStart, '2026-07-01');
   assert.equal(settingsObject(db).calculation.vatRate, 0.22);
   assert.equal(settingsObject(db).calculation.insuranceAndRoadsPerKm, 6);
