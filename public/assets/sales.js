@@ -136,7 +136,11 @@ export function renderSales(container, context) {
   // Отклонённые (cancelled с причиной) — в отдельном реестре ниже.
   const allOrders = data.orders.filter(order => inSalesPortfolio(order, data));
   const orders = allOrders.filter(matchesFilter);
-  const rejectedOrders = data.orders.filter(order => order.status === 'cancelled').filter(matchesFilter);
+  // Удалённые (deleted_at) в оперативном реестре не показываются —
+  // они остаются в БД и видны в отчёте «Реестр заявок» для аналитики.
+  const rejectedOrders = data.orders
+    .filter(order => order.status === 'cancelled' && !order.deleted_at)
+    .filter(matchesFilter);
   // «В плане у логиста» — ушедшие из портфеля: ТС назначено, рейс не отклонён.
   const assigned = data.orders.filter(order =>
     order.status !== 'cancelled' && !inSalesPortfolio(order, data)).length;
@@ -212,7 +216,11 @@ export function renderSales(container, context) {
         <small class="muted" style="display:block">окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${money(order.rate_vat)}</small>
         <small class="reject-note">✕ ${escapeHtml(order.rejection_reason || 'без причины')}</small>
       </span>
-      ${canReject ? `<button class="button ghost small" data-restore="${order.id}">Вернуть в работу</button>` : ''}
+      <span style="display:flex;gap:5px">
+        ${canReject ? `<button class="button ghost small" data-restore="${order.id}">Вернуть в работу</button>` : ''}
+        ${can('orders:write') ? `<button class="button ghost small danger" data-delete-order="${order.id}"
+          title="Убрать из оперативного реестра; для аналитики останется в отчёте «Реестр заявок»">Удалить</button>` : ''}
+      </span>
     </div>`).join('') || '<p class="muted">Отклонённых заявок нет.</p>';
 
   // Плашки-KPI кликабельны: выпадающий список позиций категории,
@@ -539,6 +547,17 @@ export function renderSales(container, context) {
       event.stopPropagation();
       const order = orders.find(item => item.id === button.dataset.editOrder);
       if (order) editOrderDialog(order, data, context);
+    }));
+
+  container.querySelectorAll('[data-delete-order]').forEach(button =>
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      if (!confirm('Убрать заявку из оперативного реестра? Для аналитики она останется в отчёте.')) return;
+      try {
+        await api(`/api/orders/${button.dataset.deleteOrder}`, { method: 'DELETE' });
+        toast('Заявка удалена — доступна в отчёте «Реестр заявок»');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
     }));
 }
 

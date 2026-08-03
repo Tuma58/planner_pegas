@@ -218,6 +218,22 @@ function integrationPublic() {
   };
 }
 
+// ── Внутренний чат и уведомления конвейера ──
+// Авто-сообщение адресуется роли следующего участника процесса: клиент
+// показывает его тостом со звуком тем, у кого эта роль, и пишет в общий чат.
+function notify(targetRole, text, entity = null, entityId = null) {
+  db.prepare(`INSERT INTO messages(author_name,kind,text,target_role,entity,entity_id)
+    VALUES('Конвейер','auto',?,?,?,?)`).run(text, targetRole, entity, entityId);
+}
+
+// Маршрут для текста уведомления: пункты, при их отсутствии — геозоны.
+function routeText(row) {
+  const zoneName = id => db.prepare('SELECT name FROM zones WHERE id=?').get(id)?.name || '';
+  const from = row.from_point || zoneName(row.from_zone_id);
+  const to = row.to_point || zoneName(row.to_zone_id);
+  return `${from} → ${to}`;
+}
+
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
     if (!body[key]) throw Object.assign(new Error(`Поле ${key} обязательно`), { status: 422 });
@@ -425,6 +441,7 @@ async function api(request, response, url) {
         integrationPublic().writePolicy === 'automatic');
       audit(db, user, 'create', 'order', returnOrderId,
         { from: 'rejected-trip', tripId: match[0] }, requestIp(request));
+      notify('sales', `Рейс ${routeText(merged.fromPoint ? { from_point: merged.fromPoint, to_point: merged.toPoint } : current)} снят (${merged.rejectionReason}) — в продажах создана заявка-возврат`, 'order', returnOrderId);
     }
     if (merged.orderId) {
       if (merged.status === 'rejected') {
@@ -433,6 +450,7 @@ async function api(request, response, url) {
         db.prepare(`UPDATE orders SET status='new',stage=1,trip_id=NULL,assigned_vehicle_id=NULL,
           rejection_reason=?,returned_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
           WHERE id=?`).run(merged.rejectionReason || 'Отклонён без указания причины', merged.orderId);
+        notify('sales', `Рейс ${routeText(current)} отклонён (${merged.rejectionReason || 'без причины'}) — заявка вернулась в продажи`, 'order', merged.orderId);
       } else {
         // Статус рейса двигает стадию конвейера: отмечаем момент перехода,
         // чтобы следующая роль видела, сколько задача у неё ждёт.
@@ -448,6 +466,9 @@ async function api(request, response, url) {
     if (merged.status !== current.status && merged.status !== 'rejected') {
       ensureTripStops(db, match[0]);
       stampStopsFromStatus(db, match[0], merged.status);
+      if (merged.status === 'unloaded') {
+        notify('accountant', `Рейс ${routeText(current)} выгружен — отметьте оплату`, 'trip', match[0]);
+      }
     }
     // Переназначение ТС: задание прежнему водителю отозвано — шаг
     // «Задание водителю отправлено» выполняется заново.
@@ -562,9 +583,28 @@ async function api(request, response, url) {
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
         integrationPublic().writePolicy === 'automatic');
     }
+    // Уведомление следующего участника: продажи подтвердили — ход логиста.
+    if (stageChanged && nextStage === 1 && Number(current.stage) === 0) {
+      notify('logist', `Заявка «${current.customer_name}» ${routeText(current)} подтверждена продажами — назначьте ТС`, 'order', match[0]);
+    }
     queueOutbox(db, 'orders', match[0], 'update', orderOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'update', 'order', match[0], body, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (match && request.method === 'DELETE') {
+    // Удаление отклонённой заявки — мягкое: из оперативных списков уходит,
+    // в БД остаётся и попадает в реестр отклонённых отчёта для аналитики.
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const current = db.prepare('SELECT * FROM orders WHERE id=?').get(match[0]);
+    if (!current) return errorJson(response, 404, 'Заявка не найдена');
+    if (current.status !== 'cancelled') {
+      return errorJson(response, 409, 'Удалять можно только отклонённые заявки');
+    }
+    db.prepare(`UPDATE orders SET deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).run(match[0]);
+    audit(db, user, 'delete', 'order', match[0], { soft: true }, requestIp(request));
     return json(response, 200, { ok: true });
   }
   match = route(/^\/api\/orders\/([^/]+)\/assign$/, pathname);
@@ -697,6 +737,28 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // ── Внутренний чат: общие сообщения и авто-уведомления конвейера ──
+  if (request.method === 'GET' && pathname === '/api/messages') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const after = Number(url.searchParams.get('after') || 0);
+    const items = after > 0
+      ? db.prepare('SELECT * FROM messages WHERE id>? ORDER BY id LIMIT 200').all(after)
+      : db.prepare('SELECT * FROM (SELECT * FROM messages ORDER BY id DESC LIMIT 40) ORDER BY id').all();
+    const lastId = db.prepare('SELECT MAX(id) id FROM messages').get().id || 0;
+    return json(response, 200, { items, lastId });
+  }
+  if (request.method === 'POST' && pathname === '/api/messages') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const text = String(body.text || '').trim().slice(0, 500);
+    if (!text) return errorJson(response, 422, 'Пустое сообщение');
+    db.prepare(`INSERT INTO messages(author_id,author_name,kind,text)
+      VALUES(?,?,'user',?)`).run(user.id, user.full_name || user.username, text);
+    return json(response, 201, { ok: true });
+  }
+
   // ── Шаг диспетчеризации: подтверждение логиста и чек-лист диспетчера ──
   match = route(/^\/api\/trips\/([^/]+)\/step$/, pathname);
   if (match && request.method === 'POST') {
@@ -706,10 +768,14 @@ async function api(request, response, url) {
     const user = requirePermission(request, response, meta.permission);
     if (!user) return;
     try {
-      const { statusChanged } = applyDispatchStep(db, match[0], body.step, user.id);
+      const { trip, statusChanged } = applyDispatchStep(db, match[0], body.step, user.id);
       if (statusChanged) {
         queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
           integrationPublic().writePolicy === 'automatic');
+      }
+      // Передача задания следующему участнику конвейера.
+      if (body.step === 'logist_confirm') {
+        notify('dispatcher', `Логист подтвердил рейс ${routeText(trip)} — подготовьте выход (1С, задание водителю, линия)`, 'trip', match[0]);
       }
       audit(db, user, 'dispatch_step', 'trip', match[0], { step: body.step }, requestIp(request));
       return json(response, 200, { ok: true, statusChanged });
@@ -842,18 +908,15 @@ async function api(request, response, url) {
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
     const rejected = trips.filter(trip => trip.status === 'rejected');
     const conflictItems = trips.filter(trip => conflicts.has(trip.id));
-    // Опоздания идущих рейсов (расчёт по стоянкам контроля, порог 30 минут).
-    // Уходят сами по факту решения: рейс выгружен или отставание отыграно.
-    const delayed = listTrips().filter(trip => trip.status === 'run').map(trip => {
-      ensureTripStops(db, trip.id);
-      const stops = stopsWithEstimates(listTripStops(db, trip.id), trip.status);
-      return { ...trip, delay_ms: tripDelayMs(stops) };
-    }).filter(trip => trip.delay_ms > 30 * 60_000)
-      .sort((a, b) => b.delay_ms - a.delay_ms);
+    // Опоздания идущих рейсов из оперативного реестра убраны по решению
+    // пользователя (2026-08-03) — вернёмся к этому позже; расчёт остаётся
+    // в отчёте «Контроль выполнения рейсов».
+    const delayed = [];
     // Заявки с истёкшим окном погрузки — тоже история: перевозку уже не выполнить.
     const rejectedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
       FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
-      WHERE o.status='cancelled' AND o.window_to>=? ORDER BY o.updated_at DESC`).all(nowIso);
+      WHERE o.status='cancelled' AND o.deleted_at IS NULL AND o.window_to>=?
+      ORDER BY o.updated_at DESC`).all(nowIso);
     const returnedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
       FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
       WHERE o.status='new' AND o.returned_at IS NOT NULL AND o.window_to>=?

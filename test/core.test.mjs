@@ -289,6 +289,39 @@ test('контроль рейса: факты на стоянках двигаю
   assert.equal(finalStops[1].actual_arrival, '2026-08-11T07:10:00.000Z');
 });
 
+test('чат и мягкое удаление: сообщения адресуются ролям, удалённые заявки остаются в БД', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-chat-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  // Авто-уведомление конвейера адресовано роли следующего участника.
+  db.prepare(`INSERT INTO messages(author_name,kind,text,target_role,entity,entity_id)
+    VALUES('Конвейер','auto','Заявка подтверждена — назначьте ТС','logist','order','o-1')`).run();
+  db.prepare(`INSERT INTO messages(author_id,author_name,kind,text)
+    VALUES(NULL,'Иванов','user','Приму смену в 14:00')`).run();
+  const items = db.prepare('SELECT * FROM messages ORDER BY id').all();
+  assert.equal(items.length, 2);
+  assert.equal(items[0].kind, 'auto');
+  assert.equal(items[0].target_role, 'logist');
+  assert.equal(items[1].kind, 'user');
+  assert.ok(items[1].id > items[0].id, 'id растёт — поллинг after=id работает');
+
+  // Мягкое удаление: отклонённая заявка уходит из оперативных списков,
+  // но остаётся в таблице для аналитики отчёта.
+  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,status,rejection_reason)
+    VALUES('del-1','Клиент',?,?,50000,'2026-08-10T06:00:00.000Z','2026-08-12T18:00:00.000Z',
+    'cancelled','Отказ клиента')`).run(zone.id, zone.id);
+  db.prepare(`UPDATE orders SET deleted_at=CURRENT_TIMESTAMP WHERE id='del-1'`).run();
+  const order = db.prepare(`SELECT * FROM orders WHERE id='del-1'`).get();
+  assert.ok(order.deleted_at, 'помечена удалённой');
+  assert.equal(order.status, 'cancelled');
+  assert.equal(order.rejection_reason, 'Отказ клиента', 'причина сохранена для аналитики');
+});
+
 test('отклонение рейса без заявки создаёт заявку-возврат в продажах', t => {
   // Рейсы из 1С не связаны с заявками: потребность при отклонении не должна
   // теряться — проверяем данные, из которых сервер строит заявку-возврат.

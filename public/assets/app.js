@@ -4,6 +4,7 @@ import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales } from './sales.js';
 import { renderLogist } from './logist.js';
+import { setupChat } from './chat.js';
 import { renderResource } from './resource.js';
 import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
@@ -467,20 +468,10 @@ function openExceptions() {
     ${can('trips:write') ? `<button class="button ghost small" data-ex-remove="${trip.id}"
       title="Убрать рейс из плана; связанная заявка уже возвращена в продажи">Убрать из плана</button>` : ''}
     <button class="button ghost small" data-ex-open="${trip.id}">Открыть</button>`;
-  // Опоздание идущего рейса решается в «Контроле»: факт выгрузки закрывает проблему.
-  const delayedSection = (data.delayed || []).length
-    ? `<h3>Опоздание в пути (${data.delayed.length})</h3><div class="list">${data.delayed.map(trip =>
-        `<div class="list-item exrow">
-          <span style="flex:1;min-width:0">
-            <strong>${escapeHtml(routeLabel(trip))}</strong>
-            <small class="muted" style="display:block"><span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
-              · ${escapeHtml(trip.customer_name)} · план прибытия ${formatDateTime(trip.ends_at)}</small>
-          </span>
-          <span class="exactions"><span class="badge bad">+${waitingLabel(trip.delay_ms)}</span>
-            <button class="button ghost small" data-ex-control
-              title="Открыть блок «Диспетчер»: линия, выгрузка, внештатные ситуации">Диспетчер</button></span>
-        </div>`).join('')}</div>`
-    : '';
+  // Опоздания в пути временно убраны из оперативного реестра (по решению
+  // пользователя, вернёмся позже) — пунктуальность видна в отчёте
+  // «Контроль выполнения рейсов».
+  const delayedSection = '';
 
   const orderSection = (title, items, badge, note, actionsFor) => items.length
     ? `<h3>${title} (${items.length})</h3><div class="list">${items.map(order => `<div class="list-item exrow">
@@ -1143,6 +1134,7 @@ try {
   renderViewTabs();
   renderMain();
   refreshExceptions();
+  setupChat(state);
 } catch (error) {
   if (!error.message.includes('Требуется вход')) toast(error.message, 'error');
 }

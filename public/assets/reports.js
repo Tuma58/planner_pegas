@@ -299,7 +299,8 @@ export async function buildReport(kind, from, to, data) {
       <td>${escapeHtml(routeLabel(order))}</td>
       <td>${formatDateTime(order.window_from)}</td>
       <td class="num">${rub(order.rate_vat)}</td>
-      <td>${escapeHtml(order.rejection_reason || 'не указана')}</td></tr>`).join('');
+      <td>${escapeHtml(order.rejection_reason || 'не указана')}${order.deleted_at
+        ? ` <span class="badge">удалена ${formatDateTime(order.deleted_at)}</span>` : ''}</td></tr>`).join('');
     body = `<div class="geohint">Подтверждено: <b>${confirmed.length}</b> ·
         отклонено: <b>${rejected.length}</b> · вернулось из плана: <b>${returned.length}</b></div>
       <div class="rsums">${summary || '—'}</div>

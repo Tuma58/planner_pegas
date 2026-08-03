@@ -97,6 +97,13 @@ CREATE TABLE IF NOT EXISTS vehicle_dispositions (
 );
 CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
   ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  author_id TEXT REFERENCES users(id), author_name TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'user' CHECK(kind IN ('user','auto')),
+  text TEXT NOT NULL, target_role TEXT, entity TEXT, entity_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS trip_stops (
   id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
   seq INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'D' CHECK(kind IN ('P','D')),
@@ -216,6 +223,9 @@ function migrateColumns(db) {
   // Шаги диспетчеризации рейса: подтверждение назначения логистом, затем
   // чек-лист диспетчера — заказ внесён в учётную систему (1С ведётся отдельно),
   // задание водителю отправлено, рейс на контроле на линии.
+  // Мягкое удаление отклонённой заявки: уходит из оперативных списков,
+  // но остаётся в БД для аналитики (реестр отклонённых в отчёте).
+  ensure('orders', 'deleted_at', 'TEXT');
   ensure('trips', 'logist_confirmed_at', 'TEXT');
   ensure('trips', 'entered_1c_at', 'TEXT');
   ensure('trips', 'driver_notified_at', 'TEXT');
