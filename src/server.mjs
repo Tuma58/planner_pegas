@@ -624,9 +624,9 @@ async function api(request, response, url) {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;
     const body = await readJson(request);
-    const allowed = new Set(['repair', 'no_driver', 'shift', 'out']);
+    const allowed = new Set(['work', 'repair', 'no_driver', 'shift', 'out']);
     if (!body.vehicleId || !allowed.has(body.kind)) {
-      return errorJson(response, 422, 'ТС и вид недоступности обязательны');
+      return errorJson(response, 422, 'ТС и вид диспозиции обязательны');
     }
     const startsAt = Date.parse(body.startsAt);
     const endsAt = Date.parse(body.endsAt);

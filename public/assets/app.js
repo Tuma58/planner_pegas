@@ -368,7 +368,9 @@ function renderMain() {
       openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload)
     });
   } else if (state.view === 'resource') {
-    renderResource(byId('timeline'), { state, openDisposition, taskContainer: byId('sidepanel') });
+    renderResource(byId('timeline'), {
+      state, openDisposition, openFleet: openFleetDirectory, taskContainer: byId('sidepanel')
+    });
   } else if (state.view === 'control') {
     renderControl(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   }
@@ -828,44 +830,129 @@ function renderSidePanel() {
     button.onclick = () => { state.panel = button.dataset.panel; renderSidePanel(); });
 }
 
-function openVehicle(vehicle) {
+// Карточка ТС: правка существующей сцепки или создание новой (vehicle = null).
+// after — возврат в вызвавший экран (например, в справочник ТС) после сохранения.
+function openVehicle(vehicle = null, after = null) {
   const types = state.data.reference.vehicleTypes.map(type =>
-    `<option value="${type.id}" ${type.id === vehicle.type_id ? 'selected' : ''}>${escapeHtml(type.name)}</option>`).join('');
+    `<option value="${type.id}" ${type.id === vehicle?.type_id ? 'selected' : ''}>${escapeHtml(type.name)}</option>`).join('');
   const statuses = [['work', 'В работе'], ['no_driver', 'Без водителя'], ['repair', 'В ремонте'], ['out', 'Выведен']];
-  showModal(`<form id="vehicleForm"><h2>Состав ТС</h2>
+  showModal(`<form id="vehicleForm"><h2>${vehicle ? 'Карточка ТС' : 'Новая сцепка'}</h2>
     <div class="fields">
-      <label class="field">Госномер<input name="plate" value="${escapeHtml(vehicle.plate)}" required></label>
-      <label class="field">Прицеп<input name="trailerPlate" value="${escapeHtml(vehicle.trailer_plate || '')}"></label>
+      <label class="field">Госномер<input name="plate" value="${escapeHtml(vehicle?.plate || '')}" required></label>
+      <label class="field">Прицеп<input name="trailerPlate" value="${escapeHtml(vehicle?.trailer_plate || '')}"></label>
       <label class="field">Тип<select name="typeId">${types}</select></label>
-      <label class="field">Водитель<input name="driverName" value="${escapeHtml(vehicle.driver_name || '')}"></label>
-      <label class="field">Зона<select name="zoneId">${zoneOptions(vehicle.zone_id)}</select></label>
+      <label class="field">Водитель<input name="driverName" value="${escapeHtml(vehicle?.driver_name || '')}"></label>
+      <label class="field">Зона<select name="zoneId">${zoneOptions(vehicle?.zone_id)}</select></label>
       <label class="field">Состояние<select name="status">${statuses.map(([id, label]) =>
-        `<option value="${id}" ${vehicle.status === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+        `<option value="${id}" ${(vehicle?.status || 'work') === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     </div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сохранить</button></div></form>`);
   byId('vehicleForm').onsubmit = async event => {
     event.preventDefault();
     try {
-      await api(`/api/vehicles/${vehicle.id}`, {
-        method: 'PATCH', body: JSON.stringify(formValues(event.currentTarget))
+      await api(vehicle ? `/api/vehicles/${vehicle.id}` : '/api/vehicles', {
+        method: vehicle ? 'PATCH' : 'POST',
+        body: JSON.stringify(formValues(event.currentTarget))
       });
-      closeModal(); toast('Состав ТС обновлен'); await reload();
+      closeModal(); toast(vehicle ? 'Состав ТС обновлен' : 'Сцепка добавлена'); await reload();
+      if (after) after();
     } catch (error) { toast(error.message, 'error'); }
   };
 }
 
+// Быстрая замена одного поля сцепки (водитель, прицеп) из справочника ТС.
+function replaceVehicleField(vehicle, field, title, after) {
+  const current = field === 'driverName' ? vehicle.driver_name : vehicle.trailer_plate;
+  showModal(`<form id="replaceForm"><h2>${title}</h2>
+    <p class="muted"><span class="mono">${escapeHtml(vehicle.plate)}</span> · сейчас: ${escapeHtml(current || '—')}</p>
+    <label class="field">${field === 'driverName' ? 'Новый водитель' : 'Новый прицеп'}
+      <input name="${field}" value="${escapeHtml(current || '')}" required autofocus></label>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Заменить</button></div></form>`);
+  byId('replaceForm').onsubmit = async event => {
+    event.preventDefault();
+    try {
+      await api(`/api/vehicles/${vehicle.id}`, {
+        method: 'PATCH', body: JSON.stringify(formValues(event.currentTarget))
+      });
+      closeModal(); toast('Замена выполнена'); await reload();
+      if (after) after();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+// Справочник ТС блока «Ресурс»: весь парк с поиском, правкой карточки,
+// заменой водителя/прицепа и планированием диспозиций.
+function openFleetDirectory() {
+  const vehicles = state.data.vehicles;
+  const back = () => openFleetDirectory();
+  const statusLabel = { work: 'В работе', repair: 'В ремонте', no_driver: 'Без водителя', out: 'Выведен' };
+  const statusTone = { work: 'ok', repair: 'warn', no_driver: 'warn', out: '' };
+  const query = (state.fleetQuery || '').toLowerCase();
+  const filtered = vehicles.filter(vehicle => !query ||
+    [vehicle.plate, vehicle.trailer_plate, vehicle.driver_name, vehicle.type_name]
+      .some(value => String(value || '').toLowerCase().includes(query)));
+  showModal(`<h2>Справочник ТС</h2>
+    <div class="salesfilter" style="margin-bottom:8px">
+      <input id="fleetSearch" placeholder="Поиск: тягач, прицеп, водитель, тип" value="${escapeHtml(state.fleetQuery || '')}" style="flex:1;min-width:180px">
+      <span class="muted">${filtered.length} из ${vehicles.length}</span>
+      <button class="button small" id="fleetAdd">+ Сцепка</button>
+    </div>
+    <div style="overflow:auto;max-height:60vh"><table class="rtable"><thead><tr>
+      <th>Тягач</th><th>Прицеп</th><th>Тип</th><th>Водитель</th><th>Зона</th><th>Состояние</th><th></th>
+    </tr></thead><tbody>${filtered.map(vehicle => `<tr>
+      <td class="mono"><strong>${escapeHtml(vehicle.plate)}</strong></td>
+      <td class="mono">${escapeHtml(vehicle.trailer_plate || '—')}</td>
+      <td>${escapeHtml(vehicle.type_name || '—')}</td>
+      <td>${escapeHtml(vehicle.driver_name || '—')}</td>
+      <td>${escapeHtml(vehicle.zone_name || '—')}</td>
+      <td><span class="badge ${statusTone[vehicle.status] || 'warn'}">${statusLabel[vehicle.status] || vehicle.status}</span></td>
+      <td class="num" style="white-space:nowrap">
+        <button class="button ghost small" data-fleet-edit="${vehicle.id}" title="Карточка ТС">✎</button>
+        <button class="button ghost small" data-fleet-driver="${vehicle.id}" title="Замена водителя">Водитель</button>
+        <button class="button ghost small" data-fleet-trailer="${vehicle.id}" title="Замена прицепа">Прицеп</button>
+        <button class="button ghost small" data-fleet-plan="${vehicle.id}" title="Планировать диспозицию">План</button>
+      </td></tr>`).join('') || '<tr><td colspan=7 class="muted">Ничего не найдено</td></tr>'}</tbody></table></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+  const search = byId('fleetSearch');
+  search.oninput = () => {
+    state.fleetQuery = search.value;
+    const caret = search.selectionStart;
+    openFleetDirectory();
+    const again = byId('fleetSearch');
+    again.focus();
+    again.setSelectionRange(caret, caret);
+  };
+  byId('fleetAdd').onclick = () => openVehicle(null, back);
+  const byVehicle = id => vehicles.find(vehicle => vehicle.id === id);
+  document.querySelectorAll('[data-fleet-edit]').forEach(button =>
+    button.onclick = () => openVehicle(byVehicle(button.dataset.fleetEdit), back));
+  document.querySelectorAll('[data-fleet-driver]').forEach(button =>
+    button.onclick = () => replaceVehicleField(byVehicle(button.dataset.fleetDriver), 'driverName', 'Замена водителя', back));
+  document.querySelectorAll('[data-fleet-trailer]').forEach(button =>
+    button.onclick = () => replaceVehicleField(byVehicle(button.dataset.fleetTrailer), 'trailerPlate', 'Замена прицепа', back));
+  document.querySelectorAll('[data-fleet-plan]').forEach(button =>
+    button.onclick = () => openDisposition(null, {
+      vehicle_id: button.dataset.fleetPlan,
+      starts_at: new Date().toISOString(),
+      ends_at: new Date(Date.now() + 86_400_000).toISOString()
+    }));
+}
+
 function openDisposition(item = null, prefill = null) {
+  // Планирование ТС по диспозициям: «В работе» — плановая загрузка,
+  // остальные виды — недоступность.
   const kinds = [
-    ['repair', 'В ремонте'], ['no_driver', 'Без водителя'],
+    ['work', 'В работе (план)'], ['repair', 'В ремонте'], ['no_driver', 'Без водителя'],
     ['shift', 'Пересменка'], ['out', 'Выведен']
   ];
   const source = item || prefill;
   const start = source?.starts_at || new Date().toISOString();
   const end = source?.ends_at || new Date(Date.now() + 86_400_000).toISOString();
-  showModal(`<form id="dispositionForm"><h2>${item ? 'Интервал недоступности' : 'Новый интервал'}</h2>
+  showModal(`<form id="dispositionForm"><h2>${item ? 'Диспозиция ТС' : 'Новая диспозиция'}</h2>
     <label class="field">Сцепка<select name="vehicleId">${vehicleOptions(source?.vehicle_id)}</select></label>
-    <label class="field">Причина<select name="kind">${kinds.map(([id, label]) =>
+    <label class="field">Вид<select name="kind">${kinds.map(([id, label]) =>
       `<option value="${id}" ${item?.kind === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     <div class="form-grid">
       <label class="field">С<input name="startsAt" type="datetime-local" value="${isoInput(start)}" required></label>

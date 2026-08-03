@@ -89,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_trips_period ON trips(starts_at,ends_at);
 CREATE INDEX IF NOT EXISTS idx_trips_vehicle ON trips(vehicle_id);
 CREATE TABLE IF NOT EXISTS vehicle_dispositions (
   id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('repair','no_driver','shift','out')),
+  kind TEXT NOT NULL CHECK(kind IN ('work','repair','no_driver','shift','out')),
   starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
   created_by TEXT REFERENCES users(id), updated_by TEXT REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -216,6 +216,27 @@ function migrateColumns(db) {
   // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
   ensure('users', 'roles', 'TEXT');
   db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);
+  // Диспозиция «В работе»: план загрузки ТС. SQLite не меняет CHECK через
+  // ALTER — существующая таблица пересоздаётся с расширенным списком видов.
+  const dispositionsSql = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='vehicle_dispositions'`).get()?.sql || '';
+  if (dispositionsSql && !dispositionsSql.includes("'work'")) {
+    db.exec(`BEGIN IMMEDIATE;
+      ALTER TABLE vehicle_dispositions RENAME TO vehicle_dispositions_legacy;
+      CREATE TABLE vehicle_dispositions (
+        id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('work','repair','no_driver','shift','out')),
+        starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+        created_by TEXT REFERENCES users(id), updated_by TEXT REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK(ends_at>starts_at)
+      );
+      INSERT INTO vehicle_dispositions SELECT * FROM vehicle_dispositions_legacy;
+      DROP TABLE vehicle_dispositions_legacy;
+      CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
+        ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
+      COMMIT;`);
+  }
 }
 
 function seed(db, admin, options) {

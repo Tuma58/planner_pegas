@@ -158,6 +158,39 @@ test('отклонение рейса возвращает заявку в пр�
   assert.ok(order.returned_at, 'возврат помечается временем — продажи видят историю');
 });
 
+test('диспозиции: вид «В работе» принимается, старая таблица мигрирует', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-disp-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const databasePath = path.join(directory, 'planner.db');
+  const admin = { username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор' };
+  const first = openDatabase(databasePath, admin);
+  const vehicle = first.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  // Свежая схема сразу принимает плановую загрузку «В работе».
+  first.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('d-work',?, 'work','2026-08-10T00:00:00.000Z','2026-08-11T00:00:00.000Z')`).run(vehicle.id);
+  // Эмуляция БД прежней версии: таблица с узким CHECK без 'work'.
+  first.exec(`DROP TABLE vehicle_dispositions;
+    CREATE TABLE vehicle_dispositions (
+      id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('repair','no_driver','shift','out')),
+      starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+      created_by TEXT REFERENCES users(id), updated_by TEXT REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK(ends_at>starts_at));`);
+  first.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note)
+    VALUES('d-old',?, 'repair','2026-08-01T00:00:00.000Z','2026-08-02T00:00:00.000Z','старый интервал')`).run(vehicle.id);
+  first.close();
+  // Повторное открытие пересоздаёт таблицу с расширенным CHECK, данные сохраняются.
+  const second = openDatabase(databasePath, admin);
+  t.after(() => second.close());
+  assert.ok(second.prepare(`SELECT sql FROM sqlite_master WHERE name='vehicle_dispositions'`)
+    .get().sql.includes("'work'"), 'CHECK расширен видом work');
+  assert.equal(second.prepare(`SELECT note FROM vehicle_dispositions WHERE id='d-old'`).get().note,
+    'старый интервал', 'данные пережили миграцию');
+  second.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('d-work-2',?, 'work','2026-08-12T00:00:00.000Z','2026-08-13T00:00:00.000Z')`).run(vehicle.id);
+});
+
 test('портфель продаж: назначенные заявки уходят к логисту, возвращаются при отклонении', async () => {
   const { inSalesPortfolio } = await import('../public/assets/pipeline.js');
   const data = { trips: [
