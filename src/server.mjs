@@ -1015,10 +1015,9 @@ async function api(request, response, url) {
     // в отчёте «Контроль выполнения рейсов».
     const delayed = [];
     // Заявки с истёкшим окном погрузки — тоже история: перевозку уже не выполнить.
-    const rejectedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
-      FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
-      WHERE o.status='cancelled' AND o.deleted_at IS NULL AND o.window_to>=?
-      ORDER BY o.updated_at DESC`).all(nowIso);
+    // Отклонённые заявки не считаются оперативной проблемой: они архивируются
+    // в реестре отклонённых (доска продаж и отчёт «Реестр заявок») с причиной.
+    const rejectedOrders = [];
     const returnedOrders = db.prepare(`SELECT o.*,f.name from_name,t.name to_name
       FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
       WHERE o.status='new' AND o.returned_at IS NOT NULL AND o.window_to>=?

@@ -226,6 +226,11 @@ function migrateColumns(db) {
   // Мягкое удаление отклонённой заявки: уходит из оперативных списков,
   // но остаётся в БД для аналитики (реестр отклонённых в отчёте).
   ensure('orders', 'deleted_at', 'TEXT');
+  // Инвариант реестра отклонённых: у каждой отклонённой заявки есть причина.
+  // Новые пути отклонения требуют её обязательно (сервер вернёт 422);
+  // записи, созданные до этого правила, получают явную пометку.
+  db.exec(`UPDATE orders SET rejection_reason='Причина не указана'
+    WHERE status='cancelled' AND (rejection_reason IS NULL OR rejection_reason='')`);
   ensure('trips', 'logist_confirmed_at', 'TEXT');
   ensure('trips', 'entered_1c_at', 'TEXT');
   ensure('trips', 'driver_notified_at', 'TEXT');

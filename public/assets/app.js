@@ -508,8 +508,9 @@ function openExceptions() {
         <span class="exactions"><span class="badge ${badge}">${title}</span>${actionsFor(order)}</span>
       </div>`).join('')}</div>`
     : '';
-  const rejectedOrderActions = order => (can('orders:write') || can('trips:write'))
-    ? `<button class="button ghost small" data-ex-order-restore="${order.id}">Вернуть в работу</button>` : '';
+  // Отклонённые заявки не показываются в оперативном реестре: они
+  // архивируются с причиной в «Отклонённых заявках» доски продаж
+  // (оттуда же возвращаются в работу) и в отчёте «Реестр заявок».
   const returnedOrderActions = () => `<button class="button ghost small" data-ex-to-sales
     title="Перейти в продажи и назначить ТС заново">В продажи</button>`;
 
@@ -524,7 +525,6 @@ function openExceptions() {
     ${delayedSection}
     ${section('Критичный', data.critical, 'bad', criticalActions)}
     ${section('Конфликт', data.conflicts, 'warn', conflictActions)}
-    ${orderSection('Заявка отклонена', data.rejectedOrders || [], 'bad', 'причина', rejectedOrderActions)}
     ${orderSection('Вернулась из плана', data.returnedOrders || [], 'warn', 'причина возврата', returnedOrderActions)}
     ${unavailable}
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
@@ -553,13 +553,6 @@ function openExceptions() {
         () => api(`/api/trips/${trip.id}`, { method: 'PATCH', body: JSON.stringify({ startsAt, endsAt }) }),
         `Рейс перенесён на ${formatDateTime(startsAt)}`);
     }));
-  document.querySelectorAll('[data-ex-order-restore]').forEach(button =>
-    button.addEventListener('click', () =>
-      resolveAndRefresh(
-        () => api(`/api/orders/${button.dataset.exOrderRestore}`, {
-          method: 'PATCH', body: JSON.stringify({ status: 'new', stage: 0 })
-        }),
-        'Заявка возвращена в работу')));
   document.querySelectorAll('[data-ex-to-sales]').forEach(button =>
     button.addEventListener('click', () => {
       closeModal();

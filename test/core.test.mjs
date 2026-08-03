@@ -326,6 +326,19 @@ test('чат и мягкое удаление: сообщения адресую
   assert.ok(order.deleted_at, 'помечена удалённой');
   assert.equal(order.status, 'cancelled');
   assert.equal(order.rejection_reason, 'Отказ клиента', 'причина сохранена для аналитики');
+
+  // Инвариант реестра: отклонённая без причины (старые данные) получает
+  // пометку при следующем открытии БД.
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,status)
+    VALUES('del-2','Клиент-без-причины',?,?,40000,'2026-08-10T06:00:00.000Z',
+    '2026-08-12T18:00:00.000Z','cancelled')`).run(zone.id, zone.id);
+  const reopened = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => reopened.close());
+  assert.equal(reopened.prepare(`SELECT rejection_reason FROM orders WHERE id='del-2'`).get().rejection_reason,
+    'Причина не указана', 'все отклонённые складируются в реестр с причиной');
 });
 
 test('отклонение рейса без заявки создаёт заявку-возврат в продажах', t => {
