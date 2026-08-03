@@ -32,7 +32,10 @@ export function vehicleStateAt(vehicle, data, dayIso) {
 export function renderResource(container, context) {
   const { state } = context;
   const data = state.data;
-  const dayWidth = 30;
+  // Разметка и метрики главного ганта: та же ширина дня, sticky-шапка и колонка,
+  // выходные и маркер «сегодня» — ресурс выглядит и ведёт себя как гант.
+  const dayWidth = Number(data.settings.general.plannerCellWidth || 44);
+  document.documentElement.style.setProperty('--planner-day-width', `${dayWidth}px`);
   const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
   const days = Math.round((monthEnd - state.month) / 86_400_000);
   const today = new Date().toISOString().slice(0, 10);
@@ -40,27 +43,33 @@ export function renderResource(container, context) {
   const inMonth = today >= monthIso && today < monthEnd.toISOString().slice(0, 10);
   const refDay = state.resourceDay || (inMonth ? today : monthIso);
   const filter = state.resourceFilter || null;
+  const todayIndex = Math.floor((Date.now() - state.month.getTime()) / 86_400_000);
 
-  const fleet = data.vehicles;
+  const withState = data.vehicles.map(vehicle => ({
+    vehicle, stateNow: vehicleStateAt(vehicle, data, refDay)
+  }));
   const counts = {};
-  fleet.forEach(vehicle => {
-    const kind = vehicleStateAt(vehicle, data, refDay).kind;
-    counts[kind] = (counts[kind] || 0) + 1;
-  });
+  withState.forEach(({ stateNow }) => { counts[stateNow.kind] = (counts[stateNow.kind] || 0) + 1; });
+  // Режим фильтрации: показывается список только активных строк выбранного состояния.
+  const visible = filter ? withState.filter(({ stateNow }) => stateNow.kind === filter) : withState;
 
   const badges = DISP_KINDS.map(item =>
     `<button class="dbadge ${filter === item.kind ? 'on' : ''}" data-kind="${item.kind}" style="--dc:${item.color}">
       <span class="dbn">${counts[item.kind] || 0}</span><span class="dbl">${item.short}</span></button>`).join('');
 
-  const head = Array.from({ length: days }, (_, index) => {
-    const date = new Date(state.month.getTime() + index * 86_400_000);
+  const headerDays = Array.from({ length: days }, (_, index) => {
+    const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
     const weekend = [0, 6].includes(date.getUTCDay());
-    return `<div class="rday ${weekend ? 'we' : ''}">${index + 1}</div>`;
+    return `<div class="day-cell ${weekend ? 'weekend' : ''} ${index === todayIndex ? 'today' : ''}"><strong>${index + 1}</strong>
+      <small>${new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(date)}</small></div>`;
   }).join('');
 
-  const rows = fleet.map(vehicle => {
-    const stateNow = vehicleStateAt(vehicle, data, refDay);
-    const dim = filter && stateNow.kind !== filter;
+  const grid = Array.from({ length: days }, (_, index) => {
+    const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
+    return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${index === todayIndex ? 'today' : ''}"></div>`;
+  }).join('');
+
+  const rows = visible.map(({ vehicle, stateNow }) => {
     const trips = data.trips
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
         new Date(trip.starts_at) < monthEnd && new Date(trip.ends_at) > state.month)
@@ -68,7 +77,7 @@ export function renderResource(container, context) {
         const start = Math.max(0, (Date.parse(trip.starts_at) - state.month.getTime()) / 86_400_000);
         const end = Math.min(days, (Date.parse(trip.ends_at) - state.month.getTime()) / 86_400_000);
         return `<span class="tripu" style="left:${(start * dayWidth).toFixed(0)}px;width:${Math.max((end - start) * dayWidth - 2, 6).toFixed(0)}px"
-          title="${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}"></span>`;
+          title="${escapeHtml(trip.from_point || trip.from_name)}→${escapeHtml(trip.to_point || trip.to_name)}"></span>`;
       }).join('');
     const bars = (data.dispositions || [])
       .filter(item => item.vehicle_id === vehicle.id &&
@@ -81,11 +90,13 @@ export function renderResource(container, context) {
           style="left:${(start * dayWidth).toFixed(0)}px;width:${Math.max((end - start) * dayWidth - 3, 18).toFixed(0)}px;background:${meta.color}"
           title="${meta.label}"><b>${meta.short}</b></span>`;
       }).join('');
-    return `<div class="rrow ${dim ? 'dim' : ''}">
-      <div class="rfix"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
-        <small class="muted">${escapeHtml(vehicle.driver_name || '—')}</small></div>
-      <div class="rtrack" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px">${trips}${bars}</div>
-      <div class="rstate" style="color:${stateNow.color}">${stateNow.label}</div>
+    return `<div class="vehicle-row">
+      <div class="vehicle-cell"><span class="vehicle-stripe" style="background:${stateNow.color}"></span>
+        <span class="vehicle-title"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
+        <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · <span style="color:${stateNow.color}">${stateNow.label}</span></small></span>
+      </div>
+      <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px">
+        <div class="track-grid">${grid}</div>${trips}${bars}</div>
     </div>`;
   }).join('');
 
@@ -93,19 +104,23 @@ export function renderResource(container, context) {
     <div class="reshead">
       <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
       <div class="resctl">
-        <span class="muted" style="font-size:var(--fs-xs)">Плашки на день</span>
+        ${filter ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
+        <span class="muted" style="font-size:var(--fs-xs)">Состояние на день</span>
         <input type="date" id="resourceDay" value="${refDay}">
         <button class="button small" id="resourceAdd">+ диспозиция</button>
       </div>
     </div>
-    <div class="geohint" style="padding:0 2px 8px">Клик по плашке — фильтр ТС по состоянию. Клик по свободному дню строки — добавить период недоступности. Клик по интервалу — изменить.</div>
-    <div class="rgridwrap">
-      <div class="rrow rhead"><div class="rfix">Сцепка · водитель</div>
-        <div class="rtrack rdays" style="width:${days * dayWidth}px">${head}</div>
-        <div class="rstate muted">Состояние<br><small>на ${refDay.split('-').reverse().slice(0, 2).join('.')}</small></div></div>
-      ${rows}
+    <div class="timeline">
+      <div class="timeline-head"><div class="vehicle-cell">Сцепка · водитель</div>${headerDays}</div>
+      ${rows || '<div class="empty-state">Нет ТС в выбранном состоянии</div>'}
     </div>
   </div>`;
+
+  // Фокус как в главном ганте: «сегодня −3 дня» при первом показе месяца.
+  if (todayIndex >= 0 && todayIndex < days && state.resourceScrolledMonth !== state.month.getTime()) {
+    state.resourceScrolledMonth = state.month.getTime();
+    document.querySelector('.board').scrollLeft = Math.max(0, todayIndex - 3) * dayWidth;
+  }
 
   container.querySelectorAll('.dbadge').forEach(button =>
     button.addEventListener('click', () => {
@@ -127,7 +142,7 @@ export function renderResource(container, context) {
       const item = (data.dispositions || []).find(row => row.id === bar.dataset.disposition);
       if (item) context.openDisposition(item);
     }));
-  container.querySelectorAll('.rtrack:not(.rdays)').forEach(track =>
+  container.querySelectorAll('.track[data-vehicle]').forEach(track =>
     track.addEventListener('click', event => {
       if (event.target.closest('.dbar')) return;
       const rect = track.getBoundingClientRect();
