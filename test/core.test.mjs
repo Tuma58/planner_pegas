@@ -197,6 +197,43 @@ test('диспозиции: вид «В работе» принимается, �
     .get().starts_at, '2026-08-10T00:00:00.000Z');
 });
 
+test('потребность от логистики: ремонт и «без водителя» скрывают ТС до суток перед выходом', async () => {
+  const { autoRequests, matchVehicles } = await import('../public/assets/sales.js');
+  const now = Date.now();
+  const iso = ms => new Date(ms).toISOString();
+  const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+  const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1));
+  const zones = [{ id: 'z1', name: 'Дом', color: '#4f8a6d' }, { id: 'z2', name: 'Москва', color: '#4e7ab0' }];
+  const vehicle = plate => ({ id: plate, plate, status: 'work', type_name: 'Тушевоз', zone_name: 'Дом' });
+  const trip = (vehicleId, endMs) => ({ vehicle_id: vehicleId, status: 'done', to_name: 'Дом',
+    starts_at: iso(endMs - 86_400_000), ends_at: iso(endMs) });
+  const data = {
+    reference: { zones, routeRates: [] },
+    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3')],
+    trips: [trip('А1', now - 3_600_000), trip('А2', now - 3_600_000), trip('А3', now - 3_600_000)],
+    dispositions: [
+      // А2: в ремонте ещё 3 дня — в потребность не попадает
+      { vehicle_id: 'А2', kind: 'repair', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
+      // А3: без водителя, выйдет через 10 часов — попадает с пометкой
+      { vehicle_id: 'А3', kind: 'no_driver', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) }
+    ]
+  };
+  const requests = autoRequests(data, monthStart, monthEnd);
+  const plates = requests.map(request => request.vehicle.plate);
+  assert.ok(plates.includes('А1'), 'свободная сцепка в потребности');
+  assert.ok(!plates.includes('А2'), 'в ремонте ещё 3 дня — скрыта');
+  assert.ok(plates.includes('А3'), 'выходит из простоя менее чем через сутки — видна');
+  const a3 = requests.find(request => request.vehicle.plate === 'А3');
+  assert.equal(a3.blockedKind, 'no_driver', 'пометка «получит водителя»');
+  assert.equal(a3.freeAt, data.dispositions[1].ends_at, 'момент освобождения — конец диспозиции');
+
+  // Кандидаты на назначение: ТС в ремонте на момент погрузки не предлагается.
+  const candidates = matchVehicles(data, 'Дом', iso(now + 3_600_000));
+  assert.ok(!candidates.some(candidate => candidate.vehicle.plate === 'А2'),
+    'ремонт исключает из кандидатов');
+  assert.ok(candidates.some(candidate => candidate.vehicle.plate === 'А1'));
+});
+
 test('портфель продаж: назначенные заявки уходят к логисту, возвращаются при отклонении', async () => {
   const { inSalesPortfolio } = await import('../public/assets/pipeline.js');
   const data = { trips: [

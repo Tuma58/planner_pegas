@@ -40,18 +40,33 @@ function routeInfo(data, fromId, toId) {
 
 // Освобождающиеся сцепки: последний рейс ТС заканчивается до конца месяца —
 // сцепке нужен обратный груз из зоны выгрузки.
+// ТС в ремонте или без водителя в потребность не попадает: предлагать её
+// клиентам рано. Появляется за сутки до окончания диспозиции с пометкой
+// «выйдет из ремонта / получит водителя такого-то числа — требуется загрузка».
 export function autoRequests(data, monthStartDate, monthEndDate) {
   const requests = [];
+  const nowMs = Date.now();
   const zoneByName = Object.fromEntries(data.reference.zones.map(zone => [zone.name, zone]));
   data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
     const trips = data.trips
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
       .sort((a, b) => a.ends_at.localeCompare(b.ends_at));
-    if (!trips.length) return;
-    const last = trips[trips.length - 1];
-    const endsAt = new Date(last.ends_at);
+    const last = trips[trips.length - 1] || null;
+    const tripFreeMs = last ? Date.parse(last.ends_at) : 0;
+    // Блокирующие интервалы (ремонт, без водителя), заканчивающиеся позже рейса:
+    // сцепка реально доступна после самого позднего из них.
+    const blocking = (data.dispositions || []).filter(item =>
+      item.vehicle_id === vehicle.id && ['repair', 'no_driver'].includes(item.kind) &&
+      Date.parse(item.ends_at) > Math.max(tripFreeMs, nowMs - 86_400_000));
+    const blockEndMs = blocking.length ? Math.max(...blocking.map(item => Date.parse(item.ends_at))) : 0;
+    // До выхода из ремонта/появления водителя больше суток — не потребность.
+    if (blockEndMs > nowMs + 86_400_000) return;
+    const blocked = blockEndMs > nowMs
+      ? blocking.find(item => Date.parse(item.ends_at) === blockEndMs) : null;
+    const endsAt = new Date(Math.max(tripFreeMs, blockEndMs));
+    if (!tripFreeMs && !blockEndMs) return;
     if (endsAt >= monthEndDate || endsAt < monthStartDate) return;
-    const zone = zoneByName[last.to_name];
+    const zone = zoneByName[last?.to_name] || zoneByName[vehicle.zone_name];
     if (!zone) return;
     // Предложение обратного груза: самое доходное направление из зоны выгрузки.
     const lanes = data.reference.routeRates
@@ -63,7 +78,10 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       : null;
     requests.push({
       vehicle, zone,
-      freeAt: last.ends_at,
+      freeAt: endsAt.toISOString(),
+      // «Выйдет из ремонта / получит водителя» — пометка для менеджера.
+      blockedKind: blocked?.kind || null,
+      blockedUntil: blocked?.ends_at || null,
       // Погрузка возможна не раньше подачи (норматив после выгрузки), окно — до конца вторых суток.
       loadFrom: new Date(endsAt.getTime() + DISPATCH_LAG_MS).toISOString(),
       windowTo: new Date(Math.min(
@@ -88,8 +106,14 @@ export function matchVehicles(data, fromZoneName, windowFrom) {
     .filter(trip => trip.status !== 'rejected' &&
       Date.parse(trip.starts_at) <= moment && Date.parse(trip.ends_at) > moment)
     .map(trip => trip.vehicle_id));
+  // Недоступные на момент погрузки (ремонт, без водителя, пересменка, выведена)
+  // кандидатами не предлагаются — та же логика, что и в потребности от логистики.
+  const blocked = new Set((data.dispositions || [])
+    .filter(item => item.kind !== 'work' &&
+      Date.parse(item.starts_at) <= moment && moment < Date.parse(item.ends_at))
+    .map(item => item.vehicle_id));
   return data.vehicles
-    .filter(vehicle => vehicle.status === 'work' && !busy.has(vehicle.id))
+    .filter(vehicle => vehicle.status === 'work' && !busy.has(vehicle.id) && !blocked.has(vehicle.id))
     .map(vehicle => {
       const lastTrip = data.trips
         .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
@@ -154,11 +178,16 @@ export function renderSales(container, context) {
   const temps = (orderOptions.temperatureModes || []).map(item => `<option>${escapeHtml(item)}</option>`).join('');
   const bodies = (orderOptions.bodyTypes || []).map(item => `<option>${escapeHtml(item)}</option>`).join('');
 
+  const blockedNote = request => request.blockedKind
+    ? `<small style="display:block;color:var(--warn);font-weight:700">⚙ ${request.blockedKind === 'repair'
+        ? 'выйдет из ремонта' : 'получит водителя'} ${fmtDateTime(request.blockedUntil)}
+        в «${escapeHtml(request.zone.name)}» — требуется загрузка</small>` : '';
   const requestList = requests.length ? requests.map((request, index) =>
     `<div class="list-item req" data-req="${index}">
       <span style="flex:1;min-width:0">
         <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.vehicle.type_name)}
         <small class="muted" style="display:block">освободится в «${escapeHtml(request.zone.name)}» ${fmtDateTime(request.freeAt)} · подача с ${fmtDateTime(request.loadFrom)}</small>
+        ${blockedNote(request)}
         ${request.suggestTo ? `<small class="muted" style="display:block">→ ${escapeHtml(request.zone.name)}→${escapeHtml(request.suggestTo)}${request.suggestCustomer ? `, ${escapeHtml(request.suggestCustomer)}` : ''} · ${money(request.suggestRate)}</small>` : ''}
       </span>
       <span class="reqzone" style="background:${request.zone.color}">${escapeHtml(request.zone.name)}</span>
@@ -256,7 +285,8 @@ export function renderSales(container, context) {
   };
   const requestRow = (request, index) => `<div class="skpi-row" data-kpi-req="${index}">
       <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.zone.name)}
-        <small class="muted" style="display:block">освободится ${fmtDateTime(request.freeAt)}</small></span></div>`;
+        <small class="muted" style="display:block">освободится ${fmtDateTime(request.freeAt)}${request.blockedKind
+          ? ` · ⚙ ${request.blockedKind === 'repair' ? 'из ремонта' : 'получит водителя'}` : ''}</small></span></div>`;
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'requests' ? 'open' : ''}" data-kpi="requests"
