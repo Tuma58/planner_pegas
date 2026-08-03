@@ -86,6 +86,13 @@ export function myTasks(orders, data, can) {
   return orders.filter(order => order.status !== 'cancelled' && pipelineStep(order, data, can).mine);
 }
 
+// Портфель продаж — только заявки до назначения ТС (стадии 0–1).
+// После назначения заявка переходит к логисту в план и уходит из портфеля;
+// вернётся она только при отклонении рейса (как новая, с пометкой возврата).
+export function inSalesPortfolio(order, data) {
+  return order.status !== 'cancelled' && orderStage(order, data).stage < 2;
+}
+
 // «висит 3 ч» / «2 дн» — подсказка, где конвейер стоит.
 export function waitingLabel(ms) {
   if (!ms || ms < 0) return '';

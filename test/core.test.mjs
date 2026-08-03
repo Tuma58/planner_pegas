@@ -158,6 +158,28 @@ test('отклонение рейса возвращает заявку в пр�
   assert.ok(order.returned_at, 'возврат помечается временем — продажи видят историю');
 });
 
+test('портфель продаж: назначенные заявки уходят к логисту, возвращаются при отклонении', async () => {
+  const { inSalesPortfolio } = await import('../public/assets/pipeline.js');
+  const data = { trips: [
+    { id: 't-plan', status: 'plan' },
+    { id: 't-run', status: 'run' },
+    { id: 't-rejected', status: 'rejected' }
+  ] };
+  // До назначения ТС заявка в портфеле: принята и подтверждена.
+  assert.equal(inSalesPortfolio({ stage: 0, status: 'new' }, data), true);
+  assert.equal(inSalesPortfolio({ stage: 1, status: 'new' }, data), true);
+  // После назначения — у логиста в плане, из портфеля уходит (весь жизненный цикл рейса).
+  assert.equal(inSalesPortfolio({ stage: 2, status: 'planned', trip_id: 't-plan' }, data), false);
+  assert.equal(inSalesPortfolio({ stage: 3, status: 'planned', trip_id: 't-run' }, data), false);
+  // Возврат: рейс отклонён — заявка снова в портфеле как новая с пометкой.
+  assert.equal(inSalesPortfolio({ stage: 1, status: 'new', returned_at: '2026-08-03 10:00:00',
+    rejection_reason: 'Поломка на маршруте' }, data), true);
+  // Рейс отклонён, но связь ещё не снята — заявка тоже видна (переназначить ТС).
+  assert.equal(inSalesPortfolio({ stage: 2, status: 'planned', trip_id: 't-rejected' }, data), true);
+  // Отклонённая заявка — в реестре отклонённых, не в портфеле.
+  assert.equal(inSalesPortfolio({ stage: 0, status: 'cancelled' }, data), false);
+});
+
 test('контроль рейса: каркас стоянок наследует пункты и времена рейса', async t => {
   const { ensureTripStops, listTripStops } = await import('../src/trip-control.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-stops-test-'));

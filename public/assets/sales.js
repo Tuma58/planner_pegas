@@ -3,7 +3,7 @@
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
 import { api, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast } from './api.js';
-import { STAGES, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
+import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 
 export { STAGES, orderStage };
 
@@ -124,12 +124,17 @@ export function renderSales(container, context) {
     (!filter.zone || order.from_name === filter.zone || order.to_name === filter.zone) &&
     (!filter.from || String(order.window_to).slice(0, 10) >= filter.from) &&
     (!filter.to || String(order.window_from).slice(0, 10) <= filter.to);
-  // Активный портфель и реестр отклонённых разделены: отклонённая заявка = cancelled с причиной.
-  const allOrders = data.orders.filter(order => order.status !== 'cancelled');
+  // Портфель продаж — заявки до назначения ТС: после назначения заявка уходит
+  // к логисту в план и возвращается только при отклонении рейса.
+  // Отклонённые (cancelled с причиной) — в отдельном реестре ниже.
+  const allOrders = data.orders.filter(order => inSalesPortfolio(order, data));
   const orders = allOrders.filter(matchesFilter);
   const rejectedOrders = data.orders.filter(order => order.status === 'cancelled').filter(matchesFilter);
-  const assigned = orders.filter(order => order.trip_id).length;
+  // «В плане у логиста» — ушедшие из портфеля: ТС назначено, рейс не отклонён.
+  const assigned = data.orders.filter(order =>
+    order.status !== 'cancelled' && !inSalesPortfolio(order, data)).length;
   const returned = orders.filter(order => order.returned_at).length;
+  const awaitingAssign = orders.filter(order => orderStage(order, data).stage === 1).length;
   const tasks = myTasks(orders, data, can);
   const onlyMine = Boolean(state.salesOnlyMine);
   const filterActive = filter.zone || filter.from || filter.to;
@@ -184,7 +189,11 @@ export function renderSales(container, context) {
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <b>${money(order.rate_vat)}</b>
         ${reassign || action}
-        ${step.canReject ? `<button class="button ghost small" data-act="reject" data-order="${order.id}">Отклонить</button>` : ''}
+        <span style="display:flex;gap:5px">
+          ${can('orders:write') ? `<button class="button ghost small" data-edit-order="${order.id}"
+            title="Изменить потребность: заказчик, пункты, окно, ставка">Изменить</button>` : ''}
+          ${step.canReject ? `<button class="button ghost small" data-act="reject" data-order="${order.id}">Отклонить</button>` : ''}
+        </span>
       </span>
     </div>`;
   }).join('') || `<p class="muted">${onlyMine ? 'Задач для вас нет — конвейер ждёт другие роли.' : 'Потребностей клиента пока нет — заполните форму слева.'}</p>`;
@@ -203,8 +212,8 @@ export function renderSales(container, context) {
     <div class="salekpis">
       <div class="skpi"><span class="skl">Потребность от логистики</span><span class="skv">${requests.length}${filterActive ? `<small class="muted"> / ${allRequests.length}</small>` : ''}</span></div>
       <div class="skpi"><span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span></div>
-      <div class="skpi"><span class="skl">Назначено ТС</span><span class="skv">${assigned}</span></div>
-      <div class="skpi"><span class="skl">Осталось назначить</span><span class="skv">${Math.max(0, orders.length - assigned)}</span></div>
+      <div class="skpi"><span class="skl">Ждут назначения ТС</span><span class="skv">${awaitingAssign}</span></div>
+      <div class="skpi" title="Назначенные заявки уходят из портфеля к логисту в план (Гант) и возвращаются только при отклонении рейса"><span class="skl">В плане у логиста</span><span class="skv">${assigned}</span></div>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <select id="salesFilterZone">
@@ -263,6 +272,8 @@ export function renderSales(container, context) {
           <button type="button" class="mine-toggle ${onlyMine ? 'on' : ''}" id="salesMyTasks"
             title="Показать только заявки, ожидающие вашего действия">мои: ${tasks.length}</button></div>
         <div class="list">${portfolio}</div>
+        <div class="geohint">После назначения ТС заявка уходит к логисту в план (Гант) и в портфеле
+          не показывается; вернётся как новая только при отклонении рейса.</div>
         <details class="rejected-details" ${state.salesRejectedOpen ? 'open' : ''} id="salesRejected">
           <summary>Отклонённые заявки <span class="scount">${rejectedOrders.length}</span></summary>
           <div class="list" style="margin-top:8px">${rejectedList}</div>
@@ -448,6 +459,77 @@ export function renderSales(container, context) {
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
     }));
+
+  container.querySelectorAll('[data-edit-order]').forEach(button =>
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      const order = orders.find(item => item.id === button.dataset.editOrder);
+      if (order) editOrderDialog(order, data, context);
+    }));
+}
+
+// Редактирование потребности в портфеле: те же поля, что и при бронировании.
+// Доступно, пока заявка у продаж/логиста (после назначения ТС её в портфеле нет).
+function editOrderDialog(order, data, context) {
+  const zoneOptions = selected => data.reference.zones.map(zone =>
+    `<option value="${zone.id}" ${zone.id === selected ? 'selected' : ''}>${escapeHtml(zone.name)}</option>`).join('');
+  const orderOptions = data.settings.orderOptions || {};
+  const options = (items, current) => (items || []).map(item =>
+    `<option ${item === current ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('');
+  context.showModal(`<form id="editOrderForm">
+    <h2>Изменить потребность</h2>
+    <p class="muted">${escapeHtml(routeLabel(order))} · создана ${fmtDateTime(order.created_at)}</p>
+    <label class="field">Заказчик
+      <input name="customerName" list="salesCustomers" value="${escapeHtml(order.customer_name)}" required autocomplete="off">
+    </label>
+    <div class="form-grid">
+      <label class="field">Пункт погрузки<input name="fromPoint" id="editFromPoint" list="salesPlaces"
+        value="${escapeHtml(order.from_point || '')}" autocomplete="off"></label>
+      <label class="field">Пункт выгрузки<input name="toPoint" id="editToPoint" list="salesPlaces"
+        value="${escapeHtml(order.to_point || '')}" autocomplete="off"></label>
+    </div>
+    <div class="form-grid">
+      <label class="field">Геозона откуда<select name="fromZoneId" id="editFromZone">${zoneOptions(order.from_zone_id)}</select></label>
+      <label class="field">Геозона куда<select name="toZoneId" id="editToZone">${zoneOptions(order.to_zone_id)}</select></label>
+    </div>
+    <div class="form-grid">
+      <label class="field">Темп. режим<select name="temperatureMode">${options(orderOptions.temperatureModes, order.temperature_mode)}</select></label>
+      <label class="field">Кузов<select name="bodyType">${options(orderOptions.bodyTypes, order.body_type)}</select></label>
+    </div>
+    <div class="form-grid">
+      <label class="field">Окно с<input name="windowFrom" type="datetime-local" required value="${inputValue(order.window_from)}"></label>
+      <label class="field">Окно по<input name="windowTo" type="datetime-local" required value="${inputValue(order.window_to)}"></label>
+    </div>
+    <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Number(order.rate_vat) || 0}"></label>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button" type="submit">Сохранить</button>
+    </div>
+  </form>`);
+  // Пункт определяет геозону по алиасам — как в форме бронирования.
+  const zoneByPlace = place => {
+    const needle = String(place || '').trim().toLowerCase();
+    if (!needle) return null;
+    return data.reference.zones.find(zone => zone.name.toLowerCase() === needle ||
+      (zone.aliases || []).some(alias => alias.toLowerCase() === needle)) || null;
+  };
+  [['editFromPoint', 'editFromZone'], ['editToPoint', 'editToZone']].forEach(([pointId, zoneId]) => {
+    document.getElementById(pointId).addEventListener('change', event => {
+      const zone = zoneByPlace(event.currentTarget.value);
+      if (zone) document.getElementById(zoneId).value = zone.id;
+    });
+  });
+  document.getElementById('editOrderForm').onsubmit = async event => {
+    event.preventDefault();
+    try {
+      await api(`/api/orders/${order.id}`, {
+        method: 'PATCH', body: JSON.stringify(formValues(event.target))
+      });
+      context.closeModal();
+      toast('Потребность обновлена');
+      await context.onReload();
+    } catch (error) { toast(error.message, 'error'); }
+  };
 }
 
 // Отклонение заявки: причина обязательна — она попадёт в реестр и отчёт.
