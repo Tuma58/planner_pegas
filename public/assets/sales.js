@@ -607,6 +607,8 @@ export function editOrderDialog(order, data, context) {
 }
 
 // Отклонение заявки: причина обязательна — она попадёт в реестр и отчёт.
+// Используется и продажами (портфель), и логистом (очередь назначения).
+export { rejectDialog as rejectOrderDialog };
 function rejectDialog(order, data, context) {
   const reasons = data.settings.rejectionReasons || [];
   context.showModal(`<form id="rejectOrderForm">

@@ -3,6 +3,7 @@ import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales } from './sales.js';
+import { renderLogist } from './logist.js';
 import { renderResource } from './resource.js';
 import { renderControl } from './control.js';
 import { waitingLabel } from './pipeline.js';
@@ -324,6 +325,7 @@ function renderLegend() {
 const MAIN_VIEWS = [
   { id: 'gantt', title: 'Гант', show: () => true },
   { id: 'sales', title: 'Продажи', show: () => can('orders:write') },
+  { id: 'logist', title: 'Логист', show: () => can('trips:write') },
   { id: 'control', title: 'Контроль', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') }
@@ -373,6 +375,11 @@ function renderMain() {
     });
   } else if (state.view === 'control') {
     renderControl(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'logist') {
+    renderLogist(byId('timeline'), {
+      state, can, onReload: reload, showModal, closeModal, openTrip, openNewTrip,
+      openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload)
+    });
   }
 }
 
@@ -765,8 +772,9 @@ function renderSidePanel() {
   </div>`;
   // Панели доступны по правам, а не по роли: администратор с полным набором прав
   // видит все вкладки, остальные роли — свою (вкладки скрыты, если панель одна).
+  // Гант — информационное пространство: панель «Планирование» переехала
+  // во вкладку «Логист» (назначение ТС, замена ТС, отклонение рейса).
   const availablePanels = [
-    { id: 'planning', title: 'Планирование', show: can('trips:write') },
     { id: 'fleet', title: 'Состав ТС', show: can('fleet:write') },
     { id: 'orders', title: 'Заявки', show: can('orders:write') },
     { id: 'summary', title: 'Сводка', show: true }
@@ -777,19 +785,7 @@ function renderSidePanel() {
         `<button data-panel="${panel.id}" class="${panel.id === state.panel ? 'active' : ''}">${panel.title}</button>`).join('')}</div>`
     : '';
 
-  if (state.panel === 'planning') {
-    const newOrders = orders.filter(order => order.status === 'new');
-    byId('sidepanel').innerHTML = `${tabs}<h2>Планирование рейсов</h2><p class="muted">Создание и распределение заявок</p>
-      ${metrics}<button class="button full" id="newTrip">+ Добавить рейс</button>
-      <h3>Новые заявки</h3><div class="list">${newOrders.slice(0, 8).map(order =>
-        `<div class="list-item"><span><strong>${escapeHtml(order.from_name)} → ${escapeHtml(order.to_name)}</strong>
-        <small class="muted">${escapeHtml(order.customer_name)}</small></span>
-        <button class="button ghost small" data-order="${order.id}">В план</button></div>`).join('')
-        || '<p class="muted">Новых заявок нет</p>'}</div>`;
-    byId('newTrip').onclick = () => openNewTrip();
-    document.querySelectorAll('[data-order]').forEach(button =>
-      button.onclick = () => openNewTrip(orders.find(order => order.id === button.dataset.order)));
-  } else if (state.panel === 'fleet') {
+  if (state.panel === 'fleet') {
     const work = vehicles.filter(vehicle => vehicle.status === 'work').length;
     const dispositions = state.data.dispositions || [];
     byId('sidepanel').innerHTML = `${tabs}<h2>Состав ТС</h2><p class="muted">Доступность парка и водителей</p>
