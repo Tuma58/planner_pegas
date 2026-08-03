@@ -1046,14 +1046,15 @@ function staticFile(request, response, url) {
   const html = path.extname(resolved) === '.html';
   // Версионированные URL уникальны для каждого деплоя — их можно кешировать намертво.
   // HTML и неверсионированные пути ревалидируются каждый раз (no-cache + ETag → 304).
-  const cacheControl = versioned ? 'public, max-age=31536000, immutable' : 'no-cache';
+  // В development версия не применяется: правки public/ должны подхватываться без рестарта.
+  const cacheControl = versioned && config.isProduction ? 'public, max-age=31536000, immutable' : 'no-cache';
   const etag = `"${ASSET_VERSION}-${Math.round(stat.mtimeMs).toString(36)}-${stat.size.toString(36)}"`;
   if (request.headers['if-none-match'] === etag) {
     response.writeHead(304, { ETag: etag, 'Cache-Control': cacheControl });
     return response.end();
   }
   let content = fs.readFileSync(resolved);
-  if (html) {
+  if (html && config.isProduction) {
     content = Buffer.from(content.toString('utf8').replaceAll('/assets/', `/assets/v${ASSET_VERSION}/`));
   }
   response.writeHead(200, {

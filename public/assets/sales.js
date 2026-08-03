@@ -227,7 +227,11 @@ export function renderSales(container, context) {
       <div class="scol">
         <div class="scolh">Потребность клиента <span>${orders.length}</span></div>
         <form id="salesForm">
-          <label class="field">Заказчик<input name="customerName" placeholder="наименование" required></label>
+          <label class="field">Заказчик
+            <input name="customerName" list="salesCustomers" placeholder="выберите из справочника или введите нового"
+              autocomplete="off" required>
+            <datalist id="salesCustomers"></datalist>
+          </label>
           <div class="form-grid">
             <label class="field">Откуда<select name="fromZoneId" id="salesFrom">${zoneOptions}</select></label>
             <label class="field">Куда<select name="toZoneId" id="salesTo">${zoneOptions}</select></label>
@@ -276,6 +280,36 @@ export function renderSales(container, context) {
   container.querySelector('#salesFilterReset')?.addEventListener('click', () => {
     state.salesFilter = { zone: '', from: '', to: '' };
     rerender();
+  });
+
+  // Справочник заказчиков для выбора в форме: загружается один раз (кэш в state),
+  // datalist сохраняет и свободный ввод — нового клиента можно вписать как раньше.
+  const customersDatalist = container.querySelector('#salesCustomers');
+  const fillCustomers = items => {
+    customersDatalist.innerHTML = [...new Set(items.map(item => item.name))]
+      .map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
+  };
+  if (state.customersDirectory) fillCustomers(state.customersDirectory);
+  else {
+    api('/api/customers?q=').then(result => {
+      state.customersDirectory = result.items;
+      fillCustomers(result.items);
+    }).catch(() => { /* нет права customers:read — останется свободный ввод */ });
+  }
+  // Выбор известного клиента подставляет его основное направление и рыночную ставку.
+  container.querySelector('[name="customerName"]').addEventListener('change', event => {
+    const name = event.currentTarget.value.trim();
+    const entries = (state.customersDirectory || []).filter(item => item.name === name);
+    if (!entries.length) return;
+    const main = entries.sort((a, b) => b.trip_count - a.trip_count)[0];
+    if (main.from_zone_id) container.querySelector('#salesFrom').value = main.from_zone_id;
+    if (main.to_zone_id) container.querySelector('#salesTo').value = main.to_zone_id;
+    feasibility();
+    // Средняя ставка клиента — точнее рыночной по направлению, ставим после пересчёта.
+    const rate = container.querySelector('#salesRate');
+    if (!rate.value && main.average_rate_vat) {
+      rate.placeholder = Math.round(main.average_rate_vat).toLocaleString('ru-RU');
+    }
   });
 
   const feasibility = () => {
