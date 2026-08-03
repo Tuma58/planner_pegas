@@ -189,6 +189,12 @@ test('диспозиции: вид «В работе» принимается, �
     'старый интервал', 'данные пережили миграцию');
   second.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
     VALUES('d-work-2',?, 'work','2026-08-12T00:00:00.000Z','2026-08-13T00:00:00.000Z')`).run(vehicle.id);
+  // Регрессия ТС 168: правка дат work-диспозиции (в т.ч. на более ранний срок)
+  // должна проходить — вид work обязан быть в списке допустимых при PATCH.
+  second.prepare(`UPDATE vehicle_dispositions SET starts_at='2026-08-10T00:00:00.000Z'
+    WHERE id='d-work-2'`).run();
+  assert.equal(second.prepare(`SELECT starts_at FROM vehicle_dispositions WHERE id='d-work-2'`)
+    .get().starts_at, '2026-08-10T00:00:00.000Z');
 });
 
 test('портфель продаж: назначенные заявки уходят к логисту, возвращаются при отклонении', async () => {

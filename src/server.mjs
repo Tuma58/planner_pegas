@@ -748,7 +748,7 @@ async function api(request, response, url) {
     const startsAt = Date.parse(body.startsAt ?? current.starts_at);
     const endsAt = Date.parse(body.endsAt ?? current.ends_at);
     const kind = body.kind ?? current.kind;
-    if (!['repair', 'no_driver', 'shift', 'out'].includes(kind) || endsAt <= startsAt) {
+    if (!['work', 'repair', 'no_driver', 'shift', 'out'].includes(kind) || endsAt <= startsAt) {
       return errorJson(response, 422, 'Некорректный интервал');
     }
     db.prepare(`UPDATE vehicle_dispositions SET vehicle_id=?,kind=?,starts_at=?,ends_at=?,
