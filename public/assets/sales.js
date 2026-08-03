@@ -237,12 +237,6 @@ export function renderSales(container, context) {
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22);
     return sum + trip.revenue_vat / (1 + vat);
   }, 0);
-  const periodCost = periodTrips.reduce((sum, trip) => {
-    const days = Math.max(0, (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 86_400_000);
-    return sum + trip.distance_km *
-      (Number(calc.costPerKm || 0) + Number(calc.insuranceAndRoadsPerKm || 0)) +
-      days * (Number(calc.driverPerTripDay || 0) + Number(calc.refrigerationPerTripDay || 0));
-  }, 0);
   const periodLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', timeZone: 'UTC' }).format(state.month);
 
   // Плашки-KPI кликабельны: выпадающий список позиций категории,
@@ -283,8 +277,8 @@ export function renderSales(container, context) {
         ${kpiDrop('logist', inPlanOrders.map(orderRow).join(''))}</div>
       <div class="skpi" title="Оперативная сводка по текущему периоду: рейсы, завершающиеся в открытом месяце">
         <span class="skl">Рейсов за ${escapeHtml(periodLabel)}</span><span class="skv">${periodTrips.length}</span></div>
-      <div class="skpi" title="Выручка без НДС минус переменные затраты — только текущий период">
-        <span class="skl">Марж. доход ${escapeHtml(periodLabel)}</span><span class="skv">${money(periodNet - periodCost)}</span></div>
+      <div class="skpi" title="Выручка без НДС по рейсам, завершающимся в текущем периоде (ставка НДС ИП — 7%)">
+        <span class="skl">Выручка б. НДС ${escapeHtml(periodLabel)}</span><span class="skv">${money(periodNet)}</span></div>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <input id="salesSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС"
