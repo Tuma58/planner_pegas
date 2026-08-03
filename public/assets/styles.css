@@ -279,8 +279,12 @@ tbody tr:hover td { background: var(--hover); }
 
 /* Интервалы недоступности на канве */
 .dispo {
-  position: absolute; top: 2px; bottom: 2px; border: 1px dashed var(--muted); border-radius: 6px;
-  background: repeating-linear-gradient(45deg, rgb(120 130 140 / 22%) 0 6px, rgb(120 130 140 / 10%) 6px 12px);
+  --dc: var(--muted);
+  position: absolute; top: 2px; bottom: 2px; border: 1px dashed var(--dc); border-radius: 6px;
+  background: var(--dc);
+  background: color-mix(in srgb, var(--dc) 82%, var(--card));
+  color: #fff; display: flex; align-items: center; padding: 0 7px;
+  font-size: 10px; font-weight: 700; overflow: hidden; white-space: nowrap;
   cursor: pointer;
 }
 .draw-select {

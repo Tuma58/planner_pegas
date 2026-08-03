@@ -5,7 +5,7 @@ import { buildReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales } from './sales.js';
 import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
-import { renderResource } from './resource.js';
+import { DISP_KINDS, renderResource } from './resource.js';
 import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
 
@@ -127,9 +127,10 @@ function renderTimeline() {
     return `<div class="day-cell ${weekend ? 'weekend' : ''} ${isToday(index) ? 'today' : ''}"><strong>${index + 1}</strong>
       <small>${new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(date)}</small></div>`;
   }).join('');
-  const dispositionKinds = {
-    repair: 'В ремонте', no_driver: 'Без водителя', shift: 'Пересменка', out: 'Выведен'
-  };
+  // Цвета и подписи видов диспозиций — те же, что в «Ресурсе»: ремонт,
+  // пересменка, без водителя и плановая работа различимы прямо на канве.
+  const dispositionMeta = kind => DISP_KINDS.find(item => item.kind === kind) ||
+    { label: kind, short: kind, color: 'var(--muted)' };
   // Экономика сцепки за открытый месяц: текущая — по рейсам, уже
   // завершившимся ко «вчера-сегодня», прогноз — включая запланированные.
   const calc = state.data.settings.calculation;
@@ -164,8 +165,11 @@ function renderTimeline() {
         const visibleEnd = new Date(Math.min(new Date(item.ends_at), monthEnd));
         const left = Math.max(0, daysBetween(state.month, visibleStart)) * dayWidth;
         const width = Math.max(10, daysBetween(visibleStart, visibleEnd) * dayWidth - 2);
-        return `<span class="dispo" data-disposition="${item.id}" style="left:${left}px;width:${width}px"
-          title="${dispositionKinds[item.kind] || item.kind}${item.note ? ` · ${escapeHtml(item.note)}` : ''}"></span>`;
+        const meta = dispositionMeta(item.kind);
+        return `<span class="dispo" data-disposition="${item.id}"
+          style="left:${left}px;width:${width}px;--dc:${meta.color}"
+          title="${meta.label} · ${formatDateTime(item.starts_at)} → ${formatDateTime(item.ends_at)}${item.note ? `
+${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ? ` · ${escapeHtml(item.note)}` : ''}</span>`;
       }).join('');
     const trips = vehicleTrips.map(trip => {
       const visibleStart = new Date(Math.max(new Date(trip.starts_at), state.month));
