@@ -226,6 +226,23 @@ function migrateColumns(db) {
   // Мягкое удаление отклонённой заявки: уходит из оперативных списков,
   // но остаётся в БД для аналитики (реестр отклонённых в отчёте).
   ensure('orders', 'deleted_at', 'TEXT');
+  // Комментарий сотрудника к потребности: уточнения по рейсу (адрес, контакт,
+  // особенности погрузки) — едет по конвейеру от продаж до диспетчера.
+  ensure('orders', 'comment', "TEXT NOT NULL DEFAULT ''");
+  // Кузова пополнены реальными типами парка: Тушевоз, Допельшток, Паллет 33/41.
+  // Идемпотентно дополняем существующие настройки, не трогая правки админа.
+  const orderOptionsRow = db.prepare(`SELECT value_json FROM settings WHERE key='orderOptions'`).get();
+  if (orderOptionsRow) {
+    const orderOptions = JSON.parse(orderOptionsRow.value_json);
+    const requiredBodies = ['Тушевоз', 'Допельшток', 'Паллет 33', 'Паллет 41'];
+    const bodies = orderOptions.bodyTypes || [];
+    const missing = requiredBodies.filter(body => !bodies.includes(body));
+    if (missing.length) {
+      orderOptions.bodyTypes = [...bodies, ...missing];
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='orderOptions'`)
+        .run(JSON.stringify(orderOptions));
+    }
+  }
   // Инвариант реестра отклонённых: у каждой отклонённой заявки есть причина.
   // Новые пути отклонения требуют её обязательно (сервер вернёт 422);
   // записи, созданные до этого правила, получают явную пометку.

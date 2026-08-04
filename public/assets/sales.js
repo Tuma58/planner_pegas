@@ -258,6 +258,7 @@ export function renderSales(container, context) {
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         ${step.plate ? ` · <span class="mono">${escapeHtml(step.plate)}</span>` : ''}
         <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
+        ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
         <div class="stepper-row">${stepper(step.stage)}<span class="pipe-inline">${waiting}${since}</span></div>
       </span>
@@ -396,6 +397,8 @@ export function renderSales(container, context) {
               value="${inputValue(atHour(new Date(state.month.getTime() + 2 * 86_400_000), WORK_END_HOUR))}"></label>
           </div>
           <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate" type="number" min="0"></label>
+          <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
+            placeholder="адрес, контакт, особенности погрузки" autocomplete="off"></label>
           <div id="salesFeas" class="feas"></div>
           <button class="button full">Забронировать</button>
         </form>
@@ -698,6 +701,8 @@ export function editOrderDialog(order, data, context) {
       <label class="field">Окно по<input name="windowTo" type="datetime-local" required value="${inputValue(order.window_to)}"></label>
     </div>
     <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Number(order.rate_vat) || 0}"></label>
+    <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
+      value="${escapeHtml(order.comment || '')}" placeholder="адрес, контакт, особенности погрузки"></label>
     <div class="modal-actions">
       ${trip && context.openTrip ? `<button type="button" class="button ghost" id="editOrderTrip"
         title="Открыть карточку рейса: времена подачи, статус, удаление">Рейс</button>` : ''}
@@ -781,6 +786,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
   showModal(`<h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>
     <p class="muted">${escapeHtml(order.customer_name)} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${escapeHtml(order.body_type || 'Реф')} ${escapeHtml(order.temperature_mode || '')}</p>
+    ${order.comment ? `<p class="muted">💬 ${escapeHtml(order.comment)}</p>` : ''}
     <div class="list" style="max-height:220px;overflow:auto;margin-bottom:10px">
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">
         <strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>

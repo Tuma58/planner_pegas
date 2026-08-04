@@ -909,11 +909,33 @@ function openDisposition(item = null, prefill = null) {
 async function showCustomers() {
   try {
     const { items } = await api('/api/customers');
-    showModal(`<h2>Справочник заказчиков</h2><p class="muted">${items.length} записей из БД</p>
+    const canAdd = can('orders:write');
+    showModal(`<h2>Справочник заказчиков</h2><p class="muted">${items.length} записей из БД ·
+        новый клиент прикрепляется к геозонам основного направления</p>
+      ${canAdd ? `<form id="newCustomerForm" class="salesfilter" style="margin-bottom:10px;flex-wrap:wrap">
+        <input name="name" placeholder="Название клиента" required style="flex:1;min-width:170px">
+        <select name="fromZoneId" title="Геозона погрузки (прикрепление)">${zoneOptions()}</select>
+        <span class="muted">→</span>
+        <select name="toZoneId" title="Геозона выгрузки">${zoneOptions()}</select>
+        <input name="averageRateVat" type="number" min="0" placeholder="ставка, ₽" style="width:110px">
+        <button class="button small">+ Клиент</button>
+      </form>` : ''}
       <div class="table-wrap"><table><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Рейсов</th><th>Средняя ставка</th></tr></thead>
       <tbody>${items.map(item => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.from_name || '—')} → ${escapeHtml(item.to_name || '—')}</td>
       <td>${item.trip_count}</td><td>${money(item.average_rate_vat)}</td></tr>`).join('')}</tbody></table></div>
-      <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div>`);
+      <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+    const form = byId('newCustomerForm');
+    if (form) form.onsubmit = async event => {
+      event.preventDefault();
+      try {
+        await api('/api/customers', {
+          method: 'POST', body: JSON.stringify(formValues(event.currentTarget))
+        });
+        toast('Клиент добавлен и прикреплён к геозоне');
+        state.customersDirectory = null;
+        showCustomers();
+      } catch (error) { toast(error.message, 'error'); }
+    };
   } catch (error) { toast(error.message, 'error'); }
 }
 

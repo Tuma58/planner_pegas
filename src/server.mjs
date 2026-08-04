@@ -528,14 +528,26 @@ async function api(request, response, url) {
     if (!Number.isFinite(windowFrom) || !Number.isFinite(windowTo) || windowTo <= windowFrom) {
       return errorJson(response, 422, 'Некорректное окно заявки');
     }
+    // Новый клиент из свободного ввода автоматически попадает в справочник
+    // и прикрепляется к геозонам первой заявки (основное направление).
+    const customerName = body.customerName.trim();
+    if (!db.prepare('SELECT 1 FROM customers WHERE name=? COLLATE NOCASE').get(customerName)) {
+      const customerId = randomUUID();
+      db.prepare(`INSERT INTO customers(id,name,from_zone_id,to_zone_id,trip_count,
+        average_rate_vat,trips_per_month) VALUES(?,?,?,?,0,?,0)`).run(
+        customerId, customerName, body.fromZoneId, body.toZoneId, Number(body.rateVat || 0));
+      audit(db, user, 'create', 'customer', customerId,
+        { name: customerName, auto: 'from-order' }, requestIp(request));
+    }
     const id = randomUUID();
     db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
-      rate_vat,window_from,window_to,temperature_mode,body_type,stage,created_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      id, body.customerName.trim(), body.fromZoneId, body.toZoneId,
+      rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, customerName, body.fromZoneId, body.toZoneId,
       String(body.fromPoint || '').trim(), String(body.toPoint || '').trim(), Number(body.rateVat || 0),
       new Date(windowFrom).toISOString(), new Date(windowTo).toISOString(),
-      String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0), user.id);
+      String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0),
+      String(body.comment || '').trim().slice(0, 500), user.id);
     queueOutbox(db, 'orders', id, 'create', orderOutboxPayload(id),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'create', 'order', id, body, requestIp(request));
@@ -581,7 +593,7 @@ async function api(request, response, url) {
     const confirmedAt = current.confirmed_at ||
       (stageChanged && nextStage >= 1 ? new Date().toISOString() : null);
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,from_point=?,to_point=?,
-      rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,
+      rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,comment=?,
       rejection_reason=?,returned_at=?,confirmed_at=?,
       stage_changed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
@@ -593,6 +605,7 @@ async function api(request, response, url) {
       new Date(ends).toISOString(), nextStatus,
       String(body.temperatureMode ?? current.temperature_mode),
       String(body.bodyType ?? current.body_type), nextStage,
+      String(body.comment ?? current.comment ?? '').trim().slice(0, 500),
       rejectionReason, returnedAt, confirmedAt, stageChanged ? 1 : 0, match[0]);
     // Заявка уже в плане у логиста: новая ставка — это выручка рейса,
     // синхронизируем, пока рейс не закрыт оплатой.
