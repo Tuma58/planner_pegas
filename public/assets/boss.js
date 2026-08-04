@@ -1,112 +1,53 @@
-// Кабина руководителя — перенос приборной панели из прототипа ТК 21:
-// круговые приборы (gaugeSVG), «вид из лобового стекла» (windshield), LCD, планка плана,
-// светофоры, P&L и простой по причинам. Данные — GET /api/reports (сервер считает
-// экономику и каскад утилизации КТГ×КВЛ×КИП по машино-дням).
+// Блок руководителя — операционный отчёт АТП (по образцу отчёта
+// «Пегас-Авто» за период): секции с якорной навигацией, KPI-полоса
+// с планами и отклонениями, каскад-воронка КТГ→КВЛ→КИП с потерями по
+// владельцам, баланс машино-дней, экономика по типам ТС и топ клиентов.
+// Тема «панель приборов» (спидометры, лобовое стекло) выведена из продукта.
+// Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
 import { api, escapeHtml, toast } from './api.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
-const pct = value => `${(value * 100).toFixed(1)}%`;
+const mln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} млн`;
+const pct = (value, digits = 1) => `${(value * 100).toFixed(digits)}%`;
+const n1 = value => Number(value || 0).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+const n0 = value => Math.round(Number(value || 0)).toLocaleString('ru-RU');
 
-function cpt(cx, cy, r, deg) {
-  const a = (deg - 90) * Math.PI / 180;
-  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
-}
-
-function arcP(cx, cy, r, d0, d1) {
-  const [x0, y0] = cpt(cx, cy, r, d0);
-  const [x1, y1] = cpt(cx, cy, r, d1);
-  const large = (d1 - d0) > 180 ? 1 : 0;
-  return `M${x0.toFixed(1)} ${y0.toFixed(1)} A${r} ${r} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
-}
-
-export function gaugeSVG(frac, valTxt, name, sub, kind, warm) {
-  const S = 225, SW = 270;
-  frac = Math.max(0, Math.min(1, frac));
-  const cx = 100, cy = 100, Rz = 76, Rt = 87, Rn = 61, Rnd = 66;
-  const z = (a, b) => arcP(cx, cy, Rz, S + a * SW, S + b * SW);
-  const zones = kind === 'tach'
-    ? `<path d="${z(0, .45)}" class="zred"/><path d="${z(.45, .78)}" class="zamb"/><path d="${z(.78, 1)}" class="zgrn"/>`
-    : `<path d="${z(0, .6)}" class="zred"/><path d="${z(.6, .85)}" class="zamb"/><path d="${z(.85, 1)}" class="zgrn"/>`;
-  let ticks = '', nums = '';
-  for (let i = 0; i <= 10; i++) {
-    const f = i / 10, d = S + f * SW;
-    const [a1, b1] = cpt(cx, cy, Rt, d), [a2, b2] = cpt(cx, cy, Rt - 12, d);
-    ticks += `<line x1="${a1.toFixed(1)}" y1="${b1.toFixed(1)}" x2="${a2.toFixed(1)}" y2="${b2.toFixed(1)}" class="tmaj"/>`;
-    const [nx, ny] = cpt(cx, cy, Rn, d);
-    nums += `<text x="${nx.toFixed(1)}" y="${(ny + 4).toFixed(1)}" class="tnum">${Math.round(f * 100)}</text>`;
-    if (i < 10) for (let j = 1; j < 5; j++) {
-      const d2 = S + (f + j / 50) * SW;
-      const [c1, e1] = cpt(cx, cy, Rt, d2), [c2, e2] = cpt(cx, cy, Rt - 6, d2);
-      ticks += `<line x1="${c1.toFixed(1)}" y1="${e1.toFixed(1)}" x2="${c2.toFixed(1)}" y2="${e2.toFixed(1)}" class="tmin"/>`;
-    }
-  }
-  const vd = S + frac * SW;
-  const shape = `<polygon points="${cx},${(cy - Rnd).toFixed(1)} ${cx - 7},${cy} ${cx + 7},${cy}" class="needle"/>`;
-  const anim = warm
-    ? `<animateTransform attributeName="transform" type="rotate" values="${S} ${cx} ${cy}; ${S + SW} ${cx} ${cy}; ${vd.toFixed(1)} ${cx} ${cy}" keyTimes="0;0.5;1" dur="1.7s" calcMode="spline" keySplines="0.35 0 0.25 1; 0.25 0 0 1" fill="freeze"/>`
-    : '';
-  const jbeg = (-(name.charCodeAt(0) % 23) / 10).toFixed(1);
-  const jitter = `<animateTransform attributeName="transform" type="rotate" additive="sum" values="0 ${cx} ${cy};0.5 ${cx} ${cy};-0.35 ${cx} ${cy};0.45 ${cx} ${cy};-0.5 ${cx} ${cy};0.25 ${cx} ${cy};-0.2 ${cx} ${cy};0 ${cx} ${cy}" dur="2.4s" begin="${jbeg}s" repeatCount="indefinite"/>`;
-  const needle = `<g transform="rotate(${vd.toFixed(1)} ${cx} ${cy})">${shape}${anim}${jitter}</g>`;
-  return `<svg viewBox="0 0 200 200" class="rgauge ${kind || ''}">
-    <circle cx="100" cy="100" r="99" class="bezel"/><circle cx="100" cy="100" r="90" class="face"/>
-    ${zones}${ticks}${nums}
-    <text x="100" y="84" class="gbigval">${valTxt}</text>
-    <text x="100" y="126" class="gname">${name}</text><text x="100" y="143" class="gsub">${sub}</text>
-    ${needle}
-    <circle cx="100" cy="100" r="10" class="hub"/><circle cx="100" cy="100" r="4" class="hubc"/></svg>`;
-}
-
-const lcdRow = (label, value, cls) =>
-  `<div class="lcdrow ${cls || ''}"><span>${label}</span><b>${value}</b></div>`;
-
-const dashLight = (count, label, info) =>
-  `<div class="warnlight ${count > 0 ? 'on' : ''} ${info ? 'info' : ''}"><div class="wn">${count}</div><div class="wl">${label}</div></div>`;
-
-export function windshield(factRev, planRev, projRev) {
-  const W = 1000, H = 300, hz = 150, vp = 500;
-  const money = n => Math.round(n).toLocaleString('ru-RU');
-  let dashes = '';
-  for (let i = 0; i < 7; i++) {
-    dashes += `<rect class="ldash" x="-5" y="-11" width="10" height="22" style="animation-delay:${(-(i / 7 * 3)).toFixed(2)}s"/>`;
-  }
-  const sign = (x, y, tag, val, col) => `<line x1="${x}" y1="${y - 4}" x2="${x}" y2="${y + 40}" stroke="#59626c" stroke-width="4"/>
-     <rect x="${x - 96}" y="${y - 60}" width="192" height="54" rx="9" fill="${col}" stroke="#f2f5f2" stroke-width="2"/>
-     <text x="${x}" y="${y - 40}" text-anchor="middle" fill="#dfe9e2" font-size="12.5" font-weight="700" letter-spacing="0.5">${tag}</text>
-     <text x="${x}" y="${y - 17}" text-anchor="middle" fill="#ffffff" font-size="18" font-weight="800">${val} ₽</text>`;
-  const planCol = !planRev ? '#5a6570' : (projRev >= planRev ? '#4c6b57' : (projRev >= planRev * 0.9 ? '#7c6a44' : '#7c4f49'));
-  const planPct = planRev
-    ? `<text x="${vp}" y="${hz - 64}" text-anchor="middle" fill="#eef3f7" font-size="12" font-weight="700">факт ${Math.round(factRev / planRev * 100)}% · прогноз ${Math.round(projRev / planRev * 100)}%</text>`
-    : '';
-  return `<svg viewBox="0 0 ${W} ${H}" class="wshield" preserveAspectRatio="xMidYMid slice">
-    <defs>
-      <linearGradient id="wsky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#95acc2"/><stop offset="0.65" stop-color="#c6d2dd"/><stop offset="1" stop-color="#e3d7c4"/></linearGradient>
-      <linearGradient id="wroad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b626b"/><stop offset="1" stop-color="#383d44"/></linearGradient>
-      <radialGradient id="wsun" cx="50%" cy="100%" r="55%"><stop offset="0" stop-color="#f4ecdd" stop-opacity="0.85"/><stop offset="1" stop-color="#f4ecdd" stop-opacity="0"/></radialGradient>
-      <linearGradient id="wrefl" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cdd6de" stop-opacity="0"/><stop offset="1" stop-color="#cdd6de" stop-opacity="0.15"/></linearGradient>
-      <radialGradient id="wglow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#eef3f7" stop-opacity="0.24"/><stop offset="1" stop-color="#eef3f7" stop-opacity="0"/></radialGradient></defs>
-    <rect x="0" y="0" width="${W}" height="${hz}" fill="url(#wsky)"/>
-    <ellipse cx="${vp}" cy="${hz}" rx="300" ry="86" fill="url(#wsun)"/>
-    <rect x="0" y="${hz}" width="${W}" height="${H - hz}" fill="#6f7d64"/>
-    <polygon points="${vp - 8},${hz} ${vp + 8},${hz} 990,${H} 10,${H}" fill="url(#wroad)"/>
-    ${dashes}
-    ${sign(250, hz, 'ВЫРУЧКА · ФАКТ', money(factRev), '#3f5a6b')}
-    ${sign(750, hz, 'ВЫРУЧКА · ПРОГНОЗ', money(projRev), '#3f5a6b')}
-    ${planPct}${sign(vp, hz - 46, 'ЦЕЛЬ · ПЛАН', planRev ? money(planRev) : 'задать', planCol)}
-    <g opacity="0.5">
-      <rect x="0" y="${H - 66}" width="${W}" height="66" fill="url(#wrefl)"/>
-      <ellipse cx="288" cy="${H - 6}" rx="150" ry="42" fill="url(#wglow)"/>
-      <ellipse cx="712" cy="${H - 6}" rx="150" ry="42" fill="url(#wglow)"/>
-      <path d="${arcP(288, H + 30, 58, 206, 334)}" fill="none" stroke="#eef3f7" stroke-width="4" opacity="0.35"/>
-      <path d="${arcP(712, H + 30, 58, 206, 334)}" fill="none" stroke="#eef3f7" stroke-width="4" opacity="0.35"/>
-    </g>
-    <polygon points="60,0 220,0 -140,${H} -300,${H}" fill="#ffffff" opacity="0.05"/>
-    <polygon points="660,0 800,0 470,${H} 330,${H}" fill="#ffffff" opacity="0.045"/></svg>`;
-}
+// Плановые уровни каскада — как в операционном отчёте АТП.
+const PLAN = { ktg: 0.97, kvl: 0.99, kip: 0.99 };
+const devPP = (fact, plan) => (fact - plan) * 100;
+const pillCls = d => d >= 0 ? 'g' : (d >= -3 ? 'w' : 'b');
 
 const monthOf = iso => `${String(iso).slice(0, 7)}-01`;
+const fmtDay = iso => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+  .format(new Date(`${iso}T00:00:00Z`));
 
-// Главный рендер кабины. context: { state, onReload, openReport }.
+// Лёгкий SVG-график «выручка нарастающим итогом»: факт-полилиния с заливкой
+// и пунктир плана — без внешних библиотек (продукт работает офлайн).
+function cumChart(fact, plan, labels) {
+  const W = 1000, H = 240, padL = 56, padR = 14, padT = 12, padB = 26;
+  const maxY = Math.max(1, ...fact, ...plan) * 1.06;
+  const x = i => padL + (W - padL - padR) * (fact.length > 1 ? i / (fact.length - 1) : 0);
+  const y = v => padT + (H - padT - padB) * (1 - v / maxY);
+  const pts = arr => arr.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const gridLines = [0.25, 0.5, 0.75, 1].map(f =>
+    `<line x1="${padL}" x2="${W - padR}" y1="${y(maxY * f).toFixed(1)}" y2="${y(maxY * f).toFixed(1)}" class="brep-grid"/>
+     <text x="${padL - 8}" y="${(y(maxY * f) + 4).toFixed(1)}" class="brep-tick" text-anchor="end">${(maxY * f / 1e6).toFixed(0)} млн</text>`).join('');
+  const ticksX = labels.map((label, i) =>
+    (i % Math.ceil(labels.length / 10) === 0 || i === labels.length - 1)
+      ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="brep-tick" text-anchor="middle">${label}</text>` : '').join('');
+  const area = `M${x(0)},${y(0)} L${pts(fact)} L${x(fact.length - 1)},${y(0)} Z`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="brep-chart" preserveAspectRatio="none">
+    ${gridLines}${ticksX}
+    <path d="${area}" class="brep-area"/>
+    <polyline points="${pts(plan)}" class="brep-plan"/>
+    <polyline points="${pts(fact)}" class="brep-fact"/>
+  </svg>`;
+}
+
+// Выручка без НДС рейса — единое правило (ИП 7%).
+const tripNet = (trip, calc) => trip.revenue_vat / (1 + (/\bИП\b/iu.test(trip.customer_name)
+  ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22)));
+
 export async function renderBoss(container, context) {
   const { state } = context;
   const monthIso = state.month.toISOString().slice(0, 10);
@@ -122,136 +63,283 @@ export async function renderBoss(container, context) {
   }
   const u = report.utilization;
   const md = u.machineDays;
+  const calc = state.data.settings.calculation;
   const planPeriod = monthOf(from);
-  const revenuePlan = Number((state.data.revenuePlans || [])
-    .find(item => item.period_start === planPeriod)?.target_net || 0);
-  const factRev = report.factRevenue;
-  const projRev = report.netRevenue;
-  const warm = state.bossWarm !== false;
-  state.bossWarm = false;
-  const immersive = state.bossImmersive !== false;
-  const exceptions = state.exceptions || { conflicts: [], critical: [], rejected: [] };
-  const idleDays = md.repair + md.noDriver + md.shift + md.idle;
-  const loadFrac = u.normDays ? u.workDays / u.normDays : 0;
-
-  const exFact = revenuePlan ? factRev / revenuePlan : 0;
-  const exProj = revenuePlan ? projRev / revenuePlan : 0;
-  const pbcls = exProj >= 1 ? '' : (exProj >= 0.9 ? 'warn' : 'bad');
-  const planbar = revenuePlan
-    ? `<div class="planbar">
-        <div class="planbar-l"><span>ВЫПОЛНЕНИЕ ПЛАНА ВЫРУЧКИ</span><b class="${pbcls === 'bad' ? 'neg' : ''}">факт ${Math.round(exFact * 100)}% · прогноз ${Math.round(exProj * 100)}%</b></div>
-        <div class="pbtrack"><div class="pbfact ${pbcls}" style="width:${Math.min(100, exFact * 100).toFixed(0)}%"></div><div class="pbproj" style="left:${Math.min(100, exProj * 100).toFixed(0)}%"></div></div>
-        <div class="planbar-s">План ${rub(revenuePlan)} · выполнено ${rub(factRev)} · прогноз ${rub(projRev)}${exProj < 1 ? ` · до цели ${rub(Math.max(0, revenuePlan - projRev))}` : ' · цель достигается'}</div>
-      </div>`
-    : '<div class="planhint">🎯 План выручки не задан — введите цель в поле «План выручки» в консоли выше</div>';
-
-  const lcds = lcdRow('ВЫРУЧКА Б.НДС', rub(report.netRevenue)) +
-    lcdRow('МАРЖ. ДОХОД', rub(report.contribution)) +
-    lcdRow('ПОСТОЯННЫЕ', rub(report.fixed)) +
-    lcdRow('ОПЕР. ПРИБЫЛЬ', rub(report.operationalProfit), `accent${report.operationalProfit < 0 ? ' neg' : ''}`) +
-    lcdRow('УПУЩЕНО', rub(u.lostProfit), 'warn');
-  const lights = dashLight(exceptions.conflicts.length, 'Конфликты') +
-    dashLight(exceptions.critical.length, 'Критич.') +
-    dashLight(exceptions.rejected.length, 'Отклон.') +
-    dashLight(Math.round(idleDays), 'Простой', true);
-
-  const marginGauge = gaugeSVG(Math.max(0, report.operationalMargin) / 0.40,
-    `${(report.operationalMargin * 100).toFixed(1)}%`, 'ОПЕР. МАРЖА', 'шкала ×2,5', null, warm);
-  const loadGauge = gaugeSVG(loadFrac, `${Math.round(loadFrac * 100)}%`, 'ЗАГРУЗКА', 'парк · норма', 'fuel', warm);
-  const cluster = immersive
-    ? `<div class="cluster">
-        <div class="gcol">
-          <div class="gbox big">${gaugeSVG(u.ktg, pct(u.ktg), 'КТГ', 'тахометр · ТОиР', 'tach', warm)}</div>
-          <div class="grow">${gaugeSVG(u.kvl, pct(u.kvl), 'КВЛ', 'водители', null, warm)}${gaugeSVG(u.overall, pct(u.overall), 'В РАБОТЕ', 'от списка', null, warm)}</div>
-        </div>
-        <div class="centerstack"><div class="lcd">${lcds}</div>${planbar}<div class="lights">${lights}</div></div>
-        <div class="gcol">
-          <div class="gbox big">${gaugeSVG(u.kip, pct(u.kip), 'КИП', 'спидометр · логистика', 'speedo', warm)}</div>
-          <div class="grow">${marginGauge}${loadGauge}</div>
-        </div>
-      </div>`
-    : `<div class="cluster compact">
-        <div class="gstrip">
-          ${gaugeSVG(u.kip, pct(u.kip), 'КИП', 'спидометр · логистика', 'speedo', warm)}
-          ${gaugeSVG(u.ktg, pct(u.ktg), 'КТГ', 'тахометр · ТОиР', 'tach', warm)}
-          ${gaugeSVG(u.kvl, pct(u.kvl), 'КВЛ', 'водители', null, warm)}
-          ${gaugeSVG(u.overall, pct(u.overall), 'В РАБОТЕ', 'от списка', null, warm)}
-          ${marginGauge}${loadGauge}
-        </div>
-        <div class="infostrip"><div class="lcd">${lcds}</div>${planbar}<div class="lights">${lights}</div></div>
-      </div>`;
-
-  const downtime = [
-    ['В ремонте', 'КТГ · ТОиР', md.repair, '#ad9268'],
-    ['Без водителя', 'КВЛ · Упр. водителями', md.noDriver, '#a4906f'],
-    ['Пересменка', 'смена вахты (вод.)', md.shift, '#6d84a6'],
-    ['Без рейса', 'КИП · Логистика', md.idle, '#8a86a4']
-  ];
-  const downtimeTotal = md.repair + md.noDriver + md.shift + md.idle;
-  const downtimeRows = downtime.map(row => `<tr><td><span class="dotc" style="background:${row[3]}"></span>${row[0]}</td>
-    <td class="muted">${row[1]}</td><td class="num">${row[2]}</td><td class="num">${downtimeTotal ? Math.round(row[2] / downtimeTotal * 100) : 0}%</td></tr>`).join('');
-
-  const fmtDay = iso => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
-    .format(new Date(`${iso}T00:00:00Z`));
   const periodLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: 'UTC' })
     .format(new Date(`${planPeriod}T00:00:00Z`));
-  const revbanner = `<div class="revbanner">
-        <div class="rbcard"><span>ВЫРУЧКА · ФАКТ</span><b>${rub(factRev)}</b></div>
-        <div class="rbcard plan"><span>ПЛАН · ${escapeHtml(periodLabel)}</span><b>${revenuePlan ? rub(revenuePlan) : '—'}</b></div>
-        <div class="rbcard"><span>ПРОГНОЗ ИТОГА</span><b>${rub(projRev)}</b>${revenuePlan ? `<i class="${pbcls === 'bad' ? 'neg' : ''}">${Math.round(exProj * 100)}% плана</i>` : ''}</div>
-        <div class="rbmeta">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · по выгрузке</div>
-      </div>`;
+  const revenuePlan = Number((state.data.revenuePlans || [])
+    .find(item => item.period_start === planPeriod)?.target_net || 0);
 
-  container.innerHTML = `<div class="bosswrap">
-    <div class="cockpit${immersive ? ' immersive' : ''}">
-      ${immersive
-        ? `<div class="wframe">${windshield(factRev, revenuePlan, projRev)}
-            <div class="mirror">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · учёт по выгрузке · каскад КТГ×КВЛ×КИП</div>
-            <div class="wtitle">PegasLogistic · кабина руководителя</div>
-          </div>`
-        : revbanner}
+  // Рейсы периода по дате выполнения — для кривой и клиентов.
+  const periodTrips = state.data.trips.filter(trip => trip.status !== 'rejected' &&
+    trip.ends_at >= `${from}T00:00:00` && trip.ends_at < `${to}T00:00:00`);
+
+  // ── KPI-полоса ──
+  const planDev = revenuePlan ? (report.netRevenue - revenuePlan) / revenuePlan * 100 : null;
+  const fondUse = u.calendarDays ? u.workDays / u.calendarDays : 0;
+  const kpiCells = [
+    { k: 'Выручка без НДС', v: mln(report.netRevenue),
+      p: revenuePlan ? `план ${mln(revenuePlan)}` : 'план не задан',
+      pill: planDev == null ? null : `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}%`,
+      pc: planDev == null ? 'w' : (planDev >= 0 ? 'g' : 'b'),
+      g: revenuePlan ? report.netRevenue / revenuePlan : 0, c: 'var(--ok)' },
+    { k: 'КТГ — техготовность', v: pct(u.ktg), p: 'план 97%',
+      pill: `${devPP(u.ktg, PLAN.ktg) >= 0 ? '+' : ''}${devPP(u.ktg, PLAN.ktg).toFixed(1)} п.п.`,
+      pc: pillCls(devPP(u.ktg, PLAN.ktg)), g: u.ktg / PLAN.ktg, c: 'var(--warn)' },
+    { k: 'КВЛ — выпуск на линию', v: pct(u.kvl), p: 'план 99%',
+      pill: `${devPP(u.kvl, PLAN.kvl) >= 0 ? '+' : ''}${devPP(u.kvl, PLAN.kvl).toFixed(1)} п.п.`,
+      pc: pillCls(devPP(u.kvl, PLAN.kvl)), g: u.kvl / PLAN.kvl, c: 'var(--teal)' },
+    { k: 'КИП — использование', v: pct(u.kip), p: `в работе ${n1(u.workDays / u.days)} ед. из ${u.vehicles}`,
+      pill: `${devPP(u.kip, PLAN.kip) >= 0 ? '+' : ''}${devPP(u.kip, PLAN.kip).toFixed(1)} п.п.`,
+      pc: pillCls(devPP(u.kip, PLAN.kip)), g: u.kip / PLAN.kip, c: '#7a6fb0' },
+    { k: 'Использование фонда', v: pct(fondUse), p: `${n0(u.workDays)} из ${n0(u.calendarDays)} машино-дней`,
+      pill: `${devPP(fondUse, u.utilizationTarget) >= 0 ? '+' : ''}${devPP(fondUse, u.utilizationTarget).toFixed(1)} п.п.`,
+      pc: pillCls(devPP(fondUse, u.utilizationTarget)), g: u.utilizationTarget ? fondUse / u.utilizationTarget : 0, c: '#5e87ad' }
+  ];
+  const kpiHtml = kpiCells.map(x => `<div>
+    <div class="k">${x.k}</div>
+    <div class="v ${x.pc === 'g' ? 'good' : x.pc === 'w' ? 'warn' : 'bad'}">${x.v}</div>
+    <div class="p">${x.p}${x.pill ? `<span class="brep-pill ${x.pc}">${x.pill}</span>` : ''}</div>
+    <div class="gauge"><i style="width:${Math.min(x.g * 100, 100)}%;background:${x.c}"></i></div>
+  </div>`).join('');
+
+  // ── 01 Период: план/факт + кривая нарастающим итогом ──
+  const dayCount = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000));
+  const dayLabels = [];
+  const dailyNet = Array(dayCount).fill(0);
+  for (let day = 0; day < dayCount; day += 1) {
+    dayLabels.push(fmtDay(new Date(Date.parse(from) + day * 86_400_000).toISOString().slice(0, 10)));
+  }
+  for (const trip of periodTrips) {
+    const idx = Math.floor((Date.parse(trip.ends_at) - Date.parse(from)) / 86_400_000);
+    if (idx >= 0 && idx < dayCount) dailyNet[idx] += tripNet(trip, calc);
+  }
+  let acc = 0;
+  const cumFact = dailyNet.map(value => (acc += value));
+  const cumPlan = dayLabels.map((_, i) => revenuePlan ? revenuePlan / dayCount * (i + 1) : 0);
+  const done = revenuePlan ? report.netRevenue / revenuePlan : 0;
+  const gap = revenuePlan ? report.netRevenue - revenuePlan : 0;
+  const periodSection = `<section id="brep-s1">
+    <div class="brep-shead"><span class="idx">01</span><h3>Отчётный период</h3>
+      <span class="note">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · выручка по дате выгрузки</span></div>
+    <div class="rcard">
+      <div class="brep-mrow">
+        <div><div class="k">План без НДС</div><div class="v">${revenuePlan ? mln(revenuePlan) : '—'}</div>
+          <div class="p">${revenuePlan ? `${rub(revenuePlan / dayCount)}/сут` : 'задайте в консоли'}</div></div>
+        <div><div class="k">Факт без НДС</div><div class="v">${mln(report.netRevenue)}</div>
+          <div class="p">${rub(report.netRevenue / Math.max(1, u.days))}/сут</div></div>
+        <div><div class="k">Выполнение</div><div class="v ${done >= 1 ? 'good' : done >= 0.9 ? 'warn' : 'bad'}">${revenuePlan ? pct(done) : '—'}</div>
+          <div class="p">${revenuePlan ? `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}% к плану` : ''}</div></div>
+        <div><div class="k">${gap >= 0 ? 'Запас' : 'Разрыв'}</div><div class="v ${gap >= 0 ? 'good' : 'bad'}">${revenuePlan ? mln(Math.abs(gap)) : '—'}</div>
+          <div class="p">${revenuePlan ? `${rub(Math.abs(gap) / Math.max(1, u.days))}/сут` : ''}</div></div>
+      </div>
+      ${revenuePlan ? `<div class="brep-pbar"><i style="width:${Math.min(100, done * 100).toFixed(1)}%"></i><em>план 100%</em></div>` : ''}
+      <div class="brep-ctitle" style="margin-top:14px">Выручка нарастающим итогом</div>
+      <div class="brep-csub">без НДС, по дате выполнения${revenuePlan ? ' · пунктир — план равномерно по дням' : ''}</div>
+      ${cumChart(cumFact, cumPlan, dayLabels)}
+      <table class="rtable" style="margin-top:10px"><tbody>
+        <tr><td>Рейсов завершено в периоде</td><td class="num">${report.trips}</td>
+          <td>Средний чек без НДС</td><td class="num">${report.trips ? rub(report.netRevenue / report.trips) : '—'}</td></tr>
+        <tr><td>Сцепок в работе (среднее)</td><td class="num">${n1(u.workDays / Math.max(1, u.days))}</td>
+          <td>Выручка на сцепку в сутки</td><td class="num">${u.workDays ? rub(report.netRevenue / u.workDays) : '—'}</td></tr>
+      </tbody></table>
+    </div>
+  </section>`;
+
+  // ── 02 Каскад КТГ → КВЛ → КИП ──
+  const perDay = value => value / Math.max(1, u.days);
+  const steps = [
+    { n: 'Списочный парк', v: u.vehicles, loss: null, c: '#54626F' },
+    { n: 'Технически исправны', v: perDay(u.techDays), loss: u.vehicles - perDay(u.techDays),
+      c: 'var(--warn)', own: 'ТОиР', kn: 'КТГ', k: u.ktg, pl: PLAN.ktg },
+    { n: 'Выпущены на линию', v: perDay(u.lineDays), loss: perDay(u.techDays) - perDay(u.lineDays),
+      c: 'var(--teal)', own: 'Водители', kn: 'КВЛ', k: u.kvl, pl: PLAN.kvl },
+    { n: 'В работе', v: perDay(u.workDays), loss: perDay(u.lineDays) - perDay(u.workDays),
+      c: '#7a6fb0', own: 'Логистика', kn: 'КИП', k: u.kip, pl: PLAN.kip }
+  ];
+  const cascadeHtml = steps.map((s, i) => {
+    const wv = s.v / u.vehicles * 100;
+    const wl = s.loss ? s.loss / u.vehicles * 100 : 0;
+    const d = s.k != null ? devPP(s.k, s.pl) : null;
+    return `<div class="brep-step">
+      <div class="t"><span class="n">${i === 3 ? `<b>${s.n}</b>` : s.n}</span>
+        <span class="val">${n1(s.v)}<small> ед.</small></span></div>
+      <div class="bar"><i style="width:${wv.toFixed(1)}%;background:${s.c}"></i>
+        <em style="width:${Math.max(0, wl).toFixed(1)}%"></em></div>
+      <div class="m"><span>${s.kn
+        ? `${s.kn} <b>${pct(s.k)}</b> · план ${pct(s.pl, 0)} <span class="brep-pill ${pillCls(d)}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</span>`
+        : `база каскада · ${pct(perDay(u.workDays) / u.vehicles)} парка доходит до работы`}</span>
+        <span>${s.own ? `${s.own} <b class="bad">−${n1(s.loss)}</b>` : ''}</span></div>
+    </div>`;
+  }).join('');
+  const lossRows = [
+    ['ТОиР', u.vehicles - perDay(u.techDays), 'var(--warn)'],
+    ['Водители', perDay(u.techDays) - perDay(u.lineDays), 'var(--teal)'],
+    ['Логистика', perDay(u.lineDays) - perDay(u.workDays), '#7a6fb0']
+  ];
+  const lossSum = lossRows.reduce((sum, row) => sum + row[1], 0);
+  const cascadeSection = `<section id="brep-s2">
+    <div class="brep-shead"><span class="idx">02</span><h3>Каскад КТГ → КВЛ → КИП</h3>
+      <span class="note">среднесуточные единицы парка · потери по владельцам процессов</span></div>
+    <div class="brep-casc">
+      <div class="rcard">${cascadeHtml}</div>
+      <div class="rcard"><div class="brep-ctitle">Куда уходит парк</div>
+        <div class="brep-csub">простой ${n1(lossSum)} ед./сут в среднем за период</div>
+        <table class="rtable"><thead><tr><th>Владелец</th><th class="num">Ед./сут</th><th class="num">Маш-дней</th><th class="num">Доля</th></tr></thead><tbody>
+        ${lossRows.map(([name, value, color]) => `<tr>
+          <td><span class="dotc" style="background:${color}"></span>${name}</td>
+          <td class="num">${n1(value)}</td>
+          <td class="num">${n0(value * u.days)}</td>
+          <td class="num">${lossSum ? Math.round(value / lossSum * 100) : 0}%</td></tr>`).join('')}
+        <tr class="tot"><td>Итого простой</td><td class="num">${n1(lossSum)}</td>
+          <td class="num">${n0(lossSum * u.days)}</td><td class="num">100%</td></tr>
+        </tbody></table>
+        <p class="brep-hint">Рейсов за период ${report.trips} · ${n1(report.trips / Math.max(1, u.days))} в сутки
+          · ${u.workDays ? n1(report.trips / u.workDays) : '—'} на работающую сцепку.</p>
+      </div>
+    </div>
+  </section>`;
+
+  // ── 03 Машино-дни: баланс календарного фонда ──
+  const fondParts = [
+    { n: 'В работе', v: md.work, c: '#7a6fb0', own: '—' },
+    { n: 'Без заказа', v: md.idle, c: '#8a7fb3', own: 'логистика' },
+    { n: 'Без водителя', v: md.noDriver, c: 'var(--teal)', own: 'водители' },
+    { n: 'Пересменка', v: md.shift, c: '#5e87ad', own: 'водители' },
+    { n: 'Ремонт', v: md.repair, c: 'var(--warn)', own: 'ТОиР' },
+    { n: 'Выведены', v: md.out, c: '#8f9aa6', own: '—' }
+  ].filter(part => part.v > 0);
+  const stackHtml = fondParts.map(part =>
+    `<div style="width:${(part.v / u.calendarDays * 100).toFixed(2)}%;background:${part.c}"
+      title="${part.n}: ${n0(part.v)} м-дн">${part.v / u.calendarDays > 0.045 ? pct(part.v / u.calendarDays, 1) : ''}</div>`).join('');
+  const lostVsNorm = Math.max(0, u.normDays - u.workDays);
+  const mdSection = `<section id="brep-s3">
+    <div class="brep-shead"><span class="idx">03</span><h3>Машино-дни</h3>
+      <span class="note">${u.vehicles} сцепок × ${u.days} дн = ${n0(u.calendarDays)} машино-дней · норма ${pct(u.utilizationTarget, 1)}</span></div>
+    <div class="rcard">
+      <div class="brep-stack">${stackHtml}</div>
+      <div class="brep-slegend">${fondParts.map(part =>
+        `<span><span class="dotc" style="background:${part.c}"></span>${part.n} — ${n0(part.v)} м-дн</span>`).join('')}</div>
+      <table class="rtable" style="margin-top:12px"><thead><tr><th>Статья</th><th>Владелец</th>
+        <th class="num">Маш-дней</th><th class="num">Доля фонда</th><th class="num">Ед./сут</th></tr></thead><tbody>
+        ${fondParts.map(part => `<tr><td><span class="dotc" style="background:${part.c}"></span>${part.n}</td>
+          <td class="muted">${part.own}</td><td class="num">${n0(part.v)}</td>
+          <td class="num">${pct(part.v / u.calendarDays)}</td>
+          <td class="num">${n1(part.v / Math.max(1, u.days))}</td></tr>`).join('')}
+        <tr class="tot"><td>Календарный фонд</td><td>—</td><td class="num">${n0(u.calendarDays)}</td>
+          <td class="num">100%</td><td class="num">${n1(u.vehicles)}</td></tr>
+      </tbody></table>
+      <p class="brep-hint">Потеря против нормы — <b>${n0(lostVsNorm)}</b> машино-дней
+        (${n1(lostVsNorm / Math.max(1, u.days))} сцепки в сутки). По марж. доходу
+        ${rub(u.marginPerTripDay)} за машино-день это <b>${mln(u.lostProfit)} ₽</b> упущенного дохода за период.</p>
+    </div>
+  </section>`;
+
+  // ── 04 Экономика ──
+  const types = [...report.byVehicleType].sort((a, b) => b.netRevenue - a.netRevenue);
+  const maxPerDay = Math.max(1, ...types.map(t => t.netRevenue / Math.max(1, u.days)));
+  const ecoSection = `<section id="brep-s4">
+    <div class="brep-shead"><span class="idx">04</span><h3>Экономика</h3>
+      <span class="note">выручка без НДС · переменные и постоянные по нормативам настроек</span></div>
+    <div class="brep-casc">
+      <div class="rcard"><div class="brep-ctitle">Операционная прибыль · P&L</div>
+        <div class="mdrow"><span>Выручка без НДС</span><b>${rub(report.netRevenue)}</b></div>
+        <div class="mdrow"><span>− Переменные (путевые, страх./дороги, водитель, ХОУ)</span><b>${rub(report.netRevenue - report.contribution)}</b></div>
+        <div class="mdrow"><span>= Маржинальный доход</span><b>${rub(report.contribution)}</b></div>
+        <div class="mdrow"><span>− Постоянные (лизинг + накладные · ${u.vehicles}×${u.days} маш-дней)</span><b>${rub(report.fixed)}</b></div>
+        <div class="mdrow big"><span>= Операционная прибыль</span><b class="${report.operationalProfit < 0 ? 'neg' : ''}">${rub(report.operationalProfit)}</b></div>
+        <div class="mdrow"><span>Операционная маржа</span><b>${pct(report.operationalMargin)}</b></div>
+        <div class="mdrow"><span>Марж. доход на машино-день</span><b>${rub(u.marginPerTripDay)}</b></div>
+      </div>
+      <div class="rcard"><div class="brep-ctitle">По типам ТС</div>
+        <div class="brep-csub">полоса — выручка в сутки</div>
+        <table class="rtable"><thead><tr><th>Тип</th><th class="num">Рейсов</th>
+          <th class="num">Выручка б.НДС</th><th class="num">В сутки</th><th class="num">Опер. маржа</th></tr></thead><tbody>
+        ${types.map(t => {
+          const per = t.netRevenue / Math.max(1, u.days);
+          const margin = t.netRevenue ? t.operationalProfit / t.netRevenue : 0;
+          return `<tr><td>${escapeHtml(t.vehicleType)}
+            <div class="brep-mini"><i style="width:${(per / maxPerDay * 100).toFixed(1)}%"></i></div></td>
+          <td class="num">${t.trips}</td><td class="num">${rub(t.netRevenue)}</td>
+          <td class="num">${rub(per)}</td>
+          <td class="num ${margin < 0 ? 'bad' : margin < 0.1 ? 'warn' : 'good'}">${pct(margin)}</td></tr>`;
+        }).join('')}
+        </tbody></table>
+      </div>
+    </div>
+  </section>`;
+
+  // ── 05 Топ клиентов периода ──
+  const byClient = new Map();
+  for (const trip of periodTrips) {
+    const item = byClient.get(trip.customer_name) || { name: trip.customer_name, trips: 0, net: 0 };
+    item.trips += 1;
+    item.net += tripNet(trip, calc);
+    byClient.set(trip.customer_name, item);
+  }
+  const clients = [...byClient.values()].sort((a, b) => b.net - a.net);
+  const top = clients.slice(0, 10);
+  const totalNet = clients.reduce((sum, client) => sum + client.net, 0);
+  const topShare = totalNet ? top.reduce((sum, client) => sum + client.net, 0) / totalNet : 0;
+  const maxClient = top[0]?.net || 1;
+  const clientsSection = `<section id="brep-s5">
+    <div class="brep-shead"><span class="idx">05</span><h3>Топ-10 клиентов</h3>
+      <span class="note">${clients.length} заказчиков за период · топ-10 дают ${pct(topShare, 0)} выручки</span></div>
+    <div class="rcard">
+      <table class="rtable"><thead><tr><th>Заказчик</th><th class="num">Рейсов</th>
+        <th class="num">Выручка б.НДС</th><th class="num">Доля</th><th class="num">Средний чек</th></tr></thead><tbody>
+      ${top.map((client, i) => `<tr>
+        <td><span class="muted mono" style="font-size:var(--fs-xs)">${String(i + 1).padStart(2, '0')}</span>
+          ${escapeHtml(client.name)}
+          <div class="brep-mini"><i style="width:${(client.net / maxClient * 100).toFixed(1)}%"></i></div></td>
+        <td class="num">${client.trips}</td><td class="num">${rub(client.net)}</td>
+        <td class="num">${totalNet ? pct(client.net / totalNet) : '—'}</td>
+        <td class="num">${rub(client.net / client.trips)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+  </section>`;
+
+  // ── Сборка ──
+  container.innerHTML = `<div class="bosswrap brep">
+    <div class="brep-top">
+      <div class="brep-title"><h2>PegasLogistic · операционный отчёт</h2>
+        <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · парк ${u.vehicles} сцепок
+          · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
       <div class="console">
-        <span class="cnl">Период отчёта</span>
+        <span class="cnl">Период</span>
         <input type="date" id="bossFrom" value="${from}">
-        <span style="color:#8b97a3">–</span>
+        <span class="muted">–</span>
         <input type="date" id="bossTo" value="${to}">
         <button class="button ghost small" id="bossMonth">Текущий месяц</button>
-        <button class="button ghost small" id="bossView">${immersive ? '▣ Компактно' : '🚗 Вид из окна'}</button>
-        <span class="cnl" style="margin-left:12px">План выручки</span>
+        <span class="cnl" style="margin-left:10px">План выручки</span>
         <input type="number" id="bossPlan" placeholder="цель, ₽" value="${revenuePlan || ''}" style="width:130px">
         <button class="button ghost small" id="bossClose" title="Зафиксировать период в истории">🏁 Закрыть период</button>
         <input id="bossSearch" class="block-search" placeholder="Поиск по странице"
-          title="Фильтрует строки всех таблиц кабины" style="margin-left:auto;width:170px">
+          title="Фильтрует строки всех таблиц отчёта" style="margin-left:auto;width:170px">
         <select id="bossReportKind">
           <option value="summary">Сводный</option><option value="util">Использование парка</option>
           <option value="econ">Экономика по типам ТС</option><option value="clients">Экономика по клиентам</option>
           <option value="rejected">Отклонённые рейсы</option>
           <option value="execution">Контроль выполнения рейсов</option>
-        <option value="conflicts">История конфликтов</option>
+          <option value="conflicts">История конфликтов</option>
           <option value="rejected-orders">Реестр заявок (подтверждённые/отклонённые)</option>
           <option value="history">История периодов</option>
         </select>
         <button class="button small" id="bossReport">📄 Сформировать</button>
       </div>
-      ${cluster}
-      ${immersive ? '<div class="wheel"><div class="wheelrim"><div class="wheelhub">PL</div></div></div>' : ''}
+      <nav class="brep-nav" id="brepNav">
+        <a href="#brep-s1" class="on">01 Период</a><a href="#brep-s2">02 Каскад</a>
+        <a href="#brep-s3">03 Машино-дни</a><a href="#brep-s4">04 Экономика</a>
+        <a href="#brep-s5">05 Клиенты</a>
+      </nav>
     </div>
-    <div class="rgrid">
-      <div class="rcard"><h3>Простой по причинам · машино-дни за период</h3>
-        <table class="rtable"><thead><tr><th>Причина</th><th>Ответственный</th><th class="num">Маш-дни</th><th class="num">Доля</th></tr></thead>
-        <tbody>${downtimeRows}<tr class="tot"><td>Итого простой</td><td></td><td class="num">${downtimeTotal}</td><td class="num">100%</td></tr></tbody></table></div>
-      <div class="rcard"><h3>Операционная прибыль за период · P&L</h3>
-        <div class="mdrow"><span>Выручка без НДС</span><b>${rub(report.netRevenue)}</b></div>
-        <div class="mdrow"><span>− Переменные (путевые, страх./дороги, водитель, ХОУ)</span><b>${rub(report.netRevenue - report.contribution)}</b></div>
-        <div class="mdrow"><span>= Маржинальный доход</span><b>${rub(report.contribution)}</b></div>
-        <div class="mdrow"><span>− Постоянные (лизинг+накладные · ${u.vehicles}×${u.days} маш-дней)</span><b>${rub(report.fixed)}</b></div>
-        <div class="mdrow big"><span>= Операционная прибыль</span><b class="${report.operationalProfit < 0 ? 'neg' : ''}">${rub(report.operationalProfit)}</b></div>
-        <div class="mdrow"><span>Марж. доход на машино-день</span><b>${rub(u.marginPerTripDay)}</b></div></div>
-    </div>
-    <div class="geohint" style="padding:6px 16px">Приборы за выбранный период, рейс учитывается <b>по дате выгрузки</b>.
-      «🚗 Вид из окна» включает панораму дороги; «▣ Компактно» убирает её для анализа.</div>
+    <div class="brep-kpi">${kpiHtml}</div>
+    ${periodSection}${cascadeSection}${mdSection}${ecoSection}${clientsSection}
+    <div class="geohint" style="padding:8px 4px">Отклонения — в процентных пунктах к плану (КТГ 97, КВЛ 99, КИП 99,
+      фонд ${pct(u.utilizationTarget, 1)}). Печатные формы — через «📄 Сформировать».</div>
   </div>`;
 
+  // ── Обработчики ──
   const rerender = () => renderBoss(container, context);
   const applyRange = () => {
     const a = document.getElementById('bossFrom').value;
@@ -265,9 +353,6 @@ export async function renderBoss(container, context) {
   document.getElementById('bossTo').onchange = applyRange;
   document.getElementById('bossMonth').onclick = () => {
     state.bossFrom = null; state.bossTo = null; rerender();
-  };
-  document.getElementById('bossView').onclick = () => {
-    state.bossImmersive = !immersive; state.bossWarm = true; rerender();
   };
   document.getElementById('bossPlan').onchange = async event => {
     const value = Math.max(0, Number(event.currentTarget.value) || 0);
@@ -287,8 +372,7 @@ export async function renderBoss(container, context) {
   };
   document.getElementById('bossReport').onclick = () =>
     context.openReport(document.getElementById('bossReportKind').value, from, to);
-  // Поиск по странице: фильтрует строки всех таблиц кабины на месте
-  // (итоговые строки .tot остаются всегда).
+  // Поиск по странице: фильтрует строки всех таблиц отчёта (итоги .tot остаются).
   const search = document.getElementById('bossSearch');
   search.oninput = () => {
     const needle = search.value.toLowerCase();
@@ -298,4 +382,16 @@ export async function renderBoss(container, context) {
       row.style.display = keep ? '' : 'none';
     });
   };
+  // Подсветка активной секции в якорной навигации при прокрутке.
+  const links = [...container.querySelectorAll('#brepNav a')];
+  const sections = links.map(link => container.querySelector(link.getAttribute('href')));
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      links.forEach(link => link.classList.remove('on'));
+      const index = sections.indexOf(entry.target);
+      if (index >= 0) links[index].classList.add('on');
+    });
+  }, { rootMargin: '-10% 0px -70% 0px' });
+  sections.forEach(section => section && observer.observe(section));
 }
