@@ -167,7 +167,9 @@ function renderTimeline() {
         const left = Math.max(0, daysBetween(state.month, visibleStart)) * dayWidth;
         const width = Math.max(10, daysBetween(visibleStart, visibleEnd) * dayWidth - 2);
         const meta = dispositionMeta(item.kind);
-        return `<span class="dispo" data-disposition="${item.id}"
+        // «В работе» — фоновая пометка плана, не событие: приглушается,
+        // чтобы не спорить с плашками рейсов и проблемными диспозициями.
+        return `<span class="dispo ${item.kind === 'work' ? 'work' : ''}" data-disposition="${item.id}"
           style="left:${left}px;width:${width}px;--dc:${meta.color}"
           title="${meta.label} · ${formatDateTime(item.starts_at)} → ${formatDateTime(item.ends_at)}${item.note ? `
 ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ? ` · ${escapeHtml(item.note)}` : ''}</span>`;
