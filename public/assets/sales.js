@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast } from './api.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 
 export { STAGES, orderStage };
@@ -419,15 +419,10 @@ export function renderSales(container, context) {
   </div>`;
 
   const rerender = () => renderSales(container, context);
-  const salesSearch = container.querySelector('#salesSearch');
-  salesSearch.oninput = () => {
-    filter.q = salesSearch.value;
-    const caret = salesSearch.selectionStart;
+  attachSearch(container.querySelector('#salesSearch'), value => {
+    filter.q = value;
     rerender();
-    const again = container.querySelector('#salesSearch');
-    again.focus();
-    again.setSelectionRange(caret, caret);
-  };
+  });
   container.querySelector('#salesFilterZone').onchange = event => {
     filter.zone = event.currentTarget.value;
     rerender();

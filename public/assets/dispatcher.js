@@ -5,7 +5,7 @@
 // 3) рейс переведён на контроль на линии (статус «В пути»).
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
-import { api, escapeHtml, formatDateTime, money, routeLabel, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, money, routeLabel, toast } from './api.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 
@@ -300,15 +300,10 @@ export async function renderDispatcher(container, context) {
     </div>
   </div>`;
 
-  const search = container.querySelector('#dispatcherSearch');
-  search.oninput = () => {
-    state.dispatcherQuery = search.value;
-    const caret = search.selectionStart;
-    renderDispatcher(container, context);
-    const again = container.querySelector('#dispatcherSearch');
-    again.focus();
-    again.setSelectionRange(caret, caret);
-  };
+  attachSearch(container.querySelector('#dispatcherSearch'), async value => {
+    state.dispatcherQuery = value;
+    await renderDispatcher(container, context);
+  });
 
   container.querySelectorAll('[data-step]').forEach(button =>
     button.addEventListener('click', () => runStep(button.dataset.trip, button.dataset.step, context.onReload)));

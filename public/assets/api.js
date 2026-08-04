@@ -95,6 +95,27 @@ export function formatDateTime(value) {
 
 // Значения формы с нормализацией полей datetime-local: браузер отдаёт их без
 // часового пояса, трактуем как время предприятия и переводим в UTC.
+// Поле поиска, переживающее перерисовку блока: ввод не прерывается
+// (перерисовка стартует после паузы в наборе), после неё фокус и каретка
+// возвращаются в пересозданное поле. apply может быть асинхронным.
+export function attachSearch(input, apply, delay = 250) {
+  let timer = null;
+  input.oninput = () => {
+    clearTimeout(timer);
+    const value = input.value;
+    timer = setTimeout(async () => {
+      const caret = input.selectionStart ?? value.length;
+      await apply(value);
+      const again = document.getElementById(input.id);
+      if (again && document.activeElement !== again) {
+        again.focus();
+        const position = Math.min(caret, again.value.length);
+        again.setSelectionRange(position, position);
+      }
+    }, delay);
+  };
+}
+
 export function formValues(form) {
   const values = Object.fromEntries(new FormData(form));
   for (const element of form.elements) {

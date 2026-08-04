@@ -1,4 +1,4 @@
-import { api, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
@@ -60,11 +60,10 @@ function setupFilters() {
     setupFilters();
     renderTimeline();
   };
-  const search = byId('ganttSearch');
-  search.oninput = () => {
-    state.ganttQuery = search.value;
+  attachSearch(byId('ganttSearch'), value => {
+    state.ganttQuery = value;
     renderTimeline();
-  };
+  });
 }
 
 function conflictIds(trips) {
@@ -839,15 +838,10 @@ function openFleetDirectory() {
         <button class="button ghost small" data-fleet-plan="${vehicle.id}" title="Планировать диспозицию">План</button>
       </td></tr>`).join('') || '<tr><td colspan=7 class="muted">Ничего не найдено</td></tr>'}</tbody></table></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
-  const search = byId('fleetSearch');
-  search.oninput = () => {
-    state.fleetQuery = search.value;
-    const caret = search.selectionStart;
+  attachSearch(byId('fleetSearch'), value => {
+    state.fleetQuery = value;
     openFleetDirectory();
-    const again = byId('fleetSearch');
-    again.focus();
-    again.setSelectionRange(caret, caret);
-  };
+  });
   byId('fleetAdd').onclick = () => openVehicle(null, back);
   const byVehicle = id => vehicles.find(vehicle => vehicle.id === id);
   document.querySelectorAll('[data-fleet-edit]').forEach(button =>

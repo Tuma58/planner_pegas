@@ -1,7 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
-import { escapeHtml, formatDateTime, fromLocalInput } from './api.js';
+import { attachSearch, escapeHtml, formatDateTime, fromLocalInput } from './api.js';
 
 export const DISP_KINDS = [
   { kind: 'work', label: 'В работе', short: 'работа', color: 'var(--teal)' },
@@ -215,15 +215,10 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     state.resourceDay = event.currentTarget.value;
     renderResource(container, context);
   };
-  const searchInput = container.querySelector('#resourceSearch');
-  searchInput.oninput = () => {
-    state.resourceQuery = searchInput.value;
-    const caret = searchInput.selectionStart;
+  attachSearch(container.querySelector('#resourceSearch'), value => {
+    state.resourceQuery = value;
     renderResource(container, context);
-    const again = container.querySelector('#resourceSearch');
-    again.focus();
-    again.setSelectionRange(caret, caret);
-  };
+  });
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {
     vehicle_id: data.vehicles[0]?.id,

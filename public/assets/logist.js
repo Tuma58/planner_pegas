@@ -3,7 +3,7 @@
 // отклонение рейса с возвратом заявки в продажи, создание рейса вручную.
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
-import { api, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { editOrderDialog, rejectOrderDialog } from './sales.js';
 
@@ -104,10 +104,13 @@ export function renderLogist(container, context) {
     .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
 
   // Действующие маршруты: план и в пути; завершённые логисту не нужны.
+  // Рейсы на подтверждении логиста — всегда приоритетом наверху списка.
+  const needsConfirm = trip => trip.status === 'plan' && !trip.logist_confirmed_at;
   const activeTrips = data.trips
     .filter(trip => ['plan', 'run'].includes(trip.status))
     .filter(trip => zoneMatches(trip) && matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
-    .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+    .sort((a, b) => Number(needsConfirm(b)) - Number(needsConfirm(a)) ||
+      a.starts_at.localeCompare(b.starts_at));
 
   const returnedOrders = queue.filter(order => order.returned_at);
   const returned = returnedOrders.length;
@@ -236,15 +239,10 @@ export function renderLogist(container, context) {
     </div>
   </div>`;
 
-  const search = container.querySelector('#logistSearch');
-  search.oninput = () => {
-    state.logistQuery = search.value;
-    const caret = search.selectionStart;
+  attachSearch(container.querySelector('#logistSearch'), value => {
+    state.logistQuery = value;
     renderLogist(container, context);
-    const again = container.querySelector('#logistSearch');
-    again.focus();
-    again.setSelectionRange(caret, caret);
-  };
+  });
   container.querySelector('#logistZone').onchange = event => {
     state.logistZone = event.currentTarget.value;
     renderLogist(container, context);
