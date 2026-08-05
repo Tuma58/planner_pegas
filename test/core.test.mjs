@@ -88,6 +88,15 @@ test('SQLite создается со справочниками, админис�
   assert.equal(settingsObject(db).calculation.insuranceAndRoadsPerKm, 6);
   assert.deepEqual(settingsObject(db).networkAccess.allowedSubnets, ['127.0.0.1/32', '::1/128']);
 
+  // Справочник адресов из АДРЕС.xlsx: все 611 пунктов с зонами,
+  // плановое расстояние от базы (Пенза) — по координатам (Москва ~630 км).
+  assert.equal(db.prepare('SELECT COUNT(*) count FROM addresses').get().count, 611);
+  assert.equal(db.prepare('SELECT COUNT(*) count FROM addresses WHERE zone_id IS NULL').get().count, 0);
+  const moscow = db.prepare(`SELECT base_distance_km FROM addresses
+    WHERE name LIKE 'Москва г%' LIMIT 1`).get();
+  assert.ok(moscow.base_distance_km > 450 && moscow.base_distance_km < 900,
+    `от базы до Москвы: ${moscow.base_distance_km}`);
+
   const itemId = queueOutbox(db, 'trips', 'trip-1', 'create', { id: 'trip-1' });
   const item = db.prepare('SELECT * FROM outbox WHERE id=?').get(itemId);
   assert.equal(item.status, 'pending_approval');

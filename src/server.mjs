@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
-import { audit, nextOrderNo, openDatabase, queueOutbox, settingsObject } from './db.mjs';
+import { audit, nextOrderNo, openDatabase, queueOutbox, roadKm, settingsObject } from './db.mjs';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { ROLE_LABELS, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import {
@@ -138,6 +138,8 @@ function allReferenceData() {
       ...zone, aliases: aliases.filter(item => item.zone_id === zone.id).map(item => item.alias)
     })),
     vehicleTypes: db.prepare('SELECT * FROM vehicle_types ORDER BY name').all(),
+    addresses: db.prepare(`SELECT a.*,z.name zone_name FROM addresses a
+      LEFT JOIN zones z ON z.id=a.zone_id ORDER BY a.name`).all(),
     routeRates: db.prepare(`SELECT r.*, f.name from_name, t.name to_name
       FROM route_rates r JOIN zones f ON f.id=r.from_zone_id JOIN zones t ON t.id=r.to_zone_id
       ORDER BY f.sort_order,t.sort_order`).all()
@@ -569,6 +571,48 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // Плановый километраж заявки: по координатам адресов погрузки/выгрузки.
+  function plannedKmFor(fromAddressId, toAddressId) {
+    if (!fromAddressId || !toAddressId) return null;
+    const point = db.prepare('SELECT latitude,longitude FROM addresses WHERE id=?');
+    const a = point.get(fromAddressId);
+    const b = point.get(toAddressId);
+    if (!a || !b) return null;
+    return roadKm(a.latitude, a.longitude, b.latitude, b.longitude);
+  }
+
+  if (request.method === 'GET' && pathname === '/api/addresses') {
+    if (!requireUser(request, response)) return;
+    return json(response, 200, {
+      items: db.prepare(`SELECT a.*,z.name zone_name FROM addresses a
+        LEFT JOIN zones z ON z.id=a.zone_id ORDER BY a.name`).all()
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/addresses') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const name = String(body.name || '').trim();
+    if (!name) return errorJson(response, 422, 'Укажите наименование пункта');
+    if (db.prepare('SELECT 1 FROM addresses WHERE name=? COLLATE NOCASE').get(name)) {
+      return errorJson(response, 422, 'Такой пункт уже есть в справочнике');
+    }
+    const latitude = Number.isFinite(Number(body.latitude)) && body.latitude !== ''
+      ? Number(body.latitude) : null;
+    const longitude = Number.isFinite(Number(body.longitude)) && body.longitude !== ''
+      ? Number(body.longitude) : null;
+    const id = randomUUID();
+    const { BASE_POINT } = await import('./db.mjs');
+    db.prepare(`INSERT INTO addresses(id,external_code,name,address,zone_id,latitude,longitude,base_distance_km)
+      VALUES(?,?,?,?,?,?,?,?)`).run(
+      id, null, name, String(body.address || '').trim(),
+      body.zoneId || null, latitude, longitude,
+      latitude != null && longitude != null
+        ? roadKm(latitude, longitude, BASE_POINT.lat, BASE_POINT.lon) : null);
+    audit(db, user, 'create', 'address', id, body, requestIp(request));
+    return json(response, 201, { id });
+  }
+
   if (request.method === 'POST' && pathname === '/api/orders') {
     const user = requirePermission(request, response, 'orders:write');
     if (!user) return;
@@ -594,15 +638,18 @@ async function api(request, response, url) {
     }
     const id = randomUUID();
     const orderNo = nextOrderNo(db);
+    const plannedKm = plannedKmFor(body.fromAddressId, body.toAddressId);
     db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
-      rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,order_no,cash,created_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,order_no,cash,
+      from_address_id,to_address_id,planned_km,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, customerName, body.fromZoneId, body.toZoneId,
       String(body.fromPoint || '').trim(), String(body.toPoint || '').trim(), Number(body.rateVat || 0),
       new Date(windowFrom).toISOString(), new Date(windowTo).toISOString(),
       String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0),
       String(body.comment || '').trim().slice(0, 500),
-      orderNo, body.cash ? 1 : 0, user.id);
+      orderNo, body.cash ? 1 : 0,
+      body.fromAddressId || null, body.toAddressId || null, plannedKm, user.id);
     queueOutbox(db, 'orders', id, 'create', orderOutboxPayload(id),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'create', 'order', id, body, requestIp(request));
@@ -649,9 +696,13 @@ async function api(request, response, url) {
       (stageChanged && nextStage >= 1 ? new Date().toISOString() : null);
     const keptOrderNo = current.order_no || '';
     const nextCash = 'cash' in body ? (body.cash ? 1 : 0) : Number(current.cash || 0);
+    const nextFromAddress = 'fromAddressId' in body ? (body.fromAddressId || null) : current.from_address_id;
+    const nextToAddress = 'toAddressId' in body ? (body.toAddressId || null) : current.to_address_id;
+    const nextPlannedKm = plannedKmFor(nextFromAddress, nextToAddress) ?? current.planned_km;
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,from_point=?,to_point=?,
       rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,comment=?,
-      order_no=?,cash=?,rejection_reason=?,returned_at=?,confirmed_at=?,
+      order_no=?,cash=?,from_address_id=?,to_address_id=?,planned_km=?,
+      rejection_reason=?,returned_at=?,confirmed_at=?,
       stage_changed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       String(body.customerName ?? current.customer_name).trim(),
@@ -663,7 +714,7 @@ async function api(request, response, url) {
       String(body.temperatureMode ?? current.temperature_mode),
       String(body.bodyType ?? current.body_type), nextStage,
       String(body.comment ?? current.comment ?? '').trim().slice(0, 500),
-      keptOrderNo, nextCash,
+      keptOrderNo, nextCash, nextFromAddress, nextToAddress, nextPlannedKm,
       rejectionReason, returnedAt, confirmedAt, stageChanged ? 1 : 0, match[0]);
     // Заявка уже в плане у логиста: ставка, форма оплаты и ID заказа —
     // атрибуты выручки рейса, синхронизируем, пока рейс не закрыт оплатой.
@@ -675,6 +726,12 @@ async function api(request, response, url) {
         .run(Number(body.rateVat ?? current.rate_vat), nextCash, keptOrderNo, user.id, current.trip_id);
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
         integrationPublic().writePolicy === 'automatic');
+    }
+    // Сменились адреса — новый плановый километраж уходит в незакрытый рейс.
+    if (current.trip_id && nextPlannedKm && nextPlannedKm !== current.planned_km) {
+      db.prepare(`UPDATE trips SET distance_km=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND status NOT IN ('paid','rejected')`)
+        .run(nextPlannedKm, user.id, current.trip_id);
     }
     // Уведомление следующего участника: продажи подтвердили — ход логиста.
     if (stageChanged && nextStage === 1 && Number(current.stage) === 0) {
@@ -713,7 +770,8 @@ async function api(request, response, url) {
     const rate = db.prepare(`SELECT distance_km FROM route_rates
       WHERE (from_zone_id=? AND to_zone_id=?) OR (from_zone_id=? AND to_zone_id=?)
       LIMIT 1`).get(order.from_zone_id, order.to_zone_id, order.to_zone_id, order.from_zone_id);
-    const distance = Number(body.distanceKm || rate?.distance_km || 500);
+    // Плановый километраж по адресам заявки — приоритет; зонный тариф — фолбэк.
+    const distance = Number(body.distanceKm || order.planned_km || rate?.distance_km || 500);
     const startsAt = order.window_from;
     const duration = distance / Number(settings.dailyMileageKm || 600) + Number(settings.handlingDays || 0.5);
     const endsAt = new Date(Date.parse(startsAt) + duration * 86_400_000).toISOString();

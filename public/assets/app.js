@@ -1108,6 +1108,56 @@ async function showCustomers() {
   } catch (error) { toast(error.message, 'error'); }
 }
 
+// Справочник адресов из 1С: пункты погрузки/выгрузки с геозоной, координатами
+// и плановым расстоянием от базы (Пенза). Выбор адреса в заявке даёт
+// плановый километраж маршрута — он уходит в рейс и экономику.
+function openAddressBook(query = '') {
+  const items = state.data.reference.addresses || [];
+  const needle = query.trim().toLowerCase();
+  const filtered = needle
+    ? items.filter(item => `${item.name} ${item.address} ${item.zone_name || ''}`.toLowerCase().includes(needle))
+    : items;
+  const shown = filtered.slice(0, 80);
+  const canAdd = can('orders:write');
+  showModal(`<h2>Справочник адресов</h2>
+    <p class="muted">${items.length} пунктов · геозона и плановое расстояние от базы (Пенза) ·
+      выбор адреса в заявке даёт плановый километраж маршрута</p>
+    <input id="addressSearch" class="block-search" placeholder="Поиск: пункт, адрес, геозона"
+      value="${escapeHtml(query)}" style="margin-bottom:8px;width:100%">
+    ${canAdd ? `<form id="newAddressForm" class="salesfilter" style="margin-bottom:10px;flex-wrap:wrap">
+      <input name="name" placeholder="Наименование пункта" required style="flex:1;min-width:170px">
+      <input name="address" placeholder="Полный адрес" style="flex:2;min-width:220px">
+      <select name="zoneId" title="Геозона">${zoneOptions()}</select>
+      <input name="latitude" placeholder="широта" style="width:90px">
+      <input name="longitude" placeholder="долгота" style="width:90px">
+      <button class="button small">+ Адрес</button>
+    </form>` : ''}
+    <div class="table-wrap" style="max-height:50vh;overflow:auto"><table>
+      <thead><tr><th>Пункт</th><th>Геозона</th><th class="num">От базы, км</th><th>Адрес</th></tr></thead>
+      <tbody>${shown.map(item => `<tr>
+        <td><b>${escapeHtml(item.name)}</b>${item.external_code ? `<br><small class="muted mono">${escapeHtml(item.external_code)}</small>` : ''}</td>
+        <td>${escapeHtml(item.zone_name || '—')}</td>
+        <td class="num">${item.base_distance_km ? Math.round(item.base_distance_km) : '—'}</td>
+        <td><small class="muted">${escapeHtml(item.address || '')}</small></td></tr>`).join('')}</tbody>
+    </table></div>
+    ${filtered.length > shown.length
+      ? `<p class="muted">Показано ${shown.length} из ${filtered.length} — уточните поиск.</p>` : ''}
+    <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+  attachSearch(byId('addressSearch'), value => openAddressBook(value));
+  const form = byId('newAddressForm');
+  if (form) form.onsubmit = async event => {
+    event.preventDefault();
+    try {
+      await api('/api/addresses', {
+        method: 'POST', body: JSON.stringify(formValues(event.currentTarget))
+      });
+      toast('Адрес добавлен в справочник');
+      await reload();
+      openAddressBook(query);
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
 async function reload() {
   byId('syncState').textContent = '● обновление…';
   state.data = await api('/api/bootstrap');
@@ -1123,6 +1173,7 @@ async function reload() {
 byId('logout').onclick = logout;
 setupTheme();
 byId('customersButton').onclick = showCustomers;
+byId('addressesButton').onclick = () => openAddressBook();
 byId('exceptionsChip').onclick = openExceptions;
 byId('geoButton').onclick = openGeoMap;
 byId('periodPrev').onclick = () => {

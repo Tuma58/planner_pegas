@@ -7,6 +7,19 @@ import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
+const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
+
+// Плановый километраж: прямая по координатам × дорожный коэффициент 1,2.
+export const ROAD_FACTOR = 1.2;
+export function roadKm(latA, lonA, latB, lonB) {
+  if (![latA, lonA, latB, lonB].every(Number.isFinite)) return null;
+  const rad = value => value * Math.PI / 180;
+  const h = Math.sin(rad(latB - latA) / 2) ** 2 +
+    Math.cos(rad(latA)) * Math.cos(rad(latB)) * Math.sin(rad(lonB - lonA) / 2) ** 2;
+  return Math.round(2 * 6371 * Math.asin(Math.sqrt(h)) * ROAD_FACTOR);
+}
+// База предприятия — Пенза: от неё считается справочное расстояние адреса.
+export const BASE_POINT = { lat: 53.195063, lon: 45.018316 };
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -104,6 +117,14 @@ CREATE TABLE IF NOT EXISTS drivers (
   absent_from TEXT, absent_to TEXT, note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS addresses (
+  id TEXT PRIMARY KEY, external_code TEXT UNIQUE,
+  name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '',
+  zone_id TEXT REFERENCES zones(id),
+  latitude REAL, longitude REAL,
+  base_distance_km REAL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   author_id TEXT REFERENCES users(id), author_name TEXT NOT NULL DEFAULT '',
@@ -191,6 +212,7 @@ export function openDatabase(databasePath, admin, options = {}) {
   migrateColumns(db);
   seed(db, admin, options);
   seedDrivers(db);
+  seedAddresses(db);
   return db;
 }
 
@@ -262,6 +284,10 @@ function migrateColumns(db) {
   // Оба поля наследуются рейсом при назначении ТС.
   ensure('orders', 'order_no', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'cash', 'INTEGER NOT NULL DEFAULT 0');
+  // Адреса погрузки/выгрузки из справочника и плановый километраж по ним.
+  ensure('orders', 'from_address_id', 'TEXT REFERENCES addresses(id)');
+  ensure('orders', 'to_address_id', 'TEXT REFERENCES addresses(id)');
+  ensure('orders', 'planned_km', 'REAL');
   ensure('trips', 'order_no', "TEXT NOT NULL DEFAULT ''");
   ensure('trips', 'cash', 'INTEGER NOT NULL DEFAULT 0');
   // Номер заявки присваивает система: сквозной счётчик в app_meta (с 1001).
@@ -357,6 +383,22 @@ function migrateColumns(db) {
       CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
+  }
+}
+
+// Справочник адресов из выгрузки 1С «АДРЕС.xlsx»: 611 пунктов с геозонами
+// и координатами. Плановое расстояние от базы (Пенза) считается при сиде;
+// повторный запуск дозаливает только новые коды (INSERT OR IGNORE).
+function seedAddresses(db) {
+  const zoneByName = Object.fromEntries(
+    db.prepare('SELECT id,name FROM zones').all().map(row => [row.name, row.id]));
+  const insert = db.prepare(`INSERT OR IGNORE INTO addresses(
+    id,external_code,name,address,zone_id,latitude,longitude,base_distance_km)
+    VALUES(?,?,?,?,?,?,?,?)`);
+  for (const item of addressesData) {
+    insert.run(randomUUID(), item.code, item.name, item.address,
+      zoneByName[item.zone] || null, item.lat, item.lon,
+      roadKm(item.lat, item.lon, BASE_POINT.lat, BASE_POINT.lon));
   }
 }
 
