@@ -144,10 +144,9 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       ? (data.orders || []).find(item => item.id === trip.order_id) : null;
     const byOrder = order ? addressById(order.to_address_id)?.region : '';
     if (byOrder) return byOrder;
-    const point = String(trip.to_point || '').trim().toLowerCase();
-    return point
-      ? (data.reference.addresses || []).find(item => item.name.toLowerCase() === point)?.region || ''
-      : '';
+    // Пункт из 1С — свободный текст («Софьино»): резолвим так же,
+    // как поле ввода адреса — точное имя, начало, подстрока.
+    return resolveAddress(data, trip.to_point || trip.to_name)?.region || '';
   };
   data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
     const trips = data.trips
