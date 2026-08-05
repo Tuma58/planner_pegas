@@ -179,6 +179,30 @@ export function setupGuide({ views, activeView, showModal }) {
   toggle.textContent = '?';
   toolbarEnd.prepend(toggle);
 
+  const stamp = () => new Date().toLocaleDateString('ru-RU');
+
+  // Печатная форма — в стиле печатных отчётов руководителя (.report + printable).
+  // Памятка одной роли уходит на печать вместе с разделом «Общее»;
+  // «Печать всех» собирает полный свод, каждая роль — с нового листа.
+  const printGuide = (ids, heading, backTo) => {
+    const parts = GUIDES.filter(guide => ids.includes(guide.id));
+    showModal(`<div class="report guide-print">
+      <h3><span style="color:var(--teal);font-weight:800">PegasLogistic</span> · ${heading}</h3>
+      <div class="geohint">Сформировано ${stamp()} · действующий порядок работы в системе</div>
+      ${parts.map(guide => `<section class="guide-sheet">
+        <h2>${guide.title}</h2>
+        <div class="guide-body">${guide.html}</div>
+      </section>`).join('')}
+    </div>
+    <div class="modal-actions no-print">
+      <button type="button" class="button ghost" id="guidePrint">Печать / PDF</button>
+      <button type="button" class="button ghost" id="guideBack">Назад</button>
+      <button type="button" class="button" data-close>Закрыть</button>
+    </div>`, 'wide printable');
+    document.getElementById('guidePrint').onclick = () => window.print();
+    document.getElementById('guideBack').onclick = () => openGuide(backTo);
+  };
+
   const openGuide = current => {
     // Видны инструкции только доступных пользователю блоков + «Общее».
     const available = GUIDES.filter(guide =>
@@ -191,10 +215,19 @@ export function setupGuide({ views, activeView, showModal }) {
         `<button class="button small ${guide.id === active ? '' : 'ghost'}"
           data-guide="${guide.id}">${guide.title}</button>`).join('')}</div>
       <div class="guide-body">${body.html}</div>
-      <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div>
+      <div class="modal-actions">
+        <button type="button" class="button ghost" id="guidePrintOne">Печать / PDF</button>
+        <button type="button" class="button ghost" id="guidePrintAll">Печать всех</button>
+        <button type="button" class="button" data-close>Закрыть</button>
+      </div>
     </div>`, 'wide');
     document.querySelectorAll('[data-guide]').forEach(button =>
       button.onclick = () => openGuide(button.dataset.guide));
+    document.getElementById('guidePrintOne').onclick = () => printGuide(
+      active === 'common' ? ['common'] : [active, 'common'],
+      `Памятка сотрудника — ${body.title}`, active);
+    document.getElementById('guidePrintAll').onclick = () => printGuide(
+      available.map(guide => guide.id), 'Инструкции сотрудников конвейера', active);
   };
   toggle.onclick = () => openGuide(activeView());
 }

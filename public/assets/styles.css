@@ -314,6 +314,13 @@ tbody tr:hover td { background: var(--hover); }
 .guide-body ol, .guide-body ul { margin: 6px 0; padding-left: 20px; }
 .guide-body li { margin: 5px 0; }
 .guide-goal { margin: 8px 0 4px; color: var(--muted); font-weight: 600; }
+.guide-print .guide-sheet { margin-top: 16px; }
+.guide-print .guide-sheet h2 { margin: 0; padding-bottom: 4px; border-bottom: 2px solid var(--teal); color: var(--ink); font-size: 15px; }
+.guide-print .guide-body { max-width: none; }
+@media print {
+  .guide-print .guide-sheet { break-inside: avoid-page; }
+  .guide-print .guide-sheet + .guide-sheet { break-before: page; }
+}
 
 /* Карта геозон (ТК 21) */
 .geowrap { display: grid; grid-template-columns: 1.5fr 1fr; gap: 16px; }
