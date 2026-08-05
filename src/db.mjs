@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS drivers (
 CREATE TABLE IF NOT EXISTS addresses (
   id TEXT PRIMARY KEY, external_code TEXT UNIQUE,
   name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '',
+  region TEXT NOT NULL DEFAULT '',
   zone_id TEXT REFERENCES zones(id),
   latitude REAL, longitude REAL,
   base_distance_km REAL,
@@ -285,6 +286,7 @@ function migrateColumns(db) {
   ensure('orders', 'order_no', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'cash', 'INTEGER NOT NULL DEFAULT 0');
   // Адреса погрузки/выгрузки из справочника и плановый километраж по ним.
+  ensure('addresses', 'region', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'from_address_id', 'TEXT REFERENCES addresses(id)');
   ensure('orders', 'to_address_id', 'TEXT REFERENCES addresses(id)');
   ensure('orders', 'planned_km', 'REAL');
@@ -393,12 +395,15 @@ function seedAddresses(db) {
   const zoneByName = Object.fromEntries(
     db.prepare('SELECT id,name FROM zones').all().map(row => [row.name, row.id]));
   const insert = db.prepare(`INSERT OR IGNORE INTO addresses(
-    id,external_code,name,address,zone_id,latitude,longitude,base_distance_km)
-    VALUES(?,?,?,?,?,?,?,?)`);
+    id,external_code,name,address,region,zone_id,latitude,longitude,base_distance_km)
+    VALUES(?,?,?,?,?,?,?,?,?)`);
+  const backfillRegion = db.prepare(`UPDATE addresses SET region=?
+    WHERE external_code=? AND region=''`);
   for (const item of addressesData) {
-    insert.run(randomUUID(), item.code, item.name, item.address,
+    insert.run(randomUUID(), item.code, item.name, item.address, item.region || '',
       zoneByName[item.zone] || null, item.lat, item.lon,
       roadKm(item.lat, item.lon, BASE_POINT.lat, BASE_POINT.lon));
+    if (item.region) backfillRegion.run(item.region, item.code);
   }
 }
 

@@ -218,7 +218,13 @@ export function renderSales(container, context) {
   const data = state.data;
   const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
   // Фильтр доски: геозона + диапазон дат (хранится в state, переживает перерисовки).
-  const filter = state.salesFilter || (state.salesFilter = { zone: '', from: '', to: '', q: '' });
+  const filter = state.salesFilter || (state.salesFilter = { zone: '', region: '', from: '', to: '', q: '' });
+  // Субъект РФ заявки — по адресам погрузки/выгрузки из справочника.
+  const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
+  const orderRegions = order => [addressById(order.from_address_id)?.region,
+    addressById(order.to_address_id)?.region].filter(Boolean);
+  const regionList = [...new Set((data.reference.addresses || [])
+    .map(item => item.region).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
   filter.q ||= '';
   const query = filter.q.toLowerCase();
   const inDateRange = iso => {
@@ -234,6 +240,7 @@ export function renderSales(container, context) {
   // пересекает диапазон, а текст поиска найден в заказчике или маршруте.
   const matchesFilter = order =>
     (!filter.zone || order.from_name === filter.zone || order.to_name === filter.zone) &&
+    (!filter.region || orderRegions(order).includes(filter.region)) &&
     (!filter.from || String(order.window_to).slice(0, 10) >= filter.from) &&
     (!filter.to || String(order.window_from).slice(0, 10) <= filter.to) &&
     (!query || `${order.customer_name} ${routeLabel(order)} ${order.rejection_reason || ''}`
@@ -255,7 +262,7 @@ export function renderSales(container, context) {
   const awaitingAssign = orders.filter(order => orderStage(order, data).stage === 1).length;
   const tasks = myTasks(orders, data, can);
   const onlyMine = Boolean(state.salesOnlyMine);
-  const filterActive = filter.zone || filter.from || filter.to || filter.q;
+  const filterActive = filter.zone || filter.region || filter.from || filter.to || filter.q;
   const zoneOptions = data.reference.zones.map(zone => `<option value="${zone.id}">${escapeHtml(zone.name)}</option>`).join('');
   const orderOptions = data.settings.orderOptions || {};
   const temps = (orderOptions.temperatureModes || []).map(item => `<option>${escapeHtml(item)}</option>`).join('');
@@ -433,6 +440,11 @@ export function renderSales(container, context) {
           ${data.reference.zones.map(zone =>
             `<option value="${escapeHtml(zone.name)}" ${filter.zone === zone.name ? 'selected' : ''}>${escapeHtml(zone.name)}</option>`).join('')}
         </select>
+        <select id="salesFilterRegion" title="Субъект РФ — по адресам погрузки/выгрузки заявки">
+          <option value="">Все субъекты</option>
+          ${regionList.map(region =>
+            `<option value="${escapeHtml(region)}" ${filter.region === region ? 'selected' : ''}>${escapeHtml(region)}</option>`).join('')}
+        </select>
         <input type="date" id="salesFilterFrom" value="${filter.from}" title="С даты">
         <span class="muted">–</span>
         <input type="date" id="salesFilterTo" value="${filter.to}" title="По дату">
@@ -510,6 +522,10 @@ export function renderSales(container, context) {
     filter.q = value;
     rerender();
   });
+  container.querySelector('#salesFilterRegion').onchange = event => {
+    filter.region = event.currentTarget.value;
+    rerender();
+  };
   container.querySelector('#salesFilterZone').onchange = event => {
     filter.zone = event.currentTarget.value;
     rerender();
@@ -523,7 +539,7 @@ export function renderSales(container, context) {
     rerender();
   };
   container.querySelector('#salesFilterReset')?.addEventListener('click', () => {
-    state.salesFilter = { zone: '', from: '', to: '', q: '' };
+    state.salesFilter = { zone: '', region: '', from: '', to: '', q: '' };
     rerender();
   });
 

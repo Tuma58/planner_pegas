@@ -94,15 +94,28 @@ export function renderLogist(container, context) {
   const data = state.data;
   const query = (state.logistQuery || '').toLowerCase();
   const zone = state.logistZone || '';
+  const region = state.logistRegion || '';
   const matches = text => !query || text.toLowerCase().includes(query);
   // Фильтр по геозонам: строка проходит, если зона участвует в маршруте.
   const zoneMatches = row => !zone || row.from_name === zone || row.to_name === zone;
+  // Субъект РФ — по адресам заявки; у рейса — через связанную заявку.
+  const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
+  const orderRegions = order => [addressById(order?.from_address_id)?.region,
+    addressById(order?.to_address_id)?.region].filter(Boolean);
+  const regionMatches = row => {
+    if (!region) return true;
+    const order = row.window_from !== undefined
+      ? row : data.orders.find(item => item.trip_id === row.id || item.id === row.order_id);
+    return orderRegions(order).includes(region);
+  };
+  const regionList = [...new Set((data.reference.addresses || [])
+    .map(item => item.region).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
 
   // Очередь на назначение: подтверждённые продажами заявки без ТС (стадия 1),
   // возвращённые из плана — с пометкой, залежавшиеся сверху.
   const queue = data.orders
     .filter(order => inSalesPortfolio(order, data) && orderStage(order, data).stage === 1)
-    .filter(order => zoneMatches(order) && matches(`${order.customer_name} ${routeLabel(order)}`))
+    .filter(order => zoneMatches(order) && regionMatches(order) && matches(`${order.customer_name} ${routeLabel(order)}`))
     .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
 
   // Действующие маршруты: план и в пути; завершённые логисту не нужны.
@@ -110,7 +123,7 @@ export function renderLogist(container, context) {
   const needsConfirm = trip => trip.status === 'plan' && !trip.logist_confirmed_at;
   const activeTrips = data.trips
     .filter(trip => ['plan', 'run'].includes(trip.status))
-    .filter(trip => zoneMatches(trip) && matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
+    .filter(trip => zoneMatches(trip) && regionMatches(trip) && matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
     .sort((a, b) => Number(needsConfirm(b)) - Number(needsConfirm(a)) ||
       a.starts_at.localeCompare(b.starts_at));
 
@@ -221,6 +234,11 @@ export function renderLogist(container, context) {
           ${data.reference.zones.map(item =>
             `<option value="${escapeHtml(item.name)}" ${zone === item.name ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}
         </select>
+        <select id="logistRegion" title="Субъект РФ — по адресам заявки маршрута">
+          <option value="">Все субъекты</option>
+          ${regionList.map(item =>
+            `<option value="${escapeHtml(item)}" ${region === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}
+        </select>
         <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
         ${can('trips:write') ? '<button class="button small" id="logistNewTrip">+ Рейс</button>' : ''}
       </div>
@@ -247,6 +265,10 @@ export function renderLogist(container, context) {
   });
   container.querySelector('#logistZone').onchange = event => {
     state.logistZone = event.currentTarget.value;
+    renderLogist(container, context);
+  };
+  container.querySelector('#logistRegion').onchange = event => {
+    state.logistRegion = event.currentTarget.value;
     renderLogist(container, context);
   };
   container.querySelector('#logistNewTrip')?.addEventListener('click', () => context.openNewTrip());

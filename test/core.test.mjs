@@ -92,10 +92,13 @@ test('SQLite создается со справочниками, админис�
   // плановое расстояние от базы (Пенза) — по координатам (Москва ~630 км).
   assert.equal(db.prepare('SELECT COUNT(*) count FROM addresses').get().count, 611);
   assert.equal(db.prepare('SELECT COUNT(*) count FROM addresses WHERE zone_id IS NULL').get().count, 0);
-  const moscow = db.prepare(`SELECT base_distance_km FROM addresses
+  const moscow = db.prepare(`SELECT base_distance_km,region FROM addresses
     WHERE name LIKE 'Москва г%' LIMIT 1`).get();
   assert.ok(moscow.base_distance_km > 450 && moscow.base_distance_km < 900,
     `от базы до Москвы: ${moscow.base_distance_km}`);
+  // Субъект РФ распознан у каждого адреса — фильтр по субъекту опирается на это.
+  assert.equal(db.prepare(`SELECT COUNT(*) count FROM addresses WHERE region=''`).get().count, 0);
+  assert.equal(moscow.region, 'Москва г');
 
   const itemId = queueOutbox(db, 'trips', 'trip-1', 'create', { id: 'trip-1' });
   const item = db.prepare('SELECT * FROM outbox WHERE id=?').get(itemId);

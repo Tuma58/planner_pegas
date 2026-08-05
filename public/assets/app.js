@@ -1111,31 +1111,43 @@ async function showCustomers() {
 // Справочник адресов из 1С: пункты погрузки/выгрузки с геозоной, координатами
 // и плановым расстоянием от базы (Пенза). Выбор адреса в заявке даёт
 // плановый километраж маршрута — он уходит в рейс и экономику.
-function openAddressBook(query = '') {
+function openAddressBook(query = '', region = '') {
   const items = state.data.reference.addresses || [];
   const needle = query.trim().toLowerCase();
-  const filtered = needle
-    ? items.filter(item => `${item.name} ${item.address} ${item.zone_name || ''}`.toLowerCase().includes(needle))
-    : items;
+  const regions = [...new Set(items.map(item => item.region).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'ru'));
+  const filtered = items.filter(item =>
+    (!region || item.region === region) &&
+    (!needle || `${item.name} ${item.address} ${item.region || ''} ${item.zone_name || ''}`
+      .toLowerCase().includes(needle)));
   const shown = filtered.slice(0, 80);
   const canAdd = can('orders:write');
   showModal(`<h2>Справочник адресов</h2>
     <p class="muted">${items.length} пунктов · геозона и плановое расстояние от базы (Пенза) ·
       выбор адреса в заявке даёт плановый километраж маршрута</p>
-    <input id="addressSearch" class="block-search" placeholder="Поиск: пункт, адрес, геозона"
-      value="${escapeHtml(query)}" style="margin-bottom:8px;width:100%">
+    <div class="salesfilter" style="margin-bottom:8px">
+      <input id="addressSearch" class="block-search" placeholder="Поиск: пункт, адрес, субъект, геозона"
+        value="${escapeHtml(query)}" style="flex:1">
+      <select id="addressRegion" title="Фильтр по субъекту РФ">
+        <option value="">Все субъекты</option>
+        ${regions.map(item =>
+          `<option value="${escapeHtml(item)}" ${region === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}
+      </select>
+    </div>
     ${canAdd ? `<form id="newAddressForm" class="salesfilter" style="margin-bottom:10px;flex-wrap:wrap">
       <input name="name" placeholder="Наименование пункта" required style="flex:1;min-width:170px">
       <input name="address" placeholder="Полный адрес" style="flex:2;min-width:220px">
+      <input name="region" placeholder="Субъект (обл/респ)" style="width:150px">
       <select name="zoneId" title="Геозона">${zoneOptions()}</select>
       <input name="latitude" placeholder="широта" style="width:90px">
       <input name="longitude" placeholder="долгота" style="width:90px">
       <button class="button small">+ Адрес</button>
     </form>` : ''}
     <div class="table-wrap" style="max-height:50vh;overflow:auto"><table>
-      <thead><tr><th>Пункт</th><th>Геозона</th><th class="num">От базы, км</th><th>Адрес</th></tr></thead>
+      <thead><tr><th>Пункт</th><th>Субъект</th><th>Геозона</th><th class="num">От базы, км</th><th>Адрес</th></tr></thead>
       <tbody>${shown.map(item => `<tr>
         <td><b>${escapeHtml(item.name)}</b>${item.external_code ? `<br><small class="muted mono">${escapeHtml(item.external_code)}</small>` : ''}</td>
+        <td>${escapeHtml(item.region || '—')}</td>
         <td>${escapeHtml(item.zone_name || '—')}</td>
         <td class="num">${item.base_distance_km ? Math.round(item.base_distance_km) : '—'}</td>
         <td><small class="muted">${escapeHtml(item.address || '')}</small></td></tr>`).join('')}</tbody>
@@ -1143,7 +1155,8 @@ function openAddressBook(query = '') {
     ${filtered.length > shown.length
       ? `<p class="muted">Показано ${shown.length} из ${filtered.length} — уточните поиск.</p>` : ''}
     <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div>`, 'wide');
-  attachSearch(byId('addressSearch'), value => openAddressBook(value));
+  attachSearch(byId('addressSearch'), value => openAddressBook(value, region));
+  byId('addressRegion').onchange = event => openAddressBook(query, event.currentTarget.value);
   const form = byId('newAddressForm');
   if (form) form.onsubmit = async event => {
     event.preventDefault();
@@ -1153,7 +1166,7 @@ function openAddressBook(query = '') {
       });
       toast('Адрес добавлен в справочник');
       await reload();
-      openAddressBook(query);
+      openAddressBook(query, region);
     } catch (error) { toast(error.message, 'error'); }
   };
 }

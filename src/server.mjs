@@ -603,9 +603,10 @@ async function api(request, response, url) {
       ? Number(body.longitude) : null;
     const id = randomUUID();
     const { BASE_POINT } = await import('./db.mjs');
-    db.prepare(`INSERT INTO addresses(id,external_code,name,address,zone_id,latitude,longitude,base_distance_km)
-      VALUES(?,?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO addresses(id,external_code,name,address,region,zone_id,latitude,longitude,base_distance_km)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(
       id, null, name, String(body.address || '').trim(),
+      String(body.region || '').trim(),
       body.zoneId || null, latitude, longitude,
       latitude != null && longitude != null
         ? roadKm(latitude, longitude, BASE_POINT.lat, BASE_POINT.lon) : null);
