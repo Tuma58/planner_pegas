@@ -37,6 +37,19 @@ export function addressByName(data, value) {
     item.name.toLowerCase() === needle) || null;
 }
 
+// Автоподтягивание при вводе: точное имя → начало имени → подстрока
+// в имени или полном адресе. Позволяет ввести «Болошнево» и получить
+// полную карточку пункта из справочника.
+export function resolveAddress(data, value) {
+  const needle = String(value || '').trim().toLowerCase();
+  if (needle.length < 3) return null;
+  const items = data.reference.addresses || [];
+  return items.find(item => item.name.toLowerCase() === needle)
+    || items.find(item => item.name.toLowerCase().startsWith(needle))
+    || items.find(item => `${item.name} ${item.address}`.toLowerCase().includes(needle))
+    || null;
+}
+
 // Плановый километраж пары адресов: прямая по координатам × дорожный 1,2 —
 // формула совпадает с серверной (roadKm в db.mjs).
 export function plannedKmBetween(a, b) {
@@ -574,8 +587,10 @@ export function renderSales(container, context) {
   };
   [['salesFromPoint', 'salesFrom'], ['salesToPoint', 'salesTo']].forEach(([pointId, zoneId]) => {
     container.querySelector(`#${pointId}`).addEventListener('change', event => {
-      // Пункт из справочника адресов надёжнее алиаса: зона берётся из него.
-      const address = addressByName(data, event.currentTarget.value);
+      // Пункт из справочника адресов надёжнее алиаса: частичный ввод
+      // подтягивает полную карточку (имя, зона), затем плановый километраж.
+      const address = resolveAddress(data, event.currentTarget.value);
+      if (address) event.currentTarget.value = address.name;
       const zone = address
         ? data.reference.zones.find(item => item.id === address.zone_id)
         : zoneByPlace(event.currentTarget.value);
@@ -856,7 +871,8 @@ export function editOrderDialog(order, data, context) {
   };
   [['editFromPoint', 'editFromZone'], ['editToPoint', 'editToZone']].forEach(([pointId, zoneId]) => {
     document.getElementById(pointId).addEventListener('change', event => {
-      const address = addressByName(data, event.currentTarget.value);
+      const address = resolveAddress(data, event.currentTarget.value);
+      if (address) event.currentTarget.value = address.name;
       const zone = address
         ? data.reference.zones.find(item => item.id === address.zone_id)
         : zoneByPlace(event.currentTarget.value);

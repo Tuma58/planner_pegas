@@ -454,8 +454,8 @@ tbody tr:hover td { background: var(--hover); }
 @media (max-width: 760px) { .rgrid { grid-template-columns: 1fr; } }
 
 /* Доска продаж (ТК 21) */
-.saleswrap { padding: 14px 16px; }
-.salekpis { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.saleswrap { padding: 10px 14px 12px; display: flex; flex-direction: column; height: calc(100vh - 137px); overflow: hidden; }
+.salekpis { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; flex-shrink: 0; }
 .skpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; }
 /* Операционный отчёт руководителя (вместо панели приборов) */
 .brep { display: flex; flex-direction: column; gap: 14px; padding: 12px 16px 40px; }
@@ -587,8 +587,8 @@ tbody tr:hover td { background: var(--hover); }
 .salesfilter select, .salesfilter input[type="date"] { width: auto; min-height: 32px; padding: 5px 8px; }
 .skv small { font-size: var(--fs-xs); font-weight: 600; }
 @media (max-width: 900px) { .salesfilter { margin-left: 0; } }
-.salesboard { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
-.scol { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.salesboard { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: stretch; flex: 1; min-height: 0; }
+.scol { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; overflow: auto; min-height: 0; }
 .scolh { font-size: var(--fs-base); font-weight: 800; color: var(--ink); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }
 .scolh span { background: var(--soft); color: var(--muted); border-radius: 10px; padding: 1px 8px; font-size: var(--fs-xs); }
 .reqzone { color: #fff; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 10px; white-space: nowrap; }
@@ -604,7 +604,11 @@ tbody tr:hover td { background: var(--hover); }
 .feas-row.ok b { color: var(--teal); }
 .feas-row.bad b { color: var(--bad); }
 .sugtruck.sel, .sugtruck:hover { border-color: var(--teal); }
-@media (max-width: 900px) { .salesboard { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .salesboard { grid-template-columns: 1fr; }
+  .saleswrap { height: auto; overflow: visible; }
+  .scol { overflow: visible; }
+}
 
 /* Календарь ресурса (ТК 21) */
 .resboard { min-width: max-content; }
