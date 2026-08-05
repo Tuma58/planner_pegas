@@ -978,7 +978,10 @@ async function api(request, response, url) {
   // с местом и временем доступности сцепки — замыкает задание ресурса.
   match = route(/^\/api\/vehicles\/([^/]+)\/request-load$/, pathname);
   if (match && request.method === 'POST') {
-    const user = requirePermission(request, response, 'fleet:write');
+    // Запросить загрузку может и ресурсник, и логист — у каждого своё право.
+    const actor = currentUser(request);
+    const permission = hasPermission(actor, 'fleet:write') ? 'fleet:write' : 'trips:write';
+    const user = requirePermission(request, response, permission);
     if (!user) return;
     const vehicle = db.prepare(`SELECT v.*,vt.name type_name FROM vehicles v
       JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.id=?`).get(match[0]);
@@ -988,7 +991,7 @@ async function api(request, response, url) {
       WHERE t.vehicle_id=? AND t.status<>'rejected' ORDER BY t.ends_at DESC LIMIT 1`).get(match[0]);
     const zoneName = lastTrip?.to_name ||
       db.prepare('SELECT name FROM zones WHERE id=?').get(vehicle.zone_id)?.name || 'зона приписки';
-    notify('sales', `Ресурс запрашивает загрузку: сцепка ${vehicle.plate} (${vehicle.type_name}) свободна в «${zoneName}»${lastTrip ? ` с ${lastTrip.ends_at.slice(0, 10)}` : ''} — подберите заявку в «Потребности от логистики»`, 'vehicle', match[0]);
+    notify('sales', `Запрос загрузки: сцепка ${vehicle.plate} (${vehicle.type_name}) свободна в «${zoneName}»${lastTrip ? ` с ${lastTrip.ends_at.slice(0, 10)}` : ''} — подберите заявку в «Потребности от логистики»`, 'vehicle', match[0]);
     audit(db, user, 'request_load', 'vehicle', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
   }

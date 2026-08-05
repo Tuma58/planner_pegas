@@ -322,6 +322,19 @@ test('потребность от логистики: ремонт и «без �
   const eventAfterShift = nextVehicleEvent(data, 'А1', now + 2 * 86_400_000);
   assert.ok(eventAfterShift.label.includes('рейс'), 'после пересменки следующее — рейс');
   assert.equal(nextVehicleEvent(data, 'А4', now), null, 'без будущих событий — null');
+
+  // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
+  const { matchOrdersForVehicle } = await import('../public/assets/logist.js');
+  const request = { freeAt: iso(now + 86_400_000), zone: { name: 'Дом' }, vehicle: { id: 'А1' } };
+  const queueOrders = [
+    { id: 'q-late', from_name: 'Дом', window_from: iso(now), window_to: iso(now + 3 * 3_600_000) },
+    { id: 'q-far', from_name: 'Москва', window_from: iso(now + 2 * 86_400_000), window_to: iso(now + 3 * 86_400_000) },
+    { id: 'q-zone', from_name: 'Дом', window_from: iso(now + 2 * 86_400_000), window_to: iso(now + 3 * 86_400_000) }
+  ];
+  const picked = matchOrdersForVehicle(request, queueOrders);
+  assert.deepEqual(picked.map(item => item.order.id), ['q-zone', 'q-far'],
+    'окно в прошлом отброшено, зона освобождения приоритетнее');
+  assert.equal(picked[0].inZone, true);
 });
 
 test('портфель продаж: назначенные заявки уходят к логисту, возвращаются при отклонении', async () => {

@@ -5,7 +5,7 @@
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
-import { editOrderDialog, nextEventHint, nextVehicleEvent, rejectOrderDialog } from './sales.js';
+import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, rejectOrderDialog } from './sales.js';
 
 const overlaps = (a, b) =>
   Date.parse(a.starts_at) < Date.parse(b.ends_at) && Date.parse(b.starts_at) < Date.parse(a.ends_at);
@@ -89,6 +89,63 @@ export function rejectTripDialog(trip, data, context) {
   };
 }
 
+// Подходящие по времени рейсы для сцепки: окно погрузки ещё достижимо
+// после освобождения (+2 ч подачи); в зоне освобождения — сверху, затем
+// по близости окна к моменту готовности.
+export function matchOrdersForVehicle(request, queue) {
+  const readyMs = Math.max(Date.parse(request.freeAt), Date.now()) + 2 * 3_600_000;
+  return queue
+    .filter(order => Date.parse(order.window_to) >= readyMs)
+    .map(order => ({
+      order,
+      inZone: order.from_name === request.zone.name,
+      waitMs: Math.max(0, Date.parse(order.window_from) - readyMs)
+    }))
+    .sort((a, b) => Number(b.inZone) - Number(a.inZone) || a.waitMs - b.waitMs);
+}
+
+// Диалог «подобрать рейс сцепке»: заявки очереди, подходящие по времени.
+// Пусто — предложение отправить запрос в продажи.
+function pickOrderDialog(request, queue, data, context) {
+  const matches = matchOrdersForVehicle(request, queue);
+  const rows = matches.map(({ order, inZone }) => `
+    <button type="button" class="list-item sugtruck" data-pick-order="${order.id}">
+      <span style="flex:1;min-width:0"><strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
+        <small class="muted" style="display:block">окно ${formatDateTime(order.window_from)} → ${formatDateTime(order.window_to)}
+          · ${escapeHtml(order.body_type || 'Реф')} · ${money(order.rate_vat)}</small></span>
+      <span class="badge ${inZone ? 'ok' : 'warn'}" style="margin-left:auto">${inZone ? 'в зоне' : escapeHtml(order.from_name || 'перегон')}</span>
+    </button>`).join('');
+  context.showModal(`<h2>Рейс для ${escapeHtml(request.vehicle.plate)}</h2>
+    <p class="muted">${escapeHtml(request.vehicle.type_name || '')} · освободится ${formatDateTime(request.freeAt)}
+      в «${escapeHtml(request.zone.name)}»${request.idleMs > 0 ? ` · уже стоит ${Math.max(1, Math.floor(request.idleMs / 86_400_000))} дн` : ''}</p>
+    ${rows ? `<div class="list" style="max-height:340px;overflow:auto;margin-bottom:10px">${rows}</div>`
+      : `<p class="muted" style="margin:14px 0">Подходящих по времени заявок в очереди нет.
+         Отправьте запрос в продажи — сцепку предложат клиентам под дату освобождения.</p>`}
+    <div class="modal-actions">
+      <button type="button" class="button ghost" id="pickAskSales">→ Запрос в продажи</button>
+      <button type="button" class="button ghost" data-close>Закрыть</button>
+    </div>`);
+  document.querySelectorAll('[data-pick-order]').forEach(button =>
+    button.addEventListener('click', async () => {
+      try {
+        await api(`/api/orders/${button.dataset.pickOrder}/assign`, {
+          method: 'POST',
+          body: JSON.stringify({ vehicleId: request.vehicle.id, autoConfirm: true })
+        });
+        context.closeModal();
+        toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    }));
+  document.getElementById('pickAskSales').onclick = async () => {
+    try {
+      await api(`/api/vehicles/${request.vehicle.id}/request-load`, { method: 'POST' });
+      context.closeModal();
+      toast('Запрос отправлен в продажи');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
 export function renderLogist(container, context) {
   const { state, can } = context;
   const data = state.data;
@@ -133,6 +190,39 @@ export function renderLogist(container, context) {
   const runCount = runTrips.length;
   const planTrips = activeTrips.filter(trip => trip.status === 'plan');
   const unconfirmedTrips = planTrips.filter(trip => !trip.logist_confirmed_at);
+
+  // Левый столбец: сцепки, которые простаивают или скоро освободятся, —
+  // логист подбирает им рейсы из очереди или запрашивает загрузку у продаж.
+  const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
+  const vehicleRequests = autoRequests(data, state.month, monthEnd)
+    .filter(request => (!zone || request.zone.name === zone) &&
+      (!region || request.region === region) &&
+      matches(`${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name}`));
+  const vehicleCards = vehicleRequests.map((request, index) => {
+    const idleDays = request.idleMs > 0 ? Math.max(1, Math.floor(request.idleMs / 86_400_000)) : 0;
+    const fits = matchOrdersForVehicle(request, queue).length;
+    const blockedNote = request.blockedKind
+      ? ` · ⚙ ${({ repair: 'из ремонта', no_driver: 'получит водителя', reserve: 'выйдет из резерва' })[request.blockedKind] || request.blockedKind}`
+      : '';
+    return `<div class="list-item ordrow ${idleDays > 2 ? 'pipe-returned' : ''}">
+      <span style="flex:1;min-width:0">
+        <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong>
+        · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.zone.name)}
+        <small class="muted" style="display:block">${idleDays
+          ? `стоит ${idleDays} дн с ${formatDateTime(request.freeAt)}`
+          : `освободится ${formatDateTime(request.freeAt)}`}${blockedNote}</small>
+      </span>
+      <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+        <span class="badge ${fits ? 'ok' : 'warn'}" title="Заявок очереди, подходящих по времени">${fits
+          ? `рейсов: ${fits}` : 'нет рейсов'}</span>
+        <span style="display:flex;gap:5px">
+          <button class="button small" data-pick="${index}" title="Заявки очереди, подходящие по времени освобождения">Подобрать рейс</button>
+          <button class="button ghost small" data-ask-sales="${request.vehicle.id}"
+            title="Уведомить продажи: сцепка свободна, нужна загрузка">→ Продажи</button>
+        </span>
+      </span>
+    </div>`;
+  }).join('') || '<p class="muted">Простаивающих и освобождающихся сцепок нет — парк загружен.</p>';
 
   const queueCards = queue.map(order => {
     const waiting = order.stage_changed_at
@@ -182,7 +272,9 @@ export function renderLogist(container, context) {
     tripRow(trip, `data-lg-confirm="${trip.id}" title="Подтвердить назначение — рейс уйдёт диспетчеру">`)).join('');
   const openTripRows = trips => trips.map(trip =>
     tripRow(trip, `data-lg-trip="${trip.id}" title="Открыть карточку рейса">`)).join('');
-  const tripCards = activeTrips.map(trip => {
+  const confirmedTrips = activeTrips.filter(trip =>
+    !(trip.status === 'plan' && !trip.logist_confirmed_at));
+  const tripCard = trip => {
     const meta = statusMeta[trip.status] || { label: trip.status, color: 'var(--muted)' };
     const unconfirmed = trip.status === 'plan' && !trip.logist_confirmed_at;
     return `<div class="list-item ordrow ${unconfirmed ? 'pipe-mine' : ''}">
@@ -204,7 +296,10 @@ export function renderLogist(container, context) {
         </span>
       </span>
     </div>`;
-  }).join('') || '<p class="muted">Действующих маршрутов нет.</p>';
+  };
+  const confirmCards = unconfirmedTrips.map(tripCard).join('');
+  const tripCards = confirmedTrips.map(tripCard).join('')
+    || '<p class="muted">Действующих маршрутов нет.</p>';
 
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
@@ -245,16 +340,21 @@ export function renderLogist(container, context) {
     </div>
     <div class="salesboard">
       <div class="scol">
-        <div class="scolh">Очередь на назначение ТС <span>${queue.length}</span></div>
-        <div class="list">${queueCards}</div>
-        <div class="geohint">Сюда попадают заявки, подтверждённые продажами, и возвраты из плана.
-          Назначение создаёт рейс и передаёт заявку диспетчеру.</div>
+        <div class="scolh">Сцепки: простаивают и освобождаются <span>${vehicleRequests.length}</span></div>
+        <div class="list">${vehicleCards}</div>
+        <div class="geohint">«Подобрать рейс» — заявки очереди, подходящие по времени освобождения;
+          «→ Продажи» — запрос загрузки, если подходящего рейса нет.</div>
       </div>
       <div class="scol">
-        <div class="scolh">Действующие маршруты <span>${activeTrips.length}</span></div>
+        <div class="scolh">Назначение и подтверждение <span>${queue.length + needConfirm}</span></div>
+        ${needConfirm ? `<div class="scolh" style="font-size:var(--fs-sm);margin-top:2px">Подтвердите назначение <span>${needConfirm}</span></div>
+        <div class="list" style="margin-bottom:12px">${confirmCards}</div>` : ''}
+        <div class="scolh" style="font-size:var(--fs-sm);margin-top:2px">Очередь на назначение <span>${queue.length}</span></div>
+        <div class="list" style="margin-bottom:12px">${queueCards}</div>
+        <div class="scolh" style="font-size:var(--fs-sm)">Действующие маршруты <span>${confirmedTrips.length}</span></div>
         <div class="list">${tripCards}</div>
-        <div class="geohint">«Заменить ТС» переставляет рейс на другую сцепку с проверкой занятости;
-          отклонение возвращает заявку в продажи. Гант — просмотр плана, управление — здесь.</div>
+        <div class="geohint">Назначение создаёт рейс и передаёт его диспетчеру; «Заменить ТС» —
+          с проверкой занятости; отклонение возвращает заявку в продажи.</div>
       </div>
     </div>
   </div>`;
@@ -310,6 +410,18 @@ export function renderLogist(container, context) {
     button.addEventListener('click', () => {
       const order = data.orders.find(item => item.id === button.dataset.assign);
       if (order) context.openAssign(order);
+    }));
+  container.querySelectorAll('[data-pick]').forEach(button =>
+    button.addEventListener('click', () => {
+      const request = vehicleRequests[Number(button.dataset.pick)];
+      if (request) pickOrderDialog(request, queue, data, context);
+    }));
+  container.querySelectorAll('[data-ask-sales]').forEach(button =>
+    button.addEventListener('click', async () => {
+      try {
+        await api(`/api/vehicles/${button.dataset.askSales}/request-load`, { method: 'POST' });
+        toast('Запрос отправлен в продажи');
+      } catch (error) { toast(error.message, 'error'); }
     }));
   container.querySelectorAll('[data-edit]').forEach(button =>
     button.addEventListener('click', () => {
