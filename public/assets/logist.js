@@ -5,7 +5,7 @@
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
-import { editOrderDialog, rejectOrderDialog } from './sales.js';
+import { editOrderDialog, nextEventHint, nextVehicleEvent, rejectOrderDialog } from './sales.js';
 
 const overlaps = (a, b) =>
   Date.parse(a.starts_at) < Date.parse(b.ends_at) && Date.parse(b.starts_at) < Date.parse(a.ends_at);
@@ -25,6 +25,7 @@ function vehicleBusy(vehicleId, trip, data) {
 // занятые показываются с причиной (заменить можно осознанно и на них).
 // Используется логистом и диспетчером (внештатные ситуации).
 export function replaceVehicleDialog(trip, data, context) {
+  const loadMs = Date.parse(trip.starts_at);
   const candidates = data.vehicles
     .map(vehicle => ({ vehicle, busy: vehicle.id === trip.vehicle_id ? 'текущая' : vehicleBusy(vehicle.id, trip, data) }))
     .sort((a, b) => Number(Boolean(a.busy)) - Number(Boolean(b.busy)) || a.vehicle.plate.localeCompare(b.vehicle.plate));
@@ -35,8 +36,9 @@ export function replaceVehicleDialog(trip, data, context) {
     <div class="list" style="max-height:320px;overflow:auto;margin-bottom:10px">
       ${candidates.map(({ vehicle, busy }) => `<button type="button" class="list-item sugtruck"
         data-replace-vehicle="${vehicle.id}" ${vehicle.id === trip.vehicle_id ? 'disabled' : ''}>
-        <strong class="mono">${escapeHtml(vehicle.plate)}</strong>
-        <small class="muted">${escapeHtml(vehicle.type_name || '')} · ${escapeHtml(vehicle.driver_name || 'без водителя')}</small>
+        <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
+        <small class="muted"> · ${escapeHtml(vehicle.type_name || '')} · ${escapeHtml(vehicle.driver_name || 'без водителя')}</small>
+        ${busy ? '' : nextEventHint(nextVehicleEvent(data, vehicle.id, loadMs), loadMs)}</span>
         <span class="badge ${busy ? 'warn' : 'ok'}" style="margin-left:auto">${busy ? escapeHtml(busy) : 'свободна'}</span>
       </button>`).join('')}
     </div>

@@ -287,6 +287,19 @@ test('потребность от логистики: ремонт и «без �
   assert.ok(!candidates.some(candidate => candidate.vehicle.plate === 'А5'),
     'резерв исключает из кандидатов подбора');
   assert.ok(candidates.some(candidate => candidate.vehicle.plate === 'А1'));
+
+  // Подсказка при назначении: ближайшее событие сцепки после момента погрузки —
+  // самое раннее из будущих рейсов и диспозиций; прошлые не показываются.
+  const { nextVehicleEvent } = await import('../public/assets/sales.js');
+  data.trips.push({ vehicle_id: 'А1', status: 'plan', from_name: 'Дом', to_name: 'Москва',
+    starts_at: iso(now + 3 * 86_400_000), ends_at: iso(now + 4 * 86_400_000) });
+  data.dispositions.push({ vehicle_id: 'А1', kind: 'shift',
+    starts_at: iso(now + 86_400_000), ends_at: iso(now + 2 * 86_400_000) });
+  const eventA1 = nextVehicleEvent(data, 'А1', now);
+  assert.equal(eventA1.label, 'Пересменка', 'пересменка раньше рейса — она первая');
+  const eventAfterShift = nextVehicleEvent(data, 'А1', now + 2 * 86_400_000);
+  assert.ok(eventAfterShift.label.includes('рейс'), 'после пересменки следующее — рейс');
+  assert.equal(nextVehicleEvent(data, 'А4', now), null, 'без будущих событий — null');
 });
 
 test('портфель продаж: назначенные заявки уходят к логисту, возвращаются при отклонении', async () => {

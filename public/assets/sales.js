@@ -4,6 +4,7 @@
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast } from './api.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
+import { DISP_KINDS } from './resource.js';
 
 export { STAGES, orderStage };
 
@@ -26,6 +27,35 @@ function atHour(date, hour) {
   const result = new Date(date);
   result.setUTCHours(hour, 0, 0, 0);
   return result;
+}
+
+// Ближайшее событие сцепки после момента погрузки: запланированный рейс
+// или интервал диспозиции (пересменка, ремонт, резерв…) — подсказка при
+// назначении, чтобы новый рейс не упёрся в существующий план.
+export function nextVehicleEvent(data, vehicleId, fromMs) {
+  const events = [];
+  data.trips
+    .filter(trip => trip.vehicle_id === vehicleId && trip.status !== 'rejected' &&
+      Date.parse(trip.starts_at) >= fromMs)
+    .forEach(trip => events.push({
+      at: Date.parse(trip.starts_at),
+      label: `Запланирован рейс ${routeLabel(trip)}`
+    }));
+  (data.dispositions || [])
+    .filter(item => item.vehicle_id === vehicleId && Date.parse(item.starts_at) >= fromMs)
+    .forEach(item => events.push({
+      at: Date.parse(item.starts_at),
+      label: DISP_KINDS.find(kind => kind.kind === item.kind)?.label || item.kind
+    }));
+  return events.sort((a, b) => a.at - b.at)[0] || null;
+}
+
+// Подсказка «⏭ следующее событие»: ближе двух суток к погрузке — предупреждение.
+export function nextEventHint(event, fromMs) {
+  if (!event) return '<small class="next-event free">⏭ дальше событий нет — сцепка свободна</small>';
+  const soon = event.at - fromMs < 2 * 86_400_000;
+  return `<small class="next-event ${soon ? 'warn' : ''}">⏭ ${escapeHtml(event.label)}
+    · ${formatDateTime(event.at)}${soon ? ' — впритык к погрузке' : ''}</small>`;
 }
 
 // Ставка без НДС: наличная перевозка — вся сумма (НДС нет),
@@ -829,28 +859,37 @@ function rejectDialog(order, data, context) {
 export function assignDialog(order, data, showModal, closeModal, onReload, options = {}) {
   const candidates = matchVehicles(data, order.from_name, order.window_from);
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
+  const loadMs = Date.parse(order.window_from);
   showModal(`<h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>
     <p class="muted">${escapeHtml(order.customer_name)} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${escapeHtml(order.body_type || 'Реф')} ${escapeHtml(order.temperature_mode || '')}</p>
     ${order.comment ? `<p class="muted">💬 ${escapeHtml(order.comment)}</p>` : ''}
     <div class="list" style="max-height:220px;overflow:auto;margin-bottom:10px">
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">
-        <strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
-        <small class="muted">${escapeHtml(candidate.vehicle.type_name)}${candidate.readyAt
+        <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
+        <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name)}${candidate.readyAt
           ? ` · свободна с ${fmtDateTime(candidate.readyAt)}` : ''}</small>
+        ${nextEventHint(nextVehicleEvent(data, candidate.vehicle.id, loadMs), loadMs)}</span>
         <span class="badge ${candidate.inZone ? 'ok' : 'warn'}" style="margin-left:auto">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.zoneName || 'перегон')}</span>
       </button>`).join('') || '<p class="muted">Нет свободных к сроку — выберите вручную.</p>'}
     </div>
     <label class="field">Или вручную из парка<select id="assignVehicle">
       ${workFleet.map(vehicle => `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)}</option>`).join('')}
     </select></label>
+    <div id="assignNext"></div>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button type="button" class="button" id="assignOk">Назначить</button>
     </div>`);
   const select = document.getElementById('assignVehicle');
+  const showNext = () => {
+    document.getElementById('assignNext').innerHTML =
+      nextEventHint(nextVehicleEvent(data, select.value, loadMs), loadMs);
+  };
+  select.addEventListener('change', showNext);
   if (candidates[0]) select.value = candidates[0].vehicle.id;
+  showNext();
   document.querySelectorAll('.sugtruck').forEach(element =>
-    element.addEventListener('click', () => { select.value = element.dataset.plate; }));
+    element.addEventListener('click', () => { select.value = element.dataset.plate; showNext(); }));
   document.getElementById('assignOk').onclick = async () => {
     try {
       await api(`/api/orders/${order.id}/assign`, {
