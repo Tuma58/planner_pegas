@@ -5,6 +5,7 @@ import { buildReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales } from './sales.js';
 import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
+import { setupGuide } from './guide.js';
 import { DISP_KINDS, renderResource } from './resource.js';
 import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
@@ -1220,6 +1221,11 @@ try {
   renderMain();
   refreshExceptions();
   setupChat(state);
+  setupGuide({
+    views: () => MAIN_VIEWS.filter(view => view.show()).map(view => view.id),
+    activeView: () => state.view,
+    showModal
+  });
 } catch (error) {
   if (!error.message.includes('Требуется вход')) toast(error.message, 'error');
 }
