@@ -200,7 +200,7 @@ export function reportSnapshot(db, fromValue, toValue) {
     const vehicleTrips = byVehicleTrips.get(vehicle.id) || [];
     for (let day = 0; day < dayCount; day += 1) {
       const midpoint = fromMs + (day + 0.5) * 86_400_000;
-      const disposition = vehicleDispositions.find(row => row.kind !== 'work' && covers(row, midpoint));
+      const disposition = vehicleDispositions.find(row => row.kind !== 'reserve' && covers(row, midpoint));
       if (disposition) {
         if (disposition.kind === 'repair') machineDays.repair += 1;
         else if (disposition.kind === 'no_driver') machineDays.noDriver += 1;
@@ -283,7 +283,7 @@ export function vehicleUtilization(db, fromValue, toValue) {
     const counts = { work: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
     for (let day = 0; day < dayCount; day += 1) {
       const midpoint = fromMs + (day + 0.5) * 86_400_000;
-      const disposition = dispositions.find(row => row.kind !== 'work' && covers(row, midpoint));
+      const disposition = dispositions.find(row => row.kind !== 'reserve' && covers(row, midpoint));
       if (disposition) {
         if (disposition.kind === 'repair') counts.repair += 1;
         else if (disposition.kind === 'no_driver') counts.noDriver += 1;

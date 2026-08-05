@@ -5,6 +5,7 @@ import { api, attachSearch, escapeHtml, formatDateTime, fromLocalInput, toast } 
 
 export const DISP_KINDS = [
   { kind: 'work', label: 'В работе', short: 'работа', color: 'var(--teal)' },
+  { kind: 'reserve', label: 'Резерв', short: 'резерв', color: '#5a9e54' },
   { kind: 'repair', label: 'В ремонте', short: 'ремонт', color: '#bd8f42' },
   { kind: 'no_driver', label: 'Без водителя', short: 'без вод.', color: '#b06a55' },
   { kind: 'shift', label: 'Пересменка', short: 'пересм.', color: '#5e87ad' },

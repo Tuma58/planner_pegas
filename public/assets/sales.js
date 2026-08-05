@@ -53,10 +53,11 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       .sort((a, b) => a.ends_at.localeCompare(b.ends_at));
     const last = trips[trips.length - 1] || null;
     const tripFreeMs = last ? Date.parse(last.ends_at) : 0;
-    // Блокирующие интервалы (ремонт, без водителя), заканчивающиеся позже рейса:
-    // сцепка реально доступна после самого позднего из них.
+    // Блокирующие интервалы (ремонт, без водителя, резерв под заказ),
+    // заканчивающиеся позже рейса: сцепка реально доступна после самого
+    // позднего из них. Резерв — сцепка обещана, продажам не предлагается.
     const blocking = (data.dispositions || []).filter(item =>
-      item.vehicle_id === vehicle.id && ['repair', 'no_driver'].includes(item.kind) &&
+      item.vehicle_id === vehicle.id && ['repair', 'no_driver', 'reserve'].includes(item.kind) &&
       Date.parse(item.ends_at) > Math.max(tripFreeMs, nowMs - 86_400_000));
     const blockEndMs = blocking.length ? Math.max(...blocking.map(item => Date.parse(item.ends_at))) : 0;
     // До выхода из ремонта/появления водителя больше суток — не потребность.
@@ -114,10 +115,10 @@ export function matchVehicles(data, fromZoneName, windowFrom) {
       Date.parse(trip.starts_at) <= moment && Date.parse(trip.ends_at) > moment)
     .map(trip => trip.vehicle_id));
   // Недоступные на момент погрузки (ремонт, без водителя, пересменка, выведена)
-  // кандидатами не предлагаются — та же логика, что и в потребности от логистики.
+  // и зарезервированные под другой заказ кандидатами не предлагаются —
+  // та же логика, что и в потребности от логистики.
   const blocked = new Set((data.dispositions || [])
-    .filter(item => item.kind !== 'work' &&
-      Date.parse(item.starts_at) <= moment && moment < Date.parse(item.ends_at))
+    .filter(item => Date.parse(item.starts_at) <= moment && moment < Date.parse(item.ends_at))
     .map(item => item.vehicle_id));
   return data.vehicles
     .filter(vehicle => vehicle.status === 'work' && !busy.has(vehicle.id) && !blocked.has(vehicle.id))
@@ -321,7 +322,8 @@ export function renderSales(container, context) {
         <small class="muted" style="display:block">${request.idleMs > 0
           ? `стоит ${Math.max(1, Math.floor(request.idleMs / 86_400_000))} дн с ${fmtDateTime(request.freeAt)}`
           : `освободится ${fmtDateTime(request.freeAt)}`}${request.blockedKind
-          ? ` · ⚙ ${request.blockedKind === 'repair' ? 'из ремонта' : 'получит водителя'}` : ''}</small></span></div>`;
+          ? ` · ⚙ ${({ repair: 'из ремонта', no_driver: 'получит водителя',
+            reserve: 'выйдет из резерва' })[request.blockedKind] || request.blockedKind}` : ''}</small></span></div>`;
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'requests' ? 'open' : ''}" data-kpi="requests"

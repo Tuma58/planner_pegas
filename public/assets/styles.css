@@ -287,8 +287,8 @@ tbody tr:hover td { background: var(--hover); }
   font-size: 10px; font-weight: 700; overflow: hidden; white-space: nowrap;
   cursor: pointer;
 }
-/* «В работе» — второй план: бледная заливка, цветной текст, рейсы поверх читаются первыми */
-.dispo.work {
+/* «Резерв» — второй план: бледная заливка, цветной текст, рейсы поверх читаются первыми */
+.dispo.reserve {
   background: color-mix(in srgb, var(--dc) 12%, transparent);
   color: var(--dc); font-weight: 600;
   border-color: color-mix(in srgb, var(--dc) 45%, transparent);

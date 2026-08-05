@@ -183,35 +183,39 @@ test('диспозиции: вид «В работе» принимается, �
   const admin = { username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор' };
   const first = openDatabase(databasePath, admin);
   const vehicle = first.prepare('SELECT id FROM vehicles LIMIT 1').get();
-  // Свежая схема сразу принимает плановую загрузку «В работе».
+  // Свежая схема сразу принимает бронь «Резерв под заказ».
   first.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
-    VALUES('d-work',?, 'work','2026-08-10T00:00:00.000Z','2026-08-11T00:00:00.000Z')`).run(vehicle.id);
-  // Эмуляция БД прежней версии: таблица с узким CHECK без 'work'.
+    VALUES('d-res',?, 'reserve','2026-08-10T00:00:00.000Z','2026-08-11T00:00:00.000Z')`).run(vehicle.id);
+  // Эмуляция БД прежней версии: CHECK со старым видом 'work' и такой записью.
   first.exec(`DROP TABLE vehicle_dispositions;
     CREATE TABLE vehicle_dispositions (
       id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
-      kind TEXT NOT NULL CHECK(kind IN ('repair','no_driver','shift','out')),
+      kind TEXT NOT NULL CHECK(kind IN ('work','repair','no_driver','shift','out')),
       starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
       created_by TEXT REFERENCES users(id), updated_by TEXT REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       CHECK(ends_at>starts_at));`);
   first.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note)
     VALUES('d-old',?, 'repair','2026-08-01T00:00:00.000Z','2026-08-02T00:00:00.000Z','старый интервал')`).run(vehicle.id);
+  first.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('d-legacy-work',?, 'work','2026-08-05T00:00:00.000Z','2026-08-06T00:00:00.000Z')`).run(vehicle.id);
   first.close();
-  // Повторное открытие пересоздаёт таблицу с расширенным CHECK, данные сохраняются.
+  // Повторное открытие пересоздаёт таблицу: CHECK с 'reserve', work → reserve.
   const second = openDatabase(databasePath, admin);
   t.after(() => second.close());
   assert.ok(second.prepare(`SELECT sql FROM sqlite_master WHERE name='vehicle_dispositions'`)
-    .get().sql.includes("'work'"), 'CHECK расширен видом work');
+    .get().sql.includes("'reserve'"), 'CHECK содержит вид reserve');
   assert.equal(second.prepare(`SELECT note FROM vehicle_dispositions WHERE id='d-old'`).get().note,
     'старый интервал', 'данные пережили миграцию');
+  assert.equal(second.prepare(`SELECT kind FROM vehicle_dispositions WHERE id='d-legacy-work'`)
+    .get().kind, 'reserve', 'прежняя бронь «В работе» стала резервом');
   second.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
-    VALUES('d-work-2',?, 'work','2026-08-12T00:00:00.000Z','2026-08-13T00:00:00.000Z')`).run(vehicle.id);
-  // Регрессия ТС 168: правка дат work-диспозиции (в т.ч. на более ранний срок)
-  // должна проходить — вид work обязан быть в списке допустимых при PATCH.
+    VALUES('d-res-2',?, 'reserve','2026-08-12T00:00:00.000Z','2026-08-13T00:00:00.000Z')`).run(vehicle.id);
+  // Регрессия ТС 168: правка дат резерва (в т.ч. на более ранний срок)
+  // должна проходить — вид reserve обязан быть в списке допустимых при PATCH.
   second.prepare(`UPDATE vehicle_dispositions SET starts_at='2026-08-10T00:00:00.000Z'
-    WHERE id='d-work-2'`).run();
-  assert.equal(second.prepare(`SELECT starts_at FROM vehicle_dispositions WHERE id='d-work-2'`)
+    WHERE id='d-res-2'`).run();
+  assert.equal(second.prepare(`SELECT starts_at FROM vehicle_dispositions WHERE id='d-res-2'`)
     .get().starts_at, '2026-08-10T00:00:00.000Z');
 });
 
@@ -227,16 +231,21 @@ test('потребность от логистики: ремонт и «без �
     starts_at: iso(endMs - 86_400_000), ends_at: iso(endMs) });
   const data = {
     reference: { zones, routeRates: [] },
-    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3'), vehicle('А4')],
+    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3'), vehicle('А4'), vehicle('А5'), vehicle('А6')],
     // А4 — «июльский хвост»: последний рейс закончился до начала месяца,
     // сцепка простаивает дольше всех и обязана быть в потребности.
     trips: [trip('А1', now - 3_600_000), trip('А2', now - 3_600_000), trip('А3', now - 3_600_000),
-      trip('А4', monthStart.getTime() - 5 * 86_400_000)],
+      trip('А4', monthStart.getTime() - 5 * 86_400_000),
+      trip('А5', now - 3_600_000), trip('А6', now - 3_600_000)],
     dispositions: [
       // А2: в ремонте ещё 3 дня — в потребность не попадает
       { vehicle_id: 'А2', kind: 'repair', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
       // А3: без водителя, выйдет через 10 часов — попадает с пометкой
-      { vehicle_id: 'А3', kind: 'no_driver', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) }
+      { vehicle_id: 'А3', kind: 'no_driver', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) },
+      // А5: в резерве под заказ ещё 3 дня — обещана, продажам не предлагается
+      { vehicle_id: 'А5', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
+      // А6: резерв истекает через 10 часов — видна с пометкой «выйдет из резерва»
+      { vehicle_id: 'А6', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) }
     ]
   };
   const requests = autoRequests(data, monthStart, monthEnd);
@@ -244,6 +253,9 @@ test('потребность от логистики: ремонт и «без �
   assert.ok(plates.includes('А1'), 'свободная сцепка в потребности');
   assert.ok(!plates.includes('А2'), 'в ремонте ещё 3 дня — скрыта');
   assert.ok(plates.includes('А3'), 'выходит из простоя менее чем через сутки — видна');
+  assert.ok(!plates.includes('А5'), 'в резерве под заказ — скрыта из потребности');
+  assert.equal(requests.find(request => request.vehicle.plate === 'А6')?.blockedKind,
+    'reserve', 'резерв истекает за сутки — пометка «выйдет из резерва»');
   const a3 = requests.find(request => request.vehicle.plate === 'А3');
   assert.equal(a3.blockedKind, 'no_driver', 'пометка «получит водителя»');
   assert.equal(a3.freeAt, data.dispositions[1].ends_at, 'момент освобождения — конец диспозиции');
@@ -259,6 +271,8 @@ test('потребность от логистики: ремонт и «без �
   const candidates = matchVehicles(data, 'Дом', iso(now + 3_600_000));
   assert.ok(!candidates.some(candidate => candidate.vehicle.plate === 'А2'),
     'ремонт исключает из кандидатов');
+  assert.ok(!candidates.some(candidate => candidate.vehicle.plate === 'А5'),
+    'резерв исключает из кандидатов подбора');
   assert.ok(candidates.some(candidate => candidate.vehicle.plate === 'А1'));
 });
 
@@ -615,10 +629,10 @@ test('контракты 1С и телематики идемпотентны, �
   assert.ok(withRepair.utilization.ktg < 1);
   assert.ok(withRepair.utilization.lostProfit >= 0);
 
-  // Бронь «В работе» — не недоступность: не попадает в «Выведен»,
-  // не перебивает факт рейса; день с бронью без рейса остаётся простоем.
+  // «Резерв под заказ» — не недоступность: не попадает в «Выведен»,
+  // не перебивает факт рейса; день резерва без рейса остаётся простоем.
   db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
-    VALUES('disp-util-2',?,'work','2026-07-01T00:00:00Z','2026-08-01T00:00:00Z')`).run(vehicleRow.id);
+    VALUES('disp-util-2',?,'reserve','2026-07-01T00:00:00Z','2026-08-01T00:00:00Z')`).run(vehicleRow.id);
   const withWork = reportSnapshot(db, '2026-07-01', '2026-08-01');
   assert.equal(withWork.utilization.machineDays.out, withRepair.utilization.machineDays.out);
   assert.equal(withWork.utilization.machineDays.work, withRepair.utilization.machineDays.work);

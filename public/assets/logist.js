@@ -16,7 +16,7 @@ function vehicleBusy(vehicleId, trip, data) {
     other.status !== 'rejected' && overlaps(other, trip));
   if (otherTrip) return `рейс ${otherTrip.from_point || otherTrip.from_name}→${otherTrip.to_point || otherTrip.to_name}`;
   const disposition = (data.dispositions || []).find(item => item.vehicle_id === vehicleId &&
-    item.kind !== 'work' && overlaps(item, trip));
+    item.kind !== 'reserve' && overlaps(item, trip));
   if (disposition) return { repair: 'в ремонте', no_driver: 'без водителя', shift: 'пересменка', out: 'выведена' }[disposition.kind] || 'недоступна';
   return null;
 }

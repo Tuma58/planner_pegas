@@ -90,9 +90,9 @@ function conflictIds(trips) {
 }
 
 function criticalIds(trips, dispositions) {
-  // Плановая «работа» — не недоступность, критичность не создаёт.
+  // «Резерв под заказ» — не недоступность, критичность не создаёт.
   return new Set(trips.filter(trip => trip.status !== 'rejected' && dispositions.some(item =>
-    item.kind !== 'work' && item.vehicle_id === trip.vehicle_id &&
+    item.kind !== 'reserve' && item.vehicle_id === trip.vehicle_id &&
     new Date(trip.starts_at) < new Date(item.ends_at) &&
     new Date(item.starts_at) < new Date(trip.ends_at))).map(trip => trip.id));
 }
@@ -166,9 +166,9 @@ function renderTimeline() {
         const left = Math.max(0, daysBetween(state.month, visibleStart)) * dayWidth;
         const width = Math.max(10, daysBetween(visibleStart, visibleEnd) * dayWidth - 2);
         const meta = dispositionMeta(item.kind);
-        // «В работе» — фоновая пометка плана, не событие: приглушается,
+        // «Резерв» — фоновая пометка плана, не событие: приглушается,
         // чтобы не спорить с плашками рейсов и проблемными диспозициями.
-        return `<span class="dispo ${item.kind === 'work' ? 'work' : ''}" data-disposition="${item.id}"
+        return `<span class="dispo ${item.kind === 'reserve' ? 'reserve' : ''}" data-disposition="${item.id}"
           style="left:${left}px;width:${width}px;--dc:${meta.color}"
           title="${meta.label} · ${formatDateTime(item.starts_at)} → ${formatDateTime(item.ends_at)}${item.note ? `
 ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ? ` · ${escapeHtml(item.note)}` : ''}</span>`;
@@ -544,7 +544,7 @@ function openExceptions() {
       const trip = tripById(button.dataset.exShift);
       if (!trip) return;
       const blocker = (state.data.dispositions || [])
-        .filter(item => item.kind !== 'work' && item.vehicle_id === trip.vehicle_id &&
+        .filter(item => item.kind !== 'reserve' && item.vehicle_id === trip.vehicle_id &&
           Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
           Date.parse(item.starts_at) < Date.parse(trip.ends_at))
         .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
@@ -1033,10 +1033,10 @@ function openFleetDirectory() {
 }
 
 function openDisposition(item = null, prefill = null) {
-  // Планирование ТС по диспозициям: «В работе» — плановая загрузка,
-  // остальные виды — недоступность.
+  // Планирование ТС по диспозициям: «Резерв» — сцепка обещана под заказ
+  // (уходит из потребности и подбора), остальные виды — недоступность.
   const kinds = [
-    ['work', 'В работе (план)'], ['repair', 'В ремонте'], ['no_driver', 'Без водителя'],
+    ['reserve', 'Резерв под заказ'], ['repair', 'В ремонте'], ['no_driver', 'Без водителя'],
     ['shift', 'Пересменка'], ['out', 'Выведен']
   ];
   const source = item || prefill;

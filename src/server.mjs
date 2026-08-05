@@ -922,7 +922,7 @@ async function api(request, response, url) {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;
     const body = await readJson(request);
-    const allowed = new Set(['work', 'repair', 'no_driver', 'shift', 'out']);
+    const allowed = new Set(['reserve', 'repair', 'no_driver', 'shift', 'out']);
     if (!body.vehicleId || !allowed.has(body.kind)) {
       return errorJson(response, 422, 'ТС и вид диспозиции обязательны');
     }
@@ -950,7 +950,7 @@ async function api(request, response, url) {
     const startsAt = Date.parse(body.startsAt ?? current.starts_at);
     const endsAt = Date.parse(body.endsAt ?? current.ends_at);
     const kind = body.kind ?? current.kind;
-    if (!['work', 'repair', 'no_driver', 'shift', 'out'].includes(kind) || endsAt <= startsAt) {
+    if (!['reserve', 'repair', 'no_driver', 'shift', 'out'].includes(kind) || endsAt <= startsAt) {
       return errorJson(response, 422, 'Некорректный интервал');
     }
     db.prepare(`UPDATE vehicle_dispositions SET vehicle_id=?,kind=?,starts_at=?,ends_at=?,
@@ -1203,9 +1203,9 @@ async function api(request, response, url) {
         }
       }
     }
-    // «В работе (план)» — не недоступность: рейс поверх брони работы — норма.
+    // «Резерв под заказ» — не недоступность: рейс поверх резерва — норма.
     const critical = trips.filter(trip => trip.status !== 'rejected' && dispositions.some(item =>
-      item.kind !== 'work' && item.vehicle_id === trip.vehicle_id &&
+      item.kind !== 'reserve' && item.vehicle_id === trip.vehicle_id &&
       Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
       Date.parse(item.starts_at) < Date.parse(trip.ends_at)));
     // Отклонённые рейсы убраны из оперативного реестра: их реестр с причинами —
