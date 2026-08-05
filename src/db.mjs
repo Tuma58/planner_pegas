@@ -319,6 +319,46 @@ function migrateColumns(db) {
         .run(JSON.stringify(orderOptions));
     }
   }
+  // Нормативы транзитного времени: 50 км/ч, 3 ч на грузовую операцию,
+  // коэффициент 1,5 (включает отдых водителя — после рейса сцепка готова).
+  // Идемпотентно дополняем существующие настройки, не трогая правки админа.
+  const calculationRow = db.prepare(`SELECT value_json FROM settings WHERE key='calculation'`).get();
+  if (calculationRow) {
+    const calculation = JSON.parse(calculationRow.value_json);
+    if (calculation.techSpeedKmh == null) {
+      calculation.techSpeedKmh = 50;
+      calculation.handlingHoursPerOperation = 3;
+      calculation.transitFactor = 1.5;
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
+        .run(JSON.stringify(calculation));
+    }
+  }
+  // Перепланирование по новой формуле транзита: у рейсов в статусе «план»
+  // (не начатых) конец пересчитывается — (км/50 + 2×3ч) × 1,5 от начала,
+  // но не раньше окна заказа клиента. Стоянки без фактов пересоберутся
+  // по новым временам сами (ensureTripStops). Однократно.
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='transit_replan_v1'`).get()) {
+    const calcRow = db.prepare(`SELECT value_json FROM settings WHERE key='calculation'`).get();
+    const calc = calcRow ? JSON.parse(calcRow.value_json) : {};
+    const speed = Number(calc.techSpeedKmh || 50);
+    const perOperation = Number(calc.handlingHoursPerOperation || 3);
+    const factor = Number(calc.transitFactor || 1.5);
+    const plans = db.prepare(`SELECT t.id,t.starts_at,t.distance_km,o.window_to
+      FROM trips t LEFT JOIN orders o ON o.trip_id=t.id WHERE t.status='plan'`).all();
+    const update = db.prepare(`UPDATE trips SET ends_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`);
+    const clearStops = db.prepare(`DELETE FROM trip_stops WHERE trip_id=?
+      AND actual_arrival IS NULL AND actual_departure IS NULL
+      AND work_started_at IS NULL AND work_finished_at IS NULL`);
+    for (const trip of plans) {
+      const transitMs = (Number(trip.distance_km || 0) / speed + 2 * perOperation) * factor * 3_600_000;
+      const endMs = Math.max(Date.parse(trip.starts_at) + transitMs,
+        trip.window_to ? Date.parse(trip.window_to) : 0);
+      if (!Number.isFinite(endMs)) continue;
+      update.run(new Date(endMs).toISOString(), trip.id);
+      clearStops.run(trip.id);
+    }
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('transit_replan_v1','1')`).run();
+  }
   // Инвариант реестра отклонённых: у каждой отклонённой заявки есть причина.
   // Новые пути отклонения требуют её обязательно (сервер вернёт 422);
   // записи, созданные до этого правила, получают явную пометку.

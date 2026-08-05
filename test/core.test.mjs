@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { nextOrderNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone } from '../src/planner-service.mjs';
+import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -217,6 +217,13 @@ test('диспозиции: вид «В работе» принимается, �
     window_from,window_to,status,stage)
     VALUES('o-nonum','Клиент',?,?,50000,'2026-08-10T08:00:00.000Z','2026-08-12T18:00:00.000Z','new',0)`)
     .run(zoneId, zoneId);
+  // Плановый рейс со старой длительностью — перепланируется новой формулой:
+  // 500 км → 24 ч от начала (заявки с более широким окном у рейса нет).
+  first.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,starts_at,ends_at,
+    distance_km,revenue_vat,status)
+    VALUES('t-replan',?,?,?,'2026-08-20T08:00:00.000Z','2026-08-25T08:00:00.000Z',500,90000,'plan')`)
+    .run(vehicle.id, zoneId, zoneId);
+  first.prepare(`DELETE FROM app_meta WHERE key='transit_replan_v1'`).run();
   first.close();
   // Повторное открытие пересоздаёт таблицу: CHECK с 'reserve', work → reserve.
   const second = openDatabase(databasePath, admin);
@@ -235,6 +242,9 @@ test('диспозиции: вид «В работе» принимается, �
     WHERE id='d-res-2'`).run();
   assert.equal(second.prepare(`SELECT starts_at FROM vehicle_dispositions WHERE id='d-res-2'`)
     .get().starts_at, '2026-08-10T00:00:00.000Z');
+
+  assert.equal(second.prepare(`SELECT ends_at FROM trips WHERE id='t-replan'`).get().ends_at,
+    '2026-08-21T08:00:00.000Z', 'план перепланирован: 500 км = 24 часа');
 
   // Автономер: система присвоила заявке следующий номер сквозного счётчика,
   // nextOrderNo продолжает нумерацию без повторов.
@@ -648,6 +658,10 @@ test('контракты 1С и телематики идемпотентны, �
     rideId: '1С-TEST-1', km: 650, status: 'done', unloadedAt: '2026-07-12T10:00:00Z'
   }], user), { matched: 1, kmUpdated: 1, statusUpdated: 1, skipped: 0 });
   assert.equal(db.prepare('SELECT actual_distance_km FROM trips WHERE id=?').get(trip.id).actual_distance_km, 650);
+  // Транзит: (км/50 + 2×3ч) × 1,5 — 500 км ровно сутки.
+  assert.equal(transitHours(500, {}), 24);
+  assert.equal(transitHours(653, {}), (653 / 50 + 6) * 1.5);
+
   const report = reportSnapshot(db, '2026-07-01', '2026-08-01');
   assert.ok(report.netRevenue > 0);
   assert.ok(report.fixed > 0);

@@ -15,6 +15,16 @@ export function resolveZone(db, value) {
     WHERE a.alias=? COLLATE NOCASE LIMIT 1`).get(normalized, normalized) || null;
 }
 
+// Транзитное время рейса: движение (50 км/ч) + две грузовые операции
+// (по 3 ч), сумма × 1,5 — запас включает отдых водителя, после ends_at
+// сцепка готова к следующему рейсу.
+export function transitHours(distanceKm, calculation = {}) {
+  const speed = Number(calculation.techSpeedKmh || 50);
+  const perOperation = Number(calculation.handlingHoursPerOperation || 3);
+  const factor = Number(calculation.transitFactor || 1.5);
+  return (Number(distanceKm || 0) / speed + 2 * perOperation) * factor;
+}
+
 function routeDistance(db, fromId, toId) {
   if (fromId === toId) return 40;
   return Number(db.prepare(`SELECT distance_km FROM route_rates
@@ -68,10 +78,9 @@ export function importTripsFrom1C(db, rows, user) {
         }
         const startsAt = isoDate(row.depDate, 'depDate');
         const distance = Number(row.km) > 0 ? Number(row.km) : routeDistance(db, from.id, to.id);
-        const defaultDays = distance / Number(settings.dailyMileageKm || 600) + Number(settings.handlingDays || 0.5);
         const endsAt = row.doneDate
           ? isoDate(row.doneDate, 'doneDate')
-          : new Date(Date.parse(startsAt) + defaultDays * 86_400_000).toISOString();
+          : new Date(Date.parse(startsAt) + transitHours(distance, settings) * 3_600_000).toISOString();
         if (Date.parse(endsAt) <= Date.parse(startsAt)) {
           throw new Error('doneDate должна быть позже depDate');
         }

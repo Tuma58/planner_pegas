@@ -12,7 +12,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, vehicleUtilization
+  importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -774,8 +774,10 @@ async function api(request, response, url) {
     // Плановый километраж по адресам заявки — приоритет; зонный тариф — фолбэк.
     const distance = Number(body.distanceKm || order.planned_km || rate?.distance_km || 500);
     const startsAt = order.window_from;
-    const duration = distance / Number(settings.dailyMileageKm || 600) + Number(settings.handlingDays || 0.5);
-    const endsAt = new Date(Date.parse(startsAt) + duration * 86_400_000).toISOString();
+    // Транзит: (км/50 + 2×3ч) × 1,5. Если окно заказа клиента шире расчёта —
+    // план ставится по окну клиента (доставка к его сроку).
+    const transitEnd = Date.parse(startsAt) + transitHours(distance, settings) * 3_600_000;
+    const endsAt = new Date(Math.max(transitEnd, Date.parse(order.window_to || 0))).toISOString();
     const tripId = order.trip_id || randomUUID();
     db.exec('BEGIN IMMEDIATE');
     try {

@@ -145,6 +145,9 @@ export const defaultSettings = {
     individualEntrepreneurVatRate: 0.07,
     dailyMileageKm: 600,
     handlingDays: 0.5,
+    techSpeedKmh: 50,
+    handlingHoursPerOperation: 3,
+    transitFactor: 1.5,
     utilizationTarget: 0.951,
     demurragePerHourVat: 1000
   },

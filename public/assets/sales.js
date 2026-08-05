@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast, transitHours } from './api.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -122,7 +122,7 @@ function routeInfo(data, fromId, toId) {
     || rates.find(item => item.from_zone_id === toId && item.to_zone_id === fromId);
   const settings = data.settings.calculation;
   const distance = Number(rate?.distance_km || 500);
-  const transit = distance / Number(settings.dailyMileageKm || 600) + Number(settings.handlingDays || 0.5);
+  const transit = transitHours(distance, settings) / 24;
   return { distance, transit, rate: Number(rate?.default_rate_vat || Math.round(distance * 120)) };
 }
 

@@ -1,4 +1,4 @@
-import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
@@ -603,7 +603,7 @@ function calculation(fromId, toId, revenue = 0, customerName = '') {
       item.from_zone_id === toId && item.to_zone_id === fromId);
   const distance = Number(rate?.distance_km || 700);
   const gross = Number(revenue || rate?.default_rate_vat || 0);
-  const days = distance / settings.dailyMileageKm + settings.handlingDays;
+  const days = transitHours(distance, settings) / 24;
   const vat = /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(customerName)
     ? Number(settings.individualEntrepreneurVatRate ?? 0.07)
     : Number(settings.vatRate ?? 0.22);
