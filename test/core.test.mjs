@@ -614,6 +614,15 @@ test('контракты 1С и телематики идемпотентны, �
   assert.equal(withRepair.utilization.techDays, 128 * 31 - 10);
   assert.ok(withRepair.utilization.ktg < 1);
   assert.ok(withRepair.utilization.lostProfit >= 0);
+
+  // Бронь «В работе» — не недоступность: не попадает в «Выведен»,
+  // не перебивает факт рейса; день с бронью без рейса остаётся простоем.
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('disp-util-2',?,'work','2026-07-01T00:00:00Z','2026-08-01T00:00:00Z')`).run(vehicleRow.id);
+  const withWork = reportSnapshot(db, '2026-07-01', '2026-08-01');
+  assert.equal(withWork.utilization.machineDays.out, withRepair.utilization.machineDays.out);
+  assert.equal(withWork.utilization.machineDays.work, withRepair.utilization.machineDays.work);
+  assert.equal(withWork.utilization.techDays, withRepair.utilization.techDays);
 });
 
 test('OData upsert принимает поля ТК 20 и короткие статусы', t => {
