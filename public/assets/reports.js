@@ -19,7 +19,7 @@ export const REPORT_TITLES = {
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 const pct = value => `${(value * 100).toFixed(1)}%`;
-const isIP = name => /\bИП\b/iu.test(String(name || ''));
+const isIP = name => /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(String(name || ''));
 const fmtDay = iso => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
   .format(new Date(`${iso}T12:00:00Z`));
 
@@ -33,7 +33,7 @@ function econByClient(data, from, to) {
   const calculation = data.settings.calculation;
   const map = new Map();
   data.trips.filter(trip => trip.status !== 'rejected' && inRange(trip, from, to)).forEach(trip => {
-    const vat = isIP(trip.customer_name)
+    const vat = trip.cash ? 0 : isIP(trip.customer_name)
       ? Number(calculation.individualEntrepreneurVatRate ?? 0.07)
       : Number(calculation.vatRate ?? 0.22);
     const net = Number(trip.revenue_vat) / (1 + vat);
@@ -305,9 +305,10 @@ export async function buildReport(kind, from, to, data) {
     const confirmedRows = confirmed.map(order => {
       const step = pipelineStep(order, data, () => false);
       return `<tr><td>${escapeHtml(order.customer_name)}</td>
+        <td class="mono">${escapeHtml(order.order_no || '—')}</td>
         <td>${escapeHtml(routeLabel(order))}</td>
         <td>${formatDateTime(order.window_from)}</td>
-        <td class="num">${rub(order.rate_vat)}</td>
+        <td class="num">${rub(order.rate_vat)}${Number(order.cash) ? ' <span class="badge">нал.</span>' : ''}</td>
         <td class="mono">${escapeHtml(step.plate || '—')}</td>
         <td>${escapeHtml(step.label)}</td></tr>`;
     }).join('');
@@ -332,7 +333,7 @@ export async function buildReport(kind, from, to, data) {
       <table class="rtable"><thead><tr><th>Стадия</th><th>Заявок</th><th>Среднее ожидание</th></tr></thead>
         <tbody>${stageRows || '<tr><td colspan=3>Нет заявок в работе</td></tr>'}</tbody></table>
       <h4>Подтверждённые заявки в работе</h4>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>ТС</th><th>Стадия</th></tr></thead>
+      <table class="rtable"><thead><tr><th>Заказчик</th><th>№ заказа</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>ТС</th><th>Стадия</th></tr></thead>
         <tbody>${confirmedRows || '<tr><td colspan=6>Подтверждённых заявок нет</td></tr>'}</tbody></table>
       <h4>Отклонённые заявки</h4>
       <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина</th></tr></thead>

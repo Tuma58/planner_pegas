@@ -257,6 +257,13 @@ function migrateColumns(db) {
   // Комментарий сотрудника к потребности: уточнения по рейсу (адрес, контакт,
   // особенности погрузки) — едет по конвейеру от продаж до диспетчера.
   ensure('orders', 'comment', "TEXT NOT NULL DEFAULT ''");
+  // Экономика по заказам: ID заказа клиента (сцепка с фактом выполнения)
+  // и перевозка за наличные — наличная ставка уже без НДС.
+  // Оба поля наследуются рейсом при назначении ТС.
+  ensure('orders', 'order_no', "TEXT NOT NULL DEFAULT ''");
+  ensure('orders', 'cash', 'INTEGER NOT NULL DEFAULT 0');
+  ensure('trips', 'order_no', "TEXT NOT NULL DEFAULT ''");
+  ensure('trips', 'cash', 'INTEGER NOT NULL DEFAULT 0');
   // Кузова пополнены реальными типами парка: Тушевоз, Допельшток, Паллет 33/41.
   // Идемпотентно дополняем существующие настройки, не трогая правки админа.
   const orderOptionsRow = db.prepare(`SELECT value_json FROM settings WHERE key='orderOptions'`).get();

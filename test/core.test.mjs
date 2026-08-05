@@ -637,6 +637,23 @@ test('контракты 1С и телематики идемпотентны, �
   assert.equal(withWork.utilization.machineDays.out, withRepair.utilization.machineDays.out);
   assert.equal(withWork.utilization.machineDays.work, withRepair.utilization.machineDays.work);
   assert.equal(withWork.utilization.techDays, withRepair.utilization.techDays);
+
+  // Перевозка за наличные: ставка уже без НДС — выручка берёт её целиком.
+  // Клиент рейса «Тестовый ИП» безналом очищается по 7% (кириллическое «ИП»
+  // обязано распознаваться — старый /\bИП\b/ не работал, все ИП шли по 22%).
+  db.prepare(`UPDATE trips SET cash=1 WHERE external_id='1c:1С-TEST-1'`).run();
+  const withCash = reportSnapshot(db, '2026-07-01', '2026-08-01');
+  const delta = withCash.netRevenue - withWork.netRevenue;
+  assert.ok(Math.abs(delta - (120000 - 120000 / 1.07)) < 1,
+    `наличный рейс ИП добавил очищавшиеся 7%: ${delta}`);
+
+  // Смена клиента на юрлицо (без «ИП») возвращает очистку 22%.
+  db.prepare(`UPDATE trips SET cash=0, customer_name='ООО Тест'
+    WHERE external_id='1c:1С-TEST-1'`).run();
+  const withOoo = reportSnapshot(db, '2026-07-01', '2026-08-01');
+  const oooDelta = withOoo.netRevenue - withWork.netRevenue;
+  assert.ok(Math.abs(oooDelta - (120000 / 1.22 - 120000 / 1.07)) < 1,
+    `юрлицо очищается по 22%: ${oooDelta}`);
 });
 
 test('OData upsert принимает поля ТК 20 и короткие статусы', t => {

@@ -157,7 +157,8 @@ export function reportSnapshot(db, fromValue, toValue) {
   let contribution = 0;
   let factRevenue = 0;
   for (const trip of trips) {
-    const vat = /\bИП\b/iu.test(trip.customer_name)
+    // Наличная перевозка — ставка уже без НДС, не очищается.
+    const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
       ? Number(calculation.individualEntrepreneurVatRate ?? 0.07)
       : Number(calculation.vatRate ?? 0.22);
     const net = Number(trip.revenue_vat) / (1 + vat);
@@ -271,7 +272,7 @@ export function vehicleUtilization(db, fromValue, toValue) {
     FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(to, from);
   const tripRows = db.prepare(`SELECT vehicle_id,starts_at,ends_at FROM trips
     WHERE status<>'rejected' AND starts_at<? AND ends_at>?`).all(to, from);
-  const revenueRows = db.prepare(`SELECT vehicle_id,customer_name,revenue_vat FROM trips
+  const revenueRows = db.prepare(`SELECT vehicle_id,customer_name,revenue_vat,cash FROM trips
     WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`).all(from, to);
   const byVehicleDispositions = Map.groupBy(dispositionRows, row => row.vehicle_id);
   const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
@@ -296,7 +297,7 @@ export function vehicleUtilization(db, fromValue, toValue) {
       }
     }
     const netRevenue = (byVehicleRevenue.get(vehicle.id) || []).reduce((sum, trip) => {
-      const vat = /\bИП\b/iu.test(trip.customer_name)
+      const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
         ? Number(calculation.individualEntrepreneurVatRate ?? 0.07)
         : Number(calculation.vatRate ?? 0.22);
       return sum + trip.revenue_vat / (1 + vat);

@@ -28,6 +28,17 @@ function atHour(date, hour) {
   return result;
 }
 
+// Ставка без НДС: наличная перевозка — вся сумма (НДС нет),
+// безналичная — очистка по ставке клиента (ИП 7%, остальные 22%).
+export function orderNet(order, data) {
+  const calc = data.settings.calculation;
+  if (Number(order.cash)) return Number(order.rate_vat) || 0;
+  const vat = /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(order.customer_name)
+    ? Number(calc.individualEntrepreneurVatRate ?? 0.07)
+    : Number(calc.vatRate ?? 0.22);
+  return (Number(order.rate_vat) || 0) / (1 + vat);
+}
+
 function routeInfo(data, fromId, toId) {
   const rates = data.reference.routeRates;
   const rate = rates.find(item => item.from_zone_id === fromId && item.to_zone_id === toId)
@@ -258,13 +269,16 @@ export function renderSales(container, context) {
       <span style="flex:1;min-width:0">
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         ${step.plate ? ` · <span class="mono">${escapeHtml(step.plate)}</span>` : ''}
-        <small class="muted" style="display:block">${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
+        ${Number(order.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
+        <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
         <div class="stepper-row">${stepper(step.stage)}<span class="pipe-inline">${waiting}${since}</span></div>
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <b>${money(order.rate_vat)}</b>
+        <small class="muted">${Number(order.cash) ? 'наличные · без НДС'
+          : `б. НДС ${money(orderNet(order, data))}`}</small>
         ${reassign || action}
         <span style="display:flex;gap:5px">
           ${can('orders:write') ? `<button class="button ghost small" data-edit-order="${order.id}"
@@ -296,7 +310,7 @@ export function renderSales(container, context) {
   const periodTrips = data.trips.filter(trip => trip.status !== 'rejected' &&
     new Date(trip.ends_at) >= state.month && new Date(trip.ends_at) < monthEnd);
   const periodNet = periodTrips.reduce((sum, trip) => {
-    const vat = /\bИП\b/iu.test(trip.customer_name)
+    const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22);
     return sum + trip.revenue_vat / (1 + vat);
   }, 0);
@@ -399,6 +413,9 @@ export function renderSales(container, context) {
               value="${inputValue(atHour(new Date(state.month.getTime() + 2 * 86_400_000), WORK_END_HOUR))}"></label>
           </div>
           <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate" type="number" min="0"></label>
+          <label class="field">№ заказа (ID)<input name="orderNo" maxlength="60"
+            placeholder="номер заказа в 1С / у клиента"></label>
+          <label class="checkline"><input type="checkbox" name="cash"> Перевозка за наличные — ставка без НДС</label>
           <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
             placeholder="адрес, контакт, особенности погрузки" autocomplete="off"></label>
           <div id="salesFeas" class="feas"></div>
@@ -564,6 +581,7 @@ export function renderSales(container, context) {
   container.querySelector('#salesForm').onsubmit = async event => {
     event.preventDefault();
     const values = formValues(event.currentTarget);
+    values.cash = values.cash ? 1 : 0;
     if (!values.rateVat) {
       values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
     }
@@ -698,6 +716,10 @@ export function editOrderDialog(order, data, context) {
       <label class="field">Окно по<input name="windowTo" type="datetime-local" required value="${inputValue(order.window_to)}"></label>
     </div>
     <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Number(order.rate_vat) || 0}"></label>
+    <label class="field">№ заказа (ID)<input name="orderNo" maxlength="60"
+      value="${escapeHtml(order.order_no || '')}" placeholder="номер заказа в 1С / у клиента"></label>
+    <label class="checkline"><input type="checkbox" name="cash" ${Number(order.cash) ? 'checked' : ''}>
+      Перевозка за наличные — ставка без НДС</label>
     <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
       value="${escapeHtml(order.comment || '')}" placeholder="адрес, контакт, особенности погрузки"></label>
     <div class="modal-actions">
@@ -728,9 +750,11 @@ export function editOrderDialog(order, data, context) {
   });
   document.getElementById('editOrderForm').onsubmit = async event => {
     event.preventDefault();
+    const values = formValues(event.target);
+    values.cash = values.cash ? 1 : 0;
     try {
       await api(`/api/orders/${order.id}`, {
-        method: 'PATCH', body: JSON.stringify(formValues(event.target))
+        method: 'PATCH', body: JSON.stringify(values)
       });
       context.closeModal();
       toast('Потребность обновлена');

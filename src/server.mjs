@@ -446,9 +446,15 @@ async function api(request, response, url) {
       id, trip.vehicleId, trip.orderId, trip.customerName, trip.fromZoneId, trip.toZoneId,
       trip.fromPoint, trip.toPoint, trip.startsAt, trip.endsAt, trip.distanceKm, trip.revenueVat,
       trip.status, trip.rejectionReason, trip.temperatureMode, trip.bodyType, user.id, user.id);
-    if (trip.orderId) db.prepare(`UPDATE orders SET status='planned',stage=2,trip_id=?,
-      assigned_vehicle_id=?,rejection_reason=NULL,returned_at=NULL,
-      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id, trip.vehicleId, trip.orderId);
+    if (trip.orderId) {
+      db.prepare(`UPDATE orders SET status='planned',stage=2,trip_id=?,
+        assigned_vehicle_id=?,rejection_reason=NULL,returned_at=NULL,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id, trip.vehicleId, trip.orderId);
+      // Рейс из заявки наследует форму оплаты и ID заказа — для экономики по факту.
+      db.prepare(`UPDATE trips SET cash=(SELECT cash FROM orders WHERE id=?),
+        order_no=(SELECT order_no FROM orders WHERE id=?) WHERE id=?`)
+        .run(trip.orderId, trip.orderId, id);
+    }
     ensureTripStops(db, id);
     const automatic = integrationPublic().writePolicy === 'automatic';
     queueOutbox(db, 'trips', id, 'create', tripOutboxPayload(id), automatic);
@@ -588,13 +594,14 @@ async function api(request, response, url) {
     }
     const id = randomUUID();
     db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
-      rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,created_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,order_no,cash,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, customerName, body.fromZoneId, body.toZoneId,
       String(body.fromPoint || '').trim(), String(body.toPoint || '').trim(), Number(body.rateVat || 0),
       new Date(windowFrom).toISOString(), new Date(windowTo).toISOString(),
       String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0),
-      String(body.comment || '').trim().slice(0, 500), user.id);
+      String(body.comment || '').trim().slice(0, 500),
+      String(body.orderNo || '').trim().slice(0, 60), body.cash ? 1 : 0, user.id);
     queueOutbox(db, 'orders', id, 'create', orderOutboxPayload(id),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'create', 'order', id, body, requestIp(request));
@@ -639,9 +646,11 @@ async function api(request, response, url) {
     }
     const confirmedAt = current.confirmed_at ||
       (stageChanged && nextStage >= 1 ? new Date().toISOString() : null);
+    const nextOrderNo = String(body.orderNo ?? current.order_no ?? '').trim().slice(0, 60);
+    const nextCash = 'cash' in body ? (body.cash ? 1 : 0) : Number(current.cash || 0);
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,from_point=?,to_point=?,
       rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,comment=?,
-      rejection_reason=?,returned_at=?,confirmed_at=?,
+      order_no=?,cash=?,rejection_reason=?,returned_at=?,confirmed_at=?,
       stage_changed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       String(body.customerName ?? current.customer_name).trim(),
@@ -653,14 +662,16 @@ async function api(request, response, url) {
       String(body.temperatureMode ?? current.temperature_mode),
       String(body.bodyType ?? current.body_type), nextStage,
       String(body.comment ?? current.comment ?? '').trim().slice(0, 500),
+      nextOrderNo, nextCash,
       rejectionReason, returnedAt, confirmedAt, stageChanged ? 1 : 0, match[0]);
-    // Заявка уже в плане у логиста: новая ставка — это выручка рейса,
-    // синхронизируем, пока рейс не закрыт оплатой.
-    if (current.trip_id && 'rateVat' in body &&
-        Number(body.rateVat) !== Number(current.rate_vat)) {
-      db.prepare(`UPDATE trips SET revenue_vat=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
+    // Заявка уже в плане у логиста: ставка, форма оплаты и ID заказа —
+    // атрибуты выручки рейса, синхронизируем, пока рейс не закрыт оплатой.
+    if (current.trip_id && (('rateVat' in body &&
+        Number(body.rateVat) !== Number(current.rate_vat)) ||
+        nextCash !== Number(current.cash || 0) || nextOrderNo !== (current.order_no || ''))) {
+      db.prepare(`UPDATE trips SET revenue_vat=?,cash=?,order_no=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
         WHERE id=? AND status NOT IN ('paid','rejected')`)
-        .run(Number(body.rateVat), user.id, current.trip_id);
+        .run(Number(body.rateVat ?? current.rate_vat), nextCash, nextOrderNo, user.id, current.trip_id);
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
         integrationPublic().writePolicy === 'automatic');
     }
@@ -709,16 +720,18 @@ async function api(request, response, url) {
     db.exec('BEGIN IMMEDIATE');
     try {
       if (order.trip_id) {
-        db.prepare(`UPDATE trips SET vehicle_id=?,status='plan',updated_by=?,updated_at=CURRENT_TIMESTAMP
-          WHERE id=?`).run(vehicle.id, user.id, tripId);
+        db.prepare(`UPDATE trips SET vehicle_id=?,status='plan',cash=?,order_no=?,
+          updated_by=?,updated_at=CURRENT_TIMESTAMP
+          WHERE id=?`).run(vehicle.id, Number(order.cash || 0), order.order_no || '', user.id, tripId);
       } else {
         db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
           from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status,temperature_mode,
-          body_type,created_by,updated_by)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'plan',?,?,?,?)`).run(
+          body_type,cash,order_no,created_by,updated_by)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'plan',?,?,?,?,?,?)`).run(
           tripId, vehicle.id, order.id, order.customer_name, order.from_zone_id, order.to_zone_id,
           order.from_point || '', order.to_point || '',
-          startsAt, endsAt, distance, order.rate_vat, order.temperature_mode, order.body_type, user.id, user.id);
+          startsAt, endsAt, distance, order.rate_vat, order.temperature_mode, order.body_type,
+          Number(order.cash || 0), order.order_no || '', user.id, user.id);
       }
       // Назначение ТС решает и «возврат из плана»: пометка снимается, запись
       // уходит из «Требует решения» по факту решения.

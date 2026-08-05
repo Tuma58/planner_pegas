@@ -230,6 +230,10 @@ th { padding: 9px 10px; background: var(--soft); color: var(--muted); font-size:
 td { padding: 9px 10px; border-top: 1px solid var(--grid); vertical-align: middle; }
 tbody tr:hover td { background: var(--hover); }
 .badge { display: inline-flex; padding: 3px 8px; border-radius: 12px; color: white; background: var(--muted); font-size: 10px; font-weight: 750; }
+/* Перевозка за наличные: чекбокс в форме заявки и бейдж в карточке */
+.checkline { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; color: var(--ink); font-size: 12px; cursor: pointer; }
+.checkline input { width: auto; }
+.cash-badge { margin-left: 6px; padding: 2px 7px; border-radius: 10px; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-size: 10px; font-weight: 750; white-space: nowrap; }
 .badge.ok { background: var(--ok); }
 .badge.warn { background: var(--warn); }
 .badge.bad { background: var(--bad); }

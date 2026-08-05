@@ -45,7 +45,7 @@ function cumChart(fact, plan, labels) {
 }
 
 // Выручка без НДС рейса — единое правило (ИП 7%).
-const tripNet = (trip, calc) => trip.revenue_vat / (1 + (/\bИП\b/iu.test(trip.customer_name)
+const tripNet = (trip, calc) => trip.revenue_vat / (1 + (trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
   ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22)));
 
 export async function renderBoss(container, context) {

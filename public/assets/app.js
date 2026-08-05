@@ -136,7 +136,7 @@ function renderTimeline() {
   // завершившимся ко «вчера-сегодня», прогноз — включая запланированные.
   const calc = state.data.settings.calculation;
   const tripMargin = trip => {
-    const vat = /\bИП\b/iu.test(trip.customer_name)
+    const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22);
     const net = trip.revenue_vat / (1 + vat);
     const days = Math.max(0, daysBetween(trip.starts_at, trip.ends_at));
@@ -604,7 +604,7 @@ function calculation(fromId, toId, revenue = 0, customerName = '') {
   const distance = Number(rate?.distance_km || 700);
   const gross = Number(revenue || rate?.default_rate_vat || 0);
   const days = distance / settings.dailyMileageKm + settings.handlingDays;
-  const vat = /\bИП\b/iu.test(customerName)
+  const vat = /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(customerName)
     ? Number(settings.individualEntrepreneurVatRate ?? 0.07)
     : Number(settings.vatRate ?? 0.22);
   const variable = distance *
