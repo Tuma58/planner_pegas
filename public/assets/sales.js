@@ -135,6 +135,20 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
   const requests = [];
   const nowMs = Date.now();
   const zoneByName = Object.fromEntries(data.reference.zones.map(zone => [zone.name, zone]));
+  // Субъект РФ, где сцепка освобождается: адрес выгрузки заявки последнего
+  // рейса, иначе пункт выгрузки рейса по справочнику адресов.
+  const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
+  const regionOfTrip = trip => {
+    if (!trip) return '';
+    const order = trip.order_id
+      ? (data.orders || []).find(item => item.id === trip.order_id) : null;
+    const byOrder = order ? addressById(order.to_address_id)?.region : '';
+    if (byOrder) return byOrder;
+    const point = String(trip.to_point || '').trim().toLowerCase();
+    return point
+      ? (data.reference.addresses || []).find(item => item.name.toLowerCase() === point)?.region || ''
+      : '';
+  };
   data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
     const trips = data.trips
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
@@ -171,6 +185,7 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       : null;
     requests.push({
       vehicle, zone,
+      region: regionOfTrip(last),
       freeAt: endsAt.toISOString(),
       // Простой: сцепка уже стоит без загрузки (idleMs > 0) — приоритет продаж.
       idleMs: Math.max(0, idleMs),
@@ -246,7 +261,8 @@ export function renderSales(container, context) {
   };
   const allRequests = autoRequests(data, state.month, monthEnd);
   const requests = allRequests.filter(request =>
-    (!filter.zone || request.zone.name === filter.zone) && inDateRange(request.freeAt) &&
+    (!filter.zone || request.zone.name === filter.zone) &&
+    (!filter.region || request.region === filter.region) && inDateRange(request.freeAt) &&
     (!query || `${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name} ${request.suggestCustomer || ''}`
       .toLowerCase().includes(query)));
   // Заявка проходит фильтр, если зона участвует в маршруте, окно погрузки
