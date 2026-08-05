@@ -158,6 +158,24 @@ test('отклонение рейса возвращает заявку в пр�
   assert.ok(order.returned_at, 'возврат помечается временем — продажи видят историю');
 });
 
+test('водители: сид из карточек ТС, закрепление и мягкое увольнение', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-drivers-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  // Сид: водители перенесены из vehicles.driver_name с закреплением.
+  const total = db.prepare('SELECT COUNT(*) n FROM drivers').get().n;
+  assert.ok(total > 0, 'справочник наполнен из карточек ТС');
+  const linked = db.prepare(`SELECT COUNT(*) n FROM drivers WHERE vehicle_id IS NOT NULL`).get().n;
+  assert.equal(linked, total, 'каждый перенесённый водитель закреплён за сцепкой');
+  // Повторное открытие не плодит дубли (флаг drivers_seeded_v1).
+  const sample = db.prepare('SELECT * FROM drivers LIMIT 1').get();
+  const vehicle = db.prepare('SELECT * FROM vehicles WHERE id=?').get(sample.vehicle_id);
+  assert.equal(vehicle.driver_name.trim(), sample.full_name, 'имя синхронизировано с картой ТС');
+});
+
 test('диспозиции: вид «В работе» принимается, старая таблица мигрирует', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-disp-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

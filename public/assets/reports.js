@@ -11,6 +11,7 @@ export const REPORT_TITLES = {
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
   execution: 'Контроль выполнения рейсов',
+  vehicles: 'Аналитика по сцепкам',
   conflicts: 'История конфликтов',
   'rejected-orders': 'Реестр заявок',
   history: 'История отчётных периодов'
@@ -260,6 +261,29 @@ export async function buildReport(kind, from, to, data) {
       <h4>Опоздания по направлениям</h4>
       <table class="rtable"><thead><tr><th>Геозона назначения</th><th class="num">Опозданий</th></tr></thead>
         <tbody>${directionRows || '<tr><td colspan=2>Опозданий не было</td></tr>'}</tbody></table>`;
+  } else if (kind === 'vehicles') {
+    // Вклад каждой сцепки: тот же серверный расчёт, что и в модалке
+    // «Аналитика» блока «Ресурс» — машино-дни, КТГ, использование, выручка.
+    const stats = await api(`/api/resource-stats?from=${from}T00:00:00.000Z&to=${to}T00:00:00.000Z`);
+    const rows = [...stats.items].sort((a, b) => a.utilization - b.utilization);
+    const worst = rows.slice(0, 3).map(row => row.plate).join(', ');
+    body = `<div class="rsums">
+        <span class="rsum">Сцепок: <b>${rows.length}</b></span>
+        <span class="rsum">Период: <b>${stats.days} дн</b></span>
+        <span class="rsum">Худшие по использованию: <b>${escapeHtml(worst)}</b></span></div>
+      <div class="geohint">Проблемные сверху. Машино-дни по состояниям (методика midpoint), выручка без НДС по дате выполнения.</div>
+      <table class="rtable"><thead><tr><th>Сцепка</th><th>Водитель</th><th>Тип</th>
+        <th class="num">Работа</th><th class="num">Ремонт</th><th class="num">Без вод.</th>
+        <th class="num">Простой</th><th class="num">КТГ</th><th class="num">Использование</th>
+        <th class="num">Рейсов</th><th class="num">Выручка б.НДС</th></tr></thead><tbody>
+      ${rows.map(row => `<tr><td class="mono">${escapeHtml(row.plate)}</td>
+        <td>${escapeHtml(row.driver || '—')}</td><td>${escapeHtml(row.type)}</td>
+        <td class="num">${row.work}</td><td class="num">${row.repair}</td>
+        <td class="num">${row.noDriver}</td><td class="num">${row.idle}</td>
+        <td class="num">${(row.ktg * 100).toFixed(0)}%</td>
+        <td class="num ${row.utilization < 0.45 ? 'danger' : ''}">${(row.utilization * 100).toFixed(0)}%</td>
+        <td class="num">${row.trips}</td><td class="num">${rub(row.netRevenue)}</td></tr>`).join('')}
+      </tbody></table>`;
   } else if (kind === 'rejected-orders') {
     // Реестр заявок: подтверждённые в работе, отклонённые и вернувшиеся из плана —
     // с причинами, плюс где конвейер стоит дольше всего.

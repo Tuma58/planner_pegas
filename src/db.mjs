@@ -97,6 +97,13 @@ CREATE TABLE IF NOT EXISTS vehicle_dispositions (
 );
 CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
   ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
+CREATE TABLE IF NOT EXISTS drivers (
+  id TEXT PRIMARY KEY, full_name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','vacation','sick','fired')),
+  vehicle_id TEXT REFERENCES vehicles(id) ON DELETE SET NULL,
+  absent_from TEXT, absent_to TEXT, note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   author_id TEXT REFERENCES users(id), author_name TEXT NOT NULL DEFAULT '',
@@ -183,7 +190,28 @@ export function openDatabase(databasePath, admin, options = {}) {
   db.exec(SCHEMA);
   migrateColumns(db);
   seed(db, admin, options);
+  seedDrivers(db);
   return db;
+}
+
+// Водители как сущность: однократный перенос имён из карточек ТС
+// в справочник drivers с закреплением за сцепкой. Выполняется после сида
+// (на свежей БД парк уже заполнен). Дальше правки идут через справочник,
+// vehicles.driver_name синхронизируется как витрина.
+function seedDrivers(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='drivers_seeded_v1'`).get()) return;
+  const rows = db.prepare(`SELECT id,driver_name FROM vehicles
+    WHERE driver_name IS NOT NULL AND TRIM(driver_name)<>''`).all();
+  const seen = new Set();
+  const insert = db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id) VALUES(?,?,?)`);
+  for (const row of rows) {
+    const name = row.driver_name.trim();
+    // Один водитель может значиться на нескольких сцепках — закрепляем за первой.
+    if (seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    insert.run(randomUUID(), name, row.id);
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('drivers_seeded_v1','1')`).run();
 }
 
 function migrateColumns(db) {
@@ -255,6 +283,9 @@ function migrateColumns(db) {
   // Отметка «продажи уведомлены об опоздании» — чтобы диспетчер видел,
   // что клиенту уже сообщили о переносе прибытия.
   ensure('trips', 'delay_notified_at', 'TEXT');
+  // Отметка последнего авто-уведомления ресурснику по сцепке (без водителя /
+  // без заказа 3+ дня) — не чаще раза в сутки.
+  ensure('vehicles', 'resource_alert_at', 'TEXT');
   // Факт прибытия под выгрузку (отмечает диспетчер): до него затянувшийся
   // рейс — «опоздание в пути», после — отсчёт выгрузки и простоя.
   ensure('trips', 'arrived_at', 'TEXT');

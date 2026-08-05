@@ -251,3 +251,65 @@ export function reportSnapshot(db, fromValue, toValue) {
     }).sort((a, b) => b.operationalProfit - a.operationalProfit)
   };
 }
+
+// Аналитика ресурса: вклад каждой сцепки за период — машино-дни по
+// состояниям (та же методика midpoint, что и в reportSnapshot), КТГ,
+// использование и выручка без НДС по дате выполнения. Используется
+// модалкой «Аналитика» в «Ресурсе» и отчётом руководителя «По сцепкам».
+export function vehicleUtilization(db, fromValue, toValue) {
+  const from = isoDate(fromValue, 'from');
+  const to = isoDate(toValue, 'to');
+  if (Date.parse(to) <= Date.parse(from)) {
+    throw Object.assign(new Error('Период задан неверно'), { status: 422 });
+  }
+  const calculation = settingsObject(db).calculation;
+  const dayCount = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000));
+  const fromMs = Date.parse(from);
+  const fleet = db.prepare(`SELECT v.id,v.plate,v.driver_name,vt.name type_name FROM vehicles v
+    JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.status<>'out' ORDER BY v.plate`).all();
+  const dispositionRows = db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at
+    FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(to, from);
+  const tripRows = db.prepare(`SELECT vehicle_id,starts_at,ends_at FROM trips
+    WHERE status<>'rejected' AND starts_at<? AND ends_at>?`).all(to, from);
+  const revenueRows = db.prepare(`SELECT vehicle_id,customer_name,revenue_vat FROM trips
+    WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`).all(from, to);
+  const byVehicleDispositions = Map.groupBy(dispositionRows, row => row.vehicle_id);
+  const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
+  const byVehicleRevenue = Map.groupBy(revenueRows, row => row.vehicle_id);
+  const covers = (row, momentMs) => Date.parse(row.starts_at) <= momentMs && momentMs < Date.parse(row.ends_at);
+  const items = fleet.map(vehicle => {
+    const dispositions = byVehicleDispositions.get(vehicle.id) || [];
+    const trips = byVehicleTrips.get(vehicle.id) || [];
+    const counts = { work: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
+    for (let day = 0; day < dayCount; day += 1) {
+      const midpoint = fromMs + (day + 0.5) * 86_400_000;
+      const disposition = dispositions.find(row => row.kind !== 'work' && covers(row, midpoint));
+      if (disposition) {
+        if (disposition.kind === 'repair') counts.repair += 1;
+        else if (disposition.kind === 'no_driver') counts.noDriver += 1;
+        else if (disposition.kind === 'shift') counts.shift += 1;
+        else counts.out += 1;
+      } else if (trips.some(row => covers(row, midpoint))) {
+        counts.work += 1;
+      } else {
+        counts.idle += 1;
+      }
+    }
+    const netRevenue = (byVehicleRevenue.get(vehicle.id) || []).reduce((sum, trip) => {
+      const vat = /\bИП\b/iu.test(trip.customer_name)
+        ? Number(calculation.individualEntrepreneurVatRate ?? 0.07)
+        : Number(calculation.vatRate ?? 0.22);
+      return sum + trip.revenue_vat / (1 + vat);
+    }, 0);
+    return {
+      vehicleId: vehicle.id, plate: vehicle.plate,
+      driver: vehicle.driver_name || '', type: vehicle.type_name,
+      ...counts,
+      trips: (byVehicleRevenue.get(vehicle.id) || []).length,
+      ktg: (dayCount - counts.repair - counts.out) / dayCount,
+      utilization: counts.work / dayCount,
+      netRevenue: Math.round(netRevenue)
+    };
+  });
+  return { from, to, days: dayCount, items };
+}

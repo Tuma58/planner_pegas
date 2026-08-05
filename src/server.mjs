@@ -12,7 +12,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  importTelematics, importTripsFrom1C, reportSnapshot, resolveZone
+  importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, vehicleUtilization
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -255,6 +255,50 @@ function runUnloadWatch() {
 setInterval(runUnloadWatch, 10 * 60_000);
 setTimeout(runUnloadWatch, 15_000);
 
+// Сторож ресурса: сцепка «без водителя» (по интервалу в календаре) или
+// «без заказа» три и более дней → авто-сообщение роли «Ресурс»,
+// не чаще раза в сутки на сцепку.
+function runResourceWatch() {
+  try {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const dayMs = 86_400_000;
+    const vehicles = db.prepare(`SELECT id,plate,driver_name,resource_alert_at
+      FROM vehicles WHERE status='work'`).all();
+    for (const vehicle of vehicles) {
+      if (vehicle.resource_alert_at && nowMs - Date.parse(vehicle.resource_alert_at) < dayMs) continue;
+      // «Без водителя»: активный интервал no_driver, начавшийся 3+ дня назад.
+      const noDriver = db.prepare(`SELECT starts_at FROM vehicle_dispositions
+        WHERE vehicle_id=? AND kind='no_driver' AND starts_at<=? AND ends_at>?
+        ORDER BY starts_at LIMIT 1`).get(vehicle.id, nowIso, nowIso);
+      const noDriverDays = noDriver ? Math.floor((nowMs - Date.parse(noDriver.starts_at)) / dayMs) : 0;
+      // «Без заказа»: последний рейс завершился 3+ дня назад, новых нет,
+      // и простой ничем не объяснён (нет активной диспозиции).
+      const lastTrip = db.prepare(`SELECT MAX(ends_at) e FROM trips
+        WHERE vehicle_id=? AND status<>'rejected'`).get(vehicle.id);
+      const idleDays = lastTrip?.e && lastTrip.e < nowIso
+        ? Math.floor((nowMs - Date.parse(lastTrip.e)) / dayMs) : 0;
+      const covered = db.prepare(`SELECT 1 FROM vehicle_dispositions
+        WHERE vehicle_id=? AND starts_at<=? AND ends_at>? LIMIT 1`).get(vehicle.id, nowIso, nowIso);
+      let text = null;
+      if (noDriverDays >= 3) {
+        text = `Сцепка ${vehicle.plate} без водителя уже ${noDriverDays} дн — закрепите водителя (справочник «Водители») или оформите вывод`;
+      } else if (idleDays >= 3 && !covered) {
+        text = `Сцепка ${vehicle.plate} без заказа ${idleDays} дн — запросите загрузку у продаж или оформите причину простоя`;
+      }
+      if (text) {
+        notify('resource', text, 'vehicle', vehicle.id);
+        db.prepare(`UPDATE vehicles SET resource_alert_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(nowIso, vehicle.id);
+      }
+    }
+  } catch (error) {
+    console.error('Сторож ресурса:', error.message);
+  }
+}
+setInterval(runResourceWatch, 60 * 60_000);
+setTimeout(runResourceWatch, 25_000);
+
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
     if (!body[key]) throw Object.assign(new Error(`Поле ${key} обязательно`), { status: 422 });
@@ -333,6 +377,9 @@ async function api(request, response, url) {
       user: publicUser(user), settings: plannerSettings(), reference: allReferenceData(),
       vehicles: listVehicles(), trips: listTrips(url.searchParams.get('date') || ''),
       orders: listOrders(), dispositions: listDispositions(),
+      drivers: db.prepare(`SELECT d.*,v.plate vehicle_plate FROM drivers d
+        LEFT JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all()
     });
   }
@@ -698,6 +745,110 @@ async function api(request, response, url) {
     return json(response, 201, { tripId });
   }
 
+  // ── Справочник водителей: закрепление за сцепками, отпуска/болезни ──
+  if (request.method === 'GET' && pathname === '/api/drivers') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, {
+      items: db.prepare(`SELECT d.*,v.plate vehicle_plate FROM drivers d
+        LEFT JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE d.status<>'fired' ORDER BY d.full_name`).all()
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/drivers') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const name = String(body.fullName || '').trim();
+    if (!name) return errorJson(response, 422, 'Укажите ФИО водителя');
+    const id = randomUUID();
+    db.prepare(`INSERT INTO drivers(id,full_name,phone,note) VALUES(?,?,?,?)`).run(
+      id, name, String(body.phone || '').trim(), String(body.note || '').trim());
+    audit(db, user, 'create', 'driver', id, body, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/drivers\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const current = db.prepare('SELECT * FROM drivers WHERE id=?').get(match[0]);
+    if (!current) return errorJson(response, 404, 'Водитель не найден');
+    const vehicleId = 'vehicleId' in body ? (body.vehicleId || null) : current.vehicle_id;
+    const status = body.status ?? current.status;
+    if (!['active', 'vacation', 'sick', 'fired'].includes(status)) {
+      return errorJson(response, 422, 'Некорректный статус водителя');
+    }
+    const absentFrom = 'absentFrom' in body ? (body.absentFrom || null) : current.absent_from;
+    const absentTo = 'absentTo' in body ? (body.absentTo || null) : current.absent_to;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      // Перезакрепление: имя водителя — витрина на карточке ТС.
+      if (vehicleId !== current.vehicle_id) {
+        if (current.vehicle_id) {
+          db.prepare(`UPDATE vehicles SET driver_name='',updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND driver_name=?`).run(current.vehicle_id, current.full_name);
+        }
+        if (vehicleId) {
+          // Сцепка занята другим водителем? Прежний открепляется.
+          db.prepare(`UPDATE drivers SET vehicle_id=NULL,updated_at=CURRENT_TIMESTAMP
+            WHERE vehicle_id=? AND id<>?`).run(vehicleId, match[0]);
+          db.prepare(`UPDATE vehicles SET driver_name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+            .run(String(body.fullName ?? current.full_name).trim(), vehicleId);
+        }
+      } else if (body.fullName && vehicleId) {
+        db.prepare(`UPDATE vehicles SET driver_name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(String(body.fullName).trim(), vehicleId);
+      }
+      db.prepare(`UPDATE drivers SET full_name=?,phone=?,status=?,vehicle_id=?,
+        absent_from=?,absent_to=?,note=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        String(body.fullName ?? current.full_name).trim(),
+        String(body.phone ?? current.phone).trim(), status, vehicleId,
+        absentFrom, absentTo, String(body.note ?? current.note).trim(), match[0]);
+      // Отпуск/болезнь с датами: закреплённая сцепка получает интервал
+      // «без водителя» — календарь, потребность и задания видят это сразу.
+      if (['vacation', 'sick'].includes(status) && vehicleId && absentFrom && absentTo &&
+          Date.parse(absentTo) > Date.parse(absentFrom)) {
+        const exists = db.prepare(`SELECT 1 FROM vehicle_dispositions
+          WHERE vehicle_id=? AND kind='no_driver' AND starts_at=? AND ends_at=?`)
+          .get(vehicleId, absentFrom, absentTo);
+        if (!exists) {
+          db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note,created_by)
+            VALUES(?,?,?,?,?,?,?)`).run(randomUUID(), vehicleId, 'no_driver', absentFrom, absentTo,
+            `${status === 'vacation' ? 'Отпуск' : 'Больничный'}: ${current.full_name}`, user.id);
+        }
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    audit(db, user, 'update', 'driver', match[0], body, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const current = db.prepare('SELECT * FROM drivers WHERE id=?').get(match[0]);
+    if (!current) return errorJson(response, 404, 'Водитель не найден');
+    // Мягко: увольнение, а не удаление — история сохраняется.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (current.vehicle_id) {
+        db.prepare(`UPDATE vehicles SET driver_name='',updated_at=CURRENT_TIMESTAMP
+          WHERE id=? AND driver_name=?`).run(current.vehicle_id, current.full_name);
+      }
+      db.prepare(`UPDATE drivers SET status='fired',vehicle_id=NULL,updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(match[0]);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    audit(db, user, 'delete', 'driver', match[0], { soft: true }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   if (request.method === 'POST' && pathname === '/api/vehicles') {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;
@@ -726,9 +877,47 @@ async function api(request, response, url) {
       body.zoneId ?? current.zone_id, body.status ?? current.status,
       body.unavailableFrom ?? current.unavailable_from, body.unavailableTo ?? current.unavailable_to,
       match[0]);
+    // Смена водителя из карточки/справочника ТС синхронизирует справочник
+    // водителей: имя ищется без учёта регистра, новый — создаётся и
+    // закрепляется, прежний водитель этой сцепки открепляется.
+    const newDriver = String(body.driverName ?? '').trim();
+    if ('driverName' in body && newDriver !== String(current.driver_name || '').trim()) {
+      db.prepare(`UPDATE drivers SET vehicle_id=NULL,updated_at=CURRENT_TIMESTAMP
+        WHERE vehicle_id=?`).run(match[0]);
+      if (newDriver) {
+        const existing = db.prepare(`SELECT id FROM drivers
+          WHERE full_name=? COLLATE NOCASE AND status<>'fired'`).get(newDriver);
+        if (existing) {
+          db.prepare(`UPDATE drivers SET vehicle_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+            .run(match[0], existing.id);
+        } else {
+          db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id) VALUES(?,?,?)`)
+            .run(randomUUID(), newDriver, match[0]);
+        }
+      }
+    }
     audit(db, user, 'update', 'vehicle', match[0], body, requestIp(request));
     return json(response, 200, { ok: true });
   }
+  // Запрос загрузки от ресурсника: адресное авто-сообщение продажам
+  // с местом и временем доступности сцепки — замыкает задание ресурса.
+  match = route(/^\/api\/vehicles\/([^/]+)\/request-load$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const vehicle = db.prepare(`SELECT v.*,vt.name type_name FROM vehicles v
+      JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.id=?`).get(match[0]);
+    if (!vehicle) return errorJson(response, 404, 'ТС не найдено');
+    const lastTrip = db.prepare(`SELECT t.ends_at,z.name to_name FROM trips t
+      JOIN zones z ON z.id=t.to_zone_id
+      WHERE t.vehicle_id=? AND t.status<>'rejected' ORDER BY t.ends_at DESC LIMIT 1`).get(match[0]);
+    const zoneName = lastTrip?.to_name ||
+      db.prepare('SELECT name FROM zones WHERE id=?').get(vehicle.zone_id)?.name || 'зона приписки';
+    notify('sales', `Ресурс запрашивает загрузку: сцепка ${vehicle.plate} (${vehicle.type_name}) свободна в «${zoneName}»${lastTrip ? ` с ${lastTrip.ends_at.slice(0, 10)}` : ''} — подберите заявку в «Потребности от логистики»`, 'vehicle', match[0]);
+    audit(db, user, 'request_load', 'vehicle', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   if (request.method === 'POST' && pathname === '/api/dispositions') {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;
@@ -1042,6 +1231,19 @@ async function api(request, response, url) {
       unavailableVehicles: db.prepare(`SELECT status,COUNT(*) count FROM vehicles
         WHERE status<>'work' GROUP BY status`).all()
     });
+  }
+
+  // Аналитика ресурса: машино-дни, КТГ и выручка по каждой сцепке.
+  if (request.method === 'GET' && pathname === '/api/resource-stats') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    try {
+      return json(response, 200, vehicleUtilization(db,
+        url.searchParams.get('from') || new Date(Date.now() - 30 * 86_400_000).toISOString(),
+        url.searchParams.get('to') || new Date().toISOString()));
+    } catch (error) {
+      return errorJson(response, error.status || 500, error.message);
+    }
   }
 
   if (request.method === 'GET' && pathname === '/api/reports') {

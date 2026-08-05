@@ -417,7 +417,9 @@ function renderMain() {
     });
   } else if (state.view === 'resource') {
     renderResource(byId('timeline'), {
-      state, openDisposition, openFleet: openFleetDirectory, taskContainer: byId('sidepanel')
+      state, openDisposition, openFleet: openFleetDirectory,
+      openDrivers: openDriversDirectory, openStats: openResourceStats,
+      onReload: reload, taskContainer: byId('sidepanel')
     });
   } else if (state.view === 'dispatcher') {
     renderDispatcher(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
@@ -800,6 +802,178 @@ function replaceVehicleField(vehicle, field, title, after) {
         method: 'PATCH', body: JSON.stringify(formValues(event.currentTarget))
       });
       closeModal(); toast('Замена выполнена'); await reload();
+      if (after) after();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+// Аналитика ресурса: вклад каждой сцепки за открытый месяц — машино-дни
+// по состояниям, КТГ, использование со светофором и выручка. Те же формулы,
+// что в отчёте руководителя (общий серверный расчёт).
+async function openResourceStats() {
+  const from = state.month.toISOString().slice(0, 10);
+  const to = addMonths(state.month, 1).toISOString().slice(0, 10);
+  showModal('<div class="empty-state">Расчёт аналитики…</div>', 'wide');
+  let stats;
+  try {
+    stats = await api(`/api/resource-stats?from=${from}&to=${to}`);
+  } catch (error) { toast(error.message, 'error'); closeModal(); return; }
+  const rows = [...stats.items].sort((a, b) => a.utilization - b.utilization);
+  const light = value => value >= 0.7 ? 'ok' : value >= 0.45 ? 'warn' : 'bad';
+  const monthLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+    .format(state.month);
+  showModal(`<h2>Аналитика ресурса · ${escapeHtml(monthLabel)}</h2>
+    <p class="muted">${stats.days} дн · машино-дни по состояниям, проблемные сверху ·
+      те же формулы, что в отчёте руководителя (КТГ, использование фонда)</p>
+    <div style="overflow:auto;max-height:62vh"><table class="rtable"><thead><tr>
+      <th>Сцепка</th><th class="num">Работа</th><th class="num">Ремонт</th><th class="num">Без вод.</th>
+      <th class="num">Пересм.</th><th class="num">Простой</th><th class="num">КТГ</th>
+      <th class="num">Использование</th><th class="num">Рейсов</th><th class="num">Выручка б.НДС</th>
+    </tr></thead><tbody>
+    ${rows.map(row => `<tr>
+      <td><strong class="mono">${escapeHtml(row.plate)}</strong>
+        <small class="muted" style="display:block">${escapeHtml(row.driver || 'без водителя')} · ${escapeHtml(row.type)}</small></td>
+      <td class="num">${row.work}</td><td class="num ${row.repair > 5 ? 'bad' : ''}">${row.repair}</td>
+      <td class="num ${row.noDriver > 5 ? 'bad' : ''}">${row.noDriver}</td>
+      <td class="num">${row.shift}</td>
+      <td class="num ${row.idle > 7 ? 'bad' : row.idle > 3 ? 'warn' : ''}">${row.idle}</td>
+      <td class="num">${(row.ktg * 100).toFixed(0)}%</td>
+      <td class="num"><span class="badge ${light(row.utilization)}">${(row.utilization * 100).toFixed(0)}%</span></td>
+      <td class="num">${row.trips}</td>
+      <td class="num">${money(row.netRevenue)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+}
+
+// Справочник водителей блока «Ресурс»: закрепление за сцепками,
+// отпуска/болезни (авто-интервал «без водителя» на ТС), «кто без машины».
+function openDriversDirectory() {
+  const drivers = state.data.drivers || [];
+  const vehicles = state.data.vehicles;
+  const back = () => openDriversDirectory();
+  const query = (state.driversQuery || '').toLowerCase();
+  const filtered = drivers.filter(driver => !query ||
+    `${driver.full_name} ${driver.phone} ${driver.vehicle_plate || ''}`.toLowerCase().includes(query));
+  const freeDrivers = filtered.filter(driver => !driver.vehicle_id && driver.status === 'active');
+  const statusMeta = {
+    active: ['в строю', 'ok'], vacation: ['отпуск', 'warn'], sick: ['болен', 'warn']
+  };
+  // Свободные сцепки + текущая сцепка водителя — для перезакрепления.
+  const vehicleOptionsFor = driver => {
+    const taken = new Set(drivers.filter(d => d.vehicle_id && d.id !== driver.id).map(d => d.vehicle_id));
+    return `<option value="">— без машины —</option>` + vehicles
+      .filter(vehicle => vehicle.status !== 'out' && (!taken.has(vehicle.id) || vehicle.id === driver.vehicle_id))
+      .map(vehicle => `<option value="${vehicle.id}" ${vehicle.id === driver.vehicle_id ? 'selected' : ''}>${escapeHtml(vehicle.plate)}</option>`).join('');
+  };
+  const row = driver => {
+    const [label, tone] = statusMeta[driver.status] || [driver.status, 'warn'];
+    return `<tr>
+      <td>${escapeHtml(driver.full_name)}
+        ${driver.absent_from ? `<small class="muted" style="display:block">отсутствие ${formatDate(driver.absent_from)} — ${formatDate(driver.absent_to)}</small>` : ''}</td>
+      <td class="mono">${escapeHtml(driver.phone || '—')}</td>
+      <td><select data-drv-vehicle="${driver.id}" title="Закрепление за сцепкой">${vehicleOptionsFor(driver)}</select></td>
+      <td><span class="badge ${tone}">${label}</span></td>
+      <td class="num" style="white-space:nowrap">
+        <button class="button ghost small" data-drv-absent="${driver.id}" title="Отпуск или больничный с датами — на сцепку встанет интервал «без водителя»">Отсутствие</button>
+        <button class="button ghost small" data-drv-edit="${driver.id}" title="ФИО, телефон, примечание">✎</button>
+        <button class="button ghost small danger" data-drv-fire="${driver.id}" title="Уволить (мягко, с открепления сцепки)">✕</button>
+      </td></tr>`;
+  };
+  showModal(`<h2>Справочник водителей</h2>
+    <div class="salesfilter" style="margin-bottom:8px">
+      <input id="driversSearch" class="block-search" placeholder="Поиск: ФИО, телефон, сцепка" value="${escapeHtml(state.driversQuery || '')}" style="flex:1;min-width:170px">
+      <span class="muted">${filtered.length} из ${drivers.length}</span>
+      <button class="button small" id="driverAdd">+ Водитель</button>
+    </div>
+    ${freeDrivers.length ? `<div class="geohint" style="margin-bottom:8px">🚶 Без машины: ${freeDrivers.map(d => escapeHtml(d.full_name)).join(', ')} — закрепите за свободной сцепкой.</div>` : ''}
+    <div style="overflow:auto;max-height:60vh"><table class="rtable"><thead><tr>
+      <th>Водитель</th><th>Телефон</th><th>Сцепка</th><th>Статус</th><th></th>
+    </tr></thead><tbody>${filtered.map(row).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+
+  attachSearch(byId('driversSearch'), value => {
+    state.driversQuery = value;
+    openDriversDirectory();
+  });
+  byId('driverAdd').onclick = () => driverEditDialog(null, back);
+  const byDriver = id => drivers.find(driver => driver.id === id);
+  document.querySelectorAll('[data-drv-vehicle]').forEach(select =>
+    select.onchange = async () => {
+      try {
+        await api(`/api/drivers/${select.dataset.drvVehicle}`, {
+          method: 'PATCH', body: JSON.stringify({ vehicleId: select.value || null })
+        });
+        toast(select.value ? 'Водитель закреплён за сцепкой' : 'Водитель откреплён');
+        await reload();
+        back();
+      } catch (error) { toast(error.message, 'error'); }
+    });
+  document.querySelectorAll('[data-drv-absent]').forEach(button =>
+    button.onclick = () => driverAbsentDialog(byDriver(button.dataset.drvAbsent), back));
+  document.querySelectorAll('[data-drv-edit]').forEach(button =>
+    button.onclick = () => driverEditDialog(byDriver(button.dataset.drvEdit), back));
+  document.querySelectorAll('[data-drv-fire]').forEach(button =>
+    button.onclick = async () => {
+      const driver = byDriver(button.dataset.drvFire);
+      if (!confirm(`Уволить водителя «${driver.full_name}»? Сцепка будет откреплена.`)) return;
+      try {
+        await api(`/api/drivers/${driver.id}`, { method: 'DELETE' });
+        toast('Водитель уволен');
+        await reload();
+        back();
+      } catch (error) { toast(error.message, 'error'); }
+    });
+}
+
+// Карточка водителя: создание или правка ФИО/телефона/примечания.
+function driverEditDialog(driver, after) {
+  showModal(`<form id="driverForm"><h2>${driver ? 'Карточка водителя' : 'Новый водитель'}</h2>
+    <label class="field">ФИО<input name="fullName" value="${escapeHtml(driver?.full_name || '')}" required></label>
+    <label class="field">Телефон<input name="phone" value="${escapeHtml(driver?.phone || '')}"></label>
+    <label class="field">Примечание<input name="note" value="${escapeHtml(driver?.note || '')}"></label>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Сохранить</button></div></form>`);
+  byId('driverForm').onsubmit = async event => {
+    event.preventDefault();
+    try {
+      await api(driver ? `/api/drivers/${driver.id}` : '/api/drivers', {
+        method: driver ? 'PATCH' : 'POST',
+        body: JSON.stringify(formValues(event.currentTarget))
+      });
+      closeModal(); toast(driver ? 'Водитель обновлён' : 'Водитель добавлен');
+      await reload();
+      if (after) after();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+// Отсутствие водителя: отпуск/болезнь с датами. На закреплённую сцепку
+// автоматически ставится интервал «без водителя» — календарь и потребность
+// сразу видят недоступность.
+function driverAbsentDialog(driver, after) {
+  showModal(`<form id="absentForm"><h2>Отсутствие · ${escapeHtml(driver.full_name)}</h2>
+    ${driver.vehicle_plate ? `<p class="muted">Сцепка <span class="mono">${escapeHtml(driver.vehicle_plate)}</span>
+      получит интервал «без водителя» на эти даты.</p>` : '<p class="muted">Водитель не закреплён за сцепкой.</p>'}
+    <label class="field">Причина<select name="status">
+      <option value="vacation" ${driver.status === 'vacation' ? 'selected' : ''}>Отпуск</option>
+      <option value="sick" ${driver.status === 'sick' ? 'selected' : ''}>Больничный</option>
+      <option value="active">Вернулся в строй</option>
+    </select></label>
+    <div class="form-grid">
+      <label class="field">С<input name="absentFrom" type="datetime-local" value="${toLocalInput(driver.absent_from) || ''}"></label>
+      <label class="field">По<input name="absentTo" type="datetime-local" value="${toLocalInput(driver.absent_to) || ''}"></label>
+    </div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Сохранить</button></div></form>`);
+  byId('absentForm').onsubmit = async event => {
+    event.preventDefault();
+    const values = formValues(event.currentTarget);
+    if (values.status === 'active') { values.absentFrom = null; values.absentTo = null; }
+    try {
+      await api(`/api/drivers/${driver.id}`, { method: 'PATCH', body: JSON.stringify(values) });
+      closeModal();
+      toast(values.status === 'active' ? 'Водитель в строю' : 'Отсутствие оформлено');
+      await reload();
       if (after) after();
     } catch (error) { toast(error.message, 'error'); }
   };

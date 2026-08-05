@@ -1,7 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
-import { attachSearch, escapeHtml, formatDateTime, fromLocalInput } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, fromLocalInput, toast } from './api.js';
 
 export const DISP_KINDS = [
   { kind: 'work', label: 'В работе', short: 'работа', color: 'var(--teal)' },
@@ -78,7 +78,11 @@ function renderResourceTasks(container, context, refDay, withState) {
           <small class="muted" style="display:block">${escapeHtml(vehicle.driver_name || 'без водителя')} · ${idleLabel(idleMs)}</small>
           ${lastTrip ? `<small class="muted" style="display:block">последний рейс: ${escapeHtml(lastTrip.to_point || lastTrip.to_name)} · ${formatDateTime(lastTrip.ends_at)}</small>` : ''}
         </span>
-        <button class="button ghost small" data-task-disposition="${vehicle.id}">Диспозиция</button>
+        <span style="display:flex;gap:5px">
+          ${stateNow.kind === 'idle' ? `<button class="button small" data-task-load="${vehicle.id}"
+            title="Авто-сообщение продажам: сцепка свободна, подберите заявку">Запросить загрузку</button>` : ''}
+          <button class="button ghost small" data-task-disposition="${vehicle.id}">Диспозиция</button>
+        </span>
       </div>`).join('') || '<p class="muted">Все машины при деле: у каждой есть заказ или оформленный простой.</p>'}
     </div>`;
 
@@ -89,6 +93,19 @@ function renderResourceTasks(container, context, refDay, withState) {
       starts_at: fromLocalInput(`${refDay}T00:00`),
       ends_at: fromLocalInput(`${nextDayIso(refDay)}T00:00`)
     })));
+  // Замыкание задания: запрос загрузки уходит продажам авто-сообщением
+  // (им придёт тост со звуком), сцепку подберут в «Потребности от логистики».
+  container.querySelectorAll('[data-task-load]').forEach(button =>
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/vehicles/${button.dataset.taskLoad}/request-load`, { method: 'POST' });
+        toast('Продажи уведомлены — запрос загрузки отправлен');
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message, 'error');
+      }
+    }));
 }
 
 export function renderResource(container, context) {
@@ -186,6 +203,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
         ${filter || query ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
         <span class="muted" style="font-size:var(--fs-xs)">Состояние на день</span>
         <input type="date" id="resourceDay" value="${refDay}">
+        ${context.openStats ? '<button class="button ghost small" id="resourceStats" title="Машино-дни, КТГ и выручка по каждой сцепке за месяц">Аналитика</button>' : ''}
+        ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
         ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
         <button class="button small" id="resourceAdd">+ диспозиция</button>
       </div>
@@ -219,27 +238,113 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     state.resourceQuery = value;
     renderResource(container, context);
   });
+  if (context.openStats) container.querySelector('#resourceStats').onclick = () => context.openStats();
+  if (context.openDrivers) container.querySelector('#resourceDrivers').onclick = () => context.openDrivers();
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {
     vehicle_id: data.vehicles[0]?.id,
     starts_at: fromLocalInput(`${refDay}T00:00`),
     ends_at: fromLocalInput(`${nextDayIso(refDay)}T00:00`)
   });
-  container.querySelectorAll('[data-disposition]').forEach(bar =>
-    bar.addEventListener('click', () => {
-      const item = (data.dispositions || []).find(row => row.id === bar.dataset.disposition);
-      if (item) context.openDisposition(item);
-    }));
+  // ── Рисование интервалов мышью ──
+  // Протяжка по свободным дням трека выделяет период и открывает форму
+  // диспозиции с этими датами; перетаскивание края существующего бара
+  // меняет его границы (PATCH), клик по середине — открывает правку.
+  const dayIso = index => new Date(state.month.getTime() + index * 86_400_000).toISOString().slice(0, 10);
+  const dayFromX = (track, clientX) => {
+    const rect = track.getBoundingClientRect();
+    return Math.max(0, Math.min(days - 1, Math.floor((clientX - rect.left) / dayWidth)));
+  };
+
   container.querySelectorAll('.track[data-vehicle]').forEach(track =>
-    track.addEventListener('click', event => {
-      if (event.target.closest('.dbar')) return;
-      const rect = track.getBoundingClientRect();
-      const day = Math.floor((event.clientX - rect.left) / dayWidth);
-      const startsAt = new Date(state.month.getTime() + day * 86_400_000);
-      context.openDisposition(null, {
-        vehicle_id: track.dataset.vehicle,
-        starts_at: startsAt.toISOString(),
-        ends_at: new Date(startsAt.getTime() + 86_400_000).toISOString()
-      });
+    track.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('.dbar')) return;
+      const startDay = dayFromX(track, event.clientX);
+      const box = document.createElement('div');
+      box.className = 'draw-select';
+      track.appendChild(box);
+      let lastDay = startDay;
+      const paint = day => {
+        const a = Math.min(startDay, day);
+        const b = Math.max(startDay, day);
+        box.style.left = `${a * dayWidth}px`;
+        box.style.width = `${(b - a + 1) * dayWidth}px`;
+      };
+      paint(startDay);
+      const move = ev => { lastDay = dayFromX(track, ev.clientX); paint(lastDay); };
+      const up = () => {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+        box.remove();
+        const a = Math.min(startDay, lastDay);
+        const b = Math.max(startDay, lastDay);
+        context.openDisposition(null, {
+          vehicle_id: track.dataset.vehicle,
+          starts_at: fromLocalInput(`${dayIso(a)}T00:00`),
+          ends_at: fromLocalInput(`${dayIso(b + 1)}T00:00`)
+        });
+      };
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
     }));
+
+  container.querySelectorAll('[data-disposition]').forEach(bar => {
+    const item = (data.dispositions || []).find(row => row.id === bar.dataset.disposition);
+    if (!item) return;
+    let resizing = false;
+    // Курсор-подсказка у краёв бара.
+    bar.addEventListener('pointermove', event => {
+      if (resizing) return;
+      const rect = bar.getBoundingClientRect();
+      const nearEdge = event.clientX - rect.left < 8 || rect.right - event.clientX < 8;
+      bar.style.cursor = nearEdge ? 'ew-resize' : 'pointer';
+    });
+    bar.addEventListener('pointerdown', event => {
+      const rect = bar.getBoundingClientRect();
+      const edge = event.clientX - rect.left < 8 ? 'left'
+        : (rect.right - event.clientX < 8 ? 'right' : null);
+      if (event.button !== 0 || !edge) return;
+      event.preventDefault();
+      event.stopPropagation();
+      resizing = true;
+      const track = bar.closest('.track');
+      const startIdx = Math.max(0, (Date.parse(item.starts_at) - state.month.getTime()) / 86_400_000);
+      const endIdx = Math.min(days, (Date.parse(item.ends_at) - state.month.getTime()) / 86_400_000);
+      let lastDay = null;
+      const move = ev => {
+        lastDay = dayFromX(track, ev.clientX);
+        if (edge === 'left') {
+          const a = Math.min(lastDay, Math.ceil(endIdx) - 1);
+          bar.style.left = `${a * dayWidth}px`;
+          bar.style.width = `${Math.max((endIdx - a) * dayWidth - 3, 18)}px`;
+        } else {
+          const b = Math.max(lastDay, Math.floor(startIdx));
+          bar.style.width = `${Math.max((b + 1 - startIdx) * dayWidth - 3, 18)}px`;
+        }
+      };
+      const up = async () => {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+        setTimeout(() => { resizing = false; }, 0);
+        if (lastDay == null) { renderResource(container, context); return; }
+        try {
+          const body = edge === 'left'
+            ? { startsAt: fromLocalInput(`${dayIso(Math.min(lastDay, Math.ceil(endIdx) - 1))}T00:00`) }
+            : { endsAt: fromLocalInput(`${dayIso(Math.max(lastDay, Math.floor(startIdx)) + 1)}T00:00`) };
+          await api(`/api/dispositions/${item.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+          toast('Границы интервала обновлены');
+          await context.onReload?.();
+        } catch (error) {
+          toast(error.message, 'error');
+          renderResource(container, context);
+        }
+      };
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+    });
+    bar.addEventListener('click', event => {
+      if (resizing) { event.stopPropagation(); return; }
+      context.openDisposition(item);
+    });
+  });
 }

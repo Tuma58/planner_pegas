@@ -321,6 +321,7 @@ export async function renderBoss(container, context) {
           <option value="econ">Экономика по типам ТС</option><option value="clients">Экономика по клиентам</option>
           <option value="rejected">Отклонённые рейсы</option>
           <option value="execution">Контроль выполнения рейсов</option>
+          <option value="vehicles">Аналитика по сцепкам</option>
           <option value="conflicts">История конфликтов</option>
           <option value="rejected-orders">Реестр заявок (подтверждённые/отклонённые)</option>
           <option value="history">История периодов</option>
