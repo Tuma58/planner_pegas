@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
+import { nextOrderNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
 import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
@@ -199,6 +199,12 @@ test('диспозиции: вид «В работе» принимается, �
     VALUES('d-old',?, 'repair','2026-08-01T00:00:00.000Z','2026-08-02T00:00:00.000Z','старый интервал')`).run(vehicle.id);
   first.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
     VALUES('d-legacy-work',?, 'work','2026-08-05T00:00:00.000Z','2026-08-06T00:00:00.000Z')`).run(vehicle.id);
+  // Заявка без номера — бэкфилл автономера при следующем старте.
+  const zoneId = first.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  first.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,status,stage)
+    VALUES('o-nonum','Клиент',?,?,50000,'2026-08-10T08:00:00.000Z','2026-08-12T18:00:00.000Z','new',0)`)
+    .run(zoneId, zoneId);
   first.close();
   // Повторное открытие пересоздаёт таблицу: CHECK с 'reserve', work → reserve.
   const second = openDatabase(databasePath, admin);
@@ -217,6 +223,13 @@ test('диспозиции: вид «В работе» принимается, �
     WHERE id='d-res-2'`).run();
   assert.equal(second.prepare(`SELECT starts_at FROM vehicle_dispositions WHERE id='d-res-2'`)
     .get().starts_at, '2026-08-10T00:00:00.000Z');
+
+  // Автономер: система присвоила заявке следующий номер сквозного счётчика,
+  // nextOrderNo продолжает нумерацию без повторов.
+  assert.equal(second.prepare(`SELECT order_no FROM orders WHERE id='o-nonum'`).get().order_no,
+    '1001', 'бэкфилл пронумеровал заявку');
+  assert.equal(nextOrderNo(second), '1002');
+  assert.equal(nextOrderNo(second), '1003');
 });
 
 test('потребность от логистики: ремонт и «без водителя» скрывают ТС до суток перед выходом', async () => {

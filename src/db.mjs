@@ -264,6 +264,19 @@ function migrateColumns(db) {
   ensure('orders', 'cash', 'INTEGER NOT NULL DEFAULT 0');
   ensure('trips', 'order_no', "TEXT NOT NULL DEFAULT ''");
   ensure('trips', 'cash', 'INTEGER NOT NULL DEFAULT 0');
+  // Номер заявки присваивает система: сквозной счётчик в app_meta (с 1001).
+  // Заявки без номера нумеруются по времени создания при каждом старте —
+  // идемпотентно подхватываются и старые, и созданные обходными путями.
+  {
+    let sequence = Number(db.prepare(
+      `SELECT value FROM app_meta WHERE key='order_no_seq'`).get()?.value || 1000);
+    const blank = db.prepare(`SELECT id FROM orders WHERE order_no=''
+      ORDER BY datetime(created_at), rowid`).all();
+    const stamp = db.prepare('UPDATE orders SET order_no=? WHERE id=?');
+    for (const row of blank) stamp.run(String(++sequence), row.id);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('order_no_seq',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(sequence));
+  }
   // Кузова пополнены реальными типами парка: Тушевоз, Допельшток, Паллет 33/41.
   // Идемпотентно дополняем существующие настройки, не трогая правки админа.
   const orderOptionsRow = db.prepare(`SELECT value_json FROM settings WHERE key='orderOptions'`).get();
@@ -524,6 +537,15 @@ function normalizeTripStatus(status) {
 
 function normalizeVehicleStatus(status) {
   return ({ rep: 'repair', nodrv: 'no_driver' })[status] || status || 'work';
+}
+
+// Следующий номер заявки из сквозного счётчика системы.
+export function nextOrderNo(db) {
+  const sequence = Number(db.prepare(
+    `SELECT value FROM app_meta WHERE key='order_no_seq'`).get()?.value || 1000) + 1;
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('order_no_seq',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(sequence));
+  return String(sequence);
 }
 
 export function settingsObject(db) {

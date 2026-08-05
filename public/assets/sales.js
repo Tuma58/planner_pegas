@@ -39,6 +39,22 @@ export function orderNet(order, data) {
   return (Number(order.rate_vat) || 0) / (1 + vat);
 }
 
+// Живой пересчёт «Без НДС» в форме: от ставки, галочки наличных и заказчика
+// (ИП — 7%). Показ — по мере ввода, сохранять нечего: поле считаемое.
+function wireNetField(form, netInput, data) {
+  const update = () => {
+    const rate = Number(form.elements.rateVat?.value) || 0;
+    netInput.value = rate ? money(orderNet({
+      rate_vat: rate,
+      cash: form.elements.cash?.checked ? 1 : 0,
+      customer_name: form.elements.customerName?.value || ''
+    }, data)) : '—';
+  };
+  form.addEventListener('input', update);
+  form.addEventListener('change', update);
+  update();
+}
+
 function routeInfo(data, fromId, toId) {
   const rates = data.reference.routeRates;
   const rate = rates.find(item => item.from_zone_id === fromId && item.to_zone_id === toId)
@@ -412,10 +428,12 @@ export function renderSales(container, context) {
             <label class="field">Окно по<input name="windowTo" id="salesWinTo" type="datetime-local" required
               value="${inputValue(atHour(new Date(state.month.getTime() + 2 * 86_400_000), WORK_END_HOUR))}"></label>
           </div>
-          <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate" type="number" min="0"></label>
-          <label class="field">№ заказа (ID)<input name="orderNo" maxlength="60"
-            placeholder="номер заказа в 1С / у клиента"></label>
-          <label class="checkline"><input type="checkbox" name="cash"> Перевозка за наличные — ставка без НДС</label>
+          <div class="form-grid">
+            <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate" type="number" min="0"></label>
+            <label class="field">Без НДС, ₽ (авто)<input id="salesRateNet" readonly tabindex="-1"></label>
+          </div>
+          <label class="checkline"><input type="checkbox" name="cash"> Перевозка за наличные —
+            водитель забирает оплату после выгрузки</label>
           <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
             placeholder="адрес, контакт, особенности погрузки" autocomplete="off"></label>
           <div id="salesFeas" class="feas"></div>
@@ -492,6 +510,8 @@ export function renderSales(container, context) {
   });
 
   // Выбор известного клиента подставляет его основное направление и рыночную ставку.
+  wireNetField(container.querySelector('#salesForm'),
+    container.querySelector('#salesRateNet'), data);
   container.querySelector('[name="customerName"]').addEventListener('change', event => {
     const name = event.currentTarget.value.trim();
     const entries = (state.customersDirectory || []).filter(item => item.name === name);
@@ -596,8 +616,8 @@ export function renderSales(container, context) {
       return;
     }
     try {
-      await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
-      toast('Забронировано — заявка в портфеле (первая в списке)');
+      const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
+      toast(`Забронировано — заявка № ${created.orderNo} в портфеле (первая в списке)`);
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -687,8 +707,9 @@ export function editOrderDialog(order, data, context) {
   // пунктов встроен в модалку, чтобы не зависеть от разметки доски продаж.
   const trip = order.trip_id ? data.trips.find(item => item.id === order.trip_id) : null;
   context.showModal(`<form id="editOrderForm">
-    <h2>Изменить потребность</h2>
-    <p class="muted">${escapeHtml(routeLabel(order))} · создана ${fmtDateTime(order.created_at)}</p>
+    <h2>Изменить потребность${order.order_no ? ` · № ${escapeHtml(order.order_no)}` : ''}</h2>
+    <p class="muted">${escapeHtml(routeLabel(order))} · создана ${fmtDateTime(order.created_at)}
+      · номер присвоен системой</p>
     ${trip ? `<p class="muted">В плане у логиста: <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
       · рейс ${fmtDateTime(trip.starts_at)} → ${fmtDateTime(trip.ends_at)} — новая ставка обновит и рейс</p>` : ''}
     <label class="field">Заказчик
@@ -715,11 +736,12 @@ export function editOrderDialog(order, data, context) {
       <label class="field">Окно с<input name="windowFrom" type="datetime-local" required value="${inputValue(order.window_from)}"></label>
       <label class="field">Окно по<input name="windowTo" type="datetime-local" required value="${inputValue(order.window_to)}"></label>
     </div>
-    <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Number(order.rate_vat) || 0}"></label>
-    <label class="field">№ заказа (ID)<input name="orderNo" maxlength="60"
-      value="${escapeHtml(order.order_no || '')}" placeholder="номер заказа в 1С / у клиента"></label>
+    <div class="form-grid">
+      <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Number(order.rate_vat) || 0}"></label>
+      <label class="field">Без НДС, ₽ (авто)<input id="editRateNet" readonly tabindex="-1"></label>
+    </div>
     <label class="checkline"><input type="checkbox" name="cash" ${Number(order.cash) ? 'checked' : ''}>
-      Перевозка за наличные — ставка без НДС</label>
+      Перевозка за наличные — водитель забирает оплату после выгрузки</label>
     <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
       value="${escapeHtml(order.comment || '')}" placeholder="адрес, контакт, особенности погрузки"></label>
     <div class="modal-actions">
@@ -748,6 +770,8 @@ export function editOrderDialog(order, data, context) {
       if (zone) document.getElementById(zoneId).value = zone.id;
     });
   });
+  wireNetField(document.getElementById('editOrderForm'),
+    document.getElementById('editRateNet'), data);
   document.getElementById('editOrderForm').onsubmit = async event => {
     event.preventDefault();
     const values = formValues(event.target);

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
-import { audit, openDatabase, queueOutbox, settingsObject } from './db.mjs';
+import { audit, nextOrderNo, openDatabase, queueOutbox, settingsObject } from './db.mjs';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { ROLE_LABELS, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import {
@@ -503,14 +503,14 @@ async function api(request, response, url) {
       const nowMs = Date.now();
       db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
         rate_vat,window_from,window_to,temperature_mode,body_type,status,stage,
-        rejection_reason,returned_at,stage_changed_at,created_by)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,'new',1,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?)`).run(
+        rejection_reason,returned_at,stage_changed_at,order_no,created_by)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,'new',1,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?,?)`).run(
         returnOrderId, merged.customerName || 'Без заказчика', merged.fromZoneId, merged.toZoneId,
         merged.fromPoint, merged.toPoint, merged.revenueVat,
         new Date(Math.max(Date.parse(merged.startsAt), nowMs)).toISOString(),
         new Date(Math.max(Date.parse(merged.endsAt), nowMs + 86_400_000)).toISOString(),
         merged.temperatureMode, merged.bodyType,
-        merged.rejectionReason || 'Отклонён без указания причины', user.id);
+        merged.rejectionReason || 'Отклонён без указания причины', nextOrderNo(db), user.id);
       queueOutbox(db, 'orders', returnOrderId, 'create', orderOutboxPayload(returnOrderId),
         integrationPublic().writePolicy === 'automatic');
       audit(db, user, 'create', 'order', returnOrderId,
@@ -593,6 +593,7 @@ async function api(request, response, url) {
         { name: customerName, auto: 'from-order' }, requestIp(request));
     }
     const id = randomUUID();
+    const orderNo = nextOrderNo(db);
     db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
       rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,order_no,cash,created_by)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
@@ -601,11 +602,11 @@ async function api(request, response, url) {
       new Date(windowFrom).toISOString(), new Date(windowTo).toISOString(),
       String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0),
       String(body.comment || '').trim().slice(0, 500),
-      String(body.orderNo || '').trim().slice(0, 60), body.cash ? 1 : 0, user.id);
+      orderNo, body.cash ? 1 : 0, user.id);
     queueOutbox(db, 'orders', id, 'create', orderOutboxPayload(id),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'create', 'order', id, body, requestIp(request));
-    return json(response, 201, { id });
+    return json(response, 201, { id, orderNo });
   }
   match = route(/^\/api\/orders\/([^/]+)$/, pathname);
   if (match && request.method === 'PATCH') {
@@ -646,7 +647,7 @@ async function api(request, response, url) {
     }
     const confirmedAt = current.confirmed_at ||
       (stageChanged && nextStage >= 1 ? new Date().toISOString() : null);
-    const nextOrderNo = String(body.orderNo ?? current.order_no ?? '').trim().slice(0, 60);
+    const keptOrderNo = current.order_no || '';
     const nextCash = 'cash' in body ? (body.cash ? 1 : 0) : Number(current.cash || 0);
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,from_point=?,to_point=?,
       rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,comment=?,
@@ -662,16 +663,16 @@ async function api(request, response, url) {
       String(body.temperatureMode ?? current.temperature_mode),
       String(body.bodyType ?? current.body_type), nextStage,
       String(body.comment ?? current.comment ?? '').trim().slice(0, 500),
-      nextOrderNo, nextCash,
+      keptOrderNo, nextCash,
       rejectionReason, returnedAt, confirmedAt, stageChanged ? 1 : 0, match[0]);
     // Заявка уже в плане у логиста: ставка, форма оплаты и ID заказа —
     // атрибуты выручки рейса, синхронизируем, пока рейс не закрыт оплатой.
     if (current.trip_id && (('rateVat' in body &&
         Number(body.rateVat) !== Number(current.rate_vat)) ||
-        nextCash !== Number(current.cash || 0) || nextOrderNo !== (current.order_no || ''))) {
+        nextCash !== Number(current.cash || 0))) {
       db.prepare(`UPDATE trips SET revenue_vat=?,cash=?,order_no=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
         WHERE id=? AND status NOT IN ('paid','rejected')`)
-        .run(Number(body.rateVat ?? current.rate_vat), nextCash, nextOrderNo, user.id, current.trip_id);
+        .run(Number(body.rateVat ?? current.rate_vat), nextCash, keptOrderNo, user.id, current.trip_id);
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
         integrationPublic().writePolicy === 'automatic');
     }

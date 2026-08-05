@@ -212,9 +212,12 @@ export async function renderDispatcher(container, context) {
 
   const tripHead = trip => `<span style="flex:1;min-width:0">
       <strong>${escapeHtml(routeLabel(trip))}</strong> · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
+      ${Number(trip.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
       <small class="muted" style="display:block">${escapeHtml(trip.driver_name || 'без водителя')}
         · ${escapeHtml(trip.customer_name || 'без заказчика')}
         · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)} · ${money(trip.revenue_vat)}</small>
+      ${Number(trip.cash) ? `<small class="cash-note">💵 За наличные: укажите в задании водителю —
+        после выгрузки забрать ${money(trip.revenue_vat)} у клиента</small>` : ''}
     </span>`;
 
   const prepCards = preparing.map(trip => `<div class="card" style="margin-bottom:10px;padding:10px 12px">
