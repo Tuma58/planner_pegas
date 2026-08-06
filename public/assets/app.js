@@ -112,18 +112,20 @@ function renderTimeline() {
     `${vehicle.plate} ${vehicle.driver_name || ''} ${vehicle.type_name || ''}`.toLowerCase().includes(ganttQuery) ||
     visibleTrips.some(trip => trip.vehicle_id === vehicle.id &&
       `${routeLabel(trip)} ${trip.customer_name || ''}`.toLowerCase().includes(ganttQuery));
-  // Фильтр по геозоне (клик в легенде): рейс месяца через зону либо сцепка
-  // стоит в ней (зона выгрузки последнего рейса, без рейсов — зона приписки).
-  const zoneOfVehicleNow = vehicle => {
+  // Фильтр по геозоне (клик в легенде): где сцепка находится НА ДАТУ —
+  // выбранный день (клик по шапке / календарик) или сегодня. Позиция — зона
+  // выгрузки последнего рейса, начавшегося к концу этой даты (идущий рейс —
+  // зона, куда движется); без рейсов — зона приписки.
+  const zoneDayIso = state.selectedDay || new Date().toISOString().slice(0, 10);
+  const zoneDayEndMs = Date.parse(`${zoneDayIso}T23:59:59Z`);
+  const zoneOfVehicleAt = vehicle => {
     const lastTrip = state.data.trips
-      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
+      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
+        Date.parse(trip.starts_at) <= zoneDayEndMs)
       .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
     return lastTrip ? lastTrip.to_name : vehicle.zone_name;
   };
-  const vehicleInZone = vehicle =>
-    visibleTrips.some(trip => trip.vehicle_id === vehicle.id &&
-      (trip.from_name === state.ganttZone || trip.to_name === state.ganttZone)) ||
-    zoneOfVehicleNow(vehicle) === state.ganttZone;
+  const vehicleInZone = vehicle => zoneOfVehicleAt(vehicle) === state.ganttZone;
   const vehicles = state.data.vehicles.filter(vehicle =>
     vehicle.status !== 'out' && (state.type === 'all' || vehicle.type_name === state.type) &&
     (!ganttQuery || vehicleMatches(vehicle)) &&
@@ -380,10 +382,14 @@ function enableDispositionDraw(dayWidth) {
 function renderLegend() {
   // Зоны легенды — фильтр строк Ганта: остаются сцепки, чьи рейсы месяца
   // проходят через зону или которые освобождаются в ней. Повторный клик — сброс.
+  const legendDay = state.selectedDay || new Date().toISOString().slice(0, 10);
+  const legendDayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+    .format(new Date(`${legendDay}T12:00:00Z`));
   byId('legend').innerHTML = state.data.reference.zones.map(zone =>
     `<span class="lg clickable ${state.ganttZone === zone.name ? 'active' : ''}" data-lg-zone="${escapeHtml(zone.name)}"
-      title="Показать сцепки с рейсами через «${escapeHtml(zone.name)}» и стоящие в ней">
-      <span class="sw" style="background:${zone.color}"></span>${escapeHtml(zone.name)}${state.ganttZone === zone.name ? ' ✕' : ''}</span>`).join('');
+      title="Сцепки в зоне «${escapeHtml(zone.name)}» на ${legendDayLabel} (сегодня или выбранный день)">
+      <span class="sw" style="background:${zone.color}"></span>${escapeHtml(zone.name)}${state.ganttZone === zone.name
+        ? ` · ${legendDayLabel} ✕` : ''}</span>`).join('');
   byId('legend').onclick = event => {
     const chip = event.target.closest('[data-lg-zone]');
     if (!chip) return;
@@ -1207,6 +1213,7 @@ function showDayAnalytics(dayIso) {
   const data = state.data;
   state.selectedDay = dayIso;
   renderMain();
+  renderLegend();
   const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
   const dayEnd = dayStart + 86_400_000;
   const midpoint = dayStart + 43_200_000;
