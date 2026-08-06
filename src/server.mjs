@@ -538,11 +538,16 @@ async function api(request, response, url) {
           stage, merged.vehicleId, stage, merged.orderId);
       }
     }
-    // Ручная смена статуса проставляет ключевые факты на стоянках контроля.
+    // Ручная смена статуса проставляет ключевые факты на стоянках контроля;
+    // фактическое время события можно передать явно (body.factAt).
     if (merged.status !== current.status && merged.status !== 'rejected') {
+      const factAt = body.factAt && Number.isFinite(Date.parse(body.factAt))
+        ? new Date(Date.parse(body.factAt)).toISOString() : null;
       ensureTripStops(db, match[0]);
-      stampStopsFromStatus(db, match[0], merged.status);
+      stampStopsFromStatus(db, match[0], merged.status, factAt);
       if (merged.status === 'unloaded') {
+        db.prepare(`UPDATE trips SET unloaded_at=COALESCE(unloaded_at,?) WHERE id=?`)
+          .run(factAt || new Date().toISOString(), match[0]);
         notify('accountant', `Рейс ${routeText(current)} выгружен — отметьте оплату`, 'trip', match[0]);
       }
     }
@@ -1126,8 +1131,11 @@ async function api(request, response, url) {
     if (!meta) return errorJson(response, 422, 'Неизвестный шаг диспетчеризации');
     const user = requirePermission(request, response, meta.permission);
     if (!user) return;
+    // Фактическое время события (если отмечают позже) — иначе «сейчас».
+    const factAt = body.at && Number.isFinite(Date.parse(body.at))
+      ? new Date(Date.parse(body.at)).toISOString() : null;
     try {
-      const { trip, statusChanged } = applyDispatchStep(db, match[0], body.step, user.id);
+      const { trip, statusChanged } = applyDispatchStep(db, match[0], body.step, user.id, factAt);
       if (statusChanged) {
         queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
           integrationPublic().writePolicy === 'automatic');
@@ -1174,20 +1182,23 @@ async function api(request, response, url) {
     const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
     if (!trip) return errorJson(response, 404, 'Рейс не найден');
     if (trip.status !== 'run') return errorJson(response, 409, 'Рейс не на линии');
+    const body = await readJson(request);
+    const factAt = body?.at && Number.isFinite(Date.parse(body.at))
+      ? new Date(Date.parse(body.at)).toISOString() : new Date().toISOString();
     // Отсчёт «не выгружают» начинается заново от факта прибытия.
     db.prepare(`UPDATE trips SET arrived_at=COALESCE(arrived_at,?),
       unload_alert_at=NULL,unload_ping_at=NULL,
       updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-      .run(new Date().toISOString(), user.id, match[0]);
+      .run(factAt, user.id, match[0]);
     // Факт прибытия — и на конечной стоянке контроля (для отчёта пунктуальности).
     ensureTripStops(db, match[0]);
     const stops = listTripStops(db, match[0]);
     const last = stops[stops.length - 1];
     if (last && !last.actual_arrival) {
       db.prepare(`UPDATE trip_stops SET actual_arrival=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
-        WHERE id=?`).run(new Date().toISOString(), user.id, last.id);
+        WHERE id=?`).run(factAt, user.id, last.id);
     }
-    audit(db, user, 'arrived', 'trip', match[0], {}, requestIp(request));
+    audit(db, user, 'arrived', 'trip', match[0], { at: factAt }, requestIp(request));
     return json(response, 200, { ok: true });
   }
 

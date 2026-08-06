@@ -286,6 +286,30 @@ export async function renderDispatcher(container, context) {
         title="Промежуточная точка: дозагрузка, санобработка, отдых">+ Стоянка</button>` : ''}`;
   };
 
+  // Единый диалог факта: любое событие линии фиксируется с датой и временем —
+  // по умолчанию «сейчас», при поздней отметке диспетчер ставит реальное время
+  // (иначе опоздания и простой считались бы от момента нажатия кнопки).
+  const factDialog = (title, hint, onSubmit) => {
+    context.showModal(`<form id="factForm"><h2>${title}</h2>
+      <p class="muted">${hint}</p>
+      <label class="field">Фактические дата и время
+        <input name="factAt" type="datetime-local" required value="${toLocalInput(new Date().toISOString())}"></label>
+      <div class="modal-actions">
+        <button type="button" class="button ghost" data-close>Отмена</button>
+        <button class="button">Зафиксировать</button>
+      </div></form>`);
+    document.getElementById('factForm').onsubmit = async event => {
+      event.preventDefault();
+      const iso = formValues(event.currentTarget).factAt;
+      if (!iso) return;
+      try {
+        await onSubmit(iso);
+        context.closeModal();
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    };
+  };
+
   // Правка времён стоянки: все шесть отметок + заметка (PATCH /api/stops/:id).
   const stopEditDialog = stop => {
     const timeInput = (name, label, value) => `<label class="field">${label}
@@ -430,22 +454,31 @@ export async function renderDispatcher(container, context) {
   });
 
   container.querySelectorAll('[data-step]').forEach(button =>
-    button.addEventListener('click', () => runStep(button.dataset.trip, button.dataset.step, context.onReload)));
+    button.addEventListener('click', () => {
+      if (button.dataset.step === 'on_line') {
+        factDialog('Вывод на линию', 'От этого времени считаются опоздания в пути.', async iso => {
+          await api(`/api/trips/${button.dataset.trip}/step`, {
+            method: 'POST', body: JSON.stringify({ step: 'on_line', at: iso })
+          });
+          toast('Рейс на линии — контроль пошёл');
+        });
+        return;
+      }
+      runStep(button.dataset.trip, button.dataset.step, context.onReload);
+    }));
   container.querySelectorAll('[data-incident]').forEach(button =>
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.incident);
       if (trip) incidentDialog(trip, data, context);
     }));
   container.querySelectorAll('[data-unload]').forEach(button =>
-    button.addEventListener('click', async () => {
-      try {
+    button.addEventListener('click', () => factDialog('Факт выгрузки',
+      'Груз выгружен у клиента — конвейер уйдёт бухгалтерии.', async iso => {
         await api(`/api/trips/${button.dataset.unload}`, {
-          method: 'PATCH', body: JSON.stringify({ status: 'unloaded' })
+          method: 'PATCH', body: JSON.stringify({ status: 'unloaded', factAt: iso })
         });
         toast('Выгрузка отмечена — конвейер передан бухгалтерии');
-        await context.onReload();
-      } catch (error) { toast(error.message, 'error'); }
-    }));
+      })));
   container.querySelectorAll('[data-notify-delay]').forEach(button =>
     button.addEventListener('click', async () => {
       button.disabled = true;
@@ -465,20 +498,13 @@ export async function renderDispatcher(container, context) {
       renderDispatcher(container, context);
     }));
   container.querySelectorAll('[data-stop-step]').forEach(button =>
-    button.addEventListener('click', async () => {
-      button.disabled = true;
-      try {
+    button.addEventListener('click', () => factDialog(`Контрольная точка · ${button.textContent.trim()}`,
+      'Укажите фактическое время события на стоянке.', async iso => {
         await api(`/api/stops/${button.dataset.stopStep}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ [button.dataset.stopField]: new Date().toISOString() })
+          method: 'PATCH', body: JSON.stringify({ [button.dataset.stopField]: iso })
         });
         toast('Факт отмечен');
-        await context.onReload();
-      } catch (error) {
-        button.disabled = false;
-        toast(error.message, 'error');
-      }
-    }));
+      })));
   container.querySelectorAll('[data-stop-edit]').forEach(button =>
     button.addEventListener('click', () => {
       const control = controlByTrip.get(button.dataset.stopTrip);
@@ -488,17 +514,13 @@ export async function renderDispatcher(container, context) {
   container.querySelectorAll('[data-stop-add]').forEach(button =>
     button.addEventListener('click', () => stopAddDialog(button.dataset.stopAdd)));
   container.querySelectorAll('[data-arrived]').forEach(button =>
-    button.addEventListener('click', async () => {
-      button.disabled = true;
-      try {
-        await api(`/api/trips/${button.dataset.arrived}/arrived`, { method: 'POST' });
+    button.addEventListener('click', () => factDialog('Факт прибытия на выгрузку',
+      'От этого времени считаются выгрузка и простой у клиента.', async iso => {
+        await api(`/api/trips/${button.dataset.arrived}/arrived`, {
+          method: 'POST', body: JSON.stringify({ at: iso })
+        });
         toast('Прибытие отмечено — пошёл отсчёт выгрузки');
-        await context.onReload();
-      } catch (error) {
-        button.disabled = false;
-        toast(error.message, 'error');
-      }
-    }));
+      })));
   container.querySelectorAll('[data-demurrage]').forEach(button =>
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.demurrage);

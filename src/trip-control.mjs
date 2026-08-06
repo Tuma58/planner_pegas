@@ -122,10 +122,10 @@ export function syncTripFromStops(db, tripId, userId) {
 
 // Обратная связь: ручной статус рейса проставляет ключевые факты на стоянках,
 // чтобы контроль не расходился с конвейером продаж/диспетчера.
-export function stampStopsFromStatus(db, tripId, status) {
+export function stampStopsFromStatus(db, tripId, status, atIso = null) {
   const stops = listTripStops(db, tripId);
   if (!stops.length) return;
-  const nowIso = new Date().toISOString();
+  const nowIso = atIso || new Date().toISOString();
   const first = stops[0];
   const last = stops[stops.length - 1];
   const set = (stopId, field) => db.prepare(
@@ -155,7 +155,7 @@ export const DISPATCH_STEPS = [
 ];
 
 // Выполнение шага с проверкой порядка. Возвращает { trip, statusChanged }.
-export function applyDispatchStep(db, tripId, step, userId) {
+export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
   const index = DISPATCH_STEPS.findIndex(item => item.step === step);
   if (index < 0) throw Object.assign(new Error('Неизвестный шаг диспетчеризации'), { status: 422 });
   const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(tripId);
@@ -169,15 +169,16 @@ export function applyDispatchStep(db, tripId, step, userId) {
   if (previous && !trip[previous.column]) {
     throw Object.assign(new Error(`Сначала выполните шаг «${previous.label}»`), { status: 409 });
   }
-  db.prepare(`UPDATE trips SET ${meta.column}=CURRENT_TIMESTAMP,updated_by=?,
-    updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(userId || null, tripId);
+  db.prepare(`UPDATE trips SET ${meta.column}=?,updated_by=?,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    .run(atIso || new Date().toISOString(), userId || null, tripId);
   let statusChanged = false;
   // Выход на линию = рейс «В пути»: стадия заявки и стоянки контроля двигаются
   // той же логикой, что и ручная смена статуса.
   if (step === 'on_line' && trip.status === 'plan') {
     setTripStatus(db, trip, 'run', userId);
     ensureTripStops(db, tripId);
-    stampStopsFromStatus(db, tripId, 'run');
+    stampStopsFromStatus(db, tripId, 'run', atIso);
     statusChanged = true;
   }
   return { trip: db.prepare('SELECT * FROM trips WHERE id=?').get(tripId), statusChanged };
