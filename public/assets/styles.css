@@ -249,6 +249,11 @@ tbody tr:hover td { background: var(--hover); }
 .today-combo { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .today-combo .button { border: 0; border-radius: 0; }
 .today-combo .day-picker { border: 0; border-left: 1px solid var(--line); border-radius: 0; }
+.day-cell .hrs { display: flex; justify-content: space-around; width: 100%; color: var(--muted); font-size: 9px; }
+.day-cell .hrs i { font-style: normal; }
+.grid-day.hours6 { background-image: repeating-linear-gradient(to right,
+  transparent, transparent calc(25% - 1px), var(--grid) calc(25% - 1px), var(--grid) 25%); }
+.grid-day.hours6.weekend { background-color: var(--gridwe); }
 .lg-sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
 .day-picker { width: 42px; min-height: 30px; padding: 4px 6px; font-size: var(--fs-sm); }
 .day-picker::-webkit-datetime-edit { display: none; }

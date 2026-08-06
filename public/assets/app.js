@@ -98,13 +98,31 @@ function criticalIds(trips, dispositions) {
     new Date(item.starts_at) < new Date(trip.ends_at))).map(trip => trip.id));
 }
 
+// Обозримый период канвы: неделя (−2…+5 от выбранной даты, по умолчанию),
+// две недели (−3…+11) или календарный месяц. Чем короче период, тем шире
+// день — на неделе видна почасовая детализация.
+function ganttView() {
+  const range = state.ganttRange || 'week';
+  const anchorIso = state.selectedDay || new Date().toISOString().slice(0, 10);
+  const anchorMs = Date.parse(`${anchorIso}T00:00:00Z`);
+  const base = Number(state.data.settings.general.plannerCellWidth || 44);
+  if (range === 'month') {
+    const start = monthStart(new Date(anchorMs));
+    return { range, start, days: monthDays(start), dayWidth: base };
+  }
+  if (range === 'two') return { range, start: new Date(anchorMs - 3 * 86_400_000), days: 14, dayWidth: base * 2 };
+  return { range, start: new Date(anchorMs - 2 * 86_400_000), days: 7, dayWidth: base * 4 };
+}
+
 function renderTimeline() {
-  const days = monthDays(state.month);
-  const dayWidth = Number(state.data.settings.general.plannerCellWidth || 44);
+  const view = ganttView();
+  const days = view.days;
+  const dayWidth = view.dayWidth;
+  const viewStart = view.start;
+  const viewEnd = new Date(viewStart.getTime() + days * 86_400_000);
   document.documentElement.style.setProperty('--planner-day-width', `${dayWidth}px`);
-  const monthEnd = addMonths(state.month, 1);
   const visibleTrips = state.data.trips.filter(trip =>
-    new Date(trip.starts_at) < monthEnd && new Date(trip.ends_at) > state.month);
+    new Date(trip.starts_at) < viewEnd && new Date(trip.ends_at) > viewStart);
   // Поиск по странице: строка остаётся, если совпала сцепка (номер, водитель,
   // тип) или любой её рейс месяца (маршрут, заказчик).
   const ganttQuery = (state.ganttQuery || '').toLowerCase();
@@ -135,19 +153,31 @@ function renderTimeline() {
     (!state.ganttState || vehicleDayState(vehicle, zoneDayIso).key === state.ganttState));
   const conflicts = conflictIds(state.data.trips);
   const critical = criticalIds(state.data.trips, state.data.dispositions || []);
-  byId('periodLabel').textContent = new Intl.DateTimeFormat('ru-RU', {
-    month: 'long', year: 'numeric', timeZone: 'UTC'
-  }).format(state.month);
-  const todayIndex = Math.floor((Date.now() - state.month.getTime()) / 86_400_000);
+  const dayLabel = ms => new Intl.DateTimeFormat('ru-RU',
+    { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(ms));
+  byId('periodLabel').textContent = view.range === 'month'
+    ? new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(viewStart)
+    : `${dayLabel(viewStart.getTime())} – ${dayLabel(viewEnd.getTime() - 86_400_000)}`;
+  byId('rangeTabs').innerHTML = [['week', 'Неделя'], ['two', '2 нед'], ['month', 'Месяц']]
+    .map(([key, label]) => `<button data-range="${key}" class="${view.range === key ? 'active' : ''}">${label}</button>`).join('');
+  byId('rangeTabs').onclick = event => {
+    const button = event.target.closest('[data-range]');
+    if (!button) return;
+    state.ganttRange = button.dataset.range;
+    renderTimeline();
+  };
+  const todayIndex = Math.floor((Date.now() - viewStart.getTime()) / 86_400_000);
   const isToday = index => index === todayIndex;
-  const dayIsoOf = index => new Date(state.month.getTime() + index * 86_400_000).toISOString().slice(0, 10);
+  const dayIsoOf = index => new Date(viewStart.getTime() + index * 86_400_000).toISOString().slice(0, 10);
   const isSelected = index => state.selectedDay === dayIsoOf(index);
   const headerDays = Array.from({ length: days }, (_, index) => {
-    const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
+    const date = new Date(viewStart.getTime() + index * 86_400_000);
     const weekend = [0, 6].includes(date.getUTCDay());
+    const hours = view.range === 'week'
+      ? '<span class="hrs"><i>06</i><i>12</i><i>18</i></span>' : '';
     return `<div class="day-cell ${weekend ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"
-      data-day-iso="${dayIsoOf(index)}" title="Аналитика дня"><strong>${index + 1}</strong>
-      <small>${new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(date)}</small></div>`;
+      data-day-iso="${dayIsoOf(index)}" title="Аналитика дня"><strong>${date.getUTCDate()}</strong>
+      <small>${new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(date)}</small>${hours}</div>`;
   }).join('');
   // Цвета и подписи видов диспозиций — те же, что в «Ресурсе»: ремонт,
   // пересменка, без водителя и плановая работа различимы прямо на канве.
@@ -158,16 +188,16 @@ function renderTimeline() {
     const vehicleTrips = visibleTrips.filter(trip => trip.vehicle_id === vehicle.id);
     const dayStatus = vehicleDayState(vehicle, zoneDayIso);
     const grid = Array.from({ length: days }, (_, index) => {
-      const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
-      return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"></div>`;
+      const date = new Date(viewStart.getTime() + index * 86_400_000);
+      return `<div class="grid-day ${view.range === 'week' ? 'hours6' : ''} ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"></div>`;
     }).join('');
     const dispositionBlocks = (state.data.dispositions || [])
       .filter(item => item.vehicle_id === vehicle.id &&
-        new Date(item.starts_at) < monthEnd && new Date(item.ends_at) > state.month)
+        new Date(item.starts_at) < viewEnd && new Date(item.ends_at) > viewStart)
       .map(item => {
-        const visibleStart = new Date(Math.max(new Date(item.starts_at), state.month));
-        const visibleEnd = new Date(Math.min(new Date(item.ends_at), monthEnd));
-        const left = Math.max(0, daysBetween(state.month, visibleStart)) * dayWidth;
+        const visibleStart = new Date(Math.max(new Date(item.starts_at), viewStart));
+        const visibleEnd = new Date(Math.min(new Date(item.ends_at), viewEnd));
+        const left = Math.max(0, daysBetween(viewStart, visibleStart)) * dayWidth;
         const width = Math.max(10, daysBetween(visibleStart, visibleEnd) * dayWidth - 2);
         const meta = dispositionMeta(item.kind);
         // «Резерв» — фоновая пометка плана, не событие: приглушается,
@@ -178,9 +208,9 @@ function renderTimeline() {
 ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ? ` · ${escapeHtml(item.note)}` : ''}</span>`;
       }).join('');
     const trips = vehicleTrips.map(trip => {
-      const visibleStart = new Date(Math.max(new Date(trip.starts_at), state.month));
-      const visibleEnd = new Date(Math.min(new Date(trip.ends_at), monthEnd));
-      const left = Math.max(0, daysBetween(state.month, visibleStart)) * dayWidth;
+      const visibleStart = new Date(Math.max(new Date(trip.starts_at), viewStart));
+      const visibleEnd = new Date(Math.min(new Date(trip.ends_at), viewEnd));
+      const left = Math.max(0, daysBetween(viewStart, visibleStart)) * dayWidth;
       const width = Math.max(28, daysBetween(visibleStart, visibleEnd) * dayWidth - 3);
       const color = trip.from_color || '#3b6ea5';
       return `<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''}"
@@ -212,18 +242,19 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
     block.addEventListener('click', () => openDisposition(
       (state.data.dispositions || []).find(item => item.id === block.dataset.disposition))));
   enableTripDrag(dayWidth);
-  enableDispositionDraw(dayWidth);
+  enableDispositionDraw(dayWidth, viewStart);
   // При первом показе месяца с текущим днём фокус на «сегодня −3 … +7 дней»:
   // канва прокручивается так, чтобы слева было видно три прошедших дня,
   // а неделя вперёд оставалась в кадре.
-  if (todayIndex >= 0 && todayIndex < days && state.autoScrolledMonth !== state.month.getTime()) {
-    state.autoScrolledMonth = state.month.getTime();
+  if (view.range === 'month' && todayIndex >= 0 && todayIndex < days &&
+      state.autoScrolledMonth !== viewStart.getTime()) {
+    state.autoScrolledMonth = viewStart.getTime();
     document.querySelector('.board').scrollLeft = Math.max(0, todayIndex - 3) * dayWidth;
   }
   const horizonStart = monthStart(new Date(`${state.data.settings.general.horizonStart}T00:00:00Z`));
   const horizonEnd = addMonths(horizonStart, Number(state.data.settings.general.horizonMonths || 12) - 1);
-  byId('periodPrev').disabled = state.month <= horizonStart;
-  byId('periodNext').disabled = state.month >= horizonEnd;
+  byId('periodPrev').disabled = view.range === 'month' && state.month <= horizonStart;
+  byId('periodNext').disabled = view.range === 'month' && state.month >= horizonEnd;
 }
 
 function showDragLabel(x, y, text) {
@@ -328,7 +359,7 @@ function enableTripDrag(dayWidth) {
 }
 
 // Рисование интервала недоступности мышью по пустой области строки ТС — по ТК 21.
-function enableDispositionDraw(dayWidth) {
+function enableDispositionDraw(dayWidth, viewStart) {
   if (!can('fleet:write')) return;
   const dayMs = 86_400_000;
   document.querySelectorAll('.track').forEach(track => {
@@ -354,8 +385,8 @@ function enableDispositionDraw(dayWidth) {
         selection.remove();
         openDisposition(null, {
           vehicle_id: track.dataset.vehicle,
-          starts_at: new Date(state.month.getTime() + range[0] * dayMs).toISOString(),
-          ends_at: new Date(state.month.getTime() + range[1] * dayMs).toISOString()
+          starts_at: new Date(viewStart.getTime() + range[0] * dayMs).toISOString(),
+          ends_at: new Date(viewStart.getTime() + range[1] * dayMs).toISOString()
         });
       };
       track.addEventListener('pointermove', onMove);
@@ -474,6 +505,7 @@ function renderMain() {
   ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'].forEach(id =>
     byId(id).classList.toggle('hidden', !timelineView));
   byId('typeFilter').classList.toggle('hidden', !isGantt);
+  byId('rangeTabs').classList.toggle('hidden', !isGantt);
   byId('legend').classList.toggle('hidden', !isGantt);
   // Правая панель осталась только у «Ресурса» (задания сотрудника):
   // Гант — информационное пространство на всю ширину, оперативная
@@ -1361,11 +1393,20 @@ byId('customersButton').onclick = showCustomers;
 byId('addressesButton').onclick = () => openAddressBook();
 byId('exceptionsChip').onclick = openExceptions;
 byId('geoButton').onclick = openGeoMap;
+const shiftGanttAnchor = direction => {
+  const view = ganttView();
+  const anchorIso = state.selectedDay || new Date().toISOString().slice(0, 10);
+  const shiftDays = view.range === 'two' ? 14 : 7;
+  selectDay(new Date(Date.parse(`${anchorIso}T00:00:00Z`) + direction * shiftDays * 86_400_000)
+    .toISOString().slice(0, 10));
+};
 byId('periodPrev').onclick = () => {
+  if (state.view === 'gantt' && (state.ganttRange || 'week') !== 'month') return shiftGanttAnchor(-1);
   if (!byId('periodPrev').disabled) state.month = addMonths(state.month, -1);
   renderMain();
 };
 byId('periodNext').onclick = () => {
+  if (state.view === 'gantt' && (state.ganttRange || 'week') !== 'month') return shiftGanttAnchor(1);
   if (!byId('periodNext').disabled) state.month = addMonths(state.month, 1);
   renderMain();
 };
