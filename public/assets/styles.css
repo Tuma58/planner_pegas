@@ -291,6 +291,9 @@ tbody tr:hover td { background: var(--hover); }
 /* Легенда зон (ТК 21) */
 .legend { display: flex; gap: 10px; flex-wrap: wrap; }
 .lg { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--muted); }
+.lg.clickable { cursor: pointer; padding: 3px 8px; border-radius: 11px; border: 1px solid transparent; }
+.lg.clickable:hover { background: var(--hover); border-color: var(--line); }
+.lg.clickable.active { background: var(--soft); border-color: var(--teal); color: var(--ink); font-weight: 700; }
 .sw { width: 11px; height: 11px; border-radius: 3px; }
 
 /* Маркер «сегодня» */

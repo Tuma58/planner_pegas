@@ -112,9 +112,22 @@ function renderTimeline() {
     `${vehicle.plate} ${vehicle.driver_name || ''} ${vehicle.type_name || ''}`.toLowerCase().includes(ganttQuery) ||
     visibleTrips.some(trip => trip.vehicle_id === vehicle.id &&
       `${routeLabel(trip)} ${trip.customer_name || ''}`.toLowerCase().includes(ganttQuery));
+  // Фильтр по геозоне (клик в легенде): рейс месяца через зону либо сцепка
+  // стоит в ней (зона выгрузки последнего рейса, без рейсов — зона приписки).
+  const zoneOfVehicleNow = vehicle => {
+    const lastTrip = state.data.trips
+      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
+      .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+    return lastTrip ? lastTrip.to_name : vehicle.zone_name;
+  };
+  const vehicleInZone = vehicle =>
+    visibleTrips.some(trip => trip.vehicle_id === vehicle.id &&
+      (trip.from_name === state.ganttZone || trip.to_name === state.ganttZone)) ||
+    zoneOfVehicleNow(vehicle) === state.ganttZone;
   const vehicles = state.data.vehicles.filter(vehicle =>
     vehicle.status !== 'out' && (state.type === 'all' || vehicle.type_name === state.type) &&
-    (!ganttQuery || vehicleMatches(vehicle)));
+    (!ganttQuery || vehicleMatches(vehicle)) &&
+    (!state.ganttZone || vehicleInZone(vehicle)));
   const conflicts = conflictIds(state.data.trips);
   const critical = criticalIds(state.data.trips, state.data.dispositions || []);
   byId('periodLabel').textContent = new Intl.DateTimeFormat('ru-RU', {
@@ -365,8 +378,19 @@ function enableDispositionDraw(dayWidth) {
 }
 
 function renderLegend() {
+  // Зоны легенды — фильтр строк Ганта: остаются сцепки, чьи рейсы месяца
+  // проходят через зону или которые освобождаются в ней. Повторный клик — сброс.
   byId('legend').innerHTML = state.data.reference.zones.map(zone =>
-    `<span class="lg"><span class="sw" style="background:${zone.color}"></span>${escapeHtml(zone.name)}</span>`).join('');
+    `<span class="lg clickable ${state.ganttZone === zone.name ? 'active' : ''}" data-lg-zone="${escapeHtml(zone.name)}"
+      title="Показать сцепки с рейсами через «${escapeHtml(zone.name)}» и стоящие в ней">
+      <span class="sw" style="background:${zone.color}"></span>${escapeHtml(zone.name)}${state.ganttZone === zone.name ? ' ✕' : ''}</span>`).join('');
+  byId('legend').onclick = event => {
+    const chip = event.target.closest('[data-lg-zone]');
+    if (!chip) return;
+    state.ganttZone = state.ganttZone === chip.dataset.lgZone ? null : chip.dataset.lgZone;
+    renderLegend();
+    renderTimeline();
+  };
 }
 
 // Главные экраны (перенос ролевых экранов ТК 21), доступ по правам.
