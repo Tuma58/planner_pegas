@@ -371,7 +371,9 @@ export function renderSales(container, context) {
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         ${step.plate ? ` · <span class="mono">${escapeHtml(step.plate)}</span>` : ''}
         ${Number(order.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
-        <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')}${order.planned_km ? ` · 📏 ${Math.round(order.planned_km)} км` : ''} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
+        <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')}${order.planned_km ? ` · 📏 ${Math.round(order.planned_km)} км` : ''}${(() => {
+          try { const viaList = JSON.parse(order.via_json || '[]');
+            return viaList.length ? ` · ⛳ ${viaList.length} пром.` : ''; } catch { return ''; } })()} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
         <div class="stepper-row">${stepper(step.stage)}<span class="pipe-inline">${waiting}${since}</span></div>
@@ -510,6 +512,17 @@ export function renderSales(container, context) {
             .map(item => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.zone_name || '')}</option>`).join('')}
             ${data.reference.zones.flatMap(zone => [zone.name, ...(zone.aliases || [])]).sort()
             .map(place => `<option value="${escapeHtml(place)}"></option>`).join('')}</datalist>
+          <div class="via-box">
+            <div class="via-head">Промежуточные пункты <small class="muted">(погрузки и выгрузки по пути)</small></div>
+            <div id="salesViaChips" class="via-chips"></div>
+            <div class="via-add">
+              <input id="salesViaPoint" list="salesPlaces" placeholder="пункт из справочника" autocomplete="off" style="flex:1">
+              <select id="salesViaKind" title="Тип операции" style="width:110px">
+                <option value="D">Выгрузка</option><option value="P">Погрузка</option>
+              </select>
+              <button type="button" class="button ghost small" id="salesViaAdd">+</button>
+            </div>
+          </div>
           <div id="salesPlannedKm" class="next-event" style="margin:0 0 6px"></div>
           <div class="form-grid">
             <label class="field">Геозона откуда<select name="fromZoneId" id="salesFrom">${zoneOptions}</select></label>
@@ -609,13 +622,47 @@ export function renderSales(container, context) {
     return data.reference.zones.find(zone => zone.name.toLowerCase() === needle ||
       (zone.aliases || []).some(alias => alias.toLowerCase() === needle)) || null;
   };
+  const via = state.salesVia || (state.salesVia = []);
+  const chainKm = (from, to, viaList) => {
+    if (!from || !to) return null;
+    const chain = [from, ...viaList.map(item => addressById(item.addressId)).filter(Boolean), to];
+    let total = 0;
+    for (let i = 1; i < chain.length; i += 1) {
+      const leg = plannedKmBetween(chain[i - 1], chain[i]);
+      if (leg == null) return null;
+      total += leg;
+    }
+    return total;
+  };
   const salesPlannedKm = () => {
     const from = addressByName(data, container.querySelector('#salesFromPoint').value);
     const to = addressByName(data, container.querySelector('#salesToPoint').value);
-    const km = plannedKmBetween(from, to);
+    const km = chainKm(from, to, via);
+    const operations = 2 + via.length;
     container.querySelector('#salesPlannedKm').innerHTML = km
-      ? `📏 Плановый километраж: <b>${km} км</b> (по справочнику адресов)` : '';
+      ? `📏 Плановый километраж: <b>${km} км</b> · ${operations} операции ·
+        транзит ~${Math.round(transitHours(km, data.settings.calculation, operations))} ч`
+      : via.length ? `⛳ Промежуточных пунктов: ${via.length} — километраж появится при выборе адресов` : '';
   };
+  const redrawVia = () => {
+    container.querySelector('#salesViaChips').innerHTML = via.map((item, index) =>
+      `<span class="via-chip">${item.kind === 'P' ? '⬆' : '⬇'} ${escapeHtml(item.point.slice(0, 30))}
+        <button type="button" data-via-del="${index}" title="Убрать пункт">×</button></span>`).join('')
+      || '<small class="muted">прямой рейс без заездов</small>';
+    container.querySelectorAll('[data-via-del]').forEach(button =>
+      button.addEventListener('click', () => { via.splice(Number(button.dataset.viaDel), 1); redrawVia(); }));
+    salesPlannedKm();
+  };
+  container.querySelector('#salesViaAdd').addEventListener('click', () => {
+    const input = container.querySelector('#salesViaPoint');
+    const address = resolveAddress(data, input.value);
+    const point = address ? address.name : input.value.trim();
+    if (!point) return;
+    via.push({ point, kind: container.querySelector('#salesViaKind').value, addressId: address?.id || null });
+    input.value = '';
+    redrawVia();
+  });
+  redrawVia();
   [['salesFromPoint', 'salesFrom'], ['salesToPoint', 'salesTo']].forEach(([pointId, zoneId]) => {
     container.querySelector(`#${pointId}`).addEventListener('change', event => {
       // Пункт из справочника адресов надёжнее алиаса: частичный ввод
@@ -728,6 +775,7 @@ export function renderSales(container, context) {
     values.cash = values.cash ? 1 : 0;
     values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
     values.toAddressId = addressByName(data, values.toPoint)?.id || null;
+    values.via = via;
     if (!values.rateVat) {
       values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
     }
@@ -744,6 +792,7 @@ export function renderSales(container, context) {
     try {
       const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
       toast(`Забронировано — заявка № ${created.orderNo} в портфеле (первая в списке)`);
+      state.salesVia = [];
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -851,6 +900,17 @@ export function editOrderDialog(order, data, context) {
       .map(item => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.zone_name || '')}</option>`).join('')}
       ${data.reference.zones.flatMap(zone => [zone.name, ...(zone.aliases || [])]).sort()
       .map(place => `<option value="${escapeHtml(place)}"></option>`).join('')}</datalist>
+    <div class="via-box">
+      <div class="via-head">Промежуточные пункты</div>
+      <div id="editViaChips" class="via-chips"></div>
+      <div class="via-add">
+        <input id="editViaPoint" list="editPlaces" placeholder="пункт из справочника" autocomplete="off" style="flex:1">
+        <select id="editViaKind" style="width:110px">
+          <option value="D">Выгрузка</option><option value="P">Погрузка</option>
+        </select>
+        <button type="button" class="button ghost small" id="editViaAdd">+</button>
+      </div>
+    </div>
     <div id="editPlannedKm" class="next-event" style="margin:0 0 6px">${order.planned_km
       ? `📏 Плановый километраж: <b>${Math.round(order.planned_km)} км</b> (по справочнику адресов)` : ''}</div>
     <div class="form-grid">
@@ -893,13 +953,45 @@ export function editOrderDialog(order, data, context) {
     return data.reference.zones.find(zone => zone.name.toLowerCase() === needle ||
       (zone.aliases || []).some(alias => alias.toLowerCase() === needle)) || null;
   };
+  const editVia = (() => { try { return JSON.parse(order.via_json || '[]'); } catch { return []; } })();
+  const editAddressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
   const editPlannedKm = () => {
     const from = addressByName(data, document.getElementById('editFromPoint').value);
     const to = addressByName(data, document.getElementById('editToPoint').value);
-    const km = plannedKmBetween(from, to);
+    const chain = from && to
+      ? [from, ...editVia.map(item => editAddressById(item.addressId)).filter(Boolean), to] : null;
+    let km = null;
+    if (chain) {
+      km = 0;
+      for (let i = 1; i < chain.length; i += 1) {
+        const leg = plannedKmBetween(chain[i - 1], chain[i]);
+        if (leg == null) { km = null; break; }
+        km += leg;
+      }
+    }
     if (km) document.getElementById('editPlannedKm').innerHTML =
-      `📏 Плановый километраж: <b>${km} км</b> (по справочнику адресов)`;
+      `📏 Плановый километраж: <b>${km} км</b> · ${2 + editVia.length} операции ·
+        транзит ~${Math.round(transitHours(km, data.settings.calculation, 2 + editVia.length))} ч`;
   };
+  const redrawEditVia = () => {
+    document.getElementById('editViaChips').innerHTML = editVia.map((item, index) =>
+      `<span class="via-chip">${item.kind === 'P' ? '⬆' : '⬇'} ${escapeHtml(item.point.slice(0, 30))}
+        <button type="button" data-evia-del="${index}">×</button></span>`).join('')
+      || '<small class="muted">прямой рейс без заездов</small>';
+    document.querySelectorAll('[data-evia-del]').forEach(button =>
+      button.addEventListener('click', () => { editVia.splice(Number(button.dataset.eviaDel), 1); redrawEditVia(); }));
+    editPlannedKm();
+  };
+  document.getElementById('editViaAdd').onclick = () => {
+    const input = document.getElementById('editViaPoint');
+    const address = resolveAddress(data, input.value);
+    const point = address ? address.name : input.value.trim();
+    if (!point) return;
+    editVia.push({ point, kind: document.getElementById('editViaKind').value, addressId: address?.id || null });
+    input.value = '';
+    redrawEditVia();
+  };
+  redrawEditVia();
   [['editFromPoint', 'editFromZone'], ['editToPoint', 'editToZone']].forEach(([pointId, zoneId]) => {
     document.getElementById(pointId).addEventListener('change', event => {
       const address = resolveAddress(data, event.currentTarget.value);
@@ -919,6 +1011,7 @@ export function editOrderDialog(order, data, context) {
     values.cash = values.cash ? 1 : 0;
     values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
     values.toAddressId = addressByName(data, values.toPoint)?.id || null;
+    values.via = editVia;
     try {
       await api(`/api/orders/${order.id}`, {
         method: 'PATCH', body: JSON.stringify(values)

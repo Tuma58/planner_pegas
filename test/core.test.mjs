@@ -674,6 +674,8 @@ test('контракты 1С и телематики идемпотентны, �
   // Транзит: (км/50 + 2×3ч) × 1,5 — 500 км ровно сутки.
   assert.equal(transitHours(500, {}), 24);
   assert.equal(transitHours(653, {}), (653 / 50 + 6) * 1.5);
+  // Мультистоп: каждая промежуточная погрузка/выгрузка — ещё одна операция.
+  assert.equal(transitHours(500, {}, 4), (500 / 50 + 12) * 1.5);
 
   const report = reportSnapshot(db, '2026-07-01', '2026-08-01');
   assert.ok(report.netRevenue > 0);

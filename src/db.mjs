@@ -290,6 +290,9 @@ function migrateColumns(db) {
   ensure('orders', 'from_address_id', 'TEXT REFERENCES addresses(id)');
   ensure('orders', 'to_address_id', 'TEXT REFERENCES addresses(id)');
   ensure('orders', 'planned_km', 'REAL');
+  // Промежуточные пункты маршрута: [{point, kind: 'P'|'D', addressId}] —
+  // мультистоп заявки; при назначении становятся стоянками рейса.
+  ensure('orders', 'via_json', "TEXT NOT NULL DEFAULT '[]'");
   ensure('trips', 'order_no', "TEXT NOT NULL DEFAULT ''");
   ensure('trips', 'cash', 'INTEGER NOT NULL DEFAULT 0');
   // Номер заявки присваивает система: сквозной счётчик в app_meta (с 1001).

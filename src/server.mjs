@@ -571,14 +571,33 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
-  // Плановый километраж заявки: по координатам адресов погрузки/выгрузки.
-  function plannedKmFor(fromAddressId, toAddressId) {
+  // Промежуточные пункты заявки: [{point, kind P/D, addressId}], до 8 штук.
+  function parseVia(value) {
+    if (!Array.isArray(value)) return null;
+    return value.slice(0, 8).map(item => ({
+      point: String(item?.point || '').trim().slice(0, 120),
+      kind: item?.kind === 'P' ? 'P' : 'D',
+      addressId: item?.addressId || null
+    })).filter(item => item.point);
+  }
+  // Плановый километраж заявки: цепочка погрузка → промежуточные → выгрузка
+  // по координатам справочника (точки без адреса пропускаются в километраже,
+  // но считаются грузовой операцией в транзитном времени).
+  function plannedKmFor(fromAddressId, toAddressId, via = []) {
     if (!fromAddressId || !toAddressId) return null;
     const point = db.prepare('SELECT latitude,longitude FROM addresses WHERE id=?');
-    const a = point.get(fromAddressId);
-    const b = point.get(toAddressId);
-    if (!a || !b) return null;
-    return roadKm(a.latitude, a.longitude, b.latitude, b.longitude);
+    const chain = [point.get(fromAddressId),
+      ...via.map(item => item.addressId ? point.get(item.addressId) : null).filter(Boolean),
+      point.get(toAddressId)].filter(Boolean);
+    if (chain.length < 2) return null;
+    let total = 0;
+    for (let i = 1; i < chain.length; i += 1) {
+      const leg = roadKm(chain[i - 1].latitude, chain[i - 1].longitude,
+        chain[i].latitude, chain[i].longitude);
+      if (leg == null) return null;
+      total += leg;
+    }
+    return total;
   }
 
   if (request.method === 'GET' && pathname === '/api/addresses') {
@@ -639,18 +658,20 @@ async function api(request, response, url) {
     }
     const id = randomUUID();
     const orderNo = nextOrderNo(db);
-    const plannedKm = plannedKmFor(body.fromAddressId, body.toAddressId);
+    const via = parseVia(body.via) || [];
+    const plannedKm = plannedKmFor(body.fromAddressId, body.toAddressId, via);
     db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
       rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,order_no,cash,
-      from_address_id,to_address_id,planned_km,created_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      from_address_id,to_address_id,planned_km,via_json,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, customerName, body.fromZoneId, body.toZoneId,
       String(body.fromPoint || '').trim(), String(body.toPoint || '').trim(), Number(body.rateVat || 0),
       new Date(windowFrom).toISOString(), new Date(windowTo).toISOString(),
       String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0),
       String(body.comment || '').trim().slice(0, 500),
       orderNo, body.cash ? 1 : 0,
-      body.fromAddressId || null, body.toAddressId || null, plannedKm, user.id);
+      body.fromAddressId || null, body.toAddressId || null, plannedKm,
+      JSON.stringify(via), user.id);
     queueOutbox(db, 'orders', id, 'create', orderOutboxPayload(id),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'create', 'order', id, body, requestIp(request));
@@ -699,10 +720,11 @@ async function api(request, response, url) {
     const nextCash = 'cash' in body ? (body.cash ? 1 : 0) : Number(current.cash || 0);
     const nextFromAddress = 'fromAddressId' in body ? (body.fromAddressId || null) : current.from_address_id;
     const nextToAddress = 'toAddressId' in body ? (body.toAddressId || null) : current.to_address_id;
-    const nextPlannedKm = plannedKmFor(nextFromAddress, nextToAddress) ?? current.planned_km;
+    const nextVia = parseVia(body.via) ?? JSON.parse(current.via_json || '[]');
+    const nextPlannedKm = plannedKmFor(nextFromAddress, nextToAddress, nextVia) ?? current.planned_km;
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,from_point=?,to_point=?,
       rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,comment=?,
-      order_no=?,cash=?,from_address_id=?,to_address_id=?,planned_km=?,
+      order_no=?,cash=?,from_address_id=?,to_address_id=?,planned_km=?,via_json=?,
       rejection_reason=?,returned_at=?,confirmed_at=?,
       stage_changed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
@@ -716,6 +738,7 @@ async function api(request, response, url) {
       String(body.bodyType ?? current.body_type), nextStage,
       String(body.comment ?? current.comment ?? '').trim().slice(0, 500),
       keptOrderNo, nextCash, nextFromAddress, nextToAddress, nextPlannedKm,
+      JSON.stringify(nextVia),
       rejectionReason, returnedAt, confirmedAt, stageChanged ? 1 : 0, match[0]);
     // Заявка уже в плане у логиста: ставка, форма оплаты и ID заказа —
     // атрибуты выручки рейса, синхронизируем, пока рейс не закрыт оплатой.
@@ -774,9 +797,11 @@ async function api(request, response, url) {
     // Плановый километраж по адресам заявки — приоритет; зонный тариф — фолбэк.
     const distance = Number(body.distanceKm || order.planned_km || rate?.distance_km || 500);
     const startsAt = order.window_from;
-    // Транзит: (км/50 + 2×3ч) × 1,5. Если окно заказа клиента шире расчёта —
-    // план ставится по окну клиента (доставка к его сроку).
-    const transitEnd = Date.parse(startsAt) + transitHours(distance, settings) * 3_600_000;
+    // Транзит: (км/50 + операции×3ч) × 1,5 — каждая промежуточная погрузка
+    // и выгрузка добавляет операцию. Окно клиента шире расчёта — план по окну.
+    const orderVia = (() => { try { return JSON.parse(order.via_json || '[]'); } catch { return []; } })();
+    const transitEnd = Date.parse(startsAt) +
+      transitHours(distance, settings, 2 + orderVia.length) * 3_600_000;
     const endsAt = new Date(Math.max(transitEnd, Date.parse(order.window_to || 0))).toISOString();
     const tripId = order.trip_id || randomUUID();
     db.exec('BEGIN IMMEDIATE');
@@ -794,6 +819,31 @@ async function api(request, response, url) {
           order.from_point || '', order.to_point || '',
           startsAt, endsAt, distance, order.rate_vat, order.temperature_mode, order.body_type,
           Number(order.cash || 0), order.order_no || '', user.id, user.id);
+      }
+      // Промежуточные пункты заявки становятся стоянками рейса: диспетчер
+      // ведёт их в «🧭 Точках» — прибытие, работы, убытие, простой.
+      // План прибытия — линейно по цепочке между началом и концом рейса.
+      ensureTripStops(db, tripId);
+      const existingMiddle = db.prepare(`SELECT COUNT(*) c FROM trip_stops
+        WHERE trip_id=? AND seq NOT IN (
+          SELECT MIN(seq) FROM trip_stops WHERE trip_id=?
+          UNION SELECT MAX(seq) FROM trip_stops WHERE trip_id=?)`)
+        .get(tripId, tripId, tripId).c;
+      if (orderVia.length && !existingMiddle) {
+        const spanMs = Date.parse(endsAt) - Date.parse(startsAt);
+        const insertStop = db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,
+          planned_arrival,updated_by) VALUES(?,?,?,?,?,?,?)`);
+        orderVia.forEach((item, index) => {
+          const plannedArrival = new Date(Date.parse(startsAt) +
+            spanMs * (index + 1) / (orderVia.length + 1)).toISOString();
+          insertStop.run(randomUUID(), tripId, index + 2, item.kind, item.point,
+            plannedArrival, user.id);
+        });
+        // Конечная выгрузка после промежуточных: пересчёт порядковых номеров.
+        const all = db.prepare(`SELECT id FROM trip_stops WHERE trip_id=?
+          ORDER BY CASE WHEN planned_arrival IS NULL THEN 1 ELSE 0 END, planned_arrival`).all(tripId);
+        const reseq = db.prepare('UPDATE trip_stops SET seq=? WHERE id=?');
+        all.forEach((stop, index) => reseq.run(index + 1, stop.id));
       }
       // Назначение ТС решает и «возврат из плана»: пометка снимается, запись
       // уходит из «Требует решения» по факту решения.

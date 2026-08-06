@@ -18,11 +18,11 @@ export function resolveZone(db, value) {
 // Транзитное время рейса: движение (50 км/ч) + две грузовые операции
 // (по 3 ч), сумма × 1,5 — запас включает отдых водителя, после ends_at
 // сцепка готова к следующему рейсу.
-export function transitHours(distanceKm, calculation = {}) {
+export function transitHours(distanceKm, calculation = {}, operations = 2) {
   const speed = Number(calculation.techSpeedKmh || 50);
   const perOperation = Number(calculation.handlingHoursPerOperation || 3);
   const factor = Number(calculation.transitFactor || 1.5);
-  return (Number(distanceKm || 0) / speed + 2 * perOperation) * factor;
+  return (Number(distanceKm || 0) / speed + operations * perOperation) * factor;
 }
 
 function routeDistance(db, fromId, toId) {
