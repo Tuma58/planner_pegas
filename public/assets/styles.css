@@ -237,6 +237,8 @@ tbody tr:hover td { background: var(--hover); }
 .checkline input { width: auto; }
 .cash-badge { margin-left: 6px; padding: 2px 7px; border-radius: 10px; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-size: 10px; font-weight: 750; white-space: nowrap; }
 .stop-warn { color: var(--warn); font-weight: 650; }
+.next-ctrl { display: block; margin-top: 4px; color: var(--teal); font-weight: 650; font-size: var(--fs-sm); }
+.next-ctrl.overdue { color: var(--bad); }
 /* Промежуточные пункты заявки (мультистоп) */
 .via-box { margin: 2px 0 8px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 9px; }
 .via-head { font-size: var(--fs-sm); font-weight: 700; color: var(--muted); margin-bottom: 6px; }

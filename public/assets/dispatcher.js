@@ -6,6 +6,7 @@
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toLocalInput, toast } from './api.js';
+import { resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 
@@ -209,8 +210,58 @@ export async function renderDispatcher(container, context) {
   const stuckMsOf = trip => trip.arrived_at ? nowMs - Date.parse(trip.arrived_at) : 0;
   const isStuck = trip => stuckMsOf(trip) > UNLOAD_STUCK_MS;
   // Особый контроль (не выгружают) — наверху списка линии.
-  const online = data.trips.filter(trip => trip.status === 'run' && matches(trip))
-    .sort((a, b) => Number(isStuck(b)) - Number(isStuck(a)) || a.ends_at.localeCompare(b.ends_at));
+  const online = data.trips.filter(trip => trip.status === 'run' && matches(trip));
+
+  // Приоритет контроля: наверху рейсы, чьё следующее событие ближе всего
+  // к текущему моменту (просроченные — самые первые). Время грузовых
+  // операций в регионах показывается по местному поясу субъекта.
+  const TZ_BY_REGION = {
+    'Самарская обл': 4, 'Ульяновская обл': 4, 'Удмуртия респ': 4, 'Астраханская обл': 4,
+    'Саратовская обл': 4, 'Оренбургская обл': 5, 'Башкортостан респ': 5, 'Пермский край': 5,
+    'Свердловская обл': 5, 'Челябинская обл': 5, 'Тюменская обл': 5, 'ХМАО-Югра': 5,
+    'Курганская обл': 5, 'Омская обл': 6, 'Новосибирская обл': 7, 'Кемеровская обл': 7,
+    'Томская обл': 7, 'Красноярский край': 7
+  };
+  const TZ_BY_ZONE = { 'Самара': 4, 'Урал': 5, 'Восток': 6 };
+  const offsetOfPoint = (point, zoneName) => {
+    const region = resolveAddress(data, point)?.region;
+    return TZ_BY_REGION[region] ?? TZ_BY_ZONE[zoneName] ?? 3;
+  };
+  const localNote = (atMs, point, zoneName) => {
+    const offset = offsetOfPoint(point, zoneName);
+    if (offset === 3) return '';
+    const local = new Date(atMs + (offset - 3) * 3_600_000);
+    return ` · местное ${formatDateTime(local.toISOString())} (МСК+${offset - 3})`;
+  };
+  const normOpMs = Number(data.settings.calculation.handlingHoursPerOperation || 3) * 3_600_000;
+  const nextControlEvent = trip => {
+    if (isStuck(trip)) {
+      return { at: 0, label: '🚨 не выгружают — вмешаться',
+        point: trip.to_point || trip.to_name, zone: trip.to_name };
+    }
+    const stops = controlByTrip.get(trip.id)?.stops || [];
+    for (const stop of stops) {
+      if (stop.actual_departure) continue;
+      const point = stop.point || trip.to_name;
+      if (!stop.actual_arrival) {
+        const candidates = [stop.estimated_arrival,
+          Date.parse(stop.planned_arrival || ''), Date.parse(trip.ends_at)];
+        const at = candidates.find(Number.isFinite) ?? Date.now();
+        return { at, label: `прибытие: ${point}`, point, zone: trip.to_name };
+      }
+      if (!stop.work_finished_at) {
+        return { at: Date.parse(stop.actual_arrival) + normOpMs,
+          label: `${stop.kind === 'P' ? 'погрузка' : 'выгрузка'}: ${point}`, point, zone: trip.to_name };
+      }
+      return { at: Date.parse(stop.work_finished_at), label: `убытие: ${point}`, point, zone: trip.to_name };
+    }
+    return { at: Date.parse(trip.ends_at), label: 'завершение рейса',
+      point: trip.to_point || trip.to_name, zone: trip.to_name };
+  };
+
+  // Ближайшее событие — наверх: просроченные и «не выгружают» первыми.
+  online.sort((a, b) => (Number.isFinite(nextControlEvent(a).at) ? nextControlEvent(a).at : Infinity) -
+    (Number.isFinite(nextControlEvent(b).at) ? nextControlEvent(b).at : Infinity));
 
   const tripHead = trip => `<span style="flex:1;min-width:0">
       <strong>${escapeHtml(routeLabel(trip))}</strong> · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
@@ -401,6 +452,12 @@ export async function renderDispatcher(container, context) {
     }
     const opened = state.dispatcherStops === trip.id;
     const stopsCount = controlByTrip.get(trip.id)?.stops?.length || 0;
+    const nextEvent = nextControlEvent(trip);
+    const hasTime = Number.isFinite(nextEvent.at) && nextEvent.at > 0;
+    const overdue = hasTime && nextEvent.at < Date.now();
+    const eventLine = `<small class="next-ctrl ${overdue || nextEvent.at === 0 ? 'overdue' : ''}">⏱ далее —
+      ${escapeHtml(nextEvent.label)}${hasTime ? ` · ${formatDateTime(new Date(nextEvent.at).toISOString())}
+      ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue ? ' · просрочено' : ''}</small>`;
     return `<div class="card" style="padding:9px 11px">
       <div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}" style="border:0;padding:0">
       ${tripHead(trip)}
@@ -416,6 +473,7 @@ export async function renderDispatcher(container, context) {
         </span>
       </span>
       </div>
+      ${eventLine}
       ${opened ? stopsBlock(trip) : ''}
     </div>`;
   }).join('') || '<p class="muted">На линии никого нет.</p>';
