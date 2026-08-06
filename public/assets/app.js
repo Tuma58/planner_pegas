@@ -131,7 +131,8 @@ function renderTimeline() {
   const vehicles = state.data.vehicles.filter(vehicle =>
     vehicle.status !== 'out' && (state.type === 'all' || vehicle.type_name === state.type) &&
     (!ganttQuery || vehicleMatches(vehicle)) &&
-    (!state.ganttZone || vehicleInZone(vehicle)));
+    (!state.ganttZone || vehicleInZone(vehicle)) &&
+    (!state.ganttState || vehicleDayState(vehicle, zoneDayIso).key === state.ganttState));
   const conflicts = conflictIds(state.data.trips);
   const critical = criticalIds(state.data.trips, state.data.dispositions || []);
   byId('periodLabel').textContent = new Intl.DateTimeFormat('ru-RU', {
@@ -152,35 +153,10 @@ function renderTimeline() {
   // пересменка, без водителя и плановая работа различимы прямо на канве.
   const dispositionMeta = kind => DISP_KINDS.find(item => item.kind === kind) ||
     { label: kind, short: kind, color: 'var(--muted)' };
-  // Статус сцепки на дату (сегодня или выбранный день): рейс «откуда → куда»,
-  // оформленная диспозиция или простой без причины (подсвечивается).
-  const shortPlace = trip_field => String(trip_field || '').split(',')[0].trim().slice(0, 20);
-  const dayStatusOf = vehicle => {
-    const dayStartMs = Date.parse(`${zoneDayIso}T00:00:00Z`);
-    const activeTrip = state.data.trips
-      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-        Date.parse(trip.starts_at) <= zoneDayEndMs && Date.parse(trip.ends_at) > dayStartMs)
-      .sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
-    if (activeTrip) {
-      const from = shortPlace(activeTrip.from_point || activeTrip.from_name);
-      const to = shortPlace(activeTrip.to_point || activeTrip.to_name);
-      return { cls: 'trip', text: `⇢ из ${from} в ${to}` };
-    }
-    const noonMs = dayStartMs + 43_200_000;
-    const disposition = (state.data.dispositions || []).find(item =>
-      item.vehicle_id === vehicle.id &&
-      Date.parse(item.starts_at) <= noonMs && noonMs < Date.parse(item.ends_at));
-    if (disposition) {
-      const meta = dispositionMeta(disposition.kind);
-      return { cls: 'dispo', color: meta.color,
-        text: `${meta.label} до ${formatDate(disposition.ends_at)}` };
-    }
-    return { cls: 'idle', text: `⚠ простой в «${zoneOfVehicleAt(vehicle)}» — причины нет` };
-  };
   const nowMs = Date.now();
   const rows = vehicles.map(vehicle => {
     const vehicleTrips = visibleTrips.filter(trip => trip.vehicle_id === vehicle.id);
-    const dayStatus = dayStatusOf(vehicle);
+    const dayStatus = vehicleDayState(vehicle, zoneDayIso);
     const grid = Array.from({ length: days }, (_, index) => {
       const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
       return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"></div>`;
@@ -388,6 +364,39 @@ function enableDispositionDraw(dayWidth) {
   });
 }
 
+// Занятость сцепки на дату: активный рейс, оформленная диспозиция или простой.
+// Используется ячейками Ганта, фильтрами состояний и их счётчиками.
+function vehicleDayState(vehicle, dayIso) {
+  const dayStartMs = Date.parse(`${dayIso}T00:00:00Z`);
+  const dayEndMs = dayStartMs + 86_399_000;
+  const shortPlace = value => String(value || '').split(',')[0].trim().slice(0, 20);
+  const activeTrip = state.data.trips
+    .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
+      Date.parse(trip.starts_at) <= dayEndMs && Date.parse(trip.ends_at) > dayStartMs)
+    .sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
+  if (activeTrip) {
+    return { key: 'trip', cls: 'trip', color: 'var(--teal)',
+      text: `⇢ из ${shortPlace(activeTrip.from_point || activeTrip.from_name)} в ${shortPlace(activeTrip.to_point || activeTrip.to_name)}` };
+  }
+  const noonMs = dayStartMs + 43_200_000;
+  const disposition = (state.data.dispositions || []).find(item =>
+    item.vehicle_id === vehicle.id &&
+    Date.parse(item.starts_at) <= noonMs && noonMs < Date.parse(item.ends_at));
+  if (disposition) {
+    const meta = DISP_KINDS.find(item => item.kind === disposition.kind) ||
+      { label: disposition.kind, color: 'var(--muted)' };
+    return { key: disposition.kind, cls: 'dispo', color: meta.color,
+      text: `${meta.label} до ${formatDate(disposition.ends_at)}` };
+  }
+  const lastTrip = state.data.trips
+    .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
+      Date.parse(trip.starts_at) <= dayEndMs)
+    .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+  const zone = lastTrip ? lastTrip.to_name : vehicle.zone_name;
+  return { key: 'idle', cls: 'idle', color: 'var(--warn)',
+    text: `⚠ простой в «${zone}» — причины нет` };
+}
+
 function renderLegend() {
   // Зоны легенды — фильтр строк Ганта: остаются сцепки, чьи рейсы месяца
   // проходят через зону или которые освобождаются в ней. Повторный клик — сброс.
@@ -399,12 +408,35 @@ function renderLegend() {
       title="Сцепки в зоне «${escapeHtml(zone.name)}» на ${legendDayLabel} (сегодня или выбранный день)">
       <span class="sw" style="background:${zone.color}"></span>${escapeHtml(zone.name)}${state.ganttZone === zone.name
         ? ` · ${legendDayLabel} ✕` : ''}</span>`).join('');
+  // Фильтры по состоянию на ту же дату: в рейсе, простой, ремонт, резерв…
+  const legendDayIso = state.selectedDay || new Date().toISOString().slice(0, 10);
+  const activeFleet = state.data.vehicles.filter(vehicle => vehicle.status !== 'out');
+  const stateCount = key => activeFleet
+    .filter(vehicle => vehicleDayState(vehicle, legendDayIso).key === key).length;
+  const stateChips = [
+    { key: 'trip', label: 'в рейсе', color: 'var(--teal)' },
+    { key: 'idle', label: 'простой', color: 'var(--warn)' },
+    ...DISP_KINDS.filter(item => ['reserve', 'repair', 'no_driver', 'shift'].includes(item.kind))
+      .map(item => ({ key: item.kind, label: item.short, color: item.color }))
+  ];
+  byId('legend').innerHTML += `<span class="lg-sep"></span>` + stateChips.map(chip =>
+    `<span class="lg clickable ${state.ganttState === chip.key ? 'active' : ''}" data-lg-state="${chip.key}"
+      title="Сцепки в состоянии «${chip.label}» на ${legendDayLabel}">
+      <span class="sw" style="background:${chip.color}"></span>${chip.label} ${stateCount(chip.key)}${state.ganttState === chip.key ? ' ✕' : ''}</span>`).join('');
   byId('legend').onclick = event => {
-    const chip = event.target.closest('[data-lg-zone]');
-    if (!chip) return;
-    state.ganttZone = state.ganttZone === chip.dataset.lgZone ? null : chip.dataset.lgZone;
-    renderLegend();
-    renderTimeline();
+    const zoneChip = event.target.closest('[data-lg-zone]');
+    if (zoneChip) {
+      state.ganttZone = state.ganttZone === zoneChip.dataset.lgZone ? null : zoneChip.dataset.lgZone;
+      renderLegend();
+      renderTimeline();
+      return;
+    }
+    const stateChip = event.target.closest('[data-lg-state]');
+    if (stateChip) {
+      state.ganttState = state.ganttState === stateChip.dataset.lgState ? null : stateChip.dataset.lgState;
+      renderLegend();
+      renderTimeline();
+    }
   };
 }
 
@@ -1380,10 +1412,22 @@ byId('scrollToday').onclick = () => {
   }
   // Фокус «сегодня −3 … +7»: слева видны три прошедших дня.
   scrollToDay(Math.max(0, Math.floor((Date.now() - state.month.getTime()) / 86_400_000) - 3));
-  showDayAnalytics(new Date().toISOString().slice(0, 10));
+  selectDay(new Date().toISOString().slice(0, 10));
 };
+// Выбор даты: подсветка дня, пересчёт занятости и фильтров — без модалки.
+// Аналитика дня осталась на клике по дню в шапке канвы.
+function selectDay(dayIso) {
+  state.selectedDay = dayIso;
+  const dayMs = Date.parse(`${dayIso}T00:00:00Z`);
+  if (dayMs < state.month.getTime() || dayMs >= addMonths(state.month, 1).getTime()) {
+    state.month = monthStart(new Date(dayMs));
+  }
+  renderMain();
+  renderLegend();
+  scrollToDay(Math.max(0, Math.floor((dayMs - state.month.getTime()) / 86_400_000) - 3));
+}
 byId('dayPicker').onchange = event => {
-  if (event.currentTarget.value) showDayAnalytics(event.currentTarget.value);
+  if (event.currentTarget.value) selectDay(event.currentTarget.value);
 };
 // Клик по дню в шапке Ганта — аналитика дня (drag-прокрутка клик подавляет).
 board.addEventListener('click', event => {

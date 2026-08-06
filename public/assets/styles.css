@@ -246,6 +246,10 @@ tbody tr:hover td { background: var(--hover); }
 .via-chip button { border: 0; background: transparent; color: var(--bad); font-weight: 800; padding: 0 2px; }
 .via-add { display: flex; gap: 6px; }
 .filter-sum { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; font-weight: 650; }
+.today-combo { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.today-combo .button { border: 0; border-radius: 0; }
+.today-combo .day-picker { border: 0; border-left: 1px solid var(--line); border-radius: 0; }
+.lg-sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
 .day-picker { width: 42px; min-height: 30px; padding: 4px 6px; font-size: var(--fs-sm); }
 .day-picker::-webkit-datetime-edit { display: none; }
 .day-picker::-webkit-calendar-picker-indicator { margin: 0; }
