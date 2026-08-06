@@ -291,6 +291,10 @@ tbody tr:hover td { background: var(--hover); }
 /* Легенда зон (ТК 21) */
 .legend { display: flex; gap: 10px; flex-wrap: wrap; }
 .lg { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--muted); }
+.vday { display: block; }
+.vday-trip { color: var(--teal); font-weight: 650; }
+.vday-idle { color: var(--warn); font-weight: 700; }
+.vehicle-cell.cell-idle { box-shadow: inset 3px 0 0 var(--warn); background: color-mix(in srgb, var(--warn) 6%, var(--card)); }
 .lg.clickable { cursor: pointer; padding: 3px 8px; border-radius: 11px; border: 1px solid transparent; }
 .lg.clickable:hover { background: var(--hover); border-color: var(--line); }
 .lg.clickable.active { background: var(--soft); border-color: var(--teal); color: var(--ink); font-weight: 700; }

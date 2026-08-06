@@ -118,6 +118,8 @@ function renderTimeline() {
   // зона, куда движется); без рейсов — зона приписки.
   const zoneDayIso = state.selectedDay || new Date().toISOString().slice(0, 10);
   const zoneDayEndMs = Date.parse(`${zoneDayIso}T23:59:59Z`);
+  const legendDayLabelOf = () => new Intl.DateTimeFormat('ru-RU',
+    { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${zoneDayIso}T12:00:00Z`));
   const zoneOfVehicleAt = vehicle => {
     const lastTrip = state.data.trips
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
@@ -150,28 +152,35 @@ function renderTimeline() {
   // пересменка, без водителя и плановая работа различимы прямо на канве.
   const dispositionMeta = kind => DISP_KINDS.find(item => item.kind === kind) ||
     { label: kind, short: kind, color: 'var(--muted)' };
-  // Экономика сцепки за открытый месяц: текущая — по рейсам, уже
-  // завершившимся ко «вчера-сегодня», прогноз — включая запланированные.
-  const calc = state.data.settings.calculation;
-  const tripMargin = trip => {
-    const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
-      ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22);
-    const net = trip.revenue_vat / (1 + vat);
-    const days = Math.max(0, daysBetween(trip.starts_at, trip.ends_at));
-    const variable = trip.distance_km *
-      (Number(calc.costPerKm || 0) + Number(calc.insuranceAndRoadsPerKm || 0)) +
-      days * (Number(calc.driverPerTripDay || 0) + Number(calc.refrigerationPerTripDay || 0));
-    return net - variable;
+  // Статус сцепки на дату (сегодня или выбранный день): рейс «откуда → куда»,
+  // оформленная диспозиция или простой без причины (подсвечивается).
+  const shortPlace = trip_field => String(trip_field || '').split(',')[0].trim().slice(0, 20);
+  const dayStatusOf = vehicle => {
+    const dayStartMs = Date.parse(`${zoneDayIso}T00:00:00Z`);
+    const activeTrip = state.data.trips
+      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
+        Date.parse(trip.starts_at) <= zoneDayEndMs && Date.parse(trip.ends_at) > dayStartMs)
+      .sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
+    if (activeTrip) {
+      const from = shortPlace(activeTrip.from_point || activeTrip.from_name);
+      const to = shortPlace(activeTrip.to_point || activeTrip.to_name);
+      return { cls: 'trip', text: `⇢ из ${from} в ${to}` };
+    }
+    const noonMs = dayStartMs + 43_200_000;
+    const disposition = (state.data.dispositions || []).find(item =>
+      item.vehicle_id === vehicle.id &&
+      Date.parse(item.starts_at) <= noonMs && noonMs < Date.parse(item.ends_at));
+    if (disposition) {
+      const meta = dispositionMeta(disposition.kind);
+      return { cls: 'dispo', color: meta.color,
+        text: `${meta.label} до ${formatDate(disposition.ends_at)}` };
+    }
+    return { cls: 'idle', text: `⚠ простой в «${zoneOfVehicleAt(vehicle)}» — причины нет` };
   };
-  const thousands = value => `${Math.round(value / 1000).toLocaleString('ru-RU')} т₽`;
   const nowMs = Date.now();
   const rows = vehicles.map(vehicle => {
     const vehicleTrips = visibleTrips.filter(trip => trip.vehicle_id === vehicle.id);
-    const monthTrips = vehicleTrips.filter(trip => trip.status !== 'rejected' &&
-      new Date(trip.ends_at) >= state.month && new Date(trip.ends_at) < monthEnd);
-    const factMargin = monthTrips.filter(trip => Date.parse(trip.ends_at) <= nowMs)
-      .reduce((sum, trip) => sum + tripMargin(trip), 0);
-    const forecastMargin = monthTrips.reduce((sum, trip) => sum + tripMargin(trip), 0);
+    const dayStatus = dayStatusOf(vehicle);
     const grid = Array.from({ length: days }, (_, index) => {
       const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
       return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"></div>`;
@@ -206,11 +215,11 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       </button>`;
     }).join('');
     return `<div class="vehicle-row">
-      <div class="vehicle-cell"><span class="vehicle-stripe"></span>
+      <div class="vehicle-cell ${dayStatus.cls === 'idle' ? 'cell-idle' : ''}"><span class="vehicle-stripe"></span>
         <span class="vehicle-title res-vtitle"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
         <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}</small>
-        <small title="Маржинальный доход сцепки за месяц: факт — по завершившимся рейсам, прогноз — включая запланированные">
-          МД: <b style="color:var(--ok)">${thousands(factMargin)}</b> · прогноз <b>${thousands(forecastMargin)}</b> · ${monthTrips.length} р.</small></span>
+        <small class="vday vday-${dayStatus.cls}" ${dayStatus.color ? `style="color:${dayStatus.color}"` : ''}
+          title="Занятость сцепки на ${legendDayLabelOf()}">${escapeHtml(dayStatus.text)}</small></span>
       </div>
       <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px"><div class="track-grid">${grid}</div>${dispositionBlocks}${trips}</div>
     </div>`;
