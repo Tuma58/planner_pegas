@@ -122,10 +122,13 @@ function renderTimeline() {
   }).format(state.month);
   const todayIndex = Math.floor((Date.now() - state.month.getTime()) / 86_400_000);
   const isToday = index => index === todayIndex;
+  const dayIsoOf = index => new Date(state.month.getTime() + index * 86_400_000).toISOString().slice(0, 10);
+  const isSelected = index => state.selectedDay === dayIsoOf(index);
   const headerDays = Array.from({ length: days }, (_, index) => {
     const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
     const weekend = [0, 6].includes(date.getUTCDay());
-    return `<div class="day-cell ${weekend ? 'weekend' : ''} ${isToday(index) ? 'today' : ''}"><strong>${index + 1}</strong>
+    return `<div class="day-cell ${weekend ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"
+      data-day-iso="${dayIsoOf(index)}" title="Аналитика дня"><strong>${index + 1}</strong>
       <small>${new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(date)}</small></div>`;
   }).join('');
   // Цвета и подписи видов диспозиций — те же, что в «Ресурсе»: ремонт,
@@ -156,7 +159,7 @@ function renderTimeline() {
     const forecastMargin = monthTrips.reduce((sum, trip) => sum + tripMargin(trip), 0);
     const grid = Array.from({ length: days }, (_, index) => {
       const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
-      return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''}"></div>`;
+      return `<div class="grid-day ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"></div>`;
     }).join('');
     const dispositionBlocks = (state.data.dispositions || [])
       .filter(item => item.vehicle_id === vehicle.id &&
@@ -1171,6 +1174,101 @@ function openAddressBook(query = '', region = '') {
   };
 }
 
+// Аналитика выбранного дня: рейсы (выходят / в работе / прибывают),
+// состояние парка на полдень, выручка дня и конфликты. Открывается кнопкой
+// «Сегодня», выбором даты в тулбаре и кликом по дню в шапке Ганта.
+function showDayAnalytics(dayIso) {
+  const data = state.data;
+  state.selectedDay = dayIso;
+  renderMain();
+  const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
+  const dayEnd = dayStart + 86_400_000;
+  const midpoint = dayStart + 43_200_000;
+  const dayLabel = new Intl.DateTimeFormat('ru-RU',
+    { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(dayStart));
+
+  const trips = state.data.trips.filter(trip => trip.status !== 'rejected');
+  const active = trips.filter(trip =>
+    Date.parse(trip.starts_at) < dayEnd && Date.parse(trip.ends_at) > dayStart);
+  const starting = active.filter(trip => Date.parse(trip.starts_at) >= dayStart);
+  const ending = active.filter(trip => Date.parse(trip.ends_at) <= dayEnd);
+
+  // Парк на полдень: рейс важнее диспозиции, резерв и простой различаются.
+  const dispositionAt = {};
+  (state.data.dispositions || [])
+    .filter(item => Date.parse(item.starts_at) <= midpoint && midpoint < Date.parse(item.ends_at))
+    .forEach(item => { dispositionAt[item.vehicle_id] = item.kind; });
+  const busy = new Set(active.map(trip => trip.vehicle_id));
+  const fleet = state.data.vehicles.filter(vehicle => vehicle.status === 'work');
+  const counts = { work: 0, reserve: 0, repair: 0, no_driver: 0, shift: 0, out: 0, idle: 0 };
+  fleet.forEach(vehicle => {
+    if (busy.has(vehicle.id)) counts.work += 1;
+    else if (dispositionAt[vehicle.id]) counts[dispositionAt[vehicle.id]] += 1;
+    else counts.idle += 1;
+  });
+
+  // Выручка дня — по рейсам, завершающимся в этот день (б. НДС, наличные целиком).
+  const calc = state.data.settings.calculation;
+  const netOf = trip => trip.revenue_vat / (1 + (trip.cash ? 0
+    : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
+      ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22)));
+  const dayNet = ending.reduce((sum, trip) => sum + netOf(trip), 0);
+
+  // Конфликты дня: рейс пересекается с недоступностью сцепки (резерв — не конфликт).
+  const conflicts = active.filter(trip => (state.data.dispositions || []).some(item =>
+    item.kind !== 'reserve' && item.vehicle_id === trip.vehicle_id &&
+    Date.parse(trip.starts_at) < Date.parse(item.ends_at) &&
+    Date.parse(item.starts_at) < Date.parse(trip.ends_at) &&
+    Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart));
+
+  const tripRow = (trip, note) => `<div class="skpi-row" data-day-trip="${trip.id}" title="Открыть карточку рейса">
+    <span style="flex:1;min-width:0"><strong>${escapeHtml(routeLabel(trip))}</strong>
+      · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
+      <small class="muted" style="display:block">${escapeHtml(trip.customer_name || 'без заказчика')} · ${note}</small></span>
+    <b>${money(trip.revenue_vat)}</b></div>`;
+  const listBlock = (title, rows, empty) => `<h3 style="margin:14px 0 6px;font-size:var(--fs-sm);color:var(--muted);text-transform:uppercase">${title}</h3>
+    <div class="list">${rows || `<p class="muted">${empty}</p>`}</div>`;
+
+  showModal(`<h2>Аналитика дня · ${dayLabel}</h2>
+    <div class="summary-grid" style="grid-template-columns:repeat(4,1fr)">
+      <div class="metric"><span>Рейсов в работе</span><strong>${active.length}</strong></div>
+      <div class="metric"><span>Выходят на линию</span><strong>${starting.length}</strong></div>
+      <div class="metric"><span>Прибывают / выгрузка</span><strong>${ending.length}</strong></div>
+      <div class="metric"><span>Выручка дня б. НДС</span><strong>${money(dayNet)}</strong></div>
+    </div>
+    <p class="muted" style="margin:4px 0 0">Парк на этот день: в рейсе ${counts.work} ·
+      резерв ${counts.reserve} · ремонт ${counts.repair} · без водителя ${counts.no_driver} ·
+      пересменка ${counts.shift} · <b>простаивают ${counts.idle}</b>${conflicts.length
+        ? ` · <span class="danger">конфликтов: ${conflicts.length}</span>` : ''}</p>
+    ${listBlock(`Выходят на линию (${starting.length})`,
+      starting.slice(0, 8).map(trip => tripRow(trip, `выход ${formatDateTime(trip.starts_at)}`)).join(''),
+      'Выходов в этот день нет.')}
+    ${listBlock(`Прибывают на выгрузку (${ending.length})`,
+      ending.slice(0, 8).map(trip => tripRow(trip, `прибытие ${formatDateTime(trip.ends_at)}`)).join(''),
+      'Прибытий в этот день нет.')}
+    ${conflicts.length ? listBlock(`⚠ Конфликты (${conflicts.length})`,
+      conflicts.slice(0, 5).map(trip => tripRow(trip, 'рейс пересекается с недоступностью сцепки')).join(''), '') : ''}
+    <div class="modal-actions">
+      <button type="button" class="button ghost" id="dayShowOnCanvas">Показать на канве</button>
+      <button type="button" class="button ghost" data-close>Закрыть</button>
+    </div>`, 'wide');
+  document.querySelectorAll('[data-day-trip]').forEach(row =>
+    row.addEventListener('click', () => {
+      const trip = state.data.trips.find(item => item.id === row.dataset.dayTrip);
+      if (trip) { closeModal(); openTrip(trip); }
+    }));
+  byId('dayShowOnCanvas').onclick = () => {
+    closeModal();
+    if (state.view !== 'gantt') { state.view = 'gantt'; renderViewTabs(); renderMain(); }
+    const index = Math.floor((dayStart - state.month.getTime()) / 86_400_000);
+    if (index < 0 || index >= monthDays(state.month)) {
+      state.month = monthStart(new Date(dayStart));
+      renderTimeline();
+    }
+    scrollToDay(Math.max(0, Math.floor((dayStart - state.month.getTime()) / 86_400_000) - 3));
+  };
+}
+
 async function reload() {
   byId('syncState').textContent = '● обновление…';
   state.data = await api('/api/bootstrap');
@@ -1240,7 +1338,19 @@ byId('scrollToday').onclick = () => {
   }
   // Фокус «сегодня −3 … +7»: слева видны три прошедших дня.
   scrollToDay(Math.max(0, Math.floor((Date.now() - state.month.getTime()) / 86_400_000) - 3));
+  showDayAnalytics(new Date().toISOString().slice(0, 10));
 };
+byId('dayPicker').onchange = event => {
+  if (event.currentTarget.value) showDayAnalytics(event.currentTarget.value);
+};
+// Клик по дню в шапке Ганта — аналитика дня (drag-прокрутка клик подавляет).
+board.addEventListener('click', event => {
+  const cell = event.target.closest('.day-cell[data-day-iso]');
+  if (!cell) return;
+  const head = event.target.closest('.timeline-head');
+  if (head?.dataset.suppressClick) { delete head.dataset.suppressClick; return; }
+  showDayAnalytics(cell.dataset.dayIso);
+});
 
 // Перетаскивание канвы за шапку дней (drag-scroll) — как в настольных гантах.
 board.addEventListener('pointerdown', event => {
@@ -1250,7 +1360,10 @@ board.addEventListener('pointerdown', event => {
   const startLeft = board.scrollLeft;
   try { head.setPointerCapture(event.pointerId); } catch { /* синтетические события без capture */ }
   head.classList.add('dragging-scroll');
-  const onMove = moveEvent => { board.scrollLeft = startLeft - (moveEvent.clientX - startX); };
+  const onMove = moveEvent => {
+    if (Math.abs(moveEvent.clientX - startX) > 5) head.dataset.suppressClick = '1';
+    board.scrollLeft = startLeft - (moveEvent.clientX - startX);
+  };
   const stop = () => {
     head.removeEventListener('pointermove', onMove);
     head.classList.remove('dragging-scroll');

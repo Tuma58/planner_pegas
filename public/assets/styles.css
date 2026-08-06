@@ -234,6 +234,12 @@ tbody tr:hover td { background: var(--hover); }
 .checkline { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; color: var(--ink); font-size: 12px; cursor: pointer; }
 .checkline input { width: auto; }
 .cash-badge { margin-left: 6px; padding: 2px 7px; border-radius: 10px; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.day-picker { width: 42px; min-height: 30px; padding: 4px 6px; font-size: var(--fs-sm); }
+.day-picker::-webkit-datetime-edit { display: none; }
+.day-picker::-webkit-calendar-picker-indicator { margin: 0; }
+.day-cell[data-day-iso] { cursor: pointer; }
+.day-cell.selected { box-shadow: inset 0 -3px var(--warn); }
+.grid-day.selected { background: color-mix(in srgb, var(--warn) 9%, transparent); }
 .skm { display: block; margin-top: 2px; color: var(--muted); font-size: 10.5px; white-space: nowrap; }
 .skpi-warn { border-color: var(--warn); }
 .skpi-warn .skv { color: var(--warn); }
