@@ -236,6 +236,7 @@ tbody tr:hover td { background: var(--hover); }
 .checkline { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; color: var(--ink); font-size: 12px; cursor: pointer; }
 .checkline input { width: auto; }
 .cash-badge { margin-left: 6px; padding: 2px 7px; border-radius: 10px; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.stop-warn { color: var(--warn); font-weight: 650; }
 .filter-sum { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; font-weight: 650; }
 .day-picker { width: 42px; min-height: 30px; padding: 4px 6px; font-size: var(--fs-sm); }
 .day-picker::-webkit-datetime-edit { display: none; }

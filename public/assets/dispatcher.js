@@ -5,7 +5,7 @@
 // 3) рейс переведён на контроль на линии (статус «В пути»).
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
-import { api, attachSearch, escapeHtml, formatDateTime, money, routeLabel, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toLocalInput, toast } from './api.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 
@@ -188,9 +188,11 @@ export async function renderDispatcher(container, context) {
   // Статус отслеживания «опоздание»: расчётная задержка по стоянкам контроля
   // (план + накопленное отставание; для идущих — не раньше «сейчас»).
   let delayByTrip = new Map();
+  let controlByTrip = new Map();
   try {
     const { items } = await api('/api/control');
     delayByTrip = new Map(items.map(item => [item.id, item.delay_ms || 0]));
+    controlByTrip = new Map(items.map(item => [item.id, item]));
   } catch { /* без расчёта задержек карточки просто не показывают опоздание */ }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
@@ -233,6 +235,118 @@ export async function renderDispatcher(container, context) {
       <span class="pipe-badge">Ждёт: Логист · подтверждение назначения</span>
     </div>`).join('');
 
+  // Лента контрольных точек рейса — как в промышленных TMS: на каждой
+  // стоянке план / расчёт / факты прибытия-убытия, работы и простой;
+  // отметка следующего факта одним нажатием (сервер сам двигает конвейер:
+  // убытие с погрузки → «В пути», конечная выгрузка → «Выгружен»).
+  const HOUR = 3_600_000;
+  const stopKindLabel = stop => stop.kind === 'P' ? '⬆ Погрузка' : '⬇ Выгрузка';
+  // Стоянка с фактом убытия пройдена: пропущенные отметки дозаполняются через ✎.
+  const nextStopStep = stop => stop.actual_departure ? null
+    : !stop.actual_arrival ? ['Прибыл', 'actualArrival']
+    : !stop.work_started_at ? ['Начало работ', 'workStartedAt']
+    : !stop.work_finished_at ? ['Работы завершены', 'workFinishedAt']
+    : ['Убыл', 'actualDeparture'];
+  const fmtShort = iso => iso ? formatDateTime(iso) : '—';
+  const stopsBlock = trip => {
+    const control = controlByTrip.get(trip.id);
+    if (!control?.stops?.length) return '<p class="muted" style="margin:6px 0 0">Стоянки появятся после обновления контроля.</p>';
+    const normMs = Number(data.settings.calculation.handlingHoursPerOperation || 3) * HOUR;
+    const rows = control.stops.map(stop => {
+      const arrivalMs = stop.actual_arrival ? Date.parse(stop.actual_arrival) : null;
+      const departureMs = stop.actual_departure ? Date.parse(stop.actual_departure) : null;
+      const dwellMs = arrivalMs ? (departureMs ?? Date.now()) - arrivalMs : null;
+      const dwellClass = dwellMs == null ? '' : dwellMs > 2 * normMs ? 'danger' : dwellMs > normMs ? 'stop-warn' : 'muted';
+      const dwellText = dwellMs == null ? ''
+        : ` · на точке ${Math.floor(dwellMs / HOUR)} ч ${Math.round(dwellMs % HOUR / 60_000)} м${departureMs ? '' : ' (идёт)'}`;
+      const lateMs = stop.planned_arrival && (arrivalMs ?? stop.estimated_arrival)
+        ? (arrivalMs ?? stop.estimated_arrival) - Date.parse(stop.planned_arrival) : 0;
+      const step = nextStopStep(stop);
+      return `<div class="list-item" style="padding:7px 10px">
+        <span style="flex:1;min-width:0">
+          <strong>${stopKindLabel(stop)} · ${escapeHtml(stop.point || '—')}</strong>
+          ${lateMs > 30 * 60_000 ? `<span class="badge bad" style="margin-left:6px">+${Math.round(lateMs / HOUR * 10) / 10} ч</span>` : ''}
+          <small class="muted" style="display:block">план ${fmtShort(stop.planned_arrival)}
+            ${!stop.actual_arrival && stop.estimated_arrival ? ` · расчёт ${fmtShort(new Date(stop.estimated_arrival).toISOString())}` : ''}
+            · факт ${fmtShort(stop.actual_arrival)} → ${fmtShort(stop.actual_departure)}</small>
+          <small class="${dwellClass}" style="display:block">${stop.work_started_at
+            ? `работы ${fmtShort(stop.work_started_at)} → ${fmtShort(stop.work_finished_at)}` : 'работы не начаты'}${dwellText}</small>
+          ${stop.note ? `<small class="muted" style="display:block">💬 ${escapeHtml(stop.note)}</small>` : ''}
+        </span>
+        ${canAct ? `<span style="display:flex;gap:5px;align-items:center">
+          ${step ? `<button class="button small" data-stop-step="${stop.id}" data-stop-field="${step[1]}"
+            title="Отметить факт текущим временем">${step[0]}</button>` : '<span class="badge ok">✓ пройдена</span>'}
+          <button class="button ghost small" data-stop-edit="${stop.id}" data-stop-trip="${trip.id}"
+            title="Поправить времена и заметку">✎</button>
+        </span>` : ''}
+      </div>`;
+    }).join('');
+    return `<div class="list" style="margin-top:8px">${rows}</div>
+      ${canAct ? `<button class="button ghost small" style="margin-top:6px" data-stop-add="${trip.id}"
+        title="Промежуточная точка: дозагрузка, санобработка, отдых">+ Стоянка</button>` : ''}`;
+  };
+
+  // Правка времён стоянки: все шесть отметок + заметка (PATCH /api/stops/:id).
+  const stopEditDialog = stop => {
+    const timeInput = (name, label, value) => `<label class="field">${label}
+      <input name="${name}" type="datetime-local" value="${value ? toLocalInput(value) : ''}"></label>`;
+    context.showModal(`<form id="stopEditForm"><h2>Стоянка · ${escapeHtml(stop.point || '')}</h2>
+      <div class="form-grid">
+        ${timeInput('actualArrival', 'Факт прибытия', stop.actual_arrival)}
+        ${timeInput('actualDeparture', 'Факт убытия', stop.actual_departure)}
+        ${timeInput('workStartedAt', 'Начало работ', stop.work_started_at)}
+        ${timeInput('workFinishedAt', 'Окончание работ', stop.work_finished_at)}
+        ${timeInput('plannedArrival', 'План прибытия', stop.planned_arrival)}
+        ${timeInput('plannedDeparture', 'План убытия', stop.planned_departure)}
+      </div>
+      <label class="field">Заметка<input name="note" maxlength="200" value="${escapeHtml(stop.note || '')}"
+        placeholder="очередь на рампе, досмотр, отдых водителя…"></label>
+      <div class="modal-actions">
+        <button type="button" class="button ghost" data-close>Отмена</button>
+        <button class="button">Сохранить</button>
+      </div></form>`);
+    document.getElementById('stopEditForm').onsubmit = async event => {
+      event.preventDefault();
+      const values = formValues(event.currentTarget);
+      const body = {};
+      for (const key of ['actualArrival', 'actualDeparture', 'workStartedAt', 'workFinishedAt',
+        'plannedArrival', 'plannedDeparture']) body[key] = values[key] || null;
+      body.note = values.note || '';
+      try {
+        await api(`/api/stops/${stop.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+        context.closeModal();
+        toast('Стоянка обновлена');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    };
+  };
+
+  // Промежуточная точка контроля: дозагрузка, санобработка, отдых, граница.
+  const stopAddDialog = tripId => {
+    context.showModal(`<form id="stopAddForm"><h2>Промежуточная стоянка</h2>
+      <label class="field">Пункт<input name="point" required placeholder="город / терминал / пост"></label>
+      <div class="form-grid">
+        <label class="field">Тип<select name="kind">
+          <option value="D">Выгрузка / контроль</option><option value="P">Погрузка</option></select></label>
+        <label class="field">План прибытия<input name="plannedArrival" type="datetime-local"></label>
+      </div>
+      <label class="field">Заметка<input name="note" maxlength="200"></label>
+      <div class="modal-actions">
+        <button type="button" class="button ghost" data-close>Отмена</button>
+        <button class="button">Добавить</button>
+      </div></form>`);
+    document.getElementById('stopAddForm').onsubmit = async event => {
+      event.preventDefault();
+      const values = formValues(event.currentTarget);
+      try {
+        await api(`/api/trips/${tripId}/stops`, { method: 'POST', body: JSON.stringify(values) });
+        context.closeModal();
+        toast('Стоянка добавлена в маршрут');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    };
+  };
+
   const onlineCards = online.map(trip => {
     const delay = delayByTrip.get(trip.id) || 0;
     const stuck = isStuck(trip);
@@ -261,17 +375,24 @@ export async function renderDispatcher(container, context) {
     } else {
       statusBlock = `<span class="badge ok">на линии${trip.on_line_at ? ` с ${formatDateTime(trip.on_line_at)}` : ''}</span>`;
     }
-    return `<div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}">
+    const opened = state.dispatcherStops === trip.id;
+    const stopsCount = controlByTrip.get(trip.id)?.stops?.length || 0;
+    return `<div class="card" style="padding:9px 11px">
+      <div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}" style="border:0;padding:0">
       ${tripHead(trip)}
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         ${statusBlock}
         <span style="display:flex;gap:5px">
+          <button class="button ghost small" data-stops-toggle="${trip.id}"
+            title="Лента контрольных точек: прибытие, работы, убытие, простой">🧭 Точки${stopsCount ? ` (${stopsCount})` : ''}</button>
           ${canAct && !trip.arrived_at ? `<button class="button ghost small" data-arrived="${trip.id}"
             title="ТС встало под выгрузку — с этого момента отсчитываются выгрузка и простой">Прибыл на выгрузку</button>` : ''}
           ${canAct ? `<button class="button small" data-unload="${trip.id}" title="Груз выгружен — конвейер уйдёт бухгалтерии">Выгружен</button>` : ''}
           <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
         </span>
       </span>
+      </div>
+      ${opened ? stopsBlock(trip) : ''}
     </div>`;
   }).join('') || '<p class="muted">На линии никого нет.</p>';
 
@@ -337,6 +458,35 @@ export async function renderDispatcher(container, context) {
         toast(error.message, 'error');
       }
     }));
+  container.querySelectorAll('[data-stops-toggle]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.dispatcherStops = state.dispatcherStops === button.dataset.stopsToggle
+        ? null : button.dataset.stopsToggle;
+      renderDispatcher(container, context);
+    }));
+  container.querySelectorAll('[data-stop-step]').forEach(button =>
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/stops/${button.dataset.stopStep}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ [button.dataset.stopField]: new Date().toISOString() })
+        });
+        toast('Факт отмечен');
+        await context.onReload();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message, 'error');
+      }
+    }));
+  container.querySelectorAll('[data-stop-edit]').forEach(button =>
+    button.addEventListener('click', () => {
+      const control = controlByTrip.get(button.dataset.stopTrip);
+      const stop = control?.stops?.find(item => item.id === button.dataset.stopEdit);
+      if (stop) stopEditDialog(stop);
+    }));
+  container.querySelectorAll('[data-stop-add]').forEach(button =>
+    button.addEventListener('click', () => stopAddDialog(button.dataset.stopAdd)));
   container.querySelectorAll('[data-arrived]').forEach(button =>
     button.addEventListener('click', async () => {
       button.disabled = true;
