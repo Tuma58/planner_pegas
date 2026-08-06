@@ -341,14 +341,16 @@ export function renderSales(container, context) {
     `<span class="stp ${index <= stage ? 'on' : ''}"></span>`).join('')}<span class="stpl">${STAGES[stage] || STAGES[0]}</span></div>`;
 
   // Карточка конвейера: стадия, чей ход, сколько ждёт и кнопка действия.
-  // Порядок предсказуемый: новые заявки сверху и НЕ мигрируют по списку после
-  // подтверждения — иначе при большом портфеле карточка «пропадает» из вида
-  // (пользователи искали её на прежнем месте и создавали дубли).
-  // Залежавшиеся видны по метке времени ожидания, задачи — по тумблеру «мои».
+  // Приоритет — заявки на подтверждении (стадия «Принята», ход продаж):
+  // всегда сверху; после подтверждения карточка уходит в общий список,
+  // где новые сверху и позиция стабильна (иначе при большом портфеле
+  // карточку «теряли» и создавали дубли).
   const canReject = can('orders:write') || can('trips:write');
   const withStep = orders.map(order => ({ order, step: pipelineStep(order, data, can) }));
+  const needsConfirm = item => Number(item.order.stage) === 0;
   const visible = (onlyMine ? withStep.filter(item => item.step.mine) : withStep)
-    .sort((a, b) => String(b.order.created_at).localeCompare(String(a.order.created_at)));
+    .sort((a, b) => Number(needsConfirm(b)) - Number(needsConfirm(a)) ||
+      String(b.order.created_at).localeCompare(String(a.order.created_at)));
 
   const portfolio = visible.map(({ order, step }) => {
     const waiting = step.waitingRole
@@ -473,10 +475,15 @@ export function renderSales(container, context) {
           ${regionList.map(region =>
             `<option value="${escapeHtml(region)}" ${filter.region === region ? 'selected' : ''}>${escapeHtml(region)}</option>`).join('')}
         </select>
-        <input type="date" id="salesFilterFrom" value="${filter.from}" title="С даты">
+        <input type="date" id="salesFilterFrom" value="${filter.from}" title="Окно заявки / освобождение сцепки — с даты">
         <span class="muted">–</span>
-        <input type="date" id="salesFilterTo" value="${filter.to}" title="По дату">
+        <input type="date" id="salesFilterTo" value="${filter.to}" title="Окно заявки / освобождение сцепки — по дату">
+        <button class="button ghost small" id="salesPresetToday" title="Только сегодняшний день">Сегодня</button>
+        <button class="button ghost small" id="salesPresetWeek" title="Ближайшие 7 дней">7 дн</button>
         ${filterActive ? '<button class="button ghost small" id="salesFilterReset">✕ Сброс</button>' : ''}
+        ${filterActive ? `<span class="filter-sum" title="Итог по отфильтрованному">заявок ${orders.length}/${allOrders.length}
+          · ${money(orders.reduce((sumRate, order) => sumRate + Number(order.rate_vat || 0), 0))}
+          · сцепок ${requests.length}/${allRequests.length}</span>` : ''}
       </div>
     </div>
     <div class="salesboard">
@@ -550,6 +557,15 @@ export function renderSales(container, context) {
     filter.q = value;
     rerender();
   });
+  const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
+  container.querySelector('#salesPresetToday').onclick = () => {
+    filter.from = dayIsoLocal(0); filter.to = dayIsoLocal(0);
+    rerender();
+  };
+  container.querySelector('#salesPresetWeek').onclick = () => {
+    filter.from = dayIsoLocal(0); filter.to = dayIsoLocal(7);
+    rerender();
+  };
   container.querySelector('#salesFilterRegion').onchange = event => {
     filter.region = event.currentTarget.value;
     rerender();
