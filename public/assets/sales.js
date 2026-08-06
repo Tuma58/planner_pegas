@@ -271,7 +271,7 @@ export function renderSales(container, context) {
     (!filter.region || orderRegions(order).includes(filter.region)) &&
     (!filter.from || String(order.window_to).slice(0, 10) >= filter.from) &&
     (!filter.to || String(order.window_from).slice(0, 10) <= filter.to) &&
-    (!query || `${order.customer_name} ${routeLabel(order)} ${order.rejection_reason || ''}`
+    (!query || `${order.customer_name} ${routeLabel(order)} ${order.order_no || ''} ${order.rejection_reason || ''}`
       .toLowerCase().includes(query));
   // Портфель продаж — заявки до назначения ТС: после назначения заявка уходит
   // к логисту в план и возвращается только при отклонении рейса.
@@ -423,6 +423,7 @@ export function renderSales(container, context) {
   // выбор заявки открывает редактирование (суммы, времена и остальное).
   const inPlanOrders = data.orders
     .filter(order => order.status !== 'cancelled' && !inSalesPortfolio(order, data))
+    .filter(matchesFilter)
     .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
   const kpiDrop = (key, rows) => state.salesKpiOpen === key
     ? `<div class="skpi-drop">${rows || '<div class="skpi-row muted">Пусто</div>'}</div>` : '';
@@ -430,7 +431,8 @@ export function renderSales(container, context) {
     const trip = order.trip_id ? data.trips.find(item => item.id === order.trip_id) : null;
     return `<div class="skpi-row" data-kpi-order="${order.id}">
       <span style="flex:1;min-width:0"><strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
-        <small class="muted" style="display:block">окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}
+        ${Number(order.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
+        <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}
           ${trip ? ` · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>` : ''}</small></span>
       <b>${money(order.rate_vat)}</b></div>`;
   };
