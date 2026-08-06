@@ -409,6 +409,8 @@ function renderMain() {
   // сводка переехала на доску продаж.
   byId('sidepanel').classList.toggle('hidden', !isResource);
   document.querySelector('.planner-layout').classList.toggle('full', !isResource);
+  // Канва тянется по контенту (месяц дней), доски — по ширине окна.
+  byId('timeline').classList.toggle('canvas', timelineView);
   if (isGantt) {
     renderTimeline();
   } else if (state.view === 'boss') {
