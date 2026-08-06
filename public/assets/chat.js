@@ -134,4 +134,21 @@ export function setupChat(state) {
 
   poll(true);
   setInterval(poll, POLL_MS);
+
+  // Версия интерфейса: после деплоя открытые вкладки узнают об обновлении
+  // (иначе сотрудники работают на старом JS до перезагрузки страницы).
+  let knownVersion = null;
+  const checkVersion = async () => {
+    try {
+      const health = await (await fetch('/api/health')).json();
+      if (!health.assetVersion) return;
+      if (knownVersion === null) { knownVersion = health.assetVersion; return; }
+      if (health.assetVersion !== knownVersion) {
+        knownVersion = health.assetVersion;
+        toast('Вышло обновление планера — обновите страницу (Ctrl+R)', 'error');
+      }
+    } catch { /* сеть моргнула — проверим в следующий раз */ }
+  };
+  checkVersion();
+  setInterval(checkVersion, 5 * 60_000);
 }

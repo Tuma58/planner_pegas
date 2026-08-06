@@ -1242,15 +1242,18 @@ function openAddressBook(query = '', region = '') {
           `<option value="${escapeHtml(item)}" ${region === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}
       </select>
     </div>
-    ${canAdd ? `<form id="newAddressForm" class="salesfilter" style="margin-bottom:10px;flex-wrap:wrap">
+    ${canAdd ? `<form id="newAddressForm" class="salesfilter" style="margin-bottom:6px;flex-wrap:wrap">
       <input name="name" placeholder="Наименование пункта" required style="flex:1;min-width:170px">
       <input name="address" placeholder="Полный адрес" style="flex:2;min-width:220px">
+      <button type="button" class="button ghost small" id="geoLookup"
+        title="Найти адрес и координаты в OpenStreetMap">🌍 Найти</button>
       <input name="region" placeholder="Субъект (обл/респ)" style="width:150px">
       <select name="zoneId" title="Геозона">${zoneOptions()}</select>
       <input name="latitude" placeholder="широта" style="width:90px">
       <input name="longitude" placeholder="долгота" style="width:90px">
       <button class="button small">+ Адрес</button>
-    </form>` : ''}
+    </form>
+    <div id="geoResults" class="list" style="margin-bottom:8px"></div>` : ''}
     <div class="table-wrap" style="max-height:50vh;overflow:auto"><table>
       <thead><tr><th>Пункт</th><th>Субъект</th><th>Геозона</th><th class="num">От базы, км</th><th>Адрес</th></tr></thead>
       <tbody>${shown.map(item => `<tr>
@@ -1265,6 +1268,36 @@ function openAddressBook(query = '', region = '') {
     <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div>`, 'wide');
   attachSearch(byId('addressSearch'), value => openAddressBook(value, region));
   byId('addressRegion').onchange = event => openAddressBook(query, event.currentTarget.value);
+  // Геокодинг из OSM: варианты списком, клик заполняет адрес и координаты.
+  byId('geoLookup')?.addEventListener('click', async () => {
+    const form = byId('newAddressForm');
+    // Ищем по полю «адрес»; если оно пусто — по наименованию (без склейки:
+    // произвольные названия складов ломают поиск по карте).
+    const queryText = (form.elements.address.value || form.elements.name.value).trim();
+    if (queryText.length < 3) return toast('Введите наименование или адрес для поиска', 'error');
+    byId('geoResults').innerHTML = '<p class="muted">Ищем в OpenStreetMap…</p>';
+    try {
+      const { items } = await api(`/api/geocode?q=${encodeURIComponent(queryText)}`);
+      byId('geoResults').innerHTML = items.length ? items.map((item, index) =>
+        `<button type="button" class="list-item sugtruck" data-geo="${index}">
+          <span style="flex:1;min-width:0"><small>${escapeHtml(item.name)}</small>
+          <small class="muted" style="display:block">${item.latitude.toFixed(5)}, ${item.longitude.toFixed(5)}${item.region ? ` · ${escapeHtml(item.region)}` : ''}</small></span>
+        </button>`).join('')
+        : '<p class="muted">Ничего не найдено — уточните запрос.</p>';
+      byId('geoResults').querySelectorAll('[data-geo]').forEach(button =>
+        button.addEventListener('click', () => {
+          const item = items[Number(button.dataset.geo)];
+          form.elements.address.value = item.name;
+          form.elements.latitude.value = item.latitude;
+          form.elements.longitude.value = item.longitude;
+          if (item.region && !form.elements.region.value) form.elements.region.value = item.region;
+          byId('geoResults').innerHTML =
+            '<p class="muted">✓ Координаты подставлены — проверьте геозону и нажмите «+ Адрес».</p>';
+        }));
+    } catch (error) {
+      byId('geoResults').innerHTML = `<p class="danger">${escapeHtml(error.message)}</p>`;
+    }
+  });
   const form = byId('newAddressForm');
   if (form) form.onsubmit = async event => {
     event.preventDefault();

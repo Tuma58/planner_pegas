@@ -369,7 +369,51 @@ async function api(request, response, url) {
   }
 
   if (request.method === 'GET' && pathname === '/api/health') {
-    return json(response, 200, { ok: true, database: Boolean(db.prepare('SELECT 1 AS ok').get().ok) });
+    return json(response, 200, {
+      ok: true, database: Boolean(db.prepare('SELECT 1 AS ok').get().ok),
+      assetVersion: ASSET_VERSION
+    });
+  }
+
+  // Геокодинг из открытых источников (OSM Nominatim): подсказки адреса
+  // и координат для справочника. Лимит источника ~1 запрос/сек.
+  if (request.method === 'GET' && pathname === '/api/geocode') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const query = String(url.searchParams.get('q') || '').trim();
+    if (query.length < 3) return errorJson(response, 422, 'Уточните запрос (от 3 символов)');
+    try {
+      const osm = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
+        format: 'jsonv2', addressdetails: '1', countrycodes: 'ru', limit: '5', q: query
+      }), {
+        headers: { 'User-Agent': 'PegasLogistic/1.0 (dispatch planner; tkpegasnigovorin@gmail.com)' },
+        signal: AbortSignal.timeout(7000)
+      });
+      if (!osm.ok) return errorJson(response, 502, `Источник геокодинга недоступен (${osm.status})`);
+      const rows = await osm.json();
+      const normalizeRegion = value => {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        if (/^москва$/iu.test(raw)) return 'Москва г';
+        if (/^санкт-петербург$/iu.test(raw)) return 'Санкт-Петербург г';
+        const oblast = raw.match(/^(.+?)\s+область$/iu);
+        if (oblast) return `${oblast[1]} обл`;
+        const republic = raw.match(/^республика\s+(.+)$/iu);
+        if (republic) return `${republic[1]} респ`;
+        return raw;
+      };
+      return json(response, 200, {
+        items: rows.map(row => ({
+          name: row.display_name,
+          latitude: Number(row.lat),
+          longitude: Number(row.lon),
+          region: normalizeRegion(row.address?.state || row.address?.city || '')
+        }))
+      });
+    } catch (error) {
+      return errorJson(response, 502,
+        error.name === 'TimeoutError' ? 'Геокодинг не ответил — попробуйте ещё раз' : 'Ошибка геокодинга');
+    }
   }
 
   if (request.method === 'GET' && pathname === '/api/bootstrap') {
