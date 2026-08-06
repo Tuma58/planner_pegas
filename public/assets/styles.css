@@ -234,6 +234,11 @@ tbody tr:hover td { background: var(--hover); }
 .checkline { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; color: var(--ink); font-size: 12px; cursor: pointer; }
 .checkline input { width: auto; }
 .cash-badge { margin-left: 6px; padding: 2px 7px; border-radius: 10px; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.skm { display: block; margin-top: 2px; color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.skpi-warn { border-color: var(--warn); }
+.skpi-warn .skv { color: var(--warn); }
+.skpi-hot { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal) inset; }
+.skpi-hot .skv { color: var(--teal); }
 .cash-note { display: block; margin-top: 3px; padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 650; }
 /* Подсказка ближайшего события сцепки при назначении/замене ТС */
 .next-event { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
