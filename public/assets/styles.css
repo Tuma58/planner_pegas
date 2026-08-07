@@ -109,7 +109,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .full { width: 100%; }
 .form-error { min-height: 20px; color: var(--bad); font-size: var(--fs-sm); }
 
-.shell { min-height: 100vh; display: grid; grid-template-rows: 54px auto 1fr 28px; }
+.shell { height: 100vh; height: 100dvh; display: grid; grid-template-rows: 54px auto 1fr 28px; }
 .topbar {
   display: flex; align-items: center; gap: 24px; padding: 0 18px;
   background: var(--navy); color: white;
@@ -156,16 +156,20 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .list-item button { margin-left: auto; }
 
 /* Горизонтальная прокрутка ганта: постоянно видимый скроллбар и drag за шапку дней */
-.board::-webkit-scrollbar { height: 11px; width: 11px; }
-.board::-webkit-scrollbar-track { background: var(--soft); }
-.board::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 6px; border: 2px solid var(--soft); }
-.board::-webkit-scrollbar-thumb:hover { background: var(--navy); }
-.board { scrollbar-width: thin; scrollbar-color: var(--muted) var(--soft); }
+.board::-webkit-scrollbar, .resscroll::-webkit-scrollbar { height: 11px; width: 11px; }
+.board::-webkit-scrollbar-track, .resscroll::-webkit-scrollbar-track { background: var(--soft); }
+.board::-webkit-scrollbar-thumb, .resscroll::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 6px; border: 2px solid var(--soft); }
+.board::-webkit-scrollbar-thumb:hover, .resscroll::-webkit-scrollbar-thumb:hover { background: var(--navy); }
+.board, .resscroll { scrollbar-width: thin; scrollbar-color: var(--muted) var(--soft); }
 .timeline-head { cursor: grab; }
 .timeline-head.dragging-scroll { cursor: grabbing; user-select: none; }
 .timeline-head .vehicle-cell { cursor: default; }
 
 .timeline { --day-width: var(--planner-day-width, 46px); }
+/* Контейнер вкладки занимает вьюпорт доски: колоночные блоки скроллятся внутри,
+   гант-канва (.canvas) наоборот растёт и прокручивается всей доской. */
+#timeline { height: 100%; }
+#timeline.canvas { height: auto; min-height: 100%; }
 /* Канва (Гант/Ресурс) шире экрана и скроллится; доски — по ширине окна */
 .timeline.canvas { min-width: max-content; }
 .timeline-head, .vehicle-row { display: flex; min-width: max-content; }
@@ -499,12 +503,13 @@ tbody tr:hover td { background: var(--hover); }
 @media (max-width: 760px) { .rgrid { grid-template-columns: 1fr; } }
 
 /* Доска продаж (ТК 21) */
-.saleswrap { padding: 10px 14px 12px; display: flex; flex-direction: column; height: calc(100vh - 137px); overflow: hidden; }
+.saleswrap { padding: 10px 14px 12px; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .salekpis { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; flex-shrink: 0; }
 .skpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; }
 /* Операционный отчёт руководителя (вместо панели приборов) */
 .brep { display: flex; flex-direction: column; gap: 14px; padding: 12px 16px 40px; }
-.brep-top { display: flex; flex-direction: column; gap: 10px; }
+.brep-top { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 0; z-index: 9;
+  background: var(--card); padding: 8px 0 0; margin: -8px 0 0; box-shadow: 0 8px 10px -8px rgb(0 0 0 / 18%); }
 .brep-title h2 { font-size: 21px; text-transform: uppercase; letter-spacing: .02em; }
 .brep-nav { display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--line); }
 .brep-nav a { font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
@@ -524,7 +529,7 @@ tbody tr:hover td { background: var(--hover); }
 .brep-pill.g { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .brep-pill.w { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 .brep-pill.b { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
-.brep section { scroll-margin-top: 10px; }
+.brep section { scroll-margin-top: 118px; }
 .brep-shead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .brep-shead h3 { font-size: 16px; text-transform: uppercase; letter-spacing: .02em; }
 .brep-shead .idx { font-family: ui-monospace, monospace; font-size: var(--fs-sm); color: var(--teal); font-weight: 800; }
@@ -634,7 +639,9 @@ tbody tr:hover td { background: var(--hover); }
 @media (max-width: 900px) { .salesfilter { margin-left: 0; } }
 .salesboard { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; flex: 1; min-height: 0; }
 .scol { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; overflow: auto; min-height: 0; min-width: 0; }
-.scolh { font-size: var(--fs-base); font-weight: 800; color: var(--ink); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }
+.scolh { font-size: var(--fs-base); font-weight: 800; color: var(--ink); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; display: flex; gap: 8px; align-items: center;
+  position: sticky; top: -12px; z-index: 2; background: var(--card); padding: 12px 0 7px; }
+.scol > .scolh:first-child { margin-top: -12px; }
 .scolh span { background: var(--soft); color: var(--muted); border-radius: 10px; padding: 1px 8px; font-size: var(--fs-xs); }
 .reqzone { color: #fff; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 10px; white-space: nowrap; }
 .list-item.req { cursor: pointer; }
@@ -650,15 +657,19 @@ tbody tr:hover td { background: var(--hover); }
 .feas-row.bad b { color: var(--bad); }
 .sugtruck.sel, .sugtruck:hover { border-color: var(--teal); }
 @media (max-width: 900px) {
+  .shell { height: auto; min-height: 100vh; }
+  .resboard { height: auto; }
   .salesboard { grid-template-columns: 1fr; }
   .saleswrap { height: auto; overflow: visible; }
   .scol { overflow: visible; }
 }
 
 /* Календарь ресурса (ТК 21) */
-.resboard { min-width: max-content; }
+.resboard { display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.resboard .resscroll { flex: 1; min-height: 0; overflow: auto; }
+.resboard .resscroll .timeline { min-width: max-content; }
 /* Шапка с бейджами прижата к видимой области при горизонтальной прокрутке канвы */
-.resboard .reshead { position: sticky; left: 0; max-width: calc(100vw - 40px); padding: 12px 16px 0; }
+.resboard .reshead { flex-shrink: 0; padding: 12px 16px 0; }
 .resboard .track { user-select: none; touch-action: pan-x; }
 .resboard .tripu { top: 18px; height: 14px; opacity: .8; color: #fff; font-size: 9px; font-weight: 700; display: flex; align-items: center; padding: 0 5px; overflow: hidden; white-space: nowrap; }
 .res-vtitle small { font-size: 10px; line-height: 1.3; }

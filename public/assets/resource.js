@@ -219,16 +219,18 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
         <button class="button small" id="resourceAdd">+ диспозиция</button>
       </div>
     </div>
-    <div class="timeline">
-      <div class="timeline-head"><div class="vehicle-cell">Сцепка · водитель</div>${headerDays}</div>
-      ${rows || '<div class="empty-state">Нет ТС в выбранном состоянии</div>'}
+    <div class="resscroll">
+      <div class="timeline">
+        <div class="timeline-head"><div class="vehicle-cell">Сцепка · водитель</div>${headerDays}</div>
+        ${rows || '<div class="empty-state">Нет ТС в выбранном состоянии</div>'}
+      </div>
     </div>
   </div>`;
 
   // Фокус как в главном ганте: «сегодня −3 дня» при первом показе месяца.
   if (todayIndex >= 0 && todayIndex < days && state.resourceScrolledMonth !== state.month.getTime()) {
     state.resourceScrolledMonth = state.month.getTime();
-    document.querySelector('.board').scrollLeft = Math.max(0, todayIndex - 3) * dayWidth;
+    container.querySelector('.resscroll').scrollLeft = Math.max(0, todayIndex - 3) * dayWidth;
   }
 
   // Панель заданий сотрудника справа (по аналогии с боковой панелью ганта).

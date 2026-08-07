@@ -301,10 +301,10 @@ export async function renderBoss(container, context) {
 
   // ── Сборка ──
   container.innerHTML = `<div class="bosswrap brep">
+    <div class="brep-title"><h2>PegasLogistic · операционный отчёт</h2>
+      <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · парк ${u.vehicles} сцепок
+        · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
     <div class="brep-top">
-      <div class="brep-title"><h2>PegasLogistic · операционный отчёт</h2>
-        <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · парк ${u.vehicles} сцепок
-          · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
       <div class="console">
         <span class="cnl">Период</span>
         <input type="date" id="bossFrom" value="${from}">

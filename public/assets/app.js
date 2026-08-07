@@ -537,7 +537,9 @@ function renderViewTabs() {
 function renderMain() {
   const isGantt = state.view === 'gantt';
   const isResource = state.view === 'resource';
-  // Ресурс — тоже гант: ему нужны навигация по месяцу, прокрутка и боковая панель заданий.
+  // Ресурс — тоже гант: ему нужны навигация по месяцу и прокрутка, но его
+  // канва скроллится внутри .resscroll (шапка фильтров закреплена), поэтому
+  // класс .canvas (ширина по контенту) — только у Ганта.
   const timelineView = isGantt || isResource;
   ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'].forEach(id =>
     byId(id).classList.toggle('hidden', !timelineView));
@@ -550,7 +552,7 @@ function renderMain() {
   byId('sidepanel').classList.toggle('hidden', !isResource);
   document.querySelector('.planner-layout').classList.toggle('full', !isResource);
   // Канва тянется по контенту (месяц дней), доски — по ширине окна.
-  byId('timeline').classList.toggle('canvas', timelineView);
+  byId('timeline').classList.toggle('canvas', isGantt);
   if (isGantt) {
     renderTimeline();
   } else if (state.view === 'boss') {
@@ -1514,19 +1516,26 @@ function dayWidthNow() {
   return Number(state.data?.settings.general.plannerCellWidth || 44);
 }
 
+// Актуальный горизонтальный скроллер: у «Ресурса» — внутренний .resscroll,
+// у Ганта — сама доска.
+function hScroller() {
+  return document.querySelector('.resscroll') || board;
+}
+
 // Плавная прокрутка своими силами: нативный behavior:'smooth' доступен не везде.
 function smoothScrollTo(left) {
-  const start = board.scrollLeft;
-  const target = Math.max(0, Math.min(left, board.scrollWidth - board.clientWidth));
+  const scroller = hScroller();
+  const start = scroller.scrollLeft;
+  const target = Math.max(0, Math.min(left, scroller.scrollWidth - scroller.clientWidth));
   const delta = target - start;
   if (!delta) return;
   // В фоновой вкладке requestAnimationFrame заморожен — прокручиваем мгновенно.
-  if (document.hidden) { board.scrollLeft = target; return; }
+  if (document.hidden) { scroller.scrollLeft = target; return; }
   const startedAt = performance.now();
   const duration = 220;
   const step = now => {
     const t = Math.min(1, (now - startedAt) / duration);
-    board.scrollLeft = start + delta * (1 - (1 - t) ** 3);
+    scroller.scrollLeft = start + delta * (1 - (1 - t) ** 3);
     if (t < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -1537,8 +1546,8 @@ function scrollToDay(index) {
   smoothScrollTo(Math.max(0, index * dayWidthNow() - 2));
 }
 
-byId('scrollLeft').onclick = () => smoothScrollTo(board.scrollLeft - 7 * dayWidthNow());
-byId('scrollRight').onclick = () => smoothScrollTo(board.scrollLeft + 7 * dayWidthNow());
+byId('scrollLeft').onclick = () => smoothScrollTo(hScroller().scrollLeft - 7 * dayWidthNow());
+byId('scrollRight').onclick = () => smoothScrollTo(hScroller().scrollLeft + 7 * dayWidthNow());
 byId('scrollToday').onclick = () => {
   const todayIndex = Math.floor((Date.now() - state.month.getTime()) / 86_400_000);
   const days = monthDays(state.month);
@@ -1579,13 +1588,15 @@ board.addEventListener('click', event => {
 board.addEventListener('pointerdown', event => {
   const head = event.target.closest('.timeline-head');
   if (!head || event.target.closest('.vehicle-cell')) return;
+  // В «Ресурсе» канва прокручивается внутри .resscroll, в Ганте — доской.
+  const scroller = head.closest('.resscroll') || board;
   const startX = event.clientX;
-  const startLeft = board.scrollLeft;
+  const startLeft = scroller.scrollLeft;
   try { head.setPointerCapture(event.pointerId); } catch { /* синтетические события без capture */ }
   head.classList.add('dragging-scroll');
   const onMove = moveEvent => {
     if (Math.abs(moveEvent.clientX - startX) > 5) head.dataset.suppressClick = '1';
-    board.scrollLeft = startLeft - (moveEvent.clientX - startX);
+    scroller.scrollLeft = startLeft - (moveEvent.clientX - startX);
   };
   const stop = () => {
     head.removeEventListener('pointermove', onMove);
@@ -1599,9 +1610,9 @@ board.addEventListener('pointerdown', event => {
 // Shift+колесо и тачпад работают нативно; обычное колесо над шапкой дней —
 // тоже горизонтально (вертикали у шапки нет).
 board.addEventListener('wheel', event => {
-  if (!event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) &&
-      event.target.closest('.timeline-head')) {
-    board.scrollLeft += event.deltaY;
+  const head = event.target.closest('.timeline-head');
+  if (!event.shiftKey && head && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+    (head.closest('.resscroll') || board).scrollLeft += event.deltaY;
     event.preventDefault();
   }
 }, { passive: false });
