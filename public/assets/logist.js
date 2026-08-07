@@ -5,6 +5,7 @@
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
+import { DISP_KINDS } from './resource.js';
 import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress } from './sales.js';
 
 const overlaps = (a, b) =>
@@ -207,7 +208,24 @@ export function renderLogist(container, context) {
   const vehicleRequests = autoRequests(data, state.month, monthEnd)
     .filter(request => (!zone || request.zone.name === zone) &&
       (!region || request.region === region) &&
-      matches(`${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name}`));
+      matches(`${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name}`))
+    .sort((a, b) => a.freeAt.localeCompare(b.freeAt));
+  // Состояние сцепки сейчас — как в ячейке Ганта: действующая диспозиция
+  // («ремонт до…»), а простой без неё — «причины нет».
+  const nowMs = Date.now();
+  const stateNote = request => {
+    const disposition = (data.dispositions || []).filter(item =>
+      item.vehicle_id === request.vehicle.id &&
+      Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs)
+      .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+    if (disposition) {
+      const meta = DISP_KINDS.find(item => item.kind === disposition.kind);
+      return `<span style="color:${meta?.color || 'var(--muted)'}">${meta?.short || disposition.kind}
+        до ${formatDateTime(disposition.ends_at)}</span>`;
+    }
+    if (request.idleMs > 0) return '<span style="color:var(--warn)">⚠ простой — причины нет</span>';
+    return 'в рейсе';
+  };
   const vehicleCards = vehicleRequests.map((request, index) => {
     const idleDays = request.idleMs > 0 ? Math.max(1, Math.floor(request.idleMs / 86_400_000)) : 0;
     const fits = matchOrdersForVehicle(request, queue).length;
@@ -221,6 +239,8 @@ export function renderLogist(container, context) {
         <small class="muted" style="display:block">${idleDays
           ? `стоит ${idleDays} дн с ${formatDateTime(request.freeAt)}`
           : `освободится ${formatDateTime(request.freeAt)}`}${blockedNote}</small>
+        <small class="muted" style="display:block">📍 ${escapeHtml(request.region || 'субъект не определён')}
+          · ${stateNote(request)}</small>
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <span class="badge ${fits ? 'ok' : 'warn'}" title="Заявок очереди, подходящих по времени">${fits
