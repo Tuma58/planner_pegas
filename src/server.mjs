@@ -153,7 +153,7 @@ function listVehicles() {
 }
 
 function listTrips(search = '') {
-  return db.prepare(`SELECT t.*,v.plate vehicle_plate,v.trailer_plate,vt.name vehicle_type,
+  return db.prepare(`SELECT t.*,v.plate vehicle_plate,v.trailer_plate,v.driver_name,vt.name vehicle_type,
     f.name from_name,f.color from_color,d.name to_name,d.color to_color
     FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
     JOIN vehicle_types vt ON vt.id=v.type_id JOIN zones f ON f.id=t.from_zone_id

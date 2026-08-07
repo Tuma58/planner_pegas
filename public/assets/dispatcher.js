@@ -6,7 +6,7 @@
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toLocalInput, toast } from './api.js';
-import { resolveAddress } from './sales.js';
+import { orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 
@@ -263,7 +263,67 @@ export async function renderDispatcher(container, context) {
   online.sort((a, b) => (Number.isFinite(nextControlEvent(a).at) ? nextControlEvent(a).at : Infinity) -
     (Number.isFinite(nextControlEvent(b).at) ? nextControlEvent(b).at : Infinity));
 
-  const tripHead = trip => `<span style="flex:1;min-width:0">
+  // Заявка рейса — источник комментария продаж и «без НДС».
+  const orderOf = trip => (data.orders || []).find(item => item.id === trip.order_id)
+    || (data.orders || []).find(item => item.trip_id === trip.id) || null;
+
+  // Полная карточка рейса: всё, что нужно для внесения в учётную систему, —
+  // одним текстом с кнопкой копирования.
+  const tripCardText = trip => {
+    const order = orderOf(trip);
+    let via = [];
+    try { via = JSON.parse(order?.via_json || '[]') || []; } catch { via = []; }
+    const lines = [
+      `№ заказа: ${trip.order_no || order?.order_no || '—'}`,
+      `Маршрут: ${routeLabel(trip)}`,
+      `Заказчик: ${trip.customer_name || order?.customer_name || '—'}`,
+      `Погрузка: ${trip.from_point || trip.from_name} · ${formatDateTime(trip.starts_at)}`,
+      via.length ? `Промежуточные: ${via.map(item =>
+        `${item.kind === 'P' ? '⬆' : '⬇'} ${item.point}`).join(', ')}` : '',
+      `Выгрузка: ${trip.to_point || trip.to_name} · ${formatDateTime(trip.ends_at)}`,
+      `ТС: ${trip.vehicle_plate}${trip.trailer_plate ? ` · прицеп ${trip.trailer_plate}` : ''}` +
+        `${trip.vehicle_type ? ` · ${trip.vehicle_type}` : ''}`,
+      `Водитель: ${trip.driver_name || 'не назначен'}`,
+      trip.temperature_mode ? `Темп. режим: ${trip.temperature_mode}` : '',
+      trip.body_type ? `Кузов: ${trip.body_type}` : '',
+      `Км план: ${Math.round(trip.distance_km || 0)}${trip.empty_km
+        ? ` (+${Math.round(trip.empty_km)} порож.)` : ''}`,
+      `Ставка с НДС: ${money(trip.revenue_vat)}`,
+      order ? `Без НДС: ${money(orderNet(order, data))}` : '',
+      Number(trip.cash)
+        ? `Оплата: 💵 НАЛИЧНЫЕ — водителю забрать ${money(trip.revenue_vat)} после выгрузки`
+        : 'Оплата: безналичный расчёт',
+      order?.comment ? `Комментарий продаж: ${order.comment}` : '',
+      trip.external_id ? `ID 1С: ${trip.external_id}` : ''
+    ];
+    return lines.filter(Boolean).join('\n');
+  };
+  const tripCardDialog = trip => {
+    const text = tripCardText(trip);
+    context.showModal(`<h2>Карточка рейса</h2>
+      <p class="muted" style="margin:0 0 8px">Полные данные для учётной системы —
+        «Скопировать всё» или выделите нужные строки.</p>
+      <textarea id="tripCardText" readonly rows="${Math.min(16, text.split('\n').length + 1)}"
+        style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre">${escapeHtml(text)}</textarea>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="button" id="tripCardCopy">📋 Скопировать всё</button>
+        <button class="button ghost" id="tripCardClose">Закрыть</button>
+      </div>`);
+    const area = document.getElementById('tripCardText');
+    document.getElementById('tripCardClose').onclick = () => context.closeModal();
+    document.getElementById('tripCardCopy').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        area.focus(); area.select();
+        document.execCommand('copy');
+      }
+      toast('Карточка рейса скопирована');
+    };
+  };
+
+  const tripHead = trip => `<span style="flex:1;min-width:0;cursor:pointer" data-trip-card="${trip.id}"
+      title="Клик — карточка рейса: полные данные с копированием">
       <strong>${escapeHtml(routeLabel(trip))}</strong> · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
       ${Number(trip.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
       <small class="muted" style="display:block">${escapeHtml(trip.driver_name || 'без водителя')}
@@ -274,11 +334,16 @@ export async function renderDispatcher(container, context) {
         после выгрузки забрать ${money(trip.revenue_vat)} у клиента</small>` : ''}
     </span>`;
 
+  const salesCommentNote = trip => {
+    const comment = orderOf(trip)?.comment;
+    return comment ? `<small class="sales-comment">💬 Продажи: ${escapeHtml(comment)}</small>` : '';
+  };
   const prepCards = preparing.map(trip => `<div class="card" style="margin-bottom:10px;padding:10px 12px">
       <div class="list-item" style="padding:0 0 4px">
         ${tripHead(trip)}
         <button class="button ghost small" data-incident="${trip.id}" title="Поломка, отказ клиента, переназначение">⚠ Внештатная</button>
       </div>
+      ${salesCommentNote(trip)}
       ${checklistBlock(trip, canAct)}
     </div>`).join('') || '<p class="muted">Нет рейсов в подготовке — очередь чиста.</p>';
 
@@ -509,6 +574,15 @@ export async function renderDispatcher(container, context) {
       </div>
     </div>
   </div>`;
+
+  // Клик по плашке рейса — карточка с полными данными и копированием;
+  // клики по кнопкам внутри строки карточку не открывают.
+  container.querySelectorAll('[data-trip-card]').forEach(head =>
+    head.addEventListener('click', event => {
+      if (event.target.closest('button')) return;
+      const trip = data.trips.find(item => item.id === head.dataset.tripCard);
+      if (trip) tripCardDialog(trip);
+    }));
 
   attachSearch(container.querySelector('#dispatcherSearch'), async value => {
     state.dispatcherQuery = value;
