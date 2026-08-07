@@ -330,6 +330,22 @@ test('потребность от логистики: ремонт и «без �
   assert.ok(eventAfterShift.label.includes('рейс'), 'после пересменки следующее — рейс');
   assert.equal(nextVehicleEvent(data, 'А4', now), null, 'без будущих событий — null');
 
+  // Субъект места: имя зоны — самый частый субъект её адресов, не подстрока
+  // («Дом» не должен находить Домодедово); пункт уточняет внутри зоны.
+  const { regionOfPlace } = await import('../public/assets/sales.js');
+  const regionData = { reference: { addresses: [
+    { name: 'Пенза-склад', address: 'г Пенза', zone_name: 'Дом', region: 'Пензенская обл' },
+    { name: 'Кузнецк', address: 'г Кузнецк', zone_name: 'Дом', region: 'Пензенская обл' },
+    { name: 'Домодедово', address: 'МО, Домодедово', zone_name: 'Москва', region: 'Московская обл' },
+    { name: 'Софьино', address: 'МО, Раменский р-н', zone_name: 'Москва', region: 'Московская обл' },
+  ] } };
+  assert.equal(regionOfPlace(regionData, '', 'Дом'), 'Пензенская обл',
+    'зона «Дом» — модальный регион её адресов, не Домодедово');
+  assert.equal(regionOfPlace(regionData, 'Софьино', 'Москва'), 'Московская обл');
+  assert.equal(regionOfPlace(regionData, 'Софьино', ''), 'Московская обл',
+    'без зоны — пункт по справочнику');
+  assert.equal(regionOfPlace(regionData, '', 'Неизвестная'), '', 'чужая зона — пусто');
+
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');
   const request = { freeAt: iso(now + 86_400_000), zone: { name: 'Дом' }, vehicle: { id: 'А1' } };

@@ -2,7 +2,7 @@ import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, 
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
 import { buildReport } from './reports.js';
-import { assignDialog, editOrderDialog, renderSales } from './sales.js';
+import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sales.js';
 import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
@@ -146,10 +146,26 @@ function renderTimeline() {
     return lastTrip ? lastTrip.to_name : vehicle.zone_name;
   };
   const vehicleInZone = vehicle => zoneOfVehicleAt(vehicle) === state.ganttZone;
+  // Субъект местоположения сцепки на дату — тот же каскад, что в продажах:
+  // адрес выгрузки заявки последнего рейса, иначе пункт/зона по справочнику.
+  const regionOfVehicleAt = vehicle => {
+    const lastTrip = state.data.trips
+      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
+        Date.parse(trip.starts_at) <= zoneDayEndMs)
+      .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+    if (!lastTrip) return regionOfPlace(state.data, '', vehicle.zone_name);
+    const order = lastTrip.order_id
+      ? (state.data.orders || []).find(item => item.id === lastTrip.order_id) : null;
+    const byOrder = order?.to_address_id ? (state.data.reference.addresses || [])
+      .find(item => item.id === order.to_address_id)?.region : '';
+    if (byOrder) return byOrder;
+    return regionOfPlace(state.data, lastTrip.to_point, lastTrip.to_name);
+  };
   const vehicles = state.data.vehicles.filter(vehicle =>
     vehicle.status !== 'out' && (state.type === 'all' || vehicle.type_name === state.type) &&
     (!ganttQuery || vehicleMatches(vehicle)) &&
     (!state.ganttZone || vehicleInZone(vehicle)) &&
+    (!state.ganttRegion || regionOfVehicleAt(vehicle) === state.ganttRegion) &&
     (!state.ganttState || vehicleDayState(vehicle, zoneDayIso).key === state.ganttState));
   const conflicts = conflictIds(state.data.trips);
   const critical = criticalIds(state.data.trips, state.data.dispositions || []);
@@ -459,6 +475,22 @@ function renderLegend() {
     `<span class="lg clickable ${state.ganttState === chip.key ? 'active' : ''}" data-lg-state="${chip.key}"
       title="Сцепки в состоянии «${chip.label}» на ${legendDayLabel}">
       <span class="sw" style="background:${chip.color}"></span>${chip.label} ${stateCount(chip.key)}${state.ganttState === chip.key ? ' ✕' : ''}</span>`).join('');
+  // Фильтр по субъекту РФ: местоположение сцепки на дату (по пункту выгрузки
+  // последнего рейса через справочник адресов).
+  const regionList = [...new Set((state.data.reference.addresses || [])
+    .map(item => item.region).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+  byId('legend').innerHTML += `<span class="lg-sep"></span>
+    <select id="ganttRegionFilter" class="lg-region ${state.ganttRegion ? 'active' : ''}"
+      title="Сцепки в субъекте РФ на ${legendDayLabel}">
+      <option value="">Все субъекты</option>
+      ${regionList.map(region => `<option value="${escapeHtml(region)}"
+        ${state.ganttRegion === region ? 'selected' : ''}>${escapeHtml(region)}</option>`).join('')}
+    </select>`;
+  byId('ganttRegionFilter').onchange = event => {
+    state.ganttRegion = event.currentTarget.value || null;
+    renderLegend();
+    renderTimeline();
+  };
   byId('legend').onclick = event => {
     const zoneChip = event.target.closest('[data-lg-zone]');
     if (zoneChip) {

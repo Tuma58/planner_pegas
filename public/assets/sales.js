@@ -50,6 +50,23 @@ export function resolveAddress(data, value) {
     || null;
 }
 
+// Субъект РФ места «пункт или зона»: имя геозоны — самый частый субъект
+// её адресов (иначе «Дом» находил бы Домодедово), затем пункт по справочнику.
+export function regionOfPlace(data, point, zoneName) {
+  const items = data.reference.addresses || [];
+  const zone = String(zoneName || '').trim().toLowerCase();
+  if (zone) {
+    const tally = {};
+    items.filter(item => (item.zone_name || '').toLowerCase() === zone && item.region)
+      .forEach(item => { tally[item.region] = (tally[item.region] || 0) + 1; });
+    const top = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
+    if (!point && top) return top[0];
+    const byPoint = point ? resolveAddress(data, point)?.region : '';
+    return byPoint || (top ? top[0] : '');
+  }
+  return (point ? resolveAddress(data, point)?.region : '') || '';
+}
+
 // Плановый километраж пары адресов: прямая по координатам × дорожный 1,2 —
 // формула совпадает с серверной (roadKm в db.mjs).
 export function plannedKmBetween(a, b) {
@@ -144,9 +161,7 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       ? (data.orders || []).find(item => item.id === trip.order_id) : null;
     const byOrder = order ? addressById(order.to_address_id)?.region : '';
     if (byOrder) return byOrder;
-    // Пункт из 1С — свободный текст («Софьино»): резолвим так же,
-    // как поле ввода адреса — точное имя, начало, подстрока.
-    return resolveAddress(data, trip.to_point || trip.to_name)?.region || '';
+    return regionOfPlace(data, trip.to_point, trip.to_name);
   };
   data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
     const trips = data.trips

@@ -258,6 +258,8 @@ tbody tr:hover td { background: var(--hover); }
 .grid-day.hours6 { background-image: repeating-linear-gradient(to right,
   transparent, transparent calc(25% - 1px), var(--grid) calc(25% - 1px), var(--grid) 25%); }
 .grid-day.hours6.weekend { background-color: var(--gridwe); }
+.lg-region { width: auto; min-height: 26px; padding: 3px 6px; font-size: var(--fs-xs); border-radius: 11px; }
+.lg-region.active { border-color: var(--teal); font-weight: 700; }
 .lg-sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
 .day-picker { width: 42px; min-height: 30px; padding: 4px 6px; font-size: var(--fs-sm); }
 .day-picker::-webkit-datetime-edit { display: none; }
