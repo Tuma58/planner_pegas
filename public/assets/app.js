@@ -937,7 +937,7 @@ async function openResourceStats() {
     <div style="overflow:auto;max-height:62vh"><table class="rtable"><thead><tr>
       <th>Сцепка</th><th class="num">Работа</th><th class="num">Ремонт</th><th class="num">Без вод.</th>
       <th class="num">Пересм.</th><th class="num">Простой</th><th class="num">КТГ</th>
-      <th class="num">Использование</th><th class="num">Рейсов</th><th class="num">Выручка б.НДС</th>
+      <th class="num">Использование</th><th class="num">Порожн., км</th><th class="num">%</th><th class="num">Рейсов</th><th class="num">Выручка б.НДС</th>
     </tr></thead><tbody>
     ${rows.map(row => `<tr>
       <td><strong class="mono">${escapeHtml(row.plate)}</strong>
@@ -1159,18 +1159,44 @@ function openDisposition(item = null, prefill = null) {
       <label class="field">С<input name="startsAt" type="datetime-local" value="${isoInput(start)}" required></label>
       <label class="field">До<input name="endsAt" type="datetime-local" value="${isoInput(end)}" required></label>
     </div>
+    <label class="field" id="repairPlaceField" style="display:none">Место ремонта (сервис)
+      <input name="repairPlace" list="repairPlaces" autocomplete="off"
+        placeholder="адрес из справочника — посчитается ремонтный пробег"
+        value="${escapeHtml(item?.address_id
+          ? (state.data.reference.addresses || []).find(a => a.id === item.address_id)?.name || '' : '')}">
+      <datalist id="repairPlaces">${(state.data.reference.addresses || [])
+        .map(a => `<option value="${escapeHtml(a.name)}"></option>`).join('')}</datalist>
+    </label>
     <label class="field">Комментарий<input name="note" value="${escapeHtml(item?.note || '')}"></label>
     <div class="modal-actions">
       ${item ? '<button type="button" class="button danger" id="deleteDisposition">Удалить</button>' : ''}
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сохранить</button>
     </div></form>`);
+  // Поле сервиса видно только для «В ремонте».
+  const dispositionForm = byId('dispositionForm');
+  const toggleRepairPlace = () => {
+    byId('repairPlaceField').style.display =
+      dispositionForm.elements.kind.value === 'repair' ? '' : 'none';
+  };
+  dispositionForm.elements.kind.addEventListener('change', toggleRepairPlace);
+  toggleRepairPlace();
   byId('dispositionForm').onsubmit = async event => {
     event.preventDefault();
+    const values = formValues(event.currentTarget);
+    // Текст сервиса → адрес справочника (точное имя/начало/подстрока).
+    const repairAddress = values.kind === 'repair' && values.repairPlace
+      ? (state.data.reference.addresses || []).find(a =>
+          a.name.toLowerCase() === values.repairPlace.trim().toLowerCase())
+        || (state.data.reference.addresses || []).find(a =>
+          a.name.toLowerCase().startsWith(values.repairPlace.trim().toLowerCase()))
+      : null;
+    values.addressId = repairAddress?.id || null;
+    delete values.repairPlace;
     try {
       await api(item ? `/api/dispositions/${item.id}` : '/api/dispositions', {
         method: item ? 'PATCH' : 'POST',
-        body: JSON.stringify(formValues(event.currentTarget))
+        body: JSON.stringify(values)
       });
       closeModal(); toast('Интервал сохранен'); await reload();
     } catch (error) { toast(error.message, 'error'); }

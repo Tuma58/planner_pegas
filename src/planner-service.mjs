@@ -165,6 +165,7 @@ export function reportSnapshot(db, fromValue, toValue) {
   let netRevenue = 0;
   let contribution = 0;
   let factRevenue = 0;
+  let emptyKmTotal = 0;
   for (const trip of trips) {
     // Наличная перевозка — ставка уже без НДС, не очищается.
     const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
@@ -172,7 +173,10 @@ export function reportSnapshot(db, fromValue, toValue) {
       : Number(calculation.vatRate ?? 0.22);
     const net = Number(trip.revenue_vat) / (1 + vat);
     const tripDays = Math.max(0, (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 86_400_000);
-    const variable = Number(trip.distance_km) *
+    // Порожний подгон — затрата этого рейса: километровые ставки на него тоже.
+    const emptyKm = Number(trip.empty_km || 0);
+    emptyKmTotal += emptyKm;
+    const variable = (Number(trip.distance_km) + emptyKm) *
       (Number(calculation.costPerKm || 0) + Number(calculation.insuranceAndRoadsPerKm || 0)) +
       tripDays * (Number(calculation.driverPerTripDay || 0) + Number(calculation.refrigerationPerTripDay || 0));
     const margin = net - variable;
@@ -244,8 +248,20 @@ export function reportSnapshot(db, fromValue, toValue) {
     lostProfit: Math.round(lostProfit)
   };
 
+  const repairKmTotal = db.prepare(`SELECT COALESCE(SUM(repair_km),0) total
+    FROM vehicle_dispositions WHERE kind='repair' AND starts_at>=? AND starts_at<?`)
+    .get(from, to).total;
+  const loadedKmTotal = trips.reduce((sum, trip) => sum + Number(trip.distance_km || 0), 0);
+  const perKmRate = Number(calculation.costPerKm || 0) + Number(calculation.insuranceAndRoadsPerKm || 0);
+
   return {
     utilization,
+    emptyKm: Math.round(emptyKmTotal),
+    repairKm: Math.round(repairKmTotal),
+    loadedKm: Math.round(loadedKmTotal),
+    emptyRatio: loadedKmTotal + emptyKmTotal + repairKmTotal
+      ? (emptyKmTotal + repairKmTotal) / (loadedKmTotal + emptyKmTotal + repairKmTotal) : 0,
+    emptyCost: Math.round((emptyKmTotal + repairKmTotal) * perKmRate),
     from, to, days, trips: trips.length, vehicles: vehicleCount,
     factRevenue: Math.round(factRevenue), netRevenue: Math.round(netRevenue),
     contribution: Math.round(contribution), fixed: Math.round(fixed),
@@ -281,8 +297,12 @@ export function vehicleUtilization(db, fromValue, toValue) {
     FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(to, from);
   const tripRows = db.prepare(`SELECT vehicle_id,starts_at,ends_at FROM trips
     WHERE status<>'rejected' AND starts_at<? AND ends_at>?`).all(to, from);
-  const revenueRows = db.prepare(`SELECT vehicle_id,customer_name,revenue_vat,cash FROM trips
-    WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`).all(from, to);
+  const revenueRows = db.prepare(`SELECT vehicle_id,customer_name,revenue_vat,cash,distance_km,empty_km
+    FROM trips WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`).all(from, to);
+  const repairKmByVehicle = new Map(db.prepare(`SELECT vehicle_id, SUM(repair_km) total
+    FROM vehicle_dispositions WHERE kind='repair' AND repair_km IS NOT NULL
+      AND starts_at>=? AND starts_at<? GROUP BY vehicle_id`).all(from, to)
+    .map(row => [row.vehicle_id, row.total]));
   const byVehicleDispositions = Map.groupBy(dispositionRows, row => row.vehicle_id);
   const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
   const byVehicleRevenue = Map.groupBy(revenueRows, row => row.vehicle_id);
@@ -311,11 +331,18 @@ export function vehicleUtilization(db, fromValue, toValue) {
         : Number(calculation.vatRate ?? 0.22);
       return sum + trip.revenue_vat / (1 + vat);
     }, 0);
+    const vehicleTripRows = byVehicleRevenue.get(vehicle.id) || [];
+    const loadedKm = vehicleTripRows.reduce((sum, row) => sum + Number(row.distance_km || 0), 0);
+    const emptyKm = vehicleTripRows.reduce((sum, row) => sum + Number(row.empty_km || 0), 0) +
+      Number(repairKmByVehicle.get(vehicle.id) || 0);
     return {
       vehicleId: vehicle.id, plate: vehicle.plate,
       driver: vehicle.driver_name || '', type: vehicle.type_name,
       ...counts,
-      trips: (byVehicleRevenue.get(vehicle.id) || []).length,
+      loadedKm: Math.round(loadedKm),
+      emptyKm: Math.round(emptyKm),
+      emptyRatio: loadedKm + emptyKm ? emptyKm / (loadedKm + emptyKm) : 0,
+      trips: vehicleTripRows.length,
       ktg: (dayCount - counts.repair - counts.out) / dayCount,
       utilization: counts.work / dayCount,
       netRevenue: Math.round(netRevenue)

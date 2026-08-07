@@ -38,7 +38,7 @@ function econByClient(data, from, to) {
       : Number(calculation.vatRate ?? 0.22);
     const net = Number(trip.revenue_vat) / (1 + vat);
     const days = Math.max(0, (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 86_400_000);
-    const variable = Number(trip.distance_km) *
+    const variable = (Number(trip.distance_km) + Number(trip.empty_km || 0)) *
       (Number(calculation.costPerKm || 0) + Number(calculation.insuranceAndRoadsPerKm || 0)) +
       days * (Number(calculation.driverPerTripDay || 0) + Number(calculation.refrigerationPerTripDay || 0));
     const item = map.get(trip.customer_name) || { customer: trip.customer_name, trips: 0, revenue: 0, profit: 0 };
@@ -97,6 +97,8 @@ export async function buildReport(kind, from, to, data) {
         <tr><td>Плановые (норма ${(u.utilizationTarget * 100).toFixed(1)}%)</td><td class="num">${u.normDays}</td></tr>
         <tr><td>Фактические в работе</td><td class="num">${u.workDays}</td></tr>
         <tr><td>Отклонение от нормы</td><td class="num">${u.workDays - u.normDays}</td></tr>
+        <tr><td>Порожний пробег (подгоны + в ремзоны)</td><td class="num">${(report.emptyKm + report.repairKm).toLocaleString('ru-RU')} км
+          · ${(report.emptyRatio * 100).toFixed(1)}% · ${rub(report.emptyCost)}</td></tr>
         <tr><td>Марж. доход на машино-день</td><td class="num">${rub(u.marginPerTripDay)}</td></tr>
         <tr><td><b>Упущенный марж. доход за период</b></td><td class="num"><b>${rub(u.lostProfit)}</b></td></tr></tbody></table>
       <h4>Операционная прибыль</h4>
@@ -275,13 +277,17 @@ export async function buildReport(kind, from, to, data) {
       <table class="rtable"><thead><tr><th>Сцепка</th><th>Водитель</th><th>Тип</th>
         <th class="num">Работа</th><th class="num">Ремонт</th><th class="num">Без вод.</th>
         <th class="num">Простой</th><th class="num">КТГ</th><th class="num">Использование</th>
-        <th class="num">Рейсов</th><th class="num">Выручка б.НДС</th></tr></thead><tbody>
+        <th class="num">Рейсов</th><th class="num">Гружёные, км</th><th class="num">Порожние, км</th>
+        <th class="num">% порожн.</th><th class="num">Выручка б.НДС</th></tr></thead><tbody>
       ${rows.map(row => `<tr><td class="mono">${escapeHtml(row.plate)}</td>
         <td>${escapeHtml(row.driver || '—')}</td><td>${escapeHtml(row.type)}</td>
         <td class="num">${row.work}</td><td class="num">${row.repair}</td>
         <td class="num">${row.noDriver}</td><td class="num">${row.idle}</td>
         <td class="num">${(row.ktg * 100).toFixed(0)}%</td>
         <td class="num ${row.utilization < 0.45 ? 'danger' : ''}">${(row.utilization * 100).toFixed(0)}%</td>
+        <td class="num">${(row.loadedKm || 0).toLocaleString('ru-RU')}</td>
+        <td class="num">${(row.emptyKm || 0).toLocaleString('ru-RU')}</td>
+        <td class="num ${row.emptyRatio > 0.25 ? 'danger' : ''}">${((row.emptyRatio || 0) * 100).toFixed(0)}%</td>
         <td class="num">${row.trips}</td><td class="num">${rub(row.netRevenue)}</td></tr>`).join('')}
       </tbody></table>`;
   } else if (kind === 'rejected-orders') {

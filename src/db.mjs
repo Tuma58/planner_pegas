@@ -214,6 +214,7 @@ export function openDatabase(databasePath, admin, options = {}) {
   seed(db, admin, options);
   seedDrivers(db);
   seedAddresses(db);
+  backfillEmptyKm(db);
   return db;
 }
 
@@ -295,6 +296,11 @@ function migrateColumns(db) {
   ensure('orders', 'via_json', "TEXT NOT NULL DEFAULT '[]'");
   ensure('trips', 'order_no', "TEXT NOT NULL DEFAULT ''");
   ensure('trips', 'cash', 'INTEGER NOT NULL DEFAULT 0');
+  // Порожний подгон к погрузке этого рейса (учёт следующего рейса) и
+  // ремонтный пробег: место ремонта у диспозиции + км до сервиса.
+  ensure('trips', 'empty_km', 'REAL');
+  ensure('vehicle_dispositions', 'address_id', 'TEXT REFERENCES addresses(id)');
+  ensure('vehicle_dispositions', 'repair_km', 'REAL');
   // Номер заявки присваивает система: сквозной счётчик в app_meta (с 1001).
   // Заявки без номера нумеруются по времени создания при каждом старте —
   // идемпотентно подхватываются и старые, и созданные обходными путями.
@@ -448,6 +454,45 @@ function seedAddresses(db) {
       roadKm(item.lat, item.lon, BASE_POINT.lat, BASE_POINT.lon));
     if (item.region) backfillRegion.run(item.region, item.code);
   }
+}
+
+// Бэкфилл порожних подгонов по истории: для каждого рейса — расстояние
+// от точки выгрузки предыдущего рейса сцепки до пункта погрузки текущего.
+// Имя зоны резолвится в центр зоны, пункт — в адрес справочника; без
+// координат empty_km остаётся NULL («неизвестно», не ноль). Однократно.
+function backfillEmptyKm(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='empty_km_backfill_v1'`).get()) return;
+  const cache = new Map();
+  const resolvePoint = text => {
+    const needle = String(text || '').trim();
+    if (needle.length < 2) return null;
+    if (cache.has(needle)) return cache.get(needle);
+    const found = db.prepare(`SELECT latitude,longitude FROM zones
+        WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL`).get(needle)
+      || db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL LIMIT 1`).get(needle)
+      || db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`${needle}%`)
+      || db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`%${needle}%`)
+      || null;
+    cache.set(needle, found);
+    return found;
+  };
+  const update = db.prepare('UPDATE trips SET empty_km=? WHERE id=? AND empty_km IS NULL');
+  for (const vehicle of db.prepare('SELECT id FROM vehicles').all()) {
+    const trips = db.prepare(`SELECT t.id,t.from_point,t.to_point,zf.name from_zone,zt.name to_zone
+      FROM trips t JOIN zones zf ON zf.id=t.from_zone_id JOIN zones zt ON zt.id=t.to_zone_id
+      WHERE t.vehicle_id=? AND t.status<>'rejected' ORDER BY t.starts_at`).all(vehicle.id);
+    for (let index = 1; index < trips.length; index += 1) {
+      const origin = resolvePoint(trips[index - 1].to_point || trips[index - 1].to_zone);
+      const target = resolvePoint(trips[index].from_point || trips[index].from_zone);
+      if (!origin || !target) continue;
+      update.run(roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude),
+        trips[index].id);
+    }
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('empty_km_backfill_v1','1')`).run();
 }
 
 function seed(db, admin, options) {

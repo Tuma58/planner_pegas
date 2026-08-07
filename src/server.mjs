@@ -596,8 +596,14 @@ async function api(request, response, url) {
       }
     }
     // Переназначение ТС: задание прежнему водителю отозвано — шаг
-    // «Задание водителю отправлено» выполняется заново.
+    // «Задание водителю отправлено» выполняется заново; порожний подгон
+    // пересчитывается от позиции новой сцепки.
     if (merged.vehicleId !== current.vehicle_id) {
+      const fromZoneName = db.prepare('SELECT name FROM zones WHERE id=?')
+        .get(merged.fromZoneId || current.from_zone_id)?.name;
+      db.prepare('UPDATE trips SET empty_km=? WHERE id=?').run(
+        emptyKmFor(merged.vehicleId, merged.startsAt || current.starts_at, null,
+          (merged.fromPoint ?? current.from_point) || fromZoneName, match[0]), match[0]);
       resetDriverNotificationOnVehicleChange(db, match[0]);
     }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
@@ -618,6 +624,54 @@ async function api(request, response, url) {
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'delete', 'trip', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
+  }
+
+  // Координаты пункта по тексту: точное имя адреса, затем начало, затем
+  // подстрока (пункты 1С — свободный текст, имена зон — алиасы справочника).
+  function addressPointByText(text) {
+    const needle = String(text || '').trim();
+    if (needle.length < 2) return null;
+    // Имя геозоны — координаты её центра (иначе «Дом» находил бы Домодедово).
+    return db.prepare(`SELECT latitude,longitude FROM zones
+        WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL`).get(needle)
+      || db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL LIMIT 1`).get(needle)
+      || db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`${needle}%`)
+      || db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`%${needle}%`)
+      || null;
+  }
+  const addressPointById = id => id
+    ? db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE id=? AND latitude IS NOT NULL`).get(id) || null
+    : null;
+
+  // Позиция сцепки перед моментом: точка выгрузки последнего рейса ЛИБО
+  // место ремонта, если ремонт с адресом был позже выгрузки.
+  function vehiclePositionBefore(vehicleId, beforeIso, excludeTripId = '') {
+    const prevTrip = db.prepare(`SELECT t.to_point, z.name to_zone_name, t.ends_at
+      FROM trips t JOIN zones z ON z.id=t.to_zone_id
+      WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.id<>? AND t.starts_at<?
+      ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, excludeTripId, beforeIso);
+    const prevRepair = db.prepare(`SELECT d.ends_at, a.latitude, a.longitude
+      FROM vehicle_dispositions d JOIN addresses a ON a.id=d.address_id
+      WHERE d.vehicle_id=? AND d.kind='repair' AND a.latitude IS NOT NULL AND d.starts_at<?
+      ORDER BY d.ends_at DESC LIMIT 1`).get(vehicleId, beforeIso);
+    if (prevRepair && (!prevTrip || prevRepair.ends_at >= prevTrip.ends_at)) {
+      return { latitude: prevRepair.latitude, longitude: prevRepair.longitude };
+    }
+    if (prevTrip) return addressPointByText(prevTrip.to_point || prevTrip.to_zone_name);
+    return null;
+  }
+
+  // Порожний подгон: от позиции сцепки до пункта погрузки (адрес заявки
+  // приоритетнее текста). null — пункт не распознан, а не ноль.
+  function emptyKmFor(vehicleId, startsAtIso, fromAddressId, fromText, excludeTripId = '') {
+    const origin = vehiclePositionBefore(vehicleId, startsAtIso, excludeTripId);
+    const target = addressPointById(fromAddressId) || addressPointByText(fromText);
+    if (!origin || !target) return null;
+    return roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
   }
 
   // Промежуточные пункты заявки: [{point, kind P/D, addressId}], до 8 штук.
@@ -855,19 +909,22 @@ async function api(request, response, url) {
     const tripId = order.trip_id || randomUUID();
     db.exec('BEGIN IMMEDIATE');
     try {
+      const assignEmptyKm = emptyKmFor(vehicle.id, startsAt,
+        order.from_address_id, order.from_point || null, tripId);
       if (order.trip_id) {
-        db.prepare(`UPDATE trips SET vehicle_id=?,status='plan',cash=?,order_no=?,
+        db.prepare(`UPDATE trips SET vehicle_id=?,status='plan',cash=?,order_no=?,empty_km=?,
           updated_by=?,updated_at=CURRENT_TIMESTAMP
-          WHERE id=?`).run(vehicle.id, Number(order.cash || 0), order.order_no || '', user.id, tripId);
+          WHERE id=?`).run(vehicle.id, Number(order.cash || 0), order.order_no || '',
+          assignEmptyKm, user.id, tripId);
       } else {
         db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
           from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status,temperature_mode,
-          body_type,cash,order_no,created_by,updated_by)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'plan',?,?,?,?,?,?)`).run(
+          body_type,cash,order_no,empty_km,created_by,updated_by)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'plan',?,?,?,?,?,?,?)`).run(
           tripId, vehicle.id, order.id, order.customer_name, order.from_zone_id, order.to_zone_id,
           order.from_point || '', order.to_point || '',
           startsAt, endsAt, distance, order.rate_vat, order.temperature_mode, order.body_type,
-          Number(order.cash || 0), order.order_no || '', user.id, user.id);
+          Number(order.cash || 0), order.order_no || '', assignEmptyKm, user.id, user.id);
       }
       // Промежуточные пункты заявки становятся стоянками рейса: диспетчер
       // ведёт их в «🧭 Точках» — прибытие, работы, убытие, простой.
@@ -1110,15 +1167,25 @@ async function api(request, response, url) {
     }
     const startsAt = Date.parse(body.startsAt);
     const endsAt = Date.parse(body.endsAt);
+    // Место ремонта: пробег до сервиса от позиции сцепки — «ремонтный пробег».
+    const repairAddressId = body.kind === 'repair' ? (body.addressId || null) : null;
+    const repairKm = repairAddressId
+      ? (() => {
+          const origin = vehiclePositionBefore(body.vehicleId, new Date(startsAt).toISOString());
+          const target = addressPointById(repairAddressId);
+          return origin && target
+            ? roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude) : null;
+        })() : null;
     if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt) || endsAt <= startsAt) {
       return errorJson(response, 422, 'Некорректный период недоступности');
     }
     const id = randomUUID();
     db.prepare(`INSERT INTO vehicle_dispositions(
-      id,vehicle_id,kind,starts_at,ends_at,note,created_by,updated_by)
-      VALUES(?,?,?,?,?,?,?,?)`).run(
+      id,vehicle_id,kind,starts_at,ends_at,note,address_id,repair_km,created_by,updated_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(
       id, body.vehicleId, body.kind, new Date(startsAt).toISOString(),
-      new Date(endsAt).toISOString(), String(body.note || ''), user.id, user.id);
+      new Date(endsAt).toISOString(), String(body.note || ''),
+      repairAddressId, repairKm, user.id, user.id);
     audit(db, user, 'create', 'disposition', id, body, requestIp(request));
     return json(response, 201, { id });
   }
@@ -1135,10 +1202,21 @@ async function api(request, response, url) {
     if (!['reserve', 'repair', 'no_driver', 'shift', 'out'].includes(kind) || endsAt <= startsAt) {
       return errorJson(response, 422, 'Некорректный интервал');
     }
+    const patchVehicleId = body.vehicleId ?? current.vehicle_id;
+    const patchAddressId = kind === 'repair'
+      ? ('addressId' in body ? (body.addressId || null) : current.address_id) : null;
+    const patchRepairKm = patchAddressId
+      ? (() => {
+          const origin = vehiclePositionBefore(patchVehicleId, new Date(startsAt).toISOString());
+          const target = addressPointById(patchAddressId);
+          return origin && target
+            ? roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude) : null;
+        })() : null;
     db.prepare(`UPDATE vehicle_dispositions SET vehicle_id=?,kind=?,starts_at=?,ends_at=?,
-      note=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-      body.vehicleId ?? current.vehicle_id, kind, new Date(startsAt).toISOString(),
-      new Date(endsAt).toISOString(), String(body.note ?? current.note), user.id, match[0]);
+      note=?,address_id=?,repair_km=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      patchVehicleId, kind, new Date(startsAt).toISOString(),
+      new Date(endsAt).toISOString(), String(body.note ?? current.note),
+      patchAddressId, patchRepairKm, user.id, match[0]);
     audit(db, user, 'update', 'disposition', match[0], body, requestIp(request));
     return json(response, 200, { ok: true });
   }

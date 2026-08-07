@@ -210,8 +210,12 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
 // Кандидаты на назначение: свободные в зоне отправления к началу окна, затем ближайшие.
 // Занятость определяется точным пересечением по времени — две заявки в один день
 // с разным временем погрузки не конфликтуют.
-export function matchVehicles(data, fromZoneName, windowFrom) {
+export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null) {
   const moment = Date.parse(windowFrom);
+  // Позиция кандидата — адрес выгрузки последнего рейса (по тексту пункта);
+  // подгон в км считается, когда известны обе точки.
+  const pointOf = trip => trip
+    ? resolveAddress(data, trip.to_point || trip.to_name) : null;
   const busy = new Set(data.trips
     .filter(trip => trip.status !== 'rejected' &&
       Date.parse(trip.starts_at) <= moment && Date.parse(trip.ends_at) > moment)
@@ -230,14 +234,21 @@ export function matchVehicles(data, fromZoneName, windowFrom) {
           Date.parse(trip.ends_at) <= moment)
         .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
       const zoneName = lastTrip ? lastTrip.to_name : vehicle.zone_name;
-      // Готовность к подаче: освободившейся сцепке нужен норматив на подачу под погрузку.
-      const readyAt = lastTrip ? Date.parse(lastTrip.ends_at) + DISPATCH_LAG_MS : null;
+      // Порожний подгон: от позиции сцепки до адреса погрузки заявки.
+      const originPoint = pointOf(lastTrip);
+      const emptyKm = fromAddress && originPoint
+        ? plannedKmBetween(originPoint, fromAddress) : null;
+      // Готовность к подаче: 2 ч + время подгона (порожние км ÷ 50 км/ч).
+      const feedMs = DISPATCH_LAG_MS + (emptyKm ? emptyKm / 50 * 3_600_000 : 0);
+      const readyAt = lastTrip ? Date.parse(lastTrip.ends_at) + feedMs : null;
       return {
-        vehicle, zoneName, inZone: zoneName === fromZoneName,
+        vehicle, zoneName, inZone: zoneName === fromZoneName, emptyKm,
         readyAt, ready: !readyAt || readyAt <= moment
       };
     })
-    .sort((a, b) => Number(b.inZone) - Number(a.inZone) || Number(b.ready) - Number(a.ready));
+    .sort((a, b) => Number(b.inZone) - Number(a.inZone) ||
+      (a.emptyKm ?? Infinity) - (b.emptyKm ?? Infinity) ||
+      Number(b.ready) - Number(a.ready));
 }
 
 export function renderSales(container, context) {
@@ -1065,7 +1076,10 @@ function rejectDialog(order, data, context) {
 // логистом проходит автоматически, рейс сразу уходит диспетчеру.
 // Из продаж — без опции: назначение обязан подтвердить логист.
 export function assignDialog(order, data, showModal, closeModal, onReload, options = {}) {
-  const candidates = matchVehicles(data, order.from_name, order.window_from);
+  const orderFromAddress = order.from_address_id
+    ? (data.reference.addresses || []).find(item => item.id === order.from_address_id)
+    : resolveAddress(data, order.from_point || order.from_name);
+  const candidates = matchVehicles(data, order.from_name, order.window_from, orderFromAddress);
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
   const loadMs = Date.parse(order.window_from);
   showModal(`<h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>
@@ -1074,7 +1088,8 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
     <div class="list" style="max-height:220px;overflow:auto;margin-bottom:10px">
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">
         <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
-        <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name)}${candidate.readyAt
+        <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name)}${candidate.emptyKm != null
+          ? ` · подгон ~${candidate.emptyKm} км` : ''}${candidate.readyAt
           ? ` · свободна с ${fmtDateTime(candidate.readyAt)}` : ''}</small>
         ${nextEventHint(nextVehicleEvent(data, candidate.vehicle.id, loadMs), loadMs)}</span>
         <span class="badge ${candidate.inZone ? 'ok' : 'warn'}" style="margin-left:auto">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.zoneName || 'перегон')}</span>

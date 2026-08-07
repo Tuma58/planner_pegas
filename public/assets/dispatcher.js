@@ -268,7 +268,8 @@ export async function renderDispatcher(container, context) {
       ${Number(trip.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
       <small class="muted" style="display:block">${escapeHtml(trip.driver_name || 'без водителя')}
         · ${escapeHtml(trip.customer_name || 'без заказчика')}
-        · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)} · ${money(trip.revenue_vat)}</small>
+        · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}${trip.empty_km
+          ? ` · +${Math.round(trip.empty_km)} км порож.` : ''} · ${money(trip.revenue_vat)}</small>
       ${Number(trip.cash) ? `<small class="cash-note">💵 За наличные: укажите в задании водителю —
         после выгрузки забрать ${money(trip.revenue_vat)} у клиента</small>` : ''}
     </span>`;

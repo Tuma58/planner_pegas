@@ -100,6 +100,13 @@ test('SQLite создается со справочниками, админис�
   assert.equal(db.prepare(`SELECT COUNT(*) count FROM addresses WHERE region=''`).get().count, 0);
   assert.equal(moscow.region, 'Москва г');
 
+  // Порожние подгоны: бэкфилл истории посчитал км между рейсами сцепок
+  // (резолв пунктов 1С в адреса/центры зон; нерезолвленные остаются NULL).
+  const emptyStats = db.prepare(`SELECT COUNT(empty_km) counted, COALESCE(SUM(empty_km),0) total
+    FROM trips`).get();
+  assert.ok(emptyStats.counted > 500, `порожняк посчитан у ${emptyStats.counted} рейсов`);
+  assert.ok(emptyStats.total > 0, 'суммарный порожняк положителен');
+
   const itemId = queueOutbox(db, 'trips', 'trip-1', 'create', { id: 'trip-1' });
   const item = db.prepare('SELECT * FROM outbox WHERE id=?').get(itemId);
   assert.equal(item.status, 'pending_approval');

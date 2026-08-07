@@ -5,7 +5,7 @@
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
-import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, rejectOrderDialog } from './sales.js';
+import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress } from './sales.js';
 
 const overlaps = (a, b) =>
   Date.parse(a.starts_at) < Date.parse(b.ends_at) && Date.parse(b.starts_at) < Date.parse(a.ends_at);
@@ -108,11 +108,21 @@ export function matchOrdersForVehicle(request, queue) {
 // Пусто — предложение отправить запрос в продажи.
 function pickOrderDialog(request, queue, data, context) {
   const matches = matchOrdersForVehicle(request, queue);
+  // Подгон от места освобождения сцепки до погрузки каждой заявки.
+  const originPoint = resolveAddress(data, request.zone.name) || null;
+  const feedKmOf = order => {
+    const target = order.from_address_id
+      ? (data.reference.addresses || []).find(item => item.id === order.from_address_id)
+      : resolveAddress(data, order.from_point || order.from_name);
+    return originPoint && target ? plannedKmBetween(originPoint, target) : null;
+  };
   const rows = matches.map(({ order, inZone }) => `
     <button type="button" class="list-item sugtruck" data-pick-order="${order.id}">
       <span style="flex:1;min-width:0"><strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         <small class="muted" style="display:block">окно ${formatDateTime(order.window_from)} → ${formatDateTime(order.window_to)}
-          · ${escapeHtml(order.body_type || 'Реф')} · ${money(order.rate_vat)}</small></span>
+          · ${escapeHtml(order.body_type || 'Реф')} · ${money(order.rate_vat)}${(() => {
+            const feed = feedKmOf(order);
+            return feed != null ? ` · подгон ~${feed} км` : ''; })()}</small></span>
       <span class="badge ${inZone ? 'ok' : 'warn'}" style="margin-left:auto">${inZone ? 'в зоне' : escapeHtml(order.from_name || 'перегон')}</span>
     </button>`).join('');
   context.showModal(`<h2>Рейс для ${escapeHtml(request.vehicle.plate)}</h2>
@@ -267,7 +277,8 @@ export function renderLogist(container, context) {
         · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
         <small class="muted" style="display:block">${escapeHtml(trip.customer_name || 'без заказчика')}
           · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}
-          · ${Number(trip.distance_km).toLocaleString('ru-RU')} км · ${money(trip.revenue_vat)}</small>
+          · ${Number(trip.distance_km).toLocaleString('ru-RU')} км${trip.empty_km
+            ? ` <span class="muted">+ ${Math.round(trip.empty_km)} порож.</span>` : ''} · ${money(trip.revenue_vat)}</small>
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <span class="badge" style="background:${meta.color};color:#fff">${escapeHtml(meta.label)}</span>
