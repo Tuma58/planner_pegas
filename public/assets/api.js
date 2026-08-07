@@ -19,6 +19,15 @@ export async function api(path, options = {}) {
 export const money = value =>
   `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 
+// Сумма из пользовательского ввода: терпит копипаст с пробелами
+// (в т.ч. неразрывными — так форматирует money()), знаком ₽ и запятой:
+// «95 000 ₽» → 95000, «95000,50» → 95000.5. Нечисло — 0.
+export function parseMoney(value) {
+  const cleaned = String(value ?? '').replace(/[\s\u00a0\u202f\u20bd]/g, '').replace(',', '.');
+  const num = Number(cleaned);
+  return Number.isFinite(num) && num >= 0 ? num : 0;
+}
+
 export function toast(message, tone = '') {
   let element = document.querySelector('.toast');
   if (!element) {

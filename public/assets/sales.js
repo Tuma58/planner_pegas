@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, routeLabel, toLocalInput, toast, transitHours } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours } from './api.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -121,7 +121,7 @@ export function orderNet(order, data) {
 // (ИП — 7%). Показ — по мере ввода, сохранять нечего: поле считаемое.
 function wireNetField(form, netInput, data) {
   const update = () => {
-    const rate = Number(form.elements.rateVat?.value) || 0;
+    const rate = parseMoney(form.elements.rateVat?.value);
     netInput.value = rate ? money(orderNet({
       rate_vat: rate,
       cash: form.elements.cash?.checked ? 1 : 0,
@@ -567,7 +567,9 @@ export function renderSales(container, context) {
               value="${inputValue(atHour(new Date(state.month.getTime() + 2 * 86_400_000), WORK_END_HOUR))}"></label>
           </div>
           <div class="form-grid">
-            <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate" type="number" min="0"></label>
+            <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate"
+              type="text" inputmode="numeric" autocomplete="off"
+              placeholder="можно вставить «95 000» или «95000,50»"></label>
             <label class="field">Без НДС, ₽ (авто)<input id="salesRateNet" readonly tabindex="-1"></label>
           </div>
           <label class="checkline"><input type="checkbox" name="cash"> Перевозка за наличные —
@@ -804,6 +806,7 @@ export function renderSales(container, context) {
     values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
     values.toAddressId = addressByName(data, values.toPoint)?.id || null;
     values.via = via;
+    values.rateVat = parseMoney(values.rateVat) || '';
     if (!values.rateVat) {
       values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
     }
@@ -954,7 +957,8 @@ export function editOrderDialog(order, data, context) {
       <label class="field">Окно по<input name="windowTo" type="datetime-local" required value="${inputValue(order.window_to)}"></label>
     </div>
     <div class="form-grid">
-      <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Number(order.rate_vat) || 0}"></label>
+      <label class="field">Ставка с НДС, ₽<input name="rateVat" type="text" inputmode="numeric"
+        autocomplete="off" value="${Number(order.rate_vat) || 0}"></label>
       <label class="field">Без НДС, ₽ (авто)<input id="editRateNet" readonly tabindex="-1"></label>
     </div>
     <label class="checkline"><input type="checkbox" name="cash" ${Number(order.cash) ? 'checked' : ''}>
@@ -1036,6 +1040,7 @@ export function editOrderDialog(order, data, context) {
   document.getElementById('editOrderForm').onsubmit = async event => {
     event.preventDefault();
     const values = formValues(event.target);
+    values.rateVat = parseMoney(values.rateVat);
     values.cash = values.cash ? 1 : 0;
     values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
     values.toAddressId = addressByName(data, values.toPoint)?.id || null;
