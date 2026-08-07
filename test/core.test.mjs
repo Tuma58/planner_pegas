@@ -225,7 +225,7 @@ test('диспозиции: вид «В работе» принимается, �
     VALUES('o-nonum','Клиент',?,?,50000,'2026-08-10T08:00:00.000Z','2026-08-12T18:00:00.000Z','new',0)`)
     .run(zoneId, zoneId);
   // Плановый рейс со старой длительностью — перепланируется новой формулой:
-  // 500 км → 24 ч от начала (заявки с более широким окном у рейса нет).
+  // 500 км → 21 ч от начала (заявки с более широким окном у рейса нет).
   first.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,starts_at,ends_at,
     distance_km,revenue_vat,status)
     VALUES('t-replan',?,?,?,'2026-08-20T08:00:00.000Z','2026-08-25T08:00:00.000Z',500,90000,'plan')`)
@@ -251,7 +251,7 @@ test('диспозиции: вид «В работе» принимается, �
     .get().starts_at, '2026-08-10T00:00:00.000Z');
 
   assert.equal(second.prepare(`SELECT ends_at FROM trips WHERE id='t-replan'`).get().ends_at,
-    '2026-08-21T08:00:00.000Z', 'план перепланирован: 500 км = 24 часа');
+    '2026-08-21T05:00:00.000Z', 'план перепланирован: 500 км = 21 час');
 
   // Автономер: система присвоила заявке следующий номер сквозного счётчика,
   // nextOrderNo продолжает нумерацию без повторов.
@@ -694,11 +694,11 @@ test('контракты 1С и телематики идемпотентны, �
     rideId: '1С-TEST-1', km: 650, status: 'done', unloadedAt: '2026-07-12T10:00:00Z'
   }], user), { matched: 1, kmUpdated: 1, statusUpdated: 1, skipped: 0 });
   assert.equal(db.prepare('SELECT actual_distance_km FROM trips WHERE id=?').get(trip.id).actual_distance_km, 650);
-  // Транзит: (км/50 + 2×3ч) × 1,5 — 500 км ровно сутки.
-  assert.equal(transitHours(500, {}), 24);
-  assert.equal(transitHours(653, {}), (653 / 50 + 6) * 1.5);
+  // Транзит: (км/50 + 2×2ч) × 1,5 — 500 км: (10 + 4) × 1,5 = 21 час.
+  assert.equal(transitHours(500, {}), 21);
+  assert.equal(transitHours(653, {}), (653 / 50 + 4) * 1.5);
   // Мультистоп: каждая промежуточная погрузка/выгрузка — ещё одна операция.
-  assert.equal(transitHours(500, {}, 4), (500 / 50 + 12) * 1.5);
+  assert.equal(transitHours(500, {}, 4), (500 / 50 + 8) * 1.5);
 
   const report = reportSnapshot(db, '2026-07-01', '2026-08-01');
   assert.ok(report.netRevenue > 0);

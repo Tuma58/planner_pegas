@@ -233,7 +233,7 @@ export async function renderDispatcher(container, context) {
     const local = new Date(atMs + (offset - 3) * 3_600_000);
     return ` · местное ${formatDateTime(local.toISOString())} (МСК+${offset - 3})`;
   };
-  const normOpMs = Number(data.settings.calculation.handlingHoursPerOperation || 3) * 3_600_000;
+  const normOpMs = Number(data.settings.calculation.handlingHoursPerOperation || 2) * 3_600_000;
   const nextControlEvent = trip => {
     if (isStuck(trip)) {
       return { at: 0, label: '🚨 не выгружают — вмешаться',
@@ -303,7 +303,7 @@ export async function renderDispatcher(container, context) {
   const stopsBlock = trip => {
     const control = controlByTrip.get(trip.id);
     if (!control?.stops?.length) return '<p class="muted" style="margin:6px 0 0">Стоянки появятся после обновления контроля.</p>';
-    const normMs = Number(data.settings.calculation.handlingHoursPerOperation || 3) * HOUR;
+    const normMs = Number(data.settings.calculation.handlingHoursPerOperation || 2) * HOUR;
     const rows = control.stops.map(stop => {
       const arrivalMs = stop.actual_arrival ? Date.parse(stop.actual_arrival) : null;
       const departureMs = stop.actual_departure ? Date.parse(stop.actual_departure) : null;

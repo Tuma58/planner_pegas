@@ -116,12 +116,12 @@ export function attachSearch(input, apply, delay = 250) {
   };
 }
 
-// Транзитное время рейса, часов: (км ÷ 50 км/ч + 2 операции × 3 ч) × 1,5.
+// Транзитное время рейса, часов: (км ÷ 50 км/ч + 2 операции × 2 ч) × 1,5.
 // Формула совпадает с серверной (transitHours в planner-service.mjs);
 // коэффициент включает отдых водителя — после рейса сцепка готова к новому.
 export function transitHours(distanceKm, calculation = {}, operations = 2) {
   const speed = Number(calculation.techSpeedKmh || 50);
-  const perOperation = Number(calculation.handlingHoursPerOperation || 3);
+  const perOperation = Number(calculation.handlingHoursPerOperation || 2);
   const factor = Number(calculation.transitFactor || 1.5);
   return (Number(distanceKm || 0) / speed + operations * perOperation) * factor;
 }
