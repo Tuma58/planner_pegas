@@ -1096,7 +1096,12 @@ async function api(request, response, url) {
   }
 
   if (request.method === 'POST' && pathname === '/api/dispositions') {
-    const user = requirePermission(request, response, 'fleet:write');
+    // Диспозиции ведёт ресурсник (fleet:write); диспетчеру право нужно
+    // для внештатной «поломки» — ремонт оформляется прямо из контроля.
+    const dispositionActor = currentUser(request);
+    const dispositionPermission = hasPermission(dispositionActor, 'fleet:write')
+      ? 'fleet:write' : 'trip-status:write';
+    const user = requirePermission(request, response, dispositionPermission);
     if (!user) return;
     const body = await readJson(request);
     const allowed = new Set(['reserve', 'repair', 'no_driver', 'shift', 'out']);
