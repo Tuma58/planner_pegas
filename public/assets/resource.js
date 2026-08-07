@@ -20,9 +20,16 @@ const nextDayIso = dayIso => new Date(Date.parse(`${dayIso}T00:00:00Z`) + 86_400
 // Состояние сцепки на день: диспозиция > статус ТС > рейс > без заказа.
 export function vehicleStateAt(vehicle, data, dayIso) {
   const midpoint = Date.parse(`${dayIso}T12:00:00Z`);
-  const disposition = (data.dispositions || []).find(item =>
-    item.vehicle_id === vehicle.id &&
-    Date.parse(item.starts_at) <= midpoint && midpoint < Date.parse(item.ends_at));
+  // Интервал объясняет день, если пересекает его: короткий дневной ремонт —
+  // тоже причина, а не «простой». Из нескольких — больший по перекрытию.
+  const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
+  const dayCeil = dayStart + 86_400_000;
+  const overlapMs = item => Math.min(Date.parse(item.ends_at), dayCeil) -
+    Math.max(Date.parse(item.starts_at), dayStart);
+  const disposition = (data.dispositions || [])
+    .filter(item => item.vehicle_id === vehicle.id &&
+      Date.parse(item.starts_at) < dayCeil && Date.parse(item.ends_at) > dayStart)
+    .sort((a, b) => overlapMs(b) - overlapMs(a))[0];
   if (disposition) return kindMeta(disposition.kind);
   if (vehicle.status === 'out') return kindMeta('out');
   if (vehicle.status === 'repair') return kindMeta('repair');
@@ -44,9 +51,11 @@ function renderResourceTasks(container, context, refDay, withState) {
     .map(({ vehicle, stateNow }) => {
       // Незаполненная диспозиция: состояние вычислено из карточки/простоя,
       // но интервального объяснения в календаре нет.
+      const dayStart = Date.parse(`${refDay}T00:00:00Z`);
       const hasDisposition = (data.dispositions || []).some(item =>
         item.vehicle_id === vehicle.id &&
-        Date.parse(item.starts_at) <= midpoint && midpoint < Date.parse(item.ends_at));
+        Date.parse(item.starts_at) < dayStart + 86_400_000 &&
+        Date.parse(item.ends_at) > dayStart);
       if (hasDisposition) return null;
       const lastTrip = data.trips
         .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&

@@ -409,10 +409,15 @@ function vehicleDayState(vehicle, dayIso) {
     return { key: 'trip', cls: 'trip', color: 'var(--teal)',
       text: `⇢ из ${shortPlace(activeTrip.from_point || activeTrip.from_name)} в ${shortPlace(activeTrip.to_point || activeTrip.to_name)}` };
   }
-  const noonMs = dayStartMs + 43_200_000;
-  const disposition = (state.data.dispositions || []).find(item =>
-    item.vehicle_id === vehicle.id &&
-    Date.parse(item.starts_at) <= noonMs && noonMs < Date.parse(item.ends_at));
+  // Диспозиция объясняет день, если ПЕРЕСЕКАЕТ его (короткий дневной ремонт
+  // 08:00–15:00 — тоже причина); из нескольких берётся большая по перекрытию.
+  const dayCeilMs = dayStartMs + 86_400_000;
+  const overlapMs = item => Math.min(Date.parse(item.ends_at), dayCeilMs) -
+    Math.max(Date.parse(item.starts_at), dayStartMs);
+  const disposition = (state.data.dispositions || [])
+    .filter(item => item.vehicle_id === vehicle.id &&
+      Date.parse(item.starts_at) < dayCeilMs && Date.parse(item.ends_at) > dayStartMs)
+    .sort((a, b) => overlapMs(b) - overlapMs(a))[0];
   if (disposition) {
     const meta = DISP_KINDS.find(item => item.kind === disposition.kind) ||
       { label: disposition.kind, color: 'var(--muted)' };
