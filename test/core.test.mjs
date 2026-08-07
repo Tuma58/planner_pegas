@@ -346,6 +346,48 @@ test('потребность от логистики: ремонт и «без �
     'без зоны — пункт по справочнику');
   assert.equal(regionOfPlace(regionData, '', 'Неизвестная'), '', 'чужая зона — пусто');
 
+  // Задание продажам на дату: свободные/освобождающиеся/недоступные сцепки
+  // и дефицит региона с рекомендацией подгона ближайшей свободной.
+  const { salesTaskFor } = await import('../public/assets/sales.js');
+  const day = '2026-08-20';
+  const taskData = { reference: { addresses: [
+      { id: 'a-pnz', name: 'Пенза-склад', address: 'г Пенза', zone_name: 'Дом',
+        region: 'Пензенская обл', latitude: 53.2, longitude: 45.0 },
+      { id: 'a-sof', name: 'Софьино', address: 'МО, Раменский р-н', zone_name: 'Москва',
+        region: 'Московская обл', latitude: 55.5, longitude: 38.1 },
+    ], zones: [] },
+    vehicles: [
+      { id: 'V1', plate: 'В1', status: 'work', zone_name: 'Дом' },
+      { id: 'V2', plate: 'В2', status: 'work', zone_name: 'Дом' },
+      { id: 'V3', plate: 'В3', status: 'work', zone_name: 'Дом' },
+    ],
+    trips: [
+      { vehicle_id: 'V1', status: 'done', to_point: 'Пенза-склад', to_name: 'Дом',
+        starts_at: '2026-08-10T08:00:00.000Z', ends_at: '2026-08-12T08:00:00.000Z' },
+      { vehicle_id: 'V2', status: 'run', to_point: 'Пенза-склад', to_name: 'Дом',
+        starts_at: '2026-08-19T08:00:00.000Z', ends_at: '2026-08-20T15:00:00.000Z' },
+    ],
+    dispositions: [
+      { vehicle_id: 'V3', kind: 'repair',
+        starts_at: '2026-08-19T00:00:00.000Z', ends_at: '2026-08-22T00:00:00.000Z' },
+    ],
+    orders: [
+      { id: 'O1', order_no: '2001', customer_name: 'К1', stage: 1, rate_vat: 100000,
+        from_address_id: 'a-sof', from_point: 'Софьино', from_name: 'Москва',
+        to_point: 'Пенза-склад', to_name: 'Дом',
+        window_from: '2026-08-20T06:00:00.000Z', window_to: '2026-08-20T20:00:00.000Z' },
+    ] };
+  const task = salesTaskFor(taskData, day);
+  assert.equal(task.free.length, 1, 'V1 свободна с прошлых дней');
+  assert.equal(task.free[0].region, 'Пензенская обл');
+  assert.equal(task.freeing.length, 1, 'V2 освободится после рейса в течение дня');
+  assert.equal(task.unavailable.length, 1, 'V3 в ремонте весь день');
+  assert.equal(task.regions.length, 1);
+  assert.equal(task.regions[0].region, 'Московская обл');
+  assert.equal(task.regions[0].deficit, 1, 'в Московской заявка без местных сцепок');
+  assert.ok(task.regions[0].send.length >= 1, 'рекомендован подгон');
+  assert.ok(task.regions[0].send[0].km > 400, 'километраж подгона Пенза→Софьино посчитан');
+
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');
   const request = { freeAt: iso(now + 86_400_000), zone: { name: 'Дом' }, vehicle: { id: 'А1' } };

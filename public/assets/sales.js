@@ -133,6 +133,179 @@ function wireNetField(form, netInput, data) {
   update();
 }
 
+// ── Задание продажам на дату ──────────────────────────────────────────────
+// Срез парка и потребностей на выбранный день: кто свободен и где, кто
+// освободится (после рейса, ремонта, пересменки), кто недоступен, какие
+// регионы не закрыты заявками без ТС и откуда направить ближайшие сцепки.
+export function salesTaskFor(data, dayIso) {
+  const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
+  const dayEnd = dayStart + 86_400_000;
+  const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
+  const positionOf = trip => trip
+    ? (resolveAddress(data, trip.to_point || trip.to_name) || null) : null;
+
+  const free = [];        // простаивают весь день
+  const freeing = [];     // освободятся в течение дня
+  const unavailable = []; // недоступны весь день (ремонт/пересменка/резерв/без вод.)
+  data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
+    const trips = data.trips
+      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
+      .sort((a, b) => a.ends_at.localeCompare(b.ends_at));
+    const activeTrip = trips.find(trip =>
+      Date.parse(trip.starts_at) < dayEnd && Date.parse(trip.ends_at) > dayStart);
+    const lastBefore = [...trips].reverse().find(trip => Date.parse(trip.ends_at) <= dayStart);
+    const место = trip => trip ? (trip.to_point || trip.to_name) : (vehicle.zone_name || '');
+    const регион = trip => trip
+      ? regionOfPlace(data, trip.to_point, trip.to_name)
+      : regionOfPlace(data, '', vehicle.zone_name);
+    if (activeTrip) {
+      if (Date.parse(activeTrip.ends_at) <= dayEnd) {
+        freeing.push({ vehicle, at: activeTrip.ends_at, why: 'после рейса',
+          place: место(activeTrip), region: регион(activeTrip), position: positionOf(activeTrip) });
+      }
+      return; // занята рейсом весь день — в задание не идёт
+    }
+    const disps = (data.dispositions || []).filter(item => item.vehicle_id === vehicle.id &&
+      Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart)
+      .sort((a, b) => b.ends_at.localeCompare(a.ends_at));
+    const kindLabel = { repair: 'ремонта', shift: 'пересменки', no_driver: 'ожидания водителя', reserve: 'резерва' };
+    if (disps.length) {
+      const disp = disps[0];
+      if (Date.parse(disp.ends_at) <= dayEnd) {
+        freeing.push({ vehicle, at: disp.ends_at, why: `после ${kindLabel[disp.kind] || disp.kind}`,
+          place: место(lastBefore), region: регион(lastBefore), position: positionOf(lastBefore) });
+      } else {
+        unavailable.push({ vehicle, kind: disp.kind, until: disp.ends_at });
+      }
+      return;
+    }
+    free.push({ vehicle, since: lastBefore?.ends_at || null,
+      place: место(lastBefore), region: регион(lastBefore), position: positionOf(lastBefore) });
+  });
+  free.sort((a, b) => String(a.since || '').localeCompare(String(b.since || '')));
+  freeing.sort((a, b) => a.at.localeCompare(b.at));
+
+  // Потребности без ТС, чьё окно накрывает день: группировка по региону погрузки.
+  const needs = (data.orders || []).filter(order => {
+    const stage = orderStage(order, data).stage;
+    return (stage === 0 || stage === 1) &&
+      Date.parse(order.window_from) < dayEnd && Date.parse(order.window_to) > dayStart;
+  });
+  const regionOfOrder = order => addressById(order.from_address_id)?.region
+    || regionOfPlace(data, order.from_point, order.from_name);
+  const byRegion = new Map();
+  needs.forEach(order => {
+    const region = regionOfOrder(order) || 'регион не определён';
+    if (!byRegion.has(region)) byRegion.set(region, { region, orders: [], freeHere: 0 });
+    byRegion.get(region).orders.push(order);
+  });
+  const freeAll = [...free, ...freeing];
+  freeAll.forEach(item => {
+    const bucket = byRegion.get(item.region);
+    if (bucket) bucket.freeHere += 1;
+  });
+  // Дефицитные регионы: рекомендация — ближайшие свободные сцепки из других мест.
+  const regions = [...byRegion.values()].map(bucket => {
+    const deficit = bucket.orders.length - bucket.freeHere;
+    let send = [];
+    if (deficit > 0) {
+      const target = addressById(bucket.orders[0].from_address_id)
+        || resolveAddress(data, bucket.orders[0].from_point || bucket.orders[0].from_name);
+      send = freeAll.filter(item => item.region !== bucket.region)
+        .map(item => ({ ...item, km: (item.position && target)
+          ? plannedKmBetween(item.position, target) : null }))
+        .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9))
+        .slice(0, deficit + 1);
+    }
+    return { ...bucket, deficit, send };
+  }).sort((a, b) => b.deficit - a.deficit);
+  return { free, freeing, unavailable, needs, regions };
+}
+
+// Диалог «Задание продажам»: дата выбирается, разделы пересчитываются,
+// текст копируется целиком для рассылки менеджерам.
+function salesTaskDialog(data, context) {
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const fmtDay = iso => new Intl.DateTimeFormat('ru-RU',
+    { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
+  const kindShort = { repair: 'ремонт', shift: 'пересменка', no_driver: 'без водителя', reserve: 'резерв' };
+  const taskText = (dayIso, task) => {
+    const lines = [`ЗАДАНИЕ ПРОДАЖАМ на ${fmtDay(dayIso)}`, ''];
+    lines.push(`Свободны с прошлых дней: ${task.free.length}`);
+    task.free.forEach(item => lines.push(`  ${item.vehicle.plate} — ${item.place}` +
+      `${item.region ? ` (${item.region})` : ''}${item.since ? `, стоит с ${formatDateTime(item.since)}` : ''}`));
+    lines.push('', `Освободятся в течение дня: ${task.freeing.length}`);
+    task.freeing.forEach(item => lines.push(`  ${item.vehicle.plate} — ${formatDateTime(item.at)} ` +
+      `${item.why}, ${item.place}${item.region ? ` (${item.region})` : ''}`));
+    if (task.unavailable.length) {
+      lines.push('', `Недоступны весь день: ${task.unavailable.length}`);
+      task.unavailable.forEach(item => lines.push(`  ${item.vehicle.plate} — ` +
+        `${kindShort[item.kind] || item.kind} до ${formatDateTime(item.until)}`));
+    }
+    lines.push('', `Потребности без ТС на день: ${task.needs.length}` +
+      (task.needs.length ? ` · ${money(task.needs.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0))}` : ''));
+    task.regions.forEach(bucket => {
+      lines.push(`  ${bucket.region}: заявок ${bucket.orders.length}, свободно на месте ${bucket.freeHere}` +
+        (bucket.deficit > 0 ? ` — НЕ ХВАТАЕТ ${bucket.deficit}` : ' — закрывается'));
+      bucket.orders.forEach(order => lines.push(`    №${order.order_no || '—'} ${order.customer_name}: ` +
+        `${order.from_point || order.from_name} → ${order.to_point || order.to_name}, ` +
+        `окно ${formatDateTime(order.window_from)}–${formatDateTime(order.window_to)}, ${money(order.rate_vat)}`));
+      bucket.send.forEach(item => lines.push(`    → направить ${item.vehicle.plate} из ` +
+        `${item.place}${item.km != null ? ` (~${item.km} км подгон)` : ''}`));
+    });
+    return lines.join('\n');
+  };
+  const render = dayIso => {
+    const task = salesTaskFor(data, dayIso);
+    const text = taskText(dayIso, task);
+    const box = document.getElementById('salesTaskBody');
+    box.dataset.text = text;
+    box.innerHTML = `
+      <div class="task-sec"><b>Свободны с прошлых дней (${task.free.length})</b>
+        ${task.free.map(item => `<div class="task-row">🚚 <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
+          — ${escapeHtml(item.place)}${item.region ? ` <span class="muted">(${escapeHtml(item.region)})</span>` : ''}
+          ${item.since ? `<span class="muted"> · стоит с ${formatDateTime(item.since)}</span>` : ''}</div>`).join('')
+          || '<p class="muted">нет</p>'}</div>
+      <div class="task-sec"><b>Освободятся в течение дня (${task.freeing.length})</b>
+        ${task.freeing.map(item => `<div class="task-row">⏱ <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
+          — ${formatDateTime(item.at)} ${escapeHtml(item.why)}, ${escapeHtml(item.place)}
+          ${item.region ? `<span class="muted">(${escapeHtml(item.region)})</span>` : ''}</div>`).join('')
+          || '<p class="muted">нет</p>'}</div>
+      <div class="task-sec"><b>Недоступны весь день (${task.unavailable.length})</b>
+        ${task.unavailable.map(item => `<div class="task-row muted">⛔ <span class="mono">${escapeHtml(item.vehicle.plate)}</span>
+          — ${escapeHtml(kindShort[item.kind] || item.kind)} до ${formatDateTime(item.until)}</div>`).join('')
+          || '<p class="muted">нет</p>'}</div>
+      <div class="task-sec"><b>Потребности без ТС (${task.needs.length})</b>
+        ${task.regions.map(bucket => `<div class="task-region ${bucket.deficit > 0 ? 'lack' : ''}">
+          <b>${escapeHtml(bucket.region)}</b>: заявок ${bucket.orders.length}, свободно на месте ${bucket.freeHere}
+          ${bucket.deficit > 0 ? `<span class="danger">— не хватает ${bucket.deficit}</span>` : '<span class="muted">— закрывается</span>'}
+          ${bucket.orders.map(order => `<div class="task-row">📦 №${escapeHtml(order.order_no || '—')}
+            ${escapeHtml(order.customer_name)} · ${escapeHtml(order.from_point || order.from_name)} →
+            ${escapeHtml(order.to_point || order.to_name)} · ${money(order.rate_vat)}</div>`).join('')}
+          ${bucket.send.map(item => `<div class="task-row send">→ направить <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
+            из ${escapeHtml(item.place)}${item.km != null ? ` <span class="muted">(~${item.km} км подгон)</span>` : ''}</div>`).join('')}
+        </div>`).join('') || '<p class="muted">заявок без ТС на день нет</p>'}</div>`;
+  };
+  context.showModal(`<h2 style="margin-bottom:6px">📋 Задание продажам</h2>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <span class="muted">на дату</span>
+      <input type="date" id="salesTaskDay" value="${tomorrow}" style="width:auto">
+      <button class="button small" id="salesTaskCopy" style="margin-left:auto">📋 Скопировать</button>
+    </div>
+    <div id="salesTaskBody" style="max-height:56vh;overflow:auto"></div>`);
+  render(tomorrow);
+  document.getElementById('salesTaskDay').onchange = event => render(event.currentTarget.value || tomorrow);
+  document.getElementById('salesTaskCopy').onclick = async () => {
+    const text = document.getElementById('salesTaskBody').dataset.text || '';
+    try { await navigator.clipboard.writeText(text); } catch {
+      const area = document.createElement('textarea');
+      area.value = text; document.body.append(area);
+      area.select(); document.execCommand('copy'); area.remove();
+    }
+    toast('Задание скопировано');
+  };
+}
+
 function routeInfo(data, fromId, toId) {
   const rates = data.reference.routeRates;
   const rate = rates.find(item => item.from_zone_id === fromId && item.to_zone_id === toId)
@@ -508,6 +681,8 @@ export function renderSales(container, context) {
         <input type="date" id="salesFilterFrom" value="${filter.from}" title="Окно заявки / освобождение сцепки — с даты">
         <span class="muted">–</span>
         <input type="date" id="salesFilterTo" value="${filter.to}" title="Окно заявки / освобождение сцепки — по дату">
+        <button class="button small" id="salesTask"
+          title="Срез на дату: свободные и освобождающиеся сцепки, ремонты и пересменки, незакрытые регионы">📋 Задание</button>
         <button class="button ghost small" id="salesPresetToday" title="Только сегодняшний день">Сегодня</button>
         <button class="button ghost small" id="salesPresetWeek" title="Ближайшие 7 дней">7 дн</button>
         ${filterActive ? '<button class="button ghost small" id="salesFilterReset">✕ Сброс</button>' : ''}
@@ -601,6 +776,7 @@ export function renderSales(container, context) {
     rerender();
   });
   const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
+  container.querySelector('#salesTask').onclick = () => salesTaskDialog(data, context);
   container.querySelector('#salesPresetToday').onclick = () => {
     filter.from = dayIsoLocal(0); filter.to = dayIsoLocal(0);
     rerender();
