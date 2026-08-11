@@ -241,9 +241,9 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
         const tailEnd = new Date(Math.min(Date.parse(trip.starts_at), viewEnd.getTime()));
         const tailWidth = daysBetween(tailStart, tailEnd) * dayWidth - 1;
         if (tailWidth > 3) {
-          emptyTail = `<span class="empty-tail" style="left:${Math.max(0,
+          emptyTail = `<span class="empty-tail" data-empty-trip="${trip.id}" style="left:${Math.max(0,
             daysBetween(viewStart, tailStart) * dayWidth)}px;width:${tailWidth}px"
-            title="Порожний подгон ~${Math.round(emptyKm)} км (~${Math.round(tailMs / 3_600_000)} ч)"></span>`;
+            title="Порожний подгон ~${Math.round(emptyKm)} км (~${Math.round(tailMs / 3_600_000)} ч)&#10;Клик — спот-запрос продажам: найти груз на это плечо"></span>`;
         }
       }
       return `${emptyTail}<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''} ${trip.status === 'plan' ? 'plan' : ''} ${width < 70 ? 'tiny' : ''}"
@@ -279,6 +279,31 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
   document.querySelectorAll('[data-disposition]').forEach(block =>
     block.addEventListener('click', () => openDisposition(
       (state.data.dispositions || []).find(item => item.id === block.dataset.disposition))));
+  // Клик по порожнему хвосту: спот-запрос продажам — найти груз на пустое
+  // плечо (откуда сцепка гонит порожняк → куда едет под погрузку).
+  document.querySelectorAll('[data-empty-tail], [data-empty-trip]').forEach(tail =>
+    tail.addEventListener('click', async () => {
+      const trip = state.data.trips.find(item => item.id === tail.dataset.emptyTrip);
+      if (!trip) return;
+      const previous = state.data.trips
+        .filter(item => item.vehicle_id === trip.vehicle_id && item.status !== 'rejected' &&
+          item.ends_at <= trip.starts_at)
+        .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+      const fromRegion = previous
+        ? regionOfPlace(state.data, previous.to_point, previous.to_name)
+        : regionOfPlace(state.data, '', state.data.vehicles
+            .find(vehicle => vehicle.id === trip.vehicle_id)?.zone_name);
+      const toRegion = regionOfPlace(state.data, trip.from_point, trip.from_name);
+      if (!fromRegion || !toRegion) { toast('Субъекты плеча не распознаны', 'error'); return; }
+      if (!confirm(`Спот-запрос продажам: найти груз ${fromRegion} → ${toRegion}` +
+        ` (~${Math.round(trip.empty_km)} км порожним, ${trip.vehicle_plate})?`)) return;
+      try {
+        await api('/api/spot-request', { method: 'POST', body: JSON.stringify({
+          fromRegion, toRegion, km: trip.empty_km, aroundIso: trip.starts_at,
+          vehicleId: trip.vehicle_id, vehiclePlate: trip.vehicle_plate }) });
+        toast('Спот-запрос отправлен продажам');
+      } catch (error) { toast(error.message, 'error'); }
+    }));
   enableTripDrag(dayWidth);
   enableDispositionDraw(dayWidth, viewStart);
   // При первом показе месяца с текущим днём фокус на «сегодня −3 … +7 дней»:

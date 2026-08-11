@@ -209,7 +209,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
   position: absolute; top: 19px; height: 11px; border-radius: 4px 0 0 4px;
   background: repeating-linear-gradient(45deg, rgb(120 130 140 / 55%) 0 4px, transparent 4px 8px);
   border: 1px dashed rgb(120 130 140 / 65%); border-right: 0; pointer-events: auto;
+  cursor: pointer;
 }
+.empty-tail:hover { border-color: var(--warn);
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--warn) 55%, transparent) 0 4px, transparent 4px 8px); }
 /* Текущий момент: вертикальная линия через всю канву. */
 .timeline { position: relative; }
 .now-line { position: absolute; top: 48px; bottom: 0; width: 2px; z-index: 2;

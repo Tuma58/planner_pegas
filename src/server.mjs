@@ -1081,6 +1081,25 @@ async function api(request, response, url) {
       { vehicleId: vehicle.id, trips: tripIds.length }, requestIp(request));
     return json(response, 201, { tripIds });
   }
+  // Общий спот-запрос (из Ганта): найти груз на порожний подгон сцепки.
+  if (request.method === 'POST' && pathname === '/api/spot-request') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const body = await readJson(request);
+    const fromRegion = String(body.fromRegion || '').slice(0, 80);
+    const toRegion = String(body.toRegion || '').slice(0, 80);
+    if (!fromRegion || !toRegion) return errorJson(response, 422, 'Нужны fromRegion и toRegion');
+    const plate = String(body.vehiclePlate || '').slice(0, 20);
+    const around = body.aroundIso ? ` к ${new Date(body.aroundIso).toLocaleString('ru-RU',
+      { day: 'numeric', month: 'short', timeZone: 'Europe/Moscow' })}` : '';
+    const km = Number(body.km) ? ` (~${Math.round(Number(body.km))} км порожним)` : '';
+    notify('sales', `🔍 Спот из Ганта${plate ? ` (${plate})` : ''}: нужен груз ${fromRegion} → ${toRegion}${around}${km} — закройте порожний подгон`, 'vehicle', body.vehicleId || null);
+    audit(db, user, 'spot-request', 'vehicle', String(body.vehicleId || ''), { fromRegion, toRegion }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   // Спот-запрос пустого плеча: конструктор просит продажи найти груз
   // на порожний перегон маршрута — сообщение уходит роли «Продажи».
   match = route(/^\/api\/routes\/([^/]+)\/spot-request$/, pathname);
