@@ -354,23 +354,61 @@ export async function renderDispatcher(container, context) {
         после выгрузки забрать ${money(trip.revenue_vat)} у клиента</small>` : ''}
     </span>`;
 
+  const prepStepOf = trip => !trip.entered_1c_at ? ['1c', 'внести заказ в 1С']
+    : !trip.driver_notified_at ? ['driver', 'отправить задание водителю']
+    : ['online', 'вывести на линию'];
+  const prepKeyOf = trip => `${trip.id}|prep:${prepStepOf(trip)[0]}|${Math.round(Date.parse(trip.starts_at) / 60_000)}`.slice(0, 200);
+  const waitKeyOf = trip => `${trip.id}|wait|${Math.round(Date.parse(trip.starts_at) / 60_000)}`.slice(0, 200);
+  // Строка события левого столбца: выход по плану, горит за 2 часа.
+  const prepEventLine = (trip, key, label) => {
+    const worked = workedMap.get(key) || null;
+    const startMs = Date.parse(trip.starts_at);
+    const overdue = startMs < Date.now();
+    const hot = !worked && startMs - Date.now() <= 2 * 3_600_000;
+    return { worked, hot,
+      html: `<small class="next-ctrl ${overdue ? 'overdue' : ''}">⏱ ${escapeHtml(label)} —
+        выход ${formatDateTime(trip.starts_at)}${overdue ? ' · время вышло' : ''}
+        ${hot && !overdue ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
+        ${worked ? `<span class="ctrl-worked-note">✓ отработано · ${escapeHtml(worked.done_by || '')}</span>` : ''}
+        ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-worked="${escapeHtml(key)}"
+          title="${worked ? 'Снять отметку' : 'Отработано (связались, в процессе) — карточка уйдёт вниз до следующего шага'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>` };
+  };
   const salesCommentNote = trip => {
     const comment = orderOf(trip)?.comment;
     return comment ? `<small class="sales-comment">💬 Продажи: ${escapeHtml(comment)}</small>` : '';
   };
-  const prepCards = preparing.map(trip => `<div class="card" style="margin-bottom:10px;padding:10px 12px">
+  const prepSorted = [...preparing].sort((a, b) =>
+    Number(!!workedMap.get(prepKeyOf(a))) - Number(!!workedMap.get(prepKeyOf(b)))
+    || a.starts_at.localeCompare(b.starts_at));
+  const prepCards = prepSorted.map(trip => {
+    const key = prepKeyOf(trip);
+    const event = prepEventLine(trip, key, prepStepOf(trip)[1]);
+    return `<div class="card ${event.hot ? 'ctrl-hot' : ''} ${event.worked ? 'ctrl-done' : ''}"
+        style="margin-bottom:10px;padding:10px 12px">
       <div class="list-item" style="padding:0 0 4px">
         ${tripHead(trip)}
         <button class="button ghost small" data-incident="${trip.id}" title="Поломка, отказ клиента, переназначение">⚠ Внештатная</button>
       </div>
+      ${event.html}
       ${salesCommentNote(trip)}
       ${checklistBlock(trip, canAct)}
-    </div>`).join('') || '<p class="muted">Нет рейсов в подготовке — очередь чиста.</p>';
+    </div>`;
+  }).join('') || '<p class="muted">Нет рейсов в подготовке — очередь чиста.</p>';
 
-  const waitCards = waitingLogist.map(trip => `<div class="list-item ordrow pipe-wait">
-      ${tripHead(trip)}
-      <span class="pipe-badge">Ждёт: Логист · подтверждение назначения</span>
-    </div>`).join('');
+  const waitSorted = [...waitingLogist].sort((a, b) =>
+    Number(!!workedMap.get(waitKeyOf(a))) - Number(!!workedMap.get(waitKeyOf(b)))
+    || a.starts_at.localeCompare(b.starts_at));
+  const waitCards = waitSorted.map(trip => {
+    const key = waitKeyOf(trip);
+    const event = prepEventLine(trip, key, 'напомнить логисту о подтверждении');
+    return `<div class="card ${event.hot ? 'ctrl-hot' : ''} ${event.worked ? 'ctrl-done' : ''}" style="padding:9px 11px">
+      <div class="list-item ordrow pipe-wait" style="border:0;padding:0">
+        ${tripHead(trip)}
+        <span class="pipe-badge">Ждёт: Логист · подтверждение назначения</span>
+      </div>
+      ${event.html}
+    </div>`;
+  }).join('');
 
   // Лента контрольных точек рейса — как в промышленных TMS: на каждой
   // стоянке план / расчёт / факты прибытия-убытия, работы и простой;
@@ -568,7 +606,7 @@ export async function renderDispatcher(container, context) {
       </span>
       </div>
       ${eventLine}
-      ${opened ? stopsBlock(trip) : ''}
+      ${opened ? `<div class="stops-inline">${stopsBlock(trip)}</div>` : ''}
     </div>`;
   }).join('') || '<p class="muted">На линии никого нет.</p>';
 
@@ -666,11 +704,25 @@ export async function renderDispatcher(container, context) {
     }));
   container.querySelectorAll('[data-stops-toggle]').forEach(button =>
     button.addEventListener('click', () => {
-      state.dispatcherStops = state.dispatcherStops === button.dataset.stopsToggle
-        ? null : button.dataset.stopsToggle;
-      renderDispatcher(container, context);
+      const tripId = button.dataset.stopsToggle;
+      const card = button.closest('.card');
+      const openedBlock = card?.querySelector('.stops-inline');
+      if (openedBlock) {
+        state.dispatcherStops = null;
+        openedBlock.remove();
+        return;
+      }
+      state.dispatcherStops = tripId;
+      const trip = data.trips.find(item => item.id === tripId);
+      if (!trip || !card) return;
+      const holder = document.createElement('div');
+      holder.className = 'stops-inline';
+      holder.innerHTML = stopsBlock(trip);
+      card.append(holder);
+      wireStopButtons(holder);
     }));
-  container.querySelectorAll('[data-stop-step]').forEach(button =>
+  const wireStopButtons = scope => {
+  scope.querySelectorAll('[data-stop-step]').forEach(button =>
     button.addEventListener('click', () => factDialog(`Контрольная точка · ${button.textContent.trim()}`,
       'Укажите фактическое время события на стоянке.', async iso => {
         await api(`/api/stops/${button.dataset.stopStep}`, {
@@ -678,14 +730,16 @@ export async function renderDispatcher(container, context) {
         });
         toast('Факт отмечен');
       })));
-  container.querySelectorAll('[data-stop-edit]').forEach(button =>
+  scope.querySelectorAll('[data-stop-edit]').forEach(button =>
     button.addEventListener('click', () => {
       const control = controlByTrip.get(button.dataset.stopTrip);
       const stop = control?.stops?.find(item => item.id === button.dataset.stopEdit);
       if (stop) stopEditDialog(stop);
     }));
-  container.querySelectorAll('[data-stop-add]').forEach(button =>
+  scope.querySelectorAll('[data-stop-add]').forEach(button =>
     button.addEventListener('click', () => stopAddDialog(button.dataset.stopAdd)));
+  };
+  wireStopButtons(container);
   container.querySelectorAll('[data-arrived]').forEach(button =>
     button.addEventListener('click', () => factDialog('Факт прибытия на выгрузку',
       'От этого времени считаются выгрузка и простой у клиента.', async iso => {
