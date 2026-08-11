@@ -297,6 +297,13 @@ tbody tr:hover td { background: var(--hover); }
 .tt-chip { display: inline-block; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); font-size: var(--fs-xs); white-space: nowrap; }
 .tt-chip.muted { color: var(--muted); }
 .task-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; }
+/* Контроль на линии: «горящее» событие (≤2 ч, не отработано) и отработанные */
+.card.ctrl-hot { border: 1px solid var(--bad); box-shadow: 0 0 0 2px color-mix(in srgb, var(--bad) 22%, transparent);
+  background: color-mix(in srgb, var(--bad) 5%, var(--card)); }
+.card.ctrl-done { opacity: .68; }
+.ctrl-soon { color: var(--warn); font-weight: 750; margin-left: 5px; }
+.ctrl-worked-note { color: var(--ok); font-weight: 650; margin-left: 6px; }
+.ctrl-worked-btn { min-height: 22px; padding: 1px 8px; margin-left: 6px; vertical-align: middle; }
 .task-done-btn { min-height: 24px; padding: 2px 8px; }
 .task-done-list { margin: 10px 0 14px; }
 .task-done-list summary { color: var(--ok); font-weight: 650; }

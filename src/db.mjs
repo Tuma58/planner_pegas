@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS app_meta (
   key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS task_marks (
-  kind TEXT NOT NULL CHECK(kind IN ('sales','logist')),
+  kind TEXT NOT NULL CHECK(kind IN ('sales','logist','dispatcher')),
   day TEXT NOT NULL, item_key TEXT NOT NULL,
   done_by TEXT NOT NULL DEFAULT '', done_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(kind, day, item_key)
@@ -411,6 +411,22 @@ function migrateColumns(db) {
   }
   // Отметки «отработано» в заданиях живут неделю после своей даты — дальше мусор.
   db.prepare(`DELETE FROM task_marks WHERE day < date('now','-7 day')`).run();
+  // Вид 'dispatcher' добавлен позже: CHECK старой таблицы его не пускает —
+  // пересоздаём с переносом отметок.
+  const marksSql = db.prepare(`SELECT sql FROM sqlite_master WHERE name='task_marks'`).get()?.sql || '';
+  if (!marksSql.includes('dispatcher')) {
+    db.exec(`BEGIN;
+      ALTER TABLE task_marks RENAME TO task_marks_old;
+      CREATE TABLE task_marks (
+        kind TEXT NOT NULL CHECK(kind IN ('sales','logist','dispatcher')),
+        day TEXT NOT NULL, item_key TEXT NOT NULL,
+        done_by TEXT NOT NULL DEFAULT '', done_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(kind, day, item_key)
+      );
+      INSERT INTO task_marks SELECT * FROM task_marks_old;
+      DROP TABLE task_marks_old;
+      COMMIT;`);
+  }
   // Инвариант реестра отклонённых: у каждой отклонённой заявки есть причина.
   // Новые пути отклонения требуют её обязательно (сервер вернёт 422);
   // записи, созданные до этого правила, получают явную пометку.

@@ -195,6 +195,19 @@ export async function renderDispatcher(container, context) {
     delayByTrip = new Map(items.map(item => [item.id, item.delay_ms || 0]));
     controlByTrip = new Map(items.map(item => [item.id, item]));
   } catch { /* без расчёта задержек карточки просто не показывают опоздание */ }
+  // Отметки «событие отработано»: общие для смены, ключ привязан к конкретному
+  // событию рейса — сменилось событие, отметка сама теряет силу.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const yesterdayIso = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  let workedMap = new Map();
+  try {
+    const days = await Promise.all([
+      api(`/api/task-marks?kind=dispatcher&day=${todayIso}`),
+      api(`/api/task-marks?kind=dispatcher&day=${yesterdayIso}`)
+    ]);
+    workedMap = new Map(days.flatMap(result => result.items)
+      .map(item => [item.item_key, item]));
+  } catch { workedMap = new Map(); }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
     `${routeLabel(trip)} ${trip.vehicle_plate} ${trip.driver_name || ''} ${trip.customer_name || ''}`
@@ -259,9 +272,16 @@ export async function renderDispatcher(container, context) {
       point: trip.to_point || trip.to_name, zone: trip.to_name };
   };
 
+  const eventKeyOf = trip => {
+    const event = nextControlEvent(trip);
+    return `${trip.id}|${event.label}|${Number.isFinite(event.at) ? Math.round(event.at / 60_000) : 0}`.slice(0, 200);
+  };
+  const workedOf = trip => workedMap.get(eventKeyOf(trip)) || null;
   // Ближайшее событие — наверх: просроченные и «не выгружают» первыми.
-  online.sort((a, b) => (Number.isFinite(nextControlEvent(a).at) ? nextControlEvent(a).at : Infinity) -
-    (Number.isFinite(nextControlEvent(b).at) ? nextControlEvent(b).at : Infinity));
+  // Отработанные события уходят под неотработанные и ждут своего следующего
+  // события; выполненный рейс («Выгружен») из списка уходит сам.
+  const eventAt = trip => Number.isFinite(nextControlEvent(trip).at) ? nextControlEvent(trip).at : Infinity;
+  online.sort((a, b) => Number(!!workedOf(a)) - Number(!!workedOf(b)) || eventAt(a) - eventAt(b));
 
   // Заявка рейса — источник комментария продаж и «без НДС».
   const orderOf = trip => (data.orders || []).find(item => item.id === trip.order_id)
@@ -521,10 +541,18 @@ export async function renderDispatcher(container, context) {
     const nextEvent = nextControlEvent(trip);
     const hasTime = Number.isFinite(nextEvent.at) && nextEvent.at > 0;
     const overdue = hasTime && nextEvent.at < Date.now();
+    const worked = workedOf(trip);
+    // «Горит»: событие ближе двух часов (или просрочено, или особый контроль)
+    // и диспетчер его ещё не отработал.
+    const hot = !worked && (nextEvent.at === 0 || (hasTime && nextEvent.at - Date.now() <= 2 * 3_600_000));
     const eventLine = `<small class="next-ctrl ${overdue || nextEvent.at === 0 ? 'overdue' : ''}">⏱ далее —
       ${escapeHtml(nextEvent.label)}${hasTime ? ` · ${formatDateTime(new Date(nextEvent.at).toISOString())}
-      ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue ? ' · просрочено' : ''}</small>`;
-    return `<div class="card" style="padding:9px 11px">
+      ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue ? ' · просрочено' : ''}
+      ${hot && !overdue && nextEvent.at !== 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
+      ${worked ? `<span class="ctrl-worked-note">✓ отработано · ${escapeHtml(worked.done_by || '')}</span>` : ''}
+      ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-worked="${escapeHtml(eventKeyOf(trip))}"
+        title="${worked ? 'Снять отметку — событие вернётся в горящие' : 'Событие отработано (связались, статус ясен) — карточка уйдёт вниз до следующего события'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>`;
+    return `<div class="card ${hot ? 'ctrl-hot' : ''} ${worked ? 'ctrl-done' : ''}" style="padding:9px 11px">
       <div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}" style="border:0;padding:0">
       ${tripHead(trip)}
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
@@ -574,6 +602,15 @@ export async function renderDispatcher(container, context) {
       </div>
     </div>
   </div>`;
+
+  container.querySelectorAll('[data-worked]').forEach(button =>
+    button.addEventListener('click', async () => {
+      try {
+        await api('/api/task-marks', { method: 'POST',
+          body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: button.dataset.worked }) });
+        await renderDispatcher(container, context);
+      } catch (error) { toast(error.message, 'error'); }
+    }));
 
   // Клик по плашке рейса — карточка с полными данными и копированием;
   // клики по кнопкам внутри строки карточку не открывают.

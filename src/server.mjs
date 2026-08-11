@@ -437,8 +437,8 @@ async function api(request, response, url) {
     if (!user) return;
     const kind = String(url.searchParams.get('kind') || '');
     const day = String(url.searchParams.get('day') || '');
-    if (!['sales', 'logist'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-      return errorJson(response, 422, 'Нужны kind (sales|logist) и day (ГГГГ-ММ-ДД)');
+    if (!['sales', 'logist', 'dispatcher'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      return errorJson(response, 422, 'Нужны kind (sales|logist|dispatcher) и day (ГГГГ-ММ-ДД)');
     }
     return json(response, 200, {
       items: db.prepare(`SELECT item_key,done_by,done_at FROM task_marks
@@ -450,11 +450,11 @@ async function api(request, response, url) {
     const kind = String(body.kind || '');
     const day = String(body.day || '');
     const key = String(body.key || '').trim().slice(0, 200);
-    if (!['sales', 'logist'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !key) {
-      return errorJson(response, 422, 'Нужны kind (sales|logist), day (ГГГГ-ММ-ДД) и key');
+    if (!['sales', 'logist', 'dispatcher'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !key) {
+      return errorJson(response, 422, 'Нужны kind (sales|logist|dispatcher), day (ГГГГ-ММ-ДД) и key');
     }
-    const user = requirePermission(request, response,
-      kind === 'sales' ? 'orders:write' : 'trips:write');
+    const permissionByKind = { sales: 'orders:write', logist: 'trips:write', dispatcher: 'trip-status:write' };
+    const user = requirePermission(request, response, permissionByKind[kind]);
     if (!user) return;
     const existing = db.prepare(`SELECT 1 FROM task_marks WHERE kind=? AND day=? AND item_key=?`)
       .get(kind, day, key);
