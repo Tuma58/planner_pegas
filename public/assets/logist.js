@@ -6,7 +6,7 @@
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
-import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress } from './sales.js';
+import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress, salesTaskFor } from './sales.js';
 
 const overlaps = (a, b) =>
   Date.parse(a.starts_at) < Date.parse(b.ends_at) && Date.parse(b.starts_at) < Date.parse(a.ends_at);
@@ -157,6 +157,130 @@ function pickOrderDialog(request, queue, data, context) {
   };
 }
 
+// «Задание логисту» на дату: весь парк учтён — кто обеспечен рейсом,
+// кто требует работы (с подбором заявок из очереди прямо из задания),
+// кто недоступен; баланс «свободные сцепки ↔ доступная работа».
+function logistTaskDialog(data, context, allRequests, queueAll) {
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const fmtDay = iso => new Intl.DateTimeFormat('ru-RU',
+    { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
+  const kindShort = { repair: 'ремонт', shift: 'пересменка', no_driver: 'без водителя', reserve: 'резерв' };
+  const requestOf = item => allRequests.find(request => request.vehicle.id === item.vehicle.id)
+    || { freeAt: item.at || item.since || new Date().toISOString(),
+      zone: { name: item.vehicle.zone_name || '' }, vehicle: item.vehicle };
+  const render = dayIso => {
+    const task = salesTaskFor(data, dayIso);
+    const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
+    const workCount = data.vehicles.filter(vehicle => vehicle.status === 'work').length;
+    const needWork = [...task.free, ...task.freeing];
+    const occupied = workCount - needWork.length - task.unavailable.length;
+    // Доступная работа: заявки очереди, чьё окно не закрылось к началу дня.
+    const openQueue = queueAll.filter(order => Date.parse(order.window_to) > dayStart);
+    const queueSum = openQueue.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0);
+    const uncovered = needWork.length - openQueue.length;
+    const cards = needWork.map(item => {
+      const request = requestOf(item);
+      const matches = matchOrdersForVehicle(request, queueAll);
+      const state = item.since != null || item.why == null
+        ? `стоит${item.since ? ` с ${formatDateTime(item.since)}` : ''}`
+        : `${formatDateTime(item.at)} ${item.why}`;
+      return { item, request, matches, state };
+    });
+    // Сначала совсем без вариантов (тревога), затем давно стоящие.
+    cards.sort((a, b) => Number(!!a.matches.length) - Number(!!b.matches.length)
+      || String(a.item.since || a.item.at || '').localeCompare(String(b.item.since || b.item.at || '')));
+    const lines = [`ЗАДАНИЕ ЛОГИСТУ на ${fmtDay(dayIso)}`, '',
+      `Парк в работе: ${workCount} · обеспечены рейсами: ${occupied} · требуют работы: ${needWork.length} · недоступны: ${task.unavailable.length}`,
+      `Очередь на назначение: ${openQueue.length} заявок · ${money(queueSum)}`,
+      uncovered > 0
+        ? `БАЛАНС: работы не хватает — ${uncovered} сцепок останутся без загрузки, запросите продажи`
+        : `БАЛАНС: работы достаточно (заявок ${openQueue.length} на ${needWork.length} свободных)`, '',
+      'ТРЕБУЮТ РАБОТЫ:'];
+    cards.forEach(({ item, matches, state }) => {
+      lines.push(`  ${item.vehicle.plate} (${item.vehicle.type_name || ''}) — ${item.place}` +
+        `${item.region ? ` (${item.region})` : ''}, ${state}`);
+      if (matches.length) {
+        matches.slice(0, 2).forEach(({ order, inZone }) => lines.push(`    подходит: №${order.order_no || '—'} ` +
+          `${order.from_point || order.from_name} → ${order.to_point || order.to_name}, ` +
+          `окно ${formatDateTime(order.window_from)}, ${money(order.rate_vat)}${inZone ? ' (в зоне)' : ''}`));
+      } else lines.push('    подходящих заявок в очереди нет — запросить продажи');
+    });
+    if (task.unavailable.length) {
+      lines.push('', 'НЕДОСТУПНЫ: ' + task.unavailable.map(item =>
+        `${item.vehicle.plate} (${kindShort[item.kind] || item.kind} до ${formatDateTime(item.until)})`).join(', '));
+    }
+    const box = document.getElementById('logistTaskBody');
+    box.dataset.text = lines.join('\n');
+    box.innerHTML = `
+      <div class="task-kpis five">
+        <div class="task-kpi"><b>${workCount}</b><span>парк в работе</span></div>
+        <div class="task-kpi"><b>${occupied}</b><span>обеспечены рейсами</span></div>
+        <div class="task-kpi ${needWork.length ? 'warn' : ''}"><b>${needWork.length}</b><span>требуют работы</span></div>
+        <div class="task-kpi muted"><b>${task.unavailable.length}</b><span>недоступны</span></div>
+        <div class="task-kpi"><b>${openQueue.length}</b><span>очередь · ${money(queueSum)}</span></div>
+      </div>
+      <div class="task-balance-line ${uncovered > 0 ? 'bad' : 'ok'}">${uncovered > 0
+        ? `⛔ Работы не хватает: <b>${uncovered}</b> сцепок останутся без загрузки — запросите продажи`
+        : `✅ Работы достаточно: заявок ${openQueue.length} на ${needWork.length} свободных сцепок`}</div>
+      <div class="task-sec"><b>Требуют работы (${needWork.length})</b>
+        ${cards.map(({ item, matches, state }) => `<div class="task-lane ${matches.length ? '' : 'lack'}">
+          <div class="task-lane-head">
+            <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
+            <span>${escapeHtml(item.vehicle.type_name || '')}</span>
+            <span class="muted">${escapeHtml(item.place)}${item.region ? ` (${escapeHtml(item.region)})` : ''} · ${escapeHtml(state)}</span>
+            <span style="margin-left:auto;display:flex;gap:5px">
+              <button class="button small" data-task-pick="${item.vehicle.id}">Подобрать</button>
+              <button class="button ghost small" data-task-ask="${item.vehicle.id}"
+                title="Запрос в продажи: сцепка без загрузки">→ Продажи</button>
+            </span>
+          </div>
+          ${matches.length ? matches.slice(0, 2).map(({ order, inZone }) => `<div class="task-row">
+            📦 №${escapeHtml(order.order_no || '—')} ${escapeHtml(order.from_point || order.from_name)} →
+            ${escapeHtml(order.to_point || order.to_name)} · окно ${formatDateTime(order.window_from)}
+            · ${money(order.rate_vat)}${inZone ? ' <span class="tt-chip">в зоне</span>' : ''}</div>`).join('')
+            : '<div class="task-row danger">подходящих заявок в очереди нет — запросите продажи</div>'}
+        </div>`).join('') || '<p class="muted">все сцепки обеспечены работой</p>'}</div>
+      <div class="task-sec"><b>Недоступны весь день (${task.unavailable.length})</b>
+        <div class="task-chips">${task.unavailable.map(item => `<span class="tt-chip muted"
+          title="до ${formatDateTime(item.until)}">${escapeHtml(item.vehicle.plate)} · ${escapeHtml(kindShort[item.kind] || item.kind)}</span>`).join(' ')
+          || '<span class="muted">нет</span>'}</div></div>`;
+    box.querySelectorAll('[data-task-pick]').forEach(button =>
+      button.addEventListener('click', () => {
+        const card = cards.find(entry => entry.item.vehicle.id === button.dataset.taskPick);
+        if (!card) return;
+        context.closeModal();
+        pickOrderDialog(card.request, queueAll, data, context);
+      }));
+    box.querySelectorAll('[data-task-ask]').forEach(button =>
+      button.addEventListener('click', async () => {
+        try {
+          await api(`/api/vehicles/${button.dataset.taskAsk}/request-load`, { method: 'POST' });
+          toast('Запрос отправлен в продажи');
+        } catch (error) { toast(error.message, 'error'); }
+      }));
+  };
+  context.showModal(`<h2 style="margin-bottom:6px">📋 Задание логисту</h2>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <span class="muted">на дату</span>
+      <input type="date" id="logistTaskDay" value="${tomorrow}" style="width:auto">
+      <button class="button small" id="logistTaskCopy" style="margin-left:auto">📋 Скопировать</button>
+    </div>
+    <div id="logistTaskBody" style="max-height:62vh;overflow:auto"></div>`);
+  const modal = document.querySelector('#modalRoot .modal');
+  if (modal) modal.style.width = 'min(820px, 96vw)';
+  render(tomorrow);
+  document.getElementById('logistTaskDay').onchange = event => render(event.currentTarget.value || tomorrow);
+  document.getElementById('logistTaskCopy').onclick = async () => {
+    const text = document.getElementById('logistTaskBody').dataset.text || '';
+    try { await navigator.clipboard.writeText(text); } catch {
+      const area = document.createElement('textarea');
+      area.value = text; document.body.append(area);
+      area.select(); document.execCommand('copy'); area.remove();
+    }
+    toast('Задание скопировано');
+  };
+}
+
 export function renderLogist(container, context) {
   const { state, can } = context;
   const data = state.data;
@@ -181,10 +305,11 @@ export function renderLogist(container, context) {
 
   // Очередь на назначение: подтверждённые продажами заявки без ТС (стадия 1),
   // возвращённые из плана — с пометкой, залежавшиеся сверху.
-  const queue = data.orders
+  const queueAll = data.orders
     .filter(order => inSalesPortfolio(order, data) && orderStage(order, data).stage === 1)
-    .filter(order => zoneMatches(order) && regionMatches(order) && matches(`${order.customer_name} ${routeLabel(order)}`))
     .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
+  const queue = queueAll
+    .filter(order => zoneMatches(order) && regionMatches(order) && matches(`${order.customer_name} ${routeLabel(order)}`));
 
   // Действующие маршруты: план и в пути; завершённые логисту не нужны.
   // Рейсы на подтверждении логиста — всегда приоритетом наверху списка.
@@ -205,7 +330,8 @@ export function renderLogist(container, context) {
   // Левый столбец: сцепки, которые простаивают или скоро освободятся, —
   // логист подбирает им рейсы из очереди или запрашивает загрузку у продаж.
   const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
-  const vehicleRequests = autoRequests(data, state.month, monthEnd)
+  const allVehicleRequests = autoRequests(data, state.month, monthEnd);
+  const vehicleRequests = allVehicleRequests
     .filter(request => (!zone || request.zone.name === zone) &&
       (!region || request.region === region) &&
       matches(`${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name}`))
@@ -367,6 +493,8 @@ export function renderLogist(container, context) {
             `<option value="${escapeHtml(item)}" ${region === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}
         </select>
         <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
+        <button class="button small" id="logistTask"
+          title="Срез на дату: весь парк учтён — кто обеспечен рейсом, кто требует работы, баланс с очередью">📋 Задание</button>
         ${can('trips:write') ? '<button class="button small" id="logistNewTrip">+ Рейс</button>' : ''}
       </div>
     </div>
@@ -437,6 +565,8 @@ export function renderLogist(container, context) {
       const request = vehicleRequests[Number(button.dataset.pick)];
       if (request) pickOrderDialog(request, queue, data, context);
     }));
+  container.querySelector('#logistTask').onclick = () =>
+    logistTaskDialog(data, context, allVehicleRequests, queueAll);
   container.querySelectorAll('[data-ask-sales]').forEach(button =>
     button.addEventListener('click', async () => {
       try {
