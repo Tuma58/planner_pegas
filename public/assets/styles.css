@@ -297,6 +297,11 @@ tbody tr:hover td { background: var(--hover); }
 .tt-chip { display: inline-block; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); font-size: var(--fs-xs); white-space: nowrap; }
 .tt-chip.muted { color: var(--muted); }
 .task-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; }
+.task-done-btn { min-height: 24px; padding: 2px 8px; }
+.task-done-list { margin: 10px 0 14px; }
+.task-done-list summary { color: var(--ok); font-weight: 650; }
+.task-row.done { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.task-row.done .button { min-height: 22px; padding: 1px 7px; margin-left: auto; }
 .task-fold { margin-top: 3px; }
 .task-fold summary { cursor: pointer; color: var(--muted); font-size: var(--fs-sm); user-select: none; }
 .task-fold summary:hover { color: var(--ink); }

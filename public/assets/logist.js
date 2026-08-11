@@ -168,12 +168,18 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
   const requestOf = item => allRequests.find(request => request.vehicle.id === item.vehicle.id)
     || { freeAt: item.at || item.since || new Date().toISOString(),
       zone: { name: item.vehicle.zone_name || '' }, vehicle: item.vehicle };
-  const render = dayIso => {
+  const render = async dayIso => {
     const task = salesTaskFor(data, dayIso);
     const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
     const workCount = data.vehicles.filter(vehicle => vehicle.status === 'work').length;
-    const needWork = [...task.free, ...task.freeing];
-    const occupied = workCount - needWork.length - task.unavailable.length;
+    const allNeedWork = [...task.free, ...task.freeing];
+    // Отметки «отработано» — общие для команды, привязаны к дате задания.
+    let marks = [];
+    try { marks = (await api(`/api/task-marks?kind=logist&day=${dayIso}`)).items; } catch { marks = []; }
+    const marked = new Map(marks.map(item => [item.item_key, item]));
+    const doneWork = allNeedWork.filter(item => marked.has(item.vehicle.id));
+    const needWork = allNeedWork.filter(item => !marked.has(item.vehicle.id));
+    const occupied = workCount - allNeedWork.length - task.unavailable.length;
     // Доступная работа: заявки очереди, чьё окно не закрылось к началу дня.
     const openQueue = queueAll.filter(order => Date.parse(order.window_to) > dayStart);
     const queueSum = openQueue.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0);
@@ -205,6 +211,9 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
           `окно ${formatDateTime(order.window_from)}, ${money(order.rate_vat)}${inZone ? ' (в зоне)' : ''}`));
       } else lines.push('    подходящих заявок в очереди нет — запросить продажи');
     });
+    if (doneWork.length) {
+      lines.push('', `Отработано (${doneWork.length}): ${doneWork.map(item => item.vehicle.plate).join(', ')}`);
+    }
     if (task.unavailable.length) {
       lines.push('', 'НЕДОСТУПНЫ: ' + task.unavailable.map(item =>
         `${item.vehicle.plate} (${kindShort[item.kind] || item.kind} до ${formatDateTime(item.until)})`).join(', '));
@@ -232,6 +241,8 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
               <button class="button small" data-task-pick="${item.vehicle.id}">Подобрать</button>
               <button class="button ghost small" data-task-ask="${item.vehicle.id}"
                 title="Запрос в продажи: сцепка без загрузки">→ Продажи</button>
+              <button class="button ghost small task-done-btn" data-task-mark="${item.vehicle.id}"
+                title="Отметить отработанной — уйдёт в «Отработанные», отметку видит вся команда">✓</button>
             </span>
           </div>
           ${matches.length ? matches.slice(0, 2).map(({ order, inZone }) => `<div class="task-row">
@@ -240,10 +251,25 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
             · ${money(order.rate_vat)}${inZone ? ' <span class="tt-chip">в зоне</span>' : ''}</div>`).join('')
             : '<div class="task-row danger">подходящих заявок в очереди нет — запросите продажи</div>'}
         </div>`).join('') || '<p class="muted">все сцепки обеспечены работой</p>'}</div>
+      ${doneWork.length ? `<details class="task-fold task-done-list">
+        <summary>✓ Отработанные сцепки (${doneWork.length})</summary>
+        ${doneWork.map(item => `<div class="task-row done">✓ <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
+          — ${escapeHtml(item.place)} <span class="muted">· ${escapeHtml(marked.get(item.vehicle.id)?.done_by || '')}</span>
+          <button class="button ghost small" data-task-mark="${item.vehicle.id}" title="Вернуть в задание">↩</button>
+        </div>`).join('')}
+      </details>` : ''}
       <div class="task-sec"><b>Недоступны весь день (${task.unavailable.length})</b>
         <div class="task-chips">${task.unavailable.map(item => `<span class="tt-chip muted"
           title="до ${formatDateTime(item.until)}">${escapeHtml(item.vehicle.plate)} · ${escapeHtml(kindShort[item.kind] || item.kind)}</span>`).join(' ')
           || '<span class="muted">нет</span>'}</div></div>`;
+    box.querySelectorAll('[data-task-mark]').forEach(button =>
+      button.addEventListener('click', async () => {
+        try {
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'logist', day: dayIso, key: button.dataset.taskMark }) });
+          await render(dayIso);
+        } catch (error) { toast(error.message, 'error'); }
+      }));
     box.querySelectorAll('[data-task-pick]').forEach(button =>
       button.addEventListener('click', () => {
         const card = cards.find(entry => entry.item.vehicle.id === button.dataset.taskPick);

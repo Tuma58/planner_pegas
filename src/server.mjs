@@ -430,6 +430,43 @@ async function api(request, response, url) {
     });
   }
 
+  // Отметки «отработано» в заданиях продаж и логиста: общие для команды,
+  // привязаны к дате задания. POST — переключатель (есть → снять).
+  if (request.method === 'GET' && pathname === '/api/task-marks') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const kind = String(url.searchParams.get('kind') || '');
+    const day = String(url.searchParams.get('day') || '');
+    if (!['sales', 'logist'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      return errorJson(response, 422, 'Нужны kind (sales|logist) и day (ГГГГ-ММ-ДД)');
+    }
+    return json(response, 200, {
+      items: db.prepare(`SELECT item_key,done_by,done_at FROM task_marks
+        WHERE kind=? AND day=? ORDER BY done_at`).all(kind, day)
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/task-marks') {
+    const body = await readJson(request);
+    const kind = String(body.kind || '');
+    const day = String(body.day || '');
+    const key = String(body.key || '').trim().slice(0, 200);
+    if (!['sales', 'logist'].includes(kind) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !key) {
+      return errorJson(response, 422, 'Нужны kind (sales|logist), day (ГГГГ-ММ-ДД) и key');
+    }
+    const user = requirePermission(request, response,
+      kind === 'sales' ? 'orders:write' : 'trips:write');
+    if (!user) return;
+    const existing = db.prepare(`SELECT 1 FROM task_marks WHERE kind=? AND day=? AND item_key=?`)
+      .get(kind, day, key);
+    if (existing) {
+      db.prepare(`DELETE FROM task_marks WHERE kind=? AND day=? AND item_key=?`).run(kind, day, key);
+    } else {
+      db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by) VALUES(?,?,?,?)`)
+        .run(kind, day, key, user.full_name || user.username || '');
+    }
+    return json(response, 200, { done: !existing });
+  }
+
   if (request.method === 'GET' && pathname === '/api/customers') {
     const user = requirePermission(request, response, 'customers:read');
     if (!user) return;

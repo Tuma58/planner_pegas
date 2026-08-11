@@ -289,9 +289,17 @@ function salesTaskDialog(data, context) {
     });
     return lines.join('\n');
   };
-  const render = dayIso => {
+  const render = async dayIso => {
     const task = salesTaskFor(data, dayIso);
-    const text = taskText(dayIso, task);
+    // Отметки «отработано» — общие для команды, привязаны к дате задания.
+    let marks = [];
+    try { marks = (await api(`/api/task-marks?kind=sales&day=${dayIso}`)).items; } catch { marks = []; }
+    const marked = new Map(marks.map(item => [item.item_key, item]));
+    const allLanes = task.lanes;
+    const doneLanes = allLanes.filter(bucket => marked.has(bucket.lane));
+    task.lanes = allLanes.filter(bucket => !marked.has(bucket.lane));
+    const text = taskText(dayIso, task) + (doneLanes.length
+      ? `\n\nОтработано (${doneLanes.length}): ${doneLanes.map(bucket => bucket.lane).join('; ')}` : '');
     const box = document.getElementById('salesTaskBody');
     box.dataset.text = text;
     const needSum = task.needs.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0);
@@ -312,6 +320,8 @@ function salesTaskDialog(data, context) {
         <span class="task-balance ${bucket.deficit > 0 ? 'bad' : 'ok'}">${bucket.deficit > 0
           ? `⛔ не хватает: ${bucket.lack.map(item => `${item.count} ${escapeHtml(item.type)}`).join(', ')}`
           : '✅ закрывается'}</span>
+        <button class="button ghost small task-done-btn" data-mark="${escapeHtml(bucket.lane)}"
+          title="Отметить отработанным — уйдёт в «Отработанные», отметку видит вся команда">✓</button>
       </div>
       <div class="task-lane-nums">
         <span>необходимо <b>${bucket.orders.length}</b>: ${typeChips(bucket.byType)}</span>
@@ -342,6 +352,13 @@ function salesTaskDialog(data, context) {
           ? ` · <span class="danger">дефицит: ${lackLanes.length}</span>` : ''})</b>
         ${[...lackLanes, ...task.lanes.filter(bucket => !bucket.deficit)].map(laneBlock).join('')
           || '<p class="muted">рейсов без ТС на день нет</p>'}</div>
+      ${doneLanes.length ? `<details class="task-fold task-done-list">
+        <summary>✓ Отработанные направления (${doneLanes.length})</summary>
+        ${doneLanes.map(bucket => `<div class="task-row done">✓ ${escapeHtml(bucket.lane)} ·
+          ${bucket.orders.length} заявок <span class="muted">· ${escapeHtml(marked.get(bucket.lane)?.done_by || '')}</span>
+          <button class="button ghost small" data-mark="${escapeHtml(bucket.lane)}" title="Вернуть в задание">↩</button>
+        </div>`).join('')}
+      </details>` : ''}
       <div class="task-sec"><b>Свободны с прошлых дней (${task.free.length})</b>
         ${[...freeByRegion.entries()].sort((a, b) => b[1].length - a[1].length).map(([region, list]) =>
           `<details class="task-fold"><summary>${escapeHtml(region)} — <b>${list.length}</b></summary>
@@ -357,6 +374,14 @@ function salesTaskDialog(data, context) {
         <div class="task-chips">${task.unavailable.map(item => `<span class="tt-chip muted"
           title="до ${formatDateTime(item.until)}">${escapeHtml(item.vehicle.plate)} · ${escapeHtml(kindShort[item.kind] || item.kind)}</span>`).join(' ')
           || '<span class="muted">нет</span>'}</div></div>`;
+    box.querySelectorAll('[data-mark]').forEach(button =>
+      button.addEventListener('click', async () => {
+        try {
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'sales', day: dayIso, key: button.dataset.mark }) });
+          await render(dayIso);
+        } catch (error) { toast(error.message, 'error'); }
+      }));
   };
   context.showModal(`<h2 style="margin-bottom:6px">📋 Задание продажам</h2>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">

@@ -26,6 +26,12 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS app_meta (
   key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_marks (
+  kind TEXT NOT NULL CHECK(kind IN ('sales','logist')),
+  day TEXT NOT NULL, item_key TEXT NOT NULL,
+  done_by TEXT NOT NULL DEFAULT '', done_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(kind, day, item_key)
+);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   full_name TEXT NOT NULL, email TEXT, password_hash TEXT NOT NULL,
@@ -403,6 +409,8 @@ function migrateColumns(db) {
     }
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('transit_replan_v2','1')`).run();
   }
+  // Отметки «отработано» в заданиях живут неделю после своей даты — дальше мусор.
+  db.prepare(`DELETE FROM task_marks WHERE day < date('now','-7 day')`).run();
   // Инвариант реестра отклонённых: у каждой отклонённой заявки есть причина.
   // Новые пути отклонения требуют её обязательно (сервер вернёт 422);
   // записи, созданные до этого правила, получают явную пометку.
