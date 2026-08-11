@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
-import { audit, nextOrderNo, openDatabase, queueOutbox, roadKm, settingsObject } from './db.mjs';
+import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, settingsObject } from './db.mjs';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { ROLE_LABELS, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import {
@@ -426,7 +426,11 @@ async function api(request, response, url) {
       drivers: db.prepare(`SELECT d.*,v.plate vehicle_plate FROM drivers d
         LEFT JOIN vehicles v ON v.id=d.vehicle_id
         WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
-      revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all()
+      revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
+      routes: db.prepare(`SELECT r.*,v.plate vehicle_plate FROM routes r
+        LEFT JOIN vehicles v ON v.id=r.vehicle_id
+        WHERE r.status IN ('draft','handed','assigned')
+        ORDER BY r.created_at DESC`).all()
     });
   }
 
@@ -921,22 +925,16 @@ async function api(request, response, url) {
     audit(db, user, 'delete', 'order', match[0], { soft: true }, requestIp(request));
     return json(response, 200, { ok: true });
   }
-  match = route(/^\/api\/orders\/([^/]+)\/assign$/, pathname);
-  if (match && request.method === 'POST') {
-    const user = requirePermission(request, response, 'trips:write');
-    if (!user) return;
-    const body = await readJson(request);
-    const order = db.prepare('SELECT * FROM orders WHERE id=?').get(match[0]);
-    const vehicle = db.prepare('SELECT * FROM vehicles WHERE id=?').get(body.vehicleId);
-    if (!order) return errorJson(response, 404, 'Заявка не найдена');
-    if (!vehicle || vehicle.status !== 'work') return errorJson(response, 422, 'Выберите доступное ТС');
+  // Ядро назначения: транзит, рейс, стоянки, порожняк, каскад заявки —
+  // используется одиночным assign и цепным назначением маршрута.
+  function assignOrderCore(order, vehicle, user, { startsAt: startsAtOverride, distanceKm } = {}) {
     const settings = settingsObject(db).calculation;
     const rate = db.prepare(`SELECT distance_km FROM route_rates
       WHERE (from_zone_id=? AND to_zone_id=?) OR (from_zone_id=? AND to_zone_id=?)
       LIMIT 1`).get(order.from_zone_id, order.to_zone_id, order.to_zone_id, order.from_zone_id);
     // Плановый километраж по адресам заявки — приоритет; зонный тариф — фолбэк.
-    const distance = Number(body.distanceKm || order.planned_km || rate?.distance_km || 500);
-    const startsAt = order.window_from;
+    const distance = Number(distanceKm || order.planned_km || rate?.distance_km || 500);
+    const startsAt = startsAtOverride || order.window_from;
     // Транзит: (км/50 + операции×3ч) × 1,5 — каждая промежуточная погрузка
     // и выгрузка добавляет операцию. Окно клиента шире расчёта — план по окну.
     const orderVia = (() => { try { return JSON.parse(order.via_json || '[]'); } catch { return []; } })();
@@ -999,18 +997,133 @@ async function api(request, response, url) {
       db.exec('ROLLBACK');
       throw error;
     }
+    queueOutbox(db, 'trips', tripId, order.trip_id ? 'update' : 'create', tripOutboxPayload(tripId),
+      integrationPublic().writePolicy === 'automatic');
+    return tripId;
+  }
+  function confirmAssigned(tripId, order, vehicle, user) {
+    applyDispatchStep(db, tripId, 'logist_confirm', user.id);
+    notify('dispatcher', `Логист назначил и подтвердил рейс ${routeText(order)} (${vehicle.plate}) — подготовьте выход (1С, задание водителю, линия)`, 'trip', tripId);
+  }
+
+  match = route(/^\/api\/orders\/([^/]+)\/assign$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trips:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const order = db.prepare('SELECT * FROM orders WHERE id=?').get(match[0]);
+    const vehicle = db.prepare('SELECT * FROM vehicles WHERE id=?').get(body.vehicleId);
+    if (!order) return errorJson(response, 404, 'Заявка не найдена');
+    if (!vehicle || vehicle.status !== 'work') return errorJson(response, 422, 'Выберите доступное ТС');
+    const tripId = assignOrderCore(order, vehicle, user, { distanceKm: body.distanceKm });
     // Назначение из вкладки «Логист» подтверждается автоматически (логист
     // назначил сам — подтверждать себя не нужно) и сразу уходит диспетчеру.
     // Назначение из продаж логист обязан подтвердить вручную.
-    if (body.autoConfirm) {
-      applyDispatchStep(db, tripId, 'logist_confirm', user.id);
-      notify('dispatcher', `Логист назначил и подтвердил рейс ${routeText(order)} (${vehicle.plate}) — подготовьте выход (1С, задание водителю, линия)`, 'trip', tripId);
-    }
-    queueOutbox(db, 'trips', tripId, order.trip_id ? 'update' : 'create', tripOutboxPayload(tripId),
-      integrationPublic().writePolicy === 'automatic');
+    if (body.autoConfirm) confirmAssigned(tripId, order, vehicle, user);
     audit(db, user, 'assign', 'order', order.id,
       { vehicleId: vehicle.id, tripId, autoConfirm: Boolean(body.autoConfirm) }, requestIp(request));
     return json(response, 201, { tripId });
+  }
+
+  // ── Конструктор маршрутов: кольцевые цепочки заявок от базы до базы ──
+  if (request.method === 'POST' && pathname === '/api/routes') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const body = await readJson(request);
+    const orderIds = Array.isArray(body.orderIds) ? body.orderIds.slice(0, 12) : [];
+    const id = randomUUID();
+    const routeNo = nextRouteNo(db);
+    db.prepare(`INSERT INTO routes(id,route_no,base_region,planned_start,target_per_day,comment,
+      created_by,updated_by) VALUES(?,?,?,?,?,?,?,?)`).run(
+      id, routeNo, String(body.baseRegion || '').slice(0, 80), body.plannedStart || null,
+      Number(body.targetPerDay) > 0 ? Number(body.targetPerDay) : 48000,
+      String(body.comment || '').slice(0, 500), user.id, user.id);
+    const link = db.prepare(`UPDATE orders SET route_id=?,route_seq=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND stage<2 AND (route_id IS NULL OR route_id=?)`);
+    orderIds.forEach((orderId, index) => link.run(id, index + 1, orderId, id));
+    audit(db, user, 'create', 'route', id, { routeNo, orders: orderIds.length }, requestIp(request));
+    return json(response, 201, { id, routeNo });
+  }
+  match = route(/^\/api\/routes\/([^/]+)\/assign$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trips:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const routeRow = db.prepare('SELECT * FROM routes WHERE id=?').get(match[0]);
+    const vehicle = db.prepare('SELECT * FROM vehicles WHERE id=?').get(body.vehicleId);
+    if (!routeRow) return errorJson(response, 404, 'Маршрут не найден');
+    if (!vehicle || vehicle.status !== 'work') return errorJson(response, 422, 'Выберите доступное ТС');
+    const routeOrders = db.prepare(`SELECT * FROM orders WHERE route_id=? ORDER BY route_seq`).all(routeRow.id);
+    if (!routeOrders.length) return errorJson(response, 422, 'В маршруте нет заявок');
+    // Цепочка: каждая следующая заявка стартует не раньше освобождения сцепки
+    // после предыдущей и не раньше своего окна.
+    let cursor = routeRow.planned_start ? Date.parse(routeRow.planned_start) : 0;
+    const tripIds = [];
+    for (const order of routeOrders) {
+      if (order.stage >= 2 && order.trip_id) {
+        const existing = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(order.trip_id);
+        if (existing) cursor = Math.max(cursor, Date.parse(existing.ends_at));
+        continue;
+      }
+      const startsAt = new Date(Math.max(Date.parse(order.window_from), cursor || 0)).toISOString();
+      const tripId = assignOrderCore(order, vehicle, user, { startsAt });
+      confirmAssigned(tripId, order, vehicle, user);
+      const created = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(tripId);
+      cursor = Date.parse(created.ends_at);
+      tripIds.push(tripId);
+    }
+    db.prepare(`UPDATE routes SET status='assigned',vehicle_id=?,updated_by=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(vehicle.id, user.id, routeRow.id);
+    audit(db, user, 'assign', 'route', routeRow.id,
+      { vehicleId: vehicle.id, trips: tripIds.length }, requestIp(request));
+    return json(response, 201, { tripIds });
+  }
+  match = route(/^\/api\/routes\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const body = await readJson(request);
+    const routeRow = db.prepare('SELECT * FROM routes WHERE id=?').get(match[0]);
+    if (!routeRow) return errorJson(response, 404, 'Маршрут не найден');
+    if (Array.isArray(body.orderIds)) {
+      db.prepare(`UPDATE orders SET route_id=NULL,route_seq=NULL WHERE route_id=?`).run(routeRow.id);
+      const link = db.prepare(`UPDATE orders SET route_id=?,route_seq=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND stage<2 AND route_id IS NULL`);
+      body.orderIds.slice(0, 12).forEach((orderId, index) => link.run(routeRow.id, index + 1, orderId));
+    }
+    const status = ['draft', 'handed', 'done', 'cancelled'].includes(body.status)
+      ? body.status : routeRow.status;
+    db.prepare(`UPDATE routes SET status=?,planned_start=?,target_per_day=?,base_region=?,comment=?,
+      updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      status, body.plannedStart ?? routeRow.planned_start,
+      Number(body.targetPerDay) > 0 ? Number(body.targetPerDay) : routeRow.target_per_day,
+      body.baseRegion != null ? String(body.baseRegion).slice(0, 80) : routeRow.base_region,
+      body.comment != null ? String(body.comment).slice(0, 500) : routeRow.comment,
+      user.id, routeRow.id);
+    if (status === 'handed' && routeRow.status === 'draft') {
+      notify('logist', `Продажи передали маршрут ${routeRow.route_no}: назначьте ТС в «Конструкторе»`, 'route', routeRow.id);
+    }
+    audit(db, user, 'update', 'route', routeRow.id, { status }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (match && request.method === 'DELETE') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const routeRow = db.prepare('SELECT * FROM routes WHERE id=?').get(match[0]);
+    if (!routeRow) return errorJson(response, 404, 'Маршрут не найден');
+    db.prepare(`UPDATE orders SET route_id=NULL,route_seq=NULL WHERE route_id=?`).run(routeRow.id);
+    db.prepare('DELETE FROM routes WHERE id=?').run(routeRow.id);
+    audit(db, user, 'delete', 'route', routeRow.id, {}, requestIp(request));
+    return json(response, 200, { ok: true });
   }
 
   // ── Справочник водителей: закрепление за сцепками, отпуска/болезни ──

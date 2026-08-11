@@ -297,6 +297,35 @@ tbody tr:hover td { background: var(--hover); }
 .tt-chip { display: inline-block; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); font-size: var(--fs-xs); white-space: nowrap; }
 .tt-chip.muted { color: var(--muted); }
 .task-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; }
+/* Конструктор маршрутов */
+.route-card { padding: 10px 12px; margin-bottom: 4px; }
+.route-card.handed { border-left: 3px solid var(--teal); }
+.route-card.assigned { border-left: 3px solid var(--ok); opacity: .85; }
+.rt-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.rt-no { font-size: var(--fs-md); }
+.rt-perday { margin-left: auto; font-weight: 800; }
+.rt-perday.ok { color: var(--ok); }
+.rt-perday.warn { color: var(--warn); }
+.rt-perday.bad { color: var(--bad); }
+.rt-chain { margin: 5px 0 4px; font-size: var(--fs-sm); color: var(--ink); }
+.rt-nums { display: flex; gap: 12px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--muted); }
+.rt-nums b { color: var(--ink); }
+.rt-actions { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+.rt-lane { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px; margin: 4px 0;
+  border: 1px solid var(--line); border-radius: 8px; }
+.rt-lane.late { border-color: var(--warn); }
+.rt-lane.start, .rt-lane.finish { background: var(--soft); font-size: var(--fs-sm); display: block; }
+.rt-idx { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--navy); color: #fff; font-size: var(--fs-xs); font-weight: 800; flex: none; }
+.rt-lane-btns { display: flex; gap: 3px; flex: none; }
+.rt-lane-btns .button { min-height: 24px; padding: 1px 7px; }
+.rt-empty-leg { margin: 0 0 0 28px; color: var(--muted); font-size: var(--fs-xs); }
+.rt-total { margin-top: 9px; padding: 8px 11px; border-radius: 9px; background: var(--soft); font-size: var(--fs-sm); }
+.rt-total.ok { background: color-mix(in srgb, var(--ok) 11%, transparent); }
+.rt-total.warn { background: color-mix(in srgb, var(--warn) 11%, transparent); }
+.rt-total.bad { background: color-mix(in srgb, var(--bad) 11%, transparent); }
+.rt-cand { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+
 /* Контроль на линии: «горящее» событие (≤2 ч, не отработано) и отработанные */
 .card.ctrl-hot { border: 1px solid var(--bad); box-shadow: 0 0 0 2px color-mix(in srgb, var(--bad) 22%, transparent);
   background: color-mix(in srgb, var(--bad) 5%, var(--card)); }

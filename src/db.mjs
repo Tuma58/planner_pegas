@@ -26,6 +26,17 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS app_meta (
   key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS routes (
+  id TEXT PRIMARY KEY, route_no TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK(status IN ('draft','handed','assigned','done','cancelled')),
+  base_region TEXT NOT NULL DEFAULT '', planned_start TEXT,
+  target_per_day REAL NOT NULL DEFAULT 48000,
+  vehicle_id TEXT REFERENCES vehicles(id),
+  comment TEXT NOT NULL DEFAULT '',
+  created_by TEXT REFERENCES users(id), updated_by TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS task_marks (
   kind TEXT NOT NULL CHECK(kind IN ('sales','logist','dispatcher')),
   day TEXT NOT NULL, item_key TEXT NOT NULL,
@@ -432,6 +443,8 @@ function migrateColumns(db) {
   // записи, созданные до этого правила, получают явную пометку.
   db.exec(`UPDATE orders SET rejection_reason='Причина не указана'
     WHERE status='cancelled' AND (rejection_reason IS NULL OR rejection_reason='')`);
+  ensure('orders', 'route_id', 'TEXT');
+  ensure('orders', 'route_seq', 'INTEGER');
   ensure('trips', 'logist_confirmed_at', 'TEXT');
   ensure('trips', 'entered_1c_at', 'TEXT');
   ensure('trips', 'driver_notified_at', 'TEXT');
@@ -734,6 +747,15 @@ function normalizeVehicleStatus(status) {
 }
 
 // Следующий номер заявки из сквозного счётчика системы.
+// Номер маршрута конструктора: М-101, М-102… — сквозной счётчик.
+export function nextRouteNo(db) {
+  const row = db.prepare(`SELECT value FROM app_meta WHERE key='route_no_seq'`).get();
+  const next = row ? Number(row.value) + 1 : 101;
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('route_no_seq',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(next));
+  return `М-${next}`;
+}
+
 export function nextOrderNo(db) {
   const sequence = Number(db.prepare(
     `SELECT value FROM app_meta WHERE key='order_no_seq'`).get()?.value || 1000) + 1;

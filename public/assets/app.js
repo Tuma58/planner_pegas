@@ -1,6 +1,7 @@
 import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderBoss } from './boss.js';
+import { renderRoutes } from './routes.js';
 import { buildReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sales.js';
 import { renderLogist } from './logist.js';
@@ -513,6 +514,7 @@ const MAIN_VIEWS = [
   { id: 'gantt', title: 'Гант', show: () => true },
   { id: 'sales', title: 'Продажи', show: () => can('orders:write') },
   { id: 'logist', title: 'Логист', show: () => can('trips:write') },
+  { id: 'routes', title: 'Конструктор', show: () => can('orders:write') || can('trips:write') },
   { id: 'dispatcher', title: 'Диспетчер', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') }
@@ -569,6 +571,8 @@ function renderMain() {
       openDrivers: openDriversDirectory, openStats: openResourceStats,
       onReload: reload, taskContainer: byId('sidepanel')
     });
+  } else if (state.view === 'routes') {
+    renderRoutes(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'dispatcher') {
     renderDispatcher(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'logist') {

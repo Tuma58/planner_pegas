@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { nextOrderNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
+import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
 import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
@@ -259,6 +259,17 @@ test('диспозиции: вид «В работе» принимается, �
     '1001', 'бэкфилл пронумеровал заявку');
   assert.equal(nextOrderNo(second), '1002');
   assert.equal(nextOrderNo(second), '1003');
+
+  // Конструктор маршрутов: таблица создана, номера сквозные, заявка
+  // привязывается к маршруту с порядковым номером.
+  assert.equal(nextRouteNo(second), 'М-101');
+  assert.equal(nextRouteNo(second), 'М-102');
+  second.prepare(`INSERT INTO routes(id,route_no,base_region,target_per_day)
+    VALUES('rt-1','М-101','Пензенская обл',48000)`).run();
+  second.prepare(`UPDATE orders SET route_id='rt-1',route_seq=1 WHERE id='o-nonum'`).run();
+  const routed = second.prepare(`SELECT route_id,route_seq FROM orders WHERE id='o-nonum'`).get();
+  assert.equal(routed.route_id, 'rt-1');
+  assert.equal(routed.route_seq, 1);
 });
 
 test('потребность от логистики: ремонт и «без водителя» скрывают ТС до суток перед выходом', async () => {
