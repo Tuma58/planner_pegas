@@ -126,13 +126,13 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .icon-button:hover { color: white; }
 
 .toolbar {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  min-height: 54px; padding: 9px 16px; background: var(--card); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap;
+  min-height: 48px; padding: 6px 14px; background: var(--card); border-bottom: 1px solid var(--line);
 }
 .period-nav { display: flex; align-items: center; gap: 6px; }
-.period-nav strong { min-width: 130px; text-align: center; color: var(--ink); text-transform: capitalize; }
+.period-nav strong { min-width: 110px; text-align: center; color: var(--ink); text-transform: capitalize; font-size: var(--fs-sm); }
 .segmented { display: flex; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; }
-.segmented button { border: 0; background: var(--card); color: var(--muted); padding: 7px 10px; font-weight: 650; }
+.segmented button { border: 0; background: var(--card); color: var(--muted); padding: 5px 9px; font-weight: 650; white-space: nowrap; }
 .segmented button.active { background: var(--navy); color: white; }
 .panel-tabs { flex-wrap: wrap; margin-bottom: 12px; }
 .panel-tabs button { flex: 1 1 auto; }
@@ -198,7 +198,27 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
   position: absolute; top: 7px; height: 35px; overflow: hidden; padding: 4px 7px;
   border: 1px solid rgb(0 0 0 / 10%); border-radius: 6px; color: white;
   box-shadow: var(--shadow); text-align: left;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 30%);
 }
+/* Плановый рейс — пунктирная рамка: план отличим от фактического движения. */
+.trip.plan { border: 1px dashed rgb(255 255 255 / 55%); }
+/* Узкая плашка: только цвет и подсказка — обрезки текста не мельтешат. */
+.trip.tiny strong, .trip.tiny small { display: none; }
+/* Порожний подгон перед рейсом: штрихованный «хвост» на треке. */
+.empty-tail {
+  position: absolute; top: 19px; height: 11px; border-radius: 4px 0 0 4px;
+  background: repeating-linear-gradient(45deg, rgb(120 130 140 / 55%) 0 4px, transparent 4px 8px);
+  border: 1px dashed rgb(120 130 140 / 65%); border-right: 0; pointer-events: auto;
+}
+/* Текущий момент: вертикальная линия через всю канву. */
+.timeline { position: relative; }
+.now-line { position: absolute; top: 48px; bottom: 0; width: 2px; z-index: 2;
+  background: var(--bad); opacity: .55; pointer-events: none; }
+.now-line::before { content: ''; position: absolute; top: -4px; left: -3px;
+  border: 4px solid transparent; border-top-color: var(--bad); }
+/* Зебра строк: взгляд не соскальзывает на длинной канве. */
+.vehicle-row:nth-child(even) { background: rgb(90 110 130 / 4%); }
+[data-theme="dark"] .vehicle-row:nth-child(even) { background: rgb(255 255 255 / 2.5%); }
 .trip strong, .trip small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trip small { opacity: .88; font-size: 10px; }
 .trip.conflict { outline: 2px solid #c96a52; outline-offset: -2px; }
@@ -386,13 +406,13 @@ tbody tr:hover td { background: var(--hover); }
 .theme-toggle:hover { color: white; background: rgb(255 255 255 / 8%); }
 
 /* Легенда зон (ТК 21) */
-.legend { display: flex; gap: 10px; flex-wrap: wrap; }
+.legend { display: flex; gap: 3px 7px; flex-wrap: wrap; align-items: center; }
 .lg { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--muted); }
 .vday { display: block; }
 .vday-trip { color: var(--teal); font-weight: 650; }
 .vday-idle { color: var(--warn); font-weight: 700; }
 .vehicle-cell.cell-idle { box-shadow: inset 3px 0 0 var(--warn); background: color-mix(in srgb, var(--warn) 6%, var(--card)); }
-.lg.clickable { cursor: pointer; padding: 3px 8px; border-radius: 11px; border: 1px solid transparent; }
+.lg.clickable { cursor: pointer; padding: 2px 6px; border-radius: 10px; border: 1px solid transparent; white-space: nowrap; }
 .lg.clickable:hover { background: var(--hover); border-color: var(--line); }
 .lg.clickable.active { background: var(--soft); border-color: var(--teal); color: var(--ink); font-weight: 700; }
 .sw { width: 11px; height: 11px; border-radius: 3px; }

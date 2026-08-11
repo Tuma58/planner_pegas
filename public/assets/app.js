@@ -224,15 +224,32 @@ function renderTimeline() {
           title="${meta.label} · ${formatDateTime(item.starts_at)} → ${formatDateTime(item.ends_at)}${item.note ? `
 ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ? ` · ${escapeHtml(item.note)}` : ''}</span>`;
       }).join('');
+    const calcSettings = state.data.settings.calculation;
     const trips = vehicleTrips.map(trip => {
       const visibleStart = new Date(Math.max(new Date(trip.starts_at), viewStart));
       const visibleEnd = new Date(Math.min(new Date(trip.ends_at), viewEnd));
       const left = Math.max(0, daysBetween(viewStart, visibleStart)) * dayWidth;
       const width = Math.max(28, daysBetween(visibleStart, visibleEnd) * dayWidth - 3);
       const color = trip.from_color || '#3b6ea5';
-      return `<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''}"
+      // Порожний подгон перед рейсом: штрихованный хвост длиной во время
+      // перегона (км/50 × 1,5 — отдых включён), обрезается краем окна.
+      let emptyTail = '';
+      const emptyKm = Number(trip.empty_km) || 0;
+      if (emptyKm > 0 && trip.status !== 'rejected') {
+        const tailMs = transitHours(emptyKm, calcSettings, 0) * 3_600_000;
+        const tailStart = new Date(Math.max(Date.parse(trip.starts_at) - tailMs, viewStart.getTime()));
+        const tailEnd = new Date(Math.min(Date.parse(trip.starts_at), viewEnd.getTime()));
+        const tailWidth = daysBetween(tailStart, tailEnd) * dayWidth - 1;
+        if (tailWidth > 3) {
+          emptyTail = `<span class="empty-tail" style="left:${Math.max(0,
+            daysBetween(viewStart, tailStart) * dayWidth)}px;width:${tailWidth}px"
+            title="Порожний подгон ~${Math.round(emptyKm)} км (~${Math.round(tailMs / 3_600_000)} ч)"></span>`;
+        }
+      }
+      return `${emptyTail}<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''} ${trip.status === 'plan' ? 'plan' : ''} ${width < 70 ? 'tiny' : ''}"
         data-trip="${trip.id}" style="left:${left}px;width:${width}px;background-color:${color}"
-        title="${escapeHtml(routeLabel(trip))}&#10;Геозоны: ${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}">
+        title="${escapeHtml(routeLabel(trip))}&#10;Геозоны: ${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}${emptyKm
+          ? `&#10;Порожний подгон ~${Math.round(emptyKm)} км` : ''}">
         <strong>${escapeHtml(routeLabel(trip))}</strong>
         <small>${escapeHtml(trip.customer_name)}</small>
       </button>`;
@@ -247,8 +264,12 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px"><div class="track-grid">${grid}</div>${dispositionBlocks}${trips}</div>
     </div>`;
   }).join('');
+  const nowMoment = Date.now();
+  const nowLine = (nowMoment > viewStart.getTime() && nowMoment < viewEnd.getTime())
+    ? `<div class="now-line" style="left:${236 + daysBetween(viewStart, new Date(nowMoment)) * dayWidth}px"
+        title="Сейчас · ${formatDateTime(new Date(nowMoment).toISOString())}"></div>` : '';
   byId('timeline').innerHTML = vehicles.length
-    ? `<div class="timeline-head"><div class="vehicle-cell">Сцепка · водитель</div>${headerDays}</div>${rows}`
+    ? `<div class="timeline-head"><div class="vehicle-cell">Сцепка · водитель</div>${headerDays}</div>${rows}${nowLine}`
     : '<div class="empty-state">Нет ТС по выбранному фильтру</div>';
   document.querySelectorAll('[data-trip]').forEach(button =>
     button.addEventListener('click', () => {
