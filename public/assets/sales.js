@@ -294,42 +294,69 @@ function salesTaskDialog(data, context) {
     const text = taskText(dayIso, task);
     const box = document.getElementById('salesTaskBody');
     box.dataset.text = text;
+    const needSum = task.needs.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0);
+    const lackLanes = task.lanes.filter(bucket => bucket.deficit > 0);
+    const typeChips = pairs => pairs.map(([type, count]) =>
+      `<span class="tt-chip">${count}&nbsp;${escapeHtml(type)}</span>`).join(' ');
+    // Свободные — группами по субъекту, номера чипами: простыня не нужна.
+    const freeByRegion = new Map();
+    task.free.forEach(item => {
+      const key = item.region || 'субъект не определён';
+      if (!freeByRegion.has(key)) freeByRegion.set(key, []);
+      freeByRegion.get(key).push(item);
+    });
+    const laneBlock = bucket => `<div class="task-lane ${bucket.deficit > 0 ? 'lack' : ''}">
+      <div class="task-lane-head">
+        <b>${escapeHtml(bucket.lane)}</b>
+        <span class="muted">${escapeHtml(bucket.fromRegion || '')}</span>
+        <span class="task-balance ${bucket.deficit > 0 ? 'bad' : 'ok'}">${bucket.deficit > 0
+          ? `⛔ не хватает: ${bucket.lack.map(item => `${item.count} ${escapeHtml(item.type)}`).join(', ')}`
+          : '✅ закрывается'}</span>
+      </div>
+      <div class="task-lane-nums">
+        <span>необходимо <b>${bucket.orders.length}</b>: ${typeChips(bucket.byType)}</span>
+        <span class="muted">·</span>
+        <span>на месте: ${bucket.freeHereByType.length
+          ? typeChips(bucket.freeHereByType) : '<span class="muted">нет</span>'}</span>
+      </div>
+      ${bucket.send.length ? bucket.send.map(item => `<div class="task-row send">→ направить
+        <b class="mono">${escapeHtml(item.vehicle.plate)}</b> (${escapeHtml(item.vehicle.type_name || '')})
+        из ${escapeHtml(item.place)}${item.km != null
+          ? ` <span class="muted">(~${item.km} км подгон)</span>` : ''}</div>`).join('') : ''}
+      <details class="task-fold"><summary>заявки (${bucket.orders.length})</summary>
+        ${bucket.orders.map(order => `<div class="task-row">📦 №${escapeHtml(order.order_no || '—')}
+          ${escapeHtml(order.customer_name)} · ${escapeHtml(order.from_point || order.from_name)} →
+          ${escapeHtml(order.to_point || order.to_name)} · ${money(order.rate_vat)}
+          ${order.body_type ? `<span class="muted">· ${escapeHtml(order.body_type)}</span>` : ''}</div>`).join('')}
+      </details>
+    </div>`;
     box.innerHTML = `
+      <div class="task-kpis">
+        <div class="task-kpi"><b>${task.free.length}</b><span>свободны</span></div>
+        <div class="task-kpi"><b>${task.freeing.length}</b><span>освободятся</span></div>
+        <div class="task-kpi muted"><b>${task.unavailable.length}</b><span>недоступны</span></div>
+        <div class="task-kpi ${lackLanes.length ? 'warn' : ''}"><b>${task.needs.length}</b>
+          <span>рейсов без ТС · ${money(needSum)}</span></div>
+      </div>
+      <div class="task-sec"><b>Перемещения на дату (${task.lanes.length} направлений${lackLanes.length
+          ? ` · <span class="danger">дефицит: ${lackLanes.length}</span>` : ''})</b>
+        ${[...lackLanes, ...task.lanes.filter(bucket => !bucket.deficit)].map(laneBlock).join('')
+          || '<p class="muted">рейсов без ТС на день нет</p>'}</div>
       <div class="task-sec"><b>Свободны с прошлых дней (${task.free.length})</b>
-        ${task.free.map(item => `<div class="task-row">🚚 <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
-          — ${escapeHtml(item.place)}${item.region ? ` <span class="muted">(${escapeHtml(item.region)})</span>` : ''}
-          ${item.since ? `<span class="muted"> · стоит с ${formatDateTime(item.since)}</span>` : ''}</div>`).join('')
-          || '<p class="muted">нет</p>'}</div>
+        ${[...freeByRegion.entries()].sort((a, b) => b[1].length - a[1].length).map(([region, list]) =>
+          `<details class="task-fold"><summary>${escapeHtml(region)} — <b>${list.length}</b></summary>
+            <div class="task-chips">${list.map(item => `<span class="tt-chip mono"
+              title="${escapeHtml(item.place)}${item.since ? ` · стоит с ${formatDateTime(item.since)}` : ''}">${escapeHtml(item.vehicle.plate)}</span>`).join(' ')}</div>
+          </details>`).join('') || '<p class="muted">нет</p>'}</div>
       <div class="task-sec"><b>Освободятся в течение дня (${task.freeing.length})</b>
-        ${task.freeing.map(item => `<div class="task-row">⏱ <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
-          — ${formatDateTime(item.at)} ${escapeHtml(item.why)}, ${escapeHtml(item.place)}
-          ${item.region ? `<span class="muted">(${escapeHtml(item.region)})</span>` : ''}</div>`).join('')
+        ${task.freeing.map(item => `<div class="task-row">⏱ <b>${formatDateTime(item.at)}</b>
+          <b class="mono">${escapeHtml(item.vehicle.plate)}</b> ${escapeHtml(item.why)} —
+          ${escapeHtml(item.place)}${item.region ? ` <span class="muted">(${escapeHtml(item.region)})</span>` : ''}</div>`).join('')
           || '<p class="muted">нет</p>'}</div>
       <div class="task-sec"><b>Недоступны весь день (${task.unavailable.length})</b>
-        ${task.unavailable.map(item => `<div class="task-row muted">⛔ <span class="mono">${escapeHtml(item.vehicle.plate)}</span>
-          — ${escapeHtml(kindShort[item.kind] || item.kind)} до ${formatDateTime(item.until)}</div>`).join('')
-          || '<p class="muted">нет</p>'}</div>
-      <div class="task-sec"><b>Перемещения — рейсы без ТС (${task.needs.length})</b>
-        ${task.lanes.map(bucket => `<div class="task-region ${bucket.deficit > 0 ? 'lack' : ''}">
-          <b>${escapeHtml(bucket.lane)}</b>${bucket.fromRegion
-            ? ` <span class="muted">· погрузка: ${escapeHtml(bucket.fromRegion)}</span>` : ''}
-          <div class="task-row"><b>необходимо ${bucket.orders.length}:</b>
-            ${bucket.byType.map(([type, count]) => `${count} ${escapeHtml(type)}`).join(', ')}</div>
-          <div class="task-row">на месте свободно: ${bucket.freeHereByType.length
-            ? bucket.freeHereByType.map(([type, count]) => `${count} ${escapeHtml(type)}`).join(', ')
-            : '<span class="muted">нет</span>'}
-            ${bucket.deficit > 0
-              ? `<span class="danger">— не хватает: ${bucket.lack.map(item =>
-                  `${item.count} ${escapeHtml(item.type)}`).join(', ')}</span>`
-              : '<span class="muted">— закрывается</span>'}</div>
-          ${bucket.orders.map(order => `<div class="task-row">📦 №${escapeHtml(order.order_no || '—')}
-            ${escapeHtml(order.customer_name)} · ${escapeHtml(order.from_point || order.from_name)} →
-            ${escapeHtml(order.to_point || order.to_name)} · ${money(order.rate_vat)}
-            ${order.body_type ? `<span class="muted">· ${escapeHtml(order.body_type)}</span>` : ''}</div>`).join('')}
-          ${bucket.send.map(item => `<div class="task-row send">→ направить <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
-            (${escapeHtml(item.vehicle.type_name || '')}) из ${escapeHtml(item.place)}${item.km != null
-              ? ` <span class="muted">(~${item.km} км подгон)</span>` : ''}</div>`).join('')}
-        </div>`).join('') || '<p class="muted">рейсов без ТС на день нет</p>'}</div>`;
+        <div class="task-chips">${task.unavailable.map(item => `<span class="tt-chip muted"
+          title="до ${formatDateTime(item.until)}">${escapeHtml(item.vehicle.plate)} · ${escapeHtml(kindShort[item.kind] || item.kind)}</span>`).join(' ')
+          || '<span class="muted">нет</span>'}</div></div>`;
   };
   context.showModal(`<h2 style="margin-bottom:6px">📋 Задание продажам</h2>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
@@ -337,7 +364,9 @@ function salesTaskDialog(data, context) {
       <input type="date" id="salesTaskDay" value="${tomorrow}" style="width:auto">
       <button class="button small" id="salesTaskCopy" style="margin-left:auto">📋 Скопировать</button>
     </div>
-    <div id="salesTaskBody" style="max-height:56vh;overflow:auto"></div>`);
+    <div id="salesTaskBody" style="max-height:62vh;overflow:auto"></div>`);
+  const modal = document.querySelector('#modalRoot .modal');
+  if (modal) modal.style.width = 'min(820px, 96vw)';
   render(tomorrow);
   document.getElementById('salesTaskDay').onchange = event => render(event.currentTarget.value || tomorrow);
   document.getElementById('salesTaskCopy').onclick = async () => {
