@@ -327,6 +327,8 @@ export async function renderBoss(container, context) {
           <option value="history">История периодов</option>
         </select>
         <button class="button small" id="bossReport">📄 Сформировать</button>
+        <button class="button ghost small" id="bossDaily"
+          title="Ежедневный отчёт по использованию автопарка: срез состояний, выручка и порожняк за день">📆 Отчёт дня</button>
       </div>
       <nav class="brep-nav" id="brepNav">
         <a href="#brep-s1" class="on">01 Период</a><a href="#brep-s2">02 Каскад</a>
@@ -340,8 +342,111 @@ export async function renderBoss(container, context) {
       фонд ${pct(u.utilizationTarget, 1)}). Печатные формы — через «📄 Сформировать».</div>
   </div>`;
 
+  // ── Ежедневный отчёт по использованию автопарка ──
+  const dailyDialog = () => {
+    const defaultDay = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const fmtDayLong = iso => new Intl.DateTimeFormat('ru-RU',
+      { weekday: 'short', day: 'numeric', month: 'long', timeZone: 'UTC' })
+      .format(new Date(`${iso}T12:00:00Z`));
+    const renderDay = async dayIso => {
+      const box = document.getElementById('bossDailyBody');
+      box.innerHTML = '<p class="muted">Считаю…</p>';
+      const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
+      const dayEnd = dayStart + 86_400_000;
+      const nextIso = new Date(dayEnd).toISOString().slice(0, 10);
+      let snap = null;
+      try { snap = await api(`/api/reports?from=${dayIso}&to=${nextIso}`); }
+      catch { box.innerHTML = '<p class="muted">Отчёт за день недоступен.</p>'; return; }
+      const data = state.data;
+      // Состояние каждой сцепки на день: рейс по пересечению → диспозиция
+      // по большему пересечению → простой (методика ячеек Ганта).
+      const buckets = { trip: [], repair: [], shift: [], no_driver: [], reserve: [], idle: [] };
+      data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
+        const hasTrip = data.trips.some(trip => trip.vehicle_id === vehicle.id &&
+          trip.status !== 'rejected' &&
+          Date.parse(trip.starts_at) < dayEnd && Date.parse(trip.ends_at) > dayStart);
+        if (hasTrip) { buckets.trip.push(vehicle); return; }
+        const covering = (data.dispositions || []).filter(item =>
+          item.vehicle_id === vehicle.id &&
+          Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart)
+          .sort((a, b) =>
+            (Math.min(Date.parse(b.ends_at), dayEnd) - Math.max(Date.parse(b.starts_at), dayStart)) -
+            (Math.min(Date.parse(a.ends_at), dayEnd) - Math.max(Date.parse(a.starts_at), dayStart)))[0];
+        if (covering && buckets[covering.kind]) { buckets[covering.kind].push(vehicle); return; }
+        buckets.idle.push(vehicle);
+      });
+      const fleet = data.vehicles.filter(vehicle => vehicle.status === 'work').length;
+      const u = snap.utilization || {};
+      const dayTrips = data.trips.filter(trip => trip.status !== 'rejected' &&
+        Date.parse(trip.ends_at) > dayStart && Date.parse(trip.ends_at) <= dayEnd);
+      const chipList = (list, extra) => list.length
+        ? `<div class="task-chips">${list.map(vehicle => `<span class="tt-chip mono"
+            title="${escapeHtml(vehicle.driver_name || '')}">${escapeHtml(vehicle.plate)}${extra
+              ? escapeHtml(extra(vehicle)) : ''}</span>`).join('')}</div>`
+        : '<p class="muted" style="margin:2px 0">нет</p>';
+      const idleSince = vehicle => {
+        const last = data.trips.filter(trip => trip.vehicle_id === vehicle.id &&
+          trip.status !== 'rejected' && Date.parse(trip.ends_at) <= dayEnd)
+          .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+        if (!last) return '';
+        const days = Math.floor((dayEnd - Date.parse(last.ends_at)) / 86_400_000);
+        return days > 0 ? ` · ${days} дн` : '';
+      };
+      const pctOf = value => `${Math.round((value || 0) * 100)}%`;
+      const lines = [`ОТЧЁТ ДНЯ ПО АВТОПАРКУ — ${fmtDayLong(dayIso)}`, '',
+        `Парк в работе: ${fleet}`,
+        `В рейсе: ${buckets.trip.length} (${pctOf(buckets.trip.length / (fleet || 1))})`,
+        `Простой без причины: ${buckets.idle.length} — ${buckets.idle.map(v => v.plate).join(', ') || '—'}`,
+        `Ремонт: ${buckets.repair.length} · Пересменка: ${buckets.shift.length}` +
+          ` · Без водителя: ${buckets.no_driver.length} · Резерв: ${buckets.reserve.length}`,
+        `КТГ ${pctOf(u.ktg)} · КВЛ ${pctOf(u.kvl)} · КИП ${pctOf(u.kip)}`,
+        `Выручка без НДС (по выгрузкам дня): ${rub(snap.netRevenue || 0)} · рейсов завершено: ${dayTrips.length}`,
+        `Пробег: гружёный ${Math.round(snap.loadedKm || 0)} км · порожний ${Math.round(snap.emptyKm || 0)} км` +
+          ` (${pctOf(snap.emptyRatio)}) · ремонтный ${Math.round(snap.repairKm || 0)} км`];
+      box.dataset.text = lines.join('\n');
+      box.innerHTML = `
+        <div class="task-kpis five">
+          <div class="task-kpi"><b>${fleet}</b><span>парк в работе</span></div>
+          <div class="task-kpi"><b>${buckets.trip.length}</b><span>в рейсе · ${pctOf(buckets.trip.length / (fleet || 1))}</span></div>
+          <div class="task-kpi ${buckets.idle.length ? 'warn' : ''}"><b>${buckets.idle.length}</b><span>простой без причины</span></div>
+          <div class="task-kpi muted"><b>${buckets.repair.length + buckets.shift.length + buckets.no_driver.length + buckets.reserve.length}</b><span>недоступны</span></div>
+          <div class="task-kpi"><b>${rub(snap.netRevenue || 0)}</b><span>без НДС за день</span></div>
+        </div>
+        <div class="task-balance-line ${(snap.emptyRatio || 0) > 0.3 ? 'bad' : 'ok'}">
+          Пробег дня: гружёный <b>${Math.round(snap.loadedKm || 0)}</b> км · порожний
+          <b>${Math.round(snap.emptyKm || 0)}</b> км (${pctOf(snap.emptyRatio)})
+          · КТГ ${pctOf(u.ktg)} · КВЛ ${pctOf(u.kvl)} · КИП ${pctOf(u.kip)}</div>
+        <div class="task-sec"><b>В рейсе (${buckets.trip.length})</b>${chipList(buckets.trip)}</div>
+        <div class="task-sec"><b>⚠ Простой без причины (${buckets.idle.length})</b>${chipList(buckets.idle, idleSince)}</div>
+        <div class="task-sec"><b>Ремонт (${buckets.repair.length})</b>${chipList(buckets.repair)}</div>
+        <div class="task-sec"><b>Пересменка (${buckets.shift.length}) · Без водителя (${buckets.no_driver.length}) · Резерв (${buckets.reserve.length})</b>
+          ${chipList([...buckets.shift, ...buckets.no_driver, ...buckets.reserve])}</div>`;
+    };
+    context.showModal(`<h2 style="margin-bottom:6px">📆 Отчёт дня по автопарку</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <span class="muted">за</span>
+        <input type="date" id="bossDailyDay" value="${defaultDay}" style="width:auto">
+        <button class="button small" id="bossDailyCopy" style="margin-left:auto">📋 Скопировать</button>
+      </div>
+      <div id="bossDailyBody" style="max-height:62vh;overflow:auto"></div>`);
+    const modal = document.querySelector('#modalRoot .modal');
+    if (modal) modal.style.width = 'min(760px, 96vw)';
+    renderDay(defaultDay);
+    document.getElementById('bossDailyDay').onchange = event => renderDay(event.currentTarget.value || defaultDay);
+    document.getElementById('bossDailyCopy').onclick = async () => {
+      const text = document.getElementById('bossDailyBody').dataset.text || '';
+      try { await navigator.clipboard.writeText(text); } catch {
+        const area = document.createElement('textarea');
+        area.value = text; document.body.append(area);
+        area.select(); document.execCommand('copy'); area.remove();
+      }
+      toast('Отчёт дня скопирован');
+    };
+  };
+
   // ── Обработчики ──
   const rerender = () => renderBoss(container, context);
+  container.querySelector('#bossDaily').onclick = dailyDialog;
   const applyRange = () => {
     const a = document.getElementById('bossFrom').value;
     const b = document.getElementById('bossTo').value;

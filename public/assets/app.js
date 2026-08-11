@@ -676,7 +676,7 @@ function renderMain() {
     renderTimeline();
   } else if (state.view === 'boss') {
     byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
-    renderBoss(byId('timeline'), { state, onReload: reload, openReport });
+    renderBoss(byId('timeline'), { state, onReload: reload, openReport, showModal, closeModal });
   } else if (state.view === 'sales') {
     renderSales(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip,
