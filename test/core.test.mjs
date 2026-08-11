@@ -357,9 +357,9 @@ test('потребность от логистики: ремонт и «без �
         region: 'Московская обл', latitude: 55.5, longitude: 38.1 },
     ], zones: [] },
     vehicles: [
-      { id: 'V1', plate: 'В1', status: 'work', zone_name: 'Дом' },
-      { id: 'V2', plate: 'В2', status: 'work', zone_name: 'Дом' },
-      { id: 'V3', plate: 'В3', status: 'work', zone_name: 'Дом' },
+      { id: 'V1', plate: 'В1', status: 'work', zone_name: 'Дом', type_name: 'Тушевоз' },
+      { id: 'V2', plate: 'В2', status: 'work', zone_name: 'Дом', type_name: 'Паллет 33' },
+      { id: 'V3', plate: 'В3', status: 'work', zone_name: 'Дом', type_name: 'Тушевоз' },
     ],
     trips: [
       { vehicle_id: 'V1', status: 'done', to_point: 'Пенза-склад', to_name: 'Дом',
@@ -373,6 +373,12 @@ test('потребность от логистики: ремонт и «без �
     ],
     orders: [
       { id: 'O1', order_no: '2001', customer_name: 'К1', stage: 1, rate_vat: 100000,
+        body_type: 'Тушевоз',
+        from_address_id: 'a-sof', from_point: 'Софьино', from_name: 'Москва',
+        to_point: 'Пенза-склад', to_name: 'Дом',
+        window_from: '2026-08-20T06:00:00.000Z', window_to: '2026-08-20T20:00:00.000Z' },
+      { id: 'O2', order_no: '2002', customer_name: 'К2', stage: 1, rate_vat: 90000,
+        body_type: 'Рефрижератор',
         from_address_id: 'a-sof', from_point: 'Софьино', from_name: 'Москва',
         to_point: 'Пенза-склад', to_name: 'Дом',
         window_from: '2026-08-20T06:00:00.000Z', window_to: '2026-08-20T20:00:00.000Z' },
@@ -382,11 +388,19 @@ test('потребность от логистики: ремонт и «без �
   assert.equal(task.free[0].region, 'Пензенская обл');
   assert.equal(task.freeing.length, 1, 'V2 освободится после рейса в течение дня');
   assert.equal(task.unavailable.length, 1, 'V3 в ремонте весь день');
-  assert.equal(task.regions.length, 1);
-  assert.equal(task.regions[0].region, 'Московская обл');
-  assert.equal(task.regions[0].deficit, 1, 'в Московской заявка без местных сцепок');
-  assert.ok(task.regions[0].send.length >= 1, 'рекомендован подгон');
-  assert.ok(task.regions[0].send[0].km > 400, 'километраж подгона Пенза→Софьино посчитан');
+  assert.equal(task.lanes.length, 1, 'направление Москва → Дом одно');
+  const lane = task.lanes[0];
+  assert.equal(lane.lane, 'Москва → Дом');
+  assert.equal(lane.orders.length, 2, 'двум рейсам нужно ТС на направлении');
+  assert.deepEqual(Object.fromEntries(lane.byType), { 'Тушевоз': 1, 'любой реф': 1 },
+    'разбивка по типам: точный кузов + любой рефрижератор');
+  assert.equal(lane.deficit, 2, 'в Московской свободных сцепок нет — не хватает обеих');
+  assert.ok(lane.lack.some(item => item.type === 'Тушевоз' && item.count === 1),
+    'дефицит тушевоза по типу');
+  const sendT = lane.send.find(item => item.forType === 'Тушевоз');
+  assert.ok(sendT && sendT.vehicle.type_name === 'Тушевоз',
+    'на дефицит тушевоза рекомендован именно тушевоз');
+  assert.ok(sendT.km > 400, 'километраж подгона Пенза→Софьино посчитан');
 
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');

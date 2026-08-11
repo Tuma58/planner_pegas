@@ -185,41 +185,69 @@ export function salesTaskFor(data, dayIso) {
   free.sort((a, b) => String(a.since || '').localeCompare(String(b.since || '')));
   freeing.sort((a, b) => a.at.localeCompare(b.at));
 
-  // Потребности без ТС, чьё окно накрывает день: группировка по региону погрузки.
+  // Потребности без ТС, чьё окно накрывает день: группировка по НАПРАВЛЕНИЮ
+  // (геозона погрузки → геозона выгрузки) с разбивкой по требуемым типам ТС.
+  // Кузов заявки, совпадающий с типом парка («Тушевоз», «Паллет 33»…), —
+  // жёсткое требование; «Рефрижератор», «Изотерм» и пустой — любой тип.
   const needs = (data.orders || []).filter(order => {
     const stage = orderStage(order, data).stage;
     return (stage === 0 || stage === 1) &&
       Date.parse(order.window_from) < dayEnd && Date.parse(order.window_to) > dayStart;
   });
+  const typeNames = [...new Set(data.vehicles.map(vehicle => vehicle.type_name).filter(Boolean))];
+  const ANY = 'любой реф';
+  const typeOfOrder = order => typeNames.find(name =>
+    name.toLowerCase() === String(order.body_type || '').trim().toLowerCase()) || ANY;
   const regionOfOrder = order => addressById(order.from_address_id)?.region
     || regionOfPlace(data, order.from_point, order.from_name);
-  const byRegion = new Map();
-  needs.forEach(order => {
-    const region = regionOfOrder(order) || 'регион не определён';
-    if (!byRegion.has(region)) byRegion.set(region, { region, orders: [], freeHere: 0 });
-    byRegion.get(region).orders.push(order);
-  });
   const freeAll = [...free, ...freeing];
-  freeAll.forEach(item => {
-    const bucket = byRegion.get(item.region);
-    if (bucket) bucket.freeHere += 1;
-  });
-  // Дефицитные регионы: рекомендация — ближайшие свободные сцепки из других мест.
-  const regions = [...byRegion.values()].map(bucket => {
-    const deficit = bucket.orders.length - bucket.freeHere;
-    let send = [];
-    if (deficit > 0) {
-      const target = addressById(bucket.orders[0].from_address_id)
-        || resolveAddress(data, bucket.orders[0].from_point || bucket.orders[0].from_name);
-      send = freeAll.filter(item => item.region !== bucket.region)
-        .map(item => ({ ...item, km: (item.position && target)
-          ? plannedKmBetween(item.position, target) : null }))
-        .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9))
-        .slice(0, deficit + 1);
+  const byLane = new Map();
+  needs.forEach(order => {
+    const key = `${order.from_name} → ${order.to_name}`;
+    if (!byLane.has(key)) {
+      byLane.set(key, { lane: key, fromZone: order.from_name, toZone: order.to_name,
+        fromRegion: regionOfOrder(order) || '', orders: [], byType: new Map() });
     }
-    return { ...bucket, deficit, send };
-  }).sort((a, b) => b.deficit - a.deficit);
-  return { free, freeing, unavailable, needs, regions };
+    const bucket = byLane.get(key);
+    bucket.orders.push(order);
+    const type = typeOfOrder(order);
+    bucket.byType.set(type, (bucket.byType.get(type) || 0) + 1);
+  });
+  const lanes = [...byLane.values()].map(bucket => {
+    // Свободные в регионе погрузки по типам парка.
+    const freeHere = freeAll.filter(item => item.region === bucket.fromRegion);
+    const freeHereByType = new Map();
+    freeHere.forEach(item => {
+      const type = item.vehicle.type_name || '';
+      freeHereByType.set(type, (freeHereByType.get(type) || 0) + 1);
+    });
+    // Дефицит: точные типы закрываются своим типом, «любой» — остатком.
+    const lack = [];
+    let usedExact = 0;
+    for (const [type, count] of bucket.byType) {
+      if (type === ANY) continue;
+      const here = freeHereByType.get(type) || 0;
+      usedExact += Math.min(count, here);
+      if (count > here) lack.push({ type, count: count - here });
+    }
+    const anyNeed = bucket.byType.get(ANY) || 0;
+    const anyLeft = Math.max(0, freeHere.length - usedExact);
+    if (anyNeed > anyLeft) lack.push({ type: ANY, count: anyNeed - anyLeft });
+    // Рекомендации: ближайшие свободные нужного типа из других регионов.
+    const target = addressById(bucket.orders[0].from_address_id)
+      || resolveAddress(data, bucket.orders[0].from_point || bucket.orders[0].from_name);
+    const send = lack.flatMap(item => freeAll
+      .filter(candidate => candidate.region !== bucket.fromRegion &&
+        (item.type === ANY || candidate.vehicle.type_name === item.type))
+      .map(candidate => ({ ...candidate, forType: item.type, km: (candidate.position && target)
+        ? plannedKmBetween(candidate.position, target) : null }))
+      .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9))
+      .slice(0, item.count + 1));
+    return { ...bucket, byType: [...bucket.byType.entries()], freeHere: freeHere.length,
+      freeHereByType: [...freeHereByType.entries()].filter(([, n]) => n > 0),
+      deficit: lack.reduce((sum, item) => sum + item.count, 0), lack, send };
+  }).sort((a, b) => b.orders.length - a.orders.length);
+  return { free, freeing, unavailable, needs, lanes };
 }
 
 // Диалог «Задание продажам»: дата выбирается, разделы пересчитываются,
@@ -242,15 +270,21 @@ function salesTaskDialog(data, context) {
       task.unavailable.forEach(item => lines.push(`  ${item.vehicle.plate} — ` +
         `${kindShort[item.kind] || item.kind} до ${formatDateTime(item.until)}`));
     }
-    lines.push('', `Потребности без ТС на день: ${task.needs.length}` +
+    lines.push('', `Перемещения — рейсов без ТС на день: ${task.needs.length}` +
       (task.needs.length ? ` · ${money(task.needs.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0))}` : ''));
-    task.regions.forEach(bucket => {
-      lines.push(`  ${bucket.region}: заявок ${bucket.orders.length}, свободно на месте ${bucket.freeHere}` +
-        (bucket.deficit > 0 ? ` — НЕ ХВАТАЕТ ${bucket.deficit}` : ' — закрывается'));
+    task.lanes.forEach(bucket => {
+      lines.push(`  ${bucket.lane}${bucket.fromRegion ? ` (погрузка: ${bucket.fromRegion})` : ''}: ` +
+        `необходимо ${bucket.orders.length} — ` +
+        bucket.byType.map(([type, count]) => `${count} ${type}`).join(', '));
+      lines.push(`    на месте свободно: ${bucket.freeHereByType.length
+        ? bucket.freeHereByType.map(([type, count]) => `${count} ${type}`).join(', ') : 'нет'}` +
+        (bucket.deficit > 0
+          ? ` — НЕ ХВАТАЕТ: ${bucket.lack.map(item => `${item.count} ${item.type}`).join(', ')}`
+          : ' — закрывается'));
       bucket.orders.forEach(order => lines.push(`    №${order.order_no || '—'} ${order.customer_name}: ` +
         `${order.from_point || order.from_name} → ${order.to_point || order.to_name}, ` +
         `окно ${formatDateTime(order.window_from)}–${formatDateTime(order.window_to)}, ${money(order.rate_vat)}`));
-      bucket.send.forEach(item => lines.push(`    → направить ${item.vehicle.plate} из ` +
+      bucket.send.forEach(item => lines.push(`    → направить ${item.vehicle.plate} (${item.vehicle.type_name || ''}) из ` +
         `${item.place}${item.km != null ? ` (~${item.km} км подгон)` : ''}`));
     });
     return lines.join('\n');
@@ -275,16 +309,27 @@ function salesTaskDialog(data, context) {
         ${task.unavailable.map(item => `<div class="task-row muted">⛔ <span class="mono">${escapeHtml(item.vehicle.plate)}</span>
           — ${escapeHtml(kindShort[item.kind] || item.kind)} до ${formatDateTime(item.until)}</div>`).join('')
           || '<p class="muted">нет</p>'}</div>
-      <div class="task-sec"><b>Потребности без ТС (${task.needs.length})</b>
-        ${task.regions.map(bucket => `<div class="task-region ${bucket.deficit > 0 ? 'lack' : ''}">
-          <b>${escapeHtml(bucket.region)}</b>: заявок ${bucket.orders.length}, свободно на месте ${bucket.freeHere}
-          ${bucket.deficit > 0 ? `<span class="danger">— не хватает ${bucket.deficit}</span>` : '<span class="muted">— закрывается</span>'}
+      <div class="task-sec"><b>Перемещения — рейсы без ТС (${task.needs.length})</b>
+        ${task.lanes.map(bucket => `<div class="task-region ${bucket.deficit > 0 ? 'lack' : ''}">
+          <b>${escapeHtml(bucket.lane)}</b>${bucket.fromRegion
+            ? ` <span class="muted">· погрузка: ${escapeHtml(bucket.fromRegion)}</span>` : ''}
+          <div class="task-row"><b>необходимо ${bucket.orders.length}:</b>
+            ${bucket.byType.map(([type, count]) => `${count} ${escapeHtml(type)}`).join(', ')}</div>
+          <div class="task-row">на месте свободно: ${bucket.freeHereByType.length
+            ? bucket.freeHereByType.map(([type, count]) => `${count} ${escapeHtml(type)}`).join(', ')
+            : '<span class="muted">нет</span>'}
+            ${bucket.deficit > 0
+              ? `<span class="danger">— не хватает: ${bucket.lack.map(item =>
+                  `${item.count} ${escapeHtml(item.type)}`).join(', ')}</span>`
+              : '<span class="muted">— закрывается</span>'}</div>
           ${bucket.orders.map(order => `<div class="task-row">📦 №${escapeHtml(order.order_no || '—')}
             ${escapeHtml(order.customer_name)} · ${escapeHtml(order.from_point || order.from_name)} →
-            ${escapeHtml(order.to_point || order.to_name)} · ${money(order.rate_vat)}</div>`).join('')}
+            ${escapeHtml(order.to_point || order.to_name)} · ${money(order.rate_vat)}
+            ${order.body_type ? `<span class="muted">· ${escapeHtml(order.body_type)}</span>` : ''}</div>`).join('')}
           ${bucket.send.map(item => `<div class="task-row send">→ направить <b class="mono">${escapeHtml(item.vehicle.plate)}</b>
-            из ${escapeHtml(item.place)}${item.km != null ? ` <span class="muted">(~${item.km} км подгон)</span>` : ''}</div>`).join('')}
-        </div>`).join('') || '<p class="muted">заявок без ТС на день нет</p>'}</div>`;
+            (${escapeHtml(item.vehicle.type_name || '')}) из ${escapeHtml(item.place)}${item.km != null
+              ? ` <span class="muted">(~${item.km} км подгон)</span>` : ''}</div>`).join('')}
+        </div>`).join('') || '<p class="muted">рейсов без ТС на день нет</p>'}</div>`;
   };
   context.showModal(`<h2 style="margin-bottom:6px">📋 Задание продажам</h2>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
