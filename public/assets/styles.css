@@ -206,7 +206,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .trip.tiny strong, .trip.tiny small { display: none; }
 /* Порожний подгон перед рейсом: штрихованный «хвост» на треке. */
 .empty-tail {
-  position: absolute; top: 19px; height: 11px; border-radius: 4px 0 0 4px;
+  position: absolute; top: 7px; height: 35px; border-radius: 6px 0 0 6px;
   background: repeating-linear-gradient(45deg, rgb(120 130 140 / 55%) 0 4px, transparent 4px 8px);
   border: 1px dashed rgb(120 130 140 / 65%); border-right: 0; pointer-events: auto;
   cursor: pointer;
@@ -225,6 +225,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .trip strong, .trip small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trip small { opacity: .88; font-size: 10px; }
 .trip.conflict { outline: 2px solid #c96a52; outline-offset: -2px; }
+/* Наложение рейсов: два яруса половинной высоты — оба видны целиком. */
+.trip.split-top { top: 3px; height: 21px; padding: 2px 7px; }
+.trip.split-bottom { top: 26px; height: 21px; padding: 2px 7px; }
+.trip.split-top small, .trip.split-bottom small { display: none; }
 .trip.critical { box-shadow: 0 0 0 3px var(--bad), 0 5px 14px rgb(120 60 50 / 35%); }
 .trip.rejected { opacity: .6; background-image: repeating-linear-gradient(45deg, rgb(0 0 0 / 16%) 0 5px, transparent 5px 10px); }
 .empty-state { display: grid; place-items: center; min-height: 350px; color: var(--muted); }

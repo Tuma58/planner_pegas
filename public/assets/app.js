@@ -225,6 +225,17 @@ function renderTimeline() {
 ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ? ` · ${escapeHtml(item.note)}` : ''}</span>`;
       }).join('');
     const calcSettings = state.data.settings.calculation;
+    // Пересекающиеся рейсы (конфликт назначения) раскладываются в два яруса
+    // половинной высоты — наложение видно, оба рейса читаются целиком.
+    let lastConflict = null;
+    const laneOf = trip => {
+      if (!conflicts.has(trip.id)) return '';
+      const overlapsPrev = lastConflict &&
+        Date.parse(trip.starts_at) < Date.parse(lastConflict.trip.ends_at);
+      const lane = overlapsPrev && lastConflict.lane === 0 ? 1 : 0;
+      lastConflict = { trip, lane };
+      return lane === 0 ? 'split-top' : 'split-bottom';
+    };
     const trips = vehicleTrips.map(trip => {
       const visibleStart = new Date(Math.max(new Date(trip.starts_at), viewStart));
       const visibleEnd = new Date(Math.min(new Date(trip.ends_at), viewEnd));
@@ -246,7 +257,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
             title="Порожний подгон ~${Math.round(emptyKm)} км (~${Math.round(tailMs / 3_600_000)} ч)&#10;Клик — спот-запрос продажам: найти груз на это плечо"></span>`;
         }
       }
-      return `${emptyTail}<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''} ${trip.status === 'plan' ? 'plan' : ''} ${width < 70 ? 'tiny' : ''}"
+      return `${emptyTail}<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${laneOf(trip)} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''} ${trip.status === 'plan' ? 'plan' : ''} ${width < 70 ? 'tiny' : ''}"
         data-trip="${trip.id}" style="left:${left}px;width:${width}px;background-color:${color}"
         title="${escapeHtml(routeLabel(trip))}&#10;Геозоны: ${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}${emptyKm
           ? `&#10;Порожний подгон ~${Math.round(emptyKm)} км` : ''}">

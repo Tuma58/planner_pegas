@@ -942,6 +942,19 @@ async function api(request, response, url) {
       transitHours(distance, settings, 2 + orderVia.length) * 3_600_000;
     const endsAt = new Date(Math.max(transitEnd, Date.parse(order.window_to || 0))).toISOString();
     const tripId = order.trip_id || randomUUID();
+    // Двойное назначение: сцепка уже занята рейсом в этот период (допуск 6 ч —
+    // стык план/факт с погрешностью не блокируем, грубое наложение — да).
+    const clash = db.prepare(`SELECT starts_at,ends_at,from_point,to_point,order_no FROM trips
+      WHERE vehicle_id=? AND status IN ('plan','run') AND id<>?
+        AND starts_at < ? AND ? < ends_at`).all(vehicle.id, tripId, endsAt, startsAt)
+      .find(existing => Math.min(Date.parse(existing.ends_at), Date.parse(endsAt)) -
+        Math.max(Date.parse(existing.starts_at), Date.parse(startsAt)) > 6 * 3_600_000);
+    if (clash) {
+      const err = new Error(`Сцепка занята рейсом ${clash.order_no ? `№${clash.order_no} ` : ''}` +
+        `${clash.from_point || ''} → ${clash.to_point || ''} до ${clash.ends_at.slice(0, 16).replace('T', ' ')} — выберите другое ТС или время`);
+      err.status = 422;
+      throw err;
+    }
     db.exec('BEGIN IMMEDIATE');
     try {
       const assignEmptyKm = emptyKmFor(vehicle.id, startsAt,
