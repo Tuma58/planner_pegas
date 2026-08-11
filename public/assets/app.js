@@ -135,6 +135,7 @@ function renderTimeline() {
   // выбранный день (клик по шапке / календарик) или сегодня. Позиция — зона
   // выгрузки последнего рейса, начавшегося к концу этой даты (идущий рейс —
   // зона, куда движется); без рейсов — зона приписки.
+  const nowMoment = Date.now();
   const zoneDayIso = state.selectedDay || new Date().toISOString().slice(0, 10);
   const zoneDayEndMs = Date.parse(`${zoneDayIso}T23:59:59Z`);
   const legendDayLabelOf = () => new Intl.DateTimeFormat('ru-RU',
@@ -265,6 +266,55 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
         <small>${escapeHtml(trip.customer_name)}</small>
       </button>`;
     }).join('');
+    // ── Разрывы между плашками ──
+    // «Ожидание погрузки» (>6 ч до назначенного рейса, сверх подгона) —
+    // пунктир; >24 ч — жёлтый и кликабельный (спот-запрос, как хвост).
+    // «Простой без работы» (>24 ч после последнего события, впереди пусто) —
+    // янтарная штриховка до линии «сейчас», клик — запрос загрузки продажам.
+    const allVehicleTrips = state.data.trips
+      .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
+      .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+    const vehicleDispositions = (state.data.dispositions || [])
+      .filter(item => item.vehicle_id === vehicle.id);
+    const dispoCovers = (fromMs, toMs) => vehicleDispositions.some(item =>
+      Date.parse(item.starts_at) < toMs && Date.parse(item.ends_at) > fromMs);
+    const gapBar = (fromMs, toMs, cls, title, dataAttr) => {
+      const visFrom = Math.max(fromMs, viewStart.getTime());
+      const visTo = Math.min(toMs, viewEnd.getTime());
+      if (visTo - visFrom < 30 * 60_000) return '';
+      const left = daysBetween(viewStart, new Date(visFrom)) * dayWidth;
+      const width = daysBetween(new Date(visFrom), new Date(visTo)) * dayWidth - 1;
+      return `<span class="${cls}" style="left:${left}px;width:${Math.max(4, width)}px"
+        title="${title}" ${dataAttr || ''}></span>`;
+    };
+    let gapBars = '';
+    for (let i = 1; i < allVehicleTrips.length; i += 1) {
+      const previous = allVehicleTrips[i - 1];
+      const next = allVehicleTrips[i];
+      const tailMs = Number(next.empty_km)
+        ? transitHours(Number(next.empty_km), calcSettings, 0) * 3_600_000 : 0;
+      const waitFrom = Date.parse(previous.ends_at);
+      const waitTo = Date.parse(next.starts_at) - tailMs;
+      const waitMs = waitTo - waitFrom;
+      if (waitMs > 6 * 3_600_000 && !dispoCovers(waitFrom, waitTo)) {
+        const long = waitMs > 24 * 3_600_000;
+        gapBars += gapBar(waitFrom, waitTo, `gap-wait ${long ? 'long' : ''}`,
+          `Ожидание погрузки ~${Math.round(waitMs / 3_600_000)} ч (рейс назначен)${long
+            ? '&#10;Клик — спот: вставить короткое плечо в паузу' : ''}`,
+          long ? `data-empty-trip="${next.id}"` : '');
+      }
+    }
+    const lastEndMs = Math.max(0,
+      ...allVehicleTrips.map(trip => Date.parse(trip.ends_at)),
+      ...vehicleDispositions.map(item => Date.parse(item.ends_at)));
+    const hasFuture = allVehicleTrips.some(trip => Date.parse(trip.ends_at) > nowMoment) ||
+      vehicleDispositions.some(item => Date.parse(item.ends_at) > nowMoment);
+    if (!hasFuture && lastEndMs > 0 && nowMoment - lastEndMs > 24 * 3_600_000) {
+      const idleDays = Math.floor((nowMoment - lastEndMs) / 86_400_000);
+      gapBars += gapBar(lastEndMs, nowMoment, 'gap-idle',
+        `Простой ${idleDays} дн с ${formatDateTime(new Date(lastEndMs).toISOString())} — работы нет&#10;Клик — запрос загрузки в продажи`,
+        `data-request-load="${vehicle.id}"`);
+    }
     return `<div class="vehicle-row">
       <div class="vehicle-cell ${dayStatus.cls === 'idle' ? 'cell-idle' : ''}"><span class="vehicle-stripe"></span>
         <span class="vehicle-title res-vtitle"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
@@ -272,10 +322,9 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
         <small class="vday vday-${dayStatus.cls}" ${dayStatus.color ? `style="color:${dayStatus.color}"` : ''}
           title="Занятость сцепки на ${legendDayLabelOf()}">${escapeHtml(dayStatus.text)}</small></span>
       </div>
-      <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px"><div class="track-grid">${grid}</div>${dispositionBlocks}${trips}</div>
+      <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px"><div class="track-grid">${grid}</div>${gapBars}${dispositionBlocks}${trips}</div>
     </div>`;
   }).join('');
-  const nowMoment = Date.now();
   const nowLine = (nowMoment > viewStart.getTime() && nowMoment < viewEnd.getTime())
     ? `<div class="now-line" style="left:${236 + daysBetween(viewStart, new Date(nowMoment)) * dayWidth}px"
         title="Сейчас · ${formatDateTime(new Date(nowMoment).toISOString())}"></div>` : '';
@@ -290,6 +339,17 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
   document.querySelectorAll('[data-disposition]').forEach(block =>
     block.addEventListener('click', () => openDisposition(
       (state.data.dispositions || []).find(item => item.id === block.dataset.disposition))));
+  // Клик по полосе простоя: запрос загрузки в продажи по сцепке.
+  document.querySelectorAll('[data-request-load]').forEach(bar =>
+    bar.addEventListener('click', async () => {
+      const vehicle = state.data.vehicles.find(item => item.id === bar.dataset.requestLoad);
+      if (!vehicle) return;
+      if (!confirm(`Запросить продажи: сцепка ${vehicle.plate} простаивает — нужна загрузка?`)) return;
+      try {
+        await api(`/api/vehicles/${vehicle.id}/request-load`, { method: 'POST' });
+        toast('Запрос загрузки отправлен продажам');
+      } catch (error) { toast(error.message, 'error'); }
+    }));
   // Клик по порожнему хвосту: спот-запрос продажам — найти груз на пустое
   // плечо (откуда сцепка гонит порожняк → куда едет под погрузку).
   document.querySelectorAll('[data-empty-tail], [data-empty-trip]').forEach(tail =>

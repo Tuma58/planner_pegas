@@ -213,6 +213,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 }
 .empty-tail:hover { border-color: var(--warn);
   background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--warn) 55%, transparent) 0 4px, transparent 4px 8px); }
+/* Разрывы между плашками: ожидание погрузки (пунктир) и простой (янтарь). */
+.gap-wait { position: absolute; top: 44px; height: 0; border-top: 2px dotted #7d93a8; opacity: .8; }
+.gap-wait.long { border-top-color: var(--warn); border-top-width: 3px; cursor: pointer; opacity: 1; }
+.gap-wait.long:hover { border-top-color: var(--bad); }
+.gap-idle { position: absolute; top: 42px; height: 5px; border-radius: 3px; cursor: pointer;
+  background: repeating-linear-gradient(45deg, var(--warn) 0 5px, transparent 5px 9px); opacity: .75; }
+.gap-idle:hover { opacity: 1; box-shadow: 0 0 0 1px var(--warn); }
+
 /* Текущий момент: вертикальная линия через всю канву. */
 .timeline { position: relative; }
 .now-line { position: absolute; top: 48px; bottom: 0; width: 2px; z-index: 2;
