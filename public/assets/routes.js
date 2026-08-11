@@ -48,8 +48,14 @@ const legKm = (data, order) => Number(order.planned_km) ||
 
 // Экономика цепочки: гружёные и порожние км, длительность от базы до базы,
 // выручка без НДС и рублей в сутки против плана маршрута.
+// Порог спота: порожний перегон длиннее — кандидат на поиск попутного груза.
+export const SPOT_KM = 150;
+
 export function routeMetrics(data, routeOrders, { baseRegion, plannedStart, targetPerDay }) {
   const calc = data.settings.calculation;
+  // Время порожнего перегона — с тем же коэффициентом 1,5 (отдых водителя),
+  // что и гружёный транзит, только без грузовых операций.
+  const emptyLegMs = km => transitHours(km || 0, calc, 0) * 3_600_000;
   const base = basePoint(data, baseRegion || HOME_REGION);
   let position = base;
   let cursor = plannedStart ? Date.parse(plannedStart) : Date.now();
@@ -64,25 +70,29 @@ export function routeMetrics(data, routeOrders, { baseRegion, plannedStart, targ
     if (feed != null) emptyKm += feed;
     const km = legKm(data, order);
     loadedKm += km;
-    const loadAt = Math.max(cursor + (feed || 0) / 50 * 3_600_000, Date.parse(order.window_from));
+    const loadAt = Math.max(cursor + emptyLegMs(feed), Date.parse(order.window_from));
     const unloadAt = loadAt + transitHours(km, calc, 2 + viaCount(order)) * 3_600_000;
     const lateStart = Date.parse(order.window_to) < loadAt;
     legs.push({ order, feed, km, loadAt, unloadAt, lateStart,
-      fromRegion: orderRegionFrom(data, order), toRegion: orderRegionTo(data, order) });
+      fromRegion: orderRegionFrom(data, order), toRegion: orderRegionTo(data, order),
+      feedFromRegion: position?.region || (baseRegion || HOME_REGION), feedAtIso: new Date(cursor).toISOString() });
     cursor = unloadAt;
     position = to || position;
   });
   const returnKm = routeOrders.length ? plannedKmBetween(position, base) : 0;
   if (returnKm != null) emptyKm += returnKm || 0;
-  const endMs = cursor + (returnKm || 0) / 50 * 3_600_000;
+  const endMs = cursor + emptyLegMs(returnKm);
   const days = Math.max(0.5, (endMs - startMs) / DAY_MS);
   const revenueNet = routeOrders.reduce((sum, order) => sum + orderNet(order, data), 0);
   const revenueVat = routeOrders.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0);
   const perDay = revenueNet / days;
   const target = Number(targetPerDay) || 48000;
+  const lastRegion = routeOrders.length
+    ? orderRegionTo(data, routeOrders[routeOrders.length - 1]) : (baseRegion || HOME_REGION);
   return { legs, loadedKm: Math.round(loadedKm), emptyKm: Math.round(emptyKm),
     returnKm: Math.round(returnKm || 0), days, revenueNet, revenueVat, perDay, target,
-    targetShare: target ? perDay / target : 0, endMs,
+    targetShare: target ? perDay / target : 0, endMs, lastRegion,
+    emptyShare: loadedKm ? emptyKm / (loadedKm + emptyKm) : 0,
     closesAtBase: routeOrders.length
       ? orderRegionTo(data, routeOrders[routeOrders.length - 1]) === (baseRegion || HOME_REGION)
       : false };
@@ -119,7 +129,8 @@ export function buildAutoRoute(data, { startIso, baseRegion, targetPerDay, maxOr
     const pick = (preferClosing && closing) ? closing : candidates[0];
     chain.push(pick.order);
     const km = legKm(data, pick.order);
-    const loadAt = Math.max(cursor + (pick.feed === 9999 ? 0 : pick.feed) / 50 * 3_600_000,
+    const loadAt = Math.max(
+      cursor + transitHours(pick.feed === 9999 ? 0 : pick.feed, data.settings.calculation, 0) * 3_600_000,
       Date.parse(pick.order.window_from));
     cursor = loadAt + transitHours(km, data.settings.calculation, 2 + viaCount(pick.order)) * 3_600_000;
     position = orderToAddress(data, pick.order) || position;
@@ -168,7 +179,8 @@ export function renderRoutes(container, context) {
       <div class="rt-nums">
         <span>заявок <b>${routeOrders.length}</b></span>
         <span>гружёные <b>${metrics.loadedKm}</b> км</span>
-        <span>порожние <b>${metrics.emptyKm}</b> км</span>
+        <span>порожние <b>${metrics.emptyKm}</b> км${metrics.emptyShare > 0.3
+          ? ` <span class="danger" title="Доля порожних км — ищите спот на пустые плечи в редакторе">⚠ ${Math.round(metrics.emptyShare * 100)}%</span>` : ''}</span>
         <span>~<b>${metrics.days.toFixed(1)}</b> сут</span>
         <span>без НДС <b>${money(Math.round(metrics.revenueNet))}</b></span>
       </div>
@@ -272,7 +284,12 @@ export function renderRoutes(container, context) {
         <div class="rt-lane start">🏁 База: <b>${escapeHtml(route.base_region || HOME_REGION)}</b>
           · старт ${route.planned_start ? formatDateTime(route.planned_start) : '—'}</div>
         ${metrics.legs.map((leg, index) => `
-          ${leg.feed ? `<div class="rt-empty-leg">⤷ порожний перегон ~${Math.round(leg.feed)} км</div>` : ''}
+          ${leg.feed ? `<div class="rt-empty-leg ${leg.feed > SPOT_KM ? 'spot' : ''}">⤷ порожний перегон ~${Math.round(leg.feed)} км${leg.feed > SPOT_KM
+            ? ` · 🔍 спот: поискать груз <b>${escapeHtml(leg.feedFromRegion || '?')}</b> → <b>${escapeHtml(leg.fromRegion || '?')}</b>
+              <button class="button ghost small" data-spot-from="${escapeHtml(leg.feedFromRegion || '')}"
+                data-spot-to="${escapeHtml(leg.fromRegion || '')}" data-spot-km="${Math.round(leg.feed)}"
+                data-spot-at="${leg.feedAtIso}" title="Запрос продажам: найти груз на это пустое плечо">→ Продажи</button>`
+            : ''}</div>` : ''}
           <div class="rt-lane ${leg.lateStart ? 'late' : ''}">
             <span class="rt-idx">${index + 1}</span>
             <span style="flex:1;min-width:0">
@@ -297,7 +314,13 @@ export function renderRoutes(container, context) {
           </div>`).join('') || '<p class="muted">Пусто: добавьте заявки из списка ниже.</p>'}
         <div class="rt-lane finish">🏁 Возврат на базу: ~${metrics.returnKm} км порожним
           ${metrics.closesAtBase ? '<span class="ctrl-worked-note">✓ кольцо замкнуто</span>'
-            : '<span class="danger">⚠ последняя выгрузка не в субъекте базирования</span>'}</div>
+            : '<span class="danger">⚠ последняя выгрузка не в субъекте базирования</span>'}
+          ${metrics.returnKm > SPOT_KM ? `· 🔍 спот: поискать груз <b>${escapeHtml(metrics.lastRegion || '?')}</b>
+            → <b>${escapeHtml(route.base_region || HOME_REGION)}</b>
+            <button class="button ghost small" data-spot-from="${escapeHtml(metrics.lastRegion || '')}"
+              data-spot-to="${escapeHtml(route.base_region || HOME_REGION)}" data-spot-km="${metrics.returnKm}"
+              data-spot-at="${new Date(metrics.endMs).toISOString()}"
+              title="Запрос продажам: найти обратный груз к базе">→ Продажи</button>` : ''}</div>
         <div class="rt-total ${perDayClass(metrics.targetShare)}">
           ${routeOrders.length} заявок · гружёные ${metrics.loadedKm} км · порожние ${metrics.emptyKm} км
           · ~${metrics.days.toFixed(1)} сут · без НДС ${money(Math.round(metrics.revenueNet))}
@@ -332,6 +355,14 @@ export function renderRoutes(container, context) {
       box.querySelectorAll('[data-add]').forEach(button => button.onclick = () => {
         ids.push(button.dataset.add);
         renderEditor();
+      });
+      box.querySelectorAll('[data-spot-from]').forEach(button => button.onclick = async () => {
+        try {
+          await api(`/api/routes/${routeId}/spot-request`, { method: 'POST',
+            body: JSON.stringify({ fromRegion: button.dataset.spotFrom, toRegion: button.dataset.spotTo,
+              km: Number(button.dataset.spotKm), aroundIso: button.dataset.spotAt }) });
+          toast('Спот-запрос отправлен продажам');
+        } catch (error) { toast(error.message, 'error'); }
       });
     };
     context.showModal(`<h2 style="margin-bottom:4px">✎ ${escapeHtml(route.route_no)}

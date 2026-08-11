@@ -1081,6 +1081,28 @@ async function api(request, response, url) {
       { vehicleId: vehicle.id, trips: tripIds.length }, requestIp(request));
     return json(response, 201, { tripIds });
   }
+  // Спот-запрос пустого плеча: конструктор просит продажи найти груз
+  // на порожний перегон маршрута — сообщение уходит роли «Продажи».
+  match = route(/^\/api\/routes\/([^/]+)\/spot-request$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const routeRow = db.prepare('SELECT * FROM routes WHERE id=?').get(match[0]);
+    if (!routeRow) return errorJson(response, 404, 'Маршрут не найден');
+    const body = await readJson(request);
+    const fromRegion = String(body.fromRegion || '').slice(0, 80);
+    const toRegion = String(body.toRegion || '').slice(0, 80);
+    if (!fromRegion || !toRegion) return errorJson(response, 422, 'Нужны fromRegion и toRegion');
+    const around = body.aroundIso ? ` к ${new Date(body.aroundIso).toLocaleString('ru-RU',
+      { day: 'numeric', month: 'short', timeZone: 'Europe/Moscow' })}` : '';
+    const km = Number(body.km) ? ` (~${Math.round(Number(body.km))} км порожним)` : '';
+    notify('sales', `🔍 Спот из конструктора ${routeRow.route_no}: нужен груз ${fromRegion} → ${toRegion}${around}${km} — закройте пустое плечо маршрута`, 'route', routeRow.id);
+    audit(db, user, 'spot-request', 'route', routeRow.id, { fromRegion, toRegion }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   match = route(/^\/api\/routes\/([^/]+)$/, pathname);
   if (match && request.method === 'PATCH') {
     const user = requireUser(request, response);

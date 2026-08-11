@@ -320,6 +320,10 @@ tbody tr:hover td { background: var(--hover); }
 .rt-lane-btns { display: flex; gap: 3px; flex: none; }
 .rt-lane-btns .button { min-height: 24px; padding: 1px 7px; }
 .rt-empty-leg { margin: 0 0 0 28px; color: var(--muted); font-size: var(--fs-xs); }
+.rt-empty-leg.spot { padding: 4px 8px; margin: 3px 0 3px 28px; border: 1px dashed var(--warn);
+  border-radius: 7px; color: var(--ink); background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.rt-empty-leg.spot .button { min-height: 20px; padding: 0 7px; margin-left: 4px; }
+.rt-lane.finish .button { min-height: 20px; padding: 0 7px; }
 .rt-total { margin-top: 9px; padding: 8px 11px; border-radius: 9px; background: var(--soft); font-size: var(--fs-sm); }
 .rt-total.ok { background: color-mix(in srgb, var(--ok) 11%, transparent); }
 .rt-total.warn { background: color-mix(in srgb, var(--warn) 11%, transparent); }
