@@ -301,6 +301,62 @@ function runResourceWatch() {
 setInterval(runResourceWatch, 60 * 60_000);
 setTimeout(runResourceWatch, 25_000);
 
+// ── Ежедневный отчёт по автопарку: каждое утро после 07:00 МСК сводка
+// за вчера уходит в чат руководителю (роль manager; чат видят все).
+// Флаг в app_meta защищает от дублей при перезапусках контейнера.
+function runDailyFleetReport() {
+  try {
+    const mskNow = new Date(Date.now() + 3 * 3_600_000);
+    if (mskNow.getUTCHours() < 7) return;
+    const todayIso = mskNow.toISOString().slice(0, 10);
+    const sent = db.prepare(`SELECT value FROM app_meta WHERE key='daily_fleet_report_day'`).get();
+    if (sent?.value === todayIso) return;
+    const dayIso = new Date(Date.parse(`${todayIso}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    const snap = reportSnapshot(db, dayIso, todayIso);
+    const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
+    const dayEnd = dayStart + 86_400_000;
+    const fleet = db.prepare(`SELECT id,plate FROM vehicles WHERE status='work'`).all();
+    const dayTrips = db.prepare(`SELECT DISTINCT vehicle_id FROM trips
+      WHERE status<>'rejected' AND starts_at<? AND ends_at>?`)
+      .all(new Date(dayEnd).toISOString(), new Date(dayStart).toISOString());
+    const inTrip = new Set(dayTrips.map(row => row.vehicle_id));
+    const dispositions = db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at FROM vehicle_dispositions
+      WHERE starts_at<? AND ends_at>?`)
+      .all(new Date(dayEnd).toISOString(), new Date(dayStart).toISOString());
+    const counts = { repair: 0, shift: 0, no_driver: 0, reserve: 0 };
+    const idlePlates = [];
+    for (const vehicle of fleet) {
+      if (inTrip.has(vehicle.id)) continue;
+      const covering = dispositions.filter(item => item.vehicle_id === vehicle.id)
+        .sort((a, b) =>
+          (Math.min(Date.parse(b.ends_at), dayEnd) - Math.max(Date.parse(b.starts_at), dayStart)) -
+          (Math.min(Date.parse(a.ends_at), dayEnd) - Math.max(Date.parse(a.starts_at), dayStart)))[0];
+      if (covering && counts[covering.kind] != null) counts[covering.kind] += 1;
+      else if (covering) counts.reserve += 1;
+      else idlePlates.push(vehicle.plate);
+    }
+    const rubShort = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
+    const pctShort = value => `${Math.round((value || 0) * 100)}%`;
+    const u = snap.utilization || {};
+    const dayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+      .format(new Date(`${dayIso}T12:00:00Z`));
+    notify('manager', `📆 Отчёт дня за ${dayLabel}: парк ${fleet.length} · в рейсе ${inTrip.size}` +
+      ` (${pctShort(inTrip.size / (fleet.length || 1))}) · простой без причины ${idlePlates.length}` +
+      `${idlePlates.length ? ` (${idlePlates.slice(0, 6).join(', ')}${idlePlates.length > 6 ? '…' : ''})` : ''}` +
+      ` · ремонт ${counts.repair}, пересм. ${counts.shift}, без вод. ${counts.no_driver}, резерв ${counts.reserve}` +
+      ` · выручка бНДС ${rubShort(snap.netRevenue)} · пробег ${Math.round(snap.loadedKm || 0)} км` +
+      ` + ${Math.round(snap.emptyKm || 0)} порожних (${pctShort(snap.emptyRatio)})` +
+      ` · КТГ ${pctShort(u.ktg)} · КВЛ ${pctShort(u.kvl)} · КИП ${pctShort(u.kip)}` +
+      ` — детали в «Руководитель → 📆 Отчёт дня»`);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
+  } catch (error) {
+    console.error('Ежедневный отчёт парка:', error.message);
+  }
+}
+setInterval(runDailyFleetReport, 5 * 60_000);
+setTimeout(runDailyFleetReport, 40_000);
+
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
     if (!body[key]) throw Object.assign(new Error(`Поле ${key} обязательно`), { status: 422 });
