@@ -340,6 +340,27 @@ function runDailyFleetReport() {
     const u = snap.utilization || {};
     const dayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
       .format(new Date(`${dayIso}T12:00:00Z`));
+    // Смена продаж и план дня: внесено/назначено, средний чек, выполнение
+    // дневного плана (остаток месячного 160 млн на остаток дней).
+    const created = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(rate_vat),0) s FROM orders
+      WHERE status<>'cancelled' AND created_at>=? AND created_at<?`)
+      .get(`${dayIso} 00:00:00`, `${todayIso} 00:00:00`);
+    const assignedCount = db.prepare(`SELECT COUNT(*) c FROM trips
+      WHERE status<>'rejected' AND order_id IS NOT NULL AND source_system<>'1c'
+        AND created_at>=? AND created_at<?`)
+      .get(`${dayIso} 00:00:00`, `${todayIso} 00:00:00`).c;
+    const monthKey = `${dayIso.slice(0, 7)}-01`;
+    const monthPlan = Number(db.prepare(`SELECT target_net FROM revenue_plans WHERE period_start=?`)
+      .get(monthKey)?.target_net || 0) || 160_000_000;
+    const factBefore = reportSnapshot(db, monthKey, dayIso).netRevenue || 0;
+    const dayDate = new Date(`${dayIso}T00:00:00Z`);
+    const daysInMonth = new Date(Date.UTC(dayDate.getUTCFullYear(), dayDate.getUTCMonth() + 1, 0)).getUTCDate();
+    const remainingFromDay = daysInMonth - dayDate.getUTCDate() + 1;
+    const dayPlan = Math.max(0, (monthPlan - factBefore) / Math.max(1, remainingFromDay));
+    const tripsDone = db.prepare(`SELECT COUNT(*) c FROM trips
+      WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`)
+      .get(`${dayIso}T00:00:00.000Z`, `${todayIso}T00:00:00.000Z`).c;
+    const avgCheck = tripsDone ? (snap.netRevenue || 0) / tripsDone : 0;
     notify('manager', `📆 Отчёт дня за ${dayLabel}: парк ${fleet.length} · в рейсе ${inTrip.size}` +
       ` (${pctShort(inTrip.size / (fleet.length || 1))}) · простой без причины ${idlePlates.length}` +
       `${idlePlates.length ? ` (${idlePlates.slice(0, 6).join(', ')}${idlePlates.length > 6 ? '…' : ''})` : ''}` +
@@ -347,7 +368,9 @@ function runDailyFleetReport() {
       ` · выручка бНДС ${rubShort(snap.netRevenue)} · пробег ${Math.round(snap.loadedKm || 0)} км` +
       ` + ${Math.round(snap.emptyKm || 0)} порожних (${pctShort(snap.emptyRatio)})` +
       ` · КТГ ${pctShort(u.ktg)} · КВЛ ${pctShort(u.kvl)} · КИП ${pctShort(u.kip)}` +
-      ` — детали в «Руководитель → 📆 Отчёт дня»`);
+      ` · план дня ${rubShort(dayPlan)} — выполнение ${Math.round((snap.netRevenue || 0) / (dayPlan || 1) * 100)}%` +
+      ` · ср. чек ${rubShort(avgCheck)} · смена: внесено ${created.c} заявок на ${rubShort(created.s)}, назначено ${assignedCount}` +
+      ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
   } catch (error) {

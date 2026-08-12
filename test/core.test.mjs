@@ -429,6 +429,28 @@ test('потребность от логистики: ремонт и «без �
   assert.deepEqual(freeOrders(freeData, 'R9', nowRef).map(order => order.id).sort(), ['F2', 'F3'],
     'заявка своего маршрута остаётся доступной редактору');
 
+  // Дашборд: дневной план из остатка месячного, факт и прогноз по ранрейту.
+  const { dashboardMetrics } = await import('../public/assets/dashboard.js');
+  const dashNow = Date.parse('2026-08-21T12:00:00.000Z'); // 21-е: прошло 20 полных дней
+  const dashData = { settings: { calculation: { vatRate: 0.22 } },
+    revenuePlans: [{ period_start: '2026-08-01', target_net: 160_000_000 }],
+    vehicles: [], dispositions: [], orders: [],
+    trips: [
+      { status: 'done', revenue_vat: 122_000_000, cash: 0, customer_name: 'К',
+        starts_at: '2026-08-02T00:00:00.000Z', ends_at: '2026-08-20T10:00:00.000Z',
+        created_at: '2026-08-02 00:00:00', source_system: 'planner' },
+      { status: 'done', revenue_vat: 6_100_000, cash: 0, customer_name: 'К',
+        order_id: 'O1', starts_at: '2026-08-21T00:00:00.000Z', ends_at: '2026-08-21T09:00:00.000Z',
+        created_at: '2026-08-21 01:00:00', source_system: 'planner' },
+    ] };
+  const dash = dashboardMetrics(dashData, dashNow);
+  assert.equal(Math.round(dash.monthFact), 105_000_000, 'факт месяца без НДС (122М+6,1М)/1,22');
+  // план дня: (160М − 100М до сегодня) / 11 оставшихся дней (21..31)
+  assert.equal(Math.round(dash.dayPlan), Math.round(60_000_000 / 11));
+  assert.equal(Math.round(dash.dayFact), 5_000_000, 'факт сегодняшнего дня');
+  assert.equal(Math.round(dash.forecast), Math.round(105_000_000 / 21 * 31), 'линейный прогноз');
+  assert.equal(dash.logist.assignedToday, 1, 'назначено сегодня — рейс с заявкой, созданный сегодня');
+
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');
   const request = { freeAt: iso(now + 86_400_000), zone: { name: 'Дом' }, vehicle: { id: 'А1' } };

@@ -332,6 +332,33 @@ tbody tr:hover td { background: var(--hover); }
 .tt-chip { display: inline-block; padding: 1px 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); font-size: var(--fs-xs); white-space: nowrap; }
 .tt-chip.muted { color: var(--muted); }
 .task-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; }
+/* Общий дашборд предприятия */
+.dashwrap { padding: 18px 22px; max-width: 1250px; margin: 0 auto; }
+.dash-main { display: grid; grid-template-columns: 3fr 2fr; gap: 14px; margin-bottom: 14px; }
+.dash-goal { padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: var(--shadow); }
+.dash-goal-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dash-goal-head > span:first-child { font-size: var(--fs-sm); font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.dash-goal-head b { font-size: 30px; }
+.dash-gauge { height: 12px; margin: 10px 0 8px; background: var(--soft); border-radius: 6px; overflow: hidden; }
+.dash-gauge i { display: block; height: 100%; border-radius: 6px; transition: width .6s; }
+.dash-gauge i.ok { background: var(--ok); }
+.dash-gauge i.warn { background: var(--warn); }
+.dash-goal-sub { display: flex; gap: 22px; flex-wrap: wrap; font-size: var(--fs-sm); color: var(--muted); }
+.dash-goal-sub b.good { color: var(--ok); }
+.dash-goal-sub b.warn { color: var(--warn); }
+.dash-goal-sub b.bad { color: var(--bad); }
+.dash-roles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.dash-role { padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: var(--shadow); }
+.dash-role-title { font-weight: 800; margin-bottom: 9px; font-size: var(--fs-md); }
+.dash-row { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: var(--fs-sm); border-bottom: 1px dashed var(--line); }
+.dash-row:last-child { border-bottom: 0; }
+.dash-row b { font-size: var(--fs-md); }
+.dash-row.warn b { color: var(--warn); }
+.dash-row.bad b { color: var(--bad); }
+.dash-row.ok b { color: var(--ok); }
+.dash-note { margin-top: 12px; font-size: var(--fs-xs); }
+@media (max-width: 1000px) { .dash-main, .dash-roles { grid-template-columns: 1fr; } }
+
 /* Конструктор маршрутов */
 .route-card { padding: 10px 12px; margin-bottom: 4px; }
 .route-card.handed { border-left: 3px solid var(--teal); }

@@ -393,6 +393,34 @@ export async function renderBoss(container, context) {
         return days > 0 ? ` · ${days} дн` : '';
       };
       const pctOf = value => `${Math.round((value || 0) * 100)}%`;
+      // Активность смены: внесено и назначено заявок, средний чек внесённого.
+      const tsMs = value => value ? Date.parse(String(value).replace(' ', 'T') +
+        (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
+      const createdDay = (data.orders || []).filter(order => order.status !== 'cancelled' &&
+        tsMs(order.created_at) >= dayStart && tsMs(order.created_at) < dayEnd);
+      const createdSum = createdDay.reduce((sum, order) => {
+        const vat = order.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(order.customer_name || '')
+          ? Number(state.data.settings.calculation.individualEntrepreneurVatRate ?? 0.07)
+          : Number(state.data.settings.calculation.vatRate ?? 0.22);
+        return sum + Number(order.rate_vat || 0) / (1 + vat);
+      }, 0);
+      const assignedDay = data.trips.filter(trip => trip.status !== 'rejected' &&
+        trip.order_id && trip.source_system !== '1c' &&
+        tsMs(trip.created_at) >= dayStart && tsMs(trip.created_at) < dayEnd).length;
+      // Дневной план: остаток месячного плана на остаток дней (на дату отчёта).
+      const dayDate = new Date(dayStart);
+      const mStart = Date.UTC(dayDate.getUTCFullYear(), dayDate.getUTCMonth(), 1);
+      const mEnd = Date.UTC(dayDate.getUTCFullYear(), dayDate.getUTCMonth() + 1, 1);
+      const daysInMonth = Math.round((mEnd - mStart) / 86_400_000);
+      const remainingFromDay = daysInMonth - dayDate.getUTCDate() + 1;
+      const monthPlanRow = (state.data.revenuePlans || [])
+        .find(item => item.period_start === new Date(mStart).toISOString().slice(0, 10));
+      const monthPlan = Number(monthPlanRow?.target_net || 0) || 160_000_000;
+      const factBefore = data.trips.filter(trip => trip.status !== 'rejected' &&
+        Date.parse(trip.ends_at) >= mStart && Date.parse(trip.ends_at) < dayStart)
+        .reduce((sum, trip) => sum + tripNet(trip, state.data.settings.calculation), 0);
+      const dayPlan = Math.max(0, (monthPlan - factBefore) / Math.max(1, remainingFromDay));
+      const avgCheckDay = dayTrips.length ? (snap.netRevenue || 0) / dayTrips.length : 0;
       const lines = [`ОТЧЁТ ДНЯ ПО АВТОПАРКУ — ${fmtDayLong(dayIso)}`, '',
         `Парк в работе: ${fleet}`,
         `В рейсе: ${buckets.trip.length} (${pctOf(buckets.trip.length / (fleet || 1))})`,
@@ -400,7 +428,9 @@ export async function renderBoss(container, context) {
         `Ремонт: ${buckets.repair.length} · Пересменка: ${buckets.shift.length}` +
           ` · Без водителя: ${buckets.no_driver.length} · Резерв: ${buckets.reserve.length}`,
         `КТГ ${pctOf(u.ktg)} · КВЛ ${pctOf(u.kvl)} · КИП ${pctOf(u.kip)}`,
-        `Выручка без НДС (по выгрузкам дня): ${rub(snap.netRevenue || 0)} · рейсов завершено: ${dayTrips.length}`,
+        `Выручка без НДС (по выгрузкам дня): ${rub(snap.netRevenue || 0)} · рейсов завершено: ${dayTrips.length} · средний чек: ${rub(avgCheckDay)}`,
+        `План дня: ${rub(dayPlan)} (остаток плана ${rub(monthPlan - factBefore)} на ${remainingFromDay} дн) — выполнение ${Math.round((snap.netRevenue || 0) / (dayPlan || 1) * 100)}%`,
+        `Смена продаж: внесено заявок ${createdDay.length} на ${rub(createdSum)} (ср. чек ${rub(createdDay.length ? createdSum / createdDay.length : 0)}) · назначено рейсов: ${assignedDay}`,
         `Пробег: гружёный ${Math.round(snap.loadedKm || 0)} км · порожний ${Math.round(snap.emptyKm || 0)} км` +
           ` (${pctOf(snap.emptyRatio)}) · ремонтный ${Math.round(snap.repairKm || 0)} км`];
       box.dataset.text = lines.join('\n');
@@ -410,8 +440,14 @@ export async function renderBoss(container, context) {
           <div class="task-kpi"><b>${buckets.trip.length}</b><span>в рейсе · ${pctOf(buckets.trip.length / (fleet || 1))}</span></div>
           <div class="task-kpi ${buckets.idle.length ? 'warn' : ''}"><b>${buckets.idle.length}</b><span>простой без причины</span></div>
           <div class="task-kpi muted"><b>${buckets.repair.length + buckets.shift.length + buckets.no_driver.length + buckets.reserve.length}</b><span>недоступны</span></div>
-          <div class="task-kpi"><b>${rub(snap.netRevenue || 0)}</b><span>без НДС за день</span></div>
+          <div class="task-kpi ${((snap.netRevenue || 0) >= dayPlan) ? '' : 'warn'}"><b>${rub(snap.netRevenue || 0)}</b>
+            <span>без НДС · план дня ${rub(dayPlan)} (${Math.round((snap.netRevenue || 0) / (dayPlan || 1) * 100)}%)</span></div>
         </div>
+        <div class="task-balance-line ${createdDay.length ? 'ok' : 'bad'}">
+          Смена продаж: внесено <b>${createdDay.length}</b> заявок на <b>${rub(createdSum)}</b>
+          (ср. чек ${rub(createdDay.length ? createdSum / createdDay.length : 0)})
+          · назначено рейсов: <b>${assignedDay}</b>
+          · средний чек выгрузок: <b>${rub(avgCheckDay)}</b></div>
         <div class="task-balance-line ${(snap.emptyRatio || 0) > 0.3 ? 'bad' : 'ok'}">
           Пробег дня: гружёный <b>${Math.round(snap.loadedKm || 0)}</b> км · порожний
           <b>${Math.round(snap.emptyKm || 0)}</b> км (${pctOf(snap.emptyRatio)})
