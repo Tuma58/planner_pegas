@@ -413,6 +413,22 @@ test('потребность от логистики: ремонт и «без �
     'на дефицит тушевоза рекомендован именно тушевоз');
   assert.ok(sendT.km > 400, 'километраж подгона Пенза→Софьино посчитан');
 
+  // Конструктор: просроченные заявки (окно закрылось) в подбор не встают.
+  const { freeOrders } = await import('../public/assets/routes.js');
+  const freeData = { trips: [], orders: [
+    { id: 'F1', stage: 1, status: 'new',
+      window_from: '2026-08-01T06:00:00.000Z', window_to: '2026-08-02T20:00:00.000Z' },
+    { id: 'F2', stage: 1, status: 'new',
+      window_from: '2026-08-25T06:00:00.000Z', window_to: '2026-08-26T20:00:00.000Z' },
+    { id: 'F3', stage: 1, status: 'new', route_id: 'R9',
+      window_from: '2026-08-25T06:00:00.000Z', window_to: '2026-08-26T20:00:00.000Z' },
+  ] };
+  const nowRef = Date.parse('2026-08-12T00:00:00.000Z');
+  assert.deepEqual(freeOrders(freeData, null, nowRef).map(order => order.id), ['F2'],
+    'просроченная и чужая маршрутная заявки не в подборе');
+  assert.deepEqual(freeOrders(freeData, 'R9', nowRef).map(order => order.id).sort(), ['F2', 'F3'],
+    'заявка своего маршрута остаётся доступной редактору');
+
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');
   const request = { freeAt: iso(now + 86_400_000), zone: { name: 'Дом' }, vehicle: { id: 'А1' } };
