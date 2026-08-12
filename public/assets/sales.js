@@ -708,14 +708,23 @@ export function renderSales(container, context) {
   // по текущему открытому периоду — рейсы, завершающиеся в выбранном месяце,
   // прошлые периоды (июль) в цифры не попадают.
   const calc = data.settings.calculation;
+  // Оперативная сводка — всегда ТЕКУЩИЙ календарный месяц: листание
+  // горизонта планера не должно подменять продажам актуальные цифры.
+  const nowRef = new Date();
+  const curMonthStart = new Date(Date.UTC(nowRef.getUTCFullYear(), nowRef.getUTCMonth(), 1));
+  const curMonthEnd = new Date(Date.UTC(nowRef.getUTCFullYear(), nowRef.getUTCMonth() + 1, 1));
   const periodTrips = data.trips.filter(trip => trip.status !== 'rejected' &&
-    new Date(trip.ends_at) >= state.month && new Date(trip.ends_at) < monthEnd);
+    new Date(trip.ends_at) >= curMonthStart && new Date(trip.ends_at) < curMonthEnd);
   const periodNet = periodTrips.reduce((sum, trip) => {
     const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22);
     return sum + trip.revenue_vat / (1 + vat);
   }, 0);
-  const periodLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', timeZone: 'UTC' }).format(state.month);
+  const periodLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', timeZone: 'UTC' }).format(curMonthStart);
+  // Заявки с истёкшим окном — требуют передоговорить сроки или отклонить:
+  // в подбор конструктора и назначение они уже не встают.
+  const expiredOrders = allOrders.filter(order =>
+    orderStage(order, data).stage < 2 && Date.parse(order.window_to) < Date.now());
 
   // Плашки-KPI кликабельны: выпадающий список позиций категории,
   // выбор заявки открывает редактирование (суммы, времена и остальное).
@@ -759,10 +768,13 @@ export function renderSales(container, context) {
         title="Назначенные заявки в плане (Гант) — выбор открывает редактирование">
         <span class="skl">В плане у логиста</span><span class="skv">${assigned}</span>
         ${kpiDrop('logist', inPlanOrders.map(orderRow).join(''))}</div>
-      <div class="skpi" title="Оперативная сводка по текущему периоду: рейсы, завершающиеся в открытом месяце">
-        <span class="skl">Рейсов за ${escapeHtml(periodLabel)}</span><span class="skv">${periodTrips.length}</span></div>
-      <div class="skpi" title="Выручка без НДС по рейсам, завершающимся в текущем периоде (ставка НДС ИП — 7%)">
-        <span class="skl">Выручка б. НДС ${escapeHtml(periodLabel)}</span><span class="skv">${money(periodNet)}</span></div>
+      <div class="skpi clickable ${state.salesKpiOpen === 'expired' ? 'open' : ''} ${expiredOrders.length ? 'skpi-hot' : ''}"
+        data-kpi="expired" title="Окно погрузки истекло, ТС не назначено: передоговорите сроки («Изменить») или отклоните — в подбор такие заявки не встают">
+        <span class="skl">⚠ Окно истекло</span><span class="skv">${expiredOrders.length}</span>
+        ${kpiDrop('expired', expiredOrders.map(orderRow).join(''))}</div>
+      <div class="skpi" title="Выручка без НДС по рейсам, завершённым в текущем календарном месяце (не зависит от листания периода; НДС ИП — 7%)">
+        <span class="skl">Выручка б. НДС · ${escapeHtml(periodLabel)}</span><span class="skv">${money(periodNet)}</span>
+        <small class="skm">${periodTrips.length} рейсов завершено</small></div>
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <input id="salesSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС"
