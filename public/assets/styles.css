@@ -356,6 +356,9 @@ tbody tr:hover td { background: var(--hover); }
 .dash-row.warn b { color: var(--warn); }
 .dash-row.bad b { color: var(--bad); }
 .dash-row.ok b { color: var(--ok); }
+.dash-gap { margin-top: 9px; padding: 7px 11px; border-radius: 8px; font-size: var(--fs-sm); font-weight: 650; }
+.dash-gap.bad { background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
+.dash-gap.good { background: color-mix(in srgb, var(--ok) 10%, transparent); color: var(--ok); }
 .dash-note { margin-top: 12px; font-size: var(--fs-xs); }
 @media (max-width: 1000px) { .dash-main, .dash-roles { grid-template-columns: 1fr; } }
 

@@ -42,6 +42,12 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   });
   const dayFact = dayTrips.reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   const factBeforeToday = monthFact - dayFact;
+  // «Забито на сегодня» = все расчётные выгрузки дня; из них выгружено
+  // фактически (статус после выгрузки) и ещё едет/ждёт выхода.
+  const doneStatuses = new Set(['unloaded', 'done', 'paid']);
+  const dayDone = dayTrips.filter(trip => doneStatuses.has(trip.status))
+    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  const dayExpected = dayFact - dayDone;
 
   const periodKey = new Date(monthStart).toISOString().slice(0, 10);
   const monthPlan = Number((data.revenuePlans || [])
@@ -99,7 +105,9 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     else idle += 1;
   }
 
-  return { monthPlan, monthFact, dayPlan, dayFact, forecast, daysInMonth, dayOfMonth,
+  const dayGap = Math.max(0, dayPlan - dayFact);
+  return { monthPlan, monthFact, dayPlan, dayFact, dayDone, dayExpected, dayGap,
+    forecast, daysInMonth, dayOfMonth,
     remainingDays, dayTripsCount: dayTrips.length,
     avgDayCheck: dayTrips.length ? dayFact / dayTrips.length : 0,
     sales: { createdToday: createdToday.length, createdSum, avgCheck, queue },
@@ -146,14 +154,19 @@ export function renderDashboard(container, context) {
       <div class="dash-goal">
         <div class="dash-goal-head">
           <span>План на сегодня</span>
-          <b>${money(Math.round(metrics.dayFact))}</b>
-          <span class="muted">из ${money(Math.round(metrics.dayPlan))} · ${dayPct}%</span>
+          <b>${money(Math.round(metrics.dayPlan))}</b>
+          <span class="muted">забито ${money(Math.round(metrics.dayFact))} · ${dayPct}%</span>
         </div>
-        ${gauge(dayPct, dayPct >= 60 ? 'ok' : 'warn')}
+        ${gauge(dayPct, dayPct >= 100 ? 'ok' : 'warn')}
         <div class="dash-goal-sub">
-          <span>Выгружено сегодня: <b>${metrics.dayTripsCount}</b> рейсов</span>
+          <span>Выгружено: <b>${money(Math.round(metrics.dayDone))}</b></span>
+          <span>Едет к выгрузке сегодня: <b>${money(Math.round(metrics.dayExpected))}</b></span>
           <span>Средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
         </div>
+        <div class="dash-gap ${metrics.dayGap > 0 ? 'bad' : 'good'}">${metrics.dayGap > 0
+          ? `⛔ До плана дня добрать: <b>${money(Math.round(metrics.dayGap))}</b> — заявки с выгрузкой сегодня`
+          : `✅ План дня забит${metrics.dayFact - metrics.dayPlan > 0
+              ? ` с запасом +${money(Math.round(metrics.dayFact - metrics.dayPlan))}` : ''}`}</div>
       </div>
     </div>
     <div class="dash-roles">

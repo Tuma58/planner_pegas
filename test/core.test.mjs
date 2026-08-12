@@ -450,6 +450,11 @@ test('потребность от логистики: ремонт и «без �
   assert.equal(Math.round(dash.dayFact), 5_000_000, 'факт сегодняшнего дня');
   assert.equal(Math.round(dash.forecast), Math.round(105_000_000 / 21 * 31), 'линейный прогноз');
   assert.equal(dash.logist.assignedToday, 1, 'назначено сегодня — рейс с заявкой, созданный сегодня');
+  // Воронка дня: забито = выгружено (done) + едет; остаток до плана.
+  assert.equal(Math.round(dash.dayDone), 5_000_000, 'выгружено — рейс со статусом done');
+  assert.equal(Math.round(dash.dayExpected), 0);
+  assert.equal(Math.round(dash.dayGap), Math.round(60_000_000 / 11 - 5_000_000),
+    'остаток до плана дня = план − забито');
 
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');
