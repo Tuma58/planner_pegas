@@ -583,7 +583,7 @@ export function renderSales(container, context) {
     .filter(matchesFilter);
   // «В плане у логиста» — ушедшие из портфеля: ТС назначено, рейс не отклонён.
   const assigned = data.orders.filter(order =>
-    order.status !== 'cancelled' && !inSalesPortfolio(order, data)).length;
+    order.status !== 'cancelled' && orderStage(order, data).stage === 2).length;
   const returned = orders.filter(order => order.returned_at).length;
   const awaitingAssign = orders.filter(order => orderStage(order, data).stage === 1).length;
   const tasks = myTasks(orders, data, can);
@@ -728,10 +728,14 @@ export function renderSales(container, context) {
 
   // Плашки-KPI кликабельны: выпадающий список позиций категории,
   // выбор заявки открывает редактирование (суммы, времена и остальное).
+  // «В плане у логиста» — только назначенные, ещё не выехавшие (stage 2):
+  // выгруженные и завершённые заявки — история, ей место в отчётах.
   const inPlanOrders = data.orders
-    .filter(order => order.status !== 'cancelled' && !inSalesPortfolio(order, data))
+    .filter(order => order.status !== 'cancelled' && orderStage(order, data).stage === 2)
     .filter(matchesFilter)
     .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
+  const inRunCount = data.orders.filter(order =>
+    order.status !== 'cancelled' && orderStage(order, data).stage === 3).length;
   const kpiDrop = (key, rows) => state.salesKpiOpen === key
     ? `<div class="skpi-drop">${rows || '<div class="skpi-row muted">Пусто</div>'}</div>` : '';
   const orderRow = order => {
@@ -765,8 +769,9 @@ export function renderSales(container, context) {
         <span class="skl">Ждут назначения ТС</span><span class="skv">${awaitingAssign}</span>
         ${kpiDrop('awaiting', orders.filter(order => orderStage(order, data).stage === 1).map(orderRow).join(''))}</div>
       <div class="skpi clickable ${state.salesKpiOpen === 'logist' ? 'open' : ''}" data-kpi="logist"
-        title="Назначенные заявки в плане (Гант) — выбор открывает редактирование">
+        title="Назначено, рейс ещё не выехал — выбор открывает редактирование; выгруженные и завершённые — в отчётах">
         <span class="skl">В плане у логиста</span><span class="skv">${assigned}</span>
+        <small class="skm">в пути ${inRunCount}</small>
         ${kpiDrop('logist', inPlanOrders.map(orderRow).join(''))}</div>
       <div class="skpi clickable ${state.salesKpiOpen === 'expired' ? 'open' : ''} ${expiredOrders.length ? 'skpi-hot' : ''}"
         data-kpi="expired" title="Окно погрузки истекло, ТС не назначено: передоговорите сроки («Изменить») или отклоните — в подбор такие заявки не встают">
