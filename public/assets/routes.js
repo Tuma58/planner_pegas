@@ -31,12 +31,14 @@ const orderRegionFrom = (data, order) => addressById(data, order.from_address_id
 const orderRegionTo = (data, order) => addressById(data, order.to_address_id)?.region
   || regionOfPlace(data, order.to_point, order.to_name);
 
-// Свободные потребности для конструктора: не назначены и не в других маршрутах.
-export function freeOrders(data, excludeRouteId = null) {
+// Свободные потребности для конструктора: не назначены, не в других
+// маршрутах и с ещё открытым окном — просроченные в подбор не встают.
+export function freeOrders(data, excludeRouteId = null, afterMs = Date.now()) {
   return (data.orders || []).filter(order => {
     const stage = orderStage(order, data).stage;
     return (stage === 0 || stage === 1) &&
-      (!order.route_id || order.route_id === excludeRouteId);
+      (!order.route_id || order.route_id === excludeRouteId) &&
+      Date.parse(order.window_to) > afterMs;
   });
 }
 
@@ -276,7 +278,12 @@ export function renderRoutes(container, context) {
       const box = document.getElementById('routeEditorBody');
       const lastPos = routeOrders.length
         ? orderToAddress(state.data, routeOrders[routeOrders.length - 1]) : basePoint(state.data, route.base_region);
-      const candidates = freeOrders(state.data, routeId)
+      // Кандидат должен быть погружаемым после конца цепочки: окно,
+      // закрывающееся раньше последней выгрузки маршрута, не предлагается.
+      const chainEndMs = metrics.legs.length
+        ? metrics.legs[metrics.legs.length - 1].unloadAt
+        : (route.planned_start ? Date.parse(route.planned_start) : Date.now());
+      const candidates = freeOrders(state.data, routeId, Math.max(chainEndMs, Date.now()))
         .filter(order => !ids.includes(order.id))
         .map(order => ({ order, feed: plannedKmBetween(lastPos, orderFromAddress(state.data, order)) ?? 9999 }))
         .sort((a, b) => a.feed - b.feed).slice(0, 12);
