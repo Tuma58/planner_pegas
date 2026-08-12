@@ -320,9 +320,17 @@ export async function renderDispatcher(container, context) {
   };
   const tripCardDialog = trip => {
     const text = tripCardText(trip);
+    // Комментарий продаж — отдельным заметным блоком со своей кнопкой
+    // копирования (и он же входит строкой в общий текст карточки).
+    const comment = String(orderOf(trip)?.comment || '').trim();
     context.showModal(`<h2>Карточка рейса</h2>
       <p class="muted" style="margin:0 0 8px">Полные данные для учётной системы —
         «Скопировать всё» или выделите нужные строки.</p>
+      ${comment ? `<div class="sales-comment" style="display:flex;gap:8px;align-items:flex-start;margin:0 0 8px">
+        <span style="flex:1;min-width:0">💬 Продажи: ${escapeHtml(comment)}</span>
+        <button class="button ghost small" id="tripCardCopyComment" style="flex:none"
+          title="Скопировать только комментарий">📋</button>
+      </div>` : ''}
       <textarea id="tripCardText" readonly rows="${Math.min(16, text.split('\n').length + 1)}"
         style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre">${escapeHtml(text)}</textarea>
       <div style="display:flex;gap:8px;margin-top:10px">
@@ -330,6 +338,13 @@ export async function renderDispatcher(container, context) {
         <button class="button ghost" id="tripCardClose">Закрыть</button>
       </div>`);
     const area = document.getElementById('tripCardText');
+    const copyText = async value => {
+      try { await navigator.clipboard.writeText(value); } catch {
+        const helper = document.createElement('textarea');
+        helper.value = value; document.body.append(helper);
+        helper.select(); document.execCommand('copy'); helper.remove();
+      }
+    };
     document.getElementById('tripCardClose').onclick = () => context.closeModal();
     document.getElementById('tripCardCopy').onclick = async () => {
       try {
@@ -339,6 +354,11 @@ export async function renderDispatcher(container, context) {
         document.execCommand('copy');
       }
       toast('Карточка рейса скопирована');
+    };
+    const commentButton = document.getElementById('tripCardCopyComment');
+    if (commentButton) commentButton.onclick = async () => {
+      await copyText(comment);
+      toast('Комментарий скопирован');
     };
   };
 
