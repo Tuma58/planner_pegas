@@ -412,13 +412,21 @@ export async function renderDispatcher(container, context) {
     const startMs = Date.parse(trip.starts_at);
     const overdue = startMs < Date.now();
     const hot = !worked && startMs - Date.now() <= 2 * 3_600_000;
+    const claim = claimOf(trip);
+    const claimMine = claim && claim.done_by === myName;
     return { worked, hot,
       html: `<small class="next-ctrl ${overdue ? 'overdue' : ''}">⏱ ${escapeHtml(label)} —
         выход ${formatDateTime(trip.starts_at)}${overdue ? ' · время вышло' : ''}
         ${hot && !overdue ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
-        ${worked ? `<span class="ctrl-worked-note">✓ отработано · ${escapeHtml(worked.done_by || '')}</span>` : ''}
+        ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
+        ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
+          · ${escapeHtml(worked.done_by || '')}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
+        ${canAct && !worked ? `<button class="button ghost small ctrl-worked-btn" data-claim="${trip.id}"
+          title="${claimMine ? 'Отпустить карточку' : claim ? `Карточку ведёт ${escapeHtml(claim.done_by)} — перехватить`
+            : 'Взять карточку в работу: коллеги увидят, что подготовкой уже занимаются'}">${claimMine ? '🖐 Отпустить' : '🖐 Беру'}</button>` : ''}
         ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-worked="${escapeHtml(key)}"
-          title="${worked ? 'Снять отметку' : 'Отработано (связались, в процессе) — карточка уйдёт вниз до следующего шага'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>` };
+          ${worked ? '' : `data-worked-label="${escapeHtml(label)}" data-worked-trip="${trip.id}"`}
+          title="${worked ? 'Снять отметку' : 'Отработано — обязателен комментарий, карточка уйдёт вниз до следующего шага'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>` };
   };
   const salesCommentNote = trip => {
     const comment = orderOf(trip)?.comment;
