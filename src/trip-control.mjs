@@ -108,6 +108,13 @@ export function syncTripFromStops(db, tripId, userId) {
   if (!stops.length) return null;
   const first = stops[0];
   const last = stops[stops.length - 1];
+  // Факт прибытия на конечную выгрузку — это и есть trips.arrived_at:
+  // сторож «не выгружают» и простой считаются без отдельной кнопки.
+  if (last.actual_arrival && !trip.arrived_at) {
+    db.prepare(`UPDATE trips SET arrived_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(last.actual_arrival, trip.id);
+    trip.arrived_at = last.actual_arrival;
+  }
   if (trip.status === 'plan' && first.actual_departure) {
     setTripStatus(db, trip, 'run', userId);
     return 'run';
@@ -151,7 +158,9 @@ export const DISPATCH_STEPS = [
   { step: 'driver_notified', column: 'driver_notified_at', permission: 'trip-status:write',
     label: 'Задание водителю отправлено' },
   { step: 'on_line', column: 'on_line_at', permission: 'trip-status:write',
-    label: 'Контроль на линии' }
+    label: 'Контроль на линии' },
+  { step: 'docs_checked', column: 'docs_checked_at', permission: 'trip-status:write',
+    label: 'Документы получены и проверены (фото, без печатей и актов)' }
 ];
 
 // Выполнение шага с проверкой порядка. Возвращает { trip, statusChanged }.

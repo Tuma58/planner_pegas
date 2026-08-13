@@ -221,9 +221,12 @@ export async function renderDispatcher(container, context) {
   // Выгрузка и простой отсчитываются только от ФАКТА прибытия (arrived_at):
   // рейс без него — «в пути», даже если план прибытия прошёл (это опоздание).
   const stuckMsOf = trip => trip.arrived_at ? nowMs - Date.parse(trip.arrived_at) : 0;
-  const isStuck = trip => stuckMsOf(trip) > UNLOAD_STUCK_MS;
+  const isStuck = trip => trip.status === 'run' && stuckMsOf(trip) > UNLOAD_STUCK_MS;
   // Особый контроль (не выгружают) — наверху списка линии.
-  const online = data.trips.filter(trip => trip.status === 'run' && matches(trip));
+  const online = data.trips.filter(trip => (trip.status === 'run' ||
+    (trip.status === 'unloaded' && !trip.docs_checked_at)) && matches(trip));
+  const tsRaw = value => value ? Date.parse(String(value).replace(' ', 'T') +
+    (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
 
   // Приоритет контроля: наверху рейсы, чьё следующее событие ближе всего
   // к текущему моменту (просроченные — самые первые). Время грузовых
@@ -247,7 +250,15 @@ export async function renderDispatcher(container, context) {
     return ` · местное ${formatDateTime(local.toISOString())} (МСК+${offset - 3})`;
   };
   const normOpMs = Number(data.settings.calculation.handlingHoursPerOperation || 2) * 3_600_000;
+  const DOCS_NORM_MS = 2 * 3_600_000;
   const nextControlEvent = trip => {
+    // После выгрузки рейс остаётся на контроле до проверки документов
+    // (фото, без печатей и актов): норматив 2 часа, дальше — сбой ежечасно.
+    if (trip.status === 'unloaded') {
+      const at = (Number.isFinite(tsRaw(trip.unloaded_at)) ? tsRaw(trip.unloaded_at) : Date.now()) + DOCS_NORM_MS;
+      return { at, label: `📄 документы: ${trip.customer_name || 'клиент'}`,
+        point: trip.to_point || trip.to_name, zone: trip.to_name, docsStep: true };
+    }
     if (isStuck(trip)) {
       return { at: 0, label: '🚨 не выгружают — вмешаться',
         point: trip.to_point || trip.to_name, zone: trip.to_name };
@@ -256,22 +267,31 @@ export async function renderDispatcher(container, context) {
     for (const stop of stops) {
       if (stop.actual_departure) continue;
       const point = stop.point || trip.to_name;
+      // Этапность словами конвейера: первая точка — погрузка, последняя —
+      // выгрузка, между ними промежуточные и контроль в пути.
+      const isFirst = stop === stops[0];
+      const isLast = stop === stops[stops.length - 1];
+      const stage = isFirst ? { arr: 'Прибыл на погрузку', start: 'Погрузка начата',
+          done: 'Загружен', dep: 'Выехал с погрузки' }
+        : isLast ? { arr: 'Прибыл на выгрузку', start: 'Выгрузка начата', done: 'Выгружен', dep: 'Убыл' }
+        : { arr: 'Прибыл', start: 'Начало работ', done: 'Работы завершены', dep: 'Убыл' };
       if (!stop.actual_arrival) {
         const candidates = [stop.estimated_arrival,
           Date.parse(stop.planned_arrival || ''), Date.parse(trip.ends_at)];
         const at = candidates.find(Number.isFinite) ?? Date.now();
-        return { at, label: `прибытие: ${point}`, point, zone: trip.to_name,
-          stopId: stop.id, stepField: 'actualArrival', stepLabel: 'Прибыл' };
+        return { at, label: `${isFirst ? 'в пути на погрузку' : isLast ? 'в пути на выгрузку' : 'прибытие'}: ${point}`,
+          point, zone: trip.to_name,
+          stopId: stop.id, stepField: 'actualArrival', stepLabel: stage.arr };
       }
       if (!stop.work_finished_at) {
         return { at: Date.parse(stop.actual_arrival) + normOpMs,
           label: `${stop.kind === 'P' ? 'погрузка' : 'выгрузка'}: ${point}`, point, zone: trip.to_name,
           stopId: stop.id,
           stepField: stop.work_started_at ? 'workFinishedAt' : 'workStartedAt',
-          stepLabel: stop.work_started_at ? 'Работы завершены' : 'Начало работ' };
+          stepLabel: stop.work_started_at ? stage.done : stage.start };
       }
       return { at: Date.parse(stop.work_finished_at), label: `убытие: ${point}`, point, zone: trip.to_name,
-        stopId: stop.id, stepField: 'actualDeparture', stepLabel: 'Убыл' };
+        stopId: stop.id, stepField: 'actualDeparture', stepLabel: stage.dep };
     }
     return { at: Date.parse(trip.ends_at), label: 'завершение рейса',
       point: trip.to_point || trip.to_name, zone: trip.to_name };
@@ -609,7 +629,10 @@ export async function renderDispatcher(container, context) {
     // продаж). «Прибыл на выгрузку» начинает отсчёт выгрузки: свыше 6 часов —
     // «не выгружают», особый контроль и выставление простоя клиенту.
     let statusBlock;
-    if (stuck) {
+    if (trip.status === 'unloaded') {
+      statusBlock = `<span class="badge warn" title="Рейс выгружен ${formatDateTime(trip.unloaded_at || trip.ends_at)} —
+        остаётся на контроле до проверки фото документов (без печатей и актов)">📄 выгружен · документы не проверены</span>`;
+    } else if (stuck) {
       const stuckHours = Math.floor(stuckMsOf(trip) / 3_600_000);
       statusBlock = `<span class="badge bad" title="Прибыл ${formatDateTime(trip.arrived_at)}, выгрузка не отмечена более 6 часов — продажи и логисты уведомлены автоматически, диспетчерам пинг каждый час">🚨 не выгружают ${stuckHours} ч · особый контроль</span>
         ${Number(trip.demurrage_vat) > 0
@@ -649,6 +672,8 @@ export async function renderDispatcher(container, context) {
       ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
         · ${escapeHtml(worked.done_by || '')}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
+      ${canAct && nextEvent.docsStep && !worked ? `<button class="button small ctrl-quick"
+        data-docs="${trip.id}" title="Фото документов получены и проверены (без печатей и актов) — рейс уйдёт с контроля">✔ Документы получены</button>` : ''}
       ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"
         data-quick-stop="${nextEvent.stopId}" data-quick-field="${nextEvent.stepField}"
         data-quick-label="${escapeHtml(nextEvent.stepLabel)}"
@@ -667,9 +692,6 @@ export async function renderDispatcher(container, context) {
         <span style="display:flex;gap:5px">
           <button class="button ghost small" data-stops-toggle="${trip.id}"
             title="Лента контрольных точек: прибытие, работы, убытие, простой">🧭 Точки${stopsCount ? ` (${stopsCount})` : ''}</button>
-          ${canAct && !trip.arrived_at ? `<button class="button ghost small" data-arrived="${trip.id}"
-            title="ТС встало под выгрузку — с этого момента отсчитываются выгрузка и простой">Прибыл на выгрузку</button>` : ''}
-          ${canAct ? `<button class="button small" data-unload="${trip.id}" title="Груз выгружен — конвейер уйдёт бухгалтерии">Выгружен</button>` : ''}
           <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
         </span>
       </span>
@@ -821,13 +843,13 @@ export async function renderDispatcher(container, context) {
       const trip = data.trips.find(item => item.id === button.dataset.incident);
       if (trip) incidentDialog(trip, data, context);
     }));
-  container.querySelectorAll('[data-unload]').forEach(button =>
-    button.addEventListener('click', () => factDialog('Факт выгрузки',
-      'Груз выгружен у клиента — конвейер уйдёт бухгалтерии.', async iso => {
-        await api(`/api/trips/${button.dataset.unload}`, {
-          method: 'PATCH', body: JSON.stringify({ status: 'unloaded', factAt: iso })
+  container.querySelectorAll('[data-docs]').forEach(button =>
+    button.addEventListener('click', () => factDialog('Документы получены',
+      'Фото документов получены и проверены (без печатей и актов) — рейс уйдёт с контроля.', async iso => {
+        await api(`/api/trips/${button.dataset.docs}/step`, {
+          method: 'POST', body: JSON.stringify({ step: 'docs_checked', at: iso })
         });
-        toast('Выгрузка отмечена — конвейер передан бухгалтерии');
+        toast('Документы проверены — рейс закрыт на контроле');
       })));
   container.querySelectorAll('[data-notify-delay]').forEach(button =>
     button.addEventListener('click', async () => {
@@ -879,14 +901,6 @@ export async function renderDispatcher(container, context) {
     button.addEventListener('click', () => stopAddDialog(button.dataset.stopAdd)));
   };
   wireStopButtons(container);
-  container.querySelectorAll('[data-arrived]').forEach(button =>
-    button.addEventListener('click', () => factDialog('Факт прибытия на выгрузку',
-      'От этого времени считаются выгрузка и простой у клиента.', async iso => {
-        await api(`/api/trips/${button.dataset.arrived}/arrived`, {
-          method: 'POST', body: JSON.stringify({ at: iso })
-        });
-        toast('Прибытие отмечено — пошёл отсчёт выгрузки');
-      })));
   container.querySelectorAll('[data-demurrage]').forEach(button =>
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.demurrage);
