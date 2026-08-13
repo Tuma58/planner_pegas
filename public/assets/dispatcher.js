@@ -427,41 +427,37 @@ export async function renderDispatcher(container, context) {
   const prepStepOf = trip => !trip.entered_1c_at ? ['1c', 'внести заказ в 1С']
     : !trip.driver_notified_at ? ['driver', 'отправить задание водителю']
     : ['online', 'вывести на линию'];
-  const prepKeyOf = trip => `${trip.id}|prep:${prepStepOf(trip)[0]}|${Math.round(Date.parse(trip.starts_at) / 60_000)}`.slice(0, 200);
-  const waitKeyOf = trip => `${trip.id}|wait|${Math.round(Date.parse(trip.starts_at) / 60_000)}`.slice(0, 200);
+  // Свободная заметка диспетчера на карточке подготовки: произвольный текст,
+  // видимый смене (живёт в общих отметках, ключ prepnote|рейс).
+  const prepNoteOf = trip => workedMap.get(`prepnote|${trip.id}`) || null;
   // Строка события левого столбца: выход по плану, горит за 2 часа.
-  const prepEventLine = (trip, key, label) => {
-    const worked = workedMap.get(key) || null;
+  const prepEventLine = (trip, label) => {
     const startMs = Date.parse(trip.starts_at);
     const overdue = startMs < Date.now();
-    const hot = !worked && startMs - Date.now() <= 2 * 3_600_000;
+    const hot = startMs - Date.now() <= 2 * 3_600_000;
     const claim = claimOf(trip);
     const claimMine = claim && claim.done_by === myName;
-    return { worked, hot,
+    const note = prepNoteOf(trip);
+    return { hot,
       html: `<small class="next-ctrl ${overdue ? 'overdue' : ''}">⏱ ${escapeHtml(label)} —
         выход ${formatDateTime(trip.starts_at)}${overdue ? ' · время вышло' : ''}
         ${hot && !overdue ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
         ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
-        ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
-          · ${escapeHtml(worked.done_by || '')}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
-        ${canAct && !worked ? `<button class="button ghost small ctrl-worked-btn" data-claim="${trip.id}"
+        ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-claim="${trip.id}"
           title="${claimMine ? 'Отпустить карточку' : claim ? `Карточку ведёт ${escapeHtml(claim.done_by)} — перехватить`
             : 'Взять карточку в работу: коллеги увидят, что подготовкой уже занимаются'}">${claimMine ? '🖐 Отпустить' : '🖐 Беру'}</button>` : ''}
-        ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-worked="${escapeHtml(key)}"
-          ${worked ? '' : `data-worked-label="${escapeHtml(label)}" data-worked-trip="${trip.id}"`}
-          title="${worked ? 'Снять отметку' : 'Отработано — обязателен комментарий, карточка уйдёт вниз до следующего шага'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>` };
+        ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-prepnote="${trip.id}"
+          title="Заметка по подготовке в произвольной форме — видна всей смене">💬${note ? ' ✎' : ' Заметка'}</button>` : ''}</small>
+        ${note ? `<small class="prep-note">💬 ${escapeHtml(note.done_by || '')}: ${escapeHtml(note.note || '')}</small>` : ''}` };
   };
   const salesCommentNote = trip => {
     const comment = orderOf(trip)?.comment;
     return comment ? `<small class="sales-comment">💬 Продажи: ${escapeHtml(comment)}</small>` : '';
   };
-  const prepSorted = [...preparing].sort((a, b) =>
-    Number(!!workedMap.get(prepKeyOf(a))) - Number(!!workedMap.get(prepKeyOf(b)))
-    || a.starts_at.localeCompare(b.starts_at));
+  const prepSorted = [...preparing].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
   const prepCards = prepSorted.map(trip => {
-    const key = prepKeyOf(trip);
-    const event = prepEventLine(trip, key, prepStepOf(trip)[1]);
-    return `<div class="card ${event.hot ? 'ctrl-hot' : ''} ${event.worked ? 'ctrl-done' : ''}"
+    const event = prepEventLine(trip, prepStepOf(trip)[1]);
+    return `<div class="card ${event.hot ? 'ctrl-hot' : ''}"
         style="margin-bottom:10px;padding:10px 12px">
       <div class="list-item" style="padding:0 0 4px">
         ${tripHead(trip)}
@@ -473,13 +469,10 @@ export async function renderDispatcher(container, context) {
     </div>`;
   }).join('') || '<p class="muted">Нет рейсов в подготовке — очередь чиста.</p>';
 
-  const waitSorted = [...waitingLogist].sort((a, b) =>
-    Number(!!workedMap.get(waitKeyOf(a))) - Number(!!workedMap.get(waitKeyOf(b)))
-    || a.starts_at.localeCompare(b.starts_at));
+  const waitSorted = [...waitingLogist].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
   const waitCards = waitSorted.map(trip => {
-    const key = waitKeyOf(trip);
-    const event = prepEventLine(trip, key, 'напомнить логисту о подтверждении');
-    return `<div class="card ${event.hot ? 'ctrl-hot' : ''} ${event.worked ? 'ctrl-done' : ''}" style="padding:9px 11px">
+    const event = prepEventLine(trip, 'напомнить логисту о подтверждении');
+    return `<div class="card ${event.hot ? 'ctrl-hot' : ''}" style="padding:9px 11px">
       <div class="list-item ordrow pipe-wait" style="border:0;padding:0">
         ${tripHead(trip)}
         <span class="pipe-badge">Ждёт: Логист · подтверждение назначения</span>
@@ -773,6 +766,32 @@ export async function renderDispatcher(container, context) {
           }
           context.closeModal();
           toast('Отработано — комментарий сохранён');
+          await renderDispatcher(container, context);
+        } catch (error) { toast(error.message, 'error'); }
+      };
+    }));
+  // «💬 Заметка» подготовки: произвольный текст, перезапись = снять + поставить.
+  container.querySelectorAll('[data-prepnote]').forEach(button =>
+    button.addEventListener('click', () => {
+      const tripId = button.dataset.prepnote;
+      const existing = workedMap.get(`prepnote|${tripId}`);
+      context.showModal(`<form id="prepNoteForm">
+        <h2>💬 Заметка по подготовке</h2>
+        <label class="field">Произвольный комментарий (видит вся смена; пусто — удалить)
+          <textarea name="note" maxlength="300" rows="3">${escapeHtml(existing?.note || '')}</textarea></label>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close>Отмена</button>
+          <button class="button">Сохранить</button>
+        </div></form>`);
+      document.getElementById('prepNoteForm').onsubmit = async event => {
+        event.preventDefault();
+        const note = String(new FormData(event.currentTarget).get('note') || '').trim();
+        try {
+          if (existing) await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `prepnote|${tripId}` }) });
+          if (note) await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `prepnote|${tripId}`, note }) });
+          context.closeModal();
           await renderDispatcher(container, context);
         } catch (error) { toast(error.message, 'error'); }
       };

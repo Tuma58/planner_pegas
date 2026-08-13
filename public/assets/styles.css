@@ -460,6 +460,8 @@ tbody tr:hover td { background: var(--hover); }
 .ctrl-worked-btn { min-height: 22px; padding: 1px 8px; margin-left: 6px; vertical-align: middle; }
 .ctrl-quick { min-height: 22px; padding: 1px 9px; margin-left: 8px; vertical-align: middle; }
 .ctrl-claim-note { color: var(--teal); font-weight: 700; margin-left: 6px; }
+.prep-note { display: block; margin-top: 3px; padding: 4px 8px; border-left: 3px solid var(--muted);
+  background: var(--soft); border-radius: 0 6px 6px 0; color: var(--ink); }
 .trip-plate { font-size: var(--fs-md); letter-spacing: .02em; }
 .trip-driver { font-weight: 700; }
 .task-done-btn { min-height: 24px; padding: 2px 8px; }
