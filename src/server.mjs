@@ -524,7 +524,7 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Нужны kind (sales|logist|dispatcher) и day (ГГГГ-ММ-ДД)');
     }
     return json(response, 200, {
-      items: db.prepare(`SELECT item_key,done_by,done_at FROM task_marks
+      items: db.prepare(`SELECT item_key,done_by,done_at,note FROM task_marks
         WHERE kind=? AND day=? ORDER BY done_at`).all(kind, day)
     });
   }
@@ -544,8 +544,9 @@ async function api(request, response, url) {
     if (existing) {
       db.prepare(`DELETE FROM task_marks WHERE kind=? AND day=? AND item_key=?`).run(kind, day, key);
     } else {
-      db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by) VALUES(?,?,?,?)`)
-        .run(kind, day, key, user.full_name || user.username || '');
+      db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by,note) VALUES(?,?,?,?,?)`)
+        .run(kind, day, key, user.full_name || user.username || '',
+          String(body.note || '').trim().slice(0, 300));
     }
     return json(response, 200, { done: !existing });
   }

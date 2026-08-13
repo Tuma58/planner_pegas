@@ -260,18 +260,33 @@ export async function renderDispatcher(container, context) {
         const candidates = [stop.estimated_arrival,
           Date.parse(stop.planned_arrival || ''), Date.parse(trip.ends_at)];
         const at = candidates.find(Number.isFinite) ?? Date.now();
-        return { at, label: `прибытие: ${point}`, point, zone: trip.to_name };
+        return { at, label: `прибытие: ${point}`, point, zone: trip.to_name,
+          stopId: stop.id, stepField: 'actualArrival', stepLabel: 'Прибыл' };
       }
       if (!stop.work_finished_at) {
         return { at: Date.parse(stop.actual_arrival) + normOpMs,
-          label: `${stop.kind === 'P' ? 'погрузка' : 'выгрузка'}: ${point}`, point, zone: trip.to_name };
+          label: `${stop.kind === 'P' ? 'погрузка' : 'выгрузка'}: ${point}`, point, zone: trip.to_name,
+          stopId: stop.id,
+          stepField: stop.work_started_at ? 'workFinishedAt' : 'workStartedAt',
+          stepLabel: stop.work_started_at ? 'Работы завершены' : 'Начало работ' };
       }
-      return { at: Date.parse(stop.work_finished_at), label: `убытие: ${point}`, point, zone: trip.to_name };
+      return { at: Date.parse(stop.work_finished_at), label: `убытие: ${point}`, point, zone: trip.to_name,
+        stopId: stop.id, stepField: 'actualDeparture', stepLabel: 'Убыл' };
     }
     return { at: Date.parse(trip.ends_at), label: 'завершение рейса',
       point: trip.to_point || trip.to_name, zone: trip.to_name };
   };
 
+  // «Взято в работу»: захват карточки на 15 минут — двое не отрабатывают
+  // одну карточку параллельно. Ключ claim|tripId в общих отметках смены.
+  const CLAIM_MS = 15 * 60_000;
+  const claimOf = trip => {
+    const mark = workedMap.get(`claim|${trip.id}`);
+    if (!mark) return null;
+    const at = Date.parse(String(mark.done_at).replace(' ', 'T') + 'Z');
+    return Number.isFinite(at) && Date.now() - at < CLAIM_MS ? mark : null;
+  };
+  const myName = state.data.user.fullName || '';
   const eventKeyOf = trip => {
     const event = nextControlEvent(trip);
     // Сбой на точке (событие просрочено) требует контроля каждый час:
@@ -613,14 +628,26 @@ export async function renderDispatcher(container, context) {
     // и диспетчер его ещё не отработал.
     const hot = !worked && (nextEvent.at === 0 || (hasTime && nextEvent.at - Date.now() <= 2 * 3_600_000));
     const overdueHours = overdue ? Math.floor((Date.now() - nextEvent.at) / 3_600_000) : 0;
+    const claim = claimOf(trip);
+    const claimMine = claim && claim.done_by === myName;
     const eventLine = `<small class="next-ctrl ${overdue || nextEvent.at === 0 ? 'overdue' : ''}">⏱ далее —
       ${escapeHtml(nextEvent.label)}${hasTime ? ` · ${formatDateTime(new Date(nextEvent.at).toISOString())}
       ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue
         ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждый час` : ''}
       ${hot && !overdue && nextEvent.at !== 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
-      ${worked ? `<span class="ctrl-worked-note">✓ отработано · ${escapeHtml(worked.done_by || '')}</span>` : ''}
+      ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
+      ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
+        · ${escapeHtml(worked.done_by || '')}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
+      ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"
+        data-quick-stop="${nextEvent.stopId}" data-quick-field="${nextEvent.stepField}"
+        data-quick-label="${escapeHtml(nextEvent.stepLabel)}"
+        title="Отметить факт «${escapeHtml(nextEvent.stepLabel)}» без открытия ленты точек">✔ ${escapeHtml(nextEvent.stepLabel)}</button>` : ''}
+      ${canAct && !worked ? `<button class="button ghost small ctrl-worked-btn" data-claim="${trip.id}"
+        title="${claimMine ? 'Отпустить карточку' : claim ? `Карточку ведёт ${escapeHtml(claim.done_by)} — перехватить`
+          : 'Взять карточку в работу: коллеги увидят, что вы уже звоните'}">${claimMine ? '🖐 Отпустить' : '🖐 Беру'}</button>` : ''}
       ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-worked="${escapeHtml(eventKeyOf(trip))}"
-        title="${worked ? 'Снять отметку — событие вернётся в горящие' : 'Событие отработано (связались, статус ясен) — карточка уйдёт вниз до следующего события'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>`;
+        ${worked ? '' : `data-worked-label="${escapeHtml(nextEvent.label)}" data-worked-trip="${trip.id}"`}
+        title="${worked ? 'Снять отметку — событие вернётся в горящие' : 'Событие отработано — обязателен комментарий, карточка уйдёт вниз до следующего события'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>`;
     return `<div class="card ${hot ? 'ctrl-hot' : ''} ${worked ? 'ctrl-done' : ''}" style="padding:9px 11px">
       <div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}" style="border:0;padding:0">
       ${tripHead(trip)}
@@ -674,12 +701,72 @@ export async function renderDispatcher(container, context) {
 
   container.querySelectorAll('[data-worked]').forEach(button =>
     button.addEventListener('click', async () => {
+      const key = button.dataset.worked;
+      // Снятие отметки — сразу; постановка — с обязательным комментарием.
+      if (!button.dataset.workedLabel) {
+        try {
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key }) });
+          await renderDispatcher(container, context);
+        } catch (error) { toast(error.message, 'error'); }
+        return;
+      }
+      const tripId = button.dataset.workedTrip;
+      context.showModal(`<form id="workedForm">
+        <h2>✓ Отработано</h2>
+        <p class="muted">${escapeHtml(button.dataset.workedLabel)} — что выяснили по звонку?</p>
+        <label class="field">Комментарий (обязательно)
+          <textarea name="note" required minlength="5" maxlength="300" rows="3"
+            placeholder="например: водитель в очереди на пандус, обещают через 40 минут"></textarea></label>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close>Отмена</button>
+          <button class="button">Сохранить</button>
+        </div></form>`);
+      document.getElementById('workedForm').onsubmit = async event => {
+        event.preventDefault();
+        const note = String(new FormData(event.currentTarget).get('note') || '').trim();
+        if (note.length < 5) { toast('Комментарий обязателен (от 5 символов)', 'error'); return; }
+        try {
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key, note }) });
+          // Отработка снимает мой захват карточки.
+          const claim = workedMap.get(`claim|${tripId}`);
+          if (claim && claim.done_by === myName) {
+            await api('/api/task-marks', { method: 'POST',
+              body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}` }) }).catch(() => {});
+          }
+          context.closeModal();
+          toast('Отработано — комментарий сохранён');
+          await renderDispatcher(container, context);
+        } catch (error) { toast(error.message, 'error'); }
+      };
+    }));
+  // «🖐 Беру»: захват карточки (toggle); перехват чужого — новый claim после снятия.
+  container.querySelectorAll('[data-claim]').forEach(button =>
+    button.addEventListener('click', async () => {
+      const tripId = button.dataset.claim;
       try {
+        const existing = workedMap.get(`claim|${tripId}`);
         await api('/api/task-marks', { method: 'POST',
-          body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: button.dataset.worked }) });
+          body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}` }) });
+        if (existing && existing.done_by !== myName) {
+          // Сняли чужой протухающий захват — сразу ставим свой.
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}` }) });
+        }
         await renderDispatcher(container, context);
       } catch (error) { toast(error.message, 'error'); }
     }));
+  // «✔ Шаг»: факт следующего события прямо с карточки — без ленты точек.
+  container.querySelectorAll('[data-quick-stop]').forEach(button =>
+    button.addEventListener('click', () => factDialog(
+      `Контрольная точка · ${button.dataset.quickLabel}`,
+      'Укажите фактическое время события на стоянке.', async iso => {
+        await api(`/api/stops/${button.dataset.quickStop}`, {
+          method: 'PATCH', body: JSON.stringify({ [button.dataset.quickField]: iso })
+        });
+        toast('Факт отмечен');
+      })));
 
   // Клик по плашке рейса — карточка с полными данными и копированием;
   // клики по кнопкам внутри строки карточку не открывают.
@@ -689,6 +776,16 @@ export async function renderDispatcher(container, context) {
       const trip = data.trips.find(item => item.id === head.dataset.tripCard);
       if (trip) tripCardDialog(trip);
     }));
+
+  // Автообновление раз в 60 с: захваты и отметки коллег видны без действий.
+  // Пауза, когда открыт модал или идёт ввод — чтобы не сбивать работу.
+  clearInterval(state.dispatcherTimer);
+  state.dispatcherTimer = setInterval(() => {
+    if (state.view !== 'dispatcher') { clearInterval(state.dispatcherTimer); return; }
+    if (document.querySelector('#modalRoot .modal')) return;
+    if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    context.onReload();
+  }, 60_000);
 
   attachSearch(container.querySelector('#dispatcherSearch'), async value => {
     state.dispatcherQuery = value;

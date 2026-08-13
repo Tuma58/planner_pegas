@@ -458,6 +458,8 @@ tbody tr:hover td { background: var(--hover); }
 .ctrl-soon { color: var(--warn); font-weight: 750; margin-left: 5px; }
 .ctrl-worked-note { color: var(--ok); font-weight: 650; margin-left: 6px; }
 .ctrl-worked-btn { min-height: 22px; padding: 1px 8px; margin-left: 6px; vertical-align: middle; }
+.ctrl-quick { min-height: 22px; padding: 1px 9px; margin-left: 8px; vertical-align: middle; }
+.ctrl-claim-note { color: var(--teal); font-weight: 700; margin-left: 6px; }
 .task-done-btn { min-height: 24px; padding: 2px 8px; }
 .task-done-list { margin: 10px 0 14px; }
 .task-done-list summary { color: var(--ok); font-weight: 650; }

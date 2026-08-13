@@ -443,6 +443,7 @@ function migrateColumns(db) {
   // записи, созданные до этого правила, получают явную пометку.
   db.exec(`UPDATE orders SET rejection_reason='Причина не указана'
     WHERE status='cancelled' AND (rejection_reason IS NULL OR rejection_reason='')`);
+  ensure('task_marks', 'note', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'route_id', 'TEXT');
   ensure('orders', 'route_seq', 'INTEGER');
   ensure('trips', 'logist_confirmed_at', 'TEXT');
