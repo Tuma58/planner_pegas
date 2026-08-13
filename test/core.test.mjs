@@ -455,6 +455,14 @@ test('потребность от логистики: ремонт и «без �
   assert.equal(Math.round(dash.dayExpected), 0);
   assert.equal(Math.round(dash.dayGap), Math.round(60_000_000 / 11 - 5_000_000),
     'остаток до плана дня = план − забито');
+  // Лента дней: план вчера от остатка на его дату, завтра — с учётом
+  // забитого сегодня; выгрузки соседних дней раскладываются по датам.
+  assert.equal(Math.round(dash.days.yesterday.plan), Math.round(160_000_000 / 12),
+    'план вчера (20-е): весь план на 12 оставшихся дней');
+  assert.equal(Math.round(dash.days.yesterday.booked), 100_000_000, 'факт вчера');
+  assert.equal(Math.round(dash.days.tomorrow.plan), Math.round(55_000_000 / 10),
+    'план завтра: остаток после забитого сегодня на 10 дней');
+  assert.equal(dash.days.tomorrow.booked, 0, 'на завтра пока не забито');
 
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');

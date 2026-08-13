@@ -106,7 +106,35 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   }
 
   const dayGap = Math.max(0, dayPlan - dayFact);
-  return { monthPlan, monthFact, dayPlan, dayFact, dayDone, dayExpected, dayGap,
+
+  // Лента «вчера / сегодня / завтра»: план каждого дня — остаток месячного
+  // плана на его дату (для завтра — с учётом забитого на сегодня), «забито» —
+  // расчётные выгрузки дня, раскладка выгружено/едет, остаток до плана.
+  const dayMetricsAt = offsetDays => {
+    const start = dayStart + offsetDays * DAY_MS;
+    const end = start + DAY_MS;
+    const date = new Date(start);
+    const inMonth = start >= monthStart && start < monthEnd;
+    const trips = activeTrips.filter(trip => {
+      const ends = Date.parse(trip.ends_at);
+      return ends >= start && ends < end;
+    });
+    const booked = trips.reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+    const done = trips.filter(trip => doneStatuses.has(trip.status))
+      .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+    const factBefore = activeTrips.filter(trip => {
+      const ends = Date.parse(trip.ends_at);
+      return ends >= monthStart && ends < start;
+    }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+    const remaining = daysInMonth - date.getUTCDate() + 1;
+    const plan = inMonth ? Math.max(0, (monthPlan - factBefore) / Math.max(1, remaining)) : null;
+    return { dateIso: date.toISOString().slice(0, 10), inMonth, plan,
+      booked, done, expected: booked - done, trips: trips.length,
+      gap: plan != null ? Math.max(0, plan - booked) : 0 };
+  };
+  const days = { yesterday: dayMetricsAt(-1), today: dayMetricsAt(0), tomorrow: dayMetricsAt(1) };
+
+  return { monthPlan, monthFact, dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
     forecast, daysInMonth, dayOfMonth,
     remainingDays, dayTripsCount: dayTrips.length,
     avgDayCheck: dayTrips.length ? dayFact / dayTrips.length : 0,
@@ -136,38 +164,54 @@ export function renderDashboard(container, context) {
       <span>${row.label}</span><b>${row.value}</b></div>`).join('')}
   </div>`;
 
+  const fmtDayShort = iso => new Intl.DateTimeFormat('ru-RU',
+    { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
+  const dayCard = (day, title, mode) => {
+    const pct = day.plan ? Math.min(999, Math.round(day.booked / day.plan * 100)) : 0;
+    const met = day.plan != null && day.booked >= day.plan;
+    let verdict = '';
+    if (day.plan == null) {
+      verdict = '<span class="muted">план соседнего месяца — не считается</span>';
+    } else if (mode === 'past') {
+      verdict = met
+        ? `✅ выполнен ${day.plan ? `+${money(Math.round(day.booked - day.plan))}` : ''}`
+        : `✗ недобор ${money(Math.round(day.plan - day.booked))} — перетёк в план сегодня`;
+    } else if (day.gap > 0) {
+      verdict = `⛔ добрать: <b>${money(Math.round(day.gap))}</b>`;
+    } else {
+      verdict = `✅ забит${day.booked - day.plan > 0 ? ` с запасом +${money(Math.round(day.booked - day.plan))}` : ''}`;
+    }
+    return `<div class="dash-day ${mode === 'today' ? 'today' : ''} ${day.plan != null && (mode === 'past' ? !met : day.gap > 0) ? 'lack' : 'met'}">
+      <div class="dd-head"><b>${title}</b><span class="muted">${fmtDayShort(day.dateIso)}</span></div>
+      <div class="dd-plan"><span>план</span><b>${day.plan != null ? money(Math.round(day.plan)) : '—'}</b></div>
+      <div class="dd-fact"><span>${mode === 'past' ? 'факт' : 'забито'}</span>
+        <b>${money(Math.round(day.booked))}</b>
+        ${day.plan ? `<em>${pct}%</em>` : ''}</div>
+      ${gauge(Math.min(100, pct), day.plan != null && day.booked >= day.plan ? 'ok' : 'warn')}
+      <div class="dd-split">${mode === 'past'
+        ? `выгружено ${money(Math.round(day.done))}${day.expected > 0.5
+            ? ` · <span class="danger">не выгружено ${money(Math.round(day.expected))}</span>` : ''}`
+        : `выгружено ${money(Math.round(day.done))} · едет ${money(Math.round(day.expected))} · ${day.trips} рейс.`}</div>
+      <div class="dd-verdict">${verdict}</div>
+    </div>`;
+  };
+
   container.innerHTML = `<div class="dashwrap">
-    <div class="dash-main">
-      <div class="dash-goal">
-        <div class="dash-goal-head">
-          <span>Выручка без НДС · ${escapeHtml(monthLabel)}</span>
-          <b>${money(Math.round(metrics.monthFact))}</b>
-          <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%</span>
-        </div>
-        ${gauge(donePct, donePct >= Math.round(metrics.dayOfMonth / metrics.daysInMonth * 100) ? 'ok' : 'warn')}
-        <div class="dash-goal-sub">
-          <span>Прогноз месяца: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
-            ${shortMln(metrics.forecast)} (${forecastPct}%)</b></span>
-          <span>Осталось дней: <b>${metrics.remainingDays}</b></span>
-        </div>
+    <div class="dash-goal dash-month">
+      <div class="dash-goal-head">
+        <span>Выручка без НДС · ${escapeHtml(monthLabel)}</span>
+        <b>${money(Math.round(metrics.monthFact))}</b>
+        <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%</span>
+        <span class="dash-month-side">Прогноз: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
+          ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
+          · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
       </div>
-      <div class="dash-goal">
-        <div class="dash-goal-head">
-          <span>План на сегодня</span>
-          <b>${money(Math.round(metrics.dayPlan))}</b>
-          <span class="muted">забито ${money(Math.round(metrics.dayFact))} · ${dayPct}%</span>
-        </div>
-        ${gauge(dayPct, dayPct >= 100 ? 'ok' : 'warn')}
-        <div class="dash-goal-sub">
-          <span>Выгружено: <b>${money(Math.round(metrics.dayDone))}</b></span>
-          <span>Едет к выгрузке сегодня: <b>${money(Math.round(metrics.dayExpected))}</b></span>
-          <span>Средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
-        </div>
-        <div class="dash-gap ${metrics.dayGap > 0 ? 'bad' : 'good'}">${metrics.dayGap > 0
-          ? `⛔ До плана дня добрать: <b>${money(Math.round(metrics.dayGap))}</b> — заявки с выгрузкой сегодня`
-          : `✅ План дня забит${metrics.dayFact - metrics.dayPlan > 0
-              ? ` с запасом +${money(Math.round(metrics.dayFact - metrics.dayPlan))}` : ''}`}</div>
-      </div>
+      ${gauge(donePct, donePct >= Math.round(metrics.dayOfMonth / metrics.daysInMonth * 100) ? 'ok' : 'warn')}
+    </div>
+    <div class="dash-days">
+      ${dayCard(metrics.days.yesterday, 'Вчера', 'past')}
+      ${dayCard(metrics.days.today, 'Сегодня', 'today')}
+      ${dayCard(metrics.days.tomorrow, 'Завтра', 'future')}
     </div>
     <div class="dash-roles">
       ${roleCard('📦 Продажи', [
