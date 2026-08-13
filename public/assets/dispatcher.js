@@ -274,7 +274,16 @@ export async function renderDispatcher(container, context) {
 
   const eventKeyOf = trip => {
     const event = nextControlEvent(trip);
-    return `${trip.id}|${event.label}|${Number.isFinite(event.at) ? Math.round(event.at / 60_000) : 0}`.slice(0, 200);
+    // Сбой на точке (событие просрочено) требует контроля каждый час:
+    // номер часа просрочки входит в ключ — отметка «отработано» протухает
+    // с началом следующего часа, карточка снова загорается.
+    let overdueHour = -1;
+    if (event.at === 0) overdueHour = Math.floor(stuckMsOf(trip) / 3_600_000);
+    else if (Number.isFinite(event.at) && event.at < Date.now()) {
+      overdueHour = Math.floor((Date.now() - event.at) / 3_600_000);
+    }
+    return `${trip.id}|${event.label}|${Number.isFinite(event.at) ? Math.round(event.at / 60_000) : 0}` +
+      `${overdueHour >= 0 ? `|h${overdueHour}` : ''}`.slice(0, 200);
   };
   const workedOf = trip => workedMap.get(eventKeyOf(trip)) || null;
   // Ближайшее событие — наверх: просроченные и «не выгружают» первыми.
@@ -603,9 +612,11 @@ export async function renderDispatcher(container, context) {
     // «Горит»: событие ближе двух часов (или просрочено, или особый контроль)
     // и диспетчер его ещё не отработал.
     const hot = !worked && (nextEvent.at === 0 || (hasTime && nextEvent.at - Date.now() <= 2 * 3_600_000));
+    const overdueHours = overdue ? Math.floor((Date.now() - nextEvent.at) / 3_600_000) : 0;
     const eventLine = `<small class="next-ctrl ${overdue || nextEvent.at === 0 ? 'overdue' : ''}">⏱ далее —
       ${escapeHtml(nextEvent.label)}${hasTime ? ` · ${formatDateTime(new Date(nextEvent.at).toISOString())}
-      ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue ? ' · просрочено' : ''}
+      ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue
+        ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждый час` : ''}
       ${hot && !overdue && nextEvent.at !== 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
       ${worked ? `<span class="ctrl-worked-note">✓ отработано · ${escapeHtml(worked.done_by || '')}</span>` : ''}
       ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-worked="${escapeHtml(eventKeyOf(trip))}"
