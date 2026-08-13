@@ -460,6 +460,14 @@ function migrateColumns(db) {
   // рейс — «опоздание в пути», после — отсчёт выгрузки и простоя.
   ensure('trips', 'arrived_at', 'TEXT');
   ensure('trips', 'docs_checked_at', 'TEXT');
+  // Этап «документы получены» введён 13.08.2026: рейсам, выгруженным
+  // до внедрения, отметка проставляется задним числом — иначе диспетчеры
+  // получили бы сотни исторических задач разом. Однократно.
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='docs_backfill_v1'`).get()) {
+    db.prepare(`UPDATE trips SET docs_checked_at=COALESCE(unloaded_at, updated_at)
+      WHERE status IN ('unloaded','done','paid') AND docs_checked_at IS NULL`).run();
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('docs_backfill_v1','1')`).run();
+  }
   // «ТС не выгружают»: момент первого алерта (продажам и логистам),
   // момент последнего ежечасного пинга диспетчерам и выставленный
   // клиенту простой (входит в выручку рейса).

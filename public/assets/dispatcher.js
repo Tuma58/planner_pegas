@@ -224,7 +224,10 @@ export async function renderDispatcher(container, context) {
   const isStuck = trip => trip.status === 'run' && stuckMsOf(trip) > UNLOAD_STUCK_MS;
   // Особый контроль (не выгружают) — наверху списка линии.
   const online = data.trips.filter(trip => (trip.status === 'run' ||
-    (trip.status === 'unloaded' && !trip.docs_checked_at)) && matches(trip));
+    (trip.status === 'unloaded' && !trip.docs_checked_at &&
+      Date.now() - Date.parse(String(trip.unloaded_at || trip.ends_at).replace(' ', 'T') +
+        (String(trip.unloaded_at || trip.ends_at).includes('Z') ? '' : 'Z')) < 72 * 3_600_000)) &&
+    matches(trip));
   const tsRaw = value => value ? Date.parse(String(value).replace(' ', 'T') +
     (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
 
