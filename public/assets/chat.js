@@ -18,16 +18,31 @@ function armAudio() {
   }
 }
 
-// Короткий двухтональный сигнал «вам задание» без аудиофайлов.
-function beep() {
+// Локальные настройки звука чата: живут в браузере этого рабочего места,
+// не зависят от системной громкости устройства.
+const soundSettings = {
+  muted: localStorage.getItem('pl_chat_muted') === '1',
+  volume: Math.min(1, Math.max(0, Number(localStorage.getItem('pl_chat_volume') ?? 0.5)))
+};
+function saveSound() {
+  localStorage.setItem('pl_chat_muted', soundSettings.muted ? '1' : '');
+  localStorage.setItem('pl_chat_volume', String(soundSettings.volume));
+}
+
+// Сигналы без аудиофайлов: «вам задание» — двухтональный, обычное
+// оповещение — одиночный тихий тон. Громкость — программная (ползунок).
+function beep(kind = 'target') {
+  if (soundSettings.muted || soundSettings.volume <= 0) return;
   if (!audioContext || audioContext.state === 'suspended') return;
   const now = audioContext.currentTime;
-  [[880, 0], [660, 0.14]].forEach(([freq, offset]) => {
+  const peak = 0.24 * soundSettings.volume * (kind === 'target' ? 1 : 0.55);
+  const tones = kind === 'target' ? [[880, 0], [660, 0.14]] : [[520, 0]];
+  tones.forEach(([freq, offset]) => {
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
     oscillator.frequency.value = freq;
     gain.gain.setValueAtTime(0.001, now + offset);
-    gain.gain.exponentialRampToValueAtTime(0.12, now + offset + 0.02);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.002, peak), now + offset + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.13);
     oscillator.connect(gain).connect(audioContext.destination);
     oscillator.start(now + offset);
@@ -48,6 +63,12 @@ export function setupChat(state) {
   const panel = document.createElement('aside');
   panel.className = 'chat-panel hidden';
   panel.innerHTML = `<div class="chat-head"><strong>Чат · конвейер</strong>
+      <span class="chat-sound" title="Звук уведомлений этого рабочего места — не зависит от громкости устройства">
+        <button class="button ghost small" id="chatMute"
+          title="Выключить/включить звук уведомлений">${soundSettings.muted ? '🔕' : '🔔'}</button>
+        <input type="range" id="chatVolume" min="0" max="100" step="5"
+          value="${Math.round(soundSettings.volume * 100)}" title="Громкость уведомлений">
+      </span>
       <button class="button ghost small" id="chatClose">✕</button></div>
     <div class="chat-list" id="chatList"></div>
     <form class="chat-form" id="chatForm">
@@ -87,10 +108,15 @@ export function setupChat(state) {
         list.insertAdjacentHTML('beforeend', renderMessage(message));
         const isNew = message.id > seenId && !initial;
         if (isNew && !isOpen()) unread += 1;
-        // Адресованное моей роли — тост со звуком, даже при закрытой панели.
+        // Звук — на каждое входящее оповещение (кроме собственных сообщений):
+        // адресованное моей роли — двойной сигнал и тост, остальное — тихий тон.
+        const ownMessage = message.kind !== 'auto' &&
+          message.author_name === (state.data.user.fullName || '');
         if (isNew && forMe(message)) {
           toast(message.text);
-          beep();
+          beep('target');
+        } else if (isNew && !ownMessage) {
+          beep('other');
         }
       }
       lastId = Math.max(lastId, serverLast);
@@ -118,6 +144,24 @@ export function setupChat(state) {
     }
   };
   panel.querySelector('#chatClose').onclick = () => panel.classList.add('hidden');
+  const muteButton = panel.querySelector('#chatMute');
+  muteButton.onclick = () => {
+    armAudio();
+    soundSettings.muted = !soundSettings.muted;
+    muteButton.textContent = soundSettings.muted ? '🔕' : '🔔';
+    saveSound();
+    if (!soundSettings.muted) beep('target');
+  };
+  panel.querySelector('#chatVolume').oninput = event => {
+    armAudio();
+    soundSettings.volume = Number(event.target.value) / 100;
+    if (soundSettings.volume > 0 && soundSettings.muted) {
+      soundSettings.muted = false;
+      muteButton.textContent = '🔔';
+    }
+    saveSound();
+    beep('target');
+  };
   panel.querySelector('#chatForm').onsubmit = async event => {
     event.preventDefault();
     const input = panel.querySelector('#chatInput');
