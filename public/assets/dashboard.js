@@ -2,7 +2,7 @@
 // месяца. Считается целиком из bootstrap (доступен каждой роли) — вкладку
 // видят все сотрудники, цель — общая видимость достижения плана.
 // Автообновление раз в 90 секунд, пока вкладка открыта.
-import { escapeHtml, money } from './api.js';
+import { escapeHtml, money, toast } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
 
@@ -144,6 +144,39 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     fleet: { total: fleet.length, inTrip: inTripIds.size, unavailable, idle } };
 }
 
+// Столбики выручки по дням месяца: прошлые и сегодня — насыщенные,
+// будущие (забронированные выгрузки) — полупрозрачные; пунктир — средний
+// дневной темп для цели месяца.
+function monthSpark(data, metrics, nowMs) {
+  const calc = data.settings.calculation;
+  const now = new Date(nowMs);
+  const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const daily = Array(metrics.daysInMonth).fill(0);
+  (data.trips || []).filter(trip => trip.status !== 'rejected').forEach(trip => {
+    const idx = Math.floor((Date.parse(trip.ends_at) - monthStart) / DAY_MS);
+    if (idx >= 0 && idx < metrics.daysInMonth) daily[idx] += tripNet(trip, calc);
+  });
+  const avgTarget = metrics.monthPlan / metrics.daysInMonth;
+  const maxValue = Math.max(avgTarget, ...daily) * 1.05;
+  const W = 620, H = 74, gap = 2;
+  const barW = (W - gap * metrics.daysInMonth) / metrics.daysInMonth;
+  const bars = daily.map((value, idx) => {
+    const h = Math.max(1.5, value / maxValue * (H - 16));
+    const x = idx * (barW + gap);
+    const today = idx + 1 === metrics.dayOfMonth;
+    const future = idx + 1 > metrics.dayOfMonth;
+    return `<rect x="${x.toFixed(1)}" y="${(H - 14 - h).toFixed(1)}" width="${barW.toFixed(1)}"
+      height="${h.toFixed(1)}" rx="1.5" class="spark-bar ${today ? 'today' : future ? 'future' : ''}">
+      <title>${idx + 1} число · ${money(Math.round(value))}${future ? ' (забронировано)' : ''}</title></rect>
+      ${(idx + 1) % 5 === 0 || today ? `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 3}"
+        class="spark-tick ${today ? 'today' : ''}">${idx + 1}</text>` : ''}`;
+  }).join('');
+  const targetY = (H - 14 - avgTarget / maxValue * (H - 16)).toFixed(1);
+  return `<svg viewBox="0 0 ${W} ${H}" class="dash-spark" preserveAspectRatio="none">
+    <line x1="0" x2="${W}" y1="${targetY}" y2="${targetY}" class="spark-target"/>
+    ${bars}</svg>`;
+}
+
 const pctOf = (value, base) => base ? Math.round(value / base * 100) : 0;
 const shortMln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU',
   { maximumFractionDigits: 1 })} млн`;
@@ -196,7 +229,14 @@ export function renderDashboard(container, context) {
     </div>`;
   };
 
-  container.innerHTML = `<div class="dashwrap">
+  container.innerHTML = `<div class="dashwrap" id="dashRoot">
+    <div class="dash-top">
+      <span class="dash-title">🏁 ПегасLogistic · план-факт</span>
+      <span class="dash-clock" id="dashClock"></span>
+      <span class="dash-upd muted">обновлено ${new Date().toLocaleTimeString('ru-RU',
+        { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })} МСК · авто раз в 90 с</span>
+      <button class="button ghost small" id="dashFull" title="Полноэкранный режим для общего экрана (выход — Esc)">⛶ На весь экран</button>
+    </div>
     <div class="dash-goal dash-month">
       <div class="dash-goal-head">
         <span>Выручка без НДС · ${escapeHtml(monthLabel)}</span>
@@ -207,6 +247,7 @@ export function renderDashboard(container, context) {
           · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
       </div>
       ${gauge(donePct, donePct >= Math.round(metrics.dayOfMonth / metrics.daysInMonth * 100) ? 'ok' : 'warn')}
+      ${monthSpark(state.data, metrics, Date.now())}
     </div>
     <div class="dash-days">
       ${dayCard(metrics.days.yesterday, 'Вчера', 'past')}
@@ -244,6 +285,49 @@ export function renderDashboard(container, context) {
       остаток месячного плана, делённый на оставшиеся дни. Прогноз — текущий темп
       на весь месяц. Обновляется автоматически.</p>
   </div>`;
+
+  // Бары «наполняются» при каждой отрисовке: вставляем нулевыми и через
+  // кадр отпускаем к целевой ширине (CSS transition делает движение).
+  container.querySelectorAll('.dash-gauge i').forEach(bar => {
+    const target = bar.style.width;
+    bar.style.width = '0%';
+    requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.width = target; }));
+  });
+  // Живые часы — каждую секунду, без перерисовки дашборда.
+  clearInterval(state.dashClockTimer);
+  const tickClock = () => {
+    const el = document.getElementById('dashClock');
+    if (!el) { clearInterval(state.dashClockTimer); return; }
+    el.textContent = new Date().toLocaleTimeString('ru-RU',
+      { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Europe/Moscow' });
+  };
+  tickClock();
+  state.dashClockTimer = setInterval(tickClock, 1000);
+  const fullButton = container.querySelector('#dashFull');
+  const setTvButton = on => { if (fullButton) fullButton.textContent = on ? '✕ Выйти (Esc)' : '⛶ На весь экран'; };
+  if (fullButton) fullButton.onclick = async () => {
+    const root = document.getElementById('dashRoot');
+    if (document.fullscreenElement) { document.exitFullscreen(); return; }
+    if (root.classList.contains('dash-tv')) { root.classList.remove('dash-tv'); setTvButton(false); return; }
+    try { await root.requestFullscreen(); } catch {
+      // Нативный fullscreen запрещён (встроенные панели, киоски) —
+      // включаем киоск-класс с теми же стилями поверх окна.
+      root.classList.add('dash-tv');
+      setTvButton(true);
+    }
+  };
+  if (!state.dashEscBound) {
+    state.dashEscBound = true;
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      const root = document.getElementById('dashRoot');
+      if (root?.classList.contains('dash-tv')) {
+        root.classList.remove('dash-tv');
+        const button = document.getElementById('dashFull');
+        if (button) button.textContent = '⛶ На весь экран';
+      }
+    });
+  }
 
   // Автообновление, пока открыта вкладка: один живой таймер на сессию.
   clearInterval(state.dashboardTimer);

@@ -381,6 +381,41 @@ tbody tr:hover td { background: var(--hover); }
 .dash-gap.bad { background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
 .dash-gap.good { background: color-mix(in srgb, var(--ok) 10%, transparent); color: var(--ok); }
 .dash-note { margin-top: 12px; font-size: var(--fs-xs); }
+.dash-top { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; }
+.dash-title { font-weight: 850; letter-spacing: .04em; text-transform: uppercase; font-size: var(--fs-md); }
+.dash-clock { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 21px; font-weight: 700; color: var(--teal); }
+.dash-upd { font-size: var(--fs-xs); margin-left: auto; }
+.dash-spark { width: 100%; height: 74px; margin-top: 10px; display: block; }
+.spark-bar { fill: var(--navy-2); opacity: .85; }
+.spark-bar.today { fill: var(--teal); opacity: 1; }
+.spark-bar.future { fill: var(--teal); opacity: .3; }
+.spark-target { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.spark-tick { font-size: 8.5px; fill: var(--muted); text-anchor: middle; }
+.spark-tick.today { fill: var(--teal); font-weight: 800; }
+/* Пульс критичных сигналов — динамика без раздражения. */
+@keyframes dashPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 28%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--bad) 0%, transparent); } }
+.dash-day.lack .dd-verdict { animation: dashPulse 2.6s ease-in-out infinite; }
+/* Полноэкранный ТВ-режим (нативный fullscreen или киоск-класс .dash-tv):
+   тёмная сцена, крупная типографика, растяжка на весь экран. */
+#dashRoot.dash-tv { position: fixed; inset: 0; z-index: 400; }
+#dashRoot:fullscreen, #dashRoot.dash-tv { background: #10161d; color: #dfe6ec; overflow: auto;
+  padding: 3vh 3.5vw; display: flex; flex-direction: column; justify-content: space-evenly; max-width: none; }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) :is(.dash-goal, .dash-day, .dash-role) {
+  background: #1a232d; border-color: #2b3641; color: #dfe6ec; }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .dash-month .dash-goal-head b { font-size: clamp(34px, 4.2vw, 64px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .dd-plan b { font-size: clamp(21px, 2.2vw, 36px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .dd-fact b { font-size: clamp(17px, 1.7vw, 28px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .dash-clock { font-size: clamp(21px, 2.4vw, 40px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) :is(.dash-row, .dd-split) { font-size: clamp(12px, 1vw, 17px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .dash-row { border-bottom-color: #2b3641; }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .dash-row b { font-size: clamp(14px, 1.2vw, 21px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) :is(.dd-verdict, .dash-gap) { font-size: clamp(12px, 1.1vw, 19px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) :is(.dash-goal-head > span:first-child, .dd-head b, .dash-role-title) {
+  font-size: clamp(12px, 1vw, 17px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .dash-month-side { font-size: clamp(12px, 1.1vw, 18px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .spark-bar { fill: #3a4a5a; }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .spark-bar.today { fill: var(--teal); }
 @media (max-width: 1000px) { .dash-main, .dash-roles { grid-template-columns: 1fr; } }
 
 /* Конструктор маршрутов */
