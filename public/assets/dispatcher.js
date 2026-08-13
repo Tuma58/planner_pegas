@@ -386,11 +386,14 @@ export async function renderDispatcher(container, context) {
     };
   };
 
+  // Первый план — сцепка (тягач/прицеп) и водитель; маршрут — второй строкой.
   const tripHead = trip => `<span style="flex:1;min-width:0;cursor:pointer" data-trip-card="${trip.id}"
       title="Клик — карточка рейса: полные данные с копированием">
-      <strong>${escapeHtml(routeLabel(trip))}</strong> · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
+      <strong class="mono trip-plate">${escapeHtml(trip.vehicle_plate)}${trip.trailer_plate
+        ? ` / ${escapeHtml(trip.trailer_plate)}` : ''}</strong>
+      · <b class="trip-driver">${escapeHtml(trip.driver_name || 'без водителя')}</b>
       ${Number(trip.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
-      <small class="muted" style="display:block">${escapeHtml(trip.driver_name || 'без водителя')}
+      <small class="muted" style="display:block">${escapeHtml(routeLabel(trip))}
         · ${escapeHtml(trip.customer_name || 'без заказчика')}
         · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}${trip.empty_km
           ? ` · +${Math.round(trip.empty_km)} км порож.` : ''} · ${money(trip.revenue_vat)}</small>
