@@ -482,6 +482,16 @@ tbody tr:hover td { background: var(--hover); }
 .sales-comment { display: block; margin: 2px 0 6px; padding: 5px 8px; border-left: 3px solid var(--teal);
   background: var(--soft); border-radius: 0 6px 6px 0; color: var(--ink); font-size: var(--fs-sm); }
 .cash-note { display: block; margin-top: 3px; padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 650; }
+/* Файлы, прикреплённые к потребности клиента (📎) */
+.order-files { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 3px; font-size: var(--fs-sm); }
+.ofile { color: var(--teal); text-decoration: none; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 100%; }
+.ofile:hover { text-decoration: underline; }
+.ofile-list { display: flex; flex-direction: column; gap: 4px; margin: 5px 0; }
+.ofile-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ofile-row .ofile { flex: 1; }
+.ofile-add { cursor: pointer; align-self: flex-start; }
+
 /* Подсказка ближайшего события сцепки при назначении/замене ТС */
 .next-event { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
 .next-event.warn { color: var(--warn); font-weight: 650; }

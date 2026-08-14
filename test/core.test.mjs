@@ -10,6 +10,7 @@ import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, trans
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
+import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
   const password = 'Very-strong-password-2026';
@@ -997,4 +998,22 @@ test('LAN production допускает явное отключение Secure c
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'false');
+});
+
+test('файлы заявки: тип только по расширению из белого списка', () => {
+  assert.equal(uploadMimeOf('пропуск.pdf'), 'application/pdf');
+  assert.equal(uploadMimeOf('Схема.JPG'), 'image/jpeg');
+  assert.equal(uploadMimeOf('заявка.xlsx'),
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  assert.equal(uploadMimeOf('script.exe'), null);
+  assert.equal(uploadMimeOf('page.html'), null);
+  assert.equal(uploadMimeOf('без-расширения'), null);
+});
+
+test('файлы заявки: имя очищается от путей и управляющих символов', () => {
+  assert.equal(cleanFileName('C:\\Users\\Оператор\\пропуск склад №7.pdf'), 'пропуск склад №7.pdf');
+  assert.equal(cleanFileName('../../etc/passwd'), 'passwd');
+  assert.equal(cleanFileName('до<>кум|ент?.pdf'), 'документ.pdf');
+  const long = cleanFileName(`${'а'.repeat(200)}.pdf`);
+  assert.ok(long.length <= 120 && long.endsWith('.pdf'));
 });

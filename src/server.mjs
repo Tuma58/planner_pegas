@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, settingsObject } from './db.mjs';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
+import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { ROLE_LABELS, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import {
   encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
@@ -75,6 +76,17 @@ async function readJson(request, limit = 1_000_000) {
   if (!raw) return {};
   try { return JSON.parse(raw); }
   catch { throw Object.assign(new Error('Некорректный JSON'), { status: 400 }); }
+}
+
+async function readRaw(request, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limit) throw Object.assign(new Error(`Файл больше ${Math.round(limit / 1_048_576)} МБ`), { status: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 function publicUser(user) {
@@ -506,6 +518,11 @@ async function api(request, response, url) {
         LEFT JOIN vehicles v ON v.id=d.vehicle_id
         WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
+      orderFiles: db.prepare(`SELECT f.id,f.order_id,f.file_name,f.mime,f.size,f.uploaded_at,
+          u.full_name uploaded_by
+        FROM order_files f LEFT JOIN users u ON u.id=f.uploaded_by
+        JOIN orders o ON o.id=f.order_id AND o.deleted_at IS NULL
+        ORDER BY f.uploaded_at`).all(),
       routes: db.prepare(`SELECT r.*,v.plate vehicle_plate FROM routes r
         LEFT JOIN vehicles v ON v.id=r.vehicle_id
         WHERE r.status IN ('draft','handed','assigned')
@@ -549,6 +566,69 @@ async function api(request, response, url) {
           String(body.note || '').trim().slice(0, 300));
     }
     return json(response, 200, { done: !existing });
+  }
+
+  // Файлы потребности клиента: пропуска, схемы проезда, заявки в PDF и т.п.
+  // Содержимое — на диске (data/uploads), метаданные — в order_files.
+  const orderFilesRoute = route(/^\/api\/orders\/([\w-]+)\/files$/, pathname);
+  if (request.method === 'POST' && orderFilesRoute) {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const order = db.prepare('SELECT id FROM orders WHERE id=? AND deleted_at IS NULL').get(orderFilesRoute[0]);
+    if (!order) return errorJson(response, 404, 'Заявка не найдена');
+    let rawName = String(request.headers['x-file-name'] || '');
+    try { rawName = decodeURIComponent(rawName); } catch { /* оставляем как есть */ }
+    const fileName = cleanFileName(rawName);
+    const mime = uploadMimeOf(fileName);
+    if (!fileName || !mime) {
+      return errorJson(response, 422, 'Такой тип файла нельзя прикрепить — разрешены документы и фото (pdf, jpg, png, docx, xlsx, zip…)');
+    }
+    const count = db.prepare('SELECT COUNT(*) n FROM order_files WHERE order_id=?').get(order.id).n;
+    if (count >= MAX_FILES_PER_ORDER) {
+      return errorJson(response, 422, `У заявки уже ${MAX_FILES_PER_ORDER} файлов — удалите лишние`);
+    }
+    const content = await readRaw(request, MAX_UPLOAD_BYTES);
+    if (!content.length) return errorJson(response, 422, 'Файл пустой');
+    const id = randomUUID();
+    fs.mkdirSync(uploadsPath, { recursive: true });
+    fs.writeFileSync(path.join(uploadsPath, id), content);
+    db.prepare(`INSERT INTO order_files(id,order_id,file_name,mime,size,uploaded_by)
+      VALUES(?,?,?,?,?,?)`).run(id, order.id, fileName, mime, content.length, user.id);
+    audit(db, user, 'create', 'order-file', id,
+      { orderId: order.id, fileName, size: content.length }, requestIp(request));
+    return json(response, 201, {
+      file: { id, order_id: order.id, file_name: fileName, mime, size: content.length,
+        uploaded_by: user.full_name, uploaded_at: new Date().toISOString() }
+    });
+  }
+
+  const orderFileRoute = route(/^\/api\/order-files\/([\w-]+)$/, pathname);
+  if (request.method === 'GET' && orderFileRoute) {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const row = db.prepare('SELECT * FROM order_files WHERE id=?').get(orderFileRoute[0]);
+    const filePath = row && path.join(uploadsPath, row.id);
+    if (!row || !fs.existsSync(filePath)) return errorJson(response, 404, 'Файл не найден');
+    const content = fs.readFileSync(filePath);
+    const disposition = INLINE_TYPES.has(row.mime) ? 'inline' : 'attachment';
+    response.writeHead(200, {
+      'Content-Type': row.mime,
+      'Content-Length': content.length,
+      'Content-Disposition': `${disposition}; filename*=UTF-8''${encodeURIComponent(row.file_name)}`,
+      'Cache-Control': 'private, max-age=3600'
+    });
+    return response.end(content);
+  }
+  if (request.method === 'DELETE' && orderFileRoute) {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const row = db.prepare('SELECT * FROM order_files WHERE id=?').get(orderFileRoute[0]);
+    if (!row) return errorJson(response, 404, 'Файл не найден');
+    db.prepare('DELETE FROM order_files WHERE id=?').run(row.id);
+    try { fs.unlinkSync(path.join(uploadsPath, row.id)); } catch { /* метаданных уже нет */ }
+    audit(db, user, 'delete', 'order-file', row.id,
+      { orderId: row.order_id, fileName: row.file_name }, requestIp(request));
+    return json(response, 200, { ok: true });
   }
 
   if (request.method === 'GET' && pathname === '/api/customers') {

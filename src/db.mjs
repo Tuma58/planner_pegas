@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS routes (
   created_by TEXT REFERENCES users(id), updated_by TEXT REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS order_files (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL REFERENCES orders(id),
+  file_name TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL,
+  uploaded_by TEXT REFERENCES users(id),
+  uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_order_files_order ON order_files(order_id);
 CREATE TABLE IF NOT EXISTS task_marks (
   kind TEXT NOT NULL CHECK(kind IN ('sales','logist','dispatcher')),
   day TEXT NOT NULL, item_key TEXT NOT NULL,

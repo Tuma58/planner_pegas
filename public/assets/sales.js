@@ -134,6 +134,19 @@ function wireNetField(form, netInput, data) {
 }
 
 // ── Задание продажам на дату ──────────────────────────────────────────────
+// Файлы, прикреплённые к потребности клиента: хелперы для карточек
+// (портфель продаж, карточка рейса диспетчера) и диалога редактирования.
+export const orderFilesOf = (data, orderId) =>
+  (data.orderFiles || []).filter(file => file.order_id === orderId);
+export const fileSizeLabel = bytes => bytes >= 1_048_576
+  ? `${(bytes / 1_048_576).toFixed(1)} МБ` : `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+export const orderFileLinks = (data, orderId) => {
+  const files = orderFilesOf(data, orderId);
+  return files.length ? `<small class="order-files">${files.map(file =>
+    `<a class="ofile" href="/api/order-files/${file.id}" target="_blank" rel="noopener"
+      title="${escapeHtml(file.uploaded_by || '')} · ${fileSizeLabel(file.size)}">📎 ${escapeHtml(file.file_name)}</a>`).join('')}</small>` : '';
+};
+
 // Срез парка и потребностей на выбранный день: кто свободен и где, кто
 // освободится (после рейса, ремонта, пересменки), кто недоступен, какие
 // регионы не закрыты заявками без ТС и откуда направить ближайшие сцепки.
@@ -673,6 +686,7 @@ export function renderSales(container, context) {
           try { const viaList = JSON.parse(order.via_json || '[]');
             return viaList.length ? ` · ⛳ ${viaList.length} пром.` : ''; } catch { return ''; } })()} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
+        ${orderFileLinks(data, order.id)}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
         <div class="stepper-row">${stepper(step.stage)}<span class="pipe-inline">${waiting}${since}</span></div>
       </span>
@@ -1257,6 +1271,13 @@ export function editOrderDialog(order, data, context) {
       Перевозка за наличные — водитель забирает оплату после выгрузки</label>
     <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
       value="${escapeHtml(order.comment || '')}" placeholder="адрес, контакт, особенности погрузки"></label>
+    <div class="field"><span>📎 Файлы к заявке <small class="muted">(пропуск, схема проезда,
+        заявка клиента · до 8 МБ)</small></span>
+      <div class="ofile-list" id="orderFilesBox"></div>
+      <label class="button ghost small ofile-add">📎 Прикрепить файл
+        <input type="file" id="orderFileInput" hidden
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.gif,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf,.zip"></label>
+    </div>
     <div class="modal-actions">
       ${trip && context.openTrip ? `<button type="button" class="button ghost" id="editOrderTrip"
         title="Открыть карточку рейса: времена подачи, статус, удаление">Рейс</button>` : ''}
@@ -1264,6 +1285,43 @@ export function editOrderDialog(order, data, context) {
       <button class="button" type="submit">Сохранить</button>
     </div>
   </form>`);
+  // Файлы заявки: загрузка сразу на сервер, список обновляется локально —
+  // карточки подхватят перемены при следующей перерисовке доски.
+  const filesBox = document.getElementById('orderFilesBox');
+  const redrawFiles = () => {
+    filesBox.innerHTML = orderFilesOf(data, order.id).map(file => `<div class="ofile-row">
+      <a class="ofile" href="/api/order-files/${file.id}" target="_blank" rel="noopener">📎 ${escapeHtml(file.file_name)}</a>
+      <small class="muted">${fileSizeLabel(file.size)} · ${escapeHtml(file.uploaded_by || '')}</small>
+      <button type="button" class="button ghost small" data-ofile-del="${file.id}" title="Удалить файл">✕</button>
+    </div>`).join('') || '<small class="muted">файлов нет</small>';
+    filesBox.querySelectorAll('[data-ofile-del]').forEach(button =>
+      button.addEventListener('click', async () => {
+        if (!confirm('Удалить файл у заявки?')) return;
+        try {
+          await api(`/api/order-files/${button.dataset.ofileDel}`, { method: 'DELETE' });
+          data.orderFiles = (data.orderFiles || []).filter(file => file.id !== button.dataset.ofileDel);
+          redrawFiles();
+        } catch (error) { toast(error.message, 'error'); }
+      }));
+  };
+  redrawFiles();
+  document.getElementById('orderFileInput').addEventListener('change', async event => {
+    const file = event.currentTarget.files[0];
+    event.currentTarget.value = '';
+    if (!file) return;
+    try {
+      const response = await fetch(`/api/orders/${order.id}/files`, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'X-File-Name': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' },
+        body: file
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      (data.orderFiles ||= []).push(payload.file);
+      redrawFiles();
+      toast('Файл прикреплён');
+    } catch (error) { toast(error.message, 'error'); }
+  });
   if (trip && context.openTrip) {
     document.getElementById('editOrderTrip').onclick = () => {
       context.closeModal();

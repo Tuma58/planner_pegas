@@ -6,7 +6,7 @@
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toLocalInput, toast } from './api.js';
-import { orderNet, resolveAddress } from './sales.js';
+import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 
@@ -370,6 +370,7 @@ export async function renderDispatcher(container, context) {
     // Комментарий продаж — отдельным заметным блоком со своей кнопкой
     // копирования (и он же входит строкой в общий текст карточки).
     const comment = String(orderOf(trip)?.comment || '').trim();
+    const orderFiles = trip.order_id ? orderFilesOf(data, trip.order_id) : [];
     context.showModal(`<h2>Карточка рейса</h2>
       <p class="muted" style="margin:0 0 8px">Полные данные для учётной системы —
         «Скопировать всё» или выделите нужные строки.</p>
@@ -378,6 +379,8 @@ export async function renderDispatcher(container, context) {
         <button class="button ghost small" id="tripCardCopyComment" style="flex:none"
           title="Скопировать только комментарий">📋</button>
       </div>` : ''}
+      ${orderFiles.length ? `<div class="order-files" style="margin:0 0 8px">${orderFiles.map(file =>
+        `<a class="ofile" href="/api/order-files/${file.id}" target="_blank" rel="noopener">📎 ${escapeHtml(file.file_name)}</a>`).join('')}</div>` : ''}
       <textarea id="tripCardText" readonly rows="${Math.min(16, text.split('\n').length + 1)}"
         style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre">${escapeHtml(text)}</textarea>
       <div style="display:flex;gap:8px;margin-top:10px">
