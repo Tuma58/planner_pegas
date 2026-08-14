@@ -458,6 +458,8 @@ test('потребность от логистики: ремонт и «без �
   assert.equal(Math.round(dash.monthPace.schedule), Math.round(160_000_000 * 21 / 31),
     'график месяца к концу 21-го');
   assert.equal(Math.round(dash.monthPace.fact), 105_000_000, 'выгружено с начала месяца');
+  assert.equal(dash.dayLoads.count, 1, 'погрузки сегодня — рейс со стартом 21-го');
+  assert.equal(Math.round(dash.dayLoads.sum), 5_000_000, 'сумма погрузок дня без НДС');
   assert.equal(dash.logist.assignedToday, 1, 'назначено сегодня — рейс с заявкой, созданный сегодня');
   // Воронка дня: забито = выгружено (done) + едет; остаток до плана.
   assert.equal(Math.round(dash.dayDone), 5_000_000, 'выгружено — рейс со статусом done');

@@ -57,6 +57,13 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // опережение/отставание в любой час смены, а не только по итогу дня.
   const dueByNow = dayTrips.filter(trip => Date.parse(trip.ends_at) <= nowMs)
     .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  // Погрузки сегодняшнего дня — опережающий индикатор: смена влияет на него
+  // прямо сейчас, а деньгами он станет при выгрузке через ~1–2 дня.
+  const dayLoads = activeTrips.filter(trip => {
+    const starts = Date.parse(trip.starts_at);
+    return starts >= dayStart && starts < dayEnd;
+  });
+  const dayLoadsSum = dayLoads.reduce((sum, trip) => sum + tripNet(trip, calc), 0);
 
   const periodKey = new Date(monthStart).toISOString().slice(0, 10);
   const monthPlan = Number((data.revenuePlans || [])
@@ -147,6 +154,8 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
 
   return { monthPlan, monthFact, dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
     dayPace: { due: dueByNow, done: dayDone, diff: dayDone - dueByNow },
+    dayLoads: { count: dayLoads.length, sum: dayLoadsSum,
+      online: dayLoads.filter(trip => trip.on_line_at).length },
     monthPace: { schedule: monthPlan * dayOfMonth / daysInMonth, fact: factPast + dayDone,
       diff: factPast + dayDone - monthPlan * dayOfMonth / daysInMonth },
     forecast, daysInMonth, dayOfMonth,
@@ -259,6 +268,9 @@ export function renderDashboard(container, context) {
         ? `выгружено ${money(Math.round(day.done))}${day.expected > 0.5
             ? ` · <span class="danger">не выгружено ${money(Math.round(day.expected))}</span>` : ''}`
         : `выгружено ${money(Math.round(day.done))} · едет ${money(Math.round(day.expected))} · ${day.trips} рейс.`}</div>
+      ${mode === 'today' ? `<div class="dd-loads">🚚 Вбито погрузок сегодня: <b>${metrics.dayLoads.count}</b>
+        на <b>${money(Math.round(metrics.dayLoads.sum))}</b> · на линии ${metrics.dayLoads.online}
+        — станут выгрузками завтра-послезавтра</div>` : ''}
       ${mode === 'today' ? (() => {
         const pace = metrics.dayPace;
         const clock = new Date().toLocaleTimeString('ru-RU',

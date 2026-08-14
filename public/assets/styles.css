@@ -347,6 +347,7 @@ tbody tr:hover td { background: var(--hover); }
 .dash-gauge.split i { border-radius: 0; }
 .dash-gauge i.ride { background: var(--teal); opacity: .45; }
 .dash-gauge i.lag { background: var(--bad); opacity: .75; }
+.dd-loads { margin-top: 4px; font-size: var(--fs-sm); color: var(--muted); }
 .dd-pace { margin-top: 4px; font-size: var(--fs-sm); }
 .dd-pace.good { color: var(--ok); }
 .dd-pace.bad { color: var(--bad); font-weight: 650; }
