@@ -451,6 +451,13 @@ test('потребность от логистики: ремонт и «без �
   assert.equal(Math.round(dash.dayFact), 5_000_000, 'факт сегодняшнего дня');
   assert.equal(Math.round(dash.forecast), Math.round(100_000_000 / 20 * 31),
     'прогноз — темп по выгрузкам прошедших полных дней');
+  // Темп: рейс дня (5М нетто, выгрузка 09:00) к 12:00 уже должен быть выгружен
+  // и выгружен фактически — день в темпе; месяц отстаёт от графика.
+  assert.equal(Math.round(dash.dayPace.due), 5_000_000, 'к 12:00 должно быть выгружено');
+  assert.equal(Math.round(dash.dayPace.diff), 0, 'день в темпе');
+  assert.equal(Math.round(dash.monthPace.schedule), Math.round(160_000_000 * 21 / 31),
+    'график месяца к концу 21-го');
+  assert.equal(Math.round(dash.monthPace.fact), 105_000_000, 'выгружено с начала месяца');
   assert.equal(dash.logist.assignedToday, 1, 'назначено сегодня — рейс с заявкой, созданный сегодня');
   // Воронка дня: забито = выгружено (done) + едет; остаток до плана.
   assert.equal(Math.round(dash.dayDone), 5_000_000, 'выгружено — рейс со статусом done');

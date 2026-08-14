@@ -52,6 +52,11 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   const dayDone = dayTrips.filter(trip => doneStatuses.has(trip.status))
     .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   const dayExpected = dayFact - dayDone;
+  // Динамика внутри дня: что по расчётному времени выгрузки уже ДОЛЖНО быть
+  // выгружено к текущему моменту — против фактически выгруженного. Даёт
+  // опережение/отставание в любой час смены, а не только по итогу дня.
+  const dueByNow = dayTrips.filter(trip => Date.parse(trip.ends_at) <= nowMs)
+    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
 
   const periodKey = new Date(monthStart).toISOString().slice(0, 10);
   const monthPlan = Number((data.revenuePlans || [])
@@ -141,6 +146,9 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   const days = { yesterday: dayMetricsAt(-1), today: dayMetricsAt(0), tomorrow: dayMetricsAt(1) };
 
   return { monthPlan, monthFact, dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
+    dayPace: { due: dueByNow, done: dayDone, diff: dayDone - dueByNow },
+    monthPace: { schedule: monthPlan * dayOfMonth / daysInMonth, fact: factPast + dayDone,
+      diff: factPast + dayDone - monthPlan * dayOfMonth / daysInMonth },
     forecast, daysInMonth, dayOfMonth,
     remainingDays, dayTripsCount: dayTrips.length,
     avgDayCheck: dayTrips.length ? dayFact / dayTrips.length : 0,
@@ -177,10 +185,24 @@ function monthSpark(data, metrics, nowMs) {
       ${(idx + 1) % 5 === 0 || today ? `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 3}"
         class="spark-tick ${today ? 'today' : ''}">${idx + 1}</text>` : ''}`;
   }).join('');
-  const targetY = (H - 14 - avgTarget / maxValue * (H - 16)).toFixed(1);
+  // Кумулятив к цели (своя шкала — до плана месяца): сплошная линия — факт
+  // нарастающим итогом, пунктирное продолжение — с учётом забронированного
+  // будущего; прямая — равномерный график к цели. Зазор между линиями и есть
+  // отставание/опережение месяца, видимое с любого расстояния.
+  const lineScale = Math.max(metrics.monthPlan, daily.reduce((a, b) => a + b, 0)) * 1.05;
+  const yOf = value => H - 14 - value / lineScale * (H - 16);
+  const xOf = idx => idx * (barW + gap) + barW / 2;
+  let cum = 0;
+  const points = daily.map((value, idx) => { cum += value; return { idx, cum }; });
+  const factPts = points.filter(pt => pt.idx + 1 <= metrics.dayOfMonth);
+  const futurePts = points.filter(pt => pt.idx + 1 >= metrics.dayOfMonth);
+  const toPoly = pts => pts.map(pt => `${xOf(pt.idx).toFixed(1)},${yOf(pt.cum).toFixed(1)}`).join(' ');
   return `<svg viewBox="0 0 ${W} ${H}" class="dash-spark" preserveAspectRatio="none">
-    <line x1="0" x2="${W}" y1="${targetY}" y2="${targetY}" class="spark-target"/>
-    ${bars}</svg>`;
+    <line x1="${xOf(0).toFixed(1)}" y1="${yOf(metrics.monthPlan / metrics.daysInMonth).toFixed(1)}"
+      x2="${xOf(metrics.daysInMonth - 1).toFixed(1)}" y2="${yOf(metrics.monthPlan).toFixed(1)}" class="spark-goal"/>
+    ${bars}
+    <polyline class="spark-cum future" points="${toPoly(futurePts)}"/>
+    <polyline class="spark-cum" points="${toPoly(factPts)}"/></svg>`;
 }
 
 const pctOf = (value, base) => base ? Math.round(value / base * 100) : 0;
@@ -226,11 +248,27 @@ export function renderDashboard(container, context) {
       <div class="dd-fact"><span>${mode === 'past' ? 'факт' : 'забито'}</span>
         <b>${money(Math.round(day.booked))}</b>
         ${day.plan ? `<em>${pct}%</em>` : ''}</div>
-      ${gauge(Math.min(100, pct), day.plan != null && day.booked >= day.plan ? 'ok' : 'warn')}
+      ${(() => {
+        const base = day.plan || day.booked || 1;
+        const donePart = Math.min(100, day.done / base * 100);
+        const restPart = Math.max(0, Math.min(100 - donePart, day.expected / base * 100));
+        return `<div class="dash-gauge split"><i class="ok" style="width:${donePart.toFixed(1)}%"></i><i
+          class="${mode === 'past' ? 'lag' : 'ride'}" style="width:${restPart.toFixed(1)}%"></i></div>`;
+      })()}
       <div class="dd-split">${mode === 'past'
         ? `выгружено ${money(Math.round(day.done))}${day.expected > 0.5
             ? ` · <span class="danger">не выгружено ${money(Math.round(day.expected))}</span>` : ''}`
         : `выгружено ${money(Math.round(day.done))} · едет ${money(Math.round(day.expected))} · ${day.trips} рейс.`}</div>
+      ${mode === 'today' ? (() => {
+        const pace = metrics.dayPace;
+        const clock = new Date().toLocaleTimeString('ru-RU',
+          { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' });
+        if (pace.due < 1) return '<div class="dd-pace muted">⏱ выгрузок по графику пока не ожидалось</div>';
+        return `<div class="dd-pace ${pace.diff >= -0.5 ? 'good' : 'bad'}">⏱ к ${clock} должно быть выгружено
+          ${money(Math.round(pace.due))} — ${pace.diff >= -0.5
+            ? `✓ в темпе${pace.diff > 0.5 ? ` +${money(Math.round(pace.diff))}` : ''}`
+            : `⚠ отстаём на ${money(Math.round(-pace.diff))}`}</div>`;
+      })() : ''}
       <div class="dd-verdict">${verdict}</div>
     </div>`;
   };
@@ -252,6 +290,12 @@ export function renderDashboard(container, context) {
           ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
           · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
       </div>
+      <div class="dash-pace ${metrics.monthPace.diff >= 0 ? 'good' : 'bad'}">
+        ⏱ По графику к концу ${metrics.dayOfMonth}-го: <b>${shortMln(metrics.monthPace.schedule)}</b>
+        · выгружено: <b>${shortMln(metrics.monthPace.fact)}</b>
+        · ${metrics.monthPace.diff >= 0 ? `опережение +${shortMln(metrics.monthPace.diff)}`
+          : `отставание ${shortMln(-metrics.monthPace.diff)}`}
+        — чтобы успеть к цели, дальше нужно по <b>${money(Math.round(metrics.dayPlan))}</b> в день</div>
       ${gauge(donePct, donePct >= Math.round(metrics.dayOfMonth / metrics.daysInMonth * 100) ? 'ok' : 'warn')}
       ${monthSpark(state.data, metrics, Date.now())}
     </div>

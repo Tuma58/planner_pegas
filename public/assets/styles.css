@@ -343,6 +343,16 @@ tbody tr:hover td { background: var(--hover); }
 .dash-gauge i { display: block; height: 100%; border-radius: 6px; transition: width .6s; }
 .dash-gauge i.ok { background: var(--ok); }
 .dash-gauge i.warn { background: var(--warn); }
+.dash-gauge.split { display: flex; }
+.dash-gauge.split i { border-radius: 0; }
+.dash-gauge i.ride { background: var(--teal); opacity: .45; }
+.dash-gauge i.lag { background: var(--bad); opacity: .75; }
+.dd-pace { margin-top: 4px; font-size: var(--fs-sm); }
+.dd-pace.good { color: var(--ok); }
+.dd-pace.bad { color: var(--bad); font-weight: 650; }
+.dash-pace { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--muted); }
+.dash-pace.good b { color: var(--ok); }
+.dash-pace.bad b { color: var(--bad); }
 .dash-goal-sub { display: flex; gap: 22px; flex-wrap: wrap; font-size: var(--fs-sm); color: var(--muted); }
 .dash-goal-sub b.good { color: var(--ok); }
 .dash-goal-sub b.warn { color: var(--warn); }
@@ -390,6 +400,9 @@ tbody tr:hover td { background: var(--hover); }
 .spark-bar.today { fill: var(--teal); opacity: 1; }
 .spark-bar.future { fill: var(--teal); opacity: .3; }
 .spark-target { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.spark-goal { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.spark-cum { fill: none; stroke: var(--ok); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.spark-cum.future { stroke-dasharray: 4 4; opacity: .5; }
 .spark-tick { font-size: 8.5px; fill: var(--muted); text-anchor: middle; }
 .spark-tick.today { fill: var(--teal); font-weight: 800; }
 /* Пульс критичных сигналов — динамика без раздражения. */
