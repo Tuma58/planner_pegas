@@ -41,7 +41,11 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     return ends >= dayStart && ends < dayEnd;
   });
   const dayFact = dayTrips.reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-  const factBeforeToday = monthFact - dayFact;
+  // Факт действительно прошедших дней: только выгрузки до начала сегодняшних
+  // суток. Забронированное будущее (и незакрытый сегодняшний день) сюда не
+  // входит — иначе темп и план дня искажаются ещё не привезённой выручкой.
+  const factPast = monthTrips.filter(trip => Date.parse(trip.ends_at) < dayStart)
+    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   // «Забито на сегодня» = все расчётные выгрузки дня; из них выгружено
   // фактически (статус после выгрузки) и ещё едет/ждёт выхода.
   const doneStatuses = new Set(['unloaded', 'done', 'paid']);
@@ -52,11 +56,13 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   const periodKey = new Date(monthStart).toISOString().slice(0, 10);
   const monthPlan = Number((data.revenuePlans || [])
     .find(item => item.period_start === periodKey)?.target_net || 0) || DEFAULT_MONTH_PLAN;
-  // Дневной план — остаток плана на остаток дней (включая сегодня).
-  const dayPlan = Math.max(0, (monthPlan - factBeforeToday) / Math.max(1, remainingDays));
-  // Прогноз месяца — линейный ранрейт по прошедшим дням.
+  // Дневной план — остаток плана на остаток дней (включая сегодня); остаток
+  // считается от факта прошедших дней — как в ленте «Вчера/Сегодня/Завтра».
+  const dayPlan = Math.max(0, (monthPlan - factPast) / Math.max(1, remainingDays));
+  // Прогноз месяца — темп по фактическим выгрузкам прошедших полных дней.
+  // 1-го числа темпа ещё нет — прогнозом служит забитое на месяц.
   const forecast = dayOfMonth > 1
-    ? monthFact / dayOfMonth * daysInMonth : monthFact * daysInMonth;
+    ? factPast / (dayOfMonth - 1) * daysInMonth : monthFact;
 
   // Продажи: внесено за день, суммы и средний чек, назначено из внесённого пула.
   const orders = (data.orders || []).filter(order => order.status !== 'cancelled');

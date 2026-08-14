@@ -449,7 +449,8 @@ test('потребность от логистики: ремонт и «без �
   // план дня: (160М − 100М до сегодня) / 11 оставшихся дней (21..31)
   assert.equal(Math.round(dash.dayPlan), Math.round(60_000_000 / 11));
   assert.equal(Math.round(dash.dayFact), 5_000_000, 'факт сегодняшнего дня');
-  assert.equal(Math.round(dash.forecast), Math.round(105_000_000 / 21 * 31), 'линейный прогноз');
+  assert.equal(Math.round(dash.forecast), Math.round(100_000_000 / 20 * 31),
+    'прогноз — темп по выгрузкам прошедших полных дней');
   assert.equal(dash.logist.assignedToday, 1, 'назначено сегодня — рейс с заявкой, созданный сегодня');
   // Воронка дня: забито = выгружено (done) + едет; остаток до плана.
   assert.equal(Math.round(dash.dayDone), 5_000_000, 'выгружено — рейс со статусом done');
@@ -1016,4 +1017,27 @@ test('файлы заявки: имя очищается от путей и уп
   assert.equal(cleanFileName('до<>кум|ент?.pdf'), 'документ.pdf');
   const long = cleanFileName(`${'а'.repeat(200)}.pdf`);
   assert.ok(long.length <= 120 && long.endsWith('.pdf'));
+});
+
+test('прогноз месяца не завышается забронированным будущим', async () => {
+  const { dashboardMetrics } = await import('../public/assets/dashboard.js');
+  const base = { settings: { calculation: { vatRate: 0.22 } }, orders: [], vehicles: [],
+    dispositions: [], revenuePlans: [], trips: [
+      { status: 'done', revenue_vat: 12_200_000, cash: 0, customer_name: 'К',
+        starts_at: '2026-08-01T00:00:00.000Z', ends_at: '2026-08-10T10:00:00.000Z',
+        created_at: '2026-08-01 00:00:00' }
+    ] };
+  const nowMs = Date.parse('2026-08-21T12:00:00Z');
+  const before = dashboardMetrics(base, nowMs);
+  const withFuture = { ...base, trips: [...base.trips,
+    { status: 'plan', revenue_vat: 61_000_000, cash: 0, customer_name: 'К',
+      starts_at: '2026-08-24T00:00:00.000Z', ends_at: '2026-08-25T10:00:00.000Z',
+      created_at: '2026-08-01 00:00:00' }] };
+  const after = dashboardMetrics(withFuture, nowMs);
+  assert.equal(Math.round(before.forecast), Math.round(10_000_000 / 20 * 31));
+  assert.equal(Math.round(after.forecast), Math.round(before.forecast),
+    'будущая бронь не увеличивает темп');
+  assert.ok(after.monthFact > 55_000_000, 'но в факте месяца бронь учтена');
+  assert.equal(Math.round(after.dayPlan), Math.round((160_000_000 - 10_000_000) / 11),
+    'план дня — от факта прошедших дней, без будущих броней');
 });
