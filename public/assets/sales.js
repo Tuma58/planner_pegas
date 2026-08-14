@@ -140,6 +140,17 @@ export const orderFilesOf = (data, orderId) =>
   (data.orderFiles || []).filter(file => file.order_id === orderId);
 export const fileSizeLabel = bytes => bytes >= 1_048_576
   ? `${(bytes / 1_048_576).toFixed(1)} МБ` : `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+export const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.webp,.heic,.gif,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf,.zip';
+export async function uploadOrderFile(orderId, file) {
+  const response = await fetch(`/api/orders/${orderId}/files`, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'X-File-Name': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' },
+    body: file
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload.file;
+}
 export const orderFileLinks = (data, orderId) => {
   const files = orderFilesOf(data, orderId);
   return files.length ? `<small class="order-files">${files.map(file =>
@@ -879,8 +890,14 @@ export function renderSales(container, context) {
           </div>
           <label class="checkline"><input type="checkbox" name="cash"> Перевозка за наличные —
             водитель забирает оплату после выгрузки</label>
-          <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
-            placeholder="адрес, контакт, особенности погрузки" autocomplete="off"></label>
+          <div class="comment-attach">
+            <label class="field">Комментарий к рейсу<input name="comment" maxlength="500"
+              placeholder="адрес, контакт, особенности погрузки" autocomplete="off"></label>
+            <button type="button" class="button ghost small attach-btn" id="salesAttach"
+              title="Прикрепить файлы к заявке: пропуск, схема проезда, заявка клиента (до 8 МБ) — загрузятся при бронировании">📎</button>
+          </div>
+          <div id="salesAttachChips" class="via-chips"></div>
+          <input type="file" id="salesAttachInput" hidden multiple accept="${UPLOAD_ACCEPT}">
           <div id="salesFeas" class="feas"></div>
           <button class="button full">Забронировать</button>
         </form>
@@ -959,6 +976,31 @@ export function renderSales(container, context) {
       (zone.aliases || []).some(alias => alias.toLowerCase() === needle)) || null;
   };
   const via = state.salesVia || (state.salesVia = []);
+  // Скрепочка у комментария: файлы копятся в форме и заливаются после
+  // создания заявки (id появляется только при бронировании).
+  const attachInput = container.querySelector('#salesAttachInput');
+  const redrawAttach = () => {
+    const files = state.salesAttach || [];
+    const chips = container.querySelector('#salesAttachChips');
+    chips.innerHTML = files.map((file, index) => `<span class="via-chip">📎 ${escapeHtml(file.name.slice(0, 30))}
+      <button type="button" data-attach-del="${index}">×</button></span>`).join('');
+    chips.querySelectorAll('[data-attach-del]').forEach(button =>
+      button.addEventListener('click', () => {
+        state.salesAttach.splice(Number(button.dataset.attachDel), 1);
+        redrawAttach();
+      }));
+    container.querySelector('#salesAttach').textContent = files.length ? `📎 ${files.length}` : '📎';
+  };
+  container.querySelector('#salesAttach').onclick = () => attachInput.click();
+  attachInput.addEventListener('change', () => {
+    for (const file of [...attachInput.files]) {
+      if (file.size > 8 * 1_048_576) { toast(`«${file.name}» больше 8 МБ`, 'error'); continue; }
+      (state.salesAttach || (state.salesAttach = [])).push(file);
+    }
+    attachInput.value = '';
+    redrawAttach();
+  });
+  redrawAttach();
   const chainKm = (from, to, viaList) => {
     if (!from || !to) return null;
     const chain = [from, ...viaList.map(item => addressById(item.addressId)).filter(Boolean), to];
@@ -1128,7 +1170,13 @@ export function renderSales(container, context) {
     }
     try {
       const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
-      toast(`Забронировано — заявка № ${created.orderNo} в портфеле (первая в списке)`);
+      let uploaded = 0;
+      for (const file of state.salesAttach || []) {
+        try { await uploadOrderFile(created.id, file); uploaded += 1; }
+        catch (error) { toast(`Файл «${file.name}»: ${error.message}`, 'error'); }
+      }
+      state.salesAttach = [];
+      toast(`Забронировано — заявка № ${created.orderNo}${uploaded ? ` · 📎 файлов: ${uploaded}` : ''} в портфеле (первая в списке)`);
       state.salesVia = [];
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
@@ -1275,8 +1323,7 @@ export function editOrderDialog(order, data, context) {
         заявка клиента · до 8 МБ)</small></span>
       <div class="ofile-list" id="orderFilesBox"></div>
       <label class="button ghost small ofile-add">📎 Прикрепить файл
-        <input type="file" id="orderFileInput" hidden
-          accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.gif,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf,.zip"></label>
+        <input type="file" id="orderFileInput" hidden accept="${UPLOAD_ACCEPT}"></label>
     </div>
     <div class="modal-actions">
       ${trip && context.openTrip ? `<button type="button" class="button ghost" id="editOrderTrip"
@@ -1310,13 +1357,7 @@ export function editOrderDialog(order, data, context) {
     event.currentTarget.value = '';
     if (!file) return;
     try {
-      const response = await fetch(`/api/orders/${order.id}/files`, {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'X-File-Name': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' },
-        body: file
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      const payload = { file: await uploadOrderFile(order.id, file) };
       (data.orderFiles ||= []).push(payload.file);
       redrawFiles();
       toast('Файл прикреплён');

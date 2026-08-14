@@ -483,6 +483,10 @@ tbody tr:hover td { background: var(--hover); }
   background: var(--soft); border-radius: 0 6px 6px 0; color: var(--ink); font-size: var(--fs-sm); }
 .cash-note { display: block; margin-top: 3px; padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 650; }
 /* Файлы, прикреплённые к потребности клиента (📎) */
+.comment-attach { display: flex; gap: 6px; align-items: flex-end; }
+.comment-attach .field { flex: 1; min-width: 0; }
+.attach-btn { flex: none; margin-bottom: 2px; }
+
 .order-files { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 3px; font-size: var(--fs-sm); }
 .ofile { color: var(--teal); text-decoration: none; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 100%; }
