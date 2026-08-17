@@ -458,7 +458,7 @@ export async function renderDispatcher(container, context) {
     return comment ? `<small class="sales-comment">💬 Продажи: ${escapeHtml(comment)}</small>` : '';
   };
   const prepSorted = [...preparing].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
-  const prepCards = prepSorted.map(trip => {
+  const prepCard = trip => {
     const event = prepEventLine(trip, prepStepOf(trip)[1]);
     return `<div class="card ${event.hot ? 'ctrl-hot' : ''}"
         style="margin-bottom:10px;padding:10px 12px">
@@ -470,7 +470,23 @@ export async function renderDispatcher(container, context) {
       ${salesCommentNote(trip)}
       ${checklistBlock(trip, canAct)}
     </div>`;
-  }).join('') || '<p class="muted">Нет рейсов в подготовке — очередь чиста.</p>';
+  };
+  // Выход просрочен больше суток — это уже не рабочая очередь, а разборник:
+  // машина либо уехала без отметок, либо рейс не состоялся. Такие карточки
+  // сворачиваются, чтобы не хоронить под собой сегодняшние выходы.
+  const STALE_PREP_MS = 24 * 3_600_000;
+  const freshPrep = prepSorted.filter(trip => Date.now() - Date.parse(trip.starts_at) < STALE_PREP_MS);
+  const stalePrep = prepSorted.filter(trip => Date.now() - Date.parse(trip.starts_at) >= STALE_PREP_MS);
+  const prepCards = freshPrep.map(prepCard).join('')
+    || (stalePrep.length ? '' : '<p class="muted">Нет рейсов в подготовке — очередь чиста.</p>');
+  const staleBlock = stalePrep.length ? `<details class="stale-preps" id="dispatcherStale"
+      ${state.dispatcherStaleOpen ? 'open' : ''}>
+    <summary>⚠ Выход просрочен больше суток <span class="scount">${stalePrep.length}</span></summary>
+    <p class="geohint">Если машина уехала без отметок — проставьте шаги чек-листа фактическим
+      временем (вывод на линию продолжит контроль). Если рейс не состоялся — «⚠ Внештатная»:
+      отказ клиента или переназначение вернёт заявку в работу.</p>
+    ${stalePrep.map(prepCard).join('')}
+  </details>` : '';
 
   const waitSorted = [...waitingLogist].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
   const waitCards = waitSorted.map(trip => {
@@ -716,6 +732,7 @@ export async function renderDispatcher(container, context) {
     <div class="salesboard">
       <div class="scol">
         <div class="scolh">Подготовка выхода <span>${preparing.length}</span></div>
+        ${staleBlock}
         ${prepCards}
         ${waitingLogist.length ? `<div class="scolh" style="margin-top:12px">Ждут подтверждения логиста <span>${waitingLogist.length}</span></div>
           <div class="list">${waitCards}</div>` : ''}
@@ -845,6 +862,9 @@ export async function renderDispatcher(container, context) {
     context.onReload();
   }, 60_000);
 
+  container.querySelector('#dispatcherStale')?.addEventListener('toggle', event => {
+    state.dispatcherStaleOpen = event.currentTarget.open;
+  });
   attachSearch(container.querySelector('#dispatcherSearch'), async value => {
     state.dispatcherQuery = value;
     await renderDispatcher(container, context);
