@@ -702,6 +702,21 @@ test('диспетчеризация: шаги идут по порядку, в�
   assert.equal(db.prepare(`SELECT stage FROM orders WHERE id='od-1'`).get().stage, 3);
   assert.equal(applyDispatchStep(db, 'td-1', 'on_line').statusChanged, false);
 
+  // Документы: у невыгруженного рейса шаг закрыт с понятной причиной...
+  assert.throws(() => applyDispatchStep(db, 'td-1', 'docs_checked'), /после выгрузки/);
+  // ...а выгруженному не нужен пройденный чек-лист подготовки: рейс мог
+  // стать «выгружен» через факты стоянок, минуя «Контроль на линии».
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status,unloaded_at)
+    VALUES('td-2',?,'Клиент 2',?,?,'2026-08-10T06:00:00.000Z','2026-08-11T06:00:00.000Z',
+    640,90000,'unloaded','2026-08-11T06:00:00.000Z')`)
+    .run(db.prepare('SELECT id FROM vehicles LIMIT 1').get().id,
+      db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get().id,
+      db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get().id);
+  applyDispatchStep(db, 'td-2', 'docs_checked');
+  assert.ok(db.prepare(`SELECT docs_checked_at FROM trips WHERE id='td-2'`).get().docs_checked_at,
+    'документы отмечены без пройденного чек-листа подготовки');
+
   // Переназначение ТС отзывает задание водителю: шаг выполняется заново.
   resetDriverNotificationOnVehicleChange(db, 'td-1');
   const after = db.prepare(`SELECT * FROM trips WHERE id='td-1'`).get();

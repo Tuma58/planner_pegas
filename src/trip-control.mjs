@@ -175,7 +175,15 @@ export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
   const meta = DISPATCH_STEPS[index];
   if (trip[meta.column]) return { trip, statusChanged: false };
   const previous = DISPATCH_STEPS[index - 1];
-  if (previous && !trip[previous.column]) {
+  if (step === 'docs_checked') {
+    // Документы проверяются по факту выгрузки. Рейс мог стать выгруженным
+    // через факты стоянок, минуя чек-лист подготовки (например, вывод на
+    // линию не отметили) — требовать пройти подготовку задним числом
+    // бессмысленно, важен только сам факт выгрузки.
+    if (!(['unloaded', 'done', 'paid'].includes(trip.status) || trip.unloaded_at)) {
+      throw Object.assign(new Error('Документы проверяются после выгрузки — сначала отметьте «Выгружен»'), { status: 409 });
+    }
+  } else if (previous && !trip[previous.column]) {
     throw Object.assign(new Error(`Сначала выполните шаг «${previous.label}»`), { status: 409 });
   }
   db.prepare(`UPDATE trips SET ${meta.column}=?,updated_by=?,
