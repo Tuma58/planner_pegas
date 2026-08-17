@@ -415,7 +415,8 @@ export async function renderDispatcher(container, context) {
   // Первый план — сцепка (тягач/прицеп) и водитель; маршрут — второй строкой.
   const tripHead = trip => `<span style="flex:1;min-width:0;cursor:pointer" data-trip-card="${trip.id}"
       title="Клик — карточка рейса: полные данные с копированием">
-      <strong class="mono trip-plate">${escapeHtml(trip.vehicle_plate)}${trip.trailer_plate
+      <strong class="mono trip-plate vlink" data-vinfo="${trip.vehicle_id}"
+        title="Карточка ТС: рейс, простой, ремонт, отметки контролёра">${escapeHtml(trip.vehicle_plate)}${trip.trailer_plate
         ? ` / ${escapeHtml(trip.trailer_plate)}` : ''}</strong>
       · <b class="trip-driver">${escapeHtml(trip.driver_name || 'без водителя')}</b>
       ${Number(trip.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
@@ -847,7 +848,7 @@ export async function renderDispatcher(container, context) {
   // клики по кнопкам внутри строки карточку не открывают.
   container.querySelectorAll('[data-trip-card]').forEach(head =>
     head.addEventListener('click', event => {
-      if (event.target.closest('button')) return;
+      if (event.target.closest('button, [data-vinfo]')) return;
       const trip = data.trips.find(item => item.id === head.dataset.tripCard);
       if (trip) tripCardDialog(trip);
     }));
