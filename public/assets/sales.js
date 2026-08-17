@@ -709,7 +709,9 @@ export function renderSales(container, context) {
         ${reassign || action}
         <span style="display:flex;gap:5px">
           ${can('orders:write') ? `<button class="button ghost small" data-edit-order="${order.id}"
-            title="Изменить потребность: заказчик, пункты, окно, ставка">Изменить</button>` : ''}
+            title="Изменить потребность: заказчик, пункты, окно, ставка">Изменить</button>
+          <button class="button ghost small" data-copy-order="${order.id}"
+            title="Создать копию заявки с новым № — под повторный рейс; откроется на правку">⧉ Копия</button>` : ''}
           ${step.canReject ? `<button class="button ghost small" data-act="reject" data-order="${order.id}">Отклонить</button>` : ''}
         </span>
       </span>
@@ -1233,6 +1235,33 @@ export function renderSales(container, context) {
         toast('Заявка возвращена в работу');
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
+    }));
+
+  // Копия заявки: те же данные, но всегда НОВЫЙ id и № (их выдаёт сервер);
+  // стадия 0, без ТС и рейса. Сразу открывается на правку — обычно копию
+  // делают под повторный рейс на другую дату.
+  container.querySelectorAll('[data-copy-order]').forEach(button =>
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      const order = orders.find(item => item.id === button.dataset.copyOrder);
+      if (!order) return;
+      button.disabled = true;
+      try {
+        const created = await api('/api/orders', { method: 'POST', body: JSON.stringify({
+          customerName: order.customer_name,
+          fromZoneId: order.from_zone_id, toZoneId: order.to_zone_id,
+          fromPoint: order.from_point || '', toPoint: order.to_point || '',
+          rateVat: order.rate_vat, windowFrom: order.window_from, windowTo: order.window_to,
+          temperatureMode: order.temperature_mode || '', bodyType: order.body_type || '',
+          comment: order.comment || '', cash: Number(order.cash) ? 1 : 0,
+          fromAddressId: order.from_address_id || null, toAddressId: order.to_address_id || null,
+          via: (() => { try { return JSON.parse(order.via_json || '[]'); } catch { return []; } })()
+        }) });
+        toast(`Копия создана — заявка № ${created.orderNo}, новый ID. Проверьте окно погрузки.`);
+        await context.onReload();
+        const copy = (context.state.data.orders || []).find(item => item.id === created.id);
+        if (copy) editOrderDialog(copy, context.state.data, context);
+      } catch (error) { button.disabled = false; toast(error.message, 'error'); }
     }));
 
   container.querySelectorAll('[data-edit-order]').forEach(button =>
