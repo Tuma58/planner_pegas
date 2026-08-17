@@ -640,7 +640,8 @@ export function renderSales(container, context) {
           title="Стоит без загрузки с ${fmtDateTime(request.freeAt)}">стоит ${idleLabel(request.idleMs)}</span>` : '';
     return `<div class="list-item req" data-req="${index}">
       <span style="flex:1;min-width:0">
-        <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.vehicle.type_name)} ${idleBadge}
+        <strong class="mono vlink" data-vinfo="${request.vehicle.id}"
+          title="Карточка ТС: рейс, простой, ремонт, отметки контролёра">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.vehicle.type_name)} ${idleBadge}
         <small class="muted" style="display:block">${request.idleMs > 0 ? 'стоит' : 'освободится'} в «${escapeHtml(request.zone.name)}»
           ${request.idleMs > 0 ? `с ${fmtDateTime(request.freeAt)}` : fmtDateTime(request.freeAt)} · подача с ${fmtDateTime(request.loadFrom)}</small>
         ${blockedNote(request)}

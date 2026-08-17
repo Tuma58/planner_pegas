@@ -1,5 +1,6 @@
 import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours } from './api.js';
 import { renderGeoMap } from './map.js';
+import { vehicleInfoDialog } from './vehicle-info.js';
 import { renderBoss } from './boss.js';
 import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
@@ -318,7 +319,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
     }
     return `<div class="vehicle-row">
       <div class="vehicle-cell ${dayStatus.cls === 'idle' ? 'cell-idle' : ''}"><span class="vehicle-stripe"></span>
-        <span class="vehicle-title res-vtitle"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
+        <span class="vehicle-title res-vtitle"><strong class="mono vlink" data-vinfo="${vehicle.id}"
+          title="Карточка ТС: рейс, простой, ремонт, отметки контролёра">${escapeHtml(vehicle.plate)}</strong>
         <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}</small>
         <small class="vday vday-${dayStatus.cls}" ${dayStatus.color ? `style="color:${dayStatus.color}"` : ''}
           title="Занятость сцепки на ${legendDayLabelOf()}">${escapeHtml(dayStatus.text)}</small></span>
@@ -895,6 +897,15 @@ function vehicleOptions(selected) {
   return state.data.vehicles.filter(vehicle => vehicle.status === 'work').map(vehicle =>
     `<option value="${vehicle.id}" ${vehicle.id === selected ? 'selected' : ''}>${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)}</option>`).join('');
 }
+
+// Карточка ТС: клик по госномеру с data-vinfo в любой вкладке (Гант,
+// продажи, ресурс) — полная картина по сцепке для всех ролей.
+document.addEventListener('click', event => {
+  const link = event.target.closest('[data-vinfo]');
+  if (!link || !state.data) return;
+  event.stopPropagation();
+  vehicleInfoDialog(link.dataset.vinfo, state.data, { showModal, closeModal });
+});
 
 function showModal(content, variant = '') {
   byId('modalRoot').innerHTML = `<div class="modal-backdrop"><div class="modal ${variant}">${content}</div></div>`;

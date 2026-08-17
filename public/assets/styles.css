@@ -496,6 +496,15 @@ tbody tr:hover td { background: var(--hover); }
 .sales-comment { display: block; margin: 2px 0 6px; padding: 5px 8px; border-left: 3px solid var(--teal);
   background: var(--soft); border-radius: 0 6px 6px 0; color: var(--ink); font-size: var(--fs-sm); }
 .cash-note { display: block; margin-top: 3px; padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 650; }
+/* Карточка ТС по клику на госномер */
+.vlink { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.vlink:hover { color: var(--teal); }
+.vinfo-state { border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; margin: 8px 0; }
+.vinfo-row { margin: 2px 0; }
+.vinfo-next { margin-top: 6px; }
+.vinfo-note { margin: 3px 0; padding-left: 8px; border-left: 2px solid var(--line); }
+.vinfo-notes { margin-top: 7px; }
+
 /* Разборник подготовки: рейсы с выходом, просроченным больше суток */
 .stale-preps { margin: 0 0 12px; border: 1px dashed var(--warn); border-radius: 10px; padding: 7px 11px; }
 .stale-preps summary { cursor: pointer; font-weight: 650; color: var(--warn); }
