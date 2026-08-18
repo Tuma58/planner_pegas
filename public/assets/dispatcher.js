@@ -186,6 +186,8 @@ export async function renderDispatcher(container, context) {
   const { state, can } = context;
   const data = state.data;
   const canAct = can('trip-status:write');
+  // Массовые операции (закрытие разборника задним числом) — только админ.
+  const isAdmin = (state.data.user.roles || [state.data.user.role]).includes('admin');
   // Статус отслеживания «опоздание»: расчётная задержка по стоянкам контроля
   // (план + накопленное отставание; для идущих — не раньше «сейчас»).
   let delayByTrip = new Map();
@@ -498,10 +500,10 @@ export async function renderDispatcher(container, context) {
     <p class="geohint">Если машина уехала без отметок — проставьте шаги чек-листа фактическим
       временем (вывод на линию продолжит контроль). Если рейс не состоялся — «⚠ Внештатная»:
       отказ клиента или переназначение вернёт заявку в работу.</p>
-    ${canAct ? (() => {
+    ${isAdmin ? (() => {
       const closable = stalePrep.filter(trip => trip.ends_at < new Date().toISOString());
       return closable.length ? `<button class="button small" id="staleCloseAll"
-        title="Каждый рейс станет «Выгружен» фактом планового времени, документы — «получены»: карточки уйдут из подготовки и не всплывут в контроле">✅ Закрыть всё как выполненное (${closable.length})</button>` : '';
+        title="Только администратор. Каждый рейс станет «Выгружен» фактом планового времени, документы — «получены»: карточки уйдут из подготовки и не всплывут в контроле">✅ Закрыть всё как выполненное (${closable.length})</button>` : '';
     })() : ''}
     ${stalePrep.map(prepCard).join('')}
   </details>` : '';
