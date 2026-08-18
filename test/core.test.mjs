@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, transitHours } from '../src/planner-service.mjs';
+import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1064,4 +1065,40 @@ test('прогноз месяца не завышается заброниров
   assert.ok(after.monthFact > 55_000_000, 'но в факте месяца бронь учтена');
   assert.equal(Math.round(after.dayPlan), Math.round((160_000_000 - 10_000_000) / 11),
     'план дня — от факта прошедших дней, без будущих броней');
+});
+
+test('показатели сотрудников: нагрузка из аудита, отметок, чата и заявок', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-staff-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const admin = db.prepare(`SELECT id, full_name FROM users LIMIT 1`).get();
+  const log = (action, entity, at) => db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,created_at)
+    VALUES(?,?,?,?,?)`).run(crypto.randomUUID(), admin.id, action, entity, at);
+  log('create', 'order', '2026-08-10 09:00:00');
+  log('assign', 'order', '2026-08-10 10:00:00');
+  log('dispatch_step', 'trip', '2026-08-11 09:00:00');
+  log('update', 'trip_stop', '2026-08-11 10:00:00');
+  log('login', 'session', '2026-08-11 08:00:00');           // не считается
+  log('create', 'order', '2026-08-20 09:00:00');            // вне периода
+  db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by) VALUES('dispatcher','2026-08-11','x|y',?)`)
+    .run(admin.full_name);
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get();
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,status,created_by,created_at)
+    VALUES('so-1','К',?,?,90000,'2026-08-10T06:00:00.000Z','2026-08-11T18:00:00.000Z','new',?,
+    '2026-08-10 09:00:00')`).run(zone.id, zone.id, admin.id);
+  const report = staffReport(db, '2026-08-10', '2026-08-12');
+  const row = report.items.find(item => item.name === admin.full_name);
+  assert.ok(row, 'сотрудник в отчёте');
+  assert.equal(row.orderCreate, 1, 'заявка вне периода не считается');
+  assert.equal(row.orderAssign, 1);
+  assert.equal(row.dispatchSteps, 1);
+  assert.equal(row.stopFacts, 1);
+  assert.equal(row.marks, 1);
+  assert.equal(row.activeDays, 2, 'два активных дня');
+  assert.equal(row.ordersSum, 90000, 'сумма внесённых ставок');
+  assert.equal(row.total, 4 + 1, 'всего: 4 действия аудита + отметка (вход не считается)');
 });

@@ -151,6 +151,61 @@ export function importTelematics(db, records, user) {
   return result;
 }
 
+// Показатели сотрудников: нагрузка каждого за период [fromDay..toDay]
+// (from включительно, to — исключая, как в остальных отчётах). Источники:
+// журнал аудита (все действия, кроме входов),
+// отметки задач (там автор — имя смены), сообщения чата и внесённые заявки
+// с суммами ставок. Роль не группируем — на проде права шире должностей.
+export function staffReport(db, fromDay, toDay) {
+  const fromTs = `${fromDay} 00:00:00`;
+  const toEx = `${toDay} 00:00:00`;
+  const byId = new Map();
+  const rowOf = (id, name) => {
+    const key = String(name || '').trim() || id || '—';
+    if (!byId.has(key)) {
+      byId.set(key, { name: key, activeDays: 0, total: 0, orderCreate: 0, orderUpdate: 0,
+        orderAssign: 0, ordersSum: 0, dispatchSteps: 0, stopFacts: 0, tripEdits: 0,
+        dispositions: 0, routes: 0, files: 0, marks: 0, chat: 0 });
+    }
+    return byId.get(key);
+  };
+  for (const r of db.prepare(`
+    SELECT u.full_name name, COUNT(*) total,
+      COUNT(DISTINCT date(a.created_at)) activeDays,
+      SUM(a.entity='order' AND a.action='create') orderCreate,
+      SUM(a.entity='order' AND a.action='update') orderUpdate,
+      SUM(a.entity='order' AND a.action='assign') orderAssign,
+      SUM(a.entity='trip' AND a.action='dispatch_step') dispatchSteps,
+      SUM(a.entity='trip_stop' OR (a.entity='trip' AND a.action='arrived')) stopFacts,
+      SUM(a.entity='trip' AND a.action IN ('create','update','delete')) tripEdits,
+      SUM(a.entity='disposition') dispositions,
+      SUM(a.entity='route') routes,
+      SUM(a.entity='order-file') files
+    FROM audit_log a JOIN users u ON u.id=a.user_id
+    WHERE a.created_at >= ? AND a.created_at < ? AND a.entity <> 'session'
+    GROUP BY a.user_id`).all(fromTs, toEx)) {
+    Object.assign(rowOf(null, r.name), { ...r, name: rowOf(null, r.name).name });
+  }
+  for (const r of db.prepare(`SELECT done_by name, COUNT(*) c FROM task_marks
+    WHERE day >= ? AND day < ? GROUP BY done_by`).all(fromDay, toDay)) {
+    rowOf(null, r.name).marks += r.c;
+  }
+  for (const r of db.prepare(`SELECT author_name name, COUNT(*) c FROM messages
+    WHERE created_at >= ? AND created_at < ? AND kind='user' AND author_name <> '' GROUP BY author_name`)
+    .all(fromTs, toEx)) {
+    rowOf(null, r.name).chat += r.c;
+  }
+  for (const r of db.prepare(`SELECT u.full_name name, SUM(o.rate_vat) s FROM orders o
+    JOIN users u ON u.id=o.created_by
+    WHERE o.created_at >= ? AND o.created_at < ? GROUP BY o.created_by`).all(fromTs, toEx)) {
+    rowOf(null, r.name).ordersSum += Number(r.s || 0);
+  }
+  return { items: [...byId.values()]
+    .map(item => ({ ...item,
+      total: item.total + item.marks + item.chat }))
+    .sort((a, b) => b.total - a.total) };
+}
+
 export function reportSnapshot(db, fromValue, toValue) {
   const from = isoDate(fromValue, 'from');
   const to = isoDate(toValue, 'to');

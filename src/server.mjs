@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, transitHours, vehicleUtilization
+  importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -1884,6 +1884,16 @@ async function api(request, response, url) {
     const base = new Date(`${from}T00:00:00.000Z`);
     const defaultTo = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1)).toISOString();
     return json(response, 200, reportSnapshot(db, from, url.searchParams.get('to') || defaultTo));
+  }
+  if (request.method === 'GET' && pathname === '/api/reports/staff') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+      return errorJson(response, 422, 'Нужны from и to (ГГГГ-ММ-ДД)');
+    }
+    return json(response, 200, staffReport(db, from, to));
   }
   if (request.method === 'GET' && pathname === '/api/periods/history') {
     const user = requirePermission(request, response, 'reports:read');

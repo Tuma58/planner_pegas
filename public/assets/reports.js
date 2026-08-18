@@ -6,6 +6,7 @@ import { pipelineStep, waitingLabel } from './pipeline.js';
 
 export const REPORT_TITLES = {
   summary: 'Сводный отчёт руководителя',
+  staff: 'Показатели сотрудников',
   util: 'Использование парка',
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
@@ -85,6 +86,50 @@ export async function buildReport(kind, from, to, data) {
           <td>${escapeHtml(routeLabel(trip))}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.rejection_reason || '—')}</td></tr>`).join('') ||
           '<tr><td colspan=4>Отклонённых нет</td></tr>'}</tbody></table>`;
+  } else if (kind === 'staff') {
+    const staff = await api(`/api/reports/staff?from=${from}&to=${to}`);
+    const t = staff.items.reduce((acc, row) => {
+      for (const key of Object.keys(acc)) acc[key] += Number(row[key] || 0);
+      return acc;
+    }, { total: 0, orderCreate: 0, ordersSum: 0, orderUpdate: 0, orderAssign: 0,
+      dispatchSteps: 0, stopFacts: 0, tripEdits: 0, dispositions: 0, routes: 0,
+      files: 0, marks: 0, chat: 0 });
+    const num = value => Number(value || 0) || '·';
+    body = `<div class="geohint">Нагрузка на каждого сотрудника за период — сколько действий он
+        фактически выполнил в планере. «Заявки» — внесено новых (и сумма их ставок с НДС);
+        «Правки» — изменения заявок; «Назначено ТС» — назначения на рейс; «Чек-лист» — шаги
+        диспетчеризации (внесено в 1С, задание водителю, вывод на линию, документы);
+        «Факты на линии» — отметки прибытий/погрузок/выгрузок по стоянкам; «Отметки» —
+        «✓ отработано», заметки и захваты «Беру»; «Дней» — активные дни в системе.
+        Точка — нулевая активность.</div>
+      <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
+        <th class="num">Заявок</th><th class="num">Сумма внесённого</th>
+        <th class="num">Правок</th><th class="num">Назначено ТС</th>
+        <th class="num">Чек-лист</th><th class="num">Факты на линии</th>
+        <th class="num">Недоступности</th><th class="num">Маршруты</th>
+        <th class="num">📎</th><th class="num">Отметки</th><th class="num">Чат</th>
+        <th class="num">Всего действий</th></tr></thead>
+      <tbody>${staff.items.map(row => `<tr><td>${escapeHtml(row.name)}</td>
+        <td class="num">${num(row.activeDays)}</td>
+        <td class="num">${num(row.orderCreate)}</td>
+        <td class="num">${row.ordersSum ? rub(row.ordersSum) : '·'}</td>
+        <td class="num">${num(row.orderUpdate)}</td>
+        <td class="num">${num(row.orderAssign)}</td>
+        <td class="num">${num(row.dispatchSteps)}</td>
+        <td class="num">${num(row.stopFacts)}</td>
+        <td class="num">${num(row.dispositions)}</td>
+        <td class="num">${num(row.routes)}</td>
+        <td class="num">${num(row.files)}</td>
+        <td class="num">${num(row.marks)}</td>
+        <td class="num">${num(row.chat)}</td>
+        <td class="num"><b>${num(row.total)}</b></td></tr>`).join('')}
+      <tr class="tot"><td>Итого</td><td class="num">—</td>
+        <td class="num">${t.orderCreate}</td><td class="num">${rub(t.ordersSum)}</td>
+        <td class="num">${t.orderUpdate}</td><td class="num">${t.orderAssign}</td>
+        <td class="num">${t.dispatchSteps}</td><td class="num">${t.stopFacts}</td>
+        <td class="num">${t.dispositions}</td><td class="num">${t.routes}</td>
+        <td class="num">${t.files}</td><td class="num">${t.marks}</td>
+        <td class="num">${t.chat}</td><td class="num"><b>${t.total}</b></td></tr></tbody></table>`;
   } else if (kind === 'util') {
     body = `<div class="rsums">
         <span class="rsum">Списочный: <b>${u.vehicles}</b></span>

@@ -317,7 +317,9 @@ export async function renderBoss(container, context) {
         <input id="bossSearch" class="block-search" placeholder="Поиск по странице"
           title="Фильтрует строки всех таблиц отчёта" style="margin-left:auto;width:170px">
         <select id="bossReportKind">
-          <option value="summary">Сводный</option><option value="util">Использование парка</option>
+          <option value="summary">Сводный</option>
+          <option value="staff">Показатели сотрудников</option>
+          <option value="util">Использование парка</option>
           <option value="econ">Экономика по типам ТС</option><option value="clients">Экономика по клиентам</option>
           <option value="rejected">Отклонённые рейсы</option>
           <option value="execution">Контроль выполнения рейсов</option>
