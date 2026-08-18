@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, wireSelectSearch } from './api.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -1536,8 +1536,10 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
         <span class="badge ${candidate.inZone ? 'ok' : 'warn'}" style="margin-left:auto">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.zoneName || 'перегон')}</span>
       </button>`).join('') || '<p class="muted">Нет свободных к сроку — выберите вручную.</p>'}
     </div>
-    <label class="field">Или вручную из парка<select id="assignVehicle">
-      ${workFleet.map(vehicle => `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)}</option>`).join('')}
+    <label class="field">Или вручную из парка
+      <input id="assignVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off">
+      <select id="assignVehicle" style="margin-top:4px">
+      ${workFleet.map(vehicle => `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)} · ${escapeHtml(vehicle.driver_name || 'без водителя')}</option>`).join('')}
     </select></label>
     <div id="assignNext"></div>
     <div class="modal-actions">
@@ -1545,6 +1547,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
       <button type="button" class="button" id="assignOk">Назначить</button>
     </div>`);
   const select = document.getElementById('assignVehicle');
+  wireSelectSearch(document.getElementById('assignVehicleSearch'), select);
   const showNext = () => {
     document.getElementById('assignNext').innerHTML =
       nextEventHint(nextVehicleEvent(data, select.value, loadMs), loadMs);

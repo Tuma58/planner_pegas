@@ -1,4 +1,4 @@
-import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours } from './api.js';
+import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch } from './api.js';
 import { renderGeoMap } from './map.js';
 import { vehicleInfoDialog } from './vehicle-info.js';
 import { renderBoss } from './boss.js';
@@ -895,7 +895,7 @@ function zoneOptions(selected) {
 
 function vehicleOptions(selected) {
   return state.data.vehicles.filter(vehicle => vehicle.status === 'work').map(vehicle =>
-    `<option value="${vehicle.id}" ${vehicle.id === selected ? 'selected' : ''}>${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)}</option>`).join('');
+    `<option value="${vehicle.id}" ${vehicle.id === selected ? 'selected' : ''}>${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)} · ${escapeHtml(vehicle.driver_name || 'без водителя')}</option>`).join('');
 }
 
 // Карточка ТС: клик по госномеру с data-vinfo в любой вкладке (Гант,
@@ -924,7 +924,9 @@ function openNewTrip(order = null) {
   const end = order?.window_to || new Date(new Date(start).getTime() + 2 * 86_400_000).toISOString();
   showModal(`<form id="tripForm">
     <h2>Новый рейс</h2><p class="muted">Рейс будет сохранен в БД, а для 1С появится исходящее изменение.</p>
-    <label class="field">Сцепка<select name="vehicleId" required>${vehicleOptions()}</select></label>
+    <label class="field">Сцепка
+      <input id="tripVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off">
+      <select name="vehicleId" required style="margin-top:4px">${vehicleOptions()}</select></label>
     <div class="form-grid">
       <label class="field">Откуда<select name="fromZoneId">${zoneOptions(order?.from_zone_id)}</select></label>
       <label class="field">Куда<select name="toZoneId">${zoneOptions(order?.to_zone_id)}</select></label>
@@ -943,6 +945,7 @@ function openNewTrip(order = null) {
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button">Добавить рейс</button></div>
   </form>`);
   const form = byId('tripForm');
+  wireSelectSearch(byId('tripVehicleSearch'), form.querySelector('[name=vehicleId]'));
   const update = () => {
     const values = formValues(form);
     const result = calculation(values.fromZoneId, values.toZoneId, values.revenueVat, values.customerName);

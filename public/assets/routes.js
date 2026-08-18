@@ -3,7 +3,7 @@
 // настройка каждого маршрута). Полуавтомат: «🧮 Собрать» предлагает цепочку
 // из свободных потребностей, дальше — ручная правка. Готовый маршрут
 // передаётся логисту и назначается на сцепку целиком (рейсы цепочкой).
-import { api, escapeHtml, formatDateTime, money, toast, transitHours } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet, plannedKmBetween, regionOfPlace, resolveAddress } from './sales.js';
 
@@ -403,10 +403,13 @@ export function renderRoutes(container, context) {
       <p class="muted">Рейсы по каждой заявке создадутся цепочкой и уйдут диспетчеру
         в подготовку (назначение подтверждается автоматически).</p>
       <label class="field">Сцепка
-        <select id="routeVehicle">${vehicles.map(vehicle =>
+        <input id="routeVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off">
+        <select id="routeVehicle" style="margin-top:4px">${vehicles.map(vehicle =>
           `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name || '')}
             · ${escapeHtml(vehicle.driver_name || 'без водителя')}</option>`).join('')}</select></label>
       <button class="button full" id="routeAssignGo">Назначить маршрут</button>`);
+    wireSelectSearch(document.getElementById('routeVehicleSearch'),
+      document.getElementById('routeVehicle'));
     document.getElementById('routeAssignGo').onclick = async () => {
       try {
         const result = await api(`/api/routes/${routeId}/assign`, { method: 'POST',

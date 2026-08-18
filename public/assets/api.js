@@ -80,6 +80,21 @@ function offsetMs(date) {
 }
 
 // UTC → значение для <input type="datetime-local"> (время предприятия).
+// Поиск по длинному <select> (сцепки): фильтрует options по подстроке —
+// номер, прицеп, водитель, тип — выбор без перелистывания. Первая
+// подошедшая опция становится выбранной.
+export function wireSelectSearch(input, select) {
+  const all = [...select.options].map(option => ({
+    html: option.outerHTML, text: option.textContent.toLowerCase()
+  }));
+  input.addEventListener('input', () => {
+    const needle = input.value.trim().toLowerCase();
+    const kept = all.filter(item => !needle || item.text.includes(needle));
+    select.innerHTML = kept.map(item => item.html).join('')
+      || '<option value="" disabled selected>ничего не найдено</option>';
+  });
+}
+
 export function toLocalInput(value) {
   const date = new Date(value);
   return new Date(date.getTime() + offsetMs(date)).toISOString().slice(0, 16);

@@ -34,6 +34,8 @@ export function replaceVehicleDialog(trip, data, context) {
     <p class="muted">${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || 'без заказчика')}
       · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}
       · сейчас: <span class="mono">${escapeHtml(trip.vehicle_plate)}</span></p>
+    <input id="replaceVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off"
+      style="width:100%;margin-bottom:8px">
     <div class="list" style="max-height:320px;overflow:auto;margin-bottom:10px">
       ${candidates.map(({ vehicle, busy }) => `<button type="button" class="list-item sugtruck"
         data-replace-vehicle="${vehicle.id}" ${vehicle.id === trip.vehicle_id ? 'disabled' : ''}>
@@ -44,6 +46,12 @@ export function replaceVehicleDialog(trip, data, context) {
       </button>`).join('')}
     </div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button></div>`);
+  document.getElementById('replaceVehicleSearch').addEventListener('input', event => {
+    const needle = event.currentTarget.value.trim().toLowerCase();
+    document.querySelectorAll('[data-replace-vehicle]').forEach(button => {
+      button.style.display = !needle || button.textContent.toLowerCase().includes(needle) ? '' : 'none';
+    });
+  });
   document.querySelectorAll('[data-replace-vehicle]').forEach(button =>
     button.addEventListener('click', async () => {
       try {
