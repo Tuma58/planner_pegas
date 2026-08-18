@@ -690,6 +690,7 @@ function renderMain() {
     renderResource(byId('timeline'), {
       state, openDisposition, openFleet: openFleetDirectory,
       openDrivers: openDriversDirectory, openStats: openResourceStats,
+      showModal, closeModal,
       onReload: reload, taskContainer: byId('sidepanel')
     });
   } else if (state.view === 'dashboard') {

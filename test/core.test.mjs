@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceSummary, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1160,4 +1160,28 @@ test('отклонения конвейера: нормативы этапов �
   assert.equal(d.expiredNoVehicle.length, 1, 'окно истекло без ТС');
   assert.equal(d.salesSlow.length, 1, 'медленное подтверждение продаж');
   assert.equal(d.lateUnload.length, 0, 'выгрузка t3 позже расчётной лишь на 30 мин — не отклонение');
+});
+
+test('явка водителей: классификатор причин и сводка укомплектованности', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-att-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  db.prepare(`INSERT INTO drivers(id,full_name) VALUES('d1','Иванов И'),('d2','Петров П'),('d3','Сидоров С')`).run();
+  const day = '2026-08-18';
+  markAttendance(db, { driverId: 'd1', day, status: 'present' });
+  assert.throws(() => markAttendance(db, { driverId: 'd2', day, status: 'absent' }),
+    /причину из классификатора/, 'невыход без причины не принимается');
+  markAttendance(db, { driverId: 'd2', day, status: 'absent', reason: 'sick' });
+  // перезапись: тот же водитель, другой статус — upsert по (driver, day)
+  markAttendance(db, { driverId: 'd2', day, status: 'absent', reason: 'truancy' });
+  const sum = attendanceSummary(db, day);
+  assert.equal(sum.present, 1);
+  assert.equal(sum.absent, 1);
+  assert.equal(sum.byReason.truancy, 1, 'причина перезаписана');
+  assert.equal(sum.unmarked, sum.drivers - 2, 'все, кроме двух отмеченных, — не отмечены');
+  assert.ok(sum.staffingTarget === 1.45);
+  assert.throws(() => markAttendance(db, { driverId: 'нет', day, status: 'present' }), /не найден/);
 });

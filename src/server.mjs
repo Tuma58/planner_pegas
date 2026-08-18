@@ -13,7 +13,8 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  importTelematics, importTripsFrom1C, reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
+  ABSENCE_REASONS, attendanceSummary, importTelematics, importTripsFrom1C, markAttendance,
+  reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -382,6 +383,17 @@ function runDailyFleetReport() {
       ` · КТГ ${pctShort(u.ktg)} · КВЛ ${pctShort(u.kvl)} · КИП ${pctShort(u.kip)}` +
       ` · план дня ${rubShort(dayPlan)} — выполнение ${Math.round((snap.netRevenue || 0) / (dayPlan || 1) * 100)}%` +
       ` · ср. чек ${rubShort(avgCheck)} · смена: внесено ${created.c} заявок на ${rubShort(created.s)}, назначено ${assignedCount}` +
+      (() => {
+        // Явка водителей за вчера: вышло/невыход по причинам/не отмечено.
+        const att = attendanceSummary(db, dayIso);
+        const reasons = Object.entries(att.byReason)
+          .map(([key, count]) => `${ABSENCE_REASONS[key] || key} ${count}`).join(', ');
+        return att.present + att.absent
+          ? ` · явка: вышло ${att.present}, невыход ${att.absent}${reasons ? ` (${reasons})` : ''}` +
+            `${att.unmarked ? `, не отмечено ${att.unmarked}` : ''}` +
+            ` · укомплектованность ${att.staffing.toFixed(2)}/${att.staffingTarget}`
+          : ' · явка за день не велась';
+      })() +
       ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
@@ -1885,6 +1897,39 @@ async function api(request, response, url) {
     const defaultTo = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1)).toISOString();
     return json(response, 200, reportSnapshot(db, from, url.searchParams.get('to') || defaultTo));
   }
+  // Явка водителей (контур ОУВ): список на день и отметка с классификацией
+  // причин невыхода. Отмечает ресурс (право fleet:write), смотрят все.
+  if (request.method === 'GET' && pathname === '/api/attendance') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const day = String(url.searchParams.get('day') || new Date().toISOString().slice(0, 10));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return errorJson(response, 422, 'Нужен day (ГГГГ-ММ-ДД)');
+    return json(response, 200, {
+      day,
+      reasons: ABSENCE_REASONS,
+      summary: attendanceSummary(db, day),
+      items: db.prepare(`SELECT d.id driver_id,d.full_name,d.status driver_status,
+          v.plate vehicle_plate,a.status,a.reason,a.note,a.marked_at
+        FROM drivers d
+        LEFT JOIN vehicles v ON v.id=d.vehicle_id
+        LEFT JOIN driver_attendance a ON a.driver_id=d.id AND a.day=?
+        WHERE d.status<>'fired' ORDER BY d.full_name`).all(day)
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/attendance') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const row = markAttendance(db, {
+      driverId: String(body.driverId || ''), day: String(body.day || ''),
+      status: String(body.status || ''), reason: String(body.reason || ''),
+      note: String(body.note || ''), userId: user.id
+    });
+    audit(db, user, 'attendance', 'driver', row.driver_id,
+      { day: row.day, status: row.status, reason: row.reason }, requestIp(request));
+    return json(response, 200, { ok: true, item: row });
+  }
+
   if (request.method === 'GET' && pathname === '/api/reports/staff') {
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;

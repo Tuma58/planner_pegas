@@ -206,6 +206,63 @@ export function staffReport(db, fromDay, toDay) {
     .sort((a, b) => b.total - a.total) };
 }
 
+// Явка водителей (перенос из v2, контур ОУВ): классификатор причин
+// невыхода — каждый невыход обязан иметь причину.
+export const ABSENCE_REASONS = {
+  sick: 'Больничный',
+  vacation: 'Отпуск',
+  dayoff: 'Выходной по графику',
+  truancy: 'Прогул',
+  intern: 'Стажировка / обучение',
+  other: 'Прочее'
+};
+
+// Отметка явки: upsert по (водитель, день). Невыход без причины не принимается.
+export function markAttendance(db, { driverId, day, status, reason = '', note = '', userId = null }) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) {
+    throw Object.assign(new Error('Нужен день в формате ГГГГ-ММ-ДД'), { status: 422 });
+  }
+  if (!['present', 'absent'].includes(status)) {
+    throw Object.assign(new Error('Статус явки: present или absent'), { status: 422 });
+  }
+  if (status === 'absent' && !ABSENCE_REASONS[reason]) {
+    throw Object.assign(new Error('Невыход обязан иметь причину из классификатора'), { status: 422 });
+  }
+  const driver = db.prepare(`SELECT id FROM drivers WHERE id=? AND status<>'fired'`).get(driverId);
+  if (!driver) throw Object.assign(new Error('Водитель не найден'), { status: 404 });
+  db.prepare(`INSERT INTO driver_attendance(id,driver_id,day,status,reason,note,marked_by)
+    VALUES(?,?,?,?,?,?,?)
+    ON CONFLICT(driver_id,day) DO UPDATE SET status=excluded.status,reason=excluded.reason,
+      note=excluded.note,marked_by=excluded.marked_by,marked_at=CURRENT_TIMESTAMP`)
+    .run(randomUUID(), driverId, day, status,
+      status === 'absent' ? reason : '', String(note || ''), userId);
+  return db.prepare(`SELECT * FROM driver_attendance WHERE driver_id=? AND day=?`).get(driverId, day);
+}
+
+// Сводка явки за день + укомплектованность (норматив 1,45 водителя на ТС).
+export function attendanceSummary(db, day) {
+  const drivers = db.prepare(`SELECT COUNT(*) count FROM drivers WHERE status<>'fired'`).get().count;
+  const vehicles = db.prepare(`SELECT COUNT(*) count FROM vehicles WHERE status<>'out'`).get().count;
+  const rows = db.prepare(`SELECT status,reason,COUNT(*) count FROM driver_attendance
+    WHERE day=? GROUP BY status,reason`).all(day);
+  const byReason = {};
+  let present = 0;
+  let absent = 0;
+  for (const row of rows) {
+    if (row.status === 'present') present += row.count;
+    else {
+      absent += row.count;
+      byReason[row.reason] = (byReason[row.reason] || 0) + row.count;
+    }
+  }
+  return {
+    drivers, vehicles, present, absent, byReason,
+    unmarked: Math.max(0, drivers - present - absent),
+    staffing: vehicles ? drivers / vehicles : 0,
+    staffingTarget: 1.45
+  };
+}
+
 export function reportSnapshot(db, fromValue, toValue) {
   const from = isoDate(fromValue, 'from');
   const to = isoDate(toValue, 'to');

@@ -459,7 +459,22 @@ export async function renderBoss(container, context) {
         <div class="task-sec"><b>⚠ Простой без причины (${buckets.idle.length})</b>${chipList(buckets.idle, idleSince)}</div>
         <div class="task-sec"><b>Ремонт (${buckets.repair.length})</b>${chipList(buckets.repair)}</div>
         <div class="task-sec"><b>Пересменка (${buckets.shift.length}) · Без водителя (${buckets.no_driver.length}) · Резерв (${buckets.reserve.length})</b>
-          ${chipList([...buckets.shift, ...buckets.no_driver, ...buckets.reserve])}</div>`;
+          ${chipList([...buckets.shift, ...buckets.no_driver, ...buckets.reserve])}</div>
+        <div class="task-sec" id="bossAttendance"><b>Явка водителей</b>
+          <p class="muted" style="margin:4px 0 0">Загружаю…</p></div>`;
+      // Явка за день — отдельным запросом (не входит в bootstrap).
+      try {
+        const att = await api(`/api/attendance?day=${dayIso}`);
+        const sum = att.summary;
+        const reasons = Object.entries(sum.byReason)
+          .map(([key, count]) => `${att.reasons[key] || key}: ${count}`).join(' · ');
+        document.getElementById('bossAttendance').innerHTML = `<b>Явка водителей</b>
+          <div class="task-balance-line ${sum.unmarked ? 'bad' : 'ok'}" style="margin-top:4px">
+            Вышло <b>${sum.present}</b> · невыход <b>${sum.absent}</b>${reasons ? ` (${reasons})` : ''}
+            · не отмечено <b>${sum.unmarked}</b>
+            · укомплектованность <b>${sum.staffing.toFixed(2)}</b> при нормативе ${sum.staffingTarget}
+            ${sum.present + sum.absent === 0 ? ' — явка за день не велась (отмечает «Ресурс → Явка»)' : ''}</div>`;
+      } catch { document.getElementById('bossAttendance').innerHTML = ''; }
     };
     context.showModal(`<h2 style="margin-bottom:6px">📆 Отчёт дня по автопарку</h2>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">

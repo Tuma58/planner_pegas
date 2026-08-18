@@ -15,6 +15,71 @@ export const DISP_KINDS = [
 
 const kindMeta = kind => DISP_KINDS.find(item => item.kind === kind) || DISP_KINDS[0];
 
+// Явка водителей (контур ОУВ, перенос из v2): отметки за день с
+// классификацией причин невыхода — каждый невыход обязан иметь причину.
+async function attendanceDialog(context) {
+  let day = new Date().toISOString().slice(0, 10);
+  const render = async () => {
+    let payload;
+    try {
+      payload = await api(`/api/attendance?day=${day}`);
+    } catch (error) { toast(error.message, 'error'); return; }
+    const { summary, reasons, items } = payload;
+    const staffingOk = summary.staffing >= summary.staffingTarget;
+    const rows = items.map(item => `<div class="list-item" style="padding:5px 8px;gap:8px">
+      <span style="flex:1;min-width:0"><strong>${escapeHtml(item.full_name)}</strong>
+        <small class="muted" style="display:block">${escapeHtml(item.vehicle_plate || 'без сцепки')}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></span>
+      <button class="button small ${item.status === 'present' ? '' : 'ghost'}"
+        data-att="present" data-driver="${item.driver_id}">✓ Вышел</button>
+      <button class="button small ${item.status === 'absent' ? '' : 'ghost'}"
+        data-att="absent" data-driver="${item.driver_id}">✗ Невыход</button>
+      <select data-att-reason="${item.driver_id}" ${item.status === 'absent' ? '' : 'disabled'}
+        style="width:150px">
+        <option value="">— причина —</option>
+        ${Object.entries(reasons).map(([key, label]) =>
+          `<option value="${key}" ${item.reason === key ? 'selected' : ''}>${label}</option>`).join('')}
+      </select>
+    </div>`).join('');
+    context.showModal(`<h2 style="margin-bottom:6px">Явка водителей</h2>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <input type="date" id="attDay" value="${day}" style="width:auto">
+        <span class="badge ok">вышли: ${summary.present}</span>
+        <span class="badge ${summary.absent ? 'bad' : ''}">невыход: ${summary.absent}</span>
+        <span class="badge ${summary.unmarked ? 'warn' : 'ok'}" title="Каждый невыход обязан иметь причину из классификатора">не отмечено: ${summary.unmarked}</span>
+        <span class="badge ${staffingOk ? 'ok' : 'bad'}"
+          title="Норматив укомплектованности — 1,45 водителя на сцепку">
+          укомплектованность: ${summary.staffing.toFixed(2)} / ${summary.staffingTarget}</span>
+      </div>
+      <div class="list" style="max-height:56vh;overflow:auto">${rows}</div>
+      <div class="modal-actions"><button type="button" class="button" data-close>Закрыть</button></div>`, 'wide');
+    document.getElementById('attDay').onchange = event => {
+      day = event.currentTarget.value || day;
+      render();
+    };
+    const mark = async body => {
+      try {
+        await api('/api/attendance', { method: 'POST', body: JSON.stringify({ ...body, day }) });
+        render();
+      } catch (error) { toast(error.message, 'error'); }
+    };
+    document.querySelectorAll('[data-att]').forEach(button => button.onclick = () => {
+      const driverId = button.dataset.driver;
+      if (button.dataset.att === 'present') return mark({ driverId, status: 'present' });
+      const reason = document.querySelector(`[data-att-reason="${driverId}"]`).value;
+      if (!reason) {
+        document.querySelector(`[data-att-reason="${driverId}"]`).disabled = false;
+        toast('Выберите причину невыхода — без неё отметка не принимается', 'error');
+        return;
+      }
+      mark({ driverId, status: 'absent', reason });
+    });
+    document.querySelectorAll('[data-att-reason]').forEach(select => select.onchange = () => {
+      if (select.value) mark({ driverId: select.dataset.attReason, status: 'absent', reason: select.value });
+    });
+  };
+  await render();
+}
+
 const nextDayIso = dayIso => new Date(Date.parse(`${dayIso}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 
 // Состояние сцепки на день: диспозиция > статус ТС > рейс > без заказа.
@@ -216,6 +281,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
         <input type="date" id="resourceDay" value="${refDay}">
         ${context.openStats ? '<button class="button ghost small" id="resourceStats" title="Машино-дни, КТГ и выручка по каждой сцепке за месяц">Аналитика</button>' : ''}
         ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
+        <button class="button ghost small" id="resourceAttendance"
+          title="Явка водителей на день: невыход — только с причиной из классификатора">Явка</button>
         ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
         <button class="button small" id="resourceAdd">+ диспозиция</button>
       </div>
@@ -253,6 +320,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   });
   if (context.openStats) container.querySelector('#resourceStats').onclick = () => context.openStats();
   if (context.openDrivers) container.querySelector('#resourceDrivers').onclick = () => context.openDrivers();
+  container.querySelector('#resourceAttendance').onclick = () => attendanceDialog(context);
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {
     vehicle_id: data.vehicles[0]?.id,

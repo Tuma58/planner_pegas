@@ -142,6 +142,14 @@ CREATE TABLE IF NOT EXISTS drivers (
   absent_from TEXT, absent_to TEXT, note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS driver_attendance (
+  id TEXT PRIMARY KEY, driver_id TEXT NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+  day TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('present','absent')),
+  reason TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+  marked_by TEXT REFERENCES users(id), marked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(driver_id, day)
+);
+CREATE INDEX IF NOT EXISTS idx_driver_attendance_day ON driver_attendance(day);
 CREATE TABLE IF NOT EXISTS addresses (
   id TEXT PRIMARY KEY, external_code TEXT UNIQUE,
   name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '',
