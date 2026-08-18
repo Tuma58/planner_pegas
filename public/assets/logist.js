@@ -430,8 +430,22 @@ export function renderLogist(container, context) {
       </span>
     </div>`;
   };
-  const queueCards = queue.map(queueCard).join('')
-    || '<p class="muted">Очередь пуста — все подтверждённые заявки обеспечены ТС.</p>';
+  // Архив очереди: окно погрузки уже закрылось — в заявленном виде заявку
+  // не выполнить. Такие уходят в свёрнутый блок, чтобы не хоронить живую
+  // очередь; «Изменить» (новое окно) возвращает заявку в работу,
+  // «Отклонить» — в реестр с причиной.
+  const nowIso = new Date().toISOString();
+  const liveQueue = queue.filter(order => String(order.window_to) >= nowIso);
+  const archiveQueue = queue.filter(order => String(order.window_to) < nowIso);
+  const queueCards = liveQueue.map(queueCard).join('')
+    || (archiveQueue.length ? '' : '<p class="muted">Очередь пуста — все подтверждённые заявки обеспечены ТС.</p>');
+  const archiveBlock = archiveQueue.length ? `<details class="stale-preps" id="logistArchive"
+      ${state.logistArchiveOpen ? 'open' : ''}>
+    <summary>🗄 Архив · окно погрузки истекло <span class="scount">${archiveQueue.length}</span></summary>
+    <p class="geohint">Окно закрылось — заявка в этом виде невыполнима. Согласуйте с продажами:
+      «Изменить» с новым окном вернёт её в очередь, «Отклонить» с причиной отправит в реестр отчёта.</p>
+    ${archiveQueue.map(queueCard).join('')}
+  </details>` : '';
 
   const statusMeta = Object.fromEntries((data.settings.statuses || []).map(([id, label, color]) => [id, { label, color }]));
   // Новые назначения ждут подтверждения логиста — только после него рейс
@@ -541,7 +555,7 @@ export function renderLogist(container, context) {
         ${!focus || focus === 'queue' || focus === 'returned'
           ? `<div class="scolh" style="font-size:var(--fs-sm);margin-top:2px">${focus === 'returned'
               ? 'Возвраты из плана' : 'Очередь на назначение'} <span>${focus === 'returned' ? returned : queue.length}</span></div>
-        <div class="list" style="margin-bottom:12px">${focus === 'returned' ? returnedCards : queueCards}</div>` : ''}
+        <div class="list" style="margin-bottom:12px">${focus === 'returned' ? returnedCards : `${queueCards}${archiveBlock}`}</div>` : ''}
         ${!focus || focus === 'plan' || focus === 'run'
           ? `<div class="scolh" style="font-size:var(--fs-sm)">${focus === 'run'
               ? 'Рейсы в пути' : focus === 'plan' ? 'Рейсы в плане' : 'Действующие маршруты'}
@@ -581,6 +595,9 @@ export function renderLogist(container, context) {
     rerender();
   });
 
+  container.querySelector('#logistArchive')?.addEventListener('toggle', event => {
+    state.logistArchiveOpen = event.currentTarget.open;
+  });
   container.querySelectorAll('[data-assign]').forEach(button =>
     button.addEventListener('click', () => {
       const order = data.orders.find(item => item.id === button.dataset.assign);
