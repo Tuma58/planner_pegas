@@ -1102,3 +1102,56 @@ test('показатели сотрудников: нагрузка из ауд�
   assert.equal(row.ordersSum, 90000, 'сумма внесённых ставок');
   assert.equal(row.total, 4 + 1, 'всего: 4 действия аудита + отметка (вход не считается)');
 });
+
+test('отклонения конвейера: нормативы этапов и попадание в период', async () => {
+  const { deviationsFor } = await import('../public/assets/reports.js');
+  const nowMs = Date.parse('2026-08-17T12:00:00Z');
+  const fromMs = Date.parse('2026-08-17T00:00:00Z');
+  const toMs = Date.parse('2026-08-18T00:00:00Z');
+  const data = {
+    trips: [
+      // подтверждён логистом через 3 ч после назначения (> 1 ч)
+      { id: 't1', status: 'run', customer_name: 'К', vehicle_plate: 'а001',
+        created_at: '2026-08-17 06:00:00', logist_confirmed_at: '2026-08-17T09:00:00.000Z',
+        starts_at: '2026-08-17T05:00:00.000Z', ends_at: '2026-08-17T08:00:00.000Z',
+        on_line_at: '2026-08-17T05:10:00.000Z', unloaded_at: '2026-08-17T09:00:00.000Z',
+        docs_checked_at: '2026-08-17T09:30:00.000Z' },
+      // выведен на линию через 2 ч после планового выхода (> 30 мин)
+      { id: 't2', status: 'run', customer_name: 'К2', vehicle_plate: 'а002',
+        created_at: '2026-08-16 06:00:00', logist_confirmed_at: '2026-08-16T06:10:00.000Z',
+        starts_at: '2026-08-17T06:00:00.000Z', ends_at: '2026-08-18T06:00:00.000Z',
+        on_line_at: '2026-08-17T08:00:00.000Z' },
+      // выгружен вовремя, документы не проверены спустя 3 ч (> 2 ч)
+      { id: 't3', status: 'unloaded', customer_name: 'К3', vehicle_plate: 'а003',
+        created_at: '2026-08-16 06:00:00', logist_confirmed_at: '2026-08-16T06:05:00.000Z',
+        starts_at: '2026-08-16T08:00:00.000Z', ends_at: '2026-08-17T08:30:00.000Z',
+        on_line_at: '2026-08-16T08:00:00.000Z', unloaded_at: '2026-08-17T09:00:00.000Z',
+        docs_checked_at: null },
+      // всё в нормативах
+      { id: 't4', status: 'run', customer_name: 'К4', vehicle_plate: 'а004',
+        created_at: '2026-08-17 06:00:00', logist_confirmed_at: '2026-08-17T06:20:00.000Z',
+        starts_at: '2026-08-17T07:00:00.000Z', ends_at: '2026-08-18T07:00:00.000Z',
+        on_line_at: '2026-08-17T07:10:00.000Z' }
+    ],
+    orders: [
+      // окно закрылось в периоде, ТС не назначено
+      { id: 'o1', order_no: '1', customer_name: 'Кл', stage: 1, status: 'confirmed', trip_id: null,
+        created_at: '2026-08-16 06:00:00', confirmed_at: '2026-08-16T06:30:00.000Z',
+        window_from: '2026-08-17T06:00:00.000Z', window_to: '2026-08-17T09:00:00.000Z' },
+      // подтверждена продажами через 6 ч (> 4 ч)
+      { id: 'o2', order_no: '2', customer_name: 'Кл2', stage: 1, status: 'confirmed', trip_id: 'x',
+        created_at: '2026-08-17 03:00:00', confirmed_at: '2026-08-17T09:00:00.000Z',
+        window_from: '2026-08-18T06:00:00.000Z', window_to: '2026-08-18T18:00:00.000Z' }
+    ]
+  };
+  const d = deviationsFor(data, fromMs, toMs, nowMs);
+  assert.equal(d.confirmSlow.length, 1, 'долгое подтверждение логиста');
+  assert.equal(d.confirmSlow[0].trip.id, 't1');
+  assert.equal(d.lateOnline.length, 1, 'поздний вывод на линию');
+  assert.equal(d.lateOnline[0].trip.id, 't2');
+  assert.equal(d.docsSlow.length, 1, 'документы дольше 2 ч');
+  assert.equal(d.docsSlow[0].trip.id, 't3');
+  assert.equal(d.expiredNoVehicle.length, 1, 'окно истекло без ТС');
+  assert.equal(d.salesSlow.length, 1, 'медленное подтверждение продаж');
+  assert.equal(d.lateUnload.length, 0, 'выгрузка t3 позже расчётной лишь на 30 мин — не отклонение');
+});

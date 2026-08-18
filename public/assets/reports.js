@@ -7,6 +7,7 @@ import { pipelineStep, waitingLabel } from './pipeline.js';
 export const REPORT_TITLES = {
   summary: 'Сводный отчёт руководителя',
   staff: 'Показатели сотрудников',
+  deviations: 'Отклонения конвейера',
   util: 'Использование парка',
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
@@ -52,6 +53,41 @@ function econByClient(data, from, to) {
     .sort((a, b) => b.revenue - a.revenue);
 }
 
+// Отклонения конвейера: несвоевременная обработка на каждом этапе.
+// Нормативы — из регламентов ролей; событие попадает в период по моменту,
+// когда норматив должен был быть выполнен. Чистая функция для тестов.
+const devTs = value => value ? Date.parse(String(value).includes('T')
+  ? value : `${String(value).replace(' ', 'T')}Z`) : NaN;
+export function deviationsFor(data, fromMs, toMs, nowMs = Date.now()) {
+  const HOUR = 3_600_000;
+  const inPeriod = ms => Number.isFinite(ms) && ms >= fromMs && ms < toMs;
+  const trips = (data.trips || []).filter(trip => trip.status !== 'rejected');
+  const orders = (data.orders || []).filter(order => order.status !== 'cancelled' && !order.deleted_at);
+  const lag = (doneMs, dueMs) => (Number.isFinite(doneMs) ? doneMs : nowMs) - dueMs;
+
+  const confirmSlow = trips.filter(trip => inPeriod(devTs(trip.created_at)))
+    .map(trip => ({ trip, ms: lag(devTs(trip.logist_confirmed_at), devTs(trip.created_at) + HOUR) }))
+    .filter(item => item.ms > 0 && (item.trip.logist_confirmed_at ||
+      ['plan'].includes(item.trip.status)));
+  const lateOnline = trips.filter(trip => inPeriod(Date.parse(trip.starts_at)))
+    .map(trip => ({ trip, ms: lag(devTs(trip.on_line_at), Date.parse(trip.starts_at) + HOUR / 2) }))
+    .filter(item => item.ms > 0 && (item.trip.on_line_at || item.trip.status === 'plan'));
+  const expiredNoVehicle = orders.filter(order => !order.trip_id &&
+    Number(order.stage) === 1 && inPeriod(Date.parse(order.window_to)) &&
+    Date.parse(order.window_to) < nowMs)
+    .map(order => ({ order, ms: nowMs - Date.parse(order.window_to) }));
+  const salesSlow = orders.filter(order => inPeriod(devTs(order.created_at)))
+    .map(order => ({ order, ms: lag(devTs(order.confirmed_at), devTs(order.created_at) + 4 * HOUR) }))
+    .filter(item => item.ms > 0 && (item.order.confirmed_at || Number(item.order.stage) === 0));
+  const docsSlow = trips.filter(trip => trip.unloaded_at && inPeriod(devTs(trip.unloaded_at)))
+    .map(trip => ({ trip, ms: lag(devTs(trip.docs_checked_at), devTs(trip.unloaded_at) + 2 * HOUR) }))
+    .filter(item => item.ms > 0);
+  const lateUnload = trips.filter(trip => trip.unloaded_at && inPeriod(Date.parse(trip.ends_at)))
+    .map(trip => ({ trip, ms: devTs(trip.unloaded_at) - Date.parse(trip.ends_at) }))
+    .filter(item => item.ms > 2 * HOUR);
+  return { confirmSlow, lateOnline, expiredNoVehicle, salesSlow, docsSlow, lateUnload };
+}
+
 export async function buildReport(kind, from, to, data) {
   const report = await api(`/api/reports?from=${from}&to=${to}`);
   const u = report.utilization;
@@ -86,6 +122,71 @@ export async function buildReport(kind, from, to, data) {
           <td>${escapeHtml(routeLabel(trip))}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.rejection_reason || '—')}</td></tr>`).join('') ||
           '<tr><td colspan=4>Отклонённых нет</td></tr>'}</tbody></table>`;
+  } else if (kind === 'deviations') {
+    const fromMs = Date.parse(`${from}T00:00:00Z`);
+    const toMs = Date.parse(`${to}T00:00:00Z`);
+    const d = deviationsFor(data, fromMs, toMs);
+    const lagLabel = ms => ms >= 86_400_000 ? `${Math.round(ms / 86_400_000 * 10) / 10} сут`
+      : `${Math.round(ms / 3_600_000 * 10) / 10} ч`;
+    const open = item => item ? '' : ' <span class="badge bad">не сделано до сих пор</span>';
+    const section = (title, hint, rows, cols) => `<h4>${title} <span class="scount">${rows.length}</span></h4>
+      <p class="geohint">${hint}</p>
+      ${rows.length ? `<table class="rtable"><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+        <tbody>${rows.join('')}</tbody></table>` : '<p class="muted">Отклонений нет.</p>'}`;
+    const total = d.confirmSlow.length + d.lateOnline.length + d.expiredNoVehicle.length +
+      d.salesSlow.length + d.docsSlow.length + d.lateUnload.length;
+    body = `<div class="rsums">
+        <span class="rsum">Всего отклонений: <b>${total}</b></span>
+        <span class="rsum">Логист: <b>${d.confirmSlow.length + d.expiredNoVehicle.length}</b></span>
+        <span class="rsum">Диспетчер: <b>${d.lateOnline.length + d.docsSlow.length}</b></span>
+        <span class="rsum">Продажи: <b>${d.salesSlow.length}</b></span>
+        <span class="rsum">Дорога/клиент: <b>${d.lateUnload.length}</b></span></div>
+      <div class="geohint">Несвоевременная обработка на каждом этапе конвейера за период.
+        Нормативы — из регламентов: подтверждение логиста 1 ч, вывод на линию — к плановому
+        времени (+30 мин), подтверждение продажами 4 ч, документы после выгрузки 2 ч.
+        Для отчёта «за смену» задайте период в один день.</div>
+      ${section('Логист · подтверждение назначения дольше 1 часа',
+        'Пока назначение не подтверждено, диспетчер не готовит выход.',
+        d.confirmSlow.map(({ trip, ms }) => `<tr><td>${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || '')}</td>
+          <td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
+          <td>${formatDateTime(trip.created_at)}</td>
+          <td class="num danger">+${lagLabel(ms)}${open(trip.logist_confirmed_at)}</td></tr>`),
+        ['Рейс', 'ТС', 'Назначен', 'Сверх норматива'])}
+      ${section('Логист · окно погрузки истекло без назначения ТС',
+        'Заявка стояла в очереди, пока окно не закрылось, — потребность потеряна или требует нового окна.',
+        d.expiredNoVehicle.map(({ order, ms }) => `<tr><td>${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.customer_name)}</td>
+          <td>${escapeHtml(routeLabel(order))}</td>
+          <td>${formatDateTime(order.window_to)}</td>
+          <td class="num danger">${lagLabel(ms)} назад</td></tr>`),
+        ['Заявка', 'Маршрут', 'Окно закрылось', 'Как давно'])}
+      ${section('Диспетчер · поздний вывод на линию (позже плана на 30+ мин)',
+        'От фактического времени выхода считаются опоздания по всему рейсу.',
+        d.lateOnline.map(({ trip, ms }) => `<tr><td>${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || '')}</td>
+          <td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
+          <td>${formatDateTime(trip.starts_at)}</td>
+          <td class="num danger">+${lagLabel(ms)}${open(trip.on_line_at)}</td></tr>`),
+        ['Рейс', 'ТС', 'Плановый выход', 'Задержка'])}
+      ${section('Диспетчер · документы позже 2 часов после выгрузки',
+        'Норматив проверки фото документов — 2 часа, дальше ежечасный сбой.',
+        d.docsSlow.map(({ trip, ms }) => `<tr><td>${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || '')}</td>
+          <td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
+          <td>${formatDateTime(trip.unloaded_at)}</td>
+          <td class="num danger">+${lagLabel(ms)}${open(trip.docs_checked_at)}</td></tr>`),
+        ['Рейс', 'ТС', 'Выгружен', 'Сверх норматива'])}
+      ${section('Продажи · подтверждение заявки дольше 4 часов',
+        'Заявка внесена, но не подтверждена — конвейер не начинается (порог 4 ч).',
+        d.salesSlow.map(({ order, ms }) => `<tr><td>${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.customer_name)}</td>
+          <td>${escapeHtml(routeLabel(order))}</td>
+          <td>${formatDateTime(order.created_at ? String(order.created_at).replace(' ', 'T') + 'Z' : order.window_from)}</td>
+          <td class="num danger">+${lagLabel(ms)}${open(order.confirmed_at)}</td></tr>`),
+        ['Заявка', 'Маршрут', 'Внесена', 'Сверх норматива'])}
+      ${section('Дорога/клиент · выгрузка позже расчётной более чем на 2 часа',
+        'Справочно: причина может быть в дороге, погрузке или клиенте — материал для разбора.',
+        d.lateUnload.map(({ trip, ms }) => `<tr><td>${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || '')}</td>
+          <td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
+          <td>${formatDateTime(trip.ends_at)}</td>
+          <td class="num danger">+${lagLabel(ms)}</td></tr>`),
+        ['Рейс', 'ТС', 'Расчётная выгрузка', 'Опоздание'])}`;
   } else if (kind === 'staff') {
     const staff = await api(`/api/reports/staff?from=${from}&to=${to}`);
     const t = staff.items.reduce((acc, row) => {

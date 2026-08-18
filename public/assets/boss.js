@@ -319,6 +319,7 @@ export async function renderBoss(container, context) {
         <select id="bossReportKind">
           <option value="summary">Сводный</option>
           <option value="staff">Показатели сотрудников</option>
+          <option value="deviations">Отклонения конвейера</option>
           <option value="util">Использование парка</option>
           <option value="econ">Экономика по типам ТС</option><option value="clients">Экономика по клиентам</option>
           <option value="rejected">Отклонённые рейсы</option>
