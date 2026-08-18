@@ -324,6 +324,18 @@ export async function renderDispatcher(container, context) {
       `${overdueHour >= 0 ? `|h${overdueHour}` : ''}`.slice(0, 200);
   };
   const workedOf = trip => workedMap.get(eventKeyOf(trip)) || null;
+  // Последний комментарий контролёра по рейсу (за сегодня-вчера) — даже если
+  // событие уже сменилось: отметка «✓ отработано» привязана к конкретному
+  // событию и с новым шагом карточка возвращается в очередь, но контекст
+  // прошлого звонка терять нельзя.
+  const lastNoteOf = trip => {
+    let best = null;
+    for (const [key, mark] of workedMap) {
+      if (!key.startsWith(`${trip.id}|`) || !mark.note) continue;
+      if (!best || String(mark.done_at) > String(best.done_at)) best = mark;
+    }
+    return best;
+  };
   // Ближайшее событие — наверх: просроченные и «не выгружают» первыми.
   // Отработанные события уходят под неотработанные и ждут своего следующего
   // события; выполненный рейс («Выгружен») из списка уходит сам.
@@ -688,6 +700,9 @@ export async function renderDispatcher(container, context) {
       ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
         · ${escapeHtml(worked.done_by || '')}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
+      ${(() => { const last = lastNoteOf(trip);
+        return !worked && last ? `<span class="ctrl-last-note" title="${escapeHtml(last.note)}">💬 прошлый контроль
+          · ${escapeHtml(last.done_by || '')} — «${escapeHtml(String(last.note).slice(0, 60))}»</span>` : ''; })()}
       ${canAct && nextEvent.docsStep && !worked ? `<button class="button small ctrl-quick"
         data-docs="${trip.id}" title="Фото документов получены и проверены (без печатей и актов) — рейс уйдёт с контроля">✔ Документы получены</button>` : ''}
       ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"
