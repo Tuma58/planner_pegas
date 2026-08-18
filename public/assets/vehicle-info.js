@@ -4,6 +4,7 @@
 // продаж с файлами заявки и отметки контролёра (диспетчера) по рейсу.
 import { api, escapeHtml, formatDateTime, money, routeLabel } from './api.js';
 import { orderFileLinks, orderNet } from './sales.js';
+import { shiftStateAt } from './resource.js';
 
 const DAY_MS = 86_400_000;
 const KIND_LABEL = { repair: '🔧 Ремонт', shift: '🔁 Пересменка',
@@ -112,6 +113,14 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
     <p class="muted">${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
       · приписка: ${escapeHtml(vehicle.zone_name || '—')}
       ${vehicle.status !== 'work' ? ' · <b class="danger">выведена из работы</b>' : ''}</p>
+    ${(() => {
+      const driver = (data.drivers || []).find(item => item.vehicle_id === vehicle.id);
+      const shift = driver ? shiftStateAt(driver, new Date().toISOString()) : null;
+      return shift ? `<p class="${shift.rest ? 'danger' : 'muted'}" style="margin-top:-6px">
+        Вахта ${driver.shift_on}/${driver.shift_off}: ${shift.rest
+          ? `<b>межвахта до ${new Date(`${shift.until}T12:00:00Z`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}</b> — машине нужен подменный водитель`
+          : `работает до ${new Date(`${shift.until}T12:00:00Z`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} включительно, дальше межвахта ${driver.shift_off} дн`}</p>` : '';
+    })()}
     ${stateBlock}
     ${nextTrip || nextDispo ? `<div class="vinfo-next muted">Дальше по плану: ${nextTrip
       ? `рейс ${escapeHtml(routeLabel(nextTrip))} · выход ${formatDateTime(nextTrip.starts_at)}`

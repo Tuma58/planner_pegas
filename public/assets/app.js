@@ -1157,6 +1157,7 @@ function openDriversDirectory() {
     const [label, tone] = statusMeta[driver.status] || [driver.status, 'warn'];
     return `<tr>
       <td>${escapeHtml(driver.full_name)}
+        ${driver.shift_on ? `<small class="muted" style="display:block">вахта ${driver.shift_on}/${driver.shift_off} с ${formatDate(driver.shift_anchor)}</small>` : ''}
         ${driver.absent_from ? `<small class="muted" style="display:block">отсутствие ${formatDate(driver.absent_from)} — ${formatDate(driver.absent_to)}</small>` : ''}</td>
       <td class="mono">${escapeHtml(driver.phone || '—')}</td>
       <td><select data-drv-vehicle="${driver.id}" title="Закрепление за сцепкой">${vehicleOptionsFor(driver)}</select></td>
@@ -1219,6 +1220,16 @@ function driverEditDialog(driver, after) {
     <label class="field">ФИО<input name="fullName" value="${escapeHtml(driver?.full_name || '')}" required></label>
     <label class="field">Телефон<input name="phone" value="${escapeHtml(driver?.phone || '')}"></label>
     <label class="field">Примечание<input name="note" value="${escapeHtml(driver?.note || '')}"></label>
+    <div class="field"><span>Вахтовый график <small class="muted">(пусто — без вахты; при закреплении
+        за ТС межвахта видна в графике и карточке ТС)</small></span>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1.4fr">
+        <label class="field">Работа, дней<input name="shiftOn" type="number" min="1" max="90"
+          value="${driver?.shift_on || ''}" placeholder="15"></label>
+        <label class="field">Отдых, дней<input name="shiftOff" type="number" min="1" max="90"
+          value="${driver?.shift_off || ''}" placeholder="15"></label>
+        <label class="field">Начало рабочего периода<input name="shiftAnchor" type="date"
+          value="${(driver?.shift_anchor || '').slice(0, 10)}"></label>
+      </div></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сохранить</button></div></form>`);
   byId('driverForm').onsubmit = async event => {

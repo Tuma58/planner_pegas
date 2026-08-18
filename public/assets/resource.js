@@ -15,6 +15,21 @@ export const DISP_KINDS = [
 
 const kindMeta = kind => DISP_KINDS.find(item => item.kind === kind) || DISP_KINDS[0];
 
+// Вахта водителя: рабочий ли день и до какого числа длится текущий период.
+// Схема «on дней работы / off отдыха» от даты начала рабочего периода.
+export function shiftStateAt(driver, dayIso) {
+  const on = Number(driver?.shift_on);
+  const off = Number(driver?.shift_off);
+  if (!on || !off || !driver.shift_anchor) return null;
+  const cycle = on + off;
+  const dayMs = Date.parse(`${String(dayIso).slice(0, 10)}T00:00:00Z`);
+  const diff = Math.floor((dayMs - Date.parse(`${String(driver.shift_anchor).slice(0, 10)}T00:00:00Z`)) / 86_400_000);
+  const position = ((diff % cycle) + cycle) % cycle;
+  const rest = position >= on;
+  const periodEndMs = dayMs + ((rest ? cycle : on) - position - 1) * 86_400_000;
+  return { rest, until: new Date(periodEndMs).toISOString().slice(0, 10) };
+}
+
 // График работы водителей: две проекции — «водители × дни: какое ТС» и
 // «ТС × дни: какой водитель». Закрепления из истории аудита + текущего
 // справочника; поверх — пересменки/«без водителя»/ремонт (диспозиции),
@@ -72,14 +87,18 @@ async function scheduleDialog(context) {
           const marks = vehicleId
             ? dispoAt(vehicleId, day.getTime()).map(item => DISPO_ICON[item.kind] || '').join('')
             : '';
+          const shift = shiftStateAt(driver, iso);
           const cls = att?.status === 'absent' ? 'sched-absent'
             : att?.status === 'present' ? 'sched-present'
-            : absent ? 'sched-away' : '';
+            : absent ? 'sched-away'
+            : shift?.rest ? 'sched-rest' : '';
           const title = [vehicleId ? plateOf.get(vehicleId) : 'без сцепки',
             att ? (att.status === 'present' ? 'вышел' : `невыход: ${att.reason}`) : '',
-            absent ? 'отсутствие по карточке' : ''].filter(Boolean).join(' · ');
+            absent ? 'отсутствие по карточке' : '',
+            shift ? (shift.rest ? `межвахта до ${shift.until}` : `вахта до ${shift.until}`) : '']
+            .filter(Boolean).join(' · ');
           return `<td class="${cls}" title="${escapeHtml(title)}">
-            ${absent ? '🏖' : ''}<span class="mono">${escapeHtml(plateOf.get(vehicleId) || '—')}</span>${marks}
+            ${absent ? '🏖' : ''}${shift?.rest ? '🌙' : ''}<span class="mono">${escapeHtml(plateOf.get(vehicleId) || '—')}</span>${marks}
             ${att ? `<b>${att.status === 'present' ? '✓' : '✗'}</b>` : ''}</td>`;
         }).join('');
         return `<tr><th class="sched-name">${escapeHtml(shortName(driver.full_name))}</th>${cells}</tr>`;
@@ -91,13 +110,19 @@ async function scheduleDialog(context) {
           const holders = drivers.filter(driver => vehicleAtDay(driver.id, midMs) === vehicle.id);
           const dispo = dispoAt(vehicle.id, day.getTime());
           const marks = dispo.map(item => DISPO_ICON[item.kind] || '').join('');
+          const iso = day.toISOString().slice(0, 10);
+          const resting = holders.filter(driver => shiftStateAt(driver, iso)?.rest);
           const cls = dispo.some(item => item.kind === 'no_driver') ? 'sched-away'
             : dispo.some(item => item.kind === 'repair') ? 'sched-absent'
+            : resting.length === holders.length && holders.length ? 'sched-rest'
             : holders.length ? '' : 'sched-empty';
-          const title = [holders.map(driver => driver.full_name).join(', ') || 'водитель не закреплён',
+          const title = [holders.map(driver => {
+              const shift = shiftStateAt(driver, iso);
+              return driver.full_name + (shift ? (shift.rest ? ` (межвахта до ${shift.until})` : ` (вахта до ${shift.until})`) : '');
+            }).join(', ') || 'водитель не закреплён',
             ...dispo.map(item => `${item.kind}: ${item.note || ''}`)].join(' · ');
           return `<td class="${cls}" title="${escapeHtml(title)}">
-            ${escapeHtml(holders.map(driver => shortName(driver.full_name)).join(', ') || '—')}${marks}</td>`;
+            ${resting.length ? '🌙' : ''}${escapeHtml(holders.map(driver => shortName(driver.full_name)).join(', ') || '—')}${marks}</td>`;
         }).join('');
         return `<tr><th class="sched-name mono">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
       }).join('');
@@ -110,7 +135,7 @@ async function scheduleDialog(context) {
         <label class="field" style="margin:0">начало периода
           <input type="date" id="schedStart" value="${startIso}" style="width:auto"></label>
         <small class="muted">${DAYS} дней · 🔁 пересменка · 🚫 без водителя · 🔧 ремонт · 📦 резерв
-          · 🏖 отсутствие · ✓/✗ явка</small>
+          · 🏖 отсутствие · 🌙 межвахта · ✓/✗ явка</small>
       </div>
       <div class="sched-wrap"><table class="sched-table">
         <thead><tr><th class="sched-name">${view === 'drivers' ? 'Водитель' : 'Сцепка'}</th>${dayHead}</tr></thead>

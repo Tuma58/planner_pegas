@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceSummary, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceSummary, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1209,4 +1209,21 @@ test('график водителей: история закреплений и�
   assert.equal(spans[1].to, null, 'текущее закрепление открыто');
   // Без событий аудита — одно текущее закрепление у dr2 нет (vehicle NULL) → пусто.
   assert.deepEqual(data.assignments.dr2, []);
+});
+
+test('вахтовый график: рабочие и выходные дни по схеме N/M', () => {
+  // 15/15 с 1 августа: 1–15 работа, 16–30 межвахта, 31 — снова работа.
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-01', '2026-08-01'), true);
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-01', '2026-08-15'), true);
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-01', '2026-08-16'), false);
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-01', '2026-08-30'), false);
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-01', '2026-08-31'), true);
+  // день ДО начала отсчёта тоже считается по циклу (отрицательная фаза)
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-16', '2026-08-15'), false);
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-16', '2026-08-01'), false,
+    '01.08 — межвахта предыдущего цикла');
+  assert.equal(shiftIsWorkday(15, 15, '2026-08-16', '2026-07-17'), true,
+    'предыдущий рабочий период 17–31.07');
+  // вахта не задана — всегда рабочий
+  assert.equal(shiftIsWorkday(null, null, null, '2026-08-20'), true);
 });

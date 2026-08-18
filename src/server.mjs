@@ -79,6 +79,20 @@ async function readJson(request, limit = 1_000_000) {
   catch { throw Object.assign(new Error('Некорректный JSON'), { status: 400 }); }
 }
 
+// Вахтовый график из тела запроса: «N дней работы / M отдыха с даты».
+// Все три поля вместе либо пусто; кривые значения — 422.
+function parseShift(body) {
+  const on = body.shiftOn === '' || body.shiftOn == null ? null : Number(body.shiftOn);
+  const off = body.shiftOff === '' || body.shiftOff == null ? null : Number(body.shiftOff);
+  const anchor = String(body.shiftAnchor || '').slice(0, 10) || null;
+  if (on == null && off == null && !anchor) return { on: null, off: null, anchor: null };
+  if (!Number.isInteger(on) || !Number.isInteger(off) || on < 1 || off < 1 || on > 90 || off > 90 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(anchor || '')) {
+    throw Object.assign(new Error('Вахта: дни работы и отдыха 1–90 и дата начала рабочего периода — или все поля пустые'), { status: 422 });
+  }
+  return { on, off, anchor };
+}
+
 async function readRaw(request, limit) {
   const chunks = [];
   let size = 0;
@@ -1369,8 +1383,11 @@ async function api(request, response, url) {
     const name = String(body.fullName || '').trim();
     if (!name) return errorJson(response, 422, 'Укажите ФИО водителя');
     const id = randomUUID();
-    db.prepare(`INSERT INTO drivers(id,full_name,phone,note) VALUES(?,?,?,?)`).run(
-      id, name, String(body.phone || '').trim(), String(body.note || '').trim());
+    const shift = parseShift(body);
+    db.prepare(`INSERT INTO drivers(id,full_name,phone,note,shift_on,shift_off,shift_anchor)
+      VALUES(?,?,?,?,?,?,?)`).run(
+      id, name, String(body.phone || '').trim(), String(body.note || '').trim(),
+      shift.on, shift.off, shift.anchor);
     audit(db, user, 'create', 'driver', id, body, requestIp(request));
     return json(response, 201, { id });
   }
@@ -1407,11 +1424,16 @@ async function api(request, response, url) {
         db.prepare(`UPDATE vehicles SET driver_name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
           .run(String(body.fullName).trim(), vehicleId);
       }
+      const shift = 'shiftOn' in body || 'shiftOff' in body || 'shiftAnchor' in body
+        ? parseShift(body)
+        : { on: current.shift_on, off: current.shift_off, anchor: current.shift_anchor };
       db.prepare(`UPDATE drivers SET full_name=?,phone=?,status=?,vehicle_id=?,
-        absent_from=?,absent_to=?,note=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        absent_from=?,absent_to=?,note=?,shift_on=?,shift_off=?,shift_anchor=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
         String(body.fullName ?? current.full_name).trim(),
         String(body.phone ?? current.phone).trim(), status, vehicleId,
-        absentFrom, absentTo, String(body.note ?? current.note).trim(), match[0]);
+        absentFrom, absentTo, String(body.note ?? current.note).trim(),
+        shift.on, shift.off, shift.anchor, match[0]);
       // Отпуск/болезнь с датами: закреплённая сцепка получает интервал
       // «без водителя» — календарь, потребность и задания видят это сразу.
       if (['vacation', 'sick'].includes(status) && vehicleId && absentFrom && absentTo &&

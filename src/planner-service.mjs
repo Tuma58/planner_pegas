@@ -206,6 +206,20 @@ export function staffReport(db, fromDay, toDay) {
     .sort((a, b) => b.total - a.total) };
 }
 
+// Вахтовый график: рабочий ли день по схеме «on дней работы / off отдыха
+// от даты начала рабочего периода». Без заданной вахты день считается
+// рабочим — график не ограничивает.
+export function shiftIsWorkday(onDays, offDays, anchorIso, dayIso) {
+  const on = Number(onDays);
+  const off = Number(offDays);
+  if (!on || !off || !anchorIso) return true;
+  const cycle = on + off;
+  const diff = Math.floor((Date.parse(`${String(dayIso).slice(0, 10)}T00:00:00Z`) -
+    Date.parse(`${String(anchorIso).slice(0, 10)}T00:00:00Z`)) / 86_400_000);
+  const position = ((diff % cycle) + cycle) % cycle;
+  return position < on;
+}
+
 // Явка водителей (перенос из v2, контур ОУВ): классификатор причин
 // невыхода — каждый невыход обязан иметь причину.
 export const ABSENCE_REASONS = {
@@ -246,7 +260,7 @@ export function markAttendance(db, { driverId, day, status, reason = '', note = 
 // отсутствия — из карточки водителя, факт — из явки.
 export function driverScheduleData(db, fromIso, toIso) {
   const drivers = db.prepare(`SELECT d.id,d.full_name,d.status,d.vehicle_id,
-      d.absent_from,d.absent_to,v.plate FROM drivers d
+      d.absent_from,d.absent_to,d.shift_on,d.shift_off,d.shift_anchor,v.plate FROM drivers d
       LEFT JOIN vehicles v ON v.id=d.vehicle_id
       WHERE d.status<>'fired' ORDER BY d.full_name`).all();
   const vehicles = db.prepare(`SELECT id,plate,trailer_plate,driver_name,status
