@@ -498,6 +498,11 @@ export async function renderDispatcher(container, context) {
     <p class="geohint">Если машина уехала без отметок — проставьте шаги чек-листа фактическим
       временем (вывод на линию продолжит контроль). Если рейс не состоялся — «⚠ Внештатная»:
       отказ клиента или переназначение вернёт заявку в работу.</p>
+    ${canAct ? (() => {
+      const closable = stalePrep.filter(trip => trip.ends_at < new Date().toISOString());
+      return closable.length ? `<button class="button small" id="staleCloseAll"
+        title="Каждый рейс станет «Выгружен» фактом планового времени, документы — «получены»: карточки уйдут из подготовки и не всплывут в контроле">✅ Закрыть всё как выполненное (${closable.length})</button>` : '';
+    })() : ''}
     ${stalePrep.map(prepCard).join('')}
   </details>` : '';
 
@@ -880,6 +885,34 @@ export async function renderDispatcher(container, context) {
 
   container.querySelector('#dispatcherStale')?.addEventListener('toggle', event => {
     state.dispatcherStaleOpen = event.currentTarget.open;
+  });
+
+  // Массовое закрытие разборника: рейсы с выходом старше суток и расчётной
+  // выгрузкой в прошлом закрываются задним числом — «Выгружен» фактом
+  // планового времени + «Документы получены». Рейсы с выгрузкой в будущем
+  // не трогаются (машина может реально ехать — их выводят на линию).
+  container.querySelector('#staleCloseAll')?.addEventListener('click', async event => {
+    const nowIso = new Date().toISOString();
+    const closable = preparing.filter(trip =>
+      Date.now() - Date.parse(trip.starts_at) >= 24 * 3_600_000 && trip.ends_at < nowIso);
+    if (!closable.length) return;
+    if (!confirm(`Закрыть ${closable.length} рейс(ов) как выполненные задним числом?
+`
+      + 'Каждый станет «Выгружен» фактом планового времени, документы — «получены». '
+      + 'Действие видно в аудите. Рейсы, чья выгрузка ещё впереди, не трогаются.')) return;
+    event.currentTarget.disabled = true;
+    let done = 0;
+    for (const trip of closable) {
+      try {
+        await api(`/api/trips/${trip.id}`, { method: 'PATCH',
+          body: JSON.stringify({ status: 'unloaded', factAt: trip.ends_at }) });
+        await api(`/api/trips/${trip.id}/step`, { method: 'POST',
+          body: JSON.stringify({ step: 'docs_checked', at: trip.ends_at }) });
+        done += 1;
+      } catch (error) { toast(`${trip.vehicle_plate || ''}: ${error.message}`, 'error'); }
+    }
+    toast(`Закрыто рейсов: ${done}`);
+    await renderDispatcher(container, context);
   });
   attachSearch(container.querySelector('#dispatcherSearch'), async value => {
     state.dispatcherQuery = value;
