@@ -133,12 +133,14 @@ export function stampStopsFromStatus(db, tripId, status, atIso = null) {
   const stops = listTripStops(db, tripId);
   if (!stops.length) return;
   const nowIso = atIso || new Date().toISOString();
-  const first = stops[0];
   const last = stops[stops.length - 1];
   const set = (stopId, field) => db.prepare(
     `UPDATE trip_stops SET ${field}=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND ${field} IS NULL`)
     .run(nowIso, stopId);
-  if (['run', 'unloaded', 'done', 'paid'].includes(status)) set(first.id, 'actual_departure');
+  // Факты ПОГРУЗКИ автоматически не проставляются никогда: вывод на линию
+  // означает «машина вышла», а не «погрузка завершена» — этапы погрузки
+  // отмечает диспетчер кнопками на карточке. Ручная отметка «Выгружен»
+  // (смена статуса с фактическим временем) штампует только выгрузку.
   if (['unloaded', 'done', 'paid'].includes(status)) {
     set(last.id, 'actual_arrival');
     set(last.id, 'work_finished_at');
@@ -194,8 +196,9 @@ export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
   // той же логикой, что и ручная смена статуса.
   if (step === 'on_line' && trip.status === 'plan') {
     setTripStatus(db, trip, 'run', userId);
+    // Стоянки контроля создаются, но факты не штампуются: первая отметка
+    // диспетчера будет «Прибыл на погрузку» с реальным временем.
     ensureTripStops(db, tripId);
-    stampStopsFromStatus(db, tripId, 'run', atIso);
     statusChanged = true;
   }
   return { trip: db.prepare('SELECT * FROM trips WHERE id=?').get(tripId), statusChanged };

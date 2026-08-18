@@ -702,6 +702,12 @@ test('диспетчеризация: шаги идут по порядку, в�
   assert.ok(trip.on_line_at);
   assert.equal(db.prepare(`SELECT stage FROM orders WHERE id='od-1'`).get().stage, 3);
   assert.equal(applyDispatchStep(db, 'td-1', 'on_line').statusChanged, false);
+  // Вывод на линию НЕ штампует факты погрузки: первую отметку («Прибыл
+  // на погрузку») диспетчер ставит сам с реальным временем.
+  const firstStop = db.prepare(`SELECT * FROM trip_stops WHERE trip_id='td-1' ORDER BY seq LIMIT 1`).get();
+  assert.ok(firstStop, 'стоянки контроля созданы');
+  assert.equal(firstStop.actual_arrival, null, 'факт прибытия на погрузку пуст');
+  assert.equal(firstStop.actual_departure, null, 'факт убытия с погрузки пуст');
 
   // Документы: у невыгруженного рейса шаг закрыт с понятной причиной...
   assert.throws(() => applyDispatchStep(db, 'td-1', 'docs_checked'), /после выгрузки/);
