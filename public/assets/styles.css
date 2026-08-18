@@ -497,6 +497,20 @@ tbody tr:hover td { background: var(--hover); }
 .sales-comment { display: block; margin: 2px 0 6px; padding: 5px 8px; border-left: 3px solid var(--teal);
   background: var(--soft); border-radius: 0 6px 6px 0; color: var(--ink); font-size: var(--fs-sm); }
 .cash-note { display: block; margin-top: 3px; padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 650; }
+/* График работы водителей: сетка водители/ТС × дни */
+.sched-wrap { overflow: auto; max-height: 62vh; border: 1px solid var(--line); border-radius: 8px; }
+.sched-table { border-collapse: collapse; font-size: 11px; width: max-content; min-width: 100%; }
+.sched-table th, .sched-table td { border: 1px solid var(--line); padding: 3px 6px; white-space: nowrap; text-align: center; }
+.sched-table thead th { position: sticky; top: 0; background: var(--soft); z-index: 2; }
+.sched-table .sched-name { position: sticky; left: 0; background: var(--soft); text-align: left; z-index: 1; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.sched-table thead .sched-name { z-index: 3; }
+.sched-we { background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.sched-today { outline: 2px solid var(--teal); outline-offset: -2px; }
+.sched-present { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.sched-absent { background: color-mix(in srgb, var(--bad) 16%, transparent); }
+.sched-away { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.sched-empty { color: var(--muted); }
+
 /* Карточка ТС по клику на госномер */
 .vlink { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .vlink:hover { color: var(--teal); }

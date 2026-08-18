@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceSummary, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceSummary, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
@@ -1916,6 +1916,20 @@ async function api(request, response, url) {
         WHERE d.status<>'fired' ORDER BY d.full_name`).all(day)
     });
   }
+  // График работы водителей: закрепления/пересменки/отсутствия/явка
+  // за период — для календаря в двух проекциях (водители и ТС).
+  if (request.method === 'GET' && pathname === '/api/driver-schedule') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '');
+    const to = String(url.searchParams.get('to') || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+      return errorJson(response, 422, 'Нужны from и to (ГГГГ-ММ-ДД)');
+    }
+    return json(response, 200,
+      driverScheduleData(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`));
+  }
+
   if (request.method === 'POST' && pathname === '/api/attendance') {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;

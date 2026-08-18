@@ -15,6 +15,117 @@ export const DISP_KINDS = [
 
 const kindMeta = kind => DISP_KINDS.find(item => item.kind === kind) || DISP_KINDS[0];
 
+// График работы водителей: две проекции — «водители × дни: какое ТС» и
+// «ТС × дни: какой водитель». Закрепления из истории аудита + текущего
+// справочника; поверх — пересменки/«без водителя»/ремонт (диспозиции),
+// отсутствия из карточки водителя и факт явки (✓/✗ с причиной).
+async function scheduleDialog(context) {
+  let startIso = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+  let view = 'drivers';
+  const DAYS = 14;
+  const shortName = full => {
+    const parts = String(full || '').split(/\s+/);
+    return `${parts[0] || ''}${parts[1] ? ` ${parts[1][0]}.` : ''}`;
+  };
+  const render = async () => {
+    const endIso = new Date(Date.parse(`${startIso}T00:00:00Z`) + DAYS * 86_400_000)
+      .toISOString().slice(0, 10);
+    let payload;
+    try {
+      payload = await api(`/api/driver-schedule?from=${startIso}&to=${endIso}`);
+    } catch (error) { toast(error.message, 'error'); return; }
+    const { drivers, vehicles, assignments, attendance, dispositions } = payload;
+    const plateOf = new Map(vehicles.map(vehicle => [vehicle.id, vehicle.plate]));
+    const attByDriver = new Map(attendance.map(item => [`${item.driver_id}|${item.day}`, item]));
+    const days = Array.from({ length: DAYS }, (_, index) =>
+      new Date(Date.parse(`${startIso}T00:00:00Z`) + index * 86_400_000));
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const dayHead = days.map(day => {
+      const iso = day.toISOString().slice(0, 10);
+      const weekend = [0, 6].includes(day.getUTCDay());
+      return `<th class="${weekend ? 'sched-we' : ''} ${iso === todayIso ? 'sched-today' : ''}">
+        ${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'numeric', timeZone: 'UTC' }).format(day)}</th>`;
+    }).join('');
+    const vehicleAtDay = (driverId, midMs) => {
+      const span = (assignments[driverId] || []).find(item =>
+        (item.from == null || Date.parse(item.from) <= midMs) &&
+        (item.to == null || Date.parse(item.to) > midMs));
+      return span ? span.vehicleId : null;
+    };
+    const dispoAt = (vehicleId, dayStartMs) => dispositions.filter(item =>
+      item.vehicle_id === vehicleId &&
+      Date.parse(item.starts_at) < dayStartMs + 86_400_000 &&
+      Date.parse(item.ends_at) > dayStartMs);
+    const absentAt = (driver, midMs) => driver.absent_from && driver.absent_to &&
+      Date.parse(driver.absent_from) <= midMs && Date.parse(driver.absent_to) >= midMs;
+    const DISPO_ICON = { shift: '🔁', no_driver: '🚫', repair: '🔧', reserve: '📦', out: '⛔' };
+
+    let body;
+    if (view === 'drivers') {
+      body = drivers.map(driver => {
+        const cells = days.map(day => {
+          const iso = day.toISOString().slice(0, 10);
+          const midMs = day.getTime() + 43_200_000;
+          const vehicleId = vehicleAtDay(driver.id, midMs);
+          const att = attByDriver.get(`${driver.id}|${iso}`);
+          const absent = absentAt(driver, midMs);
+          const marks = vehicleId
+            ? dispoAt(vehicleId, day.getTime()).map(item => DISPO_ICON[item.kind] || '').join('')
+            : '';
+          const cls = att?.status === 'absent' ? 'sched-absent'
+            : att?.status === 'present' ? 'sched-present'
+            : absent ? 'sched-away' : '';
+          const title = [vehicleId ? plateOf.get(vehicleId) : 'без сцепки',
+            att ? (att.status === 'present' ? 'вышел' : `невыход: ${att.reason}`) : '',
+            absent ? 'отсутствие по карточке' : ''].filter(Boolean).join(' · ');
+          return `<td class="${cls}" title="${escapeHtml(title)}">
+            ${absent ? '🏖' : ''}<span class="mono">${escapeHtml(plateOf.get(vehicleId) || '—')}</span>${marks}
+            ${att ? `<b>${att.status === 'present' ? '✓' : '✗'}</b>` : ''}</td>`;
+        }).join('');
+        return `<tr><th class="sched-name">${escapeHtml(shortName(driver.full_name))}</th>${cells}</tr>`;
+      }).join('');
+    } else {
+      body = vehicles.map(vehicle => {
+        const cells = days.map(day => {
+          const midMs = day.getTime() + 43_200_000;
+          const holders = drivers.filter(driver => vehicleAtDay(driver.id, midMs) === vehicle.id);
+          const dispo = dispoAt(vehicle.id, day.getTime());
+          const marks = dispo.map(item => DISPO_ICON[item.kind] || '').join('');
+          const cls = dispo.some(item => item.kind === 'no_driver') ? 'sched-away'
+            : dispo.some(item => item.kind === 'repair') ? 'sched-absent'
+            : holders.length ? '' : 'sched-empty';
+          const title = [holders.map(driver => driver.full_name).join(', ') || 'водитель не закреплён',
+            ...dispo.map(item => `${item.kind}: ${item.note || ''}`)].join(' · ');
+          return `<td class="${cls}" title="${escapeHtml(title)}">
+            ${escapeHtml(holders.map(driver => shortName(driver.full_name)).join(', ') || '—')}${marks}</td>`;
+        }).join('');
+        return `<tr><th class="sched-name mono">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
+      }).join('');
+    }
+
+    context.showModal(`<h2 style="margin-bottom:6px">📅 График работы водителей</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <button class="button small ${view === 'drivers' ? '' : 'ghost'}" id="schedByDrivers">По водителям</button>
+        <button class="button small ${view === 'vehicles' ? '' : 'ghost'}" id="schedByVehicles">По ТС</button>
+        <label class="field" style="margin:0">начало периода
+          <input type="date" id="schedStart" value="${startIso}" style="width:auto"></label>
+        <small class="muted">${DAYS} дней · 🔁 пересменка · 🚫 без водителя · 🔧 ремонт · 📦 резерв
+          · 🏖 отсутствие · ✓/✗ явка</small>
+      </div>
+      <div class="sched-wrap"><table class="sched-table">
+        <thead><tr><th class="sched-name">${view === 'drivers' ? 'Водитель' : 'Сцепка'}</th>${dayHead}</tr></thead>
+        <tbody>${body}</tbody></table></div>
+      <div class="modal-actions"><button type="button" class="button" data-close>Закрыть</button></div>`, 'wide');
+    document.getElementById('schedByDrivers').onclick = () => { view = 'drivers'; render(); };
+    document.getElementById('schedByVehicles').onclick = () => { view = 'vehicles'; render(); };
+    document.getElementById('schedStart').onchange = event => {
+      startIso = event.currentTarget.value || startIso;
+      render();
+    };
+  };
+  await render();
+}
+
 // Явка водителей (контур ОУВ, перенос из v2): отметки за день с
 // классификацией причин невыхода — каждый невыход обязан иметь причину.
 async function attendanceDialog(context) {
@@ -283,6 +394,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
         ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
         <button class="button ghost small" id="resourceAttendance"
           title="Явка водителей на день: невыход — только с причиной из классификатора">Явка</button>
+        <button class="button ghost small" id="resourceSchedule"
+          title="График работы: по водителям (какое ТС по дням) и по ТС (какой водитель)">📅 График</button>
         ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
         <button class="button small" id="resourceAdd">+ диспозиция</button>
       </div>
@@ -321,6 +434,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   if (context.openStats) container.querySelector('#resourceStats').onclick = () => context.openStats();
   if (context.openDrivers) container.querySelector('#resourceDrivers').onclick = () => context.openDrivers();
   container.querySelector('#resourceAttendance').onclick = () => attendanceDialog(context);
+  container.querySelector('#resourceSchedule').onclick = () => scheduleDialog(context);
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {
     vehicle_id: data.vehicles[0]?.id,

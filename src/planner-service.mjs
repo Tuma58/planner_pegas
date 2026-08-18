@@ -239,6 +239,65 @@ export function markAttendance(db, { driverId, day, status, reason = '', note = 
   return db.prepare(`SELECT * FROM driver_attendance WHERE driver_id=? AND day=?`).get(driverId, day);
 }
 
+// График работы водителей: две проекции (водители × дни → ТС;
+// ТС × дни → водитель). История закреплений восстанавливается из журнала
+// аудита (перезакрепление пишет vehicleId), текущее закрепление — из
+// справочника; пересменки/«без водителя»/ремонты — интервалы диспозиций,
+// отсутствия — из карточки водителя, факт — из явки.
+export function driverScheduleData(db, fromIso, toIso) {
+  const drivers = db.prepare(`SELECT d.id,d.full_name,d.status,d.vehicle_id,
+      d.absent_from,d.absent_to,v.plate FROM drivers d
+      LEFT JOIN vehicles v ON v.id=d.vehicle_id
+      WHERE d.status<>'fired' ORDER BY d.full_name`).all();
+  const vehicles = db.prepare(`SELECT id,plate,trailer_plate,driver_name,status
+      FROM vehicles WHERE status<>'out' ORDER BY plate`).all();
+  const tsIso = value => new Date(Date.parse(String(value).includes('T')
+    ? value : `${String(value).replace(' ', 'T')}Z`)).toISOString();
+  const events = db.prepare(`SELECT entity_id driver_id, details_json, created_at
+      FROM audit_log WHERE entity='driver' AND action='update'
+      ORDER BY created_at`).all()
+    .map(row => {
+      try {
+        const details = JSON.parse(row.details_json);
+        return 'vehicleId' in details
+          ? { driverId: row.driver_id, vehicleId: details.vehicleId || null, at: tsIso(row.created_at) }
+          : null;
+      } catch { return null; }
+    })
+    .filter(Boolean);
+  const byDriver = new Map();
+  for (const event of events) {
+    if (!byDriver.has(event.driverId)) byDriver.set(event.driverId, []);
+    byDriver.get(event.driverId).push(event);
+  }
+  // Интервалы закреплений: [событие; следующее событие). Без событий —
+  // текущее закрепление на всю ось; до первого события история неизвестна.
+  const assignments = {};
+  for (const driver of drivers) {
+    const list = byDriver.get(driver.id) || [];
+    const spans = [];
+    if (!list.length) {
+      if (driver.vehicle_id) spans.push({ vehicleId: driver.vehicle_id, from: null, to: null });
+    } else {
+      for (let index = 0; index < list.length; index += 1) {
+        if (list[index].vehicleId) {
+          spans.push({ vehicleId: list[index].vehicleId,
+            from: list[index].at, to: list[index + 1]?.at || null });
+        }
+      }
+    }
+    assignments[driver.id] = spans;
+  }
+  return {
+    drivers, vehicles, assignments,
+    attendance: db.prepare(`SELECT driver_id,day,status,reason FROM driver_attendance
+      WHERE day >= ? AND day <= ?`).all(fromIso.slice(0, 10), toIso.slice(0, 10)),
+    dispositions: db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at,note
+      FROM vehicle_dispositions WHERE starts_at < ? AND ends_at > ?`)
+      .all(toIso, fromIso)
+  };
+}
+
 // Сводка явки за день + укомплектованность (норматив 1,45 водителя на ТС).
 export function attendanceSummary(db, day) {
   const drivers = db.prepare(`SELECT COUNT(*) count FROM drivers WHERE status<>'fired'`).get().count;

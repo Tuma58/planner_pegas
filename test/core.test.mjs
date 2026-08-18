@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceSummary, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceSummary, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1184,4 +1184,29 @@ test('явка водителей: классификатор причин и с
   assert.equal(sum.unmarked, sum.drivers - 2, 'все, кроме двух отмеченных, — не отмечены');
   assert.ok(sum.staffingTarget === 1.45);
   assert.throws(() => markAttendance(db, { driverId: 'нет', day, status: 'present' }), /не найден/);
+});
+
+test('график водителей: история закреплений из аудита и текущее состояние', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-sched-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2] = db.prepare('SELECT id FROM vehicles LIMIT 2').all().map(row => row.id);
+  db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id) VALUES('dr1','Смирнов А',?),('dr2','Козлов Б',NULL)`).run(v2);
+  // История dr1: закреплён на v1, потом перезакреплён на v2.
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
+    VALUES(?,NULL,'update','driver','dr1',?,?)`).run('a1', JSON.stringify({ vehicleId: v1 }), '2026-08-10 08:00:00');
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
+    VALUES(?,NULL,'update','driver','dr1',?,?)`).run('a2', JSON.stringify({ vehicleId: v2 }), '2026-08-14 08:00:00');
+  const data = driverScheduleData(db, '2026-08-08T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+  const spans = data.assignments.dr1;
+  assert.equal(spans.length, 2, 'два интервала закрепления');
+  assert.equal(spans[0].vehicleId, v1);
+  assert.equal(spans[0].to, spans[1].from, 'интервалы стыкуются в момент перезакрепления');
+  assert.equal(spans[1].vehicleId, v2);
+  assert.equal(spans[1].to, null, 'текущее закрепление открыто');
+  // Без событий аудита — одно текущее закрепление у dr2 нет (vehicle NULL) → пусто.
+  assert.deepEqual(data.assignments.dr2, []);
 });
