@@ -253,6 +253,31 @@ export function markAttendance(db, { driverId, day, status, reason = '', note = 
   return db.prepare(`SELECT * FROM driver_attendance WHERE driver_id=? AND day=?`).get(driverId, day);
 }
 
+// Периодное закрепление водителя за ТС (подмена на межвахту, командировка):
+// поверх постоянного закрепления, на интервал дат. Один водитель не может
+// быть закреплён на два ТС внахлёст — пересечение отклоняется.
+export function createDriverAssignment(db, { driverId, vehicleId, startsAt, endsAt, note = '', userId = null }) {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(startsAt || '')) || !/^\d{4}-\d{2}-\d{2}/.test(String(endsAt || '')) ||
+      String(endsAt) <= String(startsAt)) {
+    throw Object.assign(new Error('Нужен период: даты с и по (по — позже чем с)'), { status: 422 });
+  }
+  const driver = db.prepare(`SELECT id,full_name FROM drivers WHERE id=? AND status<>'fired'`).get(driverId);
+  if (!driver) throw Object.assign(new Error('Водитель не найден'), { status: 404 });
+  const vehicle = db.prepare(`SELECT id,plate FROM vehicles WHERE id=?`).get(vehicleId);
+  if (!vehicle) throw Object.assign(new Error('Сцепка не найдена'), { status: 404 });
+  const clash = db.prepare(`SELECT a.id, v.plate FROM driver_assignments a
+    JOIN vehicles v ON v.id=a.vehicle_id
+    WHERE a.driver_id=? AND a.starts_at < ? AND a.ends_at > ?`).get(driverId, endsAt, startsAt);
+  if (clash) {
+    throw Object.assign(new Error(`Пересечение: водитель уже закреплён на ${clash.plate} в этот период`), { status: 422 });
+  }
+  const id = randomUUID();
+  db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at,note,created_by)
+    VALUES(?,?,?,?,?,?,?)`).run(id, driverId, vehicleId, startsAt, endsAt,
+    String(note || '').slice(0, 200), userId);
+  return db.prepare(`SELECT * FROM driver_assignments WHERE id=?`).get(id);
+}
+
 // График работы водителей: две проекции (водители × дни → ТС;
 // ТС × дни → водитель). История закреплений восстанавливается из журнала
 // аудита (перезакрепление пишет vehicleId), текущее закрепление — из
@@ -304,6 +329,8 @@ export function driverScheduleData(db, fromIso, toIso) {
   }
   return {
     drivers, vehicles, assignments,
+    planned: db.prepare(`SELECT a.id,a.driver_id,a.vehicle_id,a.starts_at,a.ends_at,a.note
+      FROM driver_assignments a WHERE a.starts_at < ? AND a.ends_at > ?`).all(toIso, fromIso),
     attendance: db.prepare(`SELECT driver_id,day,status,reason FROM driver_attendance
       WHERE day >= ? AND day <= ?`).all(fromIso.slice(0, 10), toIso.slice(0, 10)),
     dispositions: db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at,note

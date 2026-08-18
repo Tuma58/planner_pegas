@@ -142,6 +142,16 @@ CREATE TABLE IF NOT EXISTS drivers (
   absent_from TEXT, absent_to TEXT, note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS driver_assignments (
+  id TEXT PRIMARY KEY,
+  driver_id TEXT NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+  vehicle_id TEXT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+  starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_driver_assignments_span ON driver_assignments(driver_id, starts_at);
 CREATE TABLE IF NOT EXISTS driver_attendance (
   id TEXT PRIMARY KEY, driver_id TEXT NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
   day TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('present','absent')),

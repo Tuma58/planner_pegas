@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceSummary, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceSummary, createDriverAssignment, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
@@ -544,6 +544,10 @@ async function api(request, response, url) {
         LEFT JOIN vehicles v ON v.id=d.vehicle_id
         WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
+      driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
+        FROM driver_assignments a
+        JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
+        WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
       orderFiles: db.prepare(`SELECT f.id,f.order_id,f.file_name,f.mime,f.size,f.uploaded_at,
           u.full_name uploaded_by
         FROM order_files f LEFT JOIN users u ON u.id=f.uploaded_by
@@ -1938,6 +1942,32 @@ async function api(request, response, url) {
         WHERE d.status<>'fired' ORDER BY d.full_name`).all(day)
     });
   }
+  // Периодные закрепления водителя за ТС: подмена на межвахту, командировка.
+  if (request.method === 'POST' && pathname === '/api/driver-assignments') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const row = createDriverAssignment(db, {
+      driverId: String(body.driverId || ''), vehicleId: String(body.vehicleId || ''),
+      startsAt: String(body.startsAt || ''), endsAt: String(body.endsAt || ''),
+      note: String(body.note || ''), userId: user.id
+    });
+    audit(db, user, 'assign-period', 'driver', row.driver_id,
+      { vehicleId: row.vehicle_id, startsAt: row.starts_at, endsAt: row.ends_at }, requestIp(request));
+    return json(response, 201, { item: row });
+  }
+  match = route(/^\/api\/driver-assignments\/([\w-]+)$/, pathname);
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const row = db.prepare('SELECT * FROM driver_assignments WHERE id=?').get(match[0]);
+    if (!row) return errorJson(response, 404, 'Закрепление не найдено');
+    db.prepare('DELETE FROM driver_assignments WHERE id=?').run(match[0]);
+    audit(db, user, 'unassign-period', 'driver', row.driver_id,
+      { vehicleId: row.vehicle_id, startsAt: row.starts_at, endsAt: row.ends_at }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   // График работы водителей: закрепления/пересменки/отсутствия/явка
   // за период — для календаря в двух проекциях (водители и ТС).
   if (request.method === 'GET' && pathname === '/api/driver-schedule') {
@@ -2121,6 +2151,10 @@ async function api(request, response, url) {
         LEFT JOIN zones f ON f.id=c.from_zone_id LEFT JOIN zones t ON t.id=c.to_zone_id
         ORDER BY c.trip_count DESC`).all(),
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
+      driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
+        FROM driver_assignments a
+        JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
+        WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
       periodSnapshots: db.prepare('SELECT * FROM period_snapshots ORDER BY period_start DESC').all(),
       network: { currentIp: requestIp(request) },
       integration: integrationPublic(),

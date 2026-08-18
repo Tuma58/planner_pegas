@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceSummary, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceSummary, createDriverAssignment, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1226,4 +1226,26 @@ test('вахтовый график: рабочие и выходные дни �
     'предыдущий рабочий период 17–31.07');
   // вахта не задана — всегда рабочий
   assert.equal(shiftIsWorkday(null, null, null, '2026-08-20'), true);
+});
+
+test('периодное закрепление: пересечение по водителю отклоняется', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-period-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2] = db.prepare('SELECT id FROM vehicles LIMIT 2').all().map(row => row.id);
+  db.prepare(`INSERT INTO drivers(id,full_name) VALUES('pd1','Подменный В')`).run();
+  createDriverAssignment(db, { driverId: 'pd1', vehicleId: v1,
+    startsAt: '2026-08-25', endsAt: '2026-09-08' });
+  assert.throws(() => createDriverAssignment(db, { driverId: 'pd1', vehicleId: v2,
+    startsAt: '2026-09-01', endsAt: '2026-09-05' }), /Пересечение/);
+  // встык — можно
+  createDriverAssignment(db, { driverId: 'pd1', vehicleId: v2,
+    startsAt: '2026-09-08', endsAt: '2026-09-20' });
+  assert.throws(() => createDriverAssignment(db, { driverId: 'pd1', vehicleId: v1,
+    startsAt: '2026-09-10', endsAt: '2026-09-01' }), /позже чем с/);
+  const data = driverScheduleData(db, '2026-08-20T00:00:00.000Z', '2026-09-10T00:00:00.000Z');
+  assert.equal(data.planned.length, 2, 'оба периода в выдаче графика');
 });
