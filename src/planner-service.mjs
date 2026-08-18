@@ -253,6 +253,39 @@ export function markAttendance(db, { driverId, day, status, reason = '', note = 
   return db.prepare(`SELECT * FROM driver_attendance WHERE driver_id=? AND day=?`).get(driverId, day);
 }
 
+// Карточка сотрудника (водителя): все данные одним запросом — личные
+// данные, явка за 30 дней, работа его сцепки, периодные закрепления
+// и история событий из журнала (приём, перезакрепления, явка, периоды).
+export function driverCardData(db, driverId) {
+  const driver = db.prepare(`SELECT d.*, v.plate vehicle_plate, v.trailer_plate
+    FROM drivers d LEFT JOIN vehicles v ON v.id=d.vehicle_id WHERE d.id=?`).get(driverId);
+  if (!driver) throw Object.assign(new Error('Водитель не найден'), { status: 404 });
+  const att = { present: 0, absent: 0, byReason: {} };
+  for (const row of db.prepare(`SELECT status, reason, COUNT(*) c FROM driver_attendance
+    WHERE driver_id=? AND day >= date('now','-30 days') GROUP BY status, reason`).all(driverId)) {
+    if (row.status === 'present') att.present += row.c;
+    else { att.absent += row.c; att.byReason[row.reason] = (att.byReason[row.reason] || 0) + row.c; }
+  }
+  const trips30 = driver.vehicle_id ? db.prepare(`SELECT COUNT(*) count,
+      COALESCE(SUM(distance_km + COALESCE(empty_km, 0)), 0) km,
+      COALESCE(SUM(revenue_vat), 0) revenue
+    FROM trips WHERE vehicle_id=? AND status<>'rejected'
+      AND ends_at >= datetime('now','-30 days') AND ends_at <= datetime('now')`)
+    .get(driver.vehicle_id) : { count: 0, km: 0, revenue: 0 };
+  return {
+    driver,
+    attendance30: att,
+    trips30,
+    periods: db.prepare(`SELECT a.*, v.plate vehicle_plate FROM driver_assignments a
+      JOIN vehicles v ON v.id=a.vehicle_id
+      WHERE a.driver_id=? AND a.ends_at >= date('now') ORDER BY a.starts_at`).all(driverId),
+    history: db.prepare(`SELECT action, details_json, created_at,
+        (SELECT full_name FROM users WHERE id=a.user_id) by_name
+      FROM audit_log a WHERE entity='driver' AND entity_id=?
+      ORDER BY created_at DESC LIMIT 20`).all(driverId)
+  };
+}
+
 // Периодное закрепление водителя за ТС (подмена на межвахту, командировка):
 // поверх постоянного закрепления, на интервал дат. Один водитель не может
 // быть закреплён на два ТС внахлёст — пересечение отклоняется.

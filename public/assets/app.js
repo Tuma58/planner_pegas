@@ -1,6 +1,7 @@
 import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch } from './api.js';
 import { renderGeoMap } from './map.js';
 import { vehicleInfoDialog } from './vehicle-info.js';
+import { periodAssignDialog, shiftStateAt } from './resource.js';
 import { renderBoss } from './boss.js';
 import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
@@ -1156,7 +1157,8 @@ function openDriversDirectory() {
   const row = driver => {
     const [label, tone] = statusMeta[driver.status] || [driver.status, 'warn'];
     return `<tr>
-      <td>${escapeHtml(driver.full_name)}
+      <td><span class="vlink" data-driver-card="${driver.id}"
+          title="Карточка сотрудника: все данные, явка, работа, история">${escapeHtml(driver.full_name)}</span>
         ${driver.shift_on ? `<small class="muted" style="display:block">вахта ${driver.shift_on}/${driver.shift_off} с ${formatDate(driver.shift_anchor)}</small>` : ''}
         ${driver.absent_from ? `<small class="muted" style="display:block">отсутствие ${formatDate(driver.absent_from)} — ${formatDate(driver.absent_to)}</small>` : ''}</td>
       <td class="mono">${escapeHtml(driver.phone || '—')}</td>
@@ -1197,6 +1199,8 @@ function openDriversDirectory() {
         back();
       } catch (error) { toast(error.message, 'error'); }
     });
+  document.querySelectorAll('[data-driver-card]').forEach(element =>
+    element.onclick = () => driverCardDialog(byDriver(element.dataset.driverCard), back));
   document.querySelectorAll('[data-drv-absent]').forEach(button =>
     button.onclick = () => driverAbsentDialog(byDriver(button.dataset.drvAbsent), back));
   document.querySelectorAll('[data-drv-edit]').forEach(button =>
@@ -1215,6 +1219,70 @@ function openDriversDirectory() {
 }
 
 // Карточка водителя: создание или правка ФИО/телефона/примечания.
+// Карточка сотрудника: все данные по водителю в одном окне — личные
+// данные, закрепления (постоянное и периодные), вахта, явка за 30 дней,
+// работа сцепки и история событий из журнала. Действия — те же диалоги.
+async function driverCardDialog(driver, after) {
+  let card;
+  try {
+    card = await api(`/api/drivers/${driver.id}/card`);
+  } catch (error) { toast(error.message, 'error'); return; }
+  const d = card.driver;
+  const statusMeta = { active: ['в строю', 'ok'], vacation: ['отпуск', 'warn'], sick: ['болен', 'warn'] };
+  const [statusLabel, statusTone] = statusMeta[d.status] || [d.status, 'warn'];
+  const shift = shiftStateAt(d, new Date().toISOString());
+  const att = card.attendance30;
+  const reasons = Object.entries(att.byReason)
+    .map(([key, count]) => `${card.reasons[key] || key}: ${count}`).join(' · ');
+  const actionLabel = { create: 'принят на работу', update: 'изменение карточки',
+    'assign-period': 'закрепление на период', 'unassign-period': 'снято периодное закрепление',
+    attendance: 'отметка явки', delete: 'уволен' };
+  const historyRows = card.history.map(item => {
+    let extra = '';
+    try {
+      const details = JSON.parse(item.details_json);
+      if (item.action === 'attendance') extra = details.status === 'present' ? '— вышел'
+        : `— невыход (${card.reasons[details.reason] || details.reason})`;
+      else if ('vehicleId' in (details || {})) extra = details.vehicleId ? '— перезакрепление сцепки' : '— откреплён от сцепки';
+    } catch { /* детали не критичны */ }
+    return `<div class="vinfo-note"><b>${formatDateTime(String(item.created_at).replace(' ', 'T') + 'Z')}</b>
+      · ${actionLabel[item.action] || item.action} ${escapeHtml(extra)}
+      ${item.by_name ? `<small class="muted"> · ${escapeHtml(item.by_name)}</small>` : ''}</div>`;
+  }).join('') || '<p class="muted">Событий в журнале нет.</p>';
+  showModal(`<h2>👤 ${escapeHtml(d.full_name)} <span class="badge ${statusTone}">${statusLabel}</span></h2>
+    <p class="muted">${escapeHtml(d.phone || 'телефон не указан')}${d.note ? ` · ${escapeHtml(d.note)}` : ''}
+      · принят ${formatDate(d.created_at)}</p>
+    <div class="vinfo-state">
+      <div class="vinfo-row"><b>Закрепление:</b> ${d.vehicle_plate
+        ? `<span class="mono vlink" data-vinfo="${d.vehicle_id}">${escapeHtml(d.vehicle_plate)}</span>${d.trailer_plate ? ` / ${escapeHtml(d.trailer_plate)}` : ''}`
+        : '<span class="danger">без сцепки</span>'}</div>
+      ${d.shift_on ? `<div class="vinfo-row"><b>Вахта ${d.shift_on}/${d.shift_off}:</b>
+        ${shift ? (shift.rest ? `<span class="danger">межвахта до ${shift.until}</span>` : `работает до ${shift.until}`) : ''}
+        <small class="muted">(с ${formatDate(d.shift_anchor)})</small></div>` : ''}
+      ${d.absent_from ? `<div class="vinfo-row danger">Отсутствие: ${formatDate(d.absent_from)} — ${formatDate(d.absent_to)}</div>` : ''}
+      ${card.periods.length ? `<div class="vinfo-row"><b>📌 На период:</b> ${card.periods.map(item =>
+        `${escapeHtml(item.vehicle_plate)} ${String(item.starts_at).slice(0, 10)} → ${String(item.ends_at).slice(0, 10)}${item.note ? ` (${escapeHtml(item.note)})` : ''}`).join('; ')}</div>` : ''}
+    </div>
+    <div class="task-kpis" style="margin:8px 0">
+      <div class="task-kpi"><b>${att.present}</b><span>выходов за 30 дн</span></div>
+      <div class="task-kpi ${att.absent ? 'warn' : ''}"><b>${att.absent}</b><span>невыходов${reasons ? ` · ${reasons}` : ''}</span></div>
+      <div class="task-kpi"><b>${card.trips30.count}</b><span>рейсов сцепки за 30 дн</span></div>
+      <div class="task-kpi"><b>${Math.round(card.trips30.km).toLocaleString('ru-RU')}</b><span>км · выручка ${money(card.trips30.revenue)}</span></div>
+    </div>
+    <details><summary><b>История событий (журнал)</b></summary>
+      <div style="max-height:26vh;overflow:auto;margin-top:6px">${historyRows}</div></details>
+    <div class="modal-actions">
+      <button type="button" class="button ghost small" id="dcEdit">✎ Изменить</button>
+      <button type="button" class="button ghost small" id="dcAbsent">Отсутствие</button>
+      <button type="button" class="button ghost small" id="dcPeriod">📌 На период</button>
+      <button type="button" class="button ghost" data-close>Закрыть</button>
+    </div>`, 'wide');
+  byId('dcEdit').onclick = () => driverEditDialog(driver, () => driverCardDialog(driver, after));
+  byId('dcAbsent').onclick = () => driverAbsentDialog(driver, () => driverCardDialog(driver, after));
+  byId('dcPeriod').onclick = () => periodAssignDialog({ state, showModal, closeModal, onReload: reload },
+    { driverId: driver.id });
+}
+
 function driverEditDialog(driver, after) {
   showModal(`<form id="driverForm"><h2>${driver ? 'Карточка водителя' : 'Новый водитель'}</h2>
     <label class="field">ФИО<input name="fullName" value="${escapeHtml(driver?.full_name || '')}" required></label>

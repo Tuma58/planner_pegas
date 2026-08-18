@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceSummary, createDriverAssignment, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceSummary, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1248,4 +1248,30 @@ test('периодное закрепление: пересечение по в�
     startsAt: '2026-09-10', endsAt: '2026-09-01' }), /позже чем с/);
   const data = driverScheduleData(db, '2026-08-20T00:00:00.000Z', '2026-09-10T00:00:00.000Z');
   assert.equal(data.planned.length, 2, 'оба периода в выдаче графика');
+});
+
+test('карточка сотрудника: сводка явки, работы сцепки и периодов', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-card-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id) VALUES('cd1','Карточный К',?)`).run(vehicle.id);
+  markAttendance(db, { driverId: 'cd1', day: new Date().toISOString().slice(0, 10), status: 'present' });
+  markAttendance(db, { driverId: 'cd1', day: new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
+    status: 'absent', reason: 'sick' });
+  createDriverAssignment(db, { driverId: 'cd1', vehicleId: vehicle.id,
+    startsAt: new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10),
+    endsAt: new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10) });
+  const card = driverCardData(db, 'cd1');
+  assert.equal(card.driver.full_name, 'Карточный К');
+  assert.equal(card.attendance30.present, 1);
+  assert.equal(card.attendance30.byReason.sick, 1);
+  assert.equal(card.periods.length, 1, 'будущее периодное закрепление в карточке');
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
+    VALUES('ch1',NULL,'create','driver','cd1','{}','2026-08-18 09:00:00')`).run();
+  assert.ok(driverCardData(db, 'cd1').history.length >= 1, 'история из журнала попадает в карточку');
+  assert.throws(() => driverCardData(db, 'нет-такого'), /не найден/);
 });

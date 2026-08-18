@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceSummary, createDriverAssignment, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceSummary, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
@@ -1394,6 +1394,12 @@ async function api(request, response, url) {
       shift.on, shift.off, shift.anchor);
     audit(db, user, 'create', 'driver', id, body, requestIp(request));
     return json(response, 201, { id });
+  }
+  match = route(/^\/api\/drivers\/([^/]+)\/card$/, pathname);
+  if (match && request.method === 'GET') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, { reasons: ABSENCE_REASONS, ...driverCardData(db, match[0]) });
   }
   match = route(/^\/api\/drivers\/([^/]+)$/, pathname);
   if (match && request.method === 'PATCH') {
