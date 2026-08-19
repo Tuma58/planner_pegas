@@ -843,17 +843,32 @@ export async function renderDispatcher(container, context) {
   container.querySelectorAll('[data-claim]').forEach(button =>
     button.addEventListener('click', async () => {
       const tripId = button.dataset.claim;
+      // Мгновенная реакция и защита от дабл-клика: кнопка блокируется
+      // на время запроса и перерисовки.
+      if (button.disabled) return;
+      const label = button.textContent;
+      button.disabled = true;
+      button.textContent = '⏳';
       try {
         const existing = workedMap.get(`claim|${tripId}`);
+        const atMs = existing ? Date.parse(String(existing.done_at).replace(' ', 'T') +
+          (String(existing.done_at).includes('Z') ? '' : 'Z')) : NaN;
+        const alive = Number.isFinite(atMs) && Date.now() - atMs < CLAIM_MS;
         await api('/api/task-marks', { method: 'POST',
           body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}` }) });
-        if (existing && existing.done_by !== myName) {
-          // Сняли чужой протухающий захват — сразу ставим свой.
+        // Первый POST снял отметку. Если она была протухшей (в т.ч. своя) или
+        // чужой — сразу ставим свой захват: первый клик всегда даёт видимый
+        // результат. Живой свой захват — осознанное «Отпустить», не ставим.
+        if (existing && (!alive || existing.done_by !== myName)) {
           await api('/api/task-marks', { method: 'POST',
             body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}` }) });
         }
         await renderDispatcher(container, context);
-      } catch (error) { toast(error.message, 'error'); }
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = label;
+        toast(error.message, 'error');
+      }
     }));
   // «✔ Шаг»: факт следующего события прямо с карточки — без ленты точек.
   container.querySelectorAll('[data-quick-stop]').forEach(button =>
