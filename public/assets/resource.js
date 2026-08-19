@@ -274,10 +274,14 @@ async function loadResourceSchedule(container, context) {
   const refDay = state.resourceDay ||
     (today >= state.month.toISOString().slice(0, 10) && today < monthEnd.toISOString().slice(0, 10)
       ? today : state.month.toISOString().slice(0, 10));
+  const keepLeft = box.scrollLeft;
+  const keepTop = box.scrollTop;
   box.innerHTML = buildScheduleTable({ payload, data: state.data,
     view: state.resourceView === 'drivers' ? 'drivers' : 'vehicles', startIso, days: DAYS,
     query: state.resourceQuery || '', filterKind: state.resourceFilter || null,
     refDay, canWrite });
+  box.scrollLeft = keepLeft;
+  box.scrollTop = keepTop;
   // Клик по ячейке — периодное закрепление с подставленной машиной/водителем
   // и датами от дня клика (неделя по умолчанию, в форме правится).
   if (canWrite) {

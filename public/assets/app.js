@@ -1705,6 +1705,43 @@ async function reload() {
   refreshExceptions();
 }
 
+// ── Автообновление для всех вкладок ──
+// Раз в 60 с данные перезагружаются и активная вкладка перерисовывается —
+// действия коллег (заявки, назначения, отметки) видны без ручного обновления.
+// Пауза: фоновая вкладка браузера, открытый модал или фокус в поле ввода —
+// чтобы не сбивать заполняемые формы и открытые карточки.
+let lastAutoRefresh = Date.now();
+async function autoRefreshTick(force = false) {
+  if (!state.data) return;
+  if (!force) {
+    if (document.hidden) return;
+    if (byId('modalRoot').innerHTML.trim()) return;
+    const tag = document.activeElement?.tagName;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+  }
+  // Позиции прокрутки основных канв переживают перерисовку.
+  const keepScroll = ['.board', '.resscroll', '.timeline'].map(selector => {
+    const element = document.querySelector(selector);
+    return element ? [selector, element.scrollLeft, element.scrollTop] : null;
+  }).filter(Boolean);
+  try { await reload(); } catch {
+    byId('syncState').textContent = '● нет связи — повторю через минуту';
+    return;
+  }
+  lastAutoRefresh = Date.now();
+  for (const [selector, left, top] of keepScroll) {
+    const element = document.querySelector(selector);
+    if (element) { element.scrollLeft = left; element.scrollTop = top; }
+  }
+}
+setInterval(() => autoRefreshTick(), 60_000);
+// Вернулись к вкладке после паузы — данные обновляются сразу, не дожидаясь тика.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && Date.now() - lastAutoRefresh > 60_000) autoRefreshTick();
+});
+// Ручной вызов для диагностики (консоль): window.plRefresh().
+window.plRefresh = () => autoRefreshTick(true);
+
 byId('logout').onclick = logout;
 setupTheme();
 byId('customersButton').onclick = showCustomers;
