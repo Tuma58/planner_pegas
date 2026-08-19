@@ -244,7 +244,15 @@ export async function buildReport(kind, from, to, data) {
           ${isAdmin ? `<td>${roleSelect(row)}</td>` : ''}</tr>`).join('')}</tbody></table>`;
     };
     const unassigned = staff.items.filter(row => !row.jobRole);
-    body = `<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
+    // Назначение должностей — заметным блоком в начале отчёта (только admin):
+    // селекты в хвостах широких таблиц легко не заметить.
+    const rolesPanel = isAdmin ? `<details class="staff-roles" ${unassigned.length ? 'open' : ''}>
+      <summary><b>👥 Назначение должностей</b> · без должности: ${unassigned.length} из ${staff.items.length}
+        <small class="muted">(на права не влияет — только нормативы план/факта)</small></summary>
+      <div class="staff-roles-grid">${staff.items.map(row =>
+        `<label class="staff-role-row"><span>${escapeHtml(row.name)}</span>${roleSelect(row)}</label>`).join('')}</div>
+    </details>` : '';
+    body = `${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
         × активные дни в периоде (нормативы по должностям — базовые, скажите руководителю
         планера, если нужно их подстроить). Должность назначается администратором прямо здесь
         и не влияет на права доступа. «Дней» — активные дни в системе.</div>
