@@ -46,10 +46,29 @@ const shortName = full => {
 const plannedAt = (planned, midMs, key, id) => (planned || []).filter(item =>
   item[key] === id && Date.parse(item.starts_at) <= midMs && Date.parse(item.ends_at) > midMs);
 
-function buildScheduleTable({ payload, data, view, startIso, days: DAYS }) {
-  const { drivers, vehicles, assignments, planned, attendance, dispositions } = payload;
-  const plateOf = new Map(vehicles.map(vehicle => [vehicle.id, vehicle.plate]));
-  const driverById = new Map(drivers.map(driver => [driver.id, driver]));
+function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
+  query = '', filterKind = null, refDay = null, canWrite = false }) {
+  const { assignments, planned, attendance, dispositions } = payload;
+  // Режим фильтрации: на экране остаются только подходящие строки.
+  // Поиск — по номеру, прицепу, ФИО; плашка-состояние — по состоянию
+  // сцепки на выбранный день (у водителя — состояние его машины).
+  const day0 = refDay || startIso;
+  const needle = String(query || '').toLowerCase();
+  const kindOf = vehicle => vehicle ? vehicleStateAt(vehicle, data, day0).kind : 'no_driver';
+  const vehicleById = new Map(payload.vehicles.map(vehicle => [vehicle.id, vehicle]));
+  const vehicles = payload.vehicles.filter(vehicle => {
+    if (filterKind && kindOf(vehicle) !== filterKind) return false;
+    return !needle || `${vehicle.plate} ${vehicle.trailer_plate || ''} ${vehicle.driver_name || ''}`
+      .toLowerCase().includes(needle);
+  });
+  const drivers = payload.drivers.filter(driver => {
+    const vehicle = driver.vehicle_id ? vehicleById.get(driver.vehicle_id) : null;
+    if (filterKind && kindOf(vehicle) !== filterKind) return false;
+    return !needle || `${driver.full_name} ${vehicle?.plate || ''} ${vehicle?.trailer_plate || ''}`
+      .toLowerCase().includes(needle);
+  });
+  const plateOf = new Map(payload.vehicles.map(vehicle => [vehicle.id, vehicle.plate]));
+  const driverById = new Map(payload.drivers.map(driver => [driver.id, driver]));
   const attByDriver = new Map(attendance.map(item => [`${item.driver_id}|${item.day}`, item]));
   const days = Array.from({ length: DAYS }, (_, index) =>
     new Date(Date.parse(`${startIso}T00:00:00Z`) + index * 86_400_000));
@@ -106,7 +125,9 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS }) {
           absent ? 'отсутствие по карточке' : '',
           shift ? (shift.rest ? `межвахта до ${shift.until}` : `вахта до ${shift.until}`) : '']
           .filter(Boolean).join(' · ');
-        return `<td class="${cls}" title="${escapeHtml(title)}">
+        return `<td class="${cls} ${canWrite ? 'sched-act' : ''}" ${canWrite
+            ? `data-sched-driver="${driver.id}" data-sched-day="${iso}"` : ''}
+          title="${escapeHtml(title)}${canWrite ? ' · клик — назначить ТС на период' : ''}">
           ${absent ? '🏖' : ''}${shift?.rest ? '🌙' : ''}${period ? '📌' : ''}<span class="mono">${escapeHtml(plateOf.get(vehicleId) || '—')}</span>${marks}
           ${att ? `<b>${att.status === 'present' ? '✓' : '✗'}</b>` : ''}</td>`;
       }).join('');
@@ -119,7 +140,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS }) {
         const midMs = day.getTime() + 43_200_000;
         const periodHolders = plannedAt(planned, midMs, 'vehicle_id', vehicle.id)
           .map(item => driverById.get(item.driver_id)).filter(Boolean);
-        const permHolders = drivers.filter(driver =>
+        const permHolders = payload.drivers.filter(driver =>
           permAt(driver.id, midMs) === vehicle.id &&
           !plannedAt(planned, midMs, 'driver_id', driver.id).length);
         const holders = [...periodHolders, ...permHolders];
@@ -141,14 +162,20 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS }) {
           }).join(', ') || 'водитель не закреплён',
           inTrip ? 'в рейсе' : '',
           ...dispo.map(item => `${item.kind}: ${item.note || ''}`)].filter(Boolean).join(' · ');
-        return `<td class="${cls}" title="${escapeHtml(title)}">
+        return `<td class="${cls} ${canWrite ? 'sched-act' : ''}" ${canWrite
+            ? `data-sched-vehicle="${vehicle.id}" data-sched-day="${iso}"` : ''}
+          title="${escapeHtml(title)}${canWrite ? ' · клик — назначить водителя на период' : ''}">
           ${resting.length ? '🌙' : ''}${periodHolders.length ? '📌' : ''}${escapeHtml(holders.map(driver => shortName(driver.full_name)).join(', ') || '—')}${marks}</td>`;
       }).join('');
       return `<tr><th class="sched-name mono vlink" data-vinfo="${vehicle.id}"
         title="Карточка ТС">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
     }).join('');
   }
-  return `<table class="sched-table">
+  const total = view === 'drivers' ? payload.drivers.length : payload.vehicles.length;
+  const shown = view === 'drivers' ? drivers.length : vehicles.length;
+  return `${shown < total ? `<p class="muted" style="margin:6px 10px">Фильтр: показано ${shown} из ${total}.
+      ${shown ? '' : 'Ничего не подходит — сбросьте плашку-состояние или поиск.'}</p>` : ''}
+    <table class="sched-table">
     <thead><tr><th class="sched-name">${view === 'drivers' ? 'Водитель' : 'Сцепка'}</th>${dayHead}</tr></thead>
     <tbody>${body}</tbody></table>`;
 }
@@ -241,8 +268,32 @@ async function loadResourceSchedule(container, context) {
     box.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
     return;
   }
+  const canWrite = (state.data.user.permissions || []).includes('fleet:write');
+  const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
+  const today = new Date().toISOString().slice(0, 10);
+  const refDay = state.resourceDay ||
+    (today >= state.month.toISOString().slice(0, 10) && today < monthEnd.toISOString().slice(0, 10)
+      ? today : state.month.toISOString().slice(0, 10));
   box.innerHTML = buildScheduleTable({ payload, data: state.data,
-    view: state.resourceView === 'drivers' ? 'drivers' : 'vehicles', startIso, days: DAYS });
+    view: state.resourceView === 'drivers' ? 'drivers' : 'vehicles', startIso, days: DAYS,
+    query: state.resourceQuery || '', filterKind: state.resourceFilter || null,
+    refDay, canWrite });
+  // Клик по ячейке — периодное закрепление с подставленной машиной/водителем
+  // и датами от дня клика (неделя по умолчанию, в форме правится).
+  if (canWrite) {
+    box.addEventListener('click', event => {
+      const cell = event.target.closest('[data-sched-day]');
+      if (!cell || event.target.closest('.vlink')) return;
+      const from = cell.dataset.schedDay;
+      const to = new Date(Date.parse(`${from}T00:00:00Z`) + 7 * 86_400_000)
+        .toISOString().slice(0, 10);
+      periodAssignDialog(context, {
+        vehicleId: cell.dataset.schedVehicle || undefined,
+        driverId: cell.dataset.schedDriver || undefined,
+        from, to
+      });
+    });
+  }
 }
 
 // Явка водителей (контур ОУВ, перенос из v2): отметки за день с

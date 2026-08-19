@@ -519,6 +519,8 @@ tbody tr:hover td { background: var(--hover); }
 .sched-empty { color: var(--muted); }
 .sched-rest { background: color-mix(in srgb, #5e87ad 22%, transparent); }
 .sched-trip { background: color-mix(in srgb, var(--teal) 14%, transparent); }
+.sched-act { cursor: pointer; }
+.sched-act:hover { outline: 2px solid var(--teal); outline-offset: -2px; }
 
 /* Карточка ТС по клику на госномер */
 .vlink { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
