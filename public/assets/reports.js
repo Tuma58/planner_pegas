@@ -20,6 +20,23 @@ export const REPORT_TITLES = {
 };
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
+
+// Обработчики отчёта «Показатели сотрудников»: селект должности (admin).
+// Вызывается из openReport после вставки разметки в модал.
+export function wireReport(kind, { reopen }) {
+  if (kind !== 'staff') return;
+  document.querySelectorAll('[data-staff-role]').forEach(select =>
+    select.addEventListener('change', async () => {
+      try {
+        await api(`/api/admin/users/${select.dataset.staffRole}/job-role`, {
+          method: 'PATCH', body: JSON.stringify({ jobRole: select.value }) });
+        reopen();
+      } catch (error) {
+        const { toast } = await import('./api.js');
+        toast(error.message, 'error');
+      }
+    }));
+}
 const pct = value => `${(value * 100).toFixed(1)}%`;
 const isIP = name => /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(String(name || ''));
 const fmtDay = iso => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
@@ -189,48 +206,61 @@ export async function buildReport(kind, from, to, data) {
         ['Рейс', 'ТС', 'Расчётная выгрузка', 'Опоздание'])}`;
   } else if (kind === 'staff') {
     const staff = await api(`/api/reports/staff?from=${from}&to=${to}`);
-    const t = staff.items.reduce((acc, row) => {
-      for (const key of Object.keys(acc)) acc[key] += Number(row[key] || 0);
-      return acc;
-    }, { total: 0, orderCreate: 0, ordersSum: 0, orderUpdate: 0, orderAssign: 0,
-      dispatchSteps: 0, stopFacts: 0, tripEdits: 0, dispositions: 0, routes: 0,
-      files: 0, marks: 0, chat: 0 });
+    const isAdmin = (data.user.permissions || []).includes('users:write');
     const num = value => Number(value || 0) || '·';
-    body = `<div class="geohint">Нагрузка на каждого сотрудника за период — сколько действий он
-        фактически выполнил в планере. «Заявки» — внесено новых (и сумма их ставок с НДС);
-        «Правки» — изменения заявок; «Назначено ТС» — назначения на рейс; «Чек-лист» — шаги
-        диспетчеризации (внесено в 1С, задание водителю, вывод на линию, документы);
-        «Факты на линии» — отметки прибытий/погрузок/выгрузок по стоянкам; «Отметки» —
-        «✓ отработано», заметки и захваты «Беру»; «Дней» — активные дни в системе.
-        Точка — нулевая активность.</div>
-      <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
-        <th class="num">Заявок</th><th class="num">Сумма внесённого</th>
-        <th class="num">Правок</th><th class="num">Назначено ТС</th>
-        <th class="num">Чек-лист</th><th class="num">Факты на линии</th>
-        <th class="num">Недоступности</th><th class="num">Маршруты</th>
-        <th class="num">📎</th><th class="num">Отметки</th><th class="num">Чат</th>
-        <th class="num">Всего действий</th></tr></thead>
-      <tbody>${staff.items.map(row => `<tr><td>${escapeHtml(row.name)}</td>
-        <td class="num">${num(row.activeDays)}</td>
-        <td class="num">${num(row.orderCreate)}</td>
-        <td class="num">${row.ordersSum ? rub(row.ordersSum) : '·'}</td>
-        <td class="num">${num(row.orderUpdate)}</td>
-        <td class="num">${num(row.orderAssign)}</td>
-        <td class="num">${num(row.dispatchSteps)}</td>
-        <td class="num">${num(row.stopFacts)}</td>
-        <td class="num">${num(row.dispositions)}</td>
-        <td class="num">${num(row.routes)}</td>
-        <td class="num">${num(row.files)}</td>
-        <td class="num">${num(row.marks)}</td>
-        <td class="num">${num(row.chat)}</td>
-        <td class="num"><b>${num(row.total)}</b></td></tr>`).join('')}
-      <tr class="tot"><td>Итого</td><td class="num">—</td>
-        <td class="num">${t.orderCreate}</td><td class="num">${rub(t.ordersSum)}</td>
-        <td class="num">${t.orderUpdate}</td><td class="num">${t.orderAssign}</td>
-        <td class="num">${t.dispatchSteps}</td><td class="num">${t.stopFacts}</td>
-        <td class="num">${t.dispositions}</td><td class="num">${t.routes}</td>
-        <td class="num">${t.files}</td><td class="num">${t.marks}</td>
-        <td class="num">${t.chat}</td><td class="num"><b>${t.total}</b></td></tr></tbody></table>`;
+    const fmtPlan = (key, value) => key === 'ordersSum' ? rub(value) : Math.round(value);
+    const pctBadge = (fact, plan) => {
+      if (!plan) return '<span class="muted">—</span>';
+      const pct = Math.round(fact / plan * 100);
+      const tone = pct >= 100 ? 'ok' : pct >= 70 ? 'warn' : 'bad';
+      return `<span class="badge ${tone}">${pct}%</span>`;
+    };
+    const roleSelect = row => isAdmin ? `<select data-staff-role="${row.userId}" title="Должность для отчётности — на права не влияет">
+        <option value="">— должность —</option>
+        ${Object.entries(staff.plans).map(([key, plan]) =>
+          `<option value="${key}" ${row.jobRole === key ? 'selected' : ''}>${plan.label}</option>`).join('')}
+      </select>` : '';
+    // План = норматив на активный день × активные дни сотрудника в периоде.
+    const section = (roleKey, plan) => {
+      const rows = staff.items.filter(row => row.jobRole === roleKey);
+      if (!rows.length) return '';
+      return `<h4>${plan.label} <span class="scount">${rows.length}</span></h4>
+        <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
+          ${plan.metrics.map(([, label]) => `<th class="num" colspan="3">${label}</th>`).join('')}
+          <th class="num">Всего действий</th>${isAdmin ? '<th></th>' : ''}</tr>
+          <tr><th></th><th></th>${plan.metrics.map(() =>
+            '<th class="num">факт</th><th class="num">план</th><th class="num">%</th>').join('')}
+          <th></th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+        <tbody>${rows.map(row => `<tr><td>${escapeHtml(row.name)}</td>
+          <td class="num">${num(row.activeDays)}</td>
+          ${plan.metrics.map(([key, , norm]) => {
+            const fact = Number(row[key] || 0);
+            const target = norm * Number(row.activeDays || 0);
+            return `<td class="num"><b>${key === 'ordersSum' ? rub(fact) : num(fact)}</b></td>
+              <td class="num muted">${target ? fmtPlan(key, target) : '—'}</td>
+              <td class="num">${pctBadge(fact, target)}</td>`;
+          }).join('')}
+          <td class="num">${num(row.total)}</td>
+          ${isAdmin ? `<td>${roleSelect(row)}</td>` : ''}</tr>`).join('')}</tbody></table>`;
+    };
+    const unassigned = staff.items.filter(row => !row.jobRole);
+    body = `<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
+        × активные дни в периоде (нормативы по должностям — базовые, скажите руководителю
+        планера, если нужно их подстроить). Должность назначается администратором прямо здесь
+        и не влияет на права доступа. «Дней» — активные дни в системе.</div>
+      ${Object.entries(staff.plans).map(([key, plan]) => section(key, plan)).join('')}
+      ${unassigned.length ? `<h4>Без должности <span class="scount">${unassigned.length}</span></h4>
+        <p class="geohint">Назначьте должность — появится план/факт по её нормативам.</p>
+        <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
+          <th class="num">Заявок</th><th class="num">Назначено ТС</th><th class="num">Чек-лист</th>
+          <th class="num">Факты на линии</th><th class="num">Отметки</th><th class="num">Всего действий</th>
+          ${isAdmin ? '<th></th>' : ''}</tr></thead>
+        <tbody>${unassigned.map(row => `<tr><td>${escapeHtml(row.name)}</td>
+          <td class="num">${num(row.activeDays)}</td>
+          <td class="num">${num(row.orderCreate)}</td><td class="num">${num(row.orderAssign)}</td>
+          <td class="num">${num(row.dispatchSteps)}</td><td class="num">${num(row.stopFacts)}</td>
+          <td class="num">${num(row.marks)}</td><td class="num"><b>${num(row.total)}</b></td>
+          ${isAdmin ? `<td>${roleSelect(row)}</td>` : ''}</tr>`).join('')}</tbody></table>` : ''}`;
   } else if (kind === 'util') {
     body = `<div class="rsums">
         <span class="rsum">Списочный: <b>${u.vehicles}</b></span>

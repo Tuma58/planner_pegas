@@ -1107,6 +1107,13 @@ test('показатели сотрудников: нагрузка из ауд�
   assert.equal(row.activeDays, 2, 'два активных дня');
   assert.equal(row.ordersSum, 90000, 'сумма внесённых ставок');
   assert.equal(row.total, 4 + 1, 'всего: 4 действия аудита + отметка (вход не считается)');
+  db.prepare(`UPDATE users SET job_role='sales' WHERE full_name=?`).run(admin.full_name);
+  const withRole = staffReport(db, '2026-08-10', '2026-08-12').items
+    .find(item => item.name === admin.full_name);
+  assert.equal(withRole.jobRole, 'sales', 'должность в отчёте');
+  assert.ok(withRole.userId, 'id пользователя для назначения должности');
+  assert.ok(staffReport(db, '2026-08-10', '2026-08-12').plans.sales.metrics.length >= 3,
+    'нормативы должностей отдаются с отчётом');
 });
 
 test('отклонения конвейера: нормативы этапов и попадание в период', async () => {

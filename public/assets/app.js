@@ -5,7 +5,7 @@ import { periodAssignDialog, shiftStateAt } from './resource.js';
 import { renderBoss } from './boss.js';
 import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
-import { buildReport } from './reports.js';
+import { buildReport, wireReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sales.js';
 import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
@@ -719,6 +719,7 @@ async function openReport(kind, from, to) {
         <button type="button" class="button" data-close>Закрыть</button>
       </div>`, 'wide printable');
     byId('reportPrint').onclick = () => window.print();
+    wireReport(kind, { reopen: () => openReport(kind, from, to) });
   } catch (error) {
     toast(error.message, 'error');
     closeModal();

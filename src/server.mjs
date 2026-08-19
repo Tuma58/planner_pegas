@@ -2076,6 +2076,23 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // Должность для отчётности (план/факт) — только admin; права не меняет.
+  match = route(/^\/api\/admin\/users\/([\w-]+)\/job-role$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const jobRole = String(body.jobRole || '');
+    if (!['', 'sales', 'logist', 'dispatcher', 'resource'].includes(jobRole)) {
+      return errorJson(response, 422, 'Должность: sales, logist, dispatcher, resource или пусто');
+    }
+    const target = db.prepare('SELECT id FROM users WHERE id=?').get(match[0]);
+    if (!target) return errorJson(response, 404, 'Пользователь не найден');
+    db.prepare(`UPDATE users SET job_role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(jobRole, match[0]);
+    audit(db, user, 'job-role', 'user', match[0], { jobRole }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   if (request.method === 'GET' && pathname === '/api/admin/users') {
     const user = requirePermission(request, response, 'users:write');
     if (!user) return;

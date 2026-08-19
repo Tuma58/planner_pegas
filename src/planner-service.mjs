@@ -151,6 +151,32 @@ export function importTelematics(db, records, user) {
   return result;
 }
 
+// Нормативы на АКТИВНЫЙ день по должности — для план/факта в отчёте
+// «Показатели сотрудников». Значения по умолчанию; подстраиваются под
+// предприятие правкой этой таблицы.
+export const STAFF_PLANS = {
+  sales: { label: 'Продажи', metrics: [
+    ['orderCreate', 'Заявок внесено', 25],
+    ['ordersSum', 'Сумма внесённого, ₽', 2_500_000],
+    ['orderAssign', 'Назначено ТС', 10]
+  ] },
+  logist: { label: 'Логист', metrics: [
+    ['orderAssign', 'Назначено ТС', 25],
+    ['dispatchSteps', 'Подтверждений/шагов', 25],
+    ['orderUpdate', 'Правок заявок', 10]
+  ] },
+  dispatcher: { label: 'Диспетчер', metrics: [
+    ['dispatchSteps', 'Шагов чек-листа', 60],
+    ['stopFacts', 'Фактов на линии', 40],
+    ['marks', 'Отметок контроля', 10]
+  ] },
+  resource: { label: 'Ресурс', metrics: [
+    ['dispositions', 'Диспозиций', 5],
+    ['marks', 'Отметок явки/задач', 3],
+    ['tripEdits', 'Правок парка/рейсов', 5]
+  ] }
+};
+
 // Показатели сотрудников: нагрузка каждого за период [fromDay..toDay]
 // (from включительно, to — исключая, как в остальных отчётах). Источники:
 // журнал аудита (все действия, кроме входов),
@@ -169,6 +195,8 @@ export function staffReport(db, fromDay, toDay) {
     }
     return byId.get(key);
   };
+  const jobRoles = new Map(db.prepare(`SELECT full_name, job_role, id FROM users`).all()
+    .map(row => [row.full_name, { jobRole: row.job_role || '', userId: row.id }]));
   for (const r of db.prepare(`
     SELECT u.full_name name, COUNT(*) total,
       COUNT(DISTINCT date(a.created_at)) activeDays,
@@ -200,8 +228,10 @@ export function staffReport(db, fromDay, toDay) {
     WHERE o.created_at >= ? AND o.created_at < ? GROUP BY o.created_by`).all(fromTs, toEx)) {
     rowOf(null, r.name).ordersSum += Number(r.s || 0);
   }
-  return { items: [...byId.values()]
+  return { plans: STAFF_PLANS, items: [...byId.values()]
     .map(item => ({ ...item,
+      jobRole: jobRoles.get(item.name)?.jobRole || '',
+      userId: jobRoles.get(item.name)?.userId || null,
       total: item.total + item.marks + item.chat }))
     .sort((a, b) => b.total - a.total) };
 }
