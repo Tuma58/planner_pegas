@@ -99,16 +99,24 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     Date.parse(item.ends_at) > dayStartMs);
   const absentAt = (driver, midMs) => driver.absent_from && driver.absent_to &&
     Date.parse(driver.absent_from) <= midMs && Date.parse(driver.absent_to) >= midMs;
-  // Цвет ячейки — главный носитель информации (значки убраны): палитра
-  // совпадает с плашками-состояниями сверху. Приоритет: выведена → без
-  // водителя → ремонт → пересменка → резерв → в рейсе → отдых человека.
-  // Явка — цветная кромка слева; периодное закрепление — пунктирная рамка.
-  const dispoClass = kinds =>
-    kinds.includes('out') ? 'sk-out'
-    : kinds.includes('no_driver') ? 'sk-nodrv'
-    : kinds.includes('repair') ? 'sk-repair'
-    : kinds.includes('shift') ? 'sk-shift'
-    : kinds.includes('reserve') ? 'sk-reserve' : '';
+  // Ячейка читается как «что происходит в этот день»: текст — событие
+  // (выходной, пересменка, ремонт…), фамилия — только когда человек
+  // работает. Интервал «без водителя» при закреплённом водителе — это его
+  // выходной (так оформляют на предприятии). Из нескольких интервалов дня
+  // главный — с наибольшим перекрытием, остальные в подсказке.
+  const dispoMain = (vehicleId, dayStartMs) => {
+    const dayEnd = dayStartMs + 86_400_000;
+    return dispositions
+      .filter(item => item.vehicle_id === vehicleId &&
+        Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStartMs)
+      .sort((a, b) =>
+        (Math.min(Date.parse(b.ends_at), dayEnd) - Math.max(Date.parse(b.starts_at), dayStartMs)) -
+        (Math.min(Date.parse(a.ends_at), dayEnd) - Math.max(Date.parse(a.starts_at), dayStartMs)));
+  };
+  const KIND_CELL = {
+    out: ['sk-out', 'выведена'], repair: ['sk-repair', 'ремонт'],
+    shift: ['sk-shift', 'пересменка'], reserve: ['sk-reserve', 'резерв']
+  };
 
   let body;
   if (view === 'drivers') {
@@ -121,28 +129,35 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         const att = attByDriver.get(`${driver.id}|${iso}`);
         const absent = absentAt(driver, midMs);
         const shift = shiftStateAt(driver, iso);
-        const restText = absent ? (driver.status === 'sick' ? 'болен' : 'отпуск')
-          : shift?.rest ? 'межвахта' : null;
-        const kinds = vehicleId ? dispoAt(vehicleId, day.getTime()).map(item => item.kind) : [];
-        const cls = [
-          restText ? 'sk-rest'
-            : dispoClass(kinds) || (vehicleId && tripAt(vehicleId, midMs) ? 'sched-trip' : ''),
+        const main = vehicleId ? dispoMain(vehicleId, day.getTime())[0] : null;
+        // Событие дня водителя: свой отдых → выходной его машины → диспозиция.
+        let cls = '';
+        let text = '';
+        if (absent) { cls = 'sk-rest'; text = driver.status === 'sick' ? 'болен' : 'отпуск'; }
+        else if (shift?.rest) { cls = 'sk-rest'; text = 'межвахта'; }
+        else if (main?.kind === 'no_driver') { cls = 'sk-rest'; text = 'выходной'; }
+        else if (main && KIND_CELL[main.kind]) {
+          [cls, text] = KIND_CELL[main.kind];
+          text = `${text} · ${plateOf.get(vehicleId) || ''}`;
+        } else if (vehicleId && tripAt(vehicleId, midMs)) {
+          cls = 'sched-trip'; text = plateOf.get(vehicleId) || '—';
+        } else text = plateOf.get(vehicleId) || '—';
+        const clsAll = [cls,
           att?.status === 'present' ? 'att-ok' : att?.status === 'absent' ? 'att-bad' : '',
-          period ? 'sk-period' : '',
-          canWrite ? 'sched-act' : ''
-        ].filter(Boolean).join(' ');
+          period ? 'sk-period' : '', canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
         const title = [vehicleId ? plateOf.get(vehicleId) : 'без сцепки',
           period ? `закреплён на период до ${String(period.ends_at).slice(0, 10)}${period.note ? ` (${period.note})` : ''}` : '',
           att ? (att.status === 'present' ? 'вышел' : `невыход: ${att.reason}`) : '',
-          restText ? `${restText}${shift?.rest ? ` до ${shift.until}` : ''}` : '',
-          !restText && shift ? `вахта до ${shift.until}` : '',
-          ...kinds.map(kind => kindMeta(kind).label.toLowerCase())]
+          absent ? `${text} по карточке` : '',
+          shift ? (shift.rest ? `межвахта до ${shift.until}` : `вахта до ${shift.until}`) : '',
+          ...(vehicleId ? dispoMain(vehicleId, day.getTime()) : [])
+            .map(item => `${kindMeta(item.kind).label.toLowerCase()}${item.note ? `: ${item.note}` : ''}`)]
           .filter(Boolean).join(' · ');
-        return `<td class="${cls}" ${canWrite
+        return `<td class="${clsAll}" ${canWrite
             ? `data-sched-driver="${driver.id}" data-sched-day="${iso}"` : ''}
           title="${escapeHtml(title)}${canWrite ? ' · клик — назначить ТС на период' : ''}">
-          ${restText ? `<i class="sk-dim">${restText}</i>`
-            : `<span class="mono">${escapeHtml(plateOf.get(vehicleId) || '—')}</span>`}</td>`;
+          ${['выходной', 'межвахта', 'отпуск', 'болен'].includes(text.split(' ·')[0])
+            ? `<i class="sk-dim">${text}</i>` : `<span class="mono">${escapeHtml(text)}</span>`}</td>`;
       }).join('');
       return `<tr><th class="sched-name">${escapeHtml(shortName(driver.full_name))}</th>${cells}</tr>`;
     }).join('');
@@ -160,19 +175,25 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         const resting = holders.filter(driver => shiftStateAt(driver, iso)?.rest ||
           absentAt(driver, midMs));
         const activeHolders = holders.filter(driver => !resting.includes(driver));
-        const dispo = dispoAt(vehicle.id, day.getTime());
-        const kinds = dispo.map(item => item.kind);
+        const main = dispoMain(vehicle.id, day.getTime())[0];
         const inTrip = tripAt(vehicle.id, midMs);
-        // Основной водитель на выходных без подмены = машина фактически без
-        // водителя: тон «без водителя», имя — приглушённой справкой.
-        const noDriverDay = !activeHolders.length;
-        const cls = [
-          kinds.includes('out') ? 'sk-out'
-            : kinds.includes('no_driver') || noDriverDay ? 'sk-nodrv'
-            : dispoClass(kinds) || (inTrip ? 'sched-trip' : ''),
-          periodHolders.length ? 'sk-period' : '',
-          canWrite ? 'sched-act' : ''
-        ].filter(Boolean).join(' ');
+        let cls = '';
+        let text = '';
+        if (main?.kind === 'no_driver') {
+          if (holders.length) { cls = 'sk-rest'; text = 'выходной'; }
+          else { cls = 'sk-nodrv'; text = 'нет водителя'; }
+        } else if (main && KIND_CELL[main.kind]) [cls, text] = KIND_CELL[main.kind];
+        else if (!activeHolders.length && holders.length) {
+          cls = 'sk-rest';
+          text = absentAt(holders[0], midMs)
+            ? (holders[0].status === 'sick' ? 'болен' : 'отпуск') : 'межвахта';
+        } else if (!holders.length) { cls = 'sk-nodrv'; text = 'нет водителя'; }
+        else if (inTrip) {
+          cls = 'sched-trip';
+          text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
+        } else text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
+        const clsAll = [cls, periodHolders.length ? 'sk-period' : '',
+          canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
         const title = [holders.map(driver => {
             const shift = shiftStateAt(driver, iso);
             const period = plannedAt(planned, midMs, 'driver_id', driver.id)[0];
@@ -181,15 +202,14 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
                 : shift ? (shift.rest ? ` (межвахта до ${shift.until})` : ` (вахта до ${shift.until})`) : '');
           }).join(', ') || 'водитель не закреплён',
           inTrip ? 'в рейсе' : '',
-          ...kinds.map(kind => kindMeta(kind).label.toLowerCase())].filter(Boolean).join(' · ');
-        return `<td class="${cls}" ${canWrite
+          ...dispoMain(vehicle.id, day.getTime())
+            .map(item => `${kindMeta(item.kind).label.toLowerCase()}${item.note ? `: ${item.note}` : ''}`)]
+          .filter(Boolean).join(' · ');
+        return `<td class="${clsAll}" ${canWrite
             ? `data-sched-vehicle="${vehicle.id}" data-sched-day="${iso}"` : ''}
           title="${escapeHtml(title)}${canWrite ? ' · клик — назначить водителя на период' : ''}">
-          ${activeHolders.length
-            ? escapeHtml(activeHolders.map(driver => shortName(driver.full_name)).join(', '))
-            : holders.length
-              ? `<i class="sk-dim">${escapeHtml(shortName(holders[0].full_name))} · вых</i>`
-              : '<i class="sk-dim">нет водителя</i>'}</td>`;
+          ${cls === 'sk-rest' || cls === 'sk-nodrv'
+            ? `<i class="sk-dim">${escapeHtml(text)}</i>` : escapeHtml(text)}</td>`;
       }).join('');
       return `<tr><th class="sched-name mono vlink" data-vinfo="${vehicle.id}"
         title="Карточка ТС">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
@@ -200,10 +220,10 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
   const legend = `<p class="sched-legend">
     <span><i class="lg-chip" style="--c:#3f8a78"></i> в рейсе</span>
     <span><i class="lg-chip" style="--c:#5e87ad"></i> пересменка</span>
-    <span><i class="lg-chip" style="--c:#b06a55"></i> без водителя</span>
+    <span><i class="lg-chip" style="--c:#b06a55"></i> нет водителя (некому работать)</span>
     <span><i class="lg-chip" style="--c:#bd8f42"></i> ремонт</span>
     <span><i class="lg-chip" style="--c:#5a9e54"></i> резерв</span>
-    <span><i class="lg-chip" style="--c:#8a7fb3"></i> межвахта/отпуск</span>
+    <span><i class="lg-chip" style="--c:#8a7fb3"></i> выходной · межвахта · отпуск</span>
     <span><i class="lg-edge" style="--c:var(--ok)"></i> вышел</span>
     <span><i class="lg-edge" style="--c:var(--bad)"></i> невыход</span>
     <span><i class="lg-dash"></i> закреплён на период</span></p>`;
