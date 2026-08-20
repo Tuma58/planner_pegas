@@ -110,11 +110,24 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
 
   context.showModal(`<h2>🚛 <span class="mono">${escapeHtml(vehicle.plate)}${vehicle.trailer_plate
       ? ` / ${escapeHtml(vehicle.trailer_plate)}` : ''}</span></h2>
-    <p class="muted">${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
-      · приписка: ${escapeHtml(vehicle.zone_name || '—')}
-      ${vehicle.status !== 'work' ? ' · <b class="danger">выведена из работы</b>' : ''}</p>
     ${(() => {
+      // Активная периодная подмена: карточку ведёт подменный, не постоянный.
+      const sub = (data.driverAssignments || []).find(item =>
+        item.vehicle_id === vehicle.id &&
+        Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
+      return `<p class="muted">${sub
+        ? `<b>${escapeHtml(sub.driver_name)}</b> <span class="badge warn">подменный до ${String(sub.ends_at).slice(0, 10).split('-').reverse().slice(0, 2).join('.')}</span>
+           · постоянный: ${escapeHtml(vehicle.driver_name || '—')}`
+        : escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
+      · приписка: ${escapeHtml(vehicle.zone_name || '—')}
+      ${vehicle.status !== 'work' ? ' · <b class="danger">выведена из работы</b>' : ''}</p>`;
+    })()}
+    ${(() => {
+      const subNow = (data.driverAssignments || []).some(item =>
+        item.vehicle_id === vehicle.id &&
+        Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
       const driver = (data.drivers || []).find(item => item.vehicle_id === vehicle.id);
+      if (subNow) return '';
       const shift = driver ? shiftStateAt(driver, new Date().toISOString()) : null;
       return shift ? `<p class="${shift.rest ? 'danger' : 'muted'}" style="margin-top:-6px">
         Вахта ${driver.shift_on}/${driver.shift_off}: ${shift.rest
