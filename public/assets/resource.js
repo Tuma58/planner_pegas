@@ -99,7 +99,16 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     Date.parse(item.ends_at) > dayStartMs);
   const absentAt = (driver, midMs) => driver.absent_from && driver.absent_to &&
     Date.parse(driver.absent_from) <= midMs && Date.parse(driver.absent_to) >= midMs;
-  const DISPO_ICON = { shift: '🔁', no_driver: '🚫', repair: '🔧', reserve: '📦', out: '⛔' };
+  // Цвет ячейки — главный носитель информации (значки убраны): палитра
+  // совпадает с плашками-состояниями сверху. Приоритет: выведена → без
+  // водителя → ремонт → пересменка → резерв → в рейсе → отдых человека.
+  // Явка — цветная кромка слева; периодное закрепление — пунктирная рамка.
+  const dispoClass = kinds =>
+    kinds.includes('out') ? 'sk-out'
+    : kinds.includes('no_driver') ? 'sk-nodrv'
+    : kinds.includes('repair') ? 'sk-repair'
+    : kinds.includes('shift') ? 'sk-shift'
+    : kinds.includes('reserve') ? 'sk-reserve' : '';
 
   let body;
   if (view === 'drivers') {
@@ -112,24 +121,28 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         const att = attByDriver.get(`${driver.id}|${iso}`);
         const absent = absentAt(driver, midMs);
         const shift = shiftStateAt(driver, iso);
-        const marks = vehicleId
-          ? dispoAt(vehicleId, day.getTime()).map(item => DISPO_ICON[item.kind] || '').join('')
-          : '';
-        const cls = att?.status === 'absent' ? 'sched-absent'
-          : att?.status === 'present' ? 'sched-present'
-          : absent ? 'sched-away'
-          : shift?.rest ? 'sched-rest' : '';
+        const restText = absent ? (driver.status === 'sick' ? 'болен' : 'отпуск')
+          : shift?.rest ? 'межвахта' : null;
+        const kinds = vehicleId ? dispoAt(vehicleId, day.getTime()).map(item => item.kind) : [];
+        const cls = [
+          restText ? 'sk-rest'
+            : dispoClass(kinds) || (vehicleId && tripAt(vehicleId, midMs) ? 'sched-trip' : ''),
+          att?.status === 'present' ? 'att-ok' : att?.status === 'absent' ? 'att-bad' : '',
+          period ? 'sk-period' : '',
+          canWrite ? 'sched-act' : ''
+        ].filter(Boolean).join(' ');
         const title = [vehicleId ? plateOf.get(vehicleId) : 'без сцепки',
           period ? `закреплён на период до ${String(period.ends_at).slice(0, 10)}${period.note ? ` (${period.note})` : ''}` : '',
           att ? (att.status === 'present' ? 'вышел' : `невыход: ${att.reason}`) : '',
-          absent ? 'отсутствие по карточке' : '',
-          shift ? (shift.rest ? `межвахта до ${shift.until}` : `вахта до ${shift.until}`) : '']
+          restText ? `${restText}${shift?.rest ? ` до ${shift.until}` : ''}` : '',
+          !restText && shift ? `вахта до ${shift.until}` : '',
+          ...kinds.map(kind => kindMeta(kind).label.toLowerCase())]
           .filter(Boolean).join(' · ');
-        return `<td class="${cls} ${canWrite ? 'sched-act' : ''}" ${canWrite
+        return `<td class="${cls}" ${canWrite
             ? `data-sched-driver="${driver.id}" data-sched-day="${iso}"` : ''}
           title="${escapeHtml(title)}${canWrite ? ' · клик — назначить ТС на период' : ''}">
-          ${absent ? '🏖' : ''}${shift?.rest ? '🌙' : ''}${period ? '📌' : ''}<span class="mono">${escapeHtml(plateOf.get(vehicleId) || '—')}</span>${marks}
-          ${att ? `<b>${att.status === 'present' ? '✓' : '✗'}</b>` : ''}</td>`;
+          ${restText ? `<i class="sk-dim">${restText}</i>`
+            : `<span class="mono">${escapeHtml(plateOf.get(vehicleId) || '—')}</span>`}</td>`;
       }).join('');
       return `<tr><th class="sched-name">${escapeHtml(shortName(driver.full_name))}</th>${cells}</tr>`;
     }).join('');
@@ -144,28 +157,39 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           permAt(driver.id, midMs) === vehicle.id &&
           !plannedAt(planned, midMs, 'driver_id', driver.id).length);
         const holders = [...periodHolders, ...permHolders];
-        const dispo = dispoAt(vehicle.id, day.getTime());
-        const marks = dispo.map(item => DISPO_ICON[item.kind] || '').join('');
         const resting = holders.filter(driver => shiftStateAt(driver, iso)?.rest ||
           absentAt(driver, midMs));
+        const activeHolders = holders.filter(driver => !resting.includes(driver));
+        const dispo = dispoAt(vehicle.id, day.getTime());
+        const kinds = dispo.map(item => item.kind);
         const inTrip = tripAt(vehicle.id, midMs);
-        const cls = dispo.some(item => item.kind === 'no_driver') ? 'sched-away'
-          : dispo.some(item => item.kind === 'repair') ? 'sched-absent'
-          : holders.length && resting.length === holders.length ? 'sched-rest'
-          : inTrip ? 'sched-trip'
-          : holders.length ? '' : 'sched-empty';
+        // Основной водитель на выходных без подмены = машина фактически без
+        // водителя: тон «без водителя», имя — приглушённой справкой.
+        const noDriverDay = !activeHolders.length;
+        const cls = [
+          kinds.includes('out') ? 'sk-out'
+            : kinds.includes('no_driver') || noDriverDay ? 'sk-nodrv'
+            : dispoClass(kinds) || (inTrip ? 'sched-trip' : ''),
+          periodHolders.length ? 'sk-period' : '',
+          canWrite ? 'sched-act' : ''
+        ].filter(Boolean).join(' ');
         const title = [holders.map(driver => {
             const shift = shiftStateAt(driver, iso);
             const period = plannedAt(planned, midMs, 'driver_id', driver.id)[0];
             return driver.full_name + (period ? ' (на период)' : '') +
-              (shift ? (shift.rest ? ` (межвахта до ${shift.until})` : ` (вахта до ${shift.until})`) : '');
+              (absentAt(driver, midMs) ? ' (отсутствие)'
+                : shift ? (shift.rest ? ` (межвахта до ${shift.until})` : ` (вахта до ${shift.until})`) : '');
           }).join(', ') || 'водитель не закреплён',
           inTrip ? 'в рейсе' : '',
-          ...dispo.map(item => `${item.kind}: ${item.note || ''}`)].filter(Boolean).join(' · ');
-        return `<td class="${cls} ${canWrite ? 'sched-act' : ''}" ${canWrite
+          ...kinds.map(kind => kindMeta(kind).label.toLowerCase())].filter(Boolean).join(' · ');
+        return `<td class="${cls}" ${canWrite
             ? `data-sched-vehicle="${vehicle.id}" data-sched-day="${iso}"` : ''}
           title="${escapeHtml(title)}${canWrite ? ' · клик — назначить водителя на период' : ''}">
-          ${resting.length ? '🌙' : ''}${periodHolders.length ? '📌' : ''}${escapeHtml(holders.map(driver => shortName(driver.full_name)).join(', ') || '—')}${marks}</td>`;
+          ${activeHolders.length
+            ? escapeHtml(activeHolders.map(driver => shortName(driver.full_name)).join(', '))
+            : holders.length
+              ? `<i class="sk-dim">${escapeHtml(shortName(holders[0].full_name))} · вых</i>`
+              : '<i class="sk-dim">нет водителя</i>'}</td>`;
       }).join('');
       return `<tr><th class="sched-name mono vlink" data-vinfo="${vehicle.id}"
         title="Карточка ТС">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
@@ -173,7 +197,17 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
   }
   const total = view === 'drivers' ? payload.drivers.length : payload.vehicles.length;
   const shown = view === 'drivers' ? drivers.length : vehicles.length;
-  return `${shown < total ? `<p class="muted" style="margin:6px 10px">Фильтр: показано ${shown} из ${total}.
+  const legend = `<p class="sched-legend">
+    <span><i class="lg-chip" style="--c:#3f8a78"></i> в рейсе</span>
+    <span><i class="lg-chip" style="--c:#5e87ad"></i> пересменка</span>
+    <span><i class="lg-chip" style="--c:#b06a55"></i> без водителя</span>
+    <span><i class="lg-chip" style="--c:#bd8f42"></i> ремонт</span>
+    <span><i class="lg-chip" style="--c:#5a9e54"></i> резерв</span>
+    <span><i class="lg-chip" style="--c:#8a7fb3"></i> межвахта/отпуск</span>
+    <span><i class="lg-edge" style="--c:var(--ok)"></i> вышел</span>
+    <span><i class="lg-edge" style="--c:var(--bad)"></i> невыход</span>
+    <span><i class="lg-dash"></i> закреплён на период</span></p>`;
+  return `${legend}${shown < total ? `<p class="muted" style="margin:6px 10px">Фильтр: показано ${shown} из ${total}.
       ${shown ? '' : 'Ничего не подходит — сбросьте плашку-состояние или поиск.'}</p>` : ''}
     <table class="sched-table">
     <thead><tr><th class="sched-name">${view === 'drivers' ? 'Водитель' : 'Сцепка'}</th>${dayHead}</tr></thead>

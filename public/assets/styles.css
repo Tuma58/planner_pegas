@@ -517,6 +517,22 @@ tbody tr:hover td { background: var(--hover); }
 .sched-absent { background: color-mix(in srgb, var(--bad) 16%, transparent); }
 .sched-away { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .sched-empty { color: var(--muted); }
+/* Цветовая схема ячеек сетки (совпадает с плашками-состояниями) */
+.sk-out { background: color-mix(in srgb, #8f9aa6 30%, transparent); }
+.sk-nodrv { background: color-mix(in srgb, #b06a55 30%, transparent); }
+.sk-repair { background: color-mix(in srgb, #bd8f42 32%, transparent); }
+.sk-shift { background: color-mix(in srgb, #5e87ad 32%, transparent); }
+.sk-reserve { background: color-mix(in srgb, #5a9e54 28%, transparent); }
+.sk-rest { background: color-mix(in srgb, #8a7fb3 28%, transparent); }
+.att-ok { box-shadow: inset 3px 0 0 var(--ok); }
+.att-bad { box-shadow: inset 3px 0 0 var(--bad); }
+.sk-period { outline: 2px dashed var(--teal); outline-offset: -2px; }
+.sk-dim { color: var(--muted); font-style: italic; font-size: 10.5px; }
+.sched-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 10px 4px; font-size: 11.5px; color: var(--muted); }
+.sched-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.lg-chip { width: 11px; height: 11px; border-radius: 3px; background: color-mix(in srgb, var(--c) 45%, transparent); border: 1px solid var(--c); }
+.lg-edge { width: 4px; height: 12px; border-radius: 2px; background: var(--c); }
+.lg-dash { width: 14px; height: 11px; border: 2px dashed var(--teal); border-radius: 3px; }
 .sched-rest { background: color-mix(in srgb, #5e87ad 22%, transparent); }
 .sched-trip { background: color-mix(in srgb, var(--teal) 14%, transparent); }
 .sched-act { cursor: pointer; }
