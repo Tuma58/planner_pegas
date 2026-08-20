@@ -1,9 +1,18 @@
 // Инструкции сотрудников конвейера: кнопка «?» в шапке открывает памятку
 // по каждому доступному блоку. Тексты соответствуют реальным кнопкам UI.
 
+// Каждый раздел несёт дату последнего содержательного обновления
+// (поле updated) — правило: меняешь поведение блока, в том же коммите
+// правишь его раздел и ставишь сегодняшнюю дату. По дате сотрудники
+// видят точку на кнопке «?» и бейдж «обновлено» на вкладке раздела,
+// пока не откроют инструкции.
+const GUIDE_SEEN_KEY = 'pl_guide_seen';
+const guideSeen = () => { try { return localStorage.getItem(GUIDE_SEEN_KEY) || ''; } catch { return ''; } };
+export const guideUnseen = () => GUIDES.filter(guide => (guide.updated || '') > guideSeen());
+
 export const GUIDES = [
   {
-    id: 'sales', title: 'Продажи',
+    id: 'sales', updated: '2026-08-17', title: 'Продажи',
     html: `<p class="guide-goal">Ваша задача — наполнять портфель заявками и не давать парку простаивать.</p>
       <h3>Рабочий порядок</h3>
       <ol>
@@ -70,7 +79,7 @@ export const GUIDES = [
       </ul>`
   },
   {
-    id: 'logist', title: 'Логист',
+    id: 'logist', updated: '2026-08-18', title: 'Логист',
     html: `<p class="guide-goal">Ваша задача — закрыть каждую подтверждённую заявку сцепкой и держать действующие маршруты в порядке.</p>
       <h3>Рабочий порядок</h3>
       <ol>
@@ -121,7 +130,7 @@ export const GUIDES = [
       </ul>`
   },
   {
-    id: 'dispatcher', title: 'Диспетчер',
+    id: 'dispatcher', updated: '2026-08-19', title: 'Диспетчер',
     html: `<p class="guide-goal">Ваша задача — вывести каждый назначенный рейс на линию и довести его до выгрузки.</p>
       <h3>Подготовка выхода — чек-лист строго по порядку</h3>
       <p>Рейсы, чей выход просрочен <b>больше суток</b>, сворачиваются в блок
@@ -217,7 +226,7 @@ export const GUIDES = [
       </ul>`
   },
   {
-    id: 'routes', title: 'Конструктор',
+    id: 'routes', updated: '2026-08-04', title: 'Конструктор',
     html: `<p class="guide-goal">Ваша задача — собирать из потребностей клиентов кольцевые маршруты с плановой выручкой и передавать их логисту целиком.</p>
       <h3>Как это работает</h3>
       <ol>
@@ -252,7 +261,7 @@ export const GUIDES = [
       </ol>`
   },
   {
-    id: 'resource', title: 'Ресурс',
+    id: 'resource', updated: '2026-08-20', title: 'Ресурс',
     html: `<p class="guide-goal">Ваша задача — чтобы каждый день каждой сцепки был объяснён: работа, резерв или оформленная причина простоя.</p>
       <h3>Календарь</h3>
       <ol>
@@ -320,7 +329,7 @@ export const GUIDES = [
       </ul>`
   },
   {
-    id: 'dashboard', title: 'Дашборд',
+    id: 'dashboard', updated: '2026-08-14', title: 'Дашборд',
     html: `<p class="guide-goal">Общий экран достижения цели: план-факт по ролям на сегодня и прогноз месяца — виден каждому сотруднику.</p>
       <ul>
         <li><b>Выручка месяца</b>: факт без НДС против плана (160 млн — настройка
@@ -344,7 +353,7 @@ export const GUIDES = [
       </ul>`
   },
   {
-    id: 'boss', title: 'Руководитель',
+    id: 'boss', updated: '2026-08-19', title: 'Руководитель',
     html: `<p class="guide-goal">Операционный отчёт по предприятию за открытый период — от плана к деньгам.</p>
       <ul>
         <li><b>«Показатели сотрудников»</b> — план/факт по каждому: сотрудники
@@ -378,7 +387,7 @@ export const GUIDES = [
       </ul>`
   },
   {
-    id: 'gantt', title: 'Гант',
+    id: 'gantt', updated: '2026-08-05', title: 'Гант',
     html: `<p class="guide-goal">Общее информационное пространство: весь парк и все рейсы месяца на одной канве.</p>
       <ul>
         <li><b>Порожние пробеги видны на канве</b>: перед плашкой рейса — серый
@@ -425,7 +434,7 @@ export const GUIDES = [
       </ul>`
   },
   {
-    id: 'common', title: 'Общее',
+    id: 'common', updated: '2026-08-19', title: 'Общее',
     html: `<p class="guide-goal">Правила, общие для всех ролей.</p>
       <ul>
         <li><b>Автообновление</b>: все вкладки сами подтягивают данные раз в минуту —
@@ -492,11 +501,20 @@ export function setupGuide({ views, activeView, showModal }) {
       guide.id === 'common' || views().includes(guide.id));
     const active = available.some(guide => guide.id === current) ? current : available[0].id;
     const body = available.find(guide => guide.id === active);
+    // Снимок «что было непрочитанным» до отметки — бейджи на вкладках.
+    const seenBefore = guideSeen();
+    const isNew = guide => (guide.updated || '') > seenBefore;
+    try {
+      const maxUpdated = GUIDES.map(guide => guide.updated || '').sort().pop();
+      localStorage.setItem('pl_guide_seen', maxUpdated);
+    } catch { /* приватный режим */ }
+    refreshGuideBadge();
     showModal(`<div class="guide">
-      <h2>Инструкция · ${body.title}</h2>
+      <h2>Инструкция · ${body.title}
+        ${body.updated ? `<small class="muted" style="font-weight:400;font-size:12px"> · обновлена ${body.updated.split('-').reverse().join('.')}</small>` : ''}</h2>
       <div class="guide-tabs">${available.map(guide =>
         `<button class="button small ${guide.id === active ? '' : 'ghost'}"
-          data-guide="${guide.id}">${guide.title}</button>`).join('')}</div>
+          data-guide="${guide.id}">${guide.title}${isNew(guide) ? ' <span class="guide-new-badge">обновлено</span>' : ''}</button>`).join('')}</div>
       <div class="guide-body">${body.html}</div>
       <div class="modal-actions">
         <button type="button" class="button ghost" id="guidePrintOne">Печать / PDF</button>
@@ -512,5 +530,14 @@ export function setupGuide({ views, activeView, showModal }) {
     document.getElementById('guidePrintAll').onclick = () => printGuide(
       available.map(guide => guide.id), 'Инструкции сотрудников конвейера', active);
   };
+  // Точка на «?» — есть обновлённые с последнего просмотра разделы.
+  const refreshGuideBadge = () => {
+    const count = guideUnseen().length;
+    toggle.classList.toggle('guide-has-new', count > 0);
+    toggle.title = count
+      ? `Инструкции: обновлено разделов — ${count}. Откройте, чтобы посмотреть перемены.`
+      : 'Инструкции сотрудников конвейера';
+  };
+  refreshGuideBadge();
   toggle.onclick = () => openGuide(activeView());
 }
