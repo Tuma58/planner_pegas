@@ -434,7 +434,7 @@ export async function renderDispatcher(container, context) {
         ? ` / ${escapeHtml(trip.trailer_plate)}` : ''}</strong>
       · <b class="trip-driver">${escapeHtml(trip.driver_name || 'без водителя')}</b>
       ${Number(trip.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
-      <small class="muted" style="display:block">${escapeHtml(routeLabel(trip))}
+      <small class="trip-sub" style="display:block">${escapeHtml(routeLabel(trip))}
         · ${escapeHtml(trip.customer_name || 'без заказчика')}
         · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}${trip.empty_km
           ? ` · +${Math.round(trip.empty_km)} км порож.` : ''} · ${money(trip.revenue_vat)}</small>

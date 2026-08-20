@@ -278,6 +278,9 @@ tbody tr:hover td { background: var(--hover); }
 .stop-warn { color: var(--warn); font-weight: 650; }
 .view-only { margin-bottom: 10px; padding: 9px 12px; border: 1px solid var(--warn); border-radius: 9px;
   background: color-mix(in srgb, var(--warn) 9%, var(--card)); color: var(--ink); font-size: var(--fs-sm); flex-shrink: 0; }
+/* Подпись под госномером в плашках диспетчера: контрастнее, чем .muted, —
+   на слабых мониторах серый текст читался плохо. */
+.trip-sub { display: block; color: color-mix(in srgb, var(--ink) 82%, var(--muted)); font-weight: 550; }
 .next-ctrl { display: block; margin-top: 4px; color: var(--teal); font-weight: 650; font-size: var(--fs-sm); }
 .next-ctrl.overdue { color: var(--bad); }
 /* Промежуточные пункты заявки (мультистоп) */
@@ -467,8 +470,11 @@ tbody tr:hover td { background: var(--hover); }
 .rt-cand { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--line); }
 
 /* Контроль на линии: «горящее» событие (≤2 ч, не отработано) и отработанные */
-.card.ctrl-hot { border: 1px solid var(--bad); box-shadow: 0 0 0 2px color-mix(in srgb, var(--bad) 22%, transparent);
-  background: color-mix(in srgb, var(--bad) 5%, var(--card)); }
+.card.ctrl-hot { border: 2px solid var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 30%, transparent);
+  background: color-mix(in srgb, var(--bad) 11%, var(--card)); }
+.card.ctrl-hot .trip-plate { color: var(--bad); }
+.card.ctrl-hot .trip-sub { color: var(--ink); }
+.next-ctrl.overdue { font-weight: 750; }
 .card.ctrl-done { opacity: .68; }
 .ctrl-soon { color: var(--warn); font-weight: 750; margin-left: 5px; }
 .ctrl-worked-note { color: var(--ok); font-weight: 650; margin-left: 6px; }
