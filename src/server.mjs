@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceSummary, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
@@ -1940,14 +1940,21 @@ async function api(request, response, url) {
       day,
       reasons: ABSENCE_REASONS,
       summary: attendanceSummary(db, day),
-      items: db.prepare(`SELECT d.id driver_id,d.full_name,d.status driver_status,
-          v.plate vehicle_plate,a.status,a.reason,a.note,a.marked_at
-        FROM drivers d
-        LEFT JOIN vehicles v ON v.id=d.vehicle_id
-        LEFT JOIN driver_attendance a ON a.driver_id=d.id AND a.day=?
-        WHERE d.status<>'fired' ORDER BY d.full_name`).all(day)
+      items: attendanceEffective(db, day)
     });
   }
+  // Табель за период — коды по каждому водителю на основе эффективной явки.
+  if (request.method === 'GET' && pathname === '/api/attendance/timesheet') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '');
+    const to = String(url.searchParams.get('to') || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+      return errorJson(response, 422, 'Нужны from и to (ГГГГ-ММ-ДД, to позже from)');
+    }
+    return json(response, 200, attendanceTimesheet(db, from, to));
+  }
+
   // Периодные закрепления водителя за ТС: подмена на межвахту, командировка.
   if (request.method === 'POST' && pathname === '/api/driver-assignments') {
     const user = requirePermission(request, response, 'fleet:write');

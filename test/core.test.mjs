@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceSummary, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1281,4 +1281,50 @@ test('карточка сотрудника: сводка явки, работы
     VALUES('ch1',NULL,'create','driver','cd1','{}','2026-08-18 09:00:00')`).run();
   assert.ok(driverCardData(db, 'cd1').history.length >= 1, 'история из журнала попадает в карточку');
   assert.throws(() => driverCardData(db, 'нет-такого'), /не найден/);
+});
+
+test('эффективная явка: рейс, отпуск и межвахта закрываются сами, ручная — приоритет', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-att-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2, v3, v4] = db.prepare('SELECT id FROM vehicles LIMIT 4').all().map(row => row.id);
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id) VALUES
+    ('ea1','В рейсе',?),('ea2','Отпускник',?),('ea3','Межвахта',?),('ea4','Ручной',?)`)
+    .run(v1, v2, v3, v4);
+  const day = '2026-08-20';
+  // ea1: рейс его машины покрывает день → авто «вышел»
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('eat1',?,'К',?,?,'2026-08-19T06:00:00.000Z','2026-08-21T06:00:00.000Z',500,90000,'run')`)
+    .run(v1, zone, zone);
+  // ea2: отпуск по карточке
+  db.prepare(`UPDATE drivers SET status='vacation', absent_from='2026-08-15T00:00:00.000Z',
+    absent_to='2026-08-25T00:00:00.000Z' WHERE id='ea2'`).run();
+  // ea3: межвахта по вахте 15/15 с 01.08 (20.08 — отдых)
+  db.prepare(`UPDATE drivers SET shift_on=15, shift_off=15, shift_anchor='2026-08-01' WHERE id='ea3'`).run();
+  // ea4: ручная отметка прогула перекрывает всё
+  markAttendance(db, { driverId: 'ea4', day, status: 'absent', reason: 'truancy' });
+  const items = Object.fromEntries(attendanceEffective(db, day).map(item => [item.driver_id, item]));
+  assert.deepEqual([items.ea1.status, items.ea1.source], ['present', 'auto']);
+  assert.deepEqual([items.ea2.status, items.ea2.reason], ['absent', 'vacation']);
+  assert.deepEqual([items.ea3.status, items.ea3.reason], ['absent', 'dayoff']);
+  assert.deepEqual([items.ea4.status, items.ea4.reason, items.ea4.source], ['absent', 'truancy', 'manual']);
+  // сверхвахтенная работа: рейс в межвахту → present + overwork (код РВ в табеле)
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('eat2',?,'К',?,?,'2026-08-19T06:00:00.000Z','2026-08-21T06:00:00.000Z',500,90000,'run')`)
+    .run(v3, zone, zone);
+  const over = attendanceEffective(db, day).find(item => item.driver_id === 'ea3');
+  assert.equal(over.status, 'present');
+  assert.equal(over.overwork, true, 'работа в выходной — ↑ФОТ');
+  const sheet = attendanceTimesheet(db, '2026-08-20', '2026-08-21');
+  const codes = Object.fromEntries(sheet.rows.map(row => [row.driverId, row.days['2026-08-20']]));
+  assert.equal(codes.ea1, 'Я');
+  assert.equal(codes.ea2, 'ОТ');
+  assert.equal(codes.ea3, 'РВ');
+  assert.equal(codes.ea4, 'ПР');
 });

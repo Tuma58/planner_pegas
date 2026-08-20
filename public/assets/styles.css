@@ -541,6 +541,14 @@ tbody tr:hover td { background: var(--hover); }
   color-mix(in srgb, var(--warn) 34%, transparent) 0 6px,
   color-mix(in srgb, var(--warn) 14%, transparent) 6px 12px); }
 .sk-fot { display: block; font-size: 9.5px; font-weight: 750; color: var(--bad); line-height: 1.2; }
+.ts-table td { min-width: 26px; font-weight: 650; }
+.ts-ok { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.ts-over { background: repeating-linear-gradient(45deg,
+  color-mix(in srgb, var(--warn) 34%, transparent) 0 5px,
+  color-mix(in srgb, var(--warn) 14%, transparent) 5px 10px); }
+.ts-off { background: color-mix(in srgb, #8a7fb3 22%, transparent); }
+.ts-bad { background: color-mix(in srgb, var(--bad) 22%, transparent); }
+.ts-none { color: var(--muted); }
 .lg-stripe { background: repeating-linear-gradient(45deg,
   color-mix(in srgb, var(--warn) 60%, transparent) 0 3px,
   color-mix(in srgb, var(--warn) 20%, transparent) 3px 6px) !important;

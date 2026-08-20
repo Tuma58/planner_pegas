@@ -426,6 +426,55 @@ async function loadResourceSchedule(container, context) {
 
 // Явка водителей (контур ОУВ, перенос из v2): отметки за день с
 // классификацией причин невыхода — каждый невыход обязан иметь причину.
+// Табель за период на основе эффективной явки: строки — водители,
+// колонки — дни, в ячейках коды (Я/РВ/В/ОТ/Б/ПР/С/П/·), итоги по кодам.
+async function timesheetDialog(context) {
+  const now = new Date();
+  let fromIso = `${now.toISOString().slice(0, 8)}01`;
+  let toIso = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const render = async () => {
+    let payload;
+    try {
+      payload = await api(`/api/attendance/timesheet?from=${fromIso}&to=${toIso}`);
+    } catch (error) { toast(error.message, 'error'); return; }
+    const { days, rows, codes } = payload;
+    const CODE_CLS = { 'Я': 'ts-ok', 'РВ': 'ts-over', 'В': 'ts-off', 'ОТ': 'ts-off',
+      'Б': 'ts-bad', 'ПР': 'ts-bad', 'С': 'ts-ok', 'П': '', '·': 'ts-none' };
+    const head = days.map(day => `<th>${day.slice(8)}.${day.slice(5, 7)}</th>`).join('');
+    const body = rows.map(row => `<tr>
+      <th class="sched-name">${escapeHtml(row.name)}
+        <small class="muted" style="display:block">${escapeHtml(row.plate || '')}</small></th>
+      ${days.map(day => {
+        const code = row.days[day] || '·';
+        return `<td class="${CODE_CLS[code] || ''}" title="${escapeHtml(codes[code] || '')}">${code}</td>`;
+      }).join('')}
+      <td class="num"><b>${row.totals['Я'] || 0}</b></td>
+      <td class="num">${row.totals['РВ'] || 0}</td>
+      <td class="num">${(row.totals['ОТ'] || 0) + (row.totals['Б'] || 0)}</td>
+      <td class="num ${row.totals['ПР'] ? 'danger' : ''}">${row.totals['ПР'] || 0}</td>
+    </tr>`).join('');
+    context.showModal(`<div class="report printable-block">
+      <h2 style="margin-bottom:6px">📋 Табель явки водителей</h2>
+      <div class="no-print" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <label class="field" style="margin:0">с<input type="date" id="tsFrom" value="${fromIso}" style="width:auto"></label>
+        <label class="field" style="margin:0">по (не включая)<input type="date" id="tsTo" value="${toIso}" style="width:auto"></label>
+        <small class="muted">${Object.entries(codes).map(([code, label]) => `<b>${code}</b> ${label}`).join(' · ')}</small>
+      </div>
+      <div class="sched-wrap" style="max-height:60vh"><table class="sched-table ts-table">
+        <thead><tr><th class="sched-name">Водитель</th>${head}
+          <th class="num">Я</th><th class="num">РВ</th><th class="num">ОТ+Б</th><th class="num">ПР</th></tr></thead>
+        <tbody>${body}</tbody></table></div>
+      <div class="modal-actions no-print">
+        <button type="button" class="button ghost" id="tsPrint">Печать / PDF</button>
+        <button type="button" class="button" data-close>Закрыть</button>
+      </div></div>`, 'wide printable');
+    document.getElementById('tsPrint').onclick = () => window.print();
+    document.getElementById('tsFrom').onchange = event => { fromIso = event.currentTarget.value || fromIso; render(); };
+    document.getElementById('tsTo').onchange = event => { toIso = event.currentTarget.value || toIso; render(); };
+  };
+  await render();
+}
+
 async function attendanceDialog(context) {
   let day = new Date().toISOString().slice(0, 10);
   const render = async () => {
@@ -435,26 +484,37 @@ async function attendanceDialog(context) {
     } catch (error) { toast(error.message, 'error'); return; }
     const { summary, reasons, items } = payload;
     const staffingOk = summary.staffing >= summary.staffingTarget;
-    const rows = items.map(item => `<div class="list-item" style="padding:5px 8px;gap:8px">
+    // Автоматика закрывает штатное (рейс, отпуск, межвахта) — руками
+    // отмечаются только внештатные статусы. Неотмеченные — первыми.
+    const orderOfItem = item => item.source === null ? 0 : item.source === 'manual' ? 1 : 2;
+    const sorted = [...items].sort((a, b) => orderOfItem(a) - orderOfItem(b) ||
+      a.full_name.localeCompare(b.full_name, 'ru'));
+    const autoBadge = item => item.source === 'auto'
+      ? `<span class="badge ${item.status === 'present' ? (item.overwork ? 'warn' : 'ok') : ''}"
+          title="Проставлено системой — ручная отметка перекроет">${item.overwork ? '⚡ ' : ''}авто: ${escapeHtml(item.auto)}${item.overwork ? ' · ↑ФОТ' : ''}</span>`
+      : item.source === 'manual' ? '<span class="badge warn" title="Отмечено вручную">вручную</span>' : '';
+    const rows = sorted.map(item => `<div class="list-item ${item.source === null ? 'pipe-returned' : ''}" style="padding:5px 8px;gap:8px">
       <span style="flex:1;min-width:0"><strong>${escapeHtml(item.full_name)}</strong>
         <small class="muted" style="display:block">${escapeHtml(item.vehicle_plate || 'без сцепки')}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></span>
-      <button class="button small ${item.status === 'present' ? '' : 'ghost'}"
+      ${autoBadge(item)}
+      <button class="button small ${item.source === 'manual' && item.status === 'present' ? '' : 'ghost'}"
         data-att="present" data-driver="${item.driver_id}">✓ Вышел</button>
-      <button class="button small ${item.status === 'absent' ? '' : 'ghost'}"
+      <button class="button small ${item.source === 'manual' && item.status === 'absent' ? '' : 'ghost'}"
         data-att="absent" data-driver="${item.driver_id}">✗ Невыход</button>
-      <select data-att-reason="${item.driver_id}" ${item.status === 'absent' ? '' : 'disabled'}
-        style="width:150px">
+      <select data-att-reason="${item.driver_id}" style="width:150px">
         <option value="">— причина —</option>
         ${Object.entries(reasons).map(([key, label]) =>
-          `<option value="${key}" ${item.reason === key ? 'selected' : ''}>${label}</option>`).join('')}
+          `<option value="${key}" ${item.source === 'manual' && item.reason === key ? 'selected' : ''}>${label}</option>`).join('')}
       </select>
     </div>`).join('');
-    context.showModal(`<h2 style="margin-bottom:6px">Явка водителей</h2>
+    context.showModal(`<h2 style="margin-bottom:6px">Явка водителей
+      <small class="muted" style="font-weight:400;font-size:12px"> · рейсы, отпуска и межвахты проставляются сами — отмечайте только внештатное</small></h2>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
         <input type="date" id="attDay" value="${day}" style="width:auto">
         <span class="badge ok">вышли: ${summary.present}</span>
         <span class="badge ${summary.absent ? 'bad' : ''}">невыход: ${summary.absent}</span>
-        <span class="badge ${summary.unmarked ? 'warn' : 'ok'}" title="Каждый невыход обязан иметь причину из классификатора">не отмечено: ${summary.unmarked}</span>
+        <span class="badge ${summary.unmarked ? 'warn' : 'ok'}" title="Рейсы, отпуска и межвахты система закрывает сама — отметьте только этих">требуют отметки: ${summary.unmarked}</span>
+        ${summary.overwork ? `<span class="badge warn" title="Работа в выходной — повышенная оплата">⚡ в выходной: ${summary.overwork}</span>` : ''}
         <span class="badge ${staffingOk ? 'ok' : 'bad'}"
           title="Норматив укомплектованности — 1,45 водителя на сцепку">
           укомплектованность: ${summary.staffing.toFixed(2)} / ${summary.staffingTarget}</span>
@@ -737,6 +797,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
         ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
         <button class="button ghost small" id="resourceAttendance"
           title="Явка водителей на день: невыход — только с причиной из классификатора">Явка</button>
+        <button class="button ghost small" id="resourceTimesheet"
+          title="Табель явки за период: Я/РВ/В/ОТ/Б/ПР по каждому водителю, печать">📋 Табель</button>
         <button class="button small ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers' ? '' : 'ghost'}"
           id="resViewTs" title="График работы: строка — сцепка, в ячейках водитель по дням">📅 По ТС</button>
         <button class="button small ${state.resourceView === 'drivers' ? '' : 'ghost'}"
@@ -789,6 +851,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   if (context.openStats) container.querySelector('#resourceStats').onclick = () => context.openStats();
   if (context.openDrivers) container.querySelector('#resourceDrivers').onclick = () => context.openDrivers();
   container.querySelector('#resourceAttendance').onclick = () => attendanceDialog(context);
+  container.querySelector('#resourceTimesheet').onclick = () => timesheetDialog(context);
   container.querySelector('#resourcePeriod').onclick = () => periodAssignDialog(context);
   const setView = view => { state.resourceView = view; renderResource(container, context); };
   container.querySelector('#resViewTs').onclick = () => setView('ts');

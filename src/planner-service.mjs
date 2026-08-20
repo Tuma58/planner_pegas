@@ -409,23 +409,118 @@ export function driverScheduleData(db, fromIso, toIso) {
 }
 
 // Сводка явки за день + укомплектованность (норматив 1,45 водителя на ТС).
+// Эффективная явка дня: ручная отметка приоритетна, остальное система
+// выводит сама — цель: начальник автоколонны отмечает только внештатное.
+// Авто-правила: машина водителя в рейсе в этот день → «вышел» (если по
+// графику у него отдых — это работа в выходной, overwork/↑ФОТ);
+// отпуск/больничный по карточке → невыход с той причиной; межвахта по
+// вахте или интервал «без водителя» на его машине → «выходной по графику».
+// Периодная подмена уводит машину у постоянного на эти дни.
+export function attendanceEffective(db, day) {
+  const dayStartIso = `${day}T00:00:00.000Z`;
+  const dayEndIso = `${day}T23:59:59.999Z`;
+  const midIso = `${day}T12:00:00.000Z`;
+  const manual = new Map(db.prepare(`SELECT * FROM driver_attendance WHERE day=?`).all(day)
+    .map(row => [row.driver_id, row]));
+  const drivers = db.prepare(`SELECT d.*, v.plate vehicle_plate FROM drivers d
+    LEFT JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status<>'fired'
+    ORDER BY d.full_name`).all();
+  const planned = db.prepare(`SELECT driver_id, vehicle_id FROM driver_assignments
+    WHERE starts_at <= ? AND ends_at > ?`).all(day, day);
+  const plannedByDriver = new Map(planned.map(item => [item.driver_id, item.vehicle_id]));
+  const plannedVehicles = new Set(planned.map(item => item.vehicle_id));
+  const tripOn = db.prepare(`SELECT 1 FROM trips WHERE vehicle_id=? AND status<>'rejected'
+    AND starts_at < ? AND ends_at > ? LIMIT 1`);
+  const noDriverOn = db.prepare(`SELECT 1 FROM vehicle_dispositions WHERE vehicle_id=?
+    AND kind='no_driver' AND starts_at < ? AND ends_at > ? LIMIT 1`);
+  return drivers.map(driver => {
+    const base = { driver_id: driver.id, full_name: driver.full_name,
+      vehicle_plate: driver.vehicle_plate || '', note: manual.get(driver.id)?.note || '' };
+    const hand = manual.get(driver.id);
+    if (hand) return { ...base, status: hand.status, reason: hand.reason, source: 'manual' };
+    // Машина водителя на этот день: периодная подмена приоритетнее.
+    const vehicleId = plannedByDriver.get(driver.id) ||
+      (driver.vehicle_id && !plannedVehicles.has(driver.vehicle_id) ? driver.vehicle_id : null);
+    const restByShift = !shiftIsWorkday(driver.shift_on, driver.shift_off, driver.shift_anchor, day);
+    const absentCard = driver.absent_from && driver.absent_to &&
+      driver.absent_from <= dayEndIso && driver.absent_to >= dayStartIso;
+    const inTrip = vehicleId && tripOn.get(vehicleId, dayEndIso, dayStartIso);
+    if (inTrip) {
+      return { ...base, status: 'present', reason: '', source: 'auto',
+        auto: 'в рейсе', overwork: Boolean(restByShift || absentCard) };
+    }
+    if (absentCard) {
+      return { ...base, status: 'absent',
+        reason: driver.status === 'sick' ? 'sick' : 'vacation', source: 'auto',
+        auto: driver.status === 'sick' ? 'больничный по карточке' : 'отпуск по карточке' };
+    }
+    if (restByShift) return { ...base, status: 'absent', reason: 'dayoff',
+      source: 'auto', auto: 'межвахта по графику' };
+    if (vehicleId && noDriverOn.get(vehicleId, dayEndIso, dayStartIso)) {
+      return { ...base, status: 'absent', reason: 'dayoff', source: 'auto',
+        auto: 'выходной (интервал)' };
+    }
+    return { ...base, status: null, reason: '', source: null };
+  });
+}
+
+// Табель за период на основе эффективной явки. Коды: Я — работал,
+// РВ — работа в выходной (↑ФОТ), В — выходной по графику, ОТ — отпуск,
+// Б — больничный, ПР — прогул, С — стажировка, П — прочее, · — не отмечено.
+export const TIMESHEET_CODES = {
+  'Я': 'работал', 'РВ': 'работа в выходной (↑ФОТ)', 'В': 'выходной по графику',
+  'ОТ': 'отпуск', 'Б': 'больничный', 'ПР': 'прогул', 'С': 'стажировка',
+  'П': 'прочее', '·': 'не отмечено'
+};
+const timesheetCode = item => {
+  if (item.status === 'present') return item.overwork ? 'РВ' : 'Я';
+  if (item.status === 'absent') {
+    return { dayoff: 'В', vacation: 'ОТ', sick: 'Б', truancy: 'ПР',
+      intern: 'С', other: 'П' }[item.reason] || 'П';
+  }
+  return '·';
+};
+export function attendanceTimesheet(db, fromDay, toDay) {
+  const days = [];
+  for (let ms = Date.parse(`${fromDay}T00:00:00Z`);
+       ms < Date.parse(`${toDay}T00:00:00Z`); ms += 86_400_000) {
+    days.push(new Date(ms).toISOString().slice(0, 10));
+    if (days.length > 62) throw Object.assign(new Error('Период табеля — не больше 62 дней'), { status: 422 });
+  }
+  const rows = new Map();
+  for (const day of days) {
+    for (const item of attendanceEffective(db, day)) {
+      if (!rows.has(item.driver_id)) {
+        rows.set(item.driver_id, { driverId: item.driver_id, name: item.full_name,
+          plate: item.vehicle_plate, days: {}, totals: {} });
+      }
+      const row = rows.get(item.driver_id);
+      const code = timesheetCode(item);
+      row.days[day] = code;
+      row.totals[code] = (row.totals[code] || 0) + 1;
+    }
+  }
+  return { days, codes: TIMESHEET_CODES,
+    rows: [...rows.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru')) };
+}
+
 export function attendanceSummary(db, day) {
   const drivers = db.prepare(`SELECT COUNT(*) count FROM drivers WHERE status<>'fired'`).get().count;
   const vehicles = db.prepare(`SELECT COUNT(*) count FROM vehicles WHERE status<>'out'`).get().count;
-  const rows = db.prepare(`SELECT status,reason,COUNT(*) count FROM driver_attendance
-    WHERE day=? GROUP BY status,reason`).all(day);
+  const items = attendanceEffective(db, day);
   const byReason = {};
   let present = 0;
   let absent = 0;
-  for (const row of rows) {
-    if (row.status === 'present') present += row.count;
-    else {
-      absent += row.count;
-      byReason[row.reason] = (byReason[row.reason] || 0) + row.count;
+  let overwork = 0;
+  for (const item of items) {
+    if (item.status === 'present') { present += 1; if (item.overwork) overwork += 1; }
+    else if (item.status === 'absent') {
+      absent += 1;
+      byReason[item.reason] = (byReason[item.reason] || 0) + 1;
     }
   }
   return {
-    drivers, vehicles, present, absent, byReason,
+    drivers, vehicles, present, absent, byReason, overwork,
     unmarked: Math.max(0, drivers - present - absent),
     staffing: vehicles ? drivers / vehicles : 0,
     staffingTarget: 1.45
