@@ -74,8 +74,12 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     new Date(Date.parse(`${startIso}T00:00:00Z`) + index * 86_400_000));
   const todayIso = new Date().toISOString().slice(0, 10);
   const trips = (data.trips || []).filter(trip => trip.status !== 'rejected');
-  const tripAt = (vehicleId, midMs) => trips.some(trip => trip.vehicle_id === vehicleId &&
+  const tripOf = (vehicleId, midMs) => trips.find(trip => trip.vehicle_id === vehicleId &&
     Date.parse(trip.starts_at) <= midMs && midMs < Date.parse(trip.ends_at));
+  const tripAt = (vehicleId, midMs) => Boolean(tripOf(vehicleId, midMs));
+  // Куда едет — коротко: геозона назначения, иначе первое слово пункта.
+  const tripDest = trip => (trip.to_name || String(trip.to_point || '').split(/[,\s]/)[0] || '').slice(0, 12);
+  const ddmm = iso => iso ? String(iso).slice(0, 10).split('-').reverse().slice(0, 2).join('.') : '';
   const dayHead = days.map(day => {
     const iso = day.toISOString().slice(0, 10);
     const weekend = [0, 6].includes(day.getUTCDay());
@@ -140,7 +144,9 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           [cls, text] = KIND_CELL[main.kind];
           text = `${text} · ${plateOf.get(vehicleId) || ''}`;
         } else if (vehicleId && tripAt(vehicleId, midMs)) {
-          cls = 'sched-trip'; text = plateOf.get(vehicleId) || '—';
+          cls = 'sched-trip';
+          const dest = tripDest(tripOf(vehicleId, midMs));
+          text = dest ? `→ ${dest}` : (plateOf.get(vehicleId) || '—');
         } else text = plateOf.get(vehicleId) || '—';
         const clsAll = [cls,
           att?.status === 'present' ? 'att-ok' : att?.status === 'absent' ? 'att-bad' : '',
@@ -179,19 +185,33 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         const inTrip = tripAt(vehicle.id, midMs);
         let cls = '';
         let text = '';
+        // «до какой даты» длится отдых — для призыва найти подмену.
+        let restUntil = null;
         if (main?.kind === 'no_driver') {
-          if (holders.length) { cls = 'sk-rest'; text = 'выходной'; }
+          if (holders.length) { cls = 'sk-rest'; text = 'выходной'; restUntil = main.ends_at; }
           else { cls = 'sk-nodrv'; text = 'нет водителя'; }
         } else if (main && KIND_CELL[main.kind]) [cls, text] = KIND_CELL[main.kind];
         else if (!activeHolders.length && holders.length) {
           cls = 'sk-rest';
-          text = absentAt(holders[0], midMs)
-            ? (holders[0].status === 'sick' ? 'болен' : 'отпуск') : 'межвахта';
+          const first = holders[0];
+          if (absentAt(first, midMs)) {
+            text = first.status === 'sick' ? 'болен' : 'отпуск';
+            restUntil = first.absent_to;
+          } else {
+            text = 'межвахта';
+            restUntil = shiftStateAt(first, iso)?.until;
+          }
         } else if (!holders.length) { cls = 'sk-nodrv'; text = 'нет водителя'; }
         else if (inTrip) {
           cls = 'sched-trip';
-          text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
+          const dest = tripDest(tripOf(vehicle.id, midMs));
+          text = dest ? `→ ${dest}` : activeHolders.map(driver => shortName(driver.full_name)).join(', ');
         } else text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
+        // Цель — максимум машино-дней: день отдыха/пустоты сегодня и дальше
+        // требует действия. Клик по ячейке уже открывает подмену на период.
+        const needSub = iso >= todayIso && (cls === 'sk-rest' || cls === 'sk-nodrv');
+        const callHtml = needSub
+          ? `<small class="sk-call">найти подмену${restUntil ? ` до ${ddmm(restUntil)}` : ''}</small>` : '';
         const clsAll = [cls, periodHolders.length ? 'sk-period' : '',
           canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
         const title = [holders.map(driver => {
@@ -209,7 +229,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
             ? `data-sched-vehicle="${vehicle.id}" data-sched-day="${iso}"` : ''}
           title="${escapeHtml(title)}${canWrite ? ' · клик — назначить водителя на период' : ''}">
           ${cls === 'sk-rest' || cls === 'sk-nodrv'
-            ? `<i class="sk-dim">${escapeHtml(text)}</i>` : escapeHtml(text)}</td>`;
+            ? `<i class="sk-dim">${escapeHtml(text)}</i>${callHtml}` : escapeHtml(text)}</td>`;
       }).join('');
       return `<tr><th class="sched-name mono vlink" data-vinfo="${vehicle.id}"
         title="Карточка ТС">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
