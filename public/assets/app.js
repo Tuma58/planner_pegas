@@ -1697,9 +1697,10 @@ function showDayAnalytics(dayIso) {
   };
 }
 
-async function reload() {
-  byId('syncState').textContent = '● обновление…';
-  state.data = await api('/api/bootstrap');
+async function reload(prefetched = null) {
+  if (!prefetched) byId('syncState').textContent = '● обновление…';
+  state.data = prefetched || await api('/api/bootstrap');
+  state.dataSnapshot = JSON.stringify(state.data);
   byId('syncState').textContent = '● синхронно';
   setupUser();
   setupFilters();
@@ -1728,11 +1729,16 @@ async function autoRefreshTick(force = false) {
     const element = document.querySelector(selector);
     return element ? [selector, element.scrollLeft, element.scrollTop] : null;
   }).filter(Boolean);
-  try { await reload(); } catch {
+  // Без перемаргивания: если данные не изменились с прошлого раза —
+  // DOM не трогаем вообще (это подавляющее большинство тиков).
+  let fresh;
+  try { fresh = await api('/api/bootstrap'); } catch {
     byId('syncState').textContent = '● нет связи — повторю через минуту';
     return;
   }
   lastAutoRefresh = Date.now();
+  if (JSON.stringify(fresh) === state.dataSnapshot) return;
+  await reload(fresh);
   for (const [selector, left, top] of keepScroll) {
     const element = document.querySelector(selector);
     if (element) { element.scrollLeft = left; element.scrollTop = top; }

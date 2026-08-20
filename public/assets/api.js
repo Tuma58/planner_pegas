@@ -83,6 +83,66 @@ function offsetMs(date) {
 // Поиск по длинному <select> (сцепки): фильтрует options по подстроке —
 // номер, прицеп, водитель, тип — выбор без перелистывания. Первая
 // подошедшая опция становится выбранной.
+// ── Единый выбор периода ──
+// Один формат на все экраны: ◀ дата ▶ и «Сегодня» (день) либо «с — по»
+// со сдвигом стрелками на длину периода и пресетом «Месяц».
+export const dayPickerHtml = (id, value, label = '') => `<span class="ppick">
+  ${label ? `<small class="pp-label">${label}</small>` : ''}
+  <button type="button" class="pp-btn" data-pp-shift="-1" data-pp-for="${id}" title="Предыдущий день">◀</button>
+  <input type="date" id="${id}" value="${value}">
+  <button type="button" class="pp-btn" data-pp-shift="1" data-pp-for="${id}" title="Следующий день">▶</button>
+  <button type="button" class="pp-btn pp-today" data-pp-today data-pp-for="${id}" title="К сегодняшнему дню">Сегодня</button></span>`;
+export function wireDayPicker(root, id, onChange) {
+  const input = root.querySelector(`#${id}`);
+  if (!input) return;
+  const fire = () => input.value && onChange(input.value);
+  root.querySelectorAll(`[data-pp-shift][data-pp-for="${id}"]`).forEach(button =>
+    button.addEventListener('click', () => {
+      const ms = Date.parse(`${input.value || new Date().toISOString().slice(0, 10)}T00:00:00Z`)
+        + Number(button.dataset.ppShift) * 86_400_000;
+      input.value = new Date(ms).toISOString().slice(0, 10);
+      fire();
+    }));
+  root.querySelector(`[data-pp-today][data-pp-for="${id}"]`)?.addEventListener('click', () => {
+    input.value = new Date().toISOString().slice(0, 10);
+    fire();
+  });
+  input.addEventListener('change', fire);
+}
+export const rangePickerHtml = (idFrom, idTo, from, to, label = '') => `<span class="ppick">
+  ${label ? `<small class="pp-label">${label}</small>` : ''}
+  <button type="button" class="pp-btn" data-pp-range="-1" data-pp-for="${idFrom}" title="Назад на длину периода">◀</button>
+  <input type="date" id="${idFrom}" value="${from}">
+  <small class="pp-label">—</small>
+  <input type="date" id="${idTo}" value="${to}">
+  <button type="button" class="pp-btn" data-pp-range="1" data-pp-for="${idFrom}" title="Вперёд на длину периода">▶</button>
+  <button type="button" class="pp-btn pp-today" data-pp-month data-pp-for="${idFrom}" title="Текущий месяц целиком">Месяц</button></span>`;
+export function wireRangePicker(root, idFrom, idTo, onChange) {
+  const inputFrom = root.querySelector(`#${idFrom}`);
+  const inputTo = root.querySelector(`#${idTo}`);
+  if (!inputFrom || !inputTo) return;
+  const fire = () => inputFrom.value && inputTo.value && inputTo.value > inputFrom.value &&
+    onChange(inputFrom.value, inputTo.value);
+  root.querySelectorAll(`[data-pp-range][data-pp-for="${idFrom}"]`).forEach(button =>
+    button.addEventListener('click', () => {
+      const fromMs = Date.parse(`${inputFrom.value}T00:00:00Z`);
+      const toMs = Date.parse(`${inputTo.value}T00:00:00Z`);
+      const span = Math.max(86_400_000, toMs - fromMs);
+      const shift = Number(button.dataset.ppRange) * span;
+      inputFrom.value = new Date(fromMs + shift).toISOString().slice(0, 10);
+      inputTo.value = new Date(toMs + shift).toISOString().slice(0, 10);
+      fire();
+    }));
+  root.querySelector(`[data-pp-month][data-pp-for="${idFrom}"]`)?.addEventListener('click', () => {
+    const now = new Date();
+    inputFrom.value = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
+    inputTo.value = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+    fire();
+  });
+  inputFrom.addEventListener('change', fire);
+  inputTo.addEventListener('change', fire);
+}
+
 export function wireSelectSearch(input, select) {
   const all = [...select.options].map(option => ({
     html: option.outerHTML, text: option.textContent.toLowerCase()

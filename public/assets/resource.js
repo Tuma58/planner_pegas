@@ -1,7 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, fromLocalInput, toast, wireSelectSearch } from './api.js';
+import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch } from './api.js';
 import { regionOfPlace } from './sales.js';
 
 export const DISP_KINDS = [
@@ -456,8 +456,7 @@ async function timesheetDialog(context) {
     context.showModal(`<div class="report printable-block">
       <h2 style="margin-bottom:6px">📋 Табель явки водителей</h2>
       <div class="no-print" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        <label class="field" style="margin:0">с<input type="date" id="tsFrom" value="${fromIso}" style="width:auto"></label>
-        <label class="field" style="margin:0">по (не включая)<input type="date" id="tsTo" value="${toIso}" style="width:auto"></label>
+        ${rangePickerHtml('tsFrom', 'tsTo', fromIso, toIso, 'период')}
         <small class="muted">${Object.entries(codes).map(([code, label]) => `<b>${code}</b> ${label}`).join(' · ')}</small>
       </div>
       <div class="sched-wrap" style="max-height:60vh"><table class="sched-table ts-table">
@@ -469,8 +468,9 @@ async function timesheetDialog(context) {
         <button type="button" class="button" data-close>Закрыть</button>
       </div></div>`, 'wide printable');
     document.getElementById('tsPrint').onclick = () => window.print();
-    document.getElementById('tsFrom').onchange = event => { fromIso = event.currentTarget.value || fromIso; render(); };
-    document.getElementById('tsTo').onchange = event => { toIso = event.currentTarget.value || toIso; render(); };
+    wireRangePicker(document, 'tsFrom', 'tsTo', (from, to) => {
+      fromIso = from; toIso = to; render();
+    });
   };
   await render();
 }
@@ -510,7 +510,7 @@ async function attendanceDialog(context) {
     context.showModal(`<h2 style="margin-bottom:6px">Явка водителей
       <small class="muted" style="font-weight:400;font-size:12px"> · рейсы, отпуска и межвахты проставляются сами — отмечайте только внештатное</small></h2>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        <input type="date" id="attDay" value="${day}" style="width:auto">
+        ${dayPickerHtml('attDay', day)}
         <span class="badge ok">вышли: ${summary.present}</span>
         <span class="badge ${summary.absent ? 'bad' : ''}">невыход: ${summary.absent}</span>
         <span class="badge ${summary.unmarked ? 'warn' : 'ok'}" title="Рейсы, отпуска и межвахты система закрывает сама — отметьте только этих">требуют отметки: ${summary.unmarked}</span>
@@ -521,10 +521,7 @@ async function attendanceDialog(context) {
       </div>
       <div class="list" style="max-height:56vh;overflow:auto">${rows}</div>
       <div class="modal-actions"><button type="button" class="button" data-close>Закрыть</button></div>`, 'wide');
-    document.getElementById('attDay').onchange = event => {
-      day = event.currentTarget.value || day;
-      render();
-    };
+    wireDayPicker(document, 'attDay', value => { day = value; render(); });
     const mark = async body => {
       try {
         await api('/api/attendance', { method: 'POST', body: JSON.stringify({ ...body, day }) });
@@ -788,11 +785,14 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     <div class="reshead">
       <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
       <div class="resctl">
+        ${dayPickerHtml('resourceDay', refDay, 'день')}
+        ${state.resourceView !== 'gantt' ? dayPickerHtml('resSchedStart',
+          state.resourceSchedStart || new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10),
+          'график с') : ''}
         <input id="resourceSearch" class="block-search" placeholder="Поиск: тягач, прицеп, водитель"
           value="${escapeHtml(state.resourceQuery || '')}">
         ${filter || query ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
-        <span class="muted" style="font-size:var(--fs-xs)">Состояние на день</span>
-        <input type="date" id="resourceDay" value="${refDay}">
+
         ${context.openStats ? '<button class="button ghost small" id="resourceStats" title="Машино-дни, КТГ и выручка по каждой сцепке за месяц">Аналитика</button>' : ''}
         ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
         <button class="button ghost small" id="resourceAttendance"
@@ -805,9 +805,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
           id="resViewDrivers" title="График работы: строка — водитель, в ячейках сцепка по дням">👤 По водителям</button>
         <button class="button small ${state.resourceView === 'gantt' ? '' : 'ghost'}"
           id="resViewGantt" title="Классический гант ресурса: рейсы и интервалы недоступности">Гант</button>
-        ${state.resourceView !== 'gantt' ? `<input type="date" id="resSchedStart"
-          value="${state.resourceSchedStart || new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10)}"
-          title="Начало периода графика (14 дней)" style="width:auto">` : ''}
+
         <button class="button ghost small" id="resourcePeriod"
           title="Периодные закрепления водителей за ТС: подмены на межвахту, командировки">📌 На период</button>
         ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
@@ -840,10 +838,14 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       state.resourceFilter = kind && kind !== filter ? kind : null;
       renderResource(container, context);
     }));
-  container.querySelector('#resourceDay').onchange = event => {
-    state.resourceDay = event.currentTarget.value;
+  wireDayPicker(container, 'resourceDay', value => {
+    state.resourceDay = value;
     renderResource(container, context);
-  };
+  });
+  wireDayPicker(container, 'resSchedStart', value => {
+    state.resourceSchedStart = value;
+    renderResource(container, context);
+  });
   attachSearch(container.querySelector('#resourceSearch'), value => {
     state.resourceQuery = value;
     renderResource(container, context);
@@ -857,10 +859,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resViewTs').onclick = () => setView('ts');
   container.querySelector('#resViewDrivers').onclick = () => setView('drivers');
   container.querySelector('#resViewGantt').onclick = () => setView('gantt');
-  container.querySelector('#resSchedStart')?.addEventListener('change', event => {
-    state.resourceSchedStart = event.currentTarget.value || null;
-    renderResource(container, context);
-  });
+
   if (state.resourceView !== 'gantt') loadResourceSchedule(container, context);
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {

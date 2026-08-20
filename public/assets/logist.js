@@ -3,7 +3,7 @@
 // отклонение рейса с возвратом заявки в продажи, создание рейса вручную.
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker } from './api.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress, salesTaskFor } from './sales.js';
@@ -295,15 +295,14 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
   };
   context.showModal(`<h2 style="margin-bottom:6px">📋 Задание логисту</h2>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-      <span class="muted">на дату</span>
-      <input type="date" id="logistTaskDay" value="${tomorrow}" style="width:auto">
+      ${dayPickerHtml('logistTaskDay', tomorrow, 'на дату')}
       <button class="button small" id="logistTaskCopy" style="margin-left:auto">📋 Скопировать</button>
     </div>
     <div id="logistTaskBody" style="max-height:62vh;overflow:auto"></div>`);
   const modal = document.querySelector('#modalRoot .modal');
   if (modal) modal.style.width = 'min(820px, 96vw)';
   render(tomorrow);
-  document.getElementById('logistTaskDay').onchange = event => render(event.currentTarget.value || tomorrow);
+  wireDayPicker(document, 'logistTaskDay', value => render(value));
   document.getElementById('logistTaskCopy').onclick = async () => {
     const text = document.getElementById('logistTaskBody').dataset.text || '';
     try { await navigator.clipboard.writeText(text); } catch {

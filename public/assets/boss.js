@@ -4,7 +4,7 @@
 // владельцам, баланс машино-дней, экономика по типам ТС и топ клиентов.
 // Тема «панель приборов» (спидометры, лобовое стекло) выведена из продукта.
 // Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
-import { api, escapeHtml, toast } from './api.js';
+import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker } from './api.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 const mln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} млн`;
@@ -306,11 +306,7 @@ export async function renderBoss(container, context) {
         · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
     <div class="brep-top">
       <div class="console">
-        <span class="cnl">Период</span>
-        <input type="date" id="bossFrom" value="${from}">
-        <span class="muted">–</span>
-        <input type="date" id="bossTo" value="${to}">
-        <button class="button ghost small" id="bossMonth">Текущий месяц</button>
+        ${rangePickerHtml('bossFrom', 'bossTo', from, to, 'период')}
         <span class="cnl" style="margin-left:10px">План выручки</span>
         <input type="number" id="bossPlan" placeholder="цель, ₽" value="${revenuePlan || ''}" style="width:130px">
         <button class="button ghost small" id="bossClose" title="Зафиксировать период в истории">🏁 Закрыть период</button>
@@ -478,15 +474,14 @@ export async function renderBoss(container, context) {
     };
     context.showModal(`<h2 style="margin-bottom:6px">📆 Отчёт дня по автопарку</h2>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-        <span class="muted">за</span>
-        <input type="date" id="bossDailyDay" value="${defaultDay}" style="width:auto">
+        ${dayPickerHtml('bossDailyDay', defaultDay, 'за')}
         <button class="button small" id="bossDailyCopy" style="margin-left:auto">📋 Скопировать</button>
       </div>
       <div id="bossDailyBody" style="max-height:62vh;overflow:auto"></div>`);
     const modal = document.querySelector('#modalRoot .modal');
     if (modal) modal.style.width = 'min(760px, 96vw)';
     renderDay(defaultDay);
-    document.getElementById('bossDailyDay').onchange = event => renderDay(event.currentTarget.value || defaultDay);
+    wireDayPicker(document, 'bossDailyDay', value => renderDay(value));
     document.getElementById('bossDailyCopy').onclick = async () => {
       const text = document.getElementById('bossDailyBody').dataset.text || '';
       try { await navigator.clipboard.writeText(text); } catch {
@@ -501,19 +496,11 @@ export async function renderBoss(container, context) {
   // ── Обработчики ──
   const rerender = () => renderBoss(container, context);
   container.querySelector('#bossDaily').onclick = dailyDialog;
-  const applyRange = () => {
-    const a = document.getElementById('bossFrom').value;
-    const b = document.getElementById('bossTo').value;
-    if (!a || !b || b <= a) { toast('Период задан неверно', 'error'); return; }
+  wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;
     state.bossTo = b;
     rerender();
-  };
-  document.getElementById('bossFrom').onchange = applyRange;
-  document.getElementById('bossTo').onchange = applyRange;
-  document.getElementById('bossMonth').onclick = () => {
-    state.bossFrom = null; state.bossTo = null; rerender();
-  };
+  });
   document.getElementById('bossPlan').onchange = async event => {
     const value = Math.max(0, Number(event.currentTarget.value) || 0);
     try {

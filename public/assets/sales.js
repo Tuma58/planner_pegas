@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, wireSelectSearch } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, wireSelectSearch, dayPickerHtml, wireDayPicker } from './api.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -409,15 +409,14 @@ function salesTaskDialog(data, context) {
   };
   context.showModal(`<h2 style="margin-bottom:6px">📋 Задание продажам</h2>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-      <span class="muted">на дату</span>
-      <input type="date" id="salesTaskDay" value="${tomorrow}" style="width:auto">
+      ${dayPickerHtml('salesTaskDay', tomorrow, 'на дату')}
       <button class="button small" id="salesTaskCopy" style="margin-left:auto">📋 Скопировать</button>
     </div>
     <div id="salesTaskBody" style="max-height:62vh;overflow:auto"></div>`);
   const modal = document.querySelector('#modalRoot .modal');
   if (modal) modal.style.width = 'min(820px, 96vw)';
   render(tomorrow);
-  document.getElementById('salesTaskDay').onchange = event => render(event.currentTarget.value || tomorrow);
+  wireDayPicker(document, 'salesTaskDay', value => render(value));
   document.getElementById('salesTaskCopy').onclick = async () => {
     const text = document.getElementById('salesTaskBody').dataset.text || '';
     try { await navigator.clipboard.writeText(text); } catch {
