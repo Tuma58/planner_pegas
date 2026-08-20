@@ -2,6 +2,7 @@
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, fromLocalInput, toast, wireSelectSearch } from './api.js';
+import { regionOfPlace } from './sales.js';
 
 export const DISP_KINDS = [
   { kind: 'work', label: 'В работе', short: 'работа', color: 'var(--teal)' },
@@ -77,8 +78,15 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
   const tripOf = (vehicleId, midMs) => trips.find(trip => trip.vehicle_id === vehicleId &&
     Date.parse(trip.starts_at) <= midMs && midMs < Date.parse(trip.ends_at));
   const tripAt = (vehicleId, midMs) => Boolean(tripOf(vehicleId, midMs));
-  // Куда едет — коротко: геозона назначения, иначе первое слово пункта.
-  const tripDest = trip => (trip.to_name || String(trip.to_point || '').split(/[,\s]/)[0] || '').slice(0, 12);
+  // Куда едет — субъект РФ назначения (сокращённый), фолбэк — геозона/пункт.
+  const shortRegion = value => String(value || '')
+    .replace(/\s+(область|обл\.?|край|республика|респ\.?|автономный округ|АО)\s*$/i, '')
+    .slice(0, 14);
+  const tripDest = trip => {
+    const region = regionOfPlace(data, trip.to_point, trip.to_name);
+    return shortRegion(region) || String(trip.to_name || '').slice(0, 12)
+      || String(trip.to_point || '').split(/[,\s]/)[0].slice(0, 12);
+  };
   const ddmm = iso => iso ? String(iso).slice(0, 10).split('-').reverse().slice(0, 2).join('.') : '';
   const dayHead = days.map(day => {
     const iso = day.toISOString().slice(0, 10);
@@ -145,9 +153,11 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           text = `${text} · ${plateOf.get(vehicleId) || ''}`;
         } else if (vehicleId && tripAt(vehicleId, midMs)) {
           cls = 'sched-trip';
-          const dest = tripDest(tripOf(vehicleId, midMs));
-          text = dest ? `→ ${dest}` : (plateOf.get(vehicleId) || '—');
+          text = plateOf.get(vehicleId) || '—';
         } else text = plateOf.get(vehicleId) || '—';
+        const destHtml = cls === 'sched-trip'
+          ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicleId, midMs)))
+          : '';
         const clsAll = [cls,
           att?.status === 'present' ? 'att-ok' : att?.status === 'absent' ? 'att-bad' : '',
           period ? 'sk-period' : '', canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
@@ -163,7 +173,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
             ? `data-sched-driver="${driver.id}" data-sched-day="${iso}"` : ''}
           title="${escapeHtml(title)}${canWrite ? ' · клик — назначить ТС на период' : ''}">
           ${['выходной', 'межвахта', 'отпуск', 'болен'].includes(text.split(' ·')[0])
-            ? `<i class="sk-dim">${text}</i>` : `<span class="mono">${escapeHtml(text)}</span>`}</td>`;
+            ? `<i class="sk-dim">${text}</i>` : `<span class="mono">${escapeHtml(text)}</span>${destHtml}`}</td>`;
       }).join('');
       return `<tr><th class="sched-name">${escapeHtml(shortName(driver.full_name))}</th>${cells}</tr>`;
     }).join('');
@@ -204,9 +214,12 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         } else if (!holders.length) { cls = 'sk-nodrv'; text = 'нет водителя'; }
         else if (inTrip) {
           cls = 'sched-trip';
-          const dest = tripDest(tripOf(vehicle.id, midMs));
-          text = dest ? `→ ${dest}` : activeHolders.map(driver => shortName(driver.full_name)).join(', ');
+          text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
         } else text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
+        // В рейсе — фамилия, под ней направление в субъект РФ.
+        const destHtml = cls === 'sched-trip'
+          ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicle.id, midMs)))
+          : '';
         // Цель — максимум машино-дней: день отдыха/пустоты сегодня и дальше
         // требует действия. Клик по ячейке уже открывает подмену на период.
         const needSub = iso >= todayIso && (cls === 'sk-rest' || cls === 'sk-nodrv');
@@ -229,7 +242,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
             ? `data-sched-vehicle="${vehicle.id}" data-sched-day="${iso}"` : ''}
           title="${escapeHtml(title)}${canWrite ? ' · клик — назначить водителя на период' : ''}">
           ${cls === 'sk-rest' || cls === 'sk-nodrv'
-            ? `<i class="sk-dim">${escapeHtml(text)}</i>${callHtml}` : escapeHtml(text)}</td>`;
+            ? `<i class="sk-dim">${escapeHtml(text)}</i>${callHtml}` : `${escapeHtml(text)}${destHtml}`}</td>`;
       }).join('');
       return `<tr><th class="sched-name mono vlink" data-vinfo="${vehicle.id}"
         title="Карточка ТС">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
