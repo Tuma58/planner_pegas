@@ -473,13 +473,27 @@ export async function renderDispatcher(container, context) {
     return comment ? `<small class="sales-comment">💬 Продажи: ${escapeHtml(comment)}</small>` : '';
   };
   const prepSorted = [...preparing].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+  // Карточка подготовки оформлена как в «Контроле на линии»: справа
+  // бейдж срочности по событию (плановому выходу), ниже — действия.
+  const prepStatusBadge = trip => {
+    const diff = Date.parse(trip.starts_at) - Date.now();
+    if (diff < 0) return `<span class="badge bad"
+      title="Плановый выход ${formatDateTime(trip.starts_at)} прошёл — выводите фактическим временем или переносите">⏰ выход просрочен ${waitingLabel(-diff)}</span>`;
+    if (diff <= 2 * 3_600_000) return `<span class="badge warn"
+      title="До планового выхода меньше двух часов — завершайте чек-лист">🔥 выход через ${waitingLabel(diff)}</span>`;
+    return `<span class="badge ok">выход ${formatDateTime(trip.starts_at)}</span>`;
+  };
   const prepCard = trip => {
     const event = prepEventLine(trip, prepStepOf(trip)[1]);
+    const overdue = Date.parse(trip.starts_at) < Date.now();
     return `<div class="card ${event.hot ? 'ctrl-hot' : ''}"
-        style="margin-bottom:10px;padding:10px 12px">
-      <div class="list-item" style="padding:0 0 4px">
+        style="margin-bottom:10px;padding:9px 11px">
+      <div class="list-item ordrow ${overdue ? 'pipe-rejected' : event.hot ? 'pipe-returned' : ''}" style="border:0;padding:0 0 4px">
         ${tripHead(trip)}
-        <button class="button ghost small" data-incident="${trip.id}" title="Поломка, отказ клиента, переназначение">⚠ Внештатная</button>
+        <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+          ${prepStatusBadge(trip)}
+          <button class="button ghost small" data-incident="${trip.id}" title="Поломка, отказ клиента, переназначение">⚠ Внештатная</button>
+        </span>
       </div>
       ${event.html}
       ${salesCommentNote(trip)}
@@ -514,7 +528,10 @@ export async function renderDispatcher(container, context) {
     return `<div class="card ${event.hot ? 'ctrl-hot' : ''}" style="padding:9px 11px">
       <div class="list-item ordrow pipe-wait" style="border:0;padding:0">
         ${tripHead(trip)}
-        <span class="pipe-badge">Ждёт: Логист · подтверждение назначения</span>
+        <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+          ${prepStatusBadge(trip)}
+          <span class="pipe-badge">Ждёт: Логист · подтверждение назначения</span>
+        </span>
       </div>
       ${event.html}
     </div>`;
