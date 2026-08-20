@@ -155,9 +155,11 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           cls = 'sched-trip';
           text = plateOf.get(vehicleId) || '—';
         } else text = plateOf.get(vehicleId) || '—';
-        const destHtml = cls === 'sched-trip'
-          ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicleId, midMs)))
-          : '';
+        const destHtml = period && (cls === 'sched-trip' || !cls)
+          ? `<small class="sk-sub">подменный до ${ddmm(period.ends_at)}</small>`
+          : cls === 'sched-trip'
+            ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicleId, midMs)))
+            : '';
         const clsAll = [cls,
           att?.status === 'present' ? 'att-ok' : att?.status === 'absent' ? 'att-bad' : '',
           period ? 'sk-period' : '', canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
@@ -187,10 +189,13 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         const permHolders = payload.drivers.filter(driver =>
           permAt(driver.id, midMs) === vehicle.id &&
           !plannedAt(planned, midMs, 'driver_id', driver.id).length);
-        const holders = [...periodHolders, ...permHolders];
+        // Активная подмена вытесняет постоянного из ячейки полностью:
+        // машину в эти дни ведёт подменный (постоянный — в подсказке).
+        const holders = periodHolders.length ? periodHolders : permHolders;
         const resting = holders.filter(driver => shiftStateAt(driver, iso)?.rest ||
           absentAt(driver, midMs));
         const activeHolders = holders.filter(driver => !resting.includes(driver));
+        const period = plannedAt(planned, midMs, 'vehicle_id', vehicle.id)[0];
         const main = dispoMain(vehicle.id, day.getTime())[0];
         const inTrip = tripAt(vehicle.id, midMs);
         let cls = '';
@@ -217,9 +222,12 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
         } else text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
         // В рейсе — фамилия, под ней направление в субъект РФ.
-        const destHtml = cls === 'sched-trip'
-          ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicle.id, midMs)))
-          : '';
+        // Подменный помечается явно; при рейсе направление уходит в подсказку.
+        const destHtml = periodHolders.length && (cls === 'sched-trip' || !cls)
+          ? `<small class="sk-sub">подменный до ${ddmm(period?.ends_at)}</small>`
+          : cls === 'sched-trip'
+            ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicle.id, midMs)))
+            : '';
         // Цель — максимум машино-дней: день отдыха/пустоты сегодня и дальше
         // требует действия. Клик по ячейке уже открывает подмену на период.
         const needSub = iso >= todayIso && (cls === 'sk-rest' || cls === 'sk-nodrv');
@@ -229,11 +237,15 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
         const title = [holders.map(driver => {
             const shift = shiftStateAt(driver, iso);
-            const period = plannedAt(planned, midMs, 'driver_id', driver.id)[0];
-            return driver.full_name + (period ? ' (на период)' : '') +
+            const own = plannedAt(planned, midMs, 'driver_id', driver.id)[0];
+            return driver.full_name + (own ? ' (подменный)' : '') +
               (absentAt(driver, midMs) ? ' (отсутствие)'
                 : shift ? (shift.rest ? ` (межвахта до ${shift.until})` : ` (вахта до ${shift.until})`) : '');
           }).join(', ') || 'водитель не закреплён',
+          periodHolders.length && permHolders.length
+            ? `постоянный: ${permHolders.map(driver => driver.full_name).join(', ')}` : '',
+          periodHolders.length && tripOf(vehicle.id, midMs)
+            ? `едет → ${tripDest(tripOf(vehicle.id, midMs))}` : '',
           inTrip ? 'в рейсе' : '',
           ...dispoMain(vehicle.id, day.getTime())
             .map(item => `${kindMeta(item.kind).label.toLowerCase()}${item.note ? `: ${item.note}` : ''}`)]
