@@ -145,7 +145,16 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         // Событие дня водителя: свой отдых → выходной его машины → диспозиция.
         let cls = '';
         let text = '';
-        if (absent) { cls = 'sk-rest'; text = driver.status === 'sick' ? 'болен' : 'отпуск'; }
+        // Работа сверх вахты: по графику отдых, но машина в рейсе без
+        // подмены или отмечен выход — «работает в выходной, увеличенный ФОТ».
+        const restByPlan = absent || shift?.rest || main?.kind === 'no_driver';
+        const substituted = vehicleId
+          ? plannedAt(planned, midMs, 'vehicle_id', vehicleId).some(item => item.driver_id !== driver.id)
+          : false;
+        const overwork = restByPlan && !substituted &&
+          (att?.status === 'present' || (vehicleId && tripAt(vehicleId, midMs)));
+        if (overwork) { cls = 'sk-overwork'; text = plateOf.get(vehicleId) || '—'; }
+        else if (absent) { cls = 'sk-rest'; text = driver.status === 'sick' ? 'болен' : 'отпуск'; }
         else if (shift?.rest) { cls = 'sk-rest'; text = 'межвахта'; }
         else if (main?.kind === 'no_driver') { cls = 'sk-rest'; text = 'выходной'; }
         else if (main && KIND_CELL[main.kind]) {
@@ -155,11 +164,13 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           cls = 'sched-trip';
           text = plateOf.get(vehicleId) || '—';
         } else text = plateOf.get(vehicleId) || '—';
-        const destHtml = period && (cls === 'sched-trip' || !cls)
-          ? `<small class="sk-sub">подменный до ${ddmm(period.ends_at)}</small>`
-          : cls === 'sched-trip'
-            ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicleId, midMs)))
-            : '';
+        const destHtml = cls === 'sk-overwork'
+          ? '<small class="sk-fot">работает в выходной · ↑ФОТ</small>'
+          : period && (cls === 'sched-trip' || !cls)
+            ? `<small class="sk-sub">подменный до ${ddmm(period.ends_at)}</small>`
+            : cls === 'sched-trip'
+              ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicleId, midMs)))
+              : '';
         const clsAll = [cls,
           att?.status === 'present' ? 'att-ok' : att?.status === 'absent' ? 'att-bad' : '',
           period ? 'sk-period' : '', canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
@@ -202,7 +213,17 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         let text = '';
         // «до какой даты» длится отдых — для призыва найти подмену.
         let restUntil = null;
-        if (main?.kind === 'no_driver') {
+        // Работа сверх вахты: держатель по графику отдыхает, подмены нет,
+        // но машина в рейсе или человек отмечен вышедшим.
+        const restingAll = holders.length && resting.length === holders.length;
+        const restPlanned = (main?.kind === 'no_driver' && holders.length) || restingAll;
+        const attToday = holders[0] ? attByDriver.get(`${holders[0].id}|${iso}`) : null;
+        const overwork = restPlanned && !periodHolders.length &&
+          (inTrip || attToday?.status === 'present');
+        if (overwork) {
+          cls = 'sk-overwork';
+          text = shortName(holders[0].full_name);
+        } else if (main?.kind === 'no_driver') {
           if (holders.length) { cls = 'sk-rest'; text = 'выходной'; restUntil = main.ends_at; }
           else { cls = 'sk-nodrv'; text = 'нет водителя'; }
         } else if (main && KIND_CELL[main.kind]) [cls, text] = KIND_CELL[main.kind];
@@ -223,14 +244,18 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         } else text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
         // В рейсе — фамилия, под ней направление в субъект РФ.
         // Подменный помечается явно; при рейсе направление уходит в подсказку.
-        const destHtml = periodHolders.length && (cls === 'sched-trip' || !cls)
-          ? `<small class="sk-sub">подменный до ${ddmm(period?.ends_at)}</small>`
-          : cls === 'sched-trip'
-            ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicle.id, midMs)))
-            : '';
+        const destHtml = cls === 'sk-overwork'
+          ? '<small class="sk-fot">работает в выходной · ↑ФОТ</small>'
+          : periodHolders.length && (cls === 'sched-trip' || !cls)
+            ? `<small class="sk-sub">подменный до ${ddmm(period?.ends_at)}</small>`
+            : cls === 'sched-trip'
+              ? (dest => dest ? `<small class="sk-dest">→ ${escapeHtml(dest)}</small>` : '')(tripDest(tripOf(vehicle.id, midMs)))
+              : '';
         // Цель — максимум машино-дней: день отдыха/пустоты сегодня и дальше
         // требует действия. Клик по ячейке уже открывает подмену на период.
         const needSub = iso >= todayIso && (cls === 'sk-rest' || cls === 'sk-nodrv');
+        // Сверхвахтенный день — подмена всё равно нужна, но формулировка иная:
+        // призыв уже в строке ↑ФОТ, дублировать не нужно.
         const callHtml = needSub
           ? `<small class="sk-call">найти подмену${restUntil ? ` до ${ddmm(restUntil)}` : ''}</small>` : '';
         const clsAll = [cls, periodHolders.length ? 'sk-period' : '',
@@ -267,7 +292,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     <span><i class="lg-chip" style="--c:#5e87ad"></i> пересменка</span>
     <span><i class="lg-chip" style="--c:#b06a55"></i> нет водителя (некому работать)</span>
     <span><i class="lg-chip" style="--c:#bd8f42"></i> ремонт</span>
-    <span><i class="lg-chip" style="--c:#5a9e54"></i> резерв</span>
+    <span><i class="lg-chip lg-stripe"></i> работает в выходной · ↑ФОТ</span>
     <span><i class="lg-chip" style="--c:#8a7fb3"></i> выходной · межвахта · отпуск</span>
     <span><i class="lg-edge" style="--c:var(--ok)"></i> вышел</span>
     <span><i class="lg-edge" style="--c:var(--bad)"></i> невыход</span>

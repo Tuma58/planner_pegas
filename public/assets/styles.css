@@ -537,6 +537,14 @@ tbody tr:hover td { background: var(--hover); }
 .sk-shift { background: color-mix(in srgb, #5e87ad 32%, transparent); }
 .sk-reserve { background: color-mix(in srgb, #5a9e54 28%, transparent); }
 .sk-rest { background: color-mix(in srgb, #8a7fb3 28%, transparent); }
+.sk-overwork { background: repeating-linear-gradient(45deg,
+  color-mix(in srgb, var(--warn) 34%, transparent) 0 6px,
+  color-mix(in srgb, var(--warn) 14%, transparent) 6px 12px); }
+.sk-fot { display: block; font-size: 9.5px; font-weight: 750; color: var(--bad); line-height: 1.2; }
+.lg-stripe { background: repeating-linear-gradient(45deg,
+  color-mix(in srgb, var(--warn) 60%, transparent) 0 3px,
+  color-mix(in srgb, var(--warn) 20%, transparent) 3px 6px) !important;
+  border-color: var(--warn) !important; }
 .att-ok { box-shadow: inset 3px 0 0 var(--ok); }
 .att-bad { box-shadow: inset 3px 0 0 var(--bad); }
 .sk-period { outline: 2px dashed var(--teal); outline-offset: -2px; }
