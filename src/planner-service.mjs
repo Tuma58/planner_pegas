@@ -429,8 +429,11 @@ export function attendanceEffective(db, day) {
     WHERE starts_at <= ? AND ends_at > ?`).all(day, day);
   const plannedByDriver = new Map(planned.map(item => [item.driver_id, item.vehicle_id]));
   const plannedVehicles = new Set(planned.map(item => item.vehicle_id));
+  // Незавершённый рейс (план/в пути) покрывает день и после расчётного
+  // конца — водитель за рулём, пока не проставлен факт выгрузки.
   const tripOn = db.prepare(`SELECT 1 FROM trips WHERE vehicle_id=? AND status<>'rejected'
-    AND starts_at < ? AND ends_at > ? LIMIT 1`);
+    AND starts_at < ?
+    AND (ends_at > ? OR (status IN ('plan','run') AND ends_at > datetime('now','-3 days'))) LIMIT 1`);
   const noDriverOn = db.prepare(`SELECT 1 FROM vehicle_dispositions WHERE vehicle_id=?
     AND kind='no_driver' AND starts_at < ? AND ends_at > ? LIMIT 1`);
   return drivers.map(driver => {

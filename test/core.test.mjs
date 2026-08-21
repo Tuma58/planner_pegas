@@ -377,8 +377,11 @@ test('потребность от логистики: ремонт и «без �
     trips: [
       { vehicle_id: 'V1', status: 'done', to_point: 'Пенза-склад', to_name: 'Дом',
         starts_at: '2026-08-10T08:00:00.000Z', ends_at: '2026-08-12T08:00:00.000Z' },
-      { vehicle_id: 'V2', status: 'run', to_point: 'Пенза-склад', to_name: 'Дом',
-        starts_at: '2026-08-19T08:00:00.000Z', ends_at: '2026-08-20T15:00:00.000Z' },
+      // Выгружен по факту в течение дня задания: освобождается честно, по
+      // unloaded_at (незавершённый run с прошедшим расчётом занят до факта).
+      { vehicle_id: 'V2', status: 'unloaded', to_point: 'Пенза-склад', to_name: 'Дом',
+        unloaded_at: '2026-08-20T15:00:00.000Z',
+        starts_at: '2026-08-19T08:00:00.000Z', ends_at: '2026-08-20T13:00:00.000Z' },
     ],
     dispositions: [
       { vehicle_id: 'V3', kind: 'repair',
@@ -396,7 +399,16 @@ test('потребность от логистики: ремонт и «без �
         to_point: 'Пенза-склад', to_name: 'Дом',
         window_from: '2026-08-20T06:00:00.000Z', window_to: '2026-08-20T20:00:00.000Z' },
     ] };
+  // Кейс р892ху58: рейс run с давно прошедшим расчётным концом и без факта
+  // выгрузки — машина ЕЩЁ ЕДЕТ и свободной не считается вовсе.
+  taskData.vehicles.push({ id: 'V4', plate: 'р892ху58', status: 'work',
+    type_name: 'Реф', zone_name: 'Дом' });
+  taskData.trips.push({ vehicle_id: 'V4', status: 'run', to_point: 'новоиссибирск, никитина',
+    to_name: 'Москва', starts_at: '2026-08-19T08:00:00.000Z', ends_at: '2026-08-20T05:00:00.000Z' });
   const task = salesTaskFor(taskData, day);
+  assert.ok(!task.free.some(item => item.vehicle.id === 'V4'), '892 не в свободных');
+  assert.ok(!task.freeing.some(item => item.vehicle.id === 'V4' && item.at),
+    '892 без обещанного времени освобождения');
   assert.equal(task.free.length, 1, 'V1 свободна с прошлых дней');
   assert.equal(task.free[0].region, 'Пензенская обл');
   assert.equal(task.freeing.length, 1, 'V2 освободится после рейса в течение дня');

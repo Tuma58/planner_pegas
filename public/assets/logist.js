@@ -384,10 +384,16 @@ export function renderLogist(container, context) {
         до ${formatDateTime(disposition.ends_at)}</span>`;
     }
     if (request.idleMs > 0) return '<span style="color:var(--warn)">⚠ простой — причины нет</span>';
+    if (request.overdueTrip) return '<span style="color:var(--warn)">🛣 ещё в рейсе — расчётное время вышло, уточните у диспетчера</span>';
     return 'в рейсе';
   };
   const vehicleCards = vehicleRequests.map((request, index) => {
-    const idleDays = request.idleMs > 0 ? Math.max(1, Math.floor(request.idleMs / 86_400_000)) : 0;
+    // Честная длительность: часы до суток, затем дни (раньше даже 2 часа
+    // простоя показывались как «стоит 1 дн»).
+    const idleDays = request.idleMs > 0 ? Math.floor(request.idleMs / 86_400_000) : 0;
+    const idleLabel = request.idleMs <= 0 ? ''
+      : idleDays >= 1 ? `стоит ${idleDays} дн`
+      : `стоит ${Math.max(1, Math.floor(request.idleMs / 3_600_000))} ч`;
     const fits = matchOrdersForVehicle(request, queue).length;
     const blockedNote = request.blockedKind
       ? ` · ⚙ ${({ repair: 'из ремонта', no_driver: 'получит водителя', reserve: 'выйдет из резерва' })[request.blockedKind] || request.blockedKind}`
@@ -396,8 +402,9 @@ export function renderLogist(container, context) {
       <span style="flex:1;min-width:0">
         <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong>
         · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.zone.name)}
-        <small class="muted" style="display:block">${idleDays
-          ? `стоит ${idleDays} дн с ${formatDateTime(request.freeAt)}`
+        <small class="muted" style="display:block">${request.idleMs > 0
+          ? `${idleLabel} с ${formatDateTime(request.freeAt)}`
+          : request.overdueTrip ? '⏳ выгрузка ожидается — расчётное время вышло'
           : `освободится ${formatDateTime(request.freeAt)}`}${blockedNote}</small>
         <small class="muted" style="display:block">📍 ${escapeHtml(request.region || 'субъект не определён')}
           · ${stateNote(request)}</small>

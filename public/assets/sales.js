@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, wireSelectSearch, dayPickerHtml, wireDayPicker } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -177,15 +177,28 @@ export function salesTaskFor(data, dayIso) {
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
       .sort((a, b) => a.ends_at.localeCompare(b.ends_at));
     const activeTrip = trips.find(trip =>
-      Date.parse(trip.starts_at) < dayEnd && Date.parse(trip.ends_at) > dayStart);
-    const lastBefore = [...trips].reverse().find(trip => Date.parse(trip.ends_at) <= dayStart);
+      Date.parse(trip.starts_at) < dayEnd && tripBusyUntilMs(trip) > dayStart);
+    // Рейс, чей расчётный конец прошёл, а факта выгрузки нет, — машина ещё
+    // в рейсе с неизвестным освобождением: в свободные не записывается.
+    const overdueTrip = !activeTrip && trips.find(trip =>
+      (trip.status === 'plan' || trip.status === 'run') && Date.parse(trip.ends_at) <= dayStart);
+    const lastBefore = [...trips].reverse().find(trip => tripBusyUntilMs(trip) <= dayStart);
     const место = trip => trip ? (trip.to_point || trip.to_name) : (vehicle.zone_name || '');
     const регион = trip => trip
       ? regionOfPlace(data, trip.to_point, trip.to_name)
       : regionOfPlace(data, '', vehicle.zone_name);
+    if (overdueTrip) {
+      freeing.push({ vehicle, at: null, why: 'рейс дольше расчёта — уточнить у диспетчера',
+        place: место(overdueTrip), region: регион(overdueTrip), position: positionOf(overdueTrip) });
+      return;
+    }
     if (activeTrip) {
-      if (Date.parse(activeTrip.ends_at) <= dayEnd) {
-        freeing.push({ vehicle, at: activeTrip.ends_at, why: 'после рейса',
+      const busyUntil = tripBusyUntilMs(activeTrip);
+      if (busyUntil <= dayEnd) {
+        // Рейс опаздывает к расчётному времени — час освобождения неизвестен.
+        const late = busyUntil > Date.parse(activeTrip.ends_at);
+        freeing.push({ vehicle, at: late ? null : activeTrip.ends_at,
+          why: late ? 'рейс дольше расчёта — уточнить у диспетчера' : 'после рейса',
           place: место(activeTrip), region: регион(activeTrip), position: positionOf(activeTrip) });
       }
       return; // занята рейсом весь день — в задание не идёт
@@ -208,7 +221,7 @@ export function salesTaskFor(data, dayIso) {
       place: место(lastBefore), region: регион(lastBefore), position: positionOf(lastBefore) });
   });
   free.sort((a, b) => String(a.since || '').localeCompare(String(b.since || '')));
-  freeing.sort((a, b) => a.at.localeCompare(b.at));
+  freeing.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
 
   // Потребности без ТС, чьё окно накрывает день: группировка по НАПРАВЛЕНИЮ
   // (геозона погрузки → геозона выгрузки) с разбивкой по требуемым типам ТС.
@@ -288,7 +301,7 @@ function salesTaskDialog(data, context) {
     task.free.forEach(item => lines.push(`  ${item.vehicle.plate} — ${item.place}` +
       `${item.region ? ` (${item.region})` : ''}${item.since ? `, стоит с ${formatDateTime(item.since)}` : ''}`));
     lines.push('', `Освободятся в течение дня: ${task.freeing.length}`);
-    task.freeing.forEach(item => lines.push(`  ${item.vehicle.plate} — ${formatDateTime(item.at)} ` +
+    task.freeing.forEach(item => lines.push(`  ${item.vehicle.plate} — ${item.at ? formatDateTime(item.at) : '⚠ время неизвестно'} ` +
       `${item.why}, ${item.place}${item.region ? ` (${item.region})` : ''}`));
     if (task.unavailable.length) {
       lines.push('', `Недоступны весь день: ${task.unavailable.length}`);
@@ -391,7 +404,7 @@ function salesTaskDialog(data, context) {
               title="${escapeHtml(item.place)}${item.since ? ` · стоит с ${formatDateTime(item.since)}` : ''}">${escapeHtml(item.vehicle.plate)}</span>`).join(' ')}</div>
           </details>`).join('') || '<p class="muted">нет</p>'}</div>
       <div class="task-sec"><b>Освободятся в течение дня (${task.freeing.length})</b>
-        ${task.freeing.map(item => `<div class="task-row">⏱ <b>${formatDateTime(item.at)}</b>
+        ${task.freeing.map(item => `<div class="task-row">⏱ <b>${item.at ? formatDateTime(item.at) : '⚠'}</b>
           <b class="mono">${escapeHtml(item.vehicle.plate)}</b> ${escapeHtml(item.why)} —
           ${escapeHtml(item.place)}${item.region ? ` <span class="muted">(${escapeHtml(item.region)})</span>` : ''}</div>`).join('')
           || '<p class="muted">нет</p>'}</div>
@@ -464,7 +477,11 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
       .sort((a, b) => a.ends_at.localeCompare(b.ends_at));
     const last = trips[trips.length - 1] || null;
-    const tripFreeMs = last ? Date.parse(last.ends_at) : 0;
+    // Незавершённый рейс держит сцепку до факта выгрузки; расчётный конец
+    // в прошлом — не «стоит», а «рейс дольше расчёта» (пометка для логиста).
+    const tripFreeMs = last ? tripBusyUntilMs(last, nowMs) : 0;
+    const overdueTrip = last && (last.status === 'plan' || last.status === 'run') &&
+      Date.parse(last.ends_at) < nowMs;
     // Блокирующие интервалы (ремонт, без водителя, резерв под заказ),
     // заканчивающиеся позже рейса: сцепка реально доступна после самого
     // позднего из них. Резерв — сцепка обещана, продажам не предлагается.
@@ -496,6 +513,7 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     requests.push({
       vehicle, zone,
       region: regionOfTrip(last),
+      overdueTrip,
       freeAt: endsAt.toISOString(),
       // Простой: сцепка уже стоит без загрузки (idleMs > 0) — приоритет продаж.
       idleMs: Math.max(0, idleMs),
@@ -529,7 +547,7 @@ export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null
     ? resolveAddress(data, trip.to_point || trip.to_name) : null;
   const busy = new Set(data.trips
     .filter(trip => trip.status !== 'rejected' &&
-      Date.parse(trip.starts_at) <= moment && Date.parse(trip.ends_at) > moment)
+      Date.parse(trip.starts_at) <= moment && tripBusyUntilMs(trip) > moment)
     .map(trip => trip.vehicle_id));
   // Недоступные на момент погрузки (ремонт, без водителя, пересменка, выведена)
   // и зарезервированные под другой заказ кандидатами не предлагаются —
@@ -542,7 +560,7 @@ export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null
     .map(vehicle => {
       const lastTrip = data.trips
         .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-          Date.parse(trip.ends_at) <= moment)
+          tripBusyUntilMs(trip) <= moment)
         .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
       const zoneName = lastTrip ? lastTrip.to_name : vehicle.zone_name;
       // Порожний подгон: от позиции сцепки до адреса погрузки заявки.
@@ -551,7 +569,7 @@ export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null
         ? plannedKmBetween(originPoint, fromAddress) : null;
       // Готовность к подаче: 2 ч + время подгона (порожние км ÷ 50 км/ч).
       const feedMs = DISPATCH_LAG_MS + (emptyKm ? emptyKm / 50 * 3_600_000 : 0);
-      const readyAt = lastTrip ? Date.parse(lastTrip.ends_at) + feedMs : null;
+      const readyAt = lastTrip ? tripBusyUntilMs(lastTrip) + feedMs : null;
       return {
         vehicle, zoneName, inZone: zoneName === fromZoneName, emptyKm,
         readyAt, ready: !readyAt || readyAt <= moment

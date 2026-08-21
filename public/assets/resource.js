@@ -1,7 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
-import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch } from './api.js';
+import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
 
@@ -76,8 +76,9 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     new Date(Date.parse(`${startIso}T00:00:00Z`) + index * 86_400_000));
   const todayIso = new Date().toISOString().slice(0, 10);
   const trips = (data.trips || []).filter(trip => trip.status !== 'rejected');
+  // Незавершённый рейс покрывает ячейку и после расчётного конца (до факта).
   const tripOf = (vehicleId, midMs) => trips.find(trip => trip.vehicle_id === vehicleId &&
-    Date.parse(trip.starts_at) <= midMs && midMs < Date.parse(trip.ends_at));
+    Date.parse(trip.starts_at) <= midMs && midMs < tripBusyUntilMs(trip));
   const tripAt = (vehicleId, midMs) => Boolean(tripOf(vehicleId, midMs));
   // Куда едет — субъект РФ назначения (сокращённый), фолбэк — геозона/пункт.
   const shortRegion = value => String(value || '')
@@ -567,7 +568,7 @@ export function vehicleStateAt(vehicle, data, dayIso) {
   if (vehicle.status === 'repair') return kindMeta('repair');
   if (vehicle.status === 'no_driver' || !vehicle.driver_name) return kindMeta('no_driver');
   const onTrip = data.trips.some(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-    Date.parse(trip.starts_at) <= midpoint && midpoint < Date.parse(trip.ends_at));
+    Date.parse(trip.starts_at) <= midpoint && midpoint < tripBusyUntilMs(trip));
   return onTrip ? kindMeta('work') : kindMeta('idle');
 }
 
@@ -591,9 +592,9 @@ function renderResourceTasks(container, context, refDay, withState) {
       if (hasDisposition) return null;
       const lastTrip = data.trips
         .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-          Date.parse(trip.ends_at) <= midpoint)
+          tripBusyUntilMs(trip) <= midpoint)
         .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
-      const idleMs = lastTrip ? midpoint - Date.parse(lastTrip.ends_at) : null;
+      const idleMs = lastTrip ? midpoint - tripBusyUntilMs(lastTrip) : null;
       return { vehicle, stateNow, lastTrip, idleMs };
     })
     .filter(Boolean)

@@ -16,6 +16,19 @@ export async function api(path, options = {}) {
   return data;
 }
 
+// Эффективный конец занятости сцепки рейсом. Незавершённый рейс (план/в
+// пути) держит машину до ФАКТА выгрузки: расчётный конец в прошлом сцепку
+// не освобождает — рейс опаздывает, но машина едет (кейс р892ху58: ехала в
+// Новосибирск, а по расчётному концу числилась «стоит»). Завершённый рейс
+// освобождает по фактическому времени выгрузки (может быть раньше расчёта).
+export const tripBusyUntilMs = (trip, nowMs = Date.now()) => {
+  const planned = Date.parse(trip.ends_at);
+  if (trip.status === 'plan' || trip.status === 'run') return Math.max(planned, nowMs);
+  const raw = String(trip.unloaded_at || '');
+  const fact = raw ? Date.parse(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`) : NaN;
+  return Number.isFinite(fact) ? fact : planned;
+};
+
 export const money = value =>
   `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 
