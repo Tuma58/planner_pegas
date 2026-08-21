@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatMessages, createDriverAssignment, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
@@ -1720,12 +1720,17 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/messages') {
     const user = requireUser(request, response);
     if (!user) return;
-    const after = Number(url.searchParams.get('after') || 0);
-    const items = after > 0
-      ? db.prepare('SELECT * FROM messages WHERE id>? ORDER BY id LIMIT 200').all(after)
-      : db.prepare('SELECT * FROM (SELECT * FROM messages ORDER BY id DESC LIMIT 40) ORDER BY id').all();
-    const lastId = db.prepare('SELECT MAX(id) id FROM messages').get().id || 0;
-    return json(response, 200, { items, lastId });
+    return json(response, 200, chatMessages(db, user.id, Number(url.searchParams.get('after') || 0)));
+  }
+  // Собеседники для личных сообщений: все действующие сотрудники, кроме себя.
+  if (request.method === 'GET' && pathname === '/api/chat/users') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    return json(response, 200, {
+      items: db.prepare(`SELECT id,full_name,roles FROM users
+        WHERE active=1 AND deleted_at IS NULL AND id<>? ORDER BY full_name`).all(user.id)
+        .map(item => ({ ...item, roles: rolesOf(item) }))
+    });
   }
   if (request.method === 'POST' && pathname === '/api/messages') {
     const user = requireUser(request, response);
@@ -1733,8 +1738,17 @@ async function api(request, response, url) {
     const body = await readJson(request);
     const text = String(body.text || '').trim().slice(0, 500);
     if (!text) return errorJson(response, 422, 'Пустое сообщение');
-    db.prepare(`INSERT INTO messages(author_id,author_name,kind,text)
-      VALUES(?,?,'user',?)`).run(user.id, user.full_name || user.username, text);
+    // Личное сообщение: адресат — действующий сотрудник, не сам себе.
+    let recipientId = null;
+    if (body.recipientId) {
+      const recipient = db.prepare(`SELECT id FROM users
+        WHERE id=? AND active=1 AND deleted_at IS NULL`).get(String(body.recipientId));
+      if (!recipient) return errorJson(response, 422, 'Получатель не найден или отключён');
+      if (recipient.id === user.id) return errorJson(response, 422, 'Нельзя писать самому себе');
+      recipientId = recipient.id;
+    }
+    db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,recipient_id)
+      VALUES(?,?,'user',?,?)`).run(user.id, user.full_name || user.username, text, recipientId);
     return json(response, 201, { ok: true });
   }
 

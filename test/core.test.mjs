@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatMessages, createDriverAssignment, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1410,4 +1410,31 @@ test('удаление пользователя: без истории — фи�
     WHERE json_each.value='admin' AND users.active=1 AND users.deleted_at IS NULL
       AND users.id<>?`).get(admin.id).count;
   assert.equal(others, 0, 'root-admin — единственный админ, сервер откажет в удалении');
+});
+
+test('чат: личное сообщение видят только отправитель и получатель, общий канал — все', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-chat-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  db.prepare(`INSERT INTO users(id,username,full_name,password_hash,role,roles) VALUES
+    ('cu1','ivanov','Иванов','x','sales','["sales"]'),
+    ('cu2','petrov','Петров','x','logist','["logist"]'),
+    ('cu3','sidorov','Сидоров','x','dispatcher','["dispatcher"]')`).run();
+  const send = db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,recipient_id)
+    VALUES(?,?,'user',?,?)`);
+  send.run('cu1', 'Иванов', 'Всем привет', null);
+  send.run('cu1', 'Иванов', 'Петров, лично тебе', 'cu2');
+  send.run('cu2', 'Петров', 'Иванов, ответ лично', 'cu1');
+
+  const texts = userId => chatMessages(db, userId).items.map(m => m.text);
+  assert.deepEqual(texts('cu1'), ['Всем привет', 'Петров, лично тебе', 'Иванов, ответ лично']);
+  assert.deepEqual(texts('cu2'), ['Всем привет', 'Петров, лично тебе', 'Иванов, ответ лично']);
+  assert.deepEqual(texts('cu3'), ['Всем привет'], 'третьему лички не видны');
+  // Инкрементальный поллинг сохраняет фильтр видимости.
+  const first = chatMessages(db, 'cu3').items[0].id;
+  assert.deepEqual(chatMessages(db, 'cu3', first).items, []);
+  assert.equal(chatMessages(db, 'cu2', first).items.length, 2);
 });

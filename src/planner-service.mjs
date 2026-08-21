@@ -830,3 +830,17 @@ export function demurrageSummary(db, nowMs = Date.now()) {
     monthCount: month.c, monthAmount: month.s
   };
 }
+
+// ── Внутренний чат: видимость сообщений ──
+// Общий канал (recipient_id IS NULL) видят все; личное сообщение — только
+// отправитель и получатель. Поллинг инкрементальный по id.
+export function chatMessages(db, userId, after = 0) {
+  const visible = `(recipient_id IS NULL OR recipient_id=? OR author_id=?)`;
+  const items = after > 0
+    ? db.prepare(`SELECT * FROM messages WHERE id>? AND ${visible} ORDER BY id LIMIT 200`)
+      .all(after, userId, userId)
+    : db.prepare(`SELECT * FROM (SELECT * FROM messages WHERE ${visible}
+        ORDER BY id DESC LIMIT 200) ORDER BY id`).all(userId, userId);
+  const lastId = db.prepare('SELECT MAX(id) id FROM messages').get().id || 0;
+  return { items, lastId };
+}

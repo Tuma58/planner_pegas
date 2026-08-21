@@ -1,6 +1,8 @@
 // Внутренний чат и уведомления конвейера.
-// Общий канал для всех сотрудников + авто-сообщения «Конвейера», адресованные
-// роли следующего участника процесса: адресату они приходят тостом со звуком.
+// Общий канал для всех сотрудников + личные переписки один на один
+// (видят только отправитель и получатель) + авто-сообщения «Конвейера»,
+// адресованные роли следующего участника процесса: адресату они приходят
+// тостом со звуком. Вкладки-чипы: «Общий» и диалоги с непрочитанными.
 // Поллинг лёгкий (raw JSON раз в 20 секунд), новизна — по id сообщения.
 import { api, escapeHtml, formatDateTime, toast } from './api.js';
 
@@ -70,6 +72,7 @@ export function setupChat(state) {
           value="${Math.round(soundSettings.volume * 100)}" title="Громкость уведомлений">
       </span>
       <button class="button ghost small" id="chatClose">✕</button></div>
+    <div class="chat-tabs" id="chatTabs"></div>
     <div class="chat-list" id="chatList"></div>
     <form class="chat-form" id="chatForm">
       <input id="chatInput" placeholder="Сообщение всем…" autocomplete="off" maxlength="500">
@@ -78,69 +81,166 @@ export function setupChat(state) {
   document.body.appendChild(panel);
 
   const myRoles = state.data.user.roles || [state.data.user.role];
+  const myId = state.data.user.id;
   let lastId = Number(localStorage.getItem('pl_chat_last') || 0);
   let seenId = Number(localStorage.getItem('pl_chat_seen') || 0);
   let unread = 0;
   const list = panel.querySelector('#chatList');
+  const tabsBox = panel.querySelector('#chatTabs');
+  const input = panel.querySelector('#chatInput');
   const unreadBadge = document.getElementById('chatUnread');
   const isOpen = () => !panel.classList.contains('hidden');
   const forMe = message => message.target_role && myRoles.includes(message.target_role);
 
-  const renderMessage = message => `<div class="chat-msg ${message.kind} ${forMe(message) ? 'mine-target' : ''}">
+  // Личные переписки: активная вкладка (null — общий канал), сообщения в
+  // памяти, справочник собеседников, отметки «прочитано» по каждому диалогу.
+  let activePeer = null;
+  const allMessages = [];
+  let contacts = [];
+  let dmSeen = {};
+  try { dmSeen = JSON.parse(localStorage.getItem('pl_chat_dm_seen') || '{}') || {}; } catch { dmSeen = {}; }
+  const saveDmSeen = () => localStorage.setItem('pl_chat_dm_seen', JSON.stringify(dmSeen));
+  const peerName = id => contacts.find(item => item.id === id)?.full_name
+    || allMessages.find(m => m.author_id === id && m.author_name)?.author_name || 'Сотрудник';
+  const shortName = full => {
+    const [last, first] = String(full).split(' ');
+    return first ? `${last} ${first[0]}.` : last;
+  };
+  const inDialog = (message, peer) => message.recipient_id &&
+    ((message.author_id === myId && message.recipient_id === peer) ||
+     (message.author_id === peer && message.recipient_id === myId));
+  const onTab = message => activePeer ? inDialog(message, activePeer) : !message.recipient_id;
+  const dmUnreadOf = peer => allMessages.filter(m =>
+    m.author_id === peer && m.recipient_id === myId && m.id > (dmSeen[peer] || 0)).length;
+  // Диалоги: с кем есть переписка, непрочитанные — первыми.
+  const dialogPeers = () => {
+    const ids = new Set();
+    for (const m of allMessages) {
+      if (!m.recipient_id) continue;
+      if (m.author_id === myId) ids.add(m.recipient_id);
+      else if (m.recipient_id === myId) ids.add(m.author_id);
+    }
+    return [...ids].sort((a, b) => dmUnreadOf(b) - dmUnreadOf(a)
+      || peerName(a).localeCompare(peerName(b), 'ru'));
+  };
+
+  const renderTabs = () => {
+    const chips = [`<button type="button" class="chat-tab ${activePeer ? '' : 'on'}" data-peer="">
+        Общий${unread ? ` <span class="chat-unread">${unread}</span>` : ''}</button>`];
+    for (const peer of dialogPeers()) {
+      const count = dmUnreadOf(peer);
+      chips.push(`<button type="button" class="chat-tab ${activePeer === peer ? 'on' : ''}"
+        data-peer="${peer}" title="Личная переписка: видите только вы двое">
+        ${escapeHtml(shortName(peerName(peer)))}${count ? ` <span class="chat-unread">${count}</span>` : ''}</button>`);
+    }
+    chips.push(`<select id="chatNewPeer" title="Написать сотруднику лично">
+      <option value="">✎ Написать…</option>
+      ${contacts.filter(item => item.id !== activePeer).map(item =>
+        `<option value="${item.id}">${escapeHtml(item.full_name)}</option>`).join('')}</select>`);
+    tabsBox.innerHTML = chips.join('');
+    tabsBox.querySelectorAll('.chat-tab').forEach(tab =>
+      tab.addEventListener('click', () => openTab(tab.dataset.peer || null)));
+    tabsBox.querySelector('#chatNewPeer').onchange = event => {
+      if (event.target.value) openTab(event.target.value);
+    };
+  };
+
+  const renderList = () => {
+    list.innerHTML = allMessages.filter(onTab).map(renderMessage).join('')
+      || `<div class="muted" style="padding:10px">${activePeer
+        ? 'Переписка пока пуста — напишите первое сообщение.' : ''}</div>`;
+    list.scrollTop = list.scrollHeight;
+    input.placeholder = activePeer ? `Лично: ${shortName(peerName(activePeer))}…` : 'Сообщение всем…';
+  };
+
+  function openTab(peer) {
+    activePeer = peer;
+    markSeen();
+    renderTabs();
+    renderList();
+    input.focus();
+  }
+
+  // «Прочитано» — только для открытой вкладки: общий канал и каждый диалог
+  // помечаются независимо, чтобы личное не «прочитывалось» вслепую.
+  function markSeen() {
+    if (!isOpen()) return;
+    if (activePeer) {
+      dmSeen[activePeer] = lastId;
+      saveDmSeen();
+    } else {
+      seenId = lastId;
+      localStorage.setItem('pl_chat_seen', String(seenId));
+      unread = 0;
+    }
+    updateUnread();
+  }
+
+  const renderMessage = message => `<div class="chat-msg ${message.kind} ${forMe(message) ? 'mine-target' : ''} ${message.recipient_id ? 'dm' : ''} ${message.author_id === myId ? 'own' : ''}">
       <small class="muted">${message.kind === 'auto'
         ? `⚙ Конвейер${message.target_role ? ` → ${ROLE_LABELS[message.target_role] || message.target_role}` : ''}`
-        : escapeHtml(message.author_name)} · ${formatDateTime(message.created_at.includes('Z')
+        : escapeHtml(message.author_name)}${message.recipient_id ? ' · 🔒 лично' : ''} · ${formatDateTime(message.created_at.includes('Z')
           ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}</small>
       <div>${escapeHtml(message.text)}</div>
     </div>`;
 
   const updateUnread = () => {
-    unreadBadge.textContent = unread;
-    unreadBadge.classList.toggle('hidden', unread === 0);
+    const total = unread + dialogPeers().reduce((sum, peer) => sum + dmUnreadOf(peer), 0);
+    unreadBadge.textContent = total;
+    unreadBadge.classList.toggle('hidden', total === 0);
   };
 
   const poll = async (initial = false) => {
     try {
       const { items, lastId: serverLast } = await api(`/api/messages?after=${initial ? 0 : lastId}`);
-      if (initial) list.innerHTML = '';
+      let changed = initial;
       for (const message of items) {
         if (message.id <= lastId && !initial) continue;
-        list.insertAdjacentHTML('beforeend', renderMessage(message));
+        allMessages.push(message);
+        changed = true;
         const isNew = message.id > seenId && !initial;
-        if (isNew && !isOpen()) unread += 1;
-        // Звук — на каждое входящее оповещение (кроме собственных сообщений):
-        // адресованное моей роли — двойной сигнал и тост, остальное — тихий тон.
-        const ownMessage = message.kind !== 'auto' &&
-          message.author_name === (state.data.user.fullName || '');
-        if (isNew && forMe(message)) {
-          toast(message.text);
-          beep('target');
-        } else if (isNew && !ownMessage) {
-          beep('other');
+        const ownMessage = message.author_id === myId;
+        // Общий канал: счётчик как раньше; личное мне — тост и двойной сигнал.
+        if (message.recipient_id) {
+          if (isNew && message.recipient_id === myId &&
+              !(isOpen() && activePeer === message.author_id)) {
+            toast(`🔒 ${message.author_name}: ${message.text}`);
+            beep('target');
+          }
+        } else {
+          if (isNew && !isOpen()) unread += 1;
+          if (isNew && forMe(message)) {
+            toast(message.text);
+            beep('target');
+          } else if (isNew && !ownMessage) {
+            beep('other');
+          }
         }
       }
       lastId = Math.max(lastId, serverLast);
       localStorage.setItem('pl_chat_last', String(lastId));
-      if (isOpen()) {
-        seenId = lastId;
-        localStorage.setItem('pl_chat_seen', String(seenId));
-        unread = 0;
-        list.scrollTop = list.scrollHeight;
+      markSeen();
+      if (changed) {
+        renderTabs();
+        renderList();
       }
       updateUnread();
     } catch { /* сеть/сессия — попробуем в следующий цикл */ }
+  };
+
+  // Справочник собеседников — один раз при старте (список сотрудников).
+  const loadContacts = async () => {
+    try { contacts = (await api('/api/chat/users')).items; renderTabs(); } catch { /* не критично */ }
   };
 
   toggle.onclick = () => {
     armAudio();
     panel.classList.toggle('hidden');
     if (isOpen()) {
-      seenId = lastId;
-      localStorage.setItem('pl_chat_seen', String(seenId));
-      unread = 0;
-      updateUnread();
-      list.scrollTop = list.scrollHeight;
-      panel.querySelector('#chatInput').focus();
+      markSeen();
+      renderTabs();
+      renderList();
+      input.focus();
     }
   };
   panel.querySelector('#chatClose').onclick = () => panel.classList.add('hidden');
@@ -164,11 +264,11 @@ export function setupChat(state) {
   };
   panel.querySelector('#chatForm').onsubmit = async event => {
     event.preventDefault();
-    const input = panel.querySelector('#chatInput');
     const text = input.value.trim();
     if (!text) return;
     try {
-      await api('/api/messages', { method: 'POST', body: JSON.stringify({ text }) });
+      await api('/api/messages', { method: 'POST',
+        body: JSON.stringify({ text, recipientId: activePeer || undefined }) });
       input.value = '';
       await poll();
     } catch (error) { toast(error.message, 'error'); }
@@ -177,6 +277,7 @@ export function setupChat(state) {
   document.addEventListener('click', armAudio, { once: true });
 
   poll(true);
+  loadContacts();
   setInterval(poll, POLL_MS);
 
   // Версия интерфейса: после деплоя открытые вкладки узнают об обновлении

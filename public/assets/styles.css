@@ -1076,3 +1076,16 @@ tbody tr:hover td { background: var(--hover); }
 .dmr-actions { flex: none; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
   justify-content: flex-end; max-width: 40%; }
 .dmr-off { opacity: .55; }
+
+/* ── Чат: вкладки общего канала и личных диалогов ── */
+.chat-tabs { display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.chat-tab { border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  border-radius: 14px; padding: 3px 10px; font-size: var(--fs-xs); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px; }
+.chat-tab.on { border-color: var(--teal); color: var(--teal); font-weight: 700; }
+.chat-tab .chat-unread { position: static; display: inline-flex; }
+.chat-tabs select { font-size: var(--fs-xs); padding: 3px 6px; max-width: 130px;
+  border-radius: 14px; }
+.chat-msg.dm { border-left: 3px solid var(--warn); padding-left: 7px; }
+.chat-msg.dm.own { border-left-color: var(--teal); }
