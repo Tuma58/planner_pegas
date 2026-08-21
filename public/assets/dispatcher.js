@@ -318,6 +318,13 @@ export async function renderDispatcher(container, context) {
     const at = Date.parse(String(mark.done_at).replace(' ', 'T') + 'Z');
     return Number.isFinite(at) && Date.now() - at < CLAIM_MS ? mark : null;
   };
+  const claimLeftMin = claim => {
+    const at = Date.parse(String(claim.done_at).replace(' ', 'T') + (String(claim.done_at).includes('Z') ? '' : 'Z'));
+    return Math.max(1, Math.ceil((CLAIM_MS - (Date.now() - at)) / 60_000));
+  };
+  const claimBadge = (claim, mine) => claim
+    ? `<span class="ctrl-claim-note ${mine ? 'mine' : 'other'}" title="Захват снимается сам через 15 минут после взятия">🖐 ${mine
+        ? 'ВЫ ВЕДЁТЕ' : `ВЕДЁТ ${escapeHtml(String(claim.done_by).toUpperCase())}`} · ещё ${claimLeftMin(claim)} мин</span>` : '';
   const myName = state.data.user.fullName || '';
   // Ключ события СТАБИЛЬНЫЙ: рейс + подпись + плановая минута. Номер часа
   // просрочки в ключ не входит — раньше он «плыл» со временем, и отметка,
@@ -477,11 +484,11 @@ export async function renderDispatcher(container, context) {
     const claim = claimOf(trip);
     const claimMine = claim && claim.done_by === myName;
     const note = prepNoteOf(trip);
-    return { hot,
+    return { hot, claimed: Boolean(claim), claimMine: Boolean(claimMine),
       html: `<small class="next-ctrl ${overdue ? 'overdue' : ''}">⏱ ${escapeHtml(label)} —
         выход ${formatDateTime(trip.starts_at)}${overdue ? ' · время вышло' : ''}
         ${hot && !overdue ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
-        ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
+        ${claimBadge(claim, claimMine)}
         ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-claim="${trip.id}"
           title="${claimMine ? 'Отпустить карточку' : claim ? `Карточку ведёт ${escapeHtml(claim.done_by)} — перехватить`
             : 'Взять карточку в работу: коллеги увидят, что подготовкой уже занимаются'}">${claimMine ? '🖐 Отпустить' : '🖐 Беру'}</button>` : ''}
@@ -522,7 +529,7 @@ export async function renderDispatcher(container, context) {
   const prepCard = trip => {
     const event = prepEventLine(trip, prepStepOf(trip)[1]);
     const overdue = Date.parse(trip.starts_at) < Date.now();
-    return `<div class="card ${event.hot ? 'ctrl-hot' : ''}"
+    return `<div class="card ${event.hot ? 'ctrl-hot' : ''} ${event.claimed ? `ctrl-claimed ${event.claimMine ? 'mine' : ''}` : ''}"
         style="margin-bottom:10px;padding:9px 11px">
       <div class="list-item ordrow ${overdue ? 'pipe-rejected' : event.hot ? 'pipe-returned' : ''}" style="border:0;padding:0 0 4px">
         ${tripHead(trip)}
@@ -758,7 +765,7 @@ export async function renderDispatcher(container, context) {
       ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue
         ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждые 1,5 ч` : ''}
       ${hot && !overdue && nextEvent.at !== 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
-      ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
+      ${claimBadge(claim, claimMine)}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
         · ${escapeHtml(worked.done_by || '')}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
       ${(() => { const last = lastNoteOf(trip);
@@ -776,7 +783,7 @@ export async function renderDispatcher(container, context) {
       ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-worked="${escapeHtml(eventKeyOf(trip))}"
         ${worked ? '' : `data-worked-label="${escapeHtml(nextEvent.label)}" data-worked-trip="${trip.id}"`}
         title="${worked ? 'Снять отметку — событие вернётся в горящие' : 'Событие отработано — обязателен комментарий, карточка уйдёт вниз до следующего события'}">${worked ? '↩' : '✓ Отработано'}</button>` : ''}</small>`;
-    return `<div class="card ${hot ? 'ctrl-hot' : ''} ${worked ? 'ctrl-done' : ''}" style="padding:9px 11px">
+    return `<div class="card ${hot ? 'ctrl-hot' : ''} ${worked ? 'ctrl-done' : ''} ${claim ? `ctrl-claimed ${claimMine ? 'mine' : ''}` : ''}" style="padding:9px 11px">
       <div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}" style="border:0;padding:0">
       ${tripHead(trip)}
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
@@ -961,14 +968,21 @@ export async function renderDispatcher(container, context) {
         const atMs = existing ? Date.parse(String(existing.done_at).replace(' ', 'T') +
           (String(existing.done_at).includes('Z') ? '' : 'Z')) : NaN;
         const alive = Number.isFinite(atMs) && Date.now() - atMs < CLAIM_MS;
-        await api('/api/task-marks', { method: 'POST',
-          body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}` }) });
-        // Первый POST снял отметку. Если она была протухшей (в т.ч. своя) или
-        // чужой — сразу ставим свой захват: первый клик всегда даёт видимый
-        // результат. Живой свой захват — осознанное «Отпустить», не ставим.
-        if (existing && (!alive || existing.done_by !== myName)) {
+        // Явные операции вместо переключателя: свой живой захват — отпустить;
+        // чужой живой — перехват только с подтверждением; протухший/пустой —
+        // взять. (Переключатель при вчерашней записи по тому же ключу ставил
+        // и тут же снимал захват — «карточка слетает после захвата».)
+        if (existing && alive && existing.done_by === myName) {
           await api('/api/task-marks', { method: 'POST',
-            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}` }) });
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}`, remove: true }) });
+        } else {
+          if (existing && alive && existing.done_by !== myName &&
+              !confirm(`Карточку ведёт ${existing.done_by} (взял ${Math.round((Date.now() - atMs) / 60_000)} мин назад, ` +
+                `освободится сама через ${claimLeftMin(existing)} мин).\n\nПерехватить? Коллега увидит, что карточка теперь у вас.`)) {
+            button.disabled = false; button.textContent = label; return;
+          }
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `claim|${tripId}`, set: true }) });
         }
         await renderDispatcher(container, context);
       } catch (error) {

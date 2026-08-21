@@ -1183,3 +1183,11 @@ tbody tr:hover td { background: var(--hover); }
 @media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }
 .dash-done { white-space: nowrap; }
 .dash-done b { color: var(--ok); }
+
+/* ── Диспетчер: карточка в работе (захват «Беру») ── */
+.card.ctrl-claimed { border-left: 6px solid #3b82c4; background: color-mix(in srgb, #3b82c4 7%, var(--card)); }
+.card.ctrl-claimed.mine { border-left-color: var(--teal); background: color-mix(in srgb, var(--teal) 9%, var(--card)); }
+.ctrl-claim-note { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs);
+  font-weight: 800; letter-spacing: .02em; padding: 2px 8px; border-radius: 10px;
+  background: #3b82c4; color: #fff; white-space: nowrap; }
+.ctrl-claim-note.mine { background: var(--teal); }

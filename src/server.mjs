@@ -865,7 +865,19 @@ async function api(request, response, url) {
       }
       return json(response, 200, { done: true });
     }
-    // Без комментария — переключатель, как раньше (захват «Беру», отметки заданий).
+    // Явная постановка без комментария (захват «Беру»): создать или обновить
+    // автора и время — идемпотентно, без переключения.
+    if (body.set) {
+      if (existing) {
+        db.prepare(`UPDATE task_marks SET done_by=?,done_at=CURRENT_TIMESTAMP
+          WHERE kind=? AND day=? AND item_key=?`).run(author, kind, day, key);
+      } else {
+        db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by,note) VALUES(?,?,?,?,?)`)
+          .run(kind, day, key, author, '');
+      }
+      return json(response, 200, { done: true });
+    }
+    // Без комментария — переключатель, как раньше (отметки заданий).
     if (existing) {
       db.prepare(`DELETE FROM task_marks WHERE kind=? AND day=? AND item_key=?`).run(kind, day, key);
     } else {
