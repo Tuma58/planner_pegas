@@ -368,7 +368,10 @@ export function renderLogist(container, context) {
   const returnedOrders = queue.filter(order => order.returned_at);
   const returned = returnedOrders.length;
   const runTrips = activeTrips.filter(trip => trip.status === 'run');
-  const runCount = runTrips.length;
+  // «В пути» — число МАШИН (у сцепки может быть два рейса в пути: следующий
+  // выведен на линию заранее); рейсы и сумма — подписью.
+  const runVehicles = new Set(runTrips.map(trip => trip.vehicle_id)).size;
+  const runCount = runVehicles;
   const planTrips = activeTrips.filter(trip => trip.status === 'plan');
   const unconfirmedTrips = planTrips.filter(trip => !trip.logist_confirmed_at);
 
@@ -546,9 +549,9 @@ export function renderLogist(container, context) {
         <span class="skl">В плане</span><span class="skv">${confirmedTrips.filter(trip => trip.status === 'plan').length}</span>
         <small class="skm">${money(planSum)}</small></div>
       <div class="skpi clickable ${focus === 'run' ? 'open' : ''}" data-kpi="run"
-        title="Показать только рейсы в пути">
-        <span class="skl">В пути</span><span class="skv">${runCount}</span>
-        <small class="skm">${money(runSum)}</small></div>
+        title="Машин в пути (у сцепки может быть два рейса: следующий выведен заранее) — показать только рейсы в пути">
+        <span class="skl">В пути · машин</span><span class="skv">${runCount}</span>
+        <small class="skm">рейсов ${runTrips.length} · ${money(runSum)}</small></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:260px">
         <select id="logistZone" title="Фильтр по геозоне маршрута">
