@@ -333,12 +333,29 @@ async function renderUsers() {
         <td>${(user.roles || [user.role]).map(role => `<span class="badge">${escapeHtml(roleLabel(role))}</span>`).join(' ')}</td>
         <td>${user.active ? '<span class="badge ok">активен</span>' : '<span class="badge bad">отключен</span>'}</td>
         <td>${formatDate(user.created_at, { day: '2-digit', month: '2-digit', year: 'numeric' })}</td>
-        <td><button class="button ghost small" data-edit-user="${user.id}">Изменить</button></td>
+        <td style="white-space:nowrap"><button class="button ghost small" data-edit-user="${user.id}">Изменить</button>
+          <button class="button ghost small danger" data-delete-user="${user.id}"
+            title="Удалить пользователя: учётка без истории удаляется совсем, с историей — скрывается с сохранением всех записей и отчётов">✕</button></td>
       </tr>`).join('')}</tbody></table></div></div>
   </section>`;
   byId('newUser').onclick = () => editUser();
   document.querySelectorAll('[data-edit-user]').forEach(button =>
     button.onclick = () => editUser(state.users.items.find(user => user.id === button.dataset.editUser)));
+  document.querySelectorAll('[data-delete-user]').forEach(button =>
+    button.onclick = async () => {
+      const user = state.users.items.find(item => item.id === button.dataset.deleteUser);
+      if (!user) return;
+      if (!confirm(`Удалить пользователя «${user.full_name}» (${user.username})?\n\n` +
+        'Доступ закроется сразу. Если по сотруднику есть история действий, ' +
+        'она сохранится в журнале и отчётах, а учётка скроется из списка.')) return;
+      try {
+        const result = await api(`/api/admin/users/${user.id}`, { method: 'DELETE' });
+        state.users = null;
+        toast(result.mode === 'hard' ? 'Пользователь удалён'
+          : 'Пользователь удалён; история действий сохранена');
+        await renderUsers();
+      } catch (error) { toast(error.message, 'error'); }
+    });
 }
 
 function editUser(user = null) {

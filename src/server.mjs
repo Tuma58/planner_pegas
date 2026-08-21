@@ -2186,7 +2186,7 @@ async function api(request, response, url) {
     return json(response, 200, {
       roles: ROLE_LABELS,
       items: db.prepare(`SELECT id,username,full_name,email,role,roles,active,created_at,updated_at
-        FROM users ORDER BY active DESC,full_name`).all()
+        FROM users WHERE deleted_at IS NULL ORDER BY active DESC,full_name`).all()
         .map(item => ({ ...item, roles: rolesOf(item) }))
     });
   }
@@ -2249,6 +2249,38 @@ async function api(request, response, url) {
     if (body.password || body.active === false) db.prepare('DELETE FROM sessions WHERE user_id=?').run(match[0]);
     audit(db, user, 'update', 'user', match[0], { ...body, password: undefined }, requestIp(request));
     return json(response, 200, { ok: true });
+  }
+  // Удаление пользователя. Учётка без единого следа в системе удаляется
+  // физически (сессии и личные настройки — каскадом); учётка с историей
+  // (журнал действий, сообщения, отметки) удаляется мягко: скрывается из
+  // списка, доступ закрывается, логин освобождается для повторного
+  // использования, а вся история и отчёты по сотруднику сохраняются.
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    const current = db.prepare('SELECT * FROM users WHERE id=? AND deleted_at IS NULL').get(match[0]);
+    if (!current) return errorJson(response, 404, 'Пользователь не найден');
+    if (match[0] === user.id) return errorJson(response, 422, 'Нельзя удалить собственную учетную запись');
+    if (rolesOf(current).includes('admin') && current.active) {
+      const otherAdmins = db.prepare(`SELECT COUNT(*) count FROM users, json_each(users.roles)
+        WHERE json_each.value='admin' AND users.active=1 AND users.deleted_at IS NULL
+          AND users.id<>?`).get(match[0]).count;
+      if (!otherAdmins) return errorJson(response, 422, 'В системе должен остаться хотя бы один активный администратор');
+    }
+    db.prepare('DELETE FROM sessions WHERE user_id=?').run(match[0]);
+    let mode = 'hard';
+    try {
+      db.prepare('DELETE FROM users WHERE id=?').run(match[0]);
+    } catch {
+      // Внешние ссылки (история) не пускают — мягкое удаление.
+      mode = 'soft';
+      db.prepare(`UPDATE users SET active=0, deleted_at=CURRENT_TIMESTAMP,
+        username=username||'#del-'||substr(id,1,8), updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(match[0]);
+    }
+    audit(db, user, 'delete', 'user', match[0],
+      { mode, username: current.username, fullName: current.full_name }, requestIp(request));
+    return json(response, 200, { ok: true, mode });
   }
 
   if (request.method === 'GET' && pathname === '/api/admin/settings') {

@@ -1372,3 +1372,42 @@ test('простой под погрузкой/выгрузкой: сверх 8 
   assert.equal(byTrip.dm2.finishedAt, null);
   assert.equal(byTrip.dm3, undefined, 'без отметки прибытия претензия не фиксируется');
 });
+
+test('удаление пользователя: без истории — физически, с историей — мягко, логин освобождается', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-userdel-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const admin = db.prepare("SELECT * FROM users WHERE username='root-admin'").get();
+  db.prepare(`INSERT INTO users(id,username,full_name,password_hash,role,roles)
+    VALUES('ud1','clean-user','Без истории','x','logist','["logist"]'),
+           ('ud2','busy-user','С историей','x','sales','["sales"]')`).run();
+  // След в журнале: физическое удаление ud2 упрётся в внешний ключ.
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity) VALUES('ua1','ud2','create','order')`).run();
+
+  // Чистая учётка удаляется физически.
+  db.prepare('DELETE FROM users WHERE id=?').run('ud1');
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM users WHERE id='ud1'").get().c, 0);
+
+  // Учётка с историей: физическое падает (FK), мягкое скрывает и освобождает логин.
+  assert.throws(() => db.prepare('DELETE FROM users WHERE id=?').run('ud2'));
+  db.prepare(`UPDATE users SET active=0, deleted_at=CURRENT_TIMESTAMP,
+    username=username||'#del-'||substr(id,1,8) WHERE id='ud2'`).run();
+  const gone = db.prepare("SELECT * FROM users WHERE id='ud2'").get();
+  assert.equal(gone.active, 0);
+  assert.ok(gone.deleted_at, 'помечен удалённым');
+  assert.equal(gone.username, 'busy-user#del-ud2', 'логин освобождён для нового сотрудника');
+  db.prepare(`INSERT INTO users(id,username,full_name,password_hash,role,roles)
+    VALUES('ud3','busy-user','Новый с тем же логином','x','sales','["sales"]')`).run();
+  // История мягко удалённого доступна отчётам (JOIN users жив).
+  const trail = db.prepare(`SELECT u.full_name FROM audit_log a JOIN users u ON u.id=a.user_id
+    WHERE a.id='ua1'`).get();
+  assert.equal(trail.full_name, 'С историей');
+  // Последний активный админ защищён той же проверкой, что на сервере.
+  const others = db.prepare(`SELECT COUNT(*) count FROM users, json_each(users.roles)
+    WHERE json_each.value='admin' AND users.active=1 AND users.deleted_at IS NULL
+      AND users.id<>?`).get(admin.id).count;
+  assert.equal(others, 0, 'root-admin — единственный админ, сервер откажет в удалении');
+});
