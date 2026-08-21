@@ -2,7 +2,7 @@
 // месяца. Считается целиком из bootstrap (доступен каждой роли) — вкладку
 // видят все сотрудники, цель — общая видимость достижения плана.
 // Автообновление раз в 90 секунд, пока вкладка открыта.
-import { escapeHtml, money, toast, tripBusyUntilMs } from './api.js';
+import { escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
 
@@ -286,6 +286,7 @@ export function renderDashboard(container, context) {
     </div>`;
   };
 
+  const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="dashwrap" id="dashRoot">
     <div class="dash-top">
       <span class="dash-title">🏁 ПегасLogistic · план-факт</span>
@@ -348,6 +349,7 @@ export function renderDashboard(container, context) {
       остаток месячного плана, делённый на оставшиеся дни. Прогноз — текущий темп
       на весь месяц. Обновляется автоматически.</p>
   </div>`;
+  restoreScrolls(container, savedScrolls);
 
   // Бары «наполняются» при каждой отрисовке: вставляем нулевыми и через
   // кадр отпускаем к целевой ширине (CSS transition делает движение).

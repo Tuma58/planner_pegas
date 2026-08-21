@@ -3,7 +3,7 @@
 // настройка каждого маршрута). Полуавтомат: «🧮 Собрать» предлагает цепочку
 // из свободных потребностей, дальше — ручная правка. Готовый маршрут
 // передаётся логисту и назначается на сцепку целиком (рейсы цепочкой).
-import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch, captureScrolls, restoreScrolls } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet, plannedKmBetween, regionOfPlace, resolveAddress } from './sales.js';
 
@@ -198,6 +198,7 @@ export function renderRoutes(container, context) {
     </div>`;
   };
 
+  const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
       <div class="skpi"><span class="skl">Маршрутов в работе</span><span class="skv">${routes.length}</span></div>
@@ -231,6 +232,7 @@ export function renderRoutes(container, context) {
       </div>
     </div>
   </div>`;
+  restoreScrolls(container, savedScrolls);
 
   // ── Диалог сборки ──
   const autoDialog = () => {

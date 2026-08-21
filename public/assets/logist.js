@@ -3,7 +3,7 @@
 // отклонение рейса с возвратом заявки в продажи, создание рейса вручную.
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -514,6 +514,7 @@ export function renderLogist(container, context) {
   const planSum = sum(confirmedTrips.filter(trip => trip.status === 'plan'), 'revenue_vat');
   const runSum = sum(runTrips, 'revenue_vat');
 
+  const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
       <div class="skpi clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
@@ -583,6 +584,7 @@ export function renderLogist(container, context) {
       </div>
     </div>
   </div>`;
+  restoreScrolls(container, savedScrolls);
 
   attachSearch(container.querySelector('#logistSearch'), value => {
     state.logistQuery = value;

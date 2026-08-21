@@ -4,7 +4,7 @@
 // владельцам, баланс машино-дней, экономика по типам ТС и топ клиентов.
 // Тема «панель приборов» (спидометры, лобовое стекло) выведена из продукта.
 // Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
-import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker } from './api.js';
+import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
@@ -301,6 +301,7 @@ export async function renderBoss(container, context) {
   </section>`;
 
   // ── Сборка ──
+  const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="bosswrap brep">
     <div class="brep-title"><h2>PegasLogistic · операционный отчёт</h2>
       <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · парк ${u.vehicles} сцепок
@@ -343,6 +344,7 @@ export async function renderBoss(container, context) {
     <div class="geohint" style="padding:8px 4px">Отклонения — в процентных пунктах к плану (КТГ 97, КВЛ 99, КИП 99,
       фонд ${pct(u.utilizationTarget, 1)}). Печатные формы — через «📄 Сформировать».</div>
   </div>`;
+  restoreScrolls(container, savedScrolls);
 
   // ── Ежедневный отчёт по использованию автопарка ──
   const dailyDialog = () => {

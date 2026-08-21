@@ -29,6 +29,32 @@ export const tripBusyUntilMs = (trip, nowMs = Date.now()) => {
   return Number.isFinite(fact) ? fact : planned;
 };
 
+// Полная перерисовка блока (container.innerHTML) сбрасывает прокрутку всех
+// его списков: клик по карточке в конце длинного списка «перекидывал
+// вверх». Снимок прокрученных элементов (по классу и порядковому номеру)
+// перед рендером и восстановление после — одна пара вызовов в каждом render*.
+export function captureScrolls(root) {
+  const saved = [];
+  const walk = element => {
+    if (element.scrollTop || element.scrollLeft) {
+      const cls = element === root ? '' : String(element.className || '').split(/\s+/).filter(Boolean)[0];
+      if (element === root || cls) {
+        const index = cls ? [...root.querySelectorAll(`.${CSS.escape(cls)}`)].indexOf(element) : -1;
+        saved.push({ cls, index, top: element.scrollTop, left: element.scrollLeft });
+      }
+    }
+  };
+  walk(root);
+  root.querySelectorAll('*').forEach(walk);
+  return saved;
+}
+export function restoreScrolls(root, saved) {
+  for (const item of saved || []) {
+    const element = item.cls ? root.querySelectorAll(`.${CSS.escape(item.cls)}`)[item.index] : root;
+    if (element) { element.scrollTop = item.top; element.scrollLeft = item.left; }
+  }
+}
+
 export const money = value =>
   `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 

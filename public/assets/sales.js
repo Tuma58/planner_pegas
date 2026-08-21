@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -820,6 +820,7 @@ export function renderSales(container, context) {
           ${trip ? ` · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>` : ''}</small></span>
       <b>${money(order.rate_vat)}</b></div>`;
   };
+  const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
@@ -965,6 +966,7 @@ export function renderSales(container, context) {
       </div>
     </div>
   </div>`;
+  restoreScrolls(container, savedScrolls);
 
   const rerender = () => renderSales(container, context);
   attachSearch(container.querySelector('#salesSearch'), value => {

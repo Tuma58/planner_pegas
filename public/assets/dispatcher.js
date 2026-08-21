@@ -5,7 +5,7 @@
 // 3) рейс переведён на контроль на линии (статус «В пути»).
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
@@ -795,6 +795,7 @@ export async function renderDispatcher(container, context) {
   const onlineCards = inWork.map(ctrlCard).join('')
     || '<p class="muted">На линии никого нет.</p>';
 
+  const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
     ${!canAct ? `<div class="view-only">👁 Режим просмотра: отметки контроля доступны роли «Диспетчер».
       Если вы ведёте рейсы на линии — попросите администратора добавить вам роль
@@ -831,6 +832,7 @@ export async function renderDispatcher(container, context) {
       </div>
     </div>
   </div>`;
+  restoreScrolls(container, savedScrolls);
 
   wireDemurrageChip(container, context);
   // Уточнение суммы: подтвердить текущую или внести точную из заявки клиента.

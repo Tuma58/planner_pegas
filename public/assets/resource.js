@@ -1,7 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
-import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs } from './api.js';
+import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
 
@@ -783,6 +783,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     </div>`;
   }).join('');
 
+  const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="resboard">
     <div class="reshead">
       <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
@@ -825,6 +826,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       <p class="muted" style="padding:10px">⏳ Загружаю график работы…</p>
     </div>`}
   </div>`;
+  restoreScrolls(container, savedScrolls);
 
   // Фокус как в главном ганте: «сегодня −3 дня» при первом показе месяца.
   if (todayIndex >= 0 && todayIndex < days && state.resourceScrolledMonth !== state.month.getTime()) {
