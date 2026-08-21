@@ -7,7 +7,7 @@ import { config } from './config.mjs';
 import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, settingsObject } from './db.mjs';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
-import { ROLE_LABELS, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
+import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import {
   encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
@@ -109,7 +109,8 @@ function publicUser(user) {
   return {
     id: user.id, username: user.username, fullName: user.full_name, email: user.email || '',
     role: user.role, roles, roleLabel: roleLabelsFor(roles), active: Boolean(user.active),
-    permissions: permissionsForRoles(roles)
+    guest: Boolean(Number(user.guest)),
+    permissions: effectivePermissions(user)
   };
 }
 
@@ -2465,7 +2466,7 @@ async function api(request, response, url) {
     if (!user) return;
     return json(response, 200, {
       roles: ROLE_LABELS,
-      items: db.prepare(`SELECT id,username,full_name,email,role,roles,active,created_at,updated_at
+      items: db.prepare(`SELECT id,username,full_name,email,role,roles,active,guest,created_at,updated_at
         FROM users WHERE deleted_at IS NULL ORDER BY active DESC,full_name`).all()
         .map(item => ({ ...item, roles: rolesOf(item) }))
     });
@@ -2491,10 +2492,11 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Пароль должен содержать не менее 10 символов');
     }
     const id = randomUUID();
-    db.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,roles,active)
-      VALUES(?,?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,roles,active,guest)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(
       id, body.username.trim(), body.fullName.trim(), body.email || null,
-      hashPassword(body.password || ''), roles[0], JSON.stringify(roles), body.active === false ? 0 : 1);
+      hashPassword(body.password || ''), roles[0], JSON.stringify(roles), body.active === false ? 0 : 1,
+      body.guest ? 1 : 0);
     audit(db, user, 'create', 'user', id, { ...body, password: undefined }, requestIp(request));
     return json(response, 201, { id });
   }
@@ -2506,25 +2508,29 @@ async function api(request, response, url) {
     const current = db.prepare('SELECT * FROM users WHERE id=?').get(match[0]);
     if (!current) return errorJson(response, 404, 'Пользователь не найден');
     if (match[0] === user.id && body.active === false) return errorJson(response, 422, 'Нельзя отключить собственную учетную запись');
+    if (match[0] === user.id && body.guest === true) return errorJson(response, 422, 'Нельзя включить гостевой режим себе — потеряете доступ к настройкам');
     const nextRoles = parseRoles(body);
     if (nextRoles === null) return errorJson(response, 422, 'Нужна хотя бы одна корректная роль');
     if (body.password !== undefined && String(body.password).length < 10) {
       return errorJson(response, 422, 'Пароль должен содержать не менее 10 символов');
     }
     const currentRoles = rolesOf(current);
-    const removesActiveAdmin = currentRoles.includes('admin') && current.active &&
-      (body.active === false || (nextRoles !== undefined && !nextRoles.includes('admin')));
+    const removesActiveAdmin = currentRoles.includes('admin') && current.active && !Number(current.guest) &&
+      (body.active === false || body.guest === true ||
+        (nextRoles !== undefined && !nextRoles.includes('admin')));
     if (removesActiveAdmin) {
       const otherAdmins = db.prepare(`SELECT COUNT(*) count FROM users, json_each(users.roles)
-        WHERE json_each.value='admin' AND users.active=1 AND users.id<>?`).get(match[0]).count;
-      if (!otherAdmins) return errorJson(response, 422, 'В системе должен остаться хотя бы один активный администратор');
+        WHERE json_each.value='admin' AND users.active=1 AND COALESCE(users.guest,0)=0
+          AND users.deleted_at IS NULL AND users.id<>?`).get(match[0]).count;
+      if (!otherAdmins) return errorJson(response, 422, 'В системе должен остаться хотя бы один активный администратор с правами редактирования');
     }
     const finalRoles = nextRoles ?? currentRoles;
-    db.prepare(`UPDATE users SET username=?,full_name=?,email=?,role=?,roles=?,active=?,
+    db.prepare(`UPDATE users SET username=?,full_name=?,email=?,role=?,roles=?,active=?,guest=?,
       password_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       body.username ?? current.username, body.fullName ?? current.full_name,
       body.email ?? current.email, finalRoles[0], JSON.stringify(finalRoles),
       body.active === undefined ? current.active : Number(Boolean(body.active)),
+      body.guest === undefined ? Number(current.guest || 0) : Number(Boolean(body.guest)),
       body.password ? hashPassword(body.password) : current.password_hash, match[0]);
     if (body.password || body.active === false) db.prepare('DELETE FROM sessions WHERE user_id=?').run(match[0]);
     audit(db, user, 'update', 'user', match[0], { ...body, password: undefined }, requestIp(request));

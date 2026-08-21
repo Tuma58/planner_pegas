@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
-import { hasPermission, permissionsFor } from '../src/permissions.mjs';
+import { effectivePermissions, hasPermission, permissionsFor } from '../src/permissions.mjs';
 import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
@@ -1531,4 +1531,18 @@ test('подбор ТС: позиция по пункту выгрузки, а �
   assert.ok(candidate.emptyKm > 500, `подгон Пенза→Видное считается приблизительно: ${candidate.emptyKm} км`);
   assert.equal(candidate.stillRunning, true, 'факта выгрузки нет — пометка «сейчас в рейсе»');
   assert.equal(candidate.ready, false, 'с подгоном ~600 км к 17:00 МСК не успевает');
+});
+
+test('гостевой режим: права записи отсекаются, чтение остаётся', () => {
+  const logist = { active: 1, roles: '["logist","sales"]', guest: 0 };
+  assert.equal(hasPermission(logist, 'trips:write'), true);
+  assert.equal(hasPermission(logist, 'orders:write'), true);
+  const guest = { ...logist, guest: 1 };
+  assert.equal(hasPermission(guest, 'trips:write'), false, 'гость не назначает');
+  assert.equal(hasPermission(guest, 'orders:write'), false, 'гость не правит заявки');
+  assert.equal(hasPermission(guest, 'planner:read'), true, 'гость видит планер');
+  assert.equal(hasPermission(guest, 'customers:read'), true);
+  assert.deepEqual(effectivePermissions({ active: 1, roles: '["admin"]', guest: 1 }),
+    ['planner:read', 'reports:read', 'customers:read', 'audit:read'],
+    'гость-админ: только чтение, настройки/пользователи недоступны');
 });

@@ -48,6 +48,13 @@ export function roleLabelsFor(roles) {
   return roles.map(role => ROLE_LABELS[role] || role).join(' + ');
 }
 
+// Гостевой режим (users.guest): сотрудник видит всё по своим ролям, но любые
+// права на запись отсекаются — остаются только «…:read». Включает админ.
+export function effectivePermissions(user) {
+  const all = permissionsForRoles(rolesOf(user));
+  return Number(user?.guest) ? all.filter(permission => permission.endsWith(':read')) : all;
+}
+
 export function hasPermission(user, permission) {
-  return Boolean(user?.active && permissionsForRoles(rolesOf(user)).includes(permission));
+  return Boolean(user?.active && effectivePermissions(user).includes(permission));
 }

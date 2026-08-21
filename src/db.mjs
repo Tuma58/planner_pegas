@@ -540,6 +540,7 @@ function migrateColumns(db) {
   // только на то, какие нормативы применяются в «Показателях сотрудников».
   ensure('users', 'job_role', "TEXT NOT NULL DEFAULT ''");
   ensure('users', 'deleted_at', 'TEXT');
+  ensure('users', 'guest', 'INTEGER NOT NULL DEFAULT 0');
   ensure('messages', 'recipient_id', 'TEXT');
   ensure('messages', 'chat_id', 'TEXT');
   ensure('chats', 'deleted_at', 'TEXT');

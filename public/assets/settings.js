@@ -331,7 +331,8 @@ async function renderUsers() {
         <td><strong>${escapeHtml(user.full_name)}</strong><br><small class="muted">${escapeHtml(user.email || '')}</small></td>
         <td class="mono">${escapeHtml(user.username)}</td>
         <td>${(user.roles || [user.role]).map(role => `<span class="badge">${escapeHtml(roleLabel(role))}</span>`).join(' ')}</td>
-        <td>${user.active ? '<span class="badge ok">активен</span>' : '<span class="badge bad">отключен</span>'}</td>
+        <td>${user.active ? '<span class="badge ok">активен</span>' : '<span class="badge bad">отключен</span>'}
+          ${user.guest ? ' <span class="badge warn" title="Гостевой режим: только просмотр, без прав редактирования">👁 гость</span>' : ''}</td>
         <td>${formatDate(user.created_at, { day: '2-digit', month: '2-digit', year: 'numeric' })}</td>
         <td style="white-space:nowrap"><button class="button ghost small" data-edit-user="${user.id}">Изменить</button>
           <button class="button ghost small danger" data-delete-user="${user.id}"
@@ -375,6 +376,8 @@ function editUser(user = null) {
       <input name="password" type="password" minlength="10" ${user ? '' : 'required'} autocomplete="new-password">
     </label>
     <label class="check"><input name="active" type="checkbox" ${user?.active === 0 ? '' : 'checked'}> Доступ разрешен</label>
+    <label class="check" title="Видит все свои вкладки и данные, но ничего не может изменить: кнопки действий скрыты, сервер отклоняет запись">
+      <input name="guest" type="checkbox" ${user?.guest ? 'checked' : ''}> 👁 Гостевой режим — только просмотр, без прав редактирования</label>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сохранить</button></div>
   </form>`);
@@ -385,6 +388,7 @@ function editUser(user = null) {
     values.roles = [...form.querySelectorAll('input[name="roles"]:checked')].map(input => input.value);
     if (!values.roles.length) { toast('Выберите хотя бы одну роль', 'error'); return; }
     values.active = form.elements.active.checked;
+    values.guest = form.elements.guest.checked;
     if (!values.password) delete values.password;
     try {
       await api(user ? `/api/admin/users/${user.id}` : '/api/admin/users', {

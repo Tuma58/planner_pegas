@@ -45,7 +45,8 @@ function setupUser() {
   const user = state.data.user;
   state.permissions = new Set(user.permissions);
   byId('profileName').textContent = user.fullName;
-  byId('profileRole').textContent = user.roleLabel;
+  byId('profileRole').textContent = user.guest ? `${user.roleLabel} · 👁 гостевой режим` : user.roleLabel;
+  byId('profileRole').title = user.guest ? 'Только просмотр: права редактирования отключены администратором' : '';
   byId('avatar').textContent = user.fullName.trim().charAt(0).toUpperCase();
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
 }
