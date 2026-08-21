@@ -349,7 +349,9 @@ export async function renderDispatcher(container, context) {
     || (data.orders || []).find(item => item.trip_id === trip.id) || null;
 
   // Полная карточка рейса: всё, что нужно для внесения в учётную систему, —
-  // одним текстом с кнопкой копирования.
+  // одним текстом с кнопкой копирования. Пункты и даты — напрямую из заявки
+  // клиента (окно «с — по» как договорено с ним), БЕЗ расчётного транзитного
+  // времени рейса; расчётные даты рейса — только фолбэк для 1С-рейсов без заявки.
   const tripCardText = trip => {
     const order = orderOf(trip);
     let via = [];
@@ -358,10 +360,12 @@ export async function renderDispatcher(container, context) {
       `№ заказа: ${trip.order_no || order?.order_no || '—'}`,
       `Маршрут: ${routeLabel(trip)}`,
       `Заказчик: ${trip.customer_name || order?.customer_name || '—'}`,
-      `Погрузка: ${trip.from_point || trip.from_name} · ${formatDateTime(trip.starts_at)}`,
+      `Погрузка: ${order?.from_point || order?.from_name || trip.from_point || trip.from_name}` +
+        ` · ${formatDateTime(order?.window_from || trip.starts_at)}`,
       via.length ? `Промежуточные: ${via.map(item =>
         `${item.kind === 'P' ? '⬆' : '⬇'} ${item.point}`).join(', ')}` : '',
-      `Выгрузка: ${trip.to_point || trip.to_name} · ${formatDateTime(trip.ends_at)}`,
+      `Выгрузка: ${order?.to_point || order?.to_name || trip.to_point || trip.to_name}` +
+        ` · ${formatDateTime(order?.window_to || trip.ends_at)}`,
       `ТС: ${trip.vehicle_plate}${trip.trailer_plate ? ` · прицеп ${trip.trailer_plate}` : ''}` +
         `${trip.vehicle_type ? ` · ${trip.vehicle_type}` : ''}`,
       `Водитель: ${trip.driver_name || 'не назначен'}`,
