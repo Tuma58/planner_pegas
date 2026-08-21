@@ -259,7 +259,7 @@ export async function renderDispatcher(container, context) {
   const DOCS_NORM_MS = 2 * 3_600_000;
   const nextControlEvent = trip => {
     // После выгрузки рейс остаётся на контроле до проверки документов
-    // (фото, без печатей и актов): норматив 2 часа, дальше — сбой ежечасно.
+    // (фото, без печатей и актов): норматив 2 часа, дальше — контроль каждые 1,5 ч.
     if (trip.status === 'unloaded') {
       const at = (Number.isFinite(tsRaw(trip.unloaded_at)) ? tsRaw(trip.unloaded_at) : Date.now()) + DOCS_NORM_MS;
       return { at, label: `📄 документы: ${trip.customer_name || 'клиент'}`,
@@ -324,10 +324,10 @@ export async function renderDispatcher(container, context) {
       .slice(0, 200);
   };
   // Ежечасный контроль сбоя — по свежести отметки: у просроченного события
-  // (или «не выгружают») отметка живёт ровно час С МОМЕНТА КОНТРОЛЯ, затем
+  // (или «не выгружают») отметка живёт полтора часа С МОМЕНТА КОНТРОЛЯ, затем
   // протухает и карточка снова загорается. Час от факта звонка честнее
   // календарной границы часа просрочки (отметка не сгорает через минуту).
-  const WORKED_TTL_MS = 3_600_000;
+  const WORKED_TTL_MS = 1.5 * 3_600_000;
   const workedOf = trip => {
     const mark = workedMap.get(eventKeyOf(trip));
     if (!mark) return null;
@@ -750,7 +750,7 @@ export async function renderDispatcher(container, context) {
     const eventLine = `<small class="next-ctrl ${overdue || nextEvent.at === 0 ? 'overdue' : ''}">⏱ далее —
       ${escapeHtml(nextEvent.label)}${hasTime ? ` · ${formatDateTime(new Date(nextEvent.at).toISOString())}
       ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue
-        ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждый час` : ''}
+        ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждые 1,5 ч` : ''}
       ${hot && !overdue && nextEvent.at !== 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
       ${claim ? `<span class="ctrl-claim-note">🖐 ${claimMine ? 'вы ведёте' : `у ${escapeHtml(claim.done_by)}`}</span>` : ''}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
@@ -823,7 +823,7 @@ export async function renderDispatcher(container, context) {
       <div class="scol">
         ${docsQueue.length ? `<div class="scolh docs-head">📄 Получить документы <span>${docsQueue.length}</span></div>
           <div class="geohint" style="margin:0 0 6px">Рейс выгружен — осталось получить и проверить фото
-            документов (норматив 2 часа, дальше — сбой ежечасно). «✔ Документы получены» закрывает контроль.</div>
+            документов (норматив 2 часа, дальше — контроль каждые 1,5 ч). «✔ Документы получены» закрывает контроль.</div>
           <div class="list">${docsCards}</div>` : ''}
         <div class="scolh" ${docsQueue.length ? 'style="margin-top:12px"' : ''}>Контроль на линии <span>${inWork.length}</span></div>
         <div class="list">${onlineCards}</div>
