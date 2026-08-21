@@ -18,7 +18,7 @@ import {
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
-  listTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
+  listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
   stopsWithEstimates, syncTripFromStops, tripDelayMs
 } from './trip-control.mjs';
 
@@ -906,6 +906,27 @@ async function api(request, response, url) {
         notify('accountant', `Рейс ${routeText(current)} выгружен — отметьте оплату`, 'trip', match[0]);
       }
     }
+    // Сдвиг рейса (Гант, правка логиста): плановые времена стоянок без фактов
+    // следуют за рейсом; если новые даты вышли за окно заявки клиента —
+    // продажи получают сигнал (окно — договорённость с клиентом, само не
+    // меняется: передоговорить или вернуть рейс в окно).
+    if (merged.startsAt !== current.starts_at || merged.endsAt !== current.ends_at) {
+      ensureTripStops(db, match[0]);
+      rescheduleTripStops(db, match[0]);
+      const order = merged.orderId
+        ? db.prepare('SELECT order_no,window_from,window_to FROM orders WHERE id=?').get(merged.orderId)
+        : null;
+      if (order && (Date.parse(merged.startsAt) < Date.parse(order.window_from) - 3_600_000
+          || Date.parse(merged.endsAt) > Date.parse(order.window_to) + 3_600_000)) {
+        notify('sales', `⏰ Рейс по заявке ${order.order_no ? `№ ${order.order_no} ` : ''}` +
+          `(${current.from_point || ''} → ${current.to_point || ''}) сдвинут логистом вне окна клиента: ` +
+          `выход ${String(merged.startsAt).slice(0, 16).replace('T', ' ')}, выгрузка ` +
+          `${String(merged.endsAt).slice(0, 16).replace('T', ' ')} (UTC) при окне ` +
+          `${String(order.window_from).slice(0, 16).replace('T', ' ')} — ` +
+          `${String(order.window_to).slice(0, 16).replace('T', ' ')} — передоговорите сроки или верните рейс в окно`,
+          'trip', match[0]);
+      }
+    }
     // Переназначение ТС: задание прежнему водителю отозвано — шаг
     // «Задание водителю отправлено» выполняется заново; порожний подгон
     // пересчитывается от позиции новой сцепки.
@@ -1174,6 +1195,45 @@ async function api(request, response, url) {
       db.prepare(`UPDATE trips SET distance_km=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
         WHERE id=? AND status NOT IN ('paid','rejected')`)
         .run(nextPlannedKm, user.id, current.trip_id);
+    }
+    // Пункты, геозоны и ОКНО заявки — в незавершённый рейс (план / в пути):
+    // заявка клиента — источник истины, рейс перепланируется за ней.
+    // План: начало = окно «с», конец = max(начало + транзит, окно «по»).
+    // В пути: начало уже факт, пересчитывается только конец. Стоянки без
+    // фактов следуют за рейсом, логист получает уведомление о сдвиге.
+    if (current.trip_id) {
+      const trip = db.prepare(`SELECT * FROM trips WHERE id=? AND status IN ('plan','run')`)
+        .get(current.trip_id);
+      if (trip) {
+        const nextFromPoint = String(body.fromPoint ?? current.from_point ?? '').trim();
+        const nextToPoint = String(body.toPoint ?? current.to_point ?? '').trim();
+        const nextFromZone = body.fromZoneId ?? current.from_zone_id;
+        const nextToZone = body.toZoneId ?? current.to_zone_id;
+        const calc = settingsObject(db).calculation;
+        const newStart = trip.status === 'plan' ? new Date(starts).toISOString() : trip.starts_at;
+        const transitMs = transitHours(Number(trip.distance_km || nextPlannedKm || 500), calc,
+          2 + nextVia.length) * 3_600_000;
+        const newEnd = new Date(Math.max(Date.parse(newStart) + transitMs, ends)).toISOString();
+        const datesChanged = newStart !== trip.starts_at || newEnd !== trip.ends_at;
+        const placesChanged = nextFromPoint !== (trip.from_point || '') || nextToPoint !== (trip.to_point || '')
+          || nextFromZone !== trip.from_zone_id || nextToZone !== trip.to_zone_id;
+        if (datesChanged || placesChanged) {
+          db.prepare(`UPDATE trips SET from_point=?,to_point=?,from_zone_id=?,to_zone_id=?,
+              starts_at=?,ends_at=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+            .run(nextFromPoint, nextToPoint, nextFromZone, nextToZone, newStart, newEnd,
+              user.id, trip.id);
+          ensureTripStops(db, trip.id);
+          rescheduleTripStops(db, trip.id);
+          queueOutbox(db, 'trips', trip.id, 'update', tripOutboxPayload(trip.id),
+            integrationPublic().writePolicy === 'automatic');
+          if (datesChanged) {
+            notify('logist', `📝 Продажи изменили заявку ${keptOrderNo ? `№ ${keptOrderNo} ` : ''}` +
+              `(${nextFromPoint || '—'} → ${nextToPoint || '—'}): рейс перепланирован — выход ` +
+              `${newStart.slice(0, 16).replace('T', ' ')}, выгрузка ${newEnd.slice(0, 16).replace('T', ' ')} (UTC)`,
+              'trip', trip.id);
+          }
+        }
+      }
     }
     // Уведомление следующего участника: продажи подтвердили — ход логиста.
     if (stageChanged && nextStage === 1 && Number(current.stage) === 0) {

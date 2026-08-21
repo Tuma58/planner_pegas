@@ -35,6 +35,44 @@ export function ensureTripStops(db, tripId) {
   return trip;
 }
 
+// Перепланирование стоянок после сдвига рейса или правки заявки: плановые
+// времена и пункты пересчитываются ТОЛЬКО у стоянок без фактов (где машина
+// ещё не была); пройденные точки с отметками диспетчера не трогаются.
+// Первая погрузка — от начала рейса, последняя выгрузка — к концу,
+// промежуточные — линейно по порядку между соседними якорями.
+export function rescheduleTripStops(db, tripId) {
+  const trip = tripWithNames(db, tripId);
+  if (!trip || trip.status === 'rejected') return 0;
+  const stops = db.prepare('SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq').all(tripId);
+  if (!stops.length) return 0;
+  const windowMs = workWindowMs(trip);
+  const startMs = Date.parse(trip.starts_at);
+  const endMs = Date.parse(trip.ends_at);
+  const update = db.prepare(`UPDATE trip_stops SET planned_arrival=?,planned_departure=?,point=?,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`);
+  let changed = 0;
+  stops.forEach((stop, index) => {
+    if (stop.actual_arrival || stop.work_started_at || stop.work_finished_at || stop.actual_departure) return;
+    const first = index === 0;
+    const last = index === stops.length - 1;
+    let arrival;
+    let departure;
+    if (first) { arrival = startMs; departure = startMs + windowMs; }
+    else if (last) { arrival = endMs - windowMs; departure = endMs; }
+    else {
+      // Линейно между началом первой и концом последней по номеру позиции.
+      const share = index / (stops.length - 1);
+      arrival = startMs + windowMs + (endMs - windowMs - startMs - windowMs) * share;
+      departure = arrival + windowMs;
+    }
+    const point = first ? (trip.from_point || trip.from_name)
+      : last ? (trip.to_point || trip.to_name) : stop.point;
+    update.run(new Date(arrival).toISOString(), new Date(departure).toISOString(), point, stop.id);
+    changed += 1;
+  });
+  return changed;
+}
+
 export function listTripStops(db, tripId) {
   return db.prepare('SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq,planned_arrival').all(tripId);
 }

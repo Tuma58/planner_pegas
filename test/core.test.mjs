@@ -11,6 +11,7 @@ import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
+import { ensureTripStops, rescheduleTripStops } from '../src/trip-control.mjs';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
@@ -1474,4 +1475,32 @@ test('чат: личное сообщение видят только отпра
   assert.ok(chatMessages(db, 'cu2', ['logist']).items.some(m => m.chat_id === 'gr1'),
     'после восстановления история видна');
   assert.equal(chatGroups(db, 'cu2').length, 1);
+});
+
+test('перепланирование стоянок: сдвиг рейса двигает планы точек без фактов, пройденные не трогает', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-resched-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
+    starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('rs1',?,'К',?,?,'Пенза склад','Москва склад','2026-08-25T06:00:00.000Z','2026-08-26T06:00:00.000Z',650,90000,'plan')`)
+    .run(vehicle, zone, zone);
+  ensureTripStops(db, 'rs1');
+  const before = db.prepare('SELECT seq,point,planned_arrival FROM trip_stops WHERE trip_id=? ORDER BY seq').all('rs1');
+  assert.equal(before[0].planned_arrival, '2026-08-25T06:00:00.000Z');
+  // Первая точка пройдена (факт прибытия), рейс сдвинут на сутки и выгрузка в другом пункте.
+  db.prepare(`UPDATE trip_stops SET actual_arrival='2026-08-25T06:10:00.000Z' WHERE trip_id='rs1' AND seq=1`).run();
+  db.prepare(`UPDATE trips SET starts_at='2026-08-26T06:00:00.000Z', ends_at='2026-08-27T06:00:00.000Z',
+    to_point='Софьино' WHERE id='rs1'`).run();
+  const changed = rescheduleTripStops(db, 'rs1');
+  const after = db.prepare('SELECT seq,point,planned_arrival,planned_departure FROM trip_stops WHERE trip_id=? ORDER BY seq').all('rs1');
+  assert.equal(changed, 1, 'пересчитана только точка без фактов');
+  assert.equal(after[0].planned_arrival, '2026-08-25T06:00:00.000Z', 'пройденная погрузка не тронута');
+  assert.equal(after[1].planned_departure, '2026-08-27T06:00:00.000Z', 'выгрузка следует за новым концом рейса');
+  assert.equal(after[1].point, 'Софьино', 'пункт выгрузки обновлён из рейса');
 });
