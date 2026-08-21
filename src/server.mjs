@@ -467,6 +467,45 @@ function runDailyDemurrage() {
 setInterval(runDailyDemurrage, 10 * 60_000);
 setTimeout(runDailyDemurrage, 50_000);
 
+// ── Сторож неподтверждённых заявок ──
+// Заказ клиента попадает в карточку клиента сразу после внесения и ждёт
+// подтверждения продажами. За 8 часов до планового времени погрузки —
+// сигнал продажам (чат «Конвейер», тост, звук), затем каждые 30 минут,
+// пока заявка не подтверждена (или не отклонена). Истёкшие больше суток
+// назад не дёргаются — они в плашке «Окно истекло».
+const CONFIRM_ALERT_BEFORE_MS = 8 * 3_600_000;
+const CONFIRM_ALERT_REPEAT_MS = 30 * 60_000;
+function runUnconfirmedOrdersWatch() {
+  try {
+    const nowMs = Date.now();
+    const rows = db.prepare(`SELECT o.*, f.name from_name, t.name to_name FROM orders o
+      LEFT JOIN zones f ON f.id=o.from_zone_id LEFT JOIN zones t ON t.id=o.to_zone_id
+      WHERE o.status='new' AND o.stage=0 AND o.trip_id IS NULL AND o.deleted_at IS NULL
+        AND o.window_from <= ? AND o.window_to > ?
+        AND (o.confirm_alert_at IS NULL OR o.confirm_alert_at <= ?)`)
+      .all(new Date(nowMs + CONFIRM_ALERT_BEFORE_MS).toISOString(),
+        new Date(nowMs - 86_400_000).toISOString(),
+        new Date(nowMs - CONFIRM_ALERT_REPEAT_MS).toISOString());
+    const stamp = db.prepare('UPDATE orders SET confirm_alert_at=? WHERE id=?');
+    for (const order of rows) {
+      const leftMs = Date.parse(order.window_from) - nowMs;
+      const hours = Math.floor(Math.abs(leftMs) / 3_600_000);
+      const minutes = Math.round((Math.abs(leftMs) % 3_600_000) / 60_000);
+      const when = leftMs > 0
+        ? `погрузка через ${hours} ч ${minutes} мин`
+        : `время погрузки прошло ${hours} ч ${minutes} мин назад`;
+      notify('sales', `⏳ Заявка ${order.order_no ? `№ ${order.order_no} ` : ''}${order.customer_name}: ` +
+        `${routeText(order)} не подтверждена — ${when}. Подтвердите или отклоните ` +
+        `(«Продажи → Клиенты»); сигнал повторится через 30 минут`, 'order', order.id);
+      stamp.run(new Date(nowMs).toISOString(), order.id);
+    }
+  } catch (error) {
+    console.error('Сторож неподтверждённых заявок:', error.message);
+  }
+}
+setInterval(runUnconfirmedOrdersWatch, 5 * 60_000);
+setTimeout(runUnconfirmedOrdersWatch, 45_000);
+
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
     if (!body[key]) throw Object.assign(new Error(`Поле ${key} обязательно`), { status: 422 });

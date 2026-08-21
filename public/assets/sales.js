@@ -610,16 +610,6 @@ export function renderSales(container, context) {
     .map(item => item.region).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
   filter.q ||= '';
   const query = filter.q.toLowerCase();
-  const inDateRange = iso => {
-    const day = String(iso).slice(0, 10);
-    return (!filter.from || day >= filter.from) && (!filter.to || day <= filter.to);
-  };
-  const allRequests = autoRequests(data, state.month, monthEnd);
-  const requests = allRequests.filter(request =>
-    (!filter.zone || request.zone.name === filter.zone) &&
-    (!filter.region || request.region === filter.region) && inDateRange(request.freeAt) &&
-    (!query || `${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name} ${request.suggestCustomer || ''}`
-      .toLowerCase().includes(query)));
   // Заявка проходит фильтр, если зона участвует в маршруте, окно погрузки
   // пересекает диапазон, а текст поиска найден в заказчике или маршруте.
   const matchesFilter = order =>
@@ -652,47 +642,41 @@ export function renderSales(container, context) {
   const temps = (orderOptions.temperatureModes || []).map(item => `<option>${escapeHtml(item)}</option>`).join('');
   const bodies = (orderOptions.bodyTypes || []).map(item => `<option>${escapeHtml(item)}</option>`).join('');
 
-  const blockedNote = request => request.blockedKind
-    ? `<small style="display:block;color:var(--warn);font-weight:700">⚙ ${request.blockedKind === 'repair'
-        ? 'выйдет из ремонта' : 'получит водителя'} ${fmtDateTime(request.blockedUntil)}
-        в «${escapeHtml(request.zone.name)}» — требуется загрузка</small>` : '';
-  const idleLabel = ms => {
-    const days = Math.floor(ms / 86_400_000);
-    return days >= 1 ? `${days} дн` : `${Math.max(1, Math.floor(ms / 3_600_000))} ч`;
+  // ── Клиенты: живые заказы (до выгрузки) по заказчикам — с учётом фильтров ──
+  // Заказ попадает в карточку клиента сразу после внесения и ждёт там
+  // подтверждения; неподтверждённый ближе 8 часов к погрузке — горит
+  // (сервер шлёт продажам сигнал в чат каждые 30 минут до подтверждения).
+  const HOT_MS = 8 * 3_600_000;
+  const nowTs = Date.now();
+  const liveOrders = data.orders.filter(order => order.status !== 'cancelled' && !order.deleted_at &&
+    orderStage(order, data).stage < 4 && matchesFilter(order));
+  const isUnconfirmed = order => Number(order.stage) === 0 && !order.trip_id;
+  const isHotUnconfirmed = order => isUnconfirmed(order) && Date.parse(order.window_from) - nowTs < HOT_MS;
+  const clientsMap = new Map();
+  for (const order of liveOrders) {
+    if (!clientsMap.has(order.customer_name)) clientsMap.set(order.customer_name, []);
+    clientsMap.get(order.customer_name).push(order);
+  }
+  const clients = [...clientsMap].map(([name, list]) => {
+    const sorted = list.sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
+    return {
+      name, orders: sorted,
+      unconfirmed: sorted.filter(isUnconfirmed).length,
+      hot: sorted.filter(isHotUnconfirmed).length,
+      planned: sorted.filter(order => orderStage(order, data).stage >= 2).length,
+      first: sorted[0].window_from, last: sorted[sorted.length - 1].window_from,
+      sum: sorted.reduce((sum, order) => sum + Number(order.rate_vat || 0), 0)
+    };
+  }).sort((a, b) => b.hot - a.hot || b.unconfirmed - a.unconfirmed ||
+    String(a.first).localeCompare(String(b.first)));
+  const unconfirmedTotal = clients.reduce((sum, client) => sum + client.unconfirmed, 0);
+  const hotTotal = clients.reduce((sum, client) => sum + client.hot, 0);
+  const fmtDay = value => new Date(value).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const hotLabel = order => {
+    const leftMs = Date.parse(order.window_from) - nowTs;
+    if (leftMs <= 0) return 'время погрузки прошло';
+    return `погрузка через ${Math.floor(leftMs / 3_600_000)} ч ${Math.round((leftMs % 3_600_000) / 60_000)} мин`;
   };
-  // Раздел разделён на два состояния: сцепки, которые УЖЕ стоят без загрузки
-  // (потерянные машино-дни, самые залежавшиеся сверху), и будущие освобождения
-  // открытого месяца (планирование загрузки заранее).
-  const idleRequests = requests.filter(request => request.idleMs > 0)
-    .sort((a, b) => b.idleMs - a.idleMs);
-  const upcomingRequests = requests.filter(request => !request.idleMs);
-  const idleDaysTotal = Math.round(idleRequests.reduce((sum, request) => sum + request.idleMs, 0) / 86_400_000);
-  const requestCard = request => {
-    const index = requests.indexOf(request);
-    const idleBadge = request.idleMs > 0
-      ? `<span class="badge ${request.idleMs > 2 * 86_400_000 ? 'bad' : 'warn'}"
-          title="Стоит без загрузки с ${fmtDateTime(request.freeAt)}">стоит ${idleLabel(request.idleMs)}</span>` : '';
-    return `<div class="list-item req" data-req="${index}">
-      <span style="flex:1;min-width:0">
-        <strong class="mono vlink" data-vinfo="${request.vehicle.id}"
-          title="Карточка ТС: рейс, простой, ремонт, отметки контролёра">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.vehicle.type_name)} ${idleBadge}
-        <small class="muted" style="display:block">${request.idleMs > 0 ? 'стоит' : 'освободится'} в «${escapeHtml(request.zone.name)}»
-          ${request.idleMs > 0 ? `с ${fmtDateTime(request.freeAt)}` : fmtDateTime(request.freeAt)} · подача с ${fmtDateTime(request.loadFrom)}</small>
-        ${blockedNote(request)}
-        ${request.suggestTo ? `<small class="muted" style="display:block">→ ${escapeHtml(request.zone.name)}→${escapeHtml(request.suggestTo)}${request.suggestCustomer ? `, ${escapeHtml(request.suggestCustomer)}` : ''} · ${money(request.suggestRate)}</small>` : ''}
-      </span>
-      <span class="reqzone" style="background:${request.zone.color}">${escapeHtml(request.zone.name)}</span>
-    </div>`;
-  };
-  const requestList = requests.length
-    ? `${idleRequests.length ? `<div class="scolh" style="margin:2px 0 6px">Простаивают сейчас
-          <span>${idleRequests.length}</span>
-          <small class="muted" style="text-transform:none;font-weight:600">· потеряно ${idleDaysTotal} маш-дн</small></div>
-        ${idleRequests.map(requestCard).join('')}` : ''}
-      ${upcomingRequests.length ? `<div class="scolh" style="margin:10px 0 6px">Освободятся в этом месяце
-          <span>${upcomingRequests.length}</span></div>
-        ${upcomingRequests.map(requestCard).join('')}` : ''}`
-    : '<p class="muted">Нет потребности — весь парк загружен.</p>';
 
   const stepper = stage => `<div class="stepper">${STAGES.map((_, index) =>
     `<span class="stp ${index <= stage ? 'on' : ''}"></span>`).join('')}<span class="stpl">${STAGES[stage] || STAGES[0]}</span></div>`;
@@ -709,7 +693,7 @@ export function renderSales(container, context) {
     .sort((a, b) => Number(needsConfirm(b)) - Number(needsConfirm(a)) ||
       String(b.order.created_at).localeCompare(String(a.order.created_at)));
 
-  const portfolio = visible.map(({ order, step }) => {
+  const orderCardHtml = ({ order, step }) => {
     const waiting = step.waitingRole
       ? (step.mine ? '<span class="pipe-badge mine">Ваш ход</span>'
         : `<span class="pipe-badge">Ждёт: ${escapeHtml(step.waitingRole)}</span>`)
@@ -734,6 +718,7 @@ export function renderSales(container, context) {
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${orderFileLinks(data, order.id)}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
+        ${isHotUnconfirmed(order) ? `<small class="hot-note">🔥 Не подтверждена — ${hotLabel(order)}. Подтвердите или отклоните</small>` : ''}
         <div class="stepper-row">${stepper(step.stage)}<span class="pipe-inline">${waiting}${since}</span></div>
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
@@ -750,7 +735,33 @@ export function renderSales(container, context) {
         </span>
       </span>
     </div>`;
-  }).join('') || `<p class="muted">${onlyMine ? 'Задач для вас нет — конвейер ждёт другие роли.' : 'Потребностей клиента пока нет — заполните форму слева.'}</p>`;
+  };
+  const portfolio = visible.map(orderCardHtml).join('')
+    || `<p class="muted">${onlyMine ? 'Задач для вас нет — конвейер ждёт другие роли.' : 'Потребностей клиента пока нет — заполните форму справа.'}</p>`;
+
+  // Карточки клиентов: клик раскрывает все заказы клиента хронологически.
+  const clientCard = client => {
+    const open = state.salesClientOpen === client.name;
+    return `<div class="list-item client-card ${open ? 'open' : ''} ${client.hot ? 'pipe-returned' : ''}"
+        data-client="${escapeHtml(client.name)}" title="Все заказы клиента в хронологическом порядке">
+      <span style="flex:1;min-width:0">
+        <strong>${escapeHtml(client.name)}</strong>
+        <small class="muted" style="display:block">заказов ${client.orders.length}
+          · ${fmtDay(client.first)}${client.first !== client.last ? ` — ${fmtDay(client.last)}` : ''}
+          · ${money(client.sum)}</small>
+        <span class="client-badges">
+          ${client.hot ? `<span class="badge bad">🔥 подтвердить ${client.hot} — погрузка ближе 8 ч</span>` : ''}
+          ${client.unconfirmed - client.hot > 0 ? `<span class="badge warn">ждут подтверждения ${client.unconfirmed - client.hot}</span>` : ''}
+          ${client.planned ? `<span class="badge ok">в плане / в пути ${client.planned}</span>` : ''}
+        </span>
+      </span>
+      <span class="muted">${open ? '▾' : '▸'}</span>
+    </div>
+    ${open ? `<div class="client-orders">${client.orders.map(order =>
+      orderCardHtml({ order, step: pipelineStep(order, data, can) })).join('')}</div>` : ''}`;
+  };
+  const clientsList = clients.map(clientCard).join('')
+    || '<p class="muted">Живых заказов нет — внесите потребность клиента в форме справа.</p>';
 
   // Реестр отклонённых: заявки, на которые ТС так и не назначили.
   const rejectedList = rejectedOrders.map(order => `<div class="list-item ordrow rejected-order">
@@ -809,19 +820,16 @@ export function renderSales(container, context) {
           ${trip ? ` · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>` : ''}</small></span>
       <b>${money(order.rate_vat)}</b></div>`;
   };
-  const requestRow = (request, index) => `<div class="skpi-row" data-kpi-req="${index}">
-      <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(request.vehicle.plate)}</strong> · ${escapeHtml(request.zone.name)}
-        <small class="muted" style="display:block">${request.idleMs > 0
-          ? `стоит ${Math.max(1, Math.floor(request.idleMs / 86_400_000))} дн с ${fmtDateTime(request.freeAt)}`
-          : `освободится ${fmtDateTime(request.freeAt)}`}${request.blockedKind
-          ? ` · ⚙ ${({ repair: 'из ремонта', no_driver: 'получит водителя',
-            reserve: 'выйдет из резерва' })[request.blockedKind] || request.blockedKind}` : ''}</small></span></div>`;
   container.innerHTML = `<div class="saleswrap">
     <div class="salekpis">
-      <div class="skpi clickable ${state.salesKpiOpen === 'requests' ? 'open' : ''}" data-kpi="requests"
-        title="Освобождающиеся сцепки — выбор заполняет форму бронирования">
-        <span class="skl">Потребность от логистики</span><span class="skv">${requests.length}${filterActive ? `<small class="muted"> / ${allRequests.length}</small>` : ''}</span>
-        ${kpiDrop('requests', requests.map(requestRow).join(''))}</div>
+      <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
+        title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">
+        <span class="skl">Клиенты</span><span class="skv">${clients.length}</span>
+        <small class="skm">${unconfirmedTotal ? `ждут подтверждения ${unconfirmedTotal}${hotTotal ? ` · 🔥 ${hotTotal}` : ''}` : 'всё подтверждено'}</small>
+        ${kpiDrop('clients', clients.map(client => `<div class="skpi-row" data-kpi-client="${escapeHtml(client.name)}">
+          <span style="flex:1;min-width:0"><strong>${escapeHtml(client.name)}</strong>
+            <small class="muted" style="display:block">заказов ${client.orders.length} · ${fmtDay(client.first)}</small></span>
+          ${client.hot ? '🔥' : client.unconfirmed ? '⏳' : ''}</div>`).join(''))}</div>
       <div class="skpi clickable ${state.salesKpiOpen === 'portfolio' ? 'open' : ''}" data-kpi="portfolio"
         title="Заявки портфеля — выбор открывает редактирование">
         <span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span>
@@ -867,14 +875,17 @@ export function renderSales(container, context) {
         ${filterActive ? '<button class="button ghost small" id="salesFilterReset">✕ Сброс</button>' : ''}
         ${filterActive ? `<span class="filter-sum" title="Итог по отфильтрованному">заявок ${orders.length}/${allOrders.length}
           · ${money(orders.reduce((sumRate, order) => sumRate + Number(order.rate_vat || 0), 0))}
-          · сцепок ${requests.length}/${allRequests.length}</span>` : ''}
+          · клиентов ${clients.length}</span>` : ''}
       </div>
     </div>
     <div class="salesboard">
       <div class="scol">
-        <div class="scolh">Потребность от логистики <span>${requests.length}</span></div>
-        <div class="list">${requestList}</div>
-        <div class="geohint">Клик по строке заполняет бронирование обратного груза в форме справа.</div>
+        <div class="scolh">Клиенты <span>${clients.length}</span>${hotTotal
+          ? `<small class="muted" style="text-transform:none;font-weight:600">· 🔥 ${hotTotal} к подтверждению</small>` : ''}</div>
+        <div class="list">${clientsList}</div>
+        <div class="geohint">Клик по клиенту — все его заказы в хронологическом порядке. Заказ попадает
+          сюда сразу после внесения и ждёт подтверждения; ближе 8 часов к погрузке неподтверждённый горит,
+          продажам идёт сигнал в чат каждые 30 минут.</div>
       </div>
       <div class="scol">
         <div class="scolh">Потребность клиента <span>${orders.length}</span></div>
@@ -1148,20 +1159,20 @@ export function renderSales(container, context) {
     container.querySelector(`#${id}`).addEventListener('change', feasibility));
   feasibility();
 
-  const fillRequestForm = request => {
-    container.querySelector('#salesFrom').value = request.zone.id;
-    if (request.suggestToId) container.querySelector('#salesTo').value = request.suggestToId;
-    container.querySelector('[name="customerName"]').value = request.suggestCustomer || '';
-    container.querySelector('#salesRate').value = request.suggestRate || '';
-    container.querySelector('#salesWinFrom').value = inputValue(request.loadFrom);
-    container.querySelector('#salesWinTo').value = inputValue(request.windowTo);
-    feasibility();
-    toast('Бронирование обратного груза заполнено');
-  };
-  container.querySelectorAll('[data-req]').forEach(element =>
+  // Карточка клиента: раскрыть/свернуть его заказы.
+  container.querySelectorAll('[data-client]').forEach(element =>
     element.addEventListener('click', () => {
-      const request = requests[Number(element.dataset.req)];
-      if (request) fillRequestForm(request);
+      const name = element.dataset.client;
+      state.salesClientOpen = state.salesClientOpen === name ? null : name;
+      rerender();
+    }));
+  container.querySelectorAll('[data-kpi-client]').forEach(row =>
+    row.addEventListener('click', () => {
+      state.salesClientOpen = row.dataset.kpiClient;
+      state.salesKpiOpen = null;
+      rerender();
+      container.querySelector(`[data-client="${CSS.escape(row.dataset.kpiClient)}"]`)
+        ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }));
 
   // Плашки-KPI: клик раскрывает список категории; выбор заявки открывает
@@ -1180,59 +1191,6 @@ export function renderSales(container, context) {
       rerender();
       if (order) editOrderDialog(order, data, context);
     }));
-  container.querySelectorAll('[data-kpi-req]').forEach(row =>
-    row.addEventListener('click', () => {
-      const request = requests[Number(row.dataset.kpiReq)];
-      state.salesKpiOpen = null;
-      rerender();
-      if (request) fillRequestForm(request);
-    }));
-
-  container.querySelector('#salesForm').onsubmit = async event => {
-    event.preventDefault();
-    const values = formValues(event.currentTarget);
-    values.cash = values.cash ? 1 : 0;
-    values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
-    values.toAddressId = addressByName(data, values.toPoint)?.id || null;
-    values.via = via;
-    values.rateVat = parseMoney(values.rateVat) || '';
-    if (!values.rateVat) {
-      values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
-    }
-    // Защита от дублей: похожая заявка уже в портфеле (тот же заказчик,
-    // направление и пересекающееся окно) — вероятно, её просто не нашли в списке.
-    const duplicate = allOrders.find(order =>
-      order.customer_name.trim().toLowerCase() === String(values.customerName).trim().toLowerCase() &&
-      order.from_zone_id === values.fromZoneId && order.to_zone_id === values.toZoneId &&
-      Date.parse(order.window_from) < Date.parse(values.windowTo) &&
-      Date.parse(values.windowFrom) < Date.parse(order.window_to));
-    if (duplicate && !confirm(`Похожая заявка «${duplicate.customer_name}» с пересекающимся окном уже в портфеле (наверху списка). Создать ещё одну?`)) {
-      return;
-    }
-    try {
-      const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
-      let uploaded = 0;
-      for (const file of state.salesAttach || []) {
-        try { await uploadOrderFile(created.id, file); uploaded += 1; }
-        catch (error) { toast(`Файл «${file.name}»: ${error.message}`, 'error'); }
-      }
-      state.salesAttach = [];
-      toast(`Забронировано — заявка № ${created.orderNo}${uploaded ? ` · 📎 файлов: ${uploaded}` : ''} в портфеле (первая в списке)`);
-      state.salesVia = [];
-      await context.onReload();
-    } catch (error) { toast(error.message, 'error'); }
-  };
-
-  container.querySelector('#salesMyTasks').onclick = () => {
-    state.salesOnlyMine = !state.salesOnlyMine;
-    rerender();
-  };
-  container.querySelector('#salesRejected').addEventListener('toggle', event => {
-    state.salesRejectedOpen = event.currentTarget.open;
-  });
-
-  // Единая точка выполнения шага конвейера: действие сотрудника переводит заявку
-  // на следующую стадию и тем самым ставит задачу следующей роли.
   container.querySelectorAll('[data-act]').forEach(button =>
     button.addEventListener('click', async event => {
       event.stopPropagation();

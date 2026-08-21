@@ -545,6 +545,7 @@ function migrateColumns(db) {
   ensure('chats', 'deleted_at', 'TEXT');
   ensure('trips', 'sum_confirmed_at', 'TEXT');
   ensure('trips', 'sum_confirmed_by', 'TEXT');
+  ensure('orders', 'confirm_alert_at', 'TEXT');
   // Этап «документы получены» введён 13.08.2026: рейсам, выгруженным
   // до внедрения, отметка проставляется задним числом — иначе диспетчеры
   // получили бы сотни исторических задач разом. Однократно.

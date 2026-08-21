@@ -1155,3 +1155,10 @@ tbody tr:hover td { background: var(--hover); }
 /* ── Формы заявки: пункт мимо справочника адресов ── */
 .place-warn { display: block; color: var(--warn); font-size: var(--fs-xs);
   font-weight: 700; margin-top: 3px; }
+
+/* ── Продажи: карточки клиентов ── */
+.client-card { cursor: pointer; }
+.client-card.open { border-color: var(--teal); box-shadow: inset 0 0 0 1px var(--teal); }
+.client-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 4px; }
+.client-orders { margin: 0 0 12px 10px; padding-left: 8px; border-left: 3px solid var(--teal); }
+.hot-note { display: block; color: var(--bad); font-weight: 700; }
