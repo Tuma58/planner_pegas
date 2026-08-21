@@ -111,7 +111,11 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     const starts = Date.parse(trip.starts_at);
     return starts >= dayStart && starts < dayEnd;
   })()).length;
-  const online = activeTrips.filter(trip => trip.status === 'run').length;
+  // «На линии сейчас» — МАШИНЫ (у сцепки бывает два рейса в пути: следующий
+  // выведен заранее), рейсы — отдельной цифрой.
+  const onlineTrips = activeTrips.filter(trip => trip.status === 'run');
+  const online = new Set(onlineTrips.map(trip => trip.vehicle_id)).size;
+  const onlineTripCount = onlineTrips.length;
 
   // Ресурс/парк: занятость сегодня.
   const fleet = (data.vehicles || []).filter(vehicle => vehicle.status === 'work');
@@ -169,7 +173,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     avgDayCheck: dayTrips.length ? dayFact / dayTrips.length : 0,
     sales: { createdToday: createdToday.length, createdSum, avgCheck, queue },
     logist: { assignedToday, queue },
-    dispatcher: { onLineToday, startingToday, unloadedToday, online },
+    dispatcher: { onLineToday, startingToday, unloadedToday, online, onlineTripCount },
     fleet: { total: fleet.length, inTrip: inTripIds.size, unavailable, idle } };
 }
 
@@ -342,7 +346,8 @@ export function renderDashboard(container, context) {
         { label: 'Ждут выхода сегодня', value: metrics.dispatcher.startingToday,
           cls: metrics.dispatcher.startingToday ? 'warn' : 'ok' },
         { label: 'Выгружено сегодня', value: metrics.dispatcher.unloadedToday },
-        { label: 'На линии сейчас', value: metrics.dispatcher.online }
+        { label: 'На линии сейчас · машин', value: metrics.dispatcher.online },
+        { label: 'Рейсов в пути', value: metrics.dispatcher.onlineTripCount }
       ])}
       ${roleCard('🔧 Ресурс', [
         { label: 'Парк в работе', value: metrics.fleet.total },

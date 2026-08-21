@@ -461,6 +461,8 @@ test('потребность от логистики: ремонт и «без �
     ] };
   const dash = dashboardMetrics(dashData, dashNow);
   assert.ok(dash.monthDone <= dash.monthFact, '«выгружено» не больше «забито»');
+  assert.ok(dash.dispatcher.online <= dashData.vehicles.length, '«на линии» — машины, не больше парка');
+  assert.ok(dash.dispatcher.onlineTripCount >= dash.dispatcher.online);
   assert.equal(typeof dash.monthDone, 'number');
   assert.equal(Math.round(dash.monthFact), 105_000_000, 'факт месяца без НДС (122М+6,1М)/1,22');
   // план дня: (160М − 100М до сегодня) / 11 оставшихся дней (21..31)
