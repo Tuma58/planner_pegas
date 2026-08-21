@@ -1616,3 +1616,21 @@ test('занятость по факту: вывод на линию раньш�
   assert.equal(dayStateOf([brief], [{ kind: 'repair', starts_at: '2026-08-21T08:00:00.000Z', ends_at: '2026-08-21T14:00:00.000Z' }], day21, now), 'repair');
   assert.equal(dayStateOf([], [{ kind: 'reserve', starts_at: '2026-08-21T00:00:00.000Z', ends_at: '2026-08-22T00:00:00.000Z' }], day21, now), 'idle', 'резерв день не объясняет');
 });
+
+test('отчёт: будущие дни периода не считаются простоем, «выгружено» ≤ «забито»', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-future-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const today = new Date().toISOString().slice(0, 10);
+  const monthStart = today.slice(0, 8) + '01';
+  const nextMonth = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 1)).toISOString().slice(0, 10);
+  const snap = reportSnapshot(db, monthStart, nextMonth);
+  const elapsed = Math.round((Date.parse(today) - Date.parse(monthStart)) / 86_400_000) + 1;
+  assert.equal(snap.utilization.days, elapsed, 'учтены только прошедшие дни + сегодня');
+  assert.ok(snap.utilization.futureDays >= 0);
+  assert.equal(snap.utilization.days + snap.utilization.futureDays, snap.utilization.periodDays);
+  assert.ok(snap.netRevenueDone <= snap.netRevenue);
+});

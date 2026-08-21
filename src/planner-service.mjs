@@ -585,8 +585,16 @@ export function reportSnapshot(db, fromValue, toValue) {
     WHERE t.status<>'rejected' AND t.ends_at>=? AND t.ends_at<? ORDER BY t.ends_at`).all(from, to);
   const vehicleCount = db.prepare(`SELECT COUNT(*) count FROM vehicles WHERE status<>'out'`).get().count;
   const days = Math.max(1, (Date.parse(to) - Date.parse(from)) / 86_400_000);
+  // Будущие дни периода (открытый месяц до его конца) в машино-дни не входят:
+  // по ним ещё нет ни рейсов, ни фактов — они считались бы простоем всего
+  // парка и занижали КИП (за 1–31 августа 21-го числа КИП был 66% вместо 94%).
+  const tomorrowIso = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(),
+    new Date().getUTCDate() + 1)).toISOString();
+  const effectiveTo = Date.parse(to) < Date.parse(tomorrowIso) ? to : tomorrowIso;
+  const countedDays = Math.max(0, Math.round((Date.parse(effectiveTo) - Date.parse(from)) / 86_400_000));
   const byType = new Map();
   let netRevenue = 0;
+  let netRevenueDone = 0;
   let contribution = 0;
   let factRevenue = 0;
   let emptyKmTotal = 0;
@@ -605,6 +613,7 @@ export function reportSnapshot(db, fromValue, toValue) {
       tripDays * (Number(calculation.driverPerTripDay || 0) + Number(calculation.refrigerationPerTripDay || 0));
     const margin = net - variable;
     netRevenue += net;
+    if (trip.status === 'unloaded' || trip.status === 'done' || trip.status === 'paid') netRevenueDone += net;
     contribution += margin;
     if (['done', 'paid'].includes(trip.status)) factRevenue += net;
     const item = byType.get(trip.vehicle_type) || { vehicleType: trip.vehicle_type, trips: 0, netRevenue: 0, contribution: 0, vehicles: new Set() };
@@ -630,7 +639,7 @@ export function reportSnapshot(db, fromValue, toValue) {
     WHERE status<>'rejected' AND starts_at<datetime(?,'+3 days') AND ends_at>datetime(?,'-3 days')`).all(to, from);
   const byVehicleDispositions = Map.groupBy(dispositionRows, row => row.vehicle_id);
   const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
-  const dayCount = Math.round(days);
+  const dayCount = countedDays;
   const fromMs = Date.parse(from);
   const machineDays = { work: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
   for (const vehicle of fleet) {
@@ -650,7 +659,8 @@ export function reportSnapshot(db, fromValue, toValue) {
   const normDays = calendarDays * utilizationTarget;
   const lostProfit = Math.max(0, normDays - machineDays.work) * marginPerTripDay;
   const utilization = {
-    vehicles: fleet.length, days: dayCount, calendarDays, machineDays,
+    vehicles: fleet.length, days: dayCount, periodDays: Math.round(days),
+    futureDays: Math.max(0, Math.round(days) - dayCount), calendarDays, machineDays,
     techDays, lineDays, workDays: machineDays.work, idleDays: machineDays.idle,
     ktg: calendarDays ? techDays / calendarDays : 0,
     kvl: techDays ? lineDays / techDays : 0,
@@ -676,7 +686,7 @@ export function reportSnapshot(db, fromValue, toValue) {
       ? (emptyKmTotal + repairKmTotal) / (loadedKmTotal + emptyKmTotal + repairKmTotal) : 0,
     emptyCost: Math.round((emptyKmTotal + repairKmTotal) * perKmRate),
     from, to, days, trips: trips.length, vehicles: vehicleCount,
-    factRevenue: Math.round(factRevenue), netRevenue: Math.round(netRevenue),
+    factRevenue: Math.round(factRevenue), netRevenue: Math.round(netRevenue), netRevenueDone: Math.round(netRevenueDone),
     contribution: Math.round(contribution), fixed: Math.round(fixed),
     operationalProfit: Math.round(operationalProfit),
     operationalMargin: netRevenue ? operationalProfit / netRevenue : 0,
@@ -702,7 +712,9 @@ export function vehicleUtilization(db, fromValue, toValue) {
     throw Object.assign(new Error('Период задан неверно'), { status: 422 });
   }
   const calculation = settingsObject(db).calculation;
-  const dayCount = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000));
+  // Будущие дни периода не учитываются (см. reportSnapshot).
+  const tomorrowMs = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() + 1);
+  const dayCount = Math.max(0, Math.round((Math.min(Date.parse(to), tomorrowMs) - Date.parse(from)) / 86_400_000));
   const fromMs = Date.parse(from);
   const fleet = db.prepare(`SELECT v.id,v.plate,v.driver_name,vt.name type_name FROM vehicles v
     JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.status<>'out' ORDER BY v.plate`).all();

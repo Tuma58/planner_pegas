@@ -79,8 +79,8 @@ export async function renderBoss(container, context) {
   const planDev = revenuePlan ? (report.netRevenue - revenuePlan) / revenuePlan * 100 : null;
   const fondUse = u.calendarDays ? u.workDays / u.calendarDays : 0;
   const kpiCells = [
-    { k: 'Выручка без НДС', v: mln(report.netRevenue),
-      p: revenuePlan ? `план ${mln(revenuePlan)}` : 'план не задан',
+    { k: 'Выручка без НДС · забито', v: mln(report.netRevenue),
+      p: `выгружено ${mln(report.netRevenueDone || 0)}${revenuePlan ? ` · план ${mln(revenuePlan)}` : ' · план не задан'}`,
       pill: planDev == null ? null : `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}%`,
       pc: planDev == null ? 'w' : (planDev >= 0 ? 'g' : 'b'),
       g: revenuePlan ? report.netRevenue / revenuePlan : 0, c: 'var(--ok)' },
@@ -90,7 +90,7 @@ export async function renderBoss(container, context) {
     { k: 'КВЛ — выпуск на линию', v: pct(u.kvl), p: 'план 99%',
       pill: `${devPP(u.kvl, PLAN.kvl) >= 0 ? '+' : ''}${devPP(u.kvl, PLAN.kvl).toFixed(1)} п.п.`,
       pc: pillCls(devPP(u.kvl, PLAN.kvl)), g: u.kvl / PLAN.kvl, c: 'var(--teal)' },
-    { k: 'КИП — использование', v: pct(u.kip), p: `в работе ${n1(u.workDays / u.days)} ед. из ${u.vehicles}`,
+    { k: 'КИП — использование', v: pct(u.kip), p: `в работе ${n1(u.workDays / Math.max(1, u.days))} ед. из ${u.vehicles}`,
       pill: `${devPP(u.kip, PLAN.kip) >= 0 ? '+' : ''}${devPP(u.kip, PLAN.kip).toFixed(1)} п.п.`,
       pc: pillCls(devPP(u.kip, PLAN.kip)), g: u.kip / PLAN.kip, c: '#7a6fb0' },
     { k: 'Использование фонда', v: pct(fondUse), p: `${n0(u.workDays)} из ${n0(u.calendarDays)} машино-дней`,
@@ -122,13 +122,14 @@ export async function renderBoss(container, context) {
   const gap = revenuePlan ? report.netRevenue - revenuePlan : 0;
   const periodSection = `<section id="brep-s1">
     <div class="brep-shead"><span class="idx">01</span><h3>Отчётный период</h3>
-      <span class="note">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · выручка по дате выгрузки</span></div>
+      <span class="note">${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн${u.futureDays
+        ? ` · учтено ${u.days} (будущие ${u.futureDays} в машино-дни не входят)` : ''} · выручка по дате выгрузки</span></div>
     <div class="rcard">
       <div class="brep-mrow">
         <div><div class="k">План без НДС</div><div class="v">${revenuePlan ? mln(revenuePlan) : '—'}</div>
           <div class="p">${revenuePlan ? `${rub(revenuePlan / dayCount)}/сут` : 'задайте в консоли'}</div></div>
-        <div><div class="k">Факт без НДС</div><div class="v">${mln(report.netRevenue)}</div>
-          <div class="p">${rub(report.netRevenue / Math.max(1, u.days))}/сут</div></div>
+        <div><div class="k">Забито без НДС</div><div class="v">${mln(report.netRevenue)}</div>
+          <div class="p">выгружено ${mln(report.netRevenueDone || 0)} · ${rub(report.netRevenue / Math.max(1, u.periodDays || u.days))}/сут</div></div>
         <div><div class="k">Выполнение</div><div class="v ${done >= 1 ? 'good' : done >= 0.9 ? 'warn' : 'bad'}">${revenuePlan ? pct(done) : '—'}</div>
           <div class="p">${revenuePlan ? `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}% к плану` : ''}</div></div>
         <div><div class="k">${gap >= 0 ? 'Запас' : 'Разрыв'}</div><div class="v ${gap >= 0 ? 'good' : 'bad'}">${revenuePlan ? mln(Math.abs(gap)) : '—'}</div>
