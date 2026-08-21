@@ -68,9 +68,9 @@ export function setupChat(state) {
   if (!toolbarEnd || document.getElementById('chatToggle')) return;
   const toggle = document.createElement('button');
   toggle.id = 'chatToggle';
-  toggle.className = 'button ghost small';
+  toggle.className = 'button small chat-toggle';
   toggle.title = 'Внутренний чат: общий канал, лента конвейера, личные и группы';
-  toggle.innerHTML = '💬 <span class="chat-unread hidden" id="chatUnread">0</span>';
+  toggle.innerHTML = '💬 Чат <span class="chat-unread hidden" id="chatUnread">0</span>';
   toolbarEnd.prepend(toggle);
 
   const myRoles = state.data.user.roles || [state.data.user.role];
@@ -209,10 +209,93 @@ export function setupChat(state) {
           : escapeHtml(message.author_name)}</small>` : ''}
         <div>${escapeHtml(message.text)}</div>
         <small class="chat-time">${formatDateTime(message.created_at.includes('Z')
-          ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}</small>
+          ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}
+          <span class="chat-msg-actions">
+            <button type="button" class="chat-act" data-copy-msg="${message.id}" title="Скопировать текст">📋</button>
+            <button type="button" class="chat-act" data-forward-msg="${message.id}" title="Переслать в другую переписку">↪</button>
+          </span></small>
       </div>
     </div>`;
   };
+
+  // Копирование текста сообщения (с запасным путём для старых браузеров).
+  const copyText = async value => {
+    try { await navigator.clipboard.writeText(value); } catch {
+      const helper = document.createElement('textarea');
+      helper.value = value; document.body.append(helper);
+      helper.select(); document.execCommand('copy'); helper.remove();
+    }
+  };
+
+  // Пересылка: выбор переписки-получателя, текст уходит с пометкой автора.
+  const forwardView = message => {
+    el('chatHomeHead').classList.remove('hidden');
+    el('chatDialogHead').classList.add('hidden');
+    rooms.classList.add('hidden');
+    list.classList.add('hidden');
+    el('chatForm').classList.add('hidden');
+    const box = el('chatCompose');
+    box.classList.remove('hidden');
+    const author = message.kind === 'auto' ? '⚙ Конвейер' : message.author_name;
+    const targets = [
+      { key: 'all', label: '📢 Общий', sub: 'все сотрудники' },
+      ...groups.map(group => ({ key: `group:${group.id}`, label: `👥 ${group.title}`,
+        sub: group.members.map(member => shortName(member.name)).join(', ') })),
+      ...contacts.map(item => ({ key: `dm:${item.id}`, label: item.full_name,
+        sub: (item.roles || []).map(role => ROLE_LABELS[role] || role).join(', ') }))
+    ];
+    box.innerHTML = `<div style="padding:10px">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+        <b>↪ Переслать</b>
+        <button class="button ghost small" id="fwdCancel" style="margin-left:auto">Отмена</button>
+      </div>
+      <div class="chat-fwd-preview"><small class="muted">${escapeHtml(author)}:</small>
+        ${escapeHtml(message.text.slice(0, 160))}${message.text.length > 160 ? '…' : ''}</div>
+      <input id="fwdSearch" class="block-search" placeholder="Куда переслать: поиск…"
+        style="width:100%;margin:8px 0 6px">
+      <div class="chat-contacts">${targets.map(target =>
+        `<div class="chat-room" data-fwd="${target.key}">
+          <span class="chat-ava ${target.key.startsWith('dm:') ? 'human' : ''}">${target.key === 'all' ? '📢'
+            : target.key.startsWith('group:') ? '👥' : initials(target.label)}</span>
+          <span class="chat-room-body"><b>${escapeHtml(target.label.replace(/^[📢👥] /, ''))}</b>
+            <small class="muted" style="display:block">${escapeHtml(target.sub)}</small></span>
+        </div>`).join('')}</div>
+    </div>`;
+    box.querySelector('#fwdSearch').oninput = event => {
+      const query = event.target.value.toLowerCase();
+      box.querySelectorAll('[data-fwd]').forEach(row =>
+        row.classList.toggle('hidden', !row.textContent.toLowerCase().includes(query)));
+    };
+    box.querySelector('#fwdCancel').onclick = () => active ? openRoom(active.key) : showHome();
+    box.querySelectorAll('[data-fwd]').forEach(row =>
+      row.addEventListener('click', async () => {
+        const key = row.dataset.fwd;
+        const payload = { text: `↪ ${author}: ${message.text}`.slice(0, 500) };
+        if (key.startsWith('dm:')) payload.recipientId = key.slice(3);
+        if (key.startsWith('group:')) payload.chatId = key.slice(6);
+        try {
+          await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
+          await poll();
+          toast('Переслано');
+          openRoom(key);
+        } catch (error) { toast(error.message, 'error'); }
+      }));
+  };
+
+  // Делегированные действия на пузырях: копирование и пересылка.
+  list.addEventListener('click', async event => {
+    const copyButton = event.target.closest('[data-copy-msg]');
+    if (copyButton) {
+      const message = allMessages.find(m => m.id === Number(copyButton.dataset.copyMsg));
+      if (message) { await copyText(message.text); toast('Сообщение скопировано'); }
+      return;
+    }
+    const forwardButton = event.target.closest('[data-forward-msg]');
+    if (forwardButton) {
+      const message = allMessages.find(m => m.id === Number(forwardButton.dataset.forwardMsg));
+      if (message) forwardView(message);
+    }
+  });
 
   const renderDialog = () => {
     if (!active) return;
@@ -278,6 +361,7 @@ export function setupChat(state) {
     const total = roomList().reduce((sum, { key }) => sum + unreadOf(key), 0);
     unreadBadge.textContent = total;
     unreadBadge.classList.toggle('hidden', total === 0);
+    toggle.classList.toggle('has-unread', total > 0);
   };
 
   // ── Новый диалог или группа ──

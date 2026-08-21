@@ -1111,3 +1111,20 @@ tbody tr:hover td { background: var(--hover); }
 .chat-author { display: block; font-weight: 700; color: var(--teal); font-size: var(--fs-xs); }
 .chat-bubble.own .chat-author { color: #fff; }
 .chat-time { display: block; text-align: right; font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+/* ── Чат: заметная кнопка и действия на сообщениях ── */
+.chat-toggle { background: var(--teal); color: #fff; border-color: transparent;
+  font-weight: 800; padding: 6px 12px; }
+.chat-toggle:hover { filter: brightness(1.08); }
+.chat-toggle.has-unread { animation: chatPulse 2s ease-in-out infinite; }
+@keyframes chatPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(38, 166, 154, .55); }
+  50% { box-shadow: 0 0 0 7px rgba(38, 166, 154, 0); }
+}
+.chat-msg-actions { display: inline-flex; gap: 2px; margin-left: 6px; vertical-align: middle; }
+.chat-act { border: none; background: transparent; cursor: pointer; font-size: 12px;
+  padding: 0 2px; opacity: .35; color: inherit; }
+.chat-bubble:hover .chat-act { opacity: .85; }
+.chat-act:hover { opacity: 1 !important; transform: scale(1.15); }
+.chat-fwd-preview { border-left: 3px solid var(--teal); background: var(--soft);
+  border-radius: 6px; padding: 6px 10px; font-size: var(--fs-sm); }
