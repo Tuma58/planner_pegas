@@ -244,16 +244,18 @@ export function setupChat(state) {
       ...contacts.map(item => ({ key: `dm:${item.id}`, label: item.full_name,
         sub: (item.roles || []).map(role => ROLE_LABELS[role] || role).join(', ') }))
     ];
-    box.innerHTML = `<div style="padding:10px">
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+    box.innerHTML = `<div class="cmp-wrap">
+      <div class="cmp-head">
         <b>↪ Переслать</b>
         <button class="button ghost small" id="fwdCancel" style="margin-left:auto">Отмена</button>
       </div>
-      <div class="chat-fwd-preview"><small class="muted">${escapeHtml(author)}:</small>
-        ${escapeHtml(message.text.slice(0, 160))}${message.text.length > 160 ? '…' : ''}</div>
-      <input id="fwdSearch" class="block-search" placeholder="Куда переслать: поиск…"
-        style="width:100%;margin:8px 0 6px">
-      <div class="chat-contacts">${targets.map(target =>
+      <div class="cmp-fixed">
+        <div class="chat-fwd-preview"><small class="muted">${escapeHtml(author)}:</small>
+          ${escapeHtml(message.text.slice(0, 160))}${message.text.length > 160 ? '…' : ''}</div>
+        <input id="fwdSearch" class="block-search" placeholder="Куда переслать: поиск…"
+          style="width:100%;margin-top:6px">
+      </div>
+      <div class="cmp-list">${targets.map(target =>
         `<div class="chat-room" data-fwd="${target.key}">
           <span class="chat-ava ${target.key.startsWith('dm:') ? 'human' : ''}">${target.key === 'all' ? '📢'
             : target.key.startsWith('group:') ? '👥' : initials(target.label)}</span>
@@ -365,58 +367,80 @@ export function setupChat(state) {
   };
 
   // ── Новый диалог или группа ──
+  // Один принцип: управляющие элементы (название, кнопка создания, поиск)
+  // закреплены сверху и видны всегда, прокручивается только список людей.
   const composeView = () => {
     rooms.classList.add('hidden');
     const box = el('chatCompose');
     box.classList.remove('hidden');
-    box.innerHTML = `<div style="padding:10px">
-      <div style="display:flex;gap:6px;margin-bottom:8px">
+    box.innerHTML = `<div class="cmp-wrap">
+      <div class="cmp-head">
         <button class="button small" id="cmpDm">🔒 Лично</button>
         <button class="button ghost small" id="cmpGroup">👥 Группа</button>
         <button class="button ghost small" id="cmpCancel" style="margin-left:auto">Отмена</button>
       </div>
-      <div id="cmpBody"></div>
+      <div class="cmp-fixed" id="cmpFixed"></div>
+      <div class="cmp-list" id="cmpBody"></div>
     </div>`;
+    const fixed = box.querySelector('#cmpFixed');
     const body = box.querySelector('#cmpBody');
-    const dmView = () => {
-      body.innerHTML = `<input id="cmpSearch" class="block-search" placeholder="Поиск сотрудника…"
-          style="width:100%;margin-bottom:6px">
-        <div class="chat-contacts">${contacts.map(item =>
-          `<div class="chat-room" data-dm="${item.id}"><span class="chat-ava human">${initials(item.full_name)}</span>
-            <span class="chat-room-body"><b>${escapeHtml(item.full_name)}</b>
-              <small class="muted" style="display:block">${(item.roles || []).map(role => ROLE_LABELS[role] || role).join(', ')}</small></span>
-          </div>`).join('')}</div>`;
-      body.querySelector('#cmpSearch').oninput = event => {
+    const dmButton = box.querySelector('#cmpDm');
+    const groupButton = box.querySelector('#cmpGroup');
+    const markTab = isDm => {
+      dmButton.className = isDm ? 'button small' : 'button ghost small';
+      groupButton.className = isDm ? 'button ghost small' : 'button small';
+    };
+    const wireSearch = () => {
+      fixed.querySelector('#cmpSearch').oninput = event => {
         const query = event.target.value.toLowerCase();
-        body.querySelectorAll('[data-dm]').forEach(row =>
+        body.querySelectorAll('.chat-room').forEach(row =>
           row.classList.toggle('hidden', !row.textContent.toLowerCase().includes(query)));
       };
+    };
+    // Личное сообщение: клик по сотруднику сразу открывает диалог.
+    const dmView = () => {
+      markTab(true);
+      fixed.innerHTML = `<input id="cmpSearch" class="block-search"
+        placeholder="Кому написать: поиск по имени…" style="width:100%">`;
+      body.innerHTML = contacts.map(item =>
+        `<div class="chat-room" data-dm="${item.id}"><span class="chat-ava human">${initials(item.full_name)}</span>
+          <span class="chat-room-body"><b>${escapeHtml(item.full_name)}</b>
+            <small class="muted" style="display:block">${(item.roles || []).map(role => ROLE_LABELS[role] || role).join(', ')}</small></span>
+        </div>`).join('');
+      wireSearch();
       body.querySelectorAll('[data-dm]').forEach(row =>
         row.addEventListener('click', () => openRoom(`dm:${row.dataset.dm}`)));
     };
+    // Группа: название и кнопка «Создать» всегда наверху, на кнопке — счётчик.
     const groupView = (group = null) => {
-      const memberIds = new Set(group ? group.members.map(member => member.id) : [myId]);
-      body.innerHTML = `<label class="field">Название группы
-          <input id="cmpTitle" maxlength="60" placeholder="Например: Смена А / Рейс т925ат58"
-            value="${group ? escapeHtml(group.title) : ''}"></label>
-        <input id="cmpSearch" class="block-search" placeholder="Поиск сотрудника…"
-          style="width:100%;margin:6px 0">
-        <div class="chat-contacts">${contacts.map(item =>
-          `<label class="chat-room" data-member><input type="checkbox" value="${item.id}"
-              ${memberIds.has(item.id) ? 'checked' : ''}>
-            <span class="chat-ava human">${initials(item.full_name)}</span>
-            <span class="chat-room-body"><b>${escapeHtml(item.full_name)}</b></span>
-          </label>`).join('')}</div>
-        <button class="button" id="cmpCreate" style="margin-top:8px;width:100%">${group ? 'Сохранить группу' : 'Создать группу'}</button>`;
-      body.querySelector('#cmpSearch').oninput = event => {
-        const query = event.target.value.toLowerCase();
-        body.querySelectorAll('[data-member]').forEach(row =>
-          row.classList.toggle('hidden', !row.textContent.toLowerCase().includes(query)));
+      markTab(false);
+      const memberIds = new Set(group ? group.members.map(member => member.id) : []);
+      fixed.innerHTML = `<input id="cmpTitle" maxlength="60" style="width:100%"
+          placeholder="Название группы (например: Смена А)" value="${group ? escapeHtml(group.title) : ''}">
+        <button class="button" id="cmpCreate" style="width:100%;margin:6px 0">
+          ${group ? 'Сохранить группу' : 'Создать группу'} <span id="cmpCount"></span></button>
+        <input id="cmpSearch" class="block-search" placeholder="Отметьте участников: поиск…"
+          style="width:100%">`;
+      body.innerHTML = contacts.map(item =>
+        `<label class="chat-room" data-member><input type="checkbox" value="${item.id}"
+            ${memberIds.has(item.id) ? 'checked' : ''}>
+          <span class="chat-ava human">${initials(item.full_name)}</span>
+          <span class="chat-room-body"><b>${escapeHtml(item.full_name)}</b></span>
+        </label>`).join('');
+      wireSearch();
+      const countBadge = fixed.querySelector('#cmpCount');
+      const refreshCount = () => {
+        const count = body.querySelectorAll('input:checked').length;
+        countBadge.textContent = count ? `(вы + ${count})` : '(отметьте участников ↓)';
       };
-      body.querySelector('#cmpCreate').onclick = async () => {
-        const title = body.querySelector('#cmpTitle').value.trim();
-        const ids = [...body.querySelectorAll('[data-member] input:checked')].map(item => item.value);
-        if (!title) { toast('Укажите название группы', 'error'); return; }
+      refreshCount();
+      body.querySelectorAll('input[type=checkbox]').forEach(item =>
+        item.addEventListener('change', refreshCount));
+      fixed.querySelector('#cmpCreate').onclick = async () => {
+        const title = fixed.querySelector('#cmpTitle').value.trim();
+        const ids = [...body.querySelectorAll('input:checked')].map(item => item.value);
+        if (!title) { toast('Укажите название группы', 'error'); fixed.querySelector('#cmpTitle').focus(); return; }
+        if (!ids.length) { toast('Отметьте хотя бы одного участника галочкой', 'error'); return; }
         try {
           if (group) {
             await api(`/api/chats/${group.id}`, { method: 'PATCH',
@@ -428,13 +452,14 @@ export function setupChat(state) {
               body: JSON.stringify({ title, memberIds: ids }) });
             await loadGroups();
             await poll();
+            toast(`Группа «${title}» создана`);
             openRoom(`group:${created.id}`);
           }
         } catch (error) { toast(error.message, 'error'); }
       };
     };
-    box.querySelector('#cmpDm').onclick = dmView;
-    box.querySelector('#cmpGroup').onclick = () => groupView();
+    dmButton.onclick = dmView;
+    groupButton.onclick = () => groupView();
     box.querySelector('#cmpCancel').onclick = showHome;
     dmView();
     return { groupView, box };

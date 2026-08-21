@@ -1128,3 +1128,11 @@ tbody tr:hover td { background: var(--hover); }
 .chat-act:hover { opacity: 1 !important; transform: scale(1.15); }
 .chat-fwd-preview { border-left: 3px solid var(--teal); background: var(--soft);
   border-radius: 6px; padding: 6px 10px; font-size: var(--fs-sm); }
+
+/* ── Чат: раскладка экранов создания/пересылки — шапка фикс, список скроллится ── */
+.chat-compose { display: flex; flex-direction: column; min-height: 0; }
+.cmp-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 10px; gap: 8px; }
+.cmp-head { display: flex; gap: 6px; align-items: center; flex: none; }
+.cmp-fixed { flex: none; }
+.cmp-list { flex: 1; min-height: 140px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.cmp-list .chat-room input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--teal); }
