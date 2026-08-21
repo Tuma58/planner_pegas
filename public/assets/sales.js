@@ -41,6 +41,22 @@ export function addressByName(data, value) {
 // Автоподтягивание при вводе: точное имя → начало имени → подстрока
 // в имени или полном адресе. Позволяет ввести «Болошнево» и получить
 // полную карточку пункта из справочника.
+// Мягкое предупреждение под полем пункта: свободный текст мимо справочника
+// адресов даёт неточные километраж и субъект РФ (кейс «новоиссибирск» у
+// р892ху58 — опечатка увела регион машины в «Москву»). Не блокирует ввод.
+function warnUnknownPlace(input, data) {
+  let warn = input.parentElement.querySelector('.place-warn');
+  const value = input.value.trim();
+  const unknown = value && !resolveAddress(data, value);
+  if (!unknown) { warn?.remove(); return; }
+  if (!warn) {
+    warn = document.createElement('small');
+    warn.className = 'place-warn';
+    input.parentElement.append(warn);
+  }
+  warn.textContent = '⚠ Пункт не найден в справочнике — километраж и субъект РФ будут неточными. Выберите из подсказок или добавьте адрес (кнопка «Адреса»).';
+}
+
 export function resolveAddress(data, value) {
   const needle = String(value || '').trim().toLowerCase();
   if (needle.length < 3) return null;
@@ -1059,6 +1075,7 @@ export function renderSales(container, context) {
     const address = resolveAddress(data, input.value);
     const point = address ? address.name : input.value.trim();
     if (!point) return;
+    if (!address) toast('Промежуточный пункт не из справочника — в километраж не войдёт', 'error');
     via.push({ point, kind: container.querySelector('#salesViaKind').value, addressId: address?.id || null });
     input.value = '';
     redrawVia();
@@ -1070,6 +1087,7 @@ export function renderSales(container, context) {
       // подтягивает полную карточку (имя, зона), затем плановый километраж.
       const address = resolveAddress(data, event.currentTarget.value);
       if (address) event.currentTarget.value = address.name;
+      warnUnknownPlace(event.currentTarget, data);
       const zone = address
         ? data.reference.zones.find(item => item.id === address.zone_id)
         : zoneByPlace(event.currentTarget.value);
@@ -1460,15 +1478,19 @@ export function editOrderDialog(order, data, context) {
     const address = resolveAddress(data, input.value);
     const point = address ? address.name : input.value.trim();
     if (!point) return;
+    if (!address) toast('Промежуточный пункт не из справочника — в километраж не войдёт', 'error');
     editVia.push({ point, kind: document.getElementById('editViaKind').value, addressId: address?.id || null });
     input.value = '';
     redrawEditVia();
   };
   redrawEditVia();
   [['editFromPoint', 'editFromZone'], ['editToPoint', 'editToZone']].forEach(([pointId, zoneId]) => {
+    // Кривой пункт подсвечивается сразу при открытии правки (кейс 892).
+    warnUnknownPlace(document.getElementById(pointId), data);
     document.getElementById(pointId).addEventListener('change', event => {
       const address = resolveAddress(data, event.currentTarget.value);
       if (address) event.currentTarget.value = address.name;
+      warnUnknownPlace(event.currentTarget, data);
       const zone = address
         ? data.reference.zones.find(item => item.id === address.zone_id)
         : zoneByPlace(event.currentTarget.value);

@@ -1151,3 +1151,7 @@ tbody tr:hover td { background: var(--hover); }
 
 /* ── Контроль: секция «Получить документы» ── */
 .scolh.docs-head { color: var(--warn); }
+
+/* ── Формы заявки: пункт мимо справочника адресов ── */
+.place-warn { display: block; color: var(--warn); font-size: var(--fs-xs);
+  font-weight: 700; margin-top: 3px; }
