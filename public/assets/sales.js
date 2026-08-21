@@ -1250,6 +1250,53 @@ export function renderSales(container, context) {
       rerender();
       if (order) editOrderDialog(order, data, context);
     }));
+  // Бронирование потребности клиента: форма → POST /api/orders (+ файлы),
+  // защита от дублей по заказчику/направлению/окну. (Обработчик был утерян
+  // при переработке левой колонки 21.08 — форма уходила нативным submit,
+  // страницу перезагружало в Гант, заявка не создавалась.)
+  container.querySelector('#salesForm').onsubmit = async event => {
+    event.preventDefault();
+    const values = formValues(event.currentTarget);
+    values.cash = values.cash ? 1 : 0;
+    values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
+    values.toAddressId = addressByName(data, values.toPoint)?.id || null;
+    values.via = via;
+    values.rateVat = parseMoney(values.rateVat) || '';
+    if (!values.rateVat) {
+      values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
+    }
+    // Защита от дублей: похожая заявка уже в портфеле (тот же заказчик,
+    // направление и пересекающееся окно) — вероятно, её просто не нашли в списке.
+    const duplicate = allOrders.find(order =>
+      order.customer_name.trim().toLowerCase() === String(values.customerName).trim().toLowerCase() &&
+      order.from_zone_id === values.fromZoneId && order.to_zone_id === values.toZoneId &&
+      Date.parse(order.window_from) < Date.parse(values.windowTo) &&
+      Date.parse(values.windowFrom) < Date.parse(order.window_to));
+    if (duplicate && !confirm(`Похожая заявка «${duplicate.customer_name}» с пересекающимся окном уже в портфеле (наверху списка). Создать ещё одну?`)) {
+      return;
+    }
+    try {
+      const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
+      let uploaded = 0;
+      for (const file of state.salesAttach || []) {
+        try { await uploadOrderFile(created.id, file); uploaded += 1; }
+        catch (error) { toast(`Файл «${file.name}»: ${error.message}`, 'error'); }
+      }
+      state.salesAttach = [];
+      toast(`Забронировано — заявка № ${created.orderNo}${uploaded ? ` · 📎 файлов: ${uploaded}` : ''} в портфеле и в карточке клиента`);
+      state.salesVia = [];
+      await context.onReload();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+
+  container.querySelector('#salesMyTasks').onclick = () => {
+    state.salesOnlyMine = !state.salesOnlyMine;
+    rerender();
+  };
+  container.querySelector('#salesRejected').addEventListener('toggle', event => {
+    state.salesRejectedOpen = event.currentTarget.open;
+  });
+
   container.querySelectorAll('[data-act]').forEach(button =>
     button.addEventListener('click', async event => {
       event.stopPropagation();
