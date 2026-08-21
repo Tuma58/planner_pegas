@@ -839,14 +839,35 @@ async function api(request, response, url) {
     const permissionByKind = { sales: 'orders:write', logist: 'trips:write', dispatcher: 'trip-status:write' };
     const user = requirePermission(request, response, permissionByKind[kind]);
     if (!user) return;
+    const note = String(body.note || '').trim().slice(0, 300);
+    const author = user.full_name || user.username || '';
+    // Явное снятие (а не переключение): удаляется отметка за указанный день;
+    // вчерашняя по тому же стабильному ключу остаётся историей «прошлого
+    // контроля» — на «отработано» она уже не влияет (протухла).
+    if (body.remove) {
+      db.prepare(`DELETE FROM task_marks WHERE kind=? AND item_key=? AND day=?`).run(kind, key, day);
+      return json(response, 200, { done: false });
+    }
     const existing = db.prepare(`SELECT 1 FROM task_marks WHERE kind=? AND day=? AND item_key=?`)
       .get(kind, day, key);
+    // Отметка с комментарием — всегда ПОСТАНОВКА (создать или обновить):
+    // переключение здесь молча снимало свежий контроль при повторе.
+    if (note) {
+      if (existing) {
+        db.prepare(`UPDATE task_marks SET note=?,done_by=?,done_at=CURRENT_TIMESTAMP
+          WHERE kind=? AND day=? AND item_key=?`).run(note, author, kind, day, key);
+      } else {
+        db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by,note) VALUES(?,?,?,?,?)`)
+          .run(kind, day, key, author, note);
+      }
+      return json(response, 200, { done: true });
+    }
+    // Без комментария — переключатель, как раньше (захват «Беру», отметки заданий).
     if (existing) {
       db.prepare(`DELETE FROM task_marks WHERE kind=? AND day=? AND item_key=?`).run(kind, day, key);
     } else {
       db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by,note) VALUES(?,?,?,?,?)`)
-        .run(kind, day, key, user.full_name || user.username || '',
-          String(body.note || '').trim().slice(0, 300));
+        .run(kind, day, key, author, '');
     }
     return json(response, 200, { done: !existing });
   }

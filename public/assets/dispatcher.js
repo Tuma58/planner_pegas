@@ -208,8 +208,14 @@ export async function renderDispatcher(container, context) {
       api(`/api/task-marks?kind=dispatcher&day=${todayIso}`),
       api(`/api/task-marks?kind=dispatcher&day=${yesterdayIso}`)
     ]);
-    workedMap = new Map(days.flatMap(result => result.items)
-      .map(item => [item.item_key, item]));
+    // Ключи событий стабильны — одна и та же отметка может быть и вчера, и
+    // сегодня: в карте остаётся самая свежая (иначе вчерашняя перекрывала
+    // сегодняшнюю и карточка «не отрабатывалась»).
+    workedMap = new Map();
+    for (const item of days.flatMap(result => result.items)) {
+      const prev = workedMap.get(item.item_key);
+      if (!prev || String(item.done_at) > String(prev.done_at)) workedMap.set(item.item_key, item);
+    }
   } catch { workedMap = new Map(); }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
@@ -877,7 +883,7 @@ export async function renderDispatcher(container, context) {
       if (!button.dataset.workedLabel) {
         try {
           await api('/api/task-marks', { method: 'POST',
-            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key }) });
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key, remove: true }) });
           await renderDispatcher(container, context);
         } catch (error) { toast(error.message, 'error'); }
         return;
@@ -898,12 +904,8 @@ export async function renderDispatcher(container, context) {
         const note = String(new FormData(event.currentTarget).get('note') || '').trim();
         if (note.length < 5) { toast('Комментарий обязателен (от 5 символов)', 'error'); return; }
         try {
-          // Ключ может быть занят протухшей отметкой (свой же контроль час
-          // назад): toggle снял бы её вместо постановки — снимаем и ставим.
-          if (workedMap.has(key)) {
-            await api('/api/task-marks', { method: 'POST',
-              body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key }) });
-          }
+          // Отметка с комментарием — всегда постановка/обновление (сервер
+          // не переключает): повторный контроль по тому же событию не теряется.
           await api('/api/task-marks', { method: 'POST',
             body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key, note }) });
           // Отработка снимает мой захват карточки.
@@ -936,7 +938,7 @@ export async function renderDispatcher(container, context) {
         const note = String(new FormData(event.currentTarget).get('note') || '').trim();
         try {
           if (existing) await api('/api/task-marks', { method: 'POST',
-            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `prepnote|${tripId}` }) });
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `prepnote|${tripId}`, remove: true }) });
           if (note) await api('/api/task-marks', { method: 'POST',
             body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key: `prepnote|${tripId}`, note }) });
           context.closeModal();
