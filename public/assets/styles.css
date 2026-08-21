@@ -1136,3 +1136,9 @@ tbody tr:hover td { background: var(--hover); }
 .cmp-fixed { flex: none; }
 .cmp-list { flex: 1; min-height: 140px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 .cmp-list .chat-room input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--teal); }
+
+/* ── Чат: корзина удалённых групп (админ) ── */
+.chat-trash { border-top: 1px solid var(--line); padding: 4px 0; }
+.chat-trash summary { cursor: pointer; padding: 7px 12px; font-size: var(--fs-xs);
+  color: var(--muted); font-weight: 700; }
+.chat-trash .chat-room { cursor: default; }

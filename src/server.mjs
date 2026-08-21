@@ -1727,7 +1727,34 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/chats') {
     const user = requireUser(request, response);
     if (!user) return;
-    return json(response, 200, { items: chatGroups(db, user.id) });
+    const payload = {
+      items: chatGroups(db, user.id),
+      hidden: db.prepare('SELECT room_key, hidden_after FROM chat_hidden WHERE user_id=?')
+        .all(user.id)
+    };
+    // Корзина удалённых групп — администратору, для восстановления.
+    if (rolesOf(user).includes('admin')) {
+      payload.deleted = db.prepare(`SELECT c.id, c.title, c.deleted_at,
+          (SELECT COUNT(*) FROM chat_members m WHERE m.chat_id=c.id) members_count,
+          (SELECT COUNT(*) FROM messages ms WHERE ms.chat_id=c.id) messages_count
+        FROM chats c WHERE c.deleted_at IS NOT NULL ORDER BY c.deleted_at DESC`).all();
+    }
+    return json(response, 200, payload);
+  }
+  // Скрыть переписку у себя (лички/общие ленты не удаляются — только
+  // пропадают из списка; вернутся при новом сообщении или через «✚»).
+  if (request.method === 'POST' && pathname === '/api/chat/hide') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const roomKey = String(body.roomKey || '');
+    if (!/^dm:.+/.test(roomKey)) return errorJson(response, 422, 'Скрыть можно только личную переписку');
+    const lastId = db.prepare('SELECT MAX(id) id FROM messages').get().id || 0;
+    db.prepare(`INSERT INTO chat_hidden(user_id,room_key,hidden_after)
+      VALUES(?,?,?) ON CONFLICT(user_id,room_key) DO UPDATE SET
+        hidden_after=excluded.hidden_after, hidden_at=CURRENT_TIMESTAMP`)
+      .run(user.id, roomKey, lastId);
+    return json(response, 200, { ok: true });
   }
   if (request.method === 'POST' && pathname === '/api/chats') {
     const user = requireUser(request, response);
@@ -1779,6 +1806,33 @@ async function api(request, response, url) {
     audit(db, user, 'update', 'chat', match[0], { title: body.title, members: body.memberIds?.length });
     return json(response, 200, { ok: true });
   }
+  // Удаление группы — мягкое: скрывается у всех участников, история
+  // сохраняется; восстановить может только администратор (корзина в чате).
+  if (match && request.method === 'DELETE') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const chat = db.prepare('SELECT * FROM chats WHERE id=? AND deleted_at IS NULL').get(match[0]);
+    if (!chat) return errorJson(response, 404, 'Группа не найдена');
+    if (chat.created_by !== user.id && !rolesOf(user).includes('admin')) {
+      return errorJson(response, 403, 'Удалить группу может её создатель или администратор');
+    }
+    db.prepare('UPDATE chats SET deleted_at=CURRENT_TIMESTAMP WHERE id=?').run(match[0]);
+    audit(db, user, 'delete', 'chat', match[0], { title: chat.title });
+    return json(response, 200, { ok: true });
+  }
+  match = route(/^\/api\/chats\/([^/]+)\/restore$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).includes('admin')) {
+      return errorJson(response, 403, 'Восстанавливает группы администратор');
+    }
+    const chat = db.prepare('SELECT * FROM chats WHERE id=? AND deleted_at IS NOT NULL').get(match[0]);
+    if (!chat) return errorJson(response, 404, 'Удалённая группа не найдена');
+    db.prepare('UPDATE chats SET deleted_at=NULL WHERE id=?').run(match[0]);
+    audit(db, user, 'restore', 'chat', match[0], { title: chat.title });
+    return json(response, 200, { ok: true });
+  }
   // Собеседники для личных сообщений: все действующие сотрудники, кроме себя.
   if (request.method === 'GET' && pathname === '/api/chat/users') {
     const user = requireUser(request, response);
@@ -1807,7 +1861,9 @@ async function api(request, response, url) {
     // Групповое сообщение: только участник группы.
     let chatId = null;
     if (!recipientId && body.chatId) {
-      const membership = db.prepare(`SELECT 1 FROM chat_members WHERE chat_id=? AND user_id=?`)
+      const membership = db.prepare(`SELECT 1 FROM chat_members m
+          JOIN chats c ON c.id=m.chat_id AND c.deleted_at IS NULL
+          WHERE m.chat_id=? AND m.user_id=?`)
         .get(String(body.chatId), user.id);
       if (!membership) return errorJson(response, 403, 'Вы не участник этой группы');
       chatId = String(body.chatId);

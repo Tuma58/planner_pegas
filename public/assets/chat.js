@@ -97,6 +97,7 @@ export function setupChat(state) {
       <span style="flex:1;min-width:0"><strong id="chatDialogTitle"></strong>
         <small class="muted" id="chatDialogSub" style="display:block"></small></span>
       <button class="button ghost small hidden" id="chatGroupEdit" title="Состав и название группы">⚙</button>
+      <button class="button ghost small hidden" id="chatDelete" title="Удалить переписку">🗑</button>
     </div>
     <div class="chat-rooms" id="chatRooms"></div>
     <div class="chat-list hidden" id="chatList"></div>
@@ -119,6 +120,8 @@ export function setupChat(state) {
   const allMessages = [];
   let groups = [];
   let contacts = [];
+  let hiddenRooms = [];   // скрытые у себя лички: [{room_key, hidden_after}]
+  let deletedGroups = []; // корзина удалённых групп (только админ)
   let lastId = Number(localStorage.getItem('pl_chat_last') || 0);
   // Активная переписка: {kind: 'all'|'auto'|'dm'|'group', id?: peerId|chatId}
   let active = null;
@@ -168,6 +171,12 @@ export function setupChat(state) {
     }
     const pinned = ['all', 'auto'];
     const rest = [...keys].filter(key => !pinned.includes(key))
+      .filter(key => {
+        // Удалённая группа пропадает из списка сразу (сообщения в памяти не в счёт).
+        if (key.startsWith('group:')) return groups.some(group => group.id === key.slice(6));
+        const hidden = hiddenRooms.find(item => item.room_key === key);
+        return !hidden || (lastMsg[key]?.id || 0) > hidden.hidden_after;
+      })
       .sort((a, b) => (lastMsg[b]?.id || 0) - (lastMsg[a]?.id || 0));
     return [...pinned, ...rest].map(key => ({ key, last: lastMsg[key] || null }));
   };
@@ -194,6 +203,29 @@ export function setupChat(state) {
         </span>
       </div>`;
     }).join('');
+    if (deletedGroups.length) {
+      rooms.insertAdjacentHTML('beforeend', `<details class="chat-trash">
+        <summary>🗄 Корзина: удалённые группы (${deletedGroups.length})</summary>
+        ${deletedGroups.map(group => `<div class="chat-room">
+          <span class="chat-ava">🗄</span>
+          <span class="chat-room-body"><b>${escapeHtml(group.title)}</b>
+            <small class="muted" style="display:block">участников ${group.members_count}
+              · сообщений ${group.messages_count}</small></span>
+          <button class="button ghost small" data-restore="${group.id}"
+            title="Вернуть группу всем участникам вместе с историей">↩ Восстановить</button>
+        </div>`).join('')}
+      </details>`);
+      rooms.querySelectorAll('[data-restore]').forEach(button =>
+        button.addEventListener('click', async event => {
+          event.stopPropagation();
+          try {
+            await api(`/api/chats/${button.dataset.restore}/restore`, { method: 'POST' });
+            toast('Группа восстановлена');
+            await loadGroups();
+            renderRooms();
+          } catch (error) { toast(error.message, 'error'); }
+        }));
+    }
     rooms.querySelectorAll('[data-room]').forEach(row =>
       row.addEventListener('click', () => openRoom(row.dataset.room)));
   };
@@ -318,6 +350,11 @@ export function setupChat(state) {
       ? groups.find(item => item.id === active.key.slice(6)) : null;
     el('chatGroupEdit').classList.toggle('hidden',
       !group || (group.created_by !== myId && !myRoles.includes('admin')));
+    // 🗑: личную переписку скрывает у себя каждый; группу удаляет
+    // создатель или админ; «Общий» и «Конвейер» не удаляются.
+    const deletable = active.key.startsWith('dm:')
+      || (group && (group.created_by === myId || myRoles.includes('admin')));
+    el('chatDelete').classList.toggle('hidden', !deletable);
     // В «Конвейер» не пишут — это лента процесса.
     el('chatForm').classList.toggle('hidden', active.key === 'auto');
     input.placeholder = active.key === 'all' ? 'Сообщение всем…'
@@ -465,6 +502,36 @@ export function setupChat(state) {
     return { groupView, box };
   };
 
+  el('chatDelete').onclick = async () => {
+    if (!active) return;
+    if (active.key.startsWith('dm:')) {
+      if (!confirm(`Скрыть переписку с «${roomTitle(active.key)}» из вашего списка?\n\n` +
+        'История сохранится: переписка вернётся при новом сообщении ' +
+        'или если снова открыть её через «✚ → Лично».')) return;
+      try {
+        await api('/api/chat/hide', { method: 'POST',
+          body: JSON.stringify({ roomKey: active.key }) });
+        hiddenRooms = hiddenRooms.filter(item => item.room_key !== active.key);
+        hiddenRooms.push({ room_key: active.key, hidden_after: lastId });
+        toast('Переписка скрыта');
+        showHome();
+      } catch (error) { toast(error.message, 'error'); }
+      return;
+    }
+    if (active.key.startsWith('group:')) {
+      const group = groups.find(item => item.id === active.key.slice(6));
+      if (!group) return;
+      if (!confirm(`Удалить группу «${group.title}» у всех участников?\n\n` +
+        'История сохранится; восстановить группу сможет только администратор ' +
+        '(🗄 Корзина внизу списка чатов).')) return;
+      try {
+        await api(`/api/chats/${group.id}`, { method: 'DELETE' });
+        toast('Группа удалена; восстановление — через администратора');
+        await loadGroups();
+        showHome();
+      } catch (error) { toast(error.message, 'error'); }
+    }
+  };
   el('chatNew').onclick = () => { armAudio(); composeView(); };
   el('chatGroupEdit').onclick = () => {
     const group = groups.find(item => item.id === active?.key?.slice(6));
@@ -521,7 +588,12 @@ export function setupChat(state) {
   };
 
   const loadGroups = async () => {
-    try { groups = (await api('/api/chats')).items; } catch { /* не критично */ }
+    try {
+      const payload = await api('/api/chats');
+      groups = payload.items;
+      hiddenRooms = payload.hidden || [];
+      deletedGroups = payload.deleted || [];
+    } catch { /* не критично */ }
   };
   const loadContacts = async () => {
     try { contacts = (await api('/api/chat/users')).items; } catch { /* не критично */ }
@@ -590,6 +662,16 @@ export function setupChat(state) {
 
   Promise.all([loadContacts(), loadGroups()]).then(() => poll(true));
   setInterval(poll, POLL_MS);
+  // Группы (создание/удаление/восстановление коллегами) — раз в минуту.
+  setInterval(async () => {
+    await loadGroups();
+    if (isOpen() && !active) renderRooms();
+    // Открытая переписка удалённой группы закрывается сама.
+    if (active?.key?.startsWith('group:') && !groups.some(g => g.id === active.key.slice(6))) {
+      toast('Группа удалена администратором или создателем');
+      showHome();
+    }
+  }, 60_000);
 
   // Версия интерфейса: после деплоя открытые вкладки узнают об обновлении.
   let knownVersion = null;

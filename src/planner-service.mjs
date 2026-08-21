@@ -845,7 +845,8 @@ export function chatMessages(db, userId, userRoles = [], after = 0) {
     OR (kind='auto' AND chat_id IS NULL AND recipient_id IS NULL
         AND (target_role IS NULL OR target_role IN (SELECT value FROM json_each(?))))
     OR recipient_id=? OR (author_id=? AND recipient_id IS NOT NULL)
-    OR chat_id IN (SELECT chat_id FROM chat_members WHERE user_id=?)
+    OR chat_id IN (SELECT m.chat_id FROM chat_members m
+        JOIN chats c ON c.id=m.chat_id AND c.deleted_at IS NULL WHERE m.user_id=?)
   )`;
   const params = [rolesJson, userId, userId, userId];
   const items = after > 0
@@ -863,7 +864,8 @@ export function chatGroups(db, userId) {
       (SELECT json_group_array(json_object('id', u.id, 'name', u.full_name))
        FROM chat_members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=c.id) members
     FROM chats c
-    WHERE c.id IN (SELECT chat_id FROM chat_members WHERE user_id=?)
+    WHERE c.deleted_at IS NULL
+      AND c.id IN (SELECT chat_id FROM chat_members WHERE user_id=?)
     ORDER BY c.title`).all(userId)
     .map(row => ({ ...row, members: JSON.parse(row.members || '[]') }));
 }

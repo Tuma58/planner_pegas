@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatMessages, createDriverAssignment, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1452,4 +1452,14 @@ test('чат: личное сообщение видят только отпра
   const first = chatMessages(db, 'cu3', ['dispatcher']).items[0].id;
   assert.deepEqual(chatMessages(db, 'cu3', ['dispatcher'], first).items, []);
   assert.equal(chatMessages(db, 'cu2', ['logist'], first).items.length, 4);
+  // Мягкое удаление группы: сообщения и группа пропадают у участников,
+  // восстановление возвращает всё вместе с историей.
+  db.prepare(`UPDATE chats SET deleted_at=CURRENT_TIMESTAMP WHERE id='gr1'`).run();
+  assert.ok(!chatMessages(db, 'cu2', ['logist']).items.some(m => m.chat_id === 'gr1'),
+    'сообщения удалённой группы скрыты');
+  assert.equal(chatGroups(db, 'cu2').length, 0, 'удалённая группа не в списке');
+  db.prepare(`UPDATE chats SET deleted_at=NULL WHERE id='gr1'`).run();
+  assert.ok(chatMessages(db, 'cu2', ['logist']).items.some(m => m.chat_id === 'gr1'),
+    'после восстановления история видна');
+  assert.equal(chatGroups(db, 'cu2').length, 1);
 });
