@@ -1159,7 +1159,11 @@ async function api(request, response, url) {
     if (current.trip_id && (('rateVat' in body &&
         Number(body.rateVat) !== Number(current.rate_vat)) ||
         nextCash !== Number(current.cash || 0))) {
-      db.prepare(`UPDATE trips SET revenue_vat=?,cash=?,order_no=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
+      // Ставка изменилась после уточнения диспетчером — уточнение сбрасывается,
+      // в подготовке выхода снова загорится «Уточнить сумму по заявке клиента».
+      db.prepare(`UPDATE trips SET revenue_vat=?,cash=?,order_no=?,
+          sum_confirmed_at=NULL,sum_confirmed_by=NULL,
+          updated_by=?,updated_at=CURRENT_TIMESTAMP
         WHERE id=? AND status NOT IN ('paid','rejected')`)
         .run(Number(body.rateVat ?? current.rate_vat), nextCash, keptOrderNo, user.id, current.trip_id);
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
@@ -1871,6 +1875,48 @@ async function api(request, response, url) {
     db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,recipient_id,chat_id)
       VALUES(?,?,'user',?,?,?)`).run(user.id, user.full_name || user.username, text, recipientId, chatId);
     return json(response, 201, { ok: true });
+  }
+
+  // ── Уточнение суммы по заявке клиента (подготовка выхода) ──
+  // Суммы заявок зачастую предварительные; перед внесением заказа в учётную
+  // систему диспетчер сверяет ставку с клиентской заявкой: подтверждает
+  // текущую или вносит точную. Новая сумма каскадом уходит в заявку и 1С,
+  // продажи получают уведомление.
+  match = route(/^\/api\/trips\/([^/]+)\/confirm-sum$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const trip = db.prepare(`SELECT t.*,v.plate FROM trips t
+      JOIN vehicles v ON v.id=t.vehicle_id WHERE t.id=?`).get(match[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден');
+    if (['paid', 'rejected'].includes(trip.status)) {
+      return errorJson(response, 422, 'Рейс закрыт — сумма меняется только через продажи');
+    }
+    const body = await readJson(request);
+    const oldSum = Number(trip.revenue_vat || 0);
+    let newSum = oldSum;
+    if (body.rateVat !== undefined) {
+      newSum = Number(body.rateVat);
+      if (!Number.isFinite(newSum) || newSum <= 0) {
+        return errorJson(response, 422, 'Сумма должна быть положительным числом');
+      }
+    }
+    if (newSum !== oldSum) {
+      db.prepare(`UPDATE trips SET revenue_vat=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(newSum, user.id, match[0]);
+      db.prepare(`UPDATE orders SET rate_vat=?,updated_at=CURRENT_TIMESTAMP
+        WHERE deleted_at IS NULL AND (trip_id=? OR id=?)`)
+        .run(newSum, match[0], trip.order_id || '');
+      queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
+        integrationPublic().writePolicy === 'automatic');
+      notify('sales', `💰 Сумма по заявке ${trip.order_no ? `№ ${trip.order_no} ` : ''}` +
+        `(${trip.plate}) уточнена диспетчером: было ${Math.round(oldSum).toLocaleString('ru-RU')} ₽ → ` +
+        `стало ${Math.round(newSum).toLocaleString('ru-RU')} ₽ (${user.full_name})`);
+    }
+    db.prepare(`UPDATE trips SET sum_confirmed_at=CURRENT_TIMESTAMP,sum_confirmed_by=? WHERE id=?`)
+      .run(user.full_name || user.username, match[0]);
+    audit(db, user, 'confirm-sum', 'trip', match[0], { oldSum, newSum });
+    return json(response, 200, { ok: true, sum: newSum });
   }
 
   // ── Шаг диспетчеризации: подтверждение логиста и чек-лист диспетчера ──

@@ -5,7 +5,7 @@
 // 3) рейс переведён на контроль на линии (статус «В пути»).
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toLocalInput, toast } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
@@ -498,6 +498,21 @@ export async function renderDispatcher(container, context) {
       title="До планового выхода меньше двух часов — завершайте чек-лист">🔥 выход через ${waitingLabel(diff)}</span>`;
     return `<span class="badge ok">выход ${formatDateTime(trip.starts_at)}</span>`;
   };
+  // Суммы заявок зачастую предварительные — в учётную систему должна уйти
+  // точная: пока сумма не сверена с заявкой клиента, карточка призывает
+  // «Уточнить сумму», после сверки показывает, кто и какую подтвердил.
+  const sumLine = trip => {
+    if (trip.sum_confirmed_at) {
+      return `<div class="sum-line ok">✓ Сумма ${money(trip.revenue_vat)} уточнена по заявке клиента
+        · ${escapeHtml(trip.sum_confirmed_by || '')}
+        ${canAct ? `<button class="button ghost small" data-confirm-sum="${trip.id}"
+          title="Поправить сумму ещё раз">✎</button>` : ''}</div>`;
+    }
+    return `<div class="sum-line warn">💰 ${money(trip.revenue_vat)} — предварительно.
+      ${canAct ? `<button class="button small" data-confirm-sum="${trip.id}"
+        title="Сверить ставку с заявкой клиента: подтвердить или внести точную — до внесения заказа в учётную систему">Уточнить сумму по заявке клиента</button>`
+      : '<b>Уточнить сумму по заявке клиента</b> (диспетчер)'}</div>`;
+  };
   const prepCard = trip => {
     const event = prepEventLine(trip, prepStepOf(trip)[1]);
     const overdue = Date.parse(trip.starts_at) < Date.now();
@@ -510,6 +525,7 @@ export async function renderDispatcher(container, context) {
           <button class="button ghost small" data-incident="${trip.id}" title="Поломка, отказ клиента, переназначение">⚠ Внештатная</button>
         </span>
       </div>
+      ${sumLine(trip)}
       ${event.html}
       ${salesCommentNote(trip)}
       ${checklistBlock(trip, canAct)}
@@ -688,7 +704,7 @@ export async function renderDispatcher(container, context) {
     };
   };
 
-  const onlineCards = online.map(trip => {
+  const ctrlCard = trip => {
     const delay = delayByTrip.get(trip.id) || 0;
     const stuck = isStuck(trip);
     const late = !trip.arrived_at && delay > LATE_MS;
@@ -769,7 +785,15 @@ export async function renderDispatcher(container, context) {
       ${eventLine}
       ${opened ? `<div class="stops-inline">${stopsBlock(trip)}</div>` : ''}
     </div>`;
-  }).join('') || '<p class="muted">На линии никого нет.</p>';
+  };
+  // Выгруженные без документов — отдельной секцией НАД основным списком:
+  // после факта убытия карточка не проваливается на дно среди рейсов в пути,
+  // а сразу видна с кнопкой «✔ Документы получены» (норматив 2 часа).
+  const docsQueue = online.filter(trip => trip.status === 'unloaded');
+  const inWork = online.filter(trip => trip.status !== 'unloaded');
+  const docsCards = docsQueue.map(ctrlCard).join('');
+  const onlineCards = inWork.map(ctrlCard).join('')
+    || '<p class="muted">На линии никого нет.</p>';
 
   container.innerHTML = `<div class="saleswrap">
     ${!canAct ? `<div class="view-only">👁 Режим просмотра: отметки контроля доступны роли «Диспетчер».
@@ -796,7 +820,11 @@ export async function renderDispatcher(container, context) {
           задание водителю, вывод на контроль на линии. Шаги идут по порядку.</div>
       </div>
       <div class="scol">
-        <div class="scolh">Контроль на линии <span>${online.length}</span></div>
+        ${docsQueue.length ? `<div class="scolh docs-head">📄 Получить документы <span>${docsQueue.length}</span></div>
+          <div class="geohint" style="margin:0 0 6px">Рейс выгружен — осталось получить и проверить фото
+            документов (норматив 2 часа, дальше — сбой ежечасно). «✔ Документы получены» закрывает контроль.</div>
+          <div class="list">${docsCards}</div>` : ''}
+        <div class="scolh" ${docsQueue.length ? 'style="margin-top:12px"' : ''}>Контроль на линии <span>${inWork.length}</span></div>
         <div class="list">${onlineCards}</div>
         <div class="geohint">Внештатная ситуация: поломка (ремонт + пересадка или снятие),
           отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в продажи.</div>
@@ -805,6 +833,41 @@ export async function renderDispatcher(container, context) {
   </div>`;
 
   wireDemurrageChip(container, context);
+  // Уточнение суммы: подтвердить текущую или внести точную из заявки клиента.
+  container.querySelectorAll('[data-confirm-sum]').forEach(button =>
+    button.addEventListener('click', () => {
+      const trip = data.trips.find(item => item.id === button.dataset.confirmSum);
+      if (!trip) return;
+      context.showModal(`<form id="sumForm">
+        <h2>💰 Сумма по заявке клиента</h2>
+        <p class="muted">${escapeHtml(trip.vehicle_plate)} · ${escapeHtml(trip.customer_name || '')}
+          ${trip.order_no ? `· № ${escapeHtml(trip.order_no)}` : ''}<br>
+          Сверьте ставку с заявкой клиента — в учётную систему должна попасть точная сумма.</p>
+        <label class="field">Ставка с НДС, ₽
+          <input name="rateVat" inputmode="numeric" value="${Math.round(Number(trip.revenue_vat || 0))}"></label>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close>Отмена</button>
+          <button type="button" class="button ghost" id="sumAsIs">✓ Сумма верна</button>
+          <button class="button">Сохранить точную</button>
+        </div></form>`);
+      const submitSum = async rateVat => {
+        try {
+          await api(`/api/trips/${trip.id}/confirm-sum`, { method: 'POST',
+            body: JSON.stringify(rateVat === undefined ? {} : { rateVat }) });
+          context.closeModal();
+          toast('Сумма уточнена по заявке клиента');
+          await context.onReload();
+        } catch (error) { toast(error.message, 'error'); }
+      };
+      document.getElementById('sumAsIs').onclick = () => submitSum();
+      document.getElementById('sumForm').onsubmit = event => {
+        event.preventDefault();
+        const value = parseMoney(new FormData(event.currentTarget).get('rateVat'));
+        if (!value) { toast('Введите сумму — или нажмите «Сумма верна»', 'error'); return; }
+        submitSum(value);
+      };
+    }));
+
   container.querySelectorAll('[data-worked]').forEach(button =>
     button.addEventListener('click', async () => {
       const key = button.dataset.worked;

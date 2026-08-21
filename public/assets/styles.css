@@ -1142,3 +1142,12 @@ tbody tr:hover td { background: var(--hover); }
 .chat-trash summary { cursor: pointer; padding: 7px 12px; font-size: var(--fs-xs);
   color: var(--muted); font-weight: 700; }
 .chat-trash .chat-room { cursor: default; }
+
+/* ── Подготовка выхода: уточнение суммы по заявке клиента ── */
+.sum-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  font-size: var(--fs-sm); padding: 4px 0 6px; }
+.sum-line.warn { color: var(--warn); font-weight: 700; }
+.sum-line.ok { color: var(--ok); }
+
+/* ── Контроль: секция «Получить документы» ── */
+.scolh.docs-head { color: var(--warn); }
