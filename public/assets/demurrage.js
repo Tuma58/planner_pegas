@@ -19,7 +19,7 @@ export function demurrageChipHtml(data) {
   const summary = data.demurrage;
   if (!summary) return '';
   const hot = summary.openCount > 0;
-  return `<div class="skpi clickable dmr-chip ${hot ? 'skpi-warn' : ''}" data-demurrage
+  return `<div class="skpi clickable dmr-chip ${hot ? 'skpi-warn' : ''}" data-demurrage-chip
     title="Простой под погрузкой/выгрузкой сверх норматива от планового времени по заявке —
       случаи сейчас, история претензий и печать документа на счёт клиенту">
     <span class="skl">⏳ Простои П/В</span>
@@ -31,7 +31,7 @@ export function demurrageChipHtml(data) {
 }
 
 export function wireDemurrageChip(container, context) {
-  container.querySelectorAll('[data-demurrage]').forEach(chip =>
+  container.querySelectorAll('[data-demurrage-chip]').forEach(chip =>
     chip.addEventListener('click', () => demurrageDialog(context)));
 }
 

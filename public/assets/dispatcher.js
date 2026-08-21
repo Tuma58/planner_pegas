@@ -313,20 +313,30 @@ export async function renderDispatcher(container, context) {
     return Number.isFinite(at) && Date.now() - at < CLAIM_MS ? mark : null;
   };
   const myName = state.data.user.fullName || '';
+  // Ключ события СТАБИЛЬНЫЙ: рейс + подпись + плановая минута. Номер часа
+  // просрочки в ключ не входит — раньше он «плыл» со временем, и отметка,
+  // поставленная по ключу из давно отрисованной кнопки (тихое автообновление
+  // не перерисовывает DOM без изменений данных), ложилась на устаревший ключ:
+  // карточка после «✓ Отработано» тут же поднималась обратно наверх.
   const eventKeyOf = trip => {
     const event = nextControlEvent(trip);
-    // Сбой на точке (событие просрочено) требует контроля каждый час:
-    // номер часа просрочки входит в ключ — отметка «отработано» протухает
-    // с началом следующего часа, карточка снова загорается.
-    let overdueHour = -1;
-    if (event.at === 0) overdueHour = Math.floor(stuckMsOf(trip) / 3_600_000);
-    else if (Number.isFinite(event.at) && event.at < Date.now()) {
-      overdueHour = Math.floor((Date.now() - event.at) / 3_600_000);
-    }
-    return `${trip.id}|${event.label}|${Number.isFinite(event.at) ? Math.round(event.at / 60_000) : 0}` +
-      `${overdueHour >= 0 ? `|h${overdueHour}` : ''}`.slice(0, 200);
+    return `${trip.id}|${event.label}|${Number.isFinite(event.at) ? Math.round(event.at / 60_000) : 0}`
+      .slice(0, 200);
   };
-  const workedOf = trip => workedMap.get(eventKeyOf(trip)) || null;
+  // Ежечасный контроль сбоя — по свежести отметки: у просроченного события
+  // (или «не выгружают») отметка живёт ровно час С МОМЕНТА КОНТРОЛЯ, затем
+  // протухает и карточка снова загорается. Час от факта звонка честнее
+  // календарной границы часа просрочки (отметка не сгорает через минуту).
+  const WORKED_TTL_MS = 3_600_000;
+  const workedOf = trip => {
+    const mark = workedMap.get(eventKeyOf(trip));
+    if (!mark) return null;
+    const event = nextControlEvent(trip);
+    const overdue = event.at === 0 || (Number.isFinite(event.at) && event.at < Date.now());
+    if (!overdue) return mark;
+    const doneAt = Date.parse(String(mark.done_at).replace(' ', 'T') + 'Z');
+    return Number.isFinite(doneAt) && Date.now() - doneAt < WORKED_TTL_MS ? mark : null;
+  };
   // Последний комментарий контролёра по рейсу (за сегодня-вчера) — даже если
   // событие уже сменилось: отметка «✓ отработано» привязана к конкретному
   // событию и с новым шагом карточка возвращается в очередь, но контекст
@@ -823,6 +833,12 @@ export async function renderDispatcher(container, context) {
         const note = String(new FormData(event.currentTarget).get('note') || '').trim();
         if (note.length < 5) { toast('Комментарий обязателен (от 5 символов)', 'error'); return; }
         try {
+          // Ключ может быть занят протухшей отметкой (свой же контроль час
+          // назад): toggle снял бы её вместо постановки — снимаем и ставим.
+          if (workedMap.has(key)) {
+            await api('/api/task-marks', { method: 'POST',
+              body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key }) });
+          }
           await api('/api/task-marks', { method: 'POST',
             body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key, note }) });
           // Отработка снимает мой захват карточки.
