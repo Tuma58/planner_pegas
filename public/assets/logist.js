@@ -321,6 +321,13 @@ export function renderLogist(container, context) {
   const query = (state.logistQuery || '').toLowerCase();
   const zone = state.logistZone || '';
   const region = state.logistRegion || '';
+  // Период, как в продажах: заявка — окно пересекает диапазон, рейс — интервал
+  // рейса пересекает диапазон, сцепка — освобождение попадает в диапазон.
+  const dateFrom = state.logistFrom || '';
+  const dateTo = state.logistTo || '';
+  const rangeMatches = (fromIso, toIso) =>
+    (!dateFrom || String(toIso).slice(0, 10) >= dateFrom) &&
+    (!dateTo || String(fromIso).slice(0, 10) <= dateTo);
   const matches = text => !query || text.toLowerCase().includes(query);
   // Фильтр по геозонам: строка проходит, если зона участвует в маршруте.
   const zoneMatches = row => !zone || row.from_name === zone || row.to_name === zone;
@@ -343,14 +350,18 @@ export function renderLogist(container, context) {
     .filter(order => inSalesPortfolio(order, data) && orderStage(order, data).stage === 1)
     .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
   const queue = queueAll
-    .filter(order => zoneMatches(order) && regionMatches(order) && matches(`${order.customer_name} ${routeLabel(order)}`));
+    .filter(order => zoneMatches(order) && regionMatches(order) &&
+      rangeMatches(order.window_from, order.window_to) &&
+      matches(`${order.customer_name} ${routeLabel(order)}`));
 
   // Действующие маршруты: план и в пути; завершённые логисту не нужны.
   // Рейсы на подтверждении логиста — всегда приоритетом наверху списка.
   const needsConfirm = trip => trip.status === 'plan' && !trip.logist_confirmed_at;
   const activeTrips = data.trips
     .filter(trip => ['plan', 'run'].includes(trip.status))
-    .filter(trip => zoneMatches(trip) && regionMatches(trip) && matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
+    .filter(trip => zoneMatches(trip) && regionMatches(trip) &&
+      rangeMatches(trip.starts_at, trip.ends_at) &&
+      matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
     .sort((a, b) => Number(needsConfirm(b)) - Number(needsConfirm(a)) ||
       a.starts_at.localeCompare(b.starts_at));
 
@@ -368,6 +379,7 @@ export function renderLogist(container, context) {
   const vehicleRequests = allVehicleRequests
     .filter(request => (!zone || request.zone.name === zone) &&
       (!region || request.region === region) &&
+      rangeMatches(request.freeAt, request.freeAt) &&
       matches(`${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name}`))
     .sort((a, b) => a.freeAt.localeCompare(b.freeAt));
   // Состояние сцепки сейчас — как в ячейке Ганта: действующая диспозиция
@@ -549,6 +561,12 @@ export function renderLogist(container, context) {
           ${regionList.map(item =>
             `<option value="${escapeHtml(item)}" ${region === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}
         </select>
+        <input type="date" id="logistFilterFrom" value="${dateFrom}" title="Период: окно заявки / даты рейса / освобождение сцепки — с даты">
+        <span class="muted">–</span>
+        <input type="date" id="logistFilterTo" value="${dateTo}" title="Период — по дату">
+        <button class="button ghost small" id="logistPresetToday" title="Только сегодняшний день">Сегодня</button>
+        <button class="button ghost small" id="logistPresetWeek" title="Ближайшие 7 дней">7 дн</button>
+        ${zone || region || dateFrom || dateTo || query ? '<button class="button ghost small" id="logistFilterReset" title="Сбросить все фильтры">✕ Сброс</button>' : ''}
         <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
         <button class="button small" id="logistTask"
           title="Срез на дату: весь парк учтён — кто обеспечен рейсом, кто требует работы, баланс с очередью">📋 Задание</button>
@@ -589,6 +607,23 @@ export function renderLogist(container, context) {
   attachSearch(container.querySelector('#logistSearch'), value => {
     state.logistQuery = value;
     renderLogist(container, context);
+  });
+  const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
+  container.querySelector('#logistFilterFrom').onchange = event => {
+    state.logistFrom = event.currentTarget.value; rerender();
+  };
+  container.querySelector('#logistFilterTo').onchange = event => {
+    state.logistTo = event.currentTarget.value; rerender();
+  };
+  container.querySelector('#logistPresetToday').onclick = () => {
+    state.logistFrom = dayIsoLocal(0); state.logistTo = dayIsoLocal(0); rerender();
+  };
+  container.querySelector('#logistPresetWeek').onclick = () => {
+    state.logistFrom = dayIsoLocal(0); state.logistTo = dayIsoLocal(7); rerender();
+  };
+  container.querySelector('#logistFilterReset')?.addEventListener('click', () => {
+    state.logistZone = ''; state.logistRegion = ''; state.logistFrom = ''; state.logistTo = '';
+    state.logistQuery = ''; rerender();
   });
   container.querySelector('#logistZone').onchange = event => {
     state.logistZone = event.currentTarget.value;
