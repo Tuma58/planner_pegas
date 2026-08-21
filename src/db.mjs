@@ -194,6 +194,31 @@ CREATE TABLE IF NOT EXISTS chat_hidden (
   hidden_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(user_id, room_key)
 );
+CREATE TABLE IF NOT EXISTS customer_profiles (
+  customer_name TEXT PRIMARY KEY,
+  inn TEXT NOT NULL DEFAULT '', segment TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','prospect','sleeping','lost')),
+  manager_id TEXT REFERENCES users(id),
+  contract_no TEXT NOT NULL DEFAULT '', contract_until TEXT,
+  payment_days INTEGER, conditions TEXT NOT NULL DEFAULT '',
+  next_contact_at TEXT, tags TEXT NOT NULL DEFAULT '',
+  updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS customer_contacts (
+  id TEXT PRIMARY KEY, customer_name TEXT NOT NULL,
+  full_name TEXT NOT NULL, position TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+  birthday TEXT, note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_customer_contacts_name ON customer_contacts(customer_name);
+CREATE TABLE IF NOT EXISTS customer_notes (
+  id TEXT PRIMARY KEY, customer_name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'note' CHECK(kind IN ('note','call','meeting','email','congrats','claim')),
+  text TEXT NOT NULL, author_id TEXT REFERENCES users(id), author_name TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_customer_notes_name ON customer_notes(customer_name, created_at);
 CREATE TABLE IF NOT EXISTS trip_stops (
   id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
   seq INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'D' CHECK(kind IN ('P','D')),

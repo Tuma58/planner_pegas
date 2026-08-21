@@ -4,6 +4,7 @@
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
+import { customerCardDialog } from './customer-card.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -793,12 +794,20 @@ export function renderSales(container, context) {
           · ${fmtDay(client.first)}${client.first !== client.last ? ` — ${fmtDay(client.last)}` : ''}
           · ${money(client.sum)}</small>
         <span class="client-badges">
+          ${(() => {
+            const bday = (data.customerDates || []).find(item => item.kind === 'birthday' && item.customer === client.name);
+            return bday ? `<span class="badge" title="День рождения контакта — поздравьте">🎂 ${escapeHtml(bday.contact)} ${bday.daysLeft === 0 ? 'сегодня' : bday.daysLeft === 1 ? 'завтра' : `через ${bday.daysLeft} дн.`}</span>` : '';
+          })()}
           ${client.hot ? `<span class="badge bad">🔥 подтвердить ${client.hot} — погрузка ближе 8 ч</span>` : ''}
           ${client.unconfirmed - client.hot > 0 ? `<span class="badge warn">ждут подтверждения ${client.unconfirmed - client.hot}</span>` : ''}
           ${client.planned ? `<span class="badge ok">в плане / в пути ${client.planned}</span>` : ''}
         </span>
       </span>
-      <span class="muted">${open ? '▾' : '▸'}</span>
+      <span style="display:flex;gap:6px;align-items:center">
+        <button type="button" class="button ghost small" data-client-card="${escapeHtml(client.name)}"
+          title="Карточка клиента: сводка, контакты и дни рождения, журнал касаний, заказы, реквизиты">📇</button>
+        <span class="muted">${open ? '▾' : '▸'}</span>
+      </span>
     </div>
     ${open ? `<div class="client-orders">${client.orders.map(order =>
       orderCardHtml({ order, step: pipelineStep(order, data, can) })).join('')}</div>` : ''}`;
@@ -1210,6 +1219,11 @@ export function renderSales(container, context) {
       const name = element.dataset.client;
       state.salesClientOpen = state.salesClientOpen === name ? null : name;
       rerender();
+    }));
+  container.querySelectorAll('[data-client-card]').forEach(button =>
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      customerCardDialog(button.dataset.clientCard, context);
     }));
   container.querySelectorAll('[data-kpi-client]').forEach(row =>
     row.addEventListener('click', () => {

@@ -1162,3 +1162,22 @@ tbody tr:hover td { background: var(--hover); }
 .client-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 4px; }
 .client-orders { margin: 0 0 12px 10px; padding-left: 8px; border-left: 3px solid var(--teal); }
 .hot-note { display: block; color: var(--bad); font-weight: 700; }
+
+/* ── Карточка клиента (CRM) ── */
+.cc-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
+.cc-tab { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 14px;
+  padding: 4px 12px; font-size: var(--fs-sm); cursor: pointer; }
+.cc-tab.on { border-color: var(--teal); color: var(--teal); font-weight: 700; }
+.cc-body { max-height: 62vh; overflow: auto; }
+.cc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.cc-tile { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--soft); }
+.cc-tile b { display: block; font-size: var(--fs-lg); }
+.cc-tile span { display: block; font-size: var(--fs-xs); color: var(--muted); }
+.cc-tile small { display: block; font-size: var(--fs-xs); color: var(--muted); margin-top: 2px; }
+.cc-tile.warn { border-color: var(--warn); }
+.cc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.cc-cols h4 { margin: 0 0 6px; font-size: var(--fs-sm); }
+.cc-row { display: flex; gap: 8px; align-items: flex-start; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: var(--fs-sm); }
+.cc-row.danger { color: var(--bad); font-weight: 700; }
+.cc-form { margin: 8px 0 10px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 10px; }
+@media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }

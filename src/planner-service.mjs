@@ -872,3 +872,103 @@ export function chatGroups(db, userId) {
     ORDER BY c.title`).all(userId)
     .map(row => ({ ...row, members: JSON.parse(row.members || '[]') }));
 }
+
+
+// ── CRM-карточка клиента: праздники, ближайшие даты, сводка ──
+// Поздравления — часть ведения клиента: дни рождения контактов и деловые
+// праздники напоминаются продажам заранее (чат «Конвейер») и видны в карточке.
+export const HOLIDAYS = [
+  { mmdd: '01-01', name: 'Новый год', before: 7 },
+  { mmdd: '02-23', name: 'День защитника Отечества', before: 3 },
+  { mmdd: '03-08', name: 'Международный женский день', before: 3 },
+  { mmdd: '05-01', name: 'Праздник Весны и Труда', before: 2 },
+  { mmdd: '05-09', name: 'День Победы', before: 2 },
+  { mmdd: '06-12', name: 'День России', before: 2 },
+  { mmdd: '11-04', name: 'День народного единства', before: 2 },
+  { mmdd: '11-20', name: 'День работника транспорта', before: 3 }
+];
+
+// Дней до ближайшей годовщины даты 'MM-DD' (или 'YYYY-MM-DD') от nowMs (UTC-дни).
+export function daysUntilAnnual(value, nowMs = Date.now()) {
+  const mmdd = String(value || '').slice(-5);
+  if (!/^\d{2}-\d{2}$/.test(mmdd)) return null;
+  const today = new Date(nowMs);
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  for (const year of [today.getUTCFullYear(), today.getUTCFullYear() + 1]) {
+    const target = Date.parse(`${year}-${mmdd}T00:00:00Z`);
+    if (!Number.isFinite(target)) return null;
+    const diff = Math.round((target - todayUtc) / 86_400_000);
+    if (diff >= 0) return diff;
+  }
+  return null;
+}
+
+// Ближайшие поводы: дни рождения контактов клиентов и праздники в горизонте.
+export function upcomingCustomerDates(db, nowMs = Date.now(), horizonDays = 7) {
+  const items = [];
+  for (const contact of db.prepare(`SELECT * FROM customer_contacts WHERE birthday IS NOT NULL AND birthday<>''`).all()) {
+    const daysLeft = daysUntilAnnual(contact.birthday, nowMs);
+    if (daysLeft === null || daysLeft > horizonDays) continue;
+    items.push({ kind: 'birthday', customer: contact.customer_name, contactId: contact.id,
+      contact: contact.full_name, position: contact.position, date: contact.birthday.slice(-5), daysLeft });
+  }
+  for (const holiday of HOLIDAYS) {
+    const daysLeft = daysUntilAnnual(holiday.mmdd, nowMs);
+    if (daysLeft === null || daysLeft > Math.max(horizonDays, holiday.before)) continue;
+    items.push({ kind: 'holiday', name: holiday.name, date: holiday.mmdd, daysLeft, before: holiday.before });
+  }
+  return items.sort((a, b) => a.daysLeft - b.daysLeft);
+}
+
+export function customerCard(db, name, nowMs = Date.now()) {
+  const profile = db.prepare('SELECT * FROM customer_profiles WHERE customer_name=?').get(name) || {
+    customer_name: name, inn: '', segment: '', status: 'active', manager_id: null,
+    contract_no: '', contract_until: null, payment_days: null, conditions: '', next_contact_at: null, tags: ''
+  };
+  const manager = profile.manager_id
+    ? db.prepare('SELECT full_name FROM users WHERE id=?').get(profile.manager_id)?.full_name || '' : '';
+  const contacts = db.prepare('SELECT * FROM customer_contacts WHERE customer_name=? ORDER BY full_name').all(name)
+    .map(contact => ({ ...contact, daysToBirthday: contact.birthday ? daysUntilAnnual(contact.birthday, nowMs) : null }));
+  const notes = db.prepare(`SELECT * FROM customer_notes WHERE customer_name=?
+    ORDER BY created_at DESC LIMIT 60`).all(name);
+  const orders = db.prepare(`SELECT o.*, t.status trip_status, t.vehicle_id, v.plate vehicle_plate
+    FROM orders o LEFT JOIN trips t ON t.id=o.trip_id LEFT JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE o.customer_name=? AND o.deleted_at IS NULL ORDER BY o.window_from DESC LIMIT 40`).all(name);
+  const trips = db.prepare(`SELECT status, starts_at, ends_at, revenue_vat, from_zone_id, to_zone_id,
+      from_point, to_point,
+      (SELECT name FROM zones WHERE id=trips.from_zone_id) from_name,
+      (SELECT name FROM zones WHERE id=trips.to_zone_id) to_name
+    FROM trips WHERE customer_name=? AND status<>'rejected'`).all(name);
+  const ms30 = nowMs - 30 * 86_400_000;
+  const ms90 = nowMs - 90 * 86_400_000;
+  const doneStatuses = new Set(['unloaded', 'done', 'paid']);
+  const done = trips.filter(trip => doneStatuses.has(trip.status));
+  const endMs = trip => Date.parse(trip.ends_at);
+  const sum = list => list.reduce((acc, trip) => acc + Number(trip.revenue_vat || 0), 0);
+  const last30 = done.filter(trip => endMs(trip) >= ms30);
+  const last90 = done.filter(trip => endMs(trip) >= ms90);
+  const lanes = {};
+  for (const trip of trips) {
+    const key = `${trip.from_name || ''} → ${trip.to_name || ''}`;
+    lanes[key] = (lanes[key] || 0) + 1;
+  }
+  const claims = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM demurrage_claims
+    WHERE customer_name=? AND status<>'cancelled'`).get(name);
+  const lastTripMs = done.length ? Math.max(...done.map(endMs)) : null;
+  return {
+    name, profile: { ...profile, manager_name: manager }, contacts, notes, orders,
+    stats: {
+      tripsTotal: trips.length, tripsDone: done.length,
+      active: trips.filter(trip => trip.status === 'plan' || trip.status === 'run').length,
+      count30: last30.length, sum30: sum(last30), count90: last90.length, sum90: sum(last90),
+      sumAll: sum(done), avgCheck: done.length ? sum(done) / done.length : 0,
+      lastTripAt: lastTripMs ? new Date(lastTripMs).toISOString() : null,
+      daysSinceLast: lastTripMs ? Math.floor((nowMs - lastTripMs) / 86_400_000) : null,
+      firstTripAt: trips.length ? trips.map(trip => trip.starts_at).sort()[0] : null,
+      topLanes: Object.entries(lanes).sort((a, b) => b[1] - a[1]).slice(0, 4)
+        .map(([lane, count]) => ({ lane, count })),
+      claimsCount: claims.c, claimsSum: claims.s
+    },
+    dates: upcomingCustomerDates(db, nowMs, 30).filter(item => item.kind === 'holiday' || item.customer === name)
+  };
+}

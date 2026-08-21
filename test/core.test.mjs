@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { effectivePermissions, hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1545,4 +1545,45 @@ test('гостевой режим: права записи отсекаются,
   assert.deepEqual(effectivePermissions({ active: 1, roles: '["admin"]', guest: 1 }),
     ['planner:read', 'reports:read', 'customers:read', 'audit:read'],
     'гость-админ: только чтение, настройки/пользователи недоступны');
+});
+
+test('карточка клиента: сводка, контакты с днями рождения, праздники в напоминаниях', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-crm-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const now = Date.parse('2026-08-21T09:00:00.000Z');
+  // Годовщины: сегодня, завтра, через 3 дня, через год минус день.
+  assert.equal(daysUntilAnnual('08-21', now), 0);
+  assert.equal(daysUntilAnnual('1985-08-22', now), 1);
+  assert.equal(daysUntilAnnual('08-24', now), 3);
+  assert.equal(daysUntilAnnual('08-20', now), 364);
+  assert.equal(daysUntilAnnual('кривая', now), null);
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status) VALUES
+    ('cr1',?,'Останкино ООО',?,?,'2026-08-10T06:00:00.000Z','2026-08-11T06:00:00.000Z',600,120000,'done'),
+    ('cr2',?,'Останкино ООО',?,?,'2026-08-15T06:00:00.000Z','2026-08-16T06:00:00.000Z',600,100000,'paid'),
+    ('cr3',?,'Останкино ООО',?,?,'2026-08-20T06:00:00.000Z','2026-08-22T06:00:00.000Z',600,110000,'run')`)
+    .run(vehicle, zone, zone, vehicle, zone, zone, vehicle, zone, zone);
+  db.prepare(`INSERT INTO customer_contacts(id,customer_name,full_name,position,birthday)
+    VALUES('cc1','Останкино ООО','Иванов Пётр','директор по логистике','1980-08-23')`).run();
+  db.prepare(`INSERT INTO customer_notes(id,customer_name,kind,text,author_name)
+    VALUES('cn1','Останкино ООО','call','Обсудили объёмы на сентябрь','Менеджер')`).run();
+  const card = customerCard(db, 'Останкино ООО', now);
+  assert.equal(card.stats.tripsDone, 2, 'выполненные: done + paid');
+  assert.equal(card.stats.active, 1, 'один в пути');
+  assert.equal(card.stats.sumAll, 220000);
+  assert.equal(card.stats.avgCheck, 110000);
+  assert.equal(card.stats.daysSinceLast, 5, 'с последнего выполненного 16.08');
+  assert.equal(card.contacts[0].daysToBirthday, 2, 'ДР контакта через 2 дня');
+  assert.equal(card.notes.length, 1);
+  const dates = upcomingCustomerDates(db, now, 7);
+  assert.ok(dates.some(item => item.kind === 'birthday' && item.contact === 'Иванов Пётр' && item.daysLeft === 2));
+  assert.ok(!dates.some(item => item.kind === 'holiday'), 'в конце августа праздников в горизонте нет');
+  const nyDates = upcomingCustomerDates(db, Date.parse('2026-12-26T09:00:00.000Z'), 7);
+  assert.ok(nyDates.some(item => item.kind === 'holiday' && item.name === 'Новый год' && item.daysLeft === 6));
 });

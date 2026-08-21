@@ -13,8 +13,8 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
+  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  reportSnapshot, resolveZone, staffReport, transitHours, upcomingCustomerDates, vehicleUtilization
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -507,6 +507,45 @@ function runUnconfirmedOrdersWatch() {
 setInterval(runUnconfirmedOrdersWatch, 5 * 60_000);
 setTimeout(runUnconfirmedOrdersWatch, 45_000);
 
+// ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
+// Раз в день после 08:00 МСК: продажам в чат — кого поздравить (ДР контакта
+// сегодня/завтра/через 3 дня, праздник за N дней и в день), и с кем пора
+// связаться (плановая дата следующего контакта наступила).
+function runCustomerRemindersWatch() {
+  try {
+    const mskNow = new Date(Date.now() + 3 * 3_600_000);
+    if (mskNow.getUTCHours() < 8) return;
+    const todayIso = mskNow.toISOString().slice(0, 10);
+    const done = db.prepare(`SELECT value FROM app_meta WHERE key='customer_reminders_day'`).get();
+    if (done?.value === todayIso) return;
+    const dates = upcomingCustomerDates(db, Date.now(), 7);
+    const when = days => days === 0 ? 'сегодня' : days === 1 ? 'завтра' : `через ${days} дн.`;
+    for (const item of dates) {
+      if (item.kind === 'birthday' && [0, 1, 3].includes(item.daysLeft)) {
+        notify('sales', `🎂 ${when(item.daysLeft)} день рождения у ${item.contact}` +
+          `${item.position ? ` (${item.position})` : ''} — клиент «${item.customer}». Поздравьте и отметьте в карточке клиента (Журнал → Поздравление)`);
+      }
+      if (item.kind === 'holiday' && (item.daysLeft === 0 || item.daysLeft === item.before)) {
+        const active = db.prepare(`SELECT COUNT(DISTINCT customer_name) c FROM trips
+          WHERE status<>'rejected' AND ends_at > datetime('now','-90 days')`).get().c;
+        notify('sales', `🎉 ${item.name} ${when(item.daysLeft)} — поздравьте клиентов ` +
+          `(активных за 90 дней: ${active}); карточки клиентов — «Продажи → Клиенты → 📇»`);
+      }
+    }
+    for (const row of db.prepare(`SELECT customer_name, next_contact_at FROM customer_profiles
+      WHERE next_contact_at IS NOT NULL AND next_contact_at <= ?`).all(todayIso)) {
+      notify('sales', `📞 Пора связаться с клиентом «${row.customer_name}» — плановый контакт ` +
+        `${String(row.next_contact_at).slice(0, 10).split('-').reverse().join('.')}; откройте карточку клиента (📇), запишите итог и назначьте следующий контакт`);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_reminders_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
+  } catch (error) {
+    console.error('Напоминания по клиентам:', error.message);
+  }
+}
+setInterval(runCustomerRemindersWatch, 15 * 60_000);
+setTimeout(runCustomerRemindersWatch, 55_000);
+
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
     if (!body[key]) throw Object.assign(new Error(`Поле ${key} обязательно`), { status: 422 });
@@ -646,8 +685,102 @@ async function api(request, response, url) {
         LEFT JOIN vehicles v ON v.id=r.vehicle_id
         WHERE r.status IN ('draft','handed','assigned')
         ORDER BY r.created_at DESC`).all(),
-      demurrage: demurrageSummary(db)
+      demurrage: demurrageSummary(db),
+      customerDates: upcomingCustomerDates(db, Date.now(), 7)
     });
+  }
+
+  // ── CRM-карточка клиента: сводка, контакты, журнал, реквизиты ──
+  if (request.method === 'GET' && pathname === '/api/customers/card') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const name = String(url.searchParams.get('name') || '').trim();
+    if (!name) return errorJson(response, 422, 'Нужно имя клиента');
+    return json(response, 200, {
+      ...customerCard(db, name),
+      managers: db.prepare(`SELECT id, full_name FROM users
+        WHERE active=1 AND deleted_at IS NULL ORDER BY full_name`).all()
+    });
+  }
+  if (request.method === 'PUT' && pathname === '/api/customers/profile') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const name = String(body.name || '').trim();
+    if (!name) return errorJson(response, 422, 'Нужно имя клиента');
+    const status = ['active', 'prospect', 'sleeping', 'lost'].includes(body.status) ? body.status : 'active';
+    db.prepare(`INSERT INTO customer_profiles(customer_name,inn,segment,status,manager_id,contract_no,
+        contract_until,payment_days,conditions,next_contact_at,tags,updated_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(customer_name) DO UPDATE SET inn=excluded.inn, segment=excluded.segment,
+        status=excluded.status, manager_id=excluded.manager_id, contract_no=excluded.contract_no,
+        contract_until=excluded.contract_until, payment_days=excluded.payment_days,
+        conditions=excluded.conditions, next_contact_at=excluded.next_contact_at, tags=excluded.tags,
+        updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
+      .run(name, String(body.inn || '').trim().slice(0, 20), String(body.segment || '').trim().slice(0, 2),
+        status, body.managerId || null, String(body.contractNo || '').trim().slice(0, 60),
+        body.contractUntil || null,
+        Number.isFinite(Number(body.paymentDays)) && body.paymentDays !== '' && body.paymentDays !== null
+          ? Number(body.paymentDays) : null,
+        String(body.conditions || '').trim().slice(0, 1000), body.nextContactAt || null,
+        String(body.tags || '').trim().slice(0, 200), user.id);
+    audit(db, user, 'update', 'customer-profile', name, { status, segment: body.segment });
+    return json(response, 200, { ok: true });
+  }
+  if (request.method === 'POST' && pathname === '/api/customers/contacts') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const name = String(body.customerName || '').trim();
+    const fullName = String(body.fullName || '').trim();
+    if (!name || !fullName) return errorJson(response, 422, 'Нужны клиент и ФИО контакта');
+    const birthday = String(body.birthday || '').trim();
+    if (birthday && !/^(\d{4}-)?\d{2}-\d{2}$/.test(birthday)) {
+      return errorJson(response, 422, 'День рождения: ГГГГ-ММ-ДД или ММ-ДД');
+    }
+    const id = randomUUID();
+    db.prepare(`INSERT INTO customer_contacts(id,customer_name,full_name,position,phone,email,birthday,note)
+      VALUES(?,?,?,?,?,?,?,?)`).run(id, name, fullName.slice(0, 120),
+      String(body.position || '').trim().slice(0, 120), String(body.phone || '').trim().slice(0, 40),
+      String(body.email || '').trim().slice(0, 120), birthday || null,
+      String(body.note || '').trim().slice(0, 500));
+    audit(db, user, 'create', 'customer-contact', id, { customer: name, fullName });
+    return json(response, 201, { id });
+  }
+  const contactMatch = route(/^\/api\/customers\/contacts\/([^/]+)$/, pathname);
+  if (contactMatch && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const contact = db.prepare('SELECT * FROM customer_contacts WHERE id=?').get(contactMatch[0]);
+    if (!contact) return errorJson(response, 404, 'Контакт не найден');
+    db.prepare('DELETE FROM customer_contacts WHERE id=?').run(contactMatch[0]);
+    audit(db, user, 'delete', 'customer-contact', contactMatch[0], { customer: contact.customer_name, fullName: contact.full_name });
+    return json(response, 200, { ok: true });
+  }
+  if (request.method === 'POST' && pathname === '/api/customers/notes') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const name = String(body.customerName || '').trim();
+    const text = String(body.text || '').trim().slice(0, 1000);
+    const kind = ['note', 'call', 'meeting', 'email', 'congrats', 'claim'].includes(body.kind) ? body.kind : 'note';
+    if (!name || !text) return errorJson(response, 422, 'Нужны клиент и текст');
+    const id = randomUUID();
+    db.prepare(`INSERT INTO customer_notes(id,customer_name,kind,text,author_id,author_name)
+      VALUES(?,?,?,?,?,?)`).run(id, name, kind, text, user.id, user.full_name || user.username);
+    return json(response, 201, { id });
+  }
+  const noteMatch = route(/^\/api\/customers\/notes\/([^/]+)$/, pathname);
+  if (noteMatch && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const note = db.prepare('SELECT * FROM customer_notes WHERE id=?').get(noteMatch[0]);
+    if (!note) return errorJson(response, 404, 'Запись не найдена');
+    if (note.author_id !== user.id && !rolesOf(user).includes('admin')) {
+      return errorJson(response, 403, 'Удалить запись может её автор или администратор');
+    }
+    db.prepare('DELETE FROM customer_notes WHERE id=?').run(noteMatch[0]);
+    return json(response, 200, { ok: true });
   }
 
   // ── Простой под погрузкой/выгрузкой: случаи и история претензий ──
