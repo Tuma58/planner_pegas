@@ -1429,12 +1429,27 @@ test('чат: личное сообщение видят только отпра
   send.run('cu1', 'Иванов', 'Петров, лично тебе', 'cu2');
   send.run('cu2', 'Петров', 'Иванов, ответ лично', 'cu1');
 
-  const texts = userId => chatMessages(db, userId).items.map(m => m.text);
-  assert.deepEqual(texts('cu1'), ['Всем привет', 'Петров, лично тебе', 'Иванов, ответ лично']);
-  assert.deepEqual(texts('cu2'), ['Всем привет', 'Петров, лично тебе', 'Иванов, ответ лично']);
-  assert.deepEqual(texts('cu3'), ['Всем привет'], 'третьему лички не видны');
+  // Группа: Иванов+Петров; Сидоров не участник.
+  db.prepare(`INSERT INTO chats(id,title,created_by) VALUES('gr1','Смена А','cu1')`).run();
+  db.prepare(`INSERT INTO chat_members(chat_id,user_id) VALUES('gr1','cu1'),('gr1','cu2')`).run();
+  db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,chat_id)
+    VALUES('cu2','Петров','user','Группе: смена началась','gr1')`).run();
+  // Конвейер: авто-уведомление адресовано роли логиста.
+  db.prepare(`INSERT INTO messages(author_name,kind,text,target_role)
+    VALUES('Конвейер','auto','Назначьте ТС на заявку','logist')`).run();
+
+  const texts = (userId, roles) => chatMessages(db, userId, roles).items.map(m => m.text);
+  assert.deepEqual(texts('cu1', ['sales']),
+    ['Всем привет', 'Петров, лично тебе', 'Иванов, ответ лично', 'Группе: смена началась'],
+    'продажнику: общий, его лички, его группа — без чужого конвейера');
+  assert.deepEqual(texts('cu2', ['logist']),
+    ['Всем привет', 'Петров, лично тебе', 'Иванов, ответ лично',
+     'Группе: смена началась', 'Назначьте ТС на заявку'],
+    'логисту: плюс конвейер его роли');
+  assert.deepEqual(texts('cu3', ['dispatcher']), ['Всем привет'],
+    'третьему не видны ни лички, ни чужая группа, ни чужой конвейер');
   // Инкрементальный поллинг сохраняет фильтр видимости.
-  const first = chatMessages(db, 'cu3').items[0].id;
-  assert.deepEqual(chatMessages(db, 'cu3', first).items, []);
-  assert.equal(chatMessages(db, 'cu2', first).items.length, 2);
+  const first = chatMessages(db, 'cu3', ['dispatcher']).items[0].id;
+  assert.deepEqual(chatMessages(db, 'cu3', ['dispatcher'], first).items, []);
+  assert.equal(chatMessages(db, 'cu2', ['logist'], first).items.length, 4);
 });

@@ -176,6 +176,17 @@ CREATE TABLE IF NOT EXISTS messages (
   text TEXT NOT NULL, target_role TEXT, entity TEXT, entity_id TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS chats (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL,
+  created_by TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS chat_members (
+  chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(chat_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS trip_stops (
   id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
   seq INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'D' CHECK(kind IN ('P','D')),
@@ -523,6 +534,7 @@ function migrateColumns(db) {
   ensure('users', 'job_role', "TEXT NOT NULL DEFAULT ''");
   ensure('users', 'deleted_at', 'TEXT');
   ensure('messages', 'recipient_id', 'TEXT');
+  ensure('messages', 'chat_id', 'TEXT');
   // Этап «документы получены» введён 13.08.2026: рейсам, выгруженным
   // до внедрения, отметка проставляется задним числом — иначе диспетчеры
   // получили бы сотни исторических задач разом. Однократно.

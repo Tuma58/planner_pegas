@@ -1,9 +1,10 @@
-// Внутренний чат и уведомления конвейера.
-// Общий канал для всех сотрудников + личные переписки один на один
-// (видят только отправитель и получатель) + авто-сообщения «Конвейера»,
-// адресованные роли следующего участника процесса: адресату они приходят
-// тостом со звуком. Вкладки-чипы: «Общий» и диалоги с непрочитанными.
-// Поллинг лёгкий (raw JSON раз в 20 секунд), новизна — по id сообщения.
+// Внутренний чат в стиле Telegram: список переписок с последним сообщением
+// и счётчиками непрочитанных → лента-пузыри выбранной переписки.
+// Виды переписок: «Общий» (все сотрудники), «⚙ Конвейер» (авто-уведомления
+// процесса, каждому по его ролям — личная лента заданий), личные диалоги
+// (видят только двое) и группы (создаются любым сотрудником, видят участники).
+// Всплывающие системные уведомления браузера — включаются кнопкой 🖥 и
+// работают, даже когда планер в фоновой вкладке. Поллинг raw JSON раз в 20 с.
 import { api, escapeHtml, formatDateTime, toast } from './api.js';
 
 const POLL_MS = 20_000;
@@ -20,8 +21,7 @@ function armAudio() {
   }
 }
 
-// Локальные настройки звука чата: живут в браузере этого рабочего места,
-// не зависят от системной громкости устройства.
+// Локальные настройки этого рабочего места (браузера).
 const soundSettings = {
   muted: localStorage.getItem('pl_chat_muted') === '1',
   volume: Math.min(1, Math.max(0, Number(localStorage.getItem('pl_chat_volume') ?? 0.5)))
@@ -31,8 +31,7 @@ function saveSound() {
   localStorage.setItem('pl_chat_volume', String(soundSettings.volume));
 }
 
-// Сигналы без аудиофайлов: «вам задание» — двухтональный, обычное
-// оповещение — одиночный тихий тон. Громкость — программная (ползунок).
+// Сигналы без аудиофайлов: «вам» — двухтональный, прочее — одиночный тихий.
 function beep(kind = 'target') {
   if (soundSettings.muted || soundSettings.volume <= 0) return;
   if (!audioContext || audioContext.state === 'suspended') return;
@@ -52,199 +51,384 @@ function beep(kind = 'target') {
   });
 }
 
+// Системные всплывающие уведомления браузера: видны и из фоновой вкладки.
+const desktopEnabled = () => localStorage.getItem('pl_chat_desktop') === '1'
+  && typeof Notification !== 'undefined' && Notification.permission === 'granted';
+function desktopNotify(title, body) {
+  if (!desktopEnabled()) return;
+  try {
+    const note = new Notification(title, { body, tag: 'pegas-chat', renotify: false });
+    note.onclick = () => { window.focus(); note.close(); };
+    setTimeout(() => note.close(), 8000);
+  } catch { /* не поддерживается */ }
+}
+
 export function setupChat(state) {
   const toolbarEnd = document.querySelector('.toolbar-end');
   if (!toolbarEnd || document.getElementById('chatToggle')) return;
   const toggle = document.createElement('button');
   toggle.id = 'chatToggle';
   toggle.className = 'button ghost small';
-  toggle.title = 'Внутренний чат и уведомления конвейера';
+  toggle.title = 'Внутренний чат: общий канал, лента конвейера, личные и группы';
   toggle.innerHTML = '💬 <span class="chat-unread hidden" id="chatUnread">0</span>';
   toolbarEnd.prepend(toggle);
 
+  const myRoles = state.data.user.roles || [state.data.user.role];
+  const myId = state.data.user.id;
+
   const panel = document.createElement('aside');
   panel.className = 'chat-panel hidden';
-  panel.innerHTML = `<div class="chat-head"><strong>Чат · конвейер</strong>
-      <span class="chat-sound" title="Звук уведомлений этого рабочего места — не зависит от громкости устройства">
+  panel.innerHTML = `
+    <div class="chat-head" id="chatHomeHead">
+      <strong>Чат</strong>
+      <span class="chat-sound" title="Звук уведомлений этого рабочего места">
+        <button class="button ghost small" id="chatDesktop"
+          title="Всплывающие уведомления на экране — приходят, даже когда планер в фоновой вкладке">${localStorage.getItem('pl_chat_desktop') === '1' ? '🖥' : '🚫🖥'}</button>
         <button class="button ghost small" id="chatMute"
           title="Выключить/включить звук уведомлений">${soundSettings.muted ? '🔕' : '🔔'}</button>
         <input type="range" id="chatVolume" min="0" max="100" step="5"
           value="${Math.round(soundSettings.volume * 100)}" title="Громкость уведомлений">
       </span>
-      <button class="button ghost small" id="chatClose">✕</button></div>
-    <div class="chat-tabs" id="chatTabs"></div>
-    <div class="chat-list" id="chatList"></div>
-    <form class="chat-form" id="chatForm">
-      <input id="chatInput" placeholder="Сообщение всем…" autocomplete="off" maxlength="500">
+      <button class="button ghost small" id="chatNew" title="Новое личное сообщение или группа">✚</button>
+      <button class="button ghost small" id="chatClose">✕</button>
+    </div>
+    <div class="chat-head hidden" id="chatDialogHead">
+      <button class="button ghost small" id="chatBack">←</button>
+      <span style="flex:1;min-width:0"><strong id="chatDialogTitle"></strong>
+        <small class="muted" id="chatDialogSub" style="display:block"></small></span>
+      <button class="button ghost small hidden" id="chatGroupEdit" title="Состав и название группы">⚙</button>
+    </div>
+    <div class="chat-rooms" id="chatRooms"></div>
+    <div class="chat-list hidden" id="chatList"></div>
+    <div class="chat-compose hidden" id="chatCompose"></div>
+    <form class="chat-form hidden" id="chatForm">
+      <input id="chatInput" placeholder="Сообщение…" autocomplete="off" maxlength="500">
       <button class="button small">➤</button>
     </form>`;
   document.body.appendChild(panel);
 
-  const myRoles = state.data.user.roles || [state.data.user.role];
-  const myId = state.data.user.id;
-  let lastId = Number(localStorage.getItem('pl_chat_last') || 0);
-  let seenId = Number(localStorage.getItem('pl_chat_seen') || 0);
-  let unread = 0;
-  const list = panel.querySelector('#chatList');
-  const tabsBox = panel.querySelector('#chatTabs');
-  const input = panel.querySelector('#chatInput');
+  const el = id => panel.querySelector(`#${id}`);
+  const list = el('chatList');
+  const rooms = el('chatRooms');
+  const input = el('chatInput');
   const unreadBadge = document.getElementById('chatUnread');
   const isOpen = () => !panel.classList.contains('hidden');
   const forMe = message => message.target_role && myRoles.includes(message.target_role);
 
-  // Личные переписки: активная вкладка (null — общий канал), сообщения в
-  // памяти, справочник собеседников, отметки «прочитано» по каждому диалогу.
-  let activePeer = null;
+  // Модель: все видимые сообщения, группы, собеседники; активная переписка.
   const allMessages = [];
+  let groups = [];
   let contacts = [];
-  let dmSeen = {};
-  try { dmSeen = JSON.parse(localStorage.getItem('pl_chat_dm_seen') || '{}') || {}; } catch { dmSeen = {}; }
-  const saveDmSeen = () => localStorage.setItem('pl_chat_dm_seen', JSON.stringify(dmSeen));
+  let lastId = Number(localStorage.getItem('pl_chat_last') || 0);
+  // Активная переписка: {kind: 'all'|'auto'|'dm'|'group', id?: peerId|chatId}
+  let active = null;
+  let seen = {};
+  try { seen = JSON.parse(localStorage.getItem('pl_chat_seen_v2') || '{}') || {}; } catch { seen = {}; }
+  const saveSeen = () => localStorage.setItem('pl_chat_seen_v2', JSON.stringify(seen));
+  // Первый запуск новой версии чата на этом рабочем месте: вся уже
+  // существующая история считается прочитанной — счётчики только для нового.
+  let freshStart = !localStorage.getItem('pl_chat_seen_v2');
+
+  // Ключ переписки для сообщения (с чьей стороны смотрим — myId).
+  const roomKeyOf = message => {
+    if (message.chat_id) return `group:${message.chat_id}`;
+    if (message.recipient_id) {
+      return `dm:${message.author_id === myId ? message.recipient_id : message.author_id}`;
+    }
+    return message.kind === 'auto' ? 'auto' : 'all';
+  };
   const peerName = id => contacts.find(item => item.id === id)?.full_name
     || allMessages.find(m => m.author_id === id && m.author_name)?.author_name || 'Сотрудник';
   const shortName = full => {
     const [last, first] = String(full).split(' ');
     return first ? `${last} ${first[0]}.` : last;
   };
-  const inDialog = (message, peer) => message.recipient_id &&
-    ((message.author_id === myId && message.recipient_id === peer) ||
-     (message.author_id === peer && message.recipient_id === myId));
-  const onTab = message => activePeer ? inDialog(message, activePeer) : !message.recipient_id;
-  const dmUnreadOf = peer => allMessages.filter(m =>
-    m.author_id === peer && m.recipient_id === myId && m.id > (dmSeen[peer] || 0)).length;
-  // Диалоги: с кем есть переписка, непрочитанные — первыми.
-  const dialogPeers = () => {
-    const ids = new Set();
-    for (const m of allMessages) {
-      if (!m.recipient_id) continue;
-      if (m.author_id === myId) ids.add(m.recipient_id);
-      else if (m.recipient_id === myId) ids.add(m.author_id);
+  const initials = full => String(full).split(' ').slice(0, 2).map(word => word[0] || '').join('').toUpperCase();
+
+  const roomTitle = key => {
+    if (key === 'all') return '📢 Общий';
+    if (key === 'auto') return '⚙ Конвейер';
+    if (key.startsWith('dm:')) return peerName(key.slice(3));
+    const group = groups.find(item => item.id === key.slice(6));
+    return group ? `👥 ${group.title}` : '👥 Группа';
+  };
+  const unreadOf = key => allMessages.filter(m => roomKeyOf(m) === key &&
+    m.id > (seen[key] || 0) && m.author_id !== myId).length;
+
+  // Список переписок: закреплённые «Общий» и «Конвейер», затем диалоги и
+  // группы по времени последнего сообщения (как в Telegram).
+  const roomList = () => {
+    const keys = new Set(['all', 'auto']);
+    for (const message of allMessages) keys.add(roomKeyOf(message));
+    for (const group of groups) keys.add(`group:${group.id}`);
+    const lastMsg = {};
+    for (const message of allMessages) {
+      const key = roomKeyOf(message);
+      if (!lastMsg[key] || message.id > lastMsg[key].id) lastMsg[key] = message;
     }
-    return [...ids].sort((a, b) => dmUnreadOf(b) - dmUnreadOf(a)
-      || peerName(a).localeCompare(peerName(b), 'ru'));
+    const pinned = ['all', 'auto'];
+    const rest = [...keys].filter(key => !pinned.includes(key))
+      .sort((a, b) => (lastMsg[b]?.id || 0) - (lastMsg[a]?.id || 0));
+    return [...pinned, ...rest].map(key => ({ key, last: lastMsg[key] || null }));
   };
 
-  const renderTabs = () => {
-    const chips = [`<button type="button" class="chat-tab ${activePeer ? '' : 'on'}" data-peer="">
-        Общий${unread ? ` <span class="chat-unread">${unread}</span>` : ''}</button>`];
-    for (const peer of dialogPeers()) {
-      const count = dmUnreadOf(peer);
-      chips.push(`<button type="button" class="chat-tab ${activePeer === peer ? 'on' : ''}"
-        data-peer="${peer}" title="Личная переписка: видите только вы двое">
-        ${escapeHtml(shortName(peerName(peer)))}${count ? ` <span class="chat-unread">${count}</span>` : ''}</button>`);
-    }
-    chips.push(`<select id="chatNewPeer" title="Написать сотруднику лично">
-      <option value="">✎ Написать…</option>
-      ${contacts.filter(item => item.id !== activePeer).map(item =>
-        `<option value="${item.id}">${escapeHtml(item.full_name)}</option>`).join('')}</select>`);
-    tabsBox.innerHTML = chips.join('');
-    tabsBox.querySelectorAll('.chat-tab').forEach(tab =>
-      tab.addEventListener('click', () => openTab(tab.dataset.peer || null)));
-    tabsBox.querySelector('#chatNewPeer').onchange = event => {
-      if (event.target.value) openTab(event.target.value);
-    };
+  const renderRooms = () => {
+    rooms.innerHTML = roomList().map(({ key, last }) => {
+      const count = unreadOf(key);
+      const title = roomTitle(key);
+      const avatar = key === 'all' ? '📢' : key === 'auto' ? '⚙'
+        : key.startsWith('group:') ? '👥' : initials(title);
+      const time = last ? formatDateTime(last.created_at.includes('Z')
+        ? last.created_at : last.created_at.replace(' ', 'T') + 'Z') : '';
+      const preview = last
+        ? `${last.author_id === myId ? 'Вы: ' : (key.startsWith('group:') || key === 'all')
+            ? `${shortName(last.author_name || '⚙')}: ` : ''}${last.text}`
+        : (key === 'auto' ? 'Уведомления процесса — по вашим ролям' : 'Сообщений пока нет');
+      return `<div class="chat-room ${count ? 'has-unread' : ''}" data-room="${key}">
+        <span class="chat-ava ${key.startsWith('dm:') ? 'human' : ''}">${avatar}</span>
+        <span class="chat-room-body">
+          <span class="chat-room-top"><b>${escapeHtml(title.replace(/^([📢⚙👥] )/, '$1'))}</b>
+            <small class="muted">${time}</small></span>
+          <span class="chat-room-bottom"><small class="muted">${escapeHtml(String(preview).slice(0, 64))}</small>
+            ${count ? `<span class="chat-unread">${count}</span>` : ''}</span>
+        </span>
+      </div>`;
+    }).join('');
+    rooms.querySelectorAll('[data-room]').forEach(row =>
+      row.addEventListener('click', () => openRoom(row.dataset.room)));
   };
 
-  const renderList = () => {
-    list.innerHTML = allMessages.filter(onTab).map(renderMessage).join('')
-      || `<div class="muted" style="padding:10px">${activePeer
-        ? 'Переписка пока пуста — напишите первое сообщение.' : ''}</div>`;
+  const bubble = message => {
+    const own = message.author_id === myId;
+    const auto = message.kind === 'auto';
+    const groupish = active?.key === 'all' || active?.key?.startsWith('group:');
+    return `<div class="chat-bubble-row ${own ? 'own' : ''}">
+      <div class="chat-bubble ${own ? 'own' : ''} ${auto ? 'auto' : ''} ${forMe(message) ? 'mine-target' : ''}">
+        ${!own && (groupish || auto) ? `<small class="chat-author">${auto
+          ? `⚙ Конвейер${message.target_role ? ` → ${ROLE_LABELS[message.target_role] || message.target_role}` : ''}`
+          : escapeHtml(message.author_name)}</small>` : ''}
+        <div>${escapeHtml(message.text)}</div>
+        <small class="chat-time">${formatDateTime(message.created_at.includes('Z')
+          ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}</small>
+      </div>
+    </div>`;
+  };
+
+  const renderDialog = () => {
+    if (!active) return;
+    const messages = allMessages.filter(m => roomKeyOf(m) === active.key);
+    list.innerHTML = messages.map(bubble).join('')
+      || '<div class="muted" style="padding:12px;text-align:center">Сообщений пока нет — напишите первое.</div>';
     list.scrollTop = list.scrollHeight;
-    input.placeholder = activePeer ? `Лично: ${shortName(peerName(activePeer))}…` : 'Сообщение всем…';
+    el('chatDialogTitle').textContent = roomTitle(active.key);
+    const sub = active.key === 'all' ? 'все сотрудники'
+      : active.key === 'auto' ? `уведомления по ролям: ${myRoles.map(role => ROLE_LABELS[role] || role).join(', ')}`
+      : active.key.startsWith('dm:') ? '🔒 личная переписка — видите только вы двое'
+      : (() => {
+        const group = groups.find(item => item.id === active.key.slice(6));
+        return group ? group.members.map(member => shortName(member.name)).join(', ') : '';
+      })();
+    el('chatDialogSub').textContent = sub;
+    const group = active.key.startsWith('group:')
+      ? groups.find(item => item.id === active.key.slice(6)) : null;
+    el('chatGroupEdit').classList.toggle('hidden',
+      !group || (group.created_by !== myId && !myRoles.includes('admin')));
+    // В «Конвейер» не пишут — это лента процесса.
+    el('chatForm').classList.toggle('hidden', active.key === 'auto');
+    input.placeholder = active.key === 'all' ? 'Сообщение всем…'
+      : active.key.startsWith('dm:') ? `Лично: ${shortName(roomTitle(active.key))}…` : 'Сообщение группе…';
   };
 
-  function openTab(peer) {
-    activePeer = peer;
+  const showHome = () => {
+    active = null;
+    el('chatHomeHead').classList.remove('hidden');
+    el('chatDialogHead').classList.add('hidden');
+    rooms.classList.remove('hidden');
+    list.classList.add('hidden');
+    el('chatForm').classList.add('hidden');
+    el('chatCompose').classList.add('hidden');
+    el('chatCompose').innerHTML = '';
+    renderRooms();
+    updateUnread();
+  };
+
+  function openRoom(key) {
+    active = { key };
+    el('chatHomeHead').classList.add('hidden');
+    el('chatDialogHead').classList.remove('hidden');
+    rooms.classList.add('hidden');
+    el('chatCompose').classList.add('hidden');
+    el('chatCompose').innerHTML = '';
+    list.classList.remove('hidden');
+    el('chatForm').classList.remove('hidden');
     markSeen();
-    renderTabs();
-    renderList();
-    input.focus();
+    renderDialog();
+    if (key !== 'auto') input.focus();
   }
 
-  // «Прочитано» — только для открытой вкладки: общий канал и каждый диалог
-  // помечаются независимо, чтобы личное не «прочитывалось» вслепую.
+  // «Прочитано» — только у открытой переписки.
   function markSeen() {
-    if (!isOpen()) return;
-    if (activePeer) {
-      dmSeen[activePeer] = lastId;
-      saveDmSeen();
-    } else {
-      seenId = lastId;
-      localStorage.setItem('pl_chat_seen', String(seenId));
-      unread = 0;
-    }
+    if (!isOpen() || !active) return;
+    seen[active.key] = lastId;
+    saveSeen();
     updateUnread();
   }
 
-  const renderMessage = message => `<div class="chat-msg ${message.kind} ${forMe(message) ? 'mine-target' : ''} ${message.recipient_id ? 'dm' : ''} ${message.author_id === myId ? 'own' : ''}">
-      <small class="muted">${message.kind === 'auto'
-        ? `⚙ Конвейер${message.target_role ? ` → ${ROLE_LABELS[message.target_role] || message.target_role}` : ''}`
-        : escapeHtml(message.author_name)}${message.recipient_id ? ' · 🔒 лично' : ''} · ${formatDateTime(message.created_at.includes('Z')
-          ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}</small>
-      <div>${escapeHtml(message.text)}</div>
-    </div>`;
-
   const updateUnread = () => {
-    const total = unread + dialogPeers().reduce((sum, peer) => sum + dmUnreadOf(peer), 0);
+    const total = roomList().reduce((sum, { key }) => sum + unreadOf(key), 0);
     unreadBadge.textContent = total;
     unreadBadge.classList.toggle('hidden', total === 0);
   };
 
+  // ── Новый диалог или группа ──
+  const composeView = () => {
+    rooms.classList.add('hidden');
+    const box = el('chatCompose');
+    box.classList.remove('hidden');
+    box.innerHTML = `<div style="padding:10px">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button class="button small" id="cmpDm">🔒 Лично</button>
+        <button class="button ghost small" id="cmpGroup">👥 Группа</button>
+        <button class="button ghost small" id="cmpCancel" style="margin-left:auto">Отмена</button>
+      </div>
+      <div id="cmpBody"></div>
+    </div>`;
+    const body = box.querySelector('#cmpBody');
+    const dmView = () => {
+      body.innerHTML = `<input id="cmpSearch" class="block-search" placeholder="Поиск сотрудника…"
+          style="width:100%;margin-bottom:6px">
+        <div class="chat-contacts">${contacts.map(item =>
+          `<div class="chat-room" data-dm="${item.id}"><span class="chat-ava human">${initials(item.full_name)}</span>
+            <span class="chat-room-body"><b>${escapeHtml(item.full_name)}</b>
+              <small class="muted" style="display:block">${(item.roles || []).map(role => ROLE_LABELS[role] || role).join(', ')}</small></span>
+          </div>`).join('')}</div>`;
+      body.querySelector('#cmpSearch').oninput = event => {
+        const query = event.target.value.toLowerCase();
+        body.querySelectorAll('[data-dm]').forEach(row =>
+          row.classList.toggle('hidden', !row.textContent.toLowerCase().includes(query)));
+      };
+      body.querySelectorAll('[data-dm]').forEach(row =>
+        row.addEventListener('click', () => openRoom(`dm:${row.dataset.dm}`)));
+    };
+    const groupView = (group = null) => {
+      const memberIds = new Set(group ? group.members.map(member => member.id) : [myId]);
+      body.innerHTML = `<label class="field">Название группы
+          <input id="cmpTitle" maxlength="60" placeholder="Например: Смена А / Рейс т925ат58"
+            value="${group ? escapeHtml(group.title) : ''}"></label>
+        <input id="cmpSearch" class="block-search" placeholder="Поиск сотрудника…"
+          style="width:100%;margin:6px 0">
+        <div class="chat-contacts">${contacts.map(item =>
+          `<label class="chat-room" data-member><input type="checkbox" value="${item.id}"
+              ${memberIds.has(item.id) ? 'checked' : ''}>
+            <span class="chat-ava human">${initials(item.full_name)}</span>
+            <span class="chat-room-body"><b>${escapeHtml(item.full_name)}</b></span>
+          </label>`).join('')}</div>
+        <button class="button" id="cmpCreate" style="margin-top:8px;width:100%">${group ? 'Сохранить группу' : 'Создать группу'}</button>`;
+      body.querySelector('#cmpSearch').oninput = event => {
+        const query = event.target.value.toLowerCase();
+        body.querySelectorAll('[data-member]').forEach(row =>
+          row.classList.toggle('hidden', !row.textContent.toLowerCase().includes(query)));
+      };
+      body.querySelector('#cmpCreate').onclick = async () => {
+        const title = body.querySelector('#cmpTitle').value.trim();
+        const ids = [...body.querySelectorAll('[data-member] input:checked')].map(item => item.value);
+        if (!title) { toast('Укажите название группы', 'error'); return; }
+        try {
+          if (group) {
+            await api(`/api/chats/${group.id}`, { method: 'PATCH',
+              body: JSON.stringify({ title, memberIds: ids }) });
+            await loadGroups();
+            openRoom(`group:${group.id}`);
+          } else {
+            const created = await api('/api/chats', { method: 'POST',
+              body: JSON.stringify({ title, memberIds: ids }) });
+            await loadGroups();
+            await poll();
+            openRoom(`group:${created.id}`);
+          }
+        } catch (error) { toast(error.message, 'error'); }
+      };
+    };
+    box.querySelector('#cmpDm').onclick = dmView;
+    box.querySelector('#cmpGroup').onclick = () => groupView();
+    box.querySelector('#cmpCancel').onclick = showHome;
+    dmView();
+    return { groupView, box };
+  };
+
+  el('chatNew').onclick = () => { armAudio(); composeView(); };
+  el('chatGroupEdit').onclick = () => {
+    const group = groups.find(item => item.id === active?.key?.slice(6));
+    if (!group) return;
+    el('chatHomeHead').classList.remove('hidden');
+    el('chatDialogHead').classList.add('hidden');
+    list.classList.add('hidden');
+    el('chatForm').classList.add('hidden');
+    composeView().groupView(group);
+  };
+
+  // ── Поллинг ──
   const poll = async (initial = false) => {
     try {
       const { items, lastId: serverLast } = await api(`/api/messages?after=${initial ? 0 : lastId}`);
       let changed = initial;
       for (const message of items) {
-        if (message.id <= lastId && !initial) continue;
+        if (allMessages.some(m => m.id === message.id)) continue;
         allMessages.push(message);
         changed = true;
-        const isNew = message.id > seenId && !initial;
-        const ownMessage = message.author_id === myId;
-        // Общий канал: счётчик как раньше; личное мне — тост и двойной сигнал.
-        if (message.recipient_id) {
-          if (isNew && message.recipient_id === myId &&
-              !(isOpen() && activePeer === message.author_id)) {
-            toast(`🔒 ${message.author_name}: ${message.text}`);
+        const key = roomKeyOf(message);
+        const isNew = !initial && message.id > (seen[key] || 0);
+        const own = message.author_id === myId;
+        if (!isNew || own) continue;
+        const inThisRoom = isOpen() && active?.key === key;
+        const targeted = key.startsWith('dm:') || (message.kind === 'auto' && forMe(message))
+          || key.startsWith('group:');
+        if (!inThisRoom) {
+          const title = key.startsWith('dm:') ? `🔒 ${message.author_name}`
+            : key.startsWith('group:') ? roomTitle(key)
+            : message.kind === 'auto' ? '⚙ Конвейер' : `📢 ${message.author_name}`;
+          if (targeted) {
+            toast(`${title}: ${message.text}`.slice(0, 160));
             beep('target');
-          }
-        } else {
-          if (isNew && !isOpen()) unread += 1;
-          if (isNew && forMe(message)) {
-            toast(message.text);
-            beep('target');
-          } else if (isNew && !ownMessage) {
+          } else {
             beep('other');
           }
+          desktopNotify(`PegasLogistic · ${title.replace(/^[📢⚙🔒👥] ?/, '')}`, message.text);
         }
       }
+      allMessages.sort((a, b) => a.id - b.id);
       lastId = Math.max(lastId, serverLast);
+      if (freshStart) {
+        freshStart = false;
+        for (const { key } of roomList()) seen[key] = lastId;
+        saveSeen();
+      }
       localStorage.setItem('pl_chat_last', String(lastId));
-      markSeen();
       if (changed) {
-        renderTabs();
-        renderList();
+        if (active) { markSeen(); renderDialog(); } else if (isOpen()) renderRooms();
       }
       updateUnread();
     } catch { /* сеть/сессия — попробуем в следующий цикл */ }
   };
 
-  // Справочник собеседников — один раз при старте (список сотрудников).
+  const loadGroups = async () => {
+    try { groups = (await api('/api/chats')).items; } catch { /* не критично */ }
+  };
   const loadContacts = async () => {
-    try { contacts = (await api('/api/chat/users')).items; renderTabs(); } catch { /* не критично */ }
+    try { contacts = (await api('/api/chat/users')).items; } catch { /* не критично */ }
   };
 
+  // ── Управление панелью ──
   toggle.onclick = () => {
     armAudio();
     panel.classList.toggle('hidden');
     if (isOpen()) {
-      markSeen();
-      renderTabs();
-      renderList();
-      input.focus();
+      if (active) { markSeen(); renderDialog(); } else showHome();
     }
   };
-  panel.querySelector('#chatClose').onclick = () => panel.classList.add('hidden');
-  const muteButton = panel.querySelector('#chatMute');
+  el('chatClose').onclick = () => panel.classList.add('hidden');
+  el('chatBack').onclick = showHome;
+  const muteButton = el('chatMute');
   muteButton.onclick = () => {
     armAudio();
     soundSettings.muted = !soundSettings.muted;
@@ -252,7 +436,7 @@ export function setupChat(state) {
     saveSound();
     if (!soundSettings.muted) beep('target');
   };
-  panel.querySelector('#chatVolume').oninput = event => {
+  el('chatVolume').oninput = event => {
     armAudio();
     soundSettings.volume = Number(event.target.value) / 100;
     if (soundSettings.volume > 0 && soundSettings.muted) {
@@ -262,13 +446,32 @@ export function setupChat(state) {
     saveSound();
     beep('target');
   };
-  panel.querySelector('#chatForm').onsubmit = async event => {
+  // Переключатель системных всплывающих уведомлений (разрешение браузера).
+  const desktopButton = el('chatDesktop');
+  desktopButton.onclick = async () => {
+    if (localStorage.getItem('pl_chat_desktop') === '1') {
+      localStorage.setItem('pl_chat_desktop', '');
+      desktopButton.textContent = '🚫🖥';
+      toast('Всплывающие уведомления выключены');
+      return;
+    }
+    if (typeof Notification === 'undefined') { toast('Браузер не поддерживает уведомления', 'error'); return; }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') { toast('Разрешите уведомления в браузере', 'error'); return; }
+    localStorage.setItem('pl_chat_desktop', '1');
+    desktopButton.textContent = '🖥';
+    desktopNotify('PegasLogistic', 'Всплывающие уведомления включены ✅');
+    toast('Всплывающие уведомления включены');
+  };
+  el('chatForm').onsubmit = async event => {
     event.preventDefault();
     const text = input.value.trim();
-    if (!text) return;
+    if (!text || !active || active.key === 'auto') return;
+    const payload = { text };
+    if (active.key.startsWith('dm:')) payload.recipientId = active.key.slice(3);
+    if (active.key.startsWith('group:')) payload.chatId = active.key.slice(6);
     try {
-      await api('/api/messages', { method: 'POST',
-        body: JSON.stringify({ text, recipientId: activePeer || undefined }) });
+      await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
       input.value = '';
       await poll();
     } catch (error) { toast(error.message, 'error'); }
@@ -276,12 +479,10 @@ export function setupChat(state) {
   // Жест в любом месте страницы активирует звук уведомлений.
   document.addEventListener('click', armAudio, { once: true });
 
-  poll(true);
-  loadContacts();
+  Promise.all([loadContacts(), loadGroups()]).then(() => poll(true));
   setInterval(poll, POLL_MS);
 
-  // Версия интерфейса: после деплоя открытые вкладки узнают об обновлении
-  // (иначе сотрудники работают на старом JS до перезагрузки страницы).
+  // Версия интерфейса: после деплоя открытые вкладки узнают об обновлении.
   let knownVersion = null;
   const checkVersion = async () => {
     try {

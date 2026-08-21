@@ -832,15 +832,38 @@ export function demurrageSummary(db, nowMs = Date.now()) {
 }
 
 // ── Внутренний чат: видимость сообщений ──
-// Общий канал (recipient_id IS NULL) видят все; личное сообщение — только
-// отправитель и получатель. Поллинг инкрементальный по id.
-export function chatMessages(db, userId, after = 0) {
-  const visible = `(recipient_id IS NULL OR recipient_id=? OR author_id=?)`;
+// Четыре вида переписок (как в Telegram):
+// «Общий» — людские сообщения без адресата, видят все;
+// «Конвейер» — авто-уведомления процесса, каждому по его ролям
+//   (target_role входит в роли сотрудника; без target_role — всем);
+// личные — только отправитель и получатель;
+// группы — участники чата (chat_members). Поллинг инкрементальный по id.
+export function chatMessages(db, userId, userRoles = [], after = 0) {
+  const rolesJson = JSON.stringify(userRoles);
+  const visible = `(
+    (recipient_id IS NULL AND chat_id IS NULL AND kind='user')
+    OR (kind='auto' AND chat_id IS NULL AND recipient_id IS NULL
+        AND (target_role IS NULL OR target_role IN (SELECT value FROM json_each(?))))
+    OR recipient_id=? OR (author_id=? AND recipient_id IS NOT NULL)
+    OR chat_id IN (SELECT chat_id FROM chat_members WHERE user_id=?)
+  )`;
+  const params = [rolesJson, userId, userId, userId];
   const items = after > 0
-    ? db.prepare(`SELECT * FROM messages WHERE id>? AND ${visible} ORDER BY id LIMIT 200`)
-      .all(after, userId, userId)
+    ? db.prepare(`SELECT * FROM messages WHERE id>? AND ${visible} ORDER BY id LIMIT 300`)
+      .all(after, ...params)
     : db.prepare(`SELECT * FROM (SELECT * FROM messages WHERE ${visible}
-        ORDER BY id DESC LIMIT 200) ORDER BY id`).all(userId, userId);
+        ORDER BY id DESC LIMIT 300) ORDER BY id`).all(...params);
   const lastId = db.prepare('SELECT MAX(id) id FROM messages').get().id || 0;
   return { items, lastId };
+}
+
+// Группы пользователя со списком участников — для списка чатов.
+export function chatGroups(db, userId) {
+  return db.prepare(`SELECT c.id, c.title, c.created_by,
+      (SELECT json_group_array(json_object('id', u.id, 'name', u.full_name))
+       FROM chat_members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=c.id) members
+    FROM chats c
+    WHERE c.id IN (SELECT chat_id FROM chat_members WHERE user_id=?)
+    ORDER BY c.title`).all(userId)
+    .map(row => ({ ...row, members: JSON.parse(row.members || '[]') }));
 }

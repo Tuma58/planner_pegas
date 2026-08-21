@@ -1077,15 +1077,37 @@ tbody tr:hover td { background: var(--hover); }
   justify-content: flex-end; max-width: 40%; }
 .dmr-off { opacity: .55; }
 
-/* ── Чат: вкладки общего канала и личных диалогов ── */
-.chat-tabs { display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
-  padding: 6px 10px; border-bottom: 1px solid var(--line); }
-.chat-tab { border: 1px solid var(--line); background: var(--card); color: var(--ink);
-  border-radius: 14px; padding: 3px 10px; font-size: var(--fs-xs); cursor: pointer;
-  display: inline-flex; align-items: center; gap: 5px; }
-.chat-tab.on { border-color: var(--teal); color: var(--teal); font-weight: 700; }
-.chat-tab .chat-unread { position: static; display: inline-flex; }
-.chat-tabs select { font-size: var(--fs-xs); padding: 3px 6px; max-width: 130px;
-  border-radius: 14px; }
-.chat-msg.dm { border-left: 3px solid var(--warn); padding-left: 7px; }
-.chat-msg.dm.own { border-left-color: var(--teal); }
+/* ── Чат в стиле Telegram: список переписок и пузыри ── */
+.chat-panel { width: 400px; }
+.chat-rooms, .chat-contacts { flex: 1; overflow: auto; }
+.chat-contacts { max-height: 46vh; overflow: auto; border: 1px solid var(--line);
+  border-radius: 10px; }
+.chat-room { display: flex; gap: 9px; align-items: center; padding: 8px 10px;
+  border-bottom: 1px solid var(--line); cursor: pointer; }
+.chat-room:hover { background: var(--soft); }
+.chat-room.has-unread b { font-weight: 800; }
+.chat-ava { flex: none; width: 38px; height: 38px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--soft); font-size: 17px; border: 1px solid var(--line); }
+.chat-ava.human { background: var(--teal); color: #fff; font-size: var(--fs-xs);
+  font-weight: 800; border: none; }
+.chat-room-body { flex: 1; min-width: 0; }
+.chat-room-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.chat-room-top small { flex: none; font-size: 10px; }
+.chat-room-bottom { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.chat-room-bottom small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-room-bottom .chat-unread { position: static; flex: none; }
+.chat-compose { flex: 1; overflow: auto; }
+.chat-room input[type=checkbox] { flex: none; }
+.chat-bubble-row { display: flex; margin: 3px 0; }
+.chat-bubble-row.own { justify-content: flex-end; }
+.chat-bubble { max-width: 82%; border-radius: 14px 14px 14px 4px; padding: 6px 11px;
+  background: var(--soft); border: 1px solid var(--line); font-size: var(--fs-sm); }
+.chat-bubble.own { border-radius: 14px 14px 4px 14px; background: var(--teal); color: #fff;
+  border-color: transparent; }
+.chat-bubble.own .chat-time, .chat-bubble.own .muted { color: rgba(255,255,255,.75); }
+.chat-bubble.auto { background: var(--card); border-style: dashed; }
+.chat-bubble.mine-target { box-shadow: inset 0 0 0 1px var(--teal); }
+.chat-author { display: block; font-weight: 700; color: var(--teal); font-size: var(--fs-xs); }
+.chat-bubble.own .chat-author { color: #fff; }
+.chat-time { display: block; text-align: right; font-size: 10px; color: var(--muted); margin-top: 2px; }

@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatMessages, createDriverAssignment, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
@@ -1720,7 +1720,64 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/messages') {
     const user = requireUser(request, response);
     if (!user) return;
-    return json(response, 200, chatMessages(db, user.id, Number(url.searchParams.get('after') || 0)));
+    return json(response, 200,
+      chatMessages(db, user.id, rolesOf(user), Number(url.searchParams.get('after') || 0)));
+  }
+  // Групповые чаты: список моих групп, создание, правка состава/названия.
+  if (request.method === 'GET' && pathname === '/api/chats') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    return json(response, 200, { items: chatGroups(db, user.id) });
+  }
+  if (request.method === 'POST' && pathname === '/api/chats') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const title = String(body.title || '').trim().slice(0, 60);
+    if (!title) return errorJson(response, 422, 'Название группы обязательно');
+    const memberIds = [...new Set([user.id, ...(Array.isArray(body.memberIds) ? body.memberIds : [])])]
+      .map(String);
+    const valid = db.prepare(`SELECT id FROM users
+      WHERE active=1 AND deleted_at IS NULL AND id IN (${memberIds.map(() => '?').join(',')})`)
+      .all(...memberIds).map(row => row.id);
+    if (valid.length < 2) return errorJson(response, 422, 'В группе нужны хотя бы два участника');
+    const id = randomUUID();
+    db.prepare('INSERT INTO chats(id,title,created_by) VALUES(?,?,?)').run(id, title, user.id);
+    const add = db.prepare('INSERT INTO chat_members(chat_id,user_id) VALUES(?,?)');
+    for (const memberId of valid) add.run(id, memberId);
+    // Первое сообщение — системное: группа создана, состав виден всем участникам.
+    db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,chat_id)
+      VALUES(?,?,'user',?,?)`).run(user.id, user.full_name || user.username,
+      `👥 Группа «${title}» создана (участников: ${valid.length})`, id);
+    audit(db, user, 'create', 'chat', id, { title, members: valid.length });
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/chats\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const chat = db.prepare('SELECT * FROM chats WHERE id=?').get(match[0]);
+    if (!chat) return errorJson(response, 404, 'Группа не найдена');
+    if (chat.created_by !== user.id && !rolesOf(user).includes('admin')) {
+      return errorJson(response, 403, 'Менять группу может её создатель или администратор');
+    }
+    const body = await readJson(request);
+    if (body.title) {
+      db.prepare('UPDATE chats SET title=? WHERE id=?')
+        .run(String(body.title).trim().slice(0, 60), match[0]);
+    }
+    if (Array.isArray(body.memberIds)) {
+      const memberIds = [...new Set([chat.created_by, ...body.memberIds])].map(String);
+      const valid = db.prepare(`SELECT id FROM users
+        WHERE active=1 AND deleted_at IS NULL AND id IN (${memberIds.map(() => '?').join(',')})`)
+        .all(...memberIds).map(row => row.id);
+      if (valid.length < 2) return errorJson(response, 422, 'В группе нужны хотя бы два участника');
+      db.prepare('DELETE FROM chat_members WHERE chat_id=?').run(match[0]);
+      const add = db.prepare('INSERT INTO chat_members(chat_id,user_id) VALUES(?,?)');
+      for (const memberId of valid) add.run(match[0], memberId);
+    }
+    audit(db, user, 'update', 'chat', match[0], { title: body.title, members: body.memberIds?.length });
+    return json(response, 200, { ok: true });
   }
   // Собеседники для личных сообщений: все действующие сотрудники, кроме себя.
   if (request.method === 'GET' && pathname === '/api/chat/users') {
@@ -1747,8 +1804,16 @@ async function api(request, response, url) {
       if (recipient.id === user.id) return errorJson(response, 422, 'Нельзя писать самому себе');
       recipientId = recipient.id;
     }
-    db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,recipient_id)
-      VALUES(?,?,'user',?,?)`).run(user.id, user.full_name || user.username, text, recipientId);
+    // Групповое сообщение: только участник группы.
+    let chatId = null;
+    if (!recipientId && body.chatId) {
+      const membership = db.prepare(`SELECT 1 FROM chat_members WHERE chat_id=? AND user_id=?`)
+        .get(String(body.chatId), user.id);
+      if (!membership) return errorJson(response, 403, 'Вы не участник этой группы');
+      chatId = String(body.chatId);
+    }
+    db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,recipient_id,chat_id)
+      VALUES(?,?,'user',?,?,?)`).run(user.id, user.full_name || user.username, text, recipientId, chatId);
     return json(response, 201, { ok: true });
   }
 
