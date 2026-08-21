@@ -51,6 +51,11 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   const doneStatuses = new Set(['unloaded', 'done', 'paid']);
   const dayDone = dayTrips.filter(trip => doneStatuses.has(trip.status))
     .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  // «Выгружено за месяц» — только фактически выгруженные рейсы месяца
+  // (статус после выгрузки); главная цифра плашки — «забито» (monthFact:
+  // факт + ещё не привезённая выручка броней до конца месяца).
+  const monthDone = monthTrips.filter(trip => doneStatuses.has(trip.status))
+    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   const dayExpected = dayFact - dayDone;
   // Динамика внутри дня: что по расчётному времени выгрузки уже ДОЛЖНО быть
   // выгружено к текущему моменту — против фактически выгруженного. Даёт
@@ -153,7 +158,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   };
   const days = { yesterday: dayMetricsAt(-1), today: dayMetricsAt(0), tomorrow: dayMetricsAt(1) };
 
-  return { monthPlan, monthFact, dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
+  return { monthPlan, monthFact, monthDone, dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
     dayPace: { due: dueByNow, done: dayDone, diff: dayDone - dueByNow },
     dayLoads: { count: dayLoads.length, sum: dayLoadsSum,
       online: dayLoads.filter(trip => trip.on_line_at).length },
@@ -297,9 +302,10 @@ export function renderDashboard(container, context) {
     </div>
     <div class="dash-goal dash-month">
       <div class="dash-goal-head">
-        <span>Выручка без НДС · ${escapeHtml(monthLabel)}</span>
-        <b>${money(Math.round(metrics.monthFact))}</b>
-        <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%</span>
+        <span>Выручка без НДС · ${escapeHtml(monthLabel)} · <b>забито</b></span>
+        <b title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">${money(Math.round(metrics.monthFact))}</b>
+        <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%
+          · <span class="dash-done" title="Фактически выгружено с начала месяца (статус «выгружен» и далее)">выгружено <b>${money(Math.round(metrics.monthDone))}</b></span></span>
         <span class="dash-month-side">Прогноз: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
           ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
           · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>

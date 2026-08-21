@@ -460,6 +460,8 @@ test('потребность от логистики: ремонт и «без �
         created_at: '2026-08-21 01:00:00', source_system: 'planner' },
     ] };
   const dash = dashboardMetrics(dashData, dashNow);
+  assert.ok(dash.monthDone <= dash.monthFact, '«выгружено» не больше «забито»');
+  assert.equal(typeof dash.monthDone, 'number');
   assert.equal(Math.round(dash.monthFact), 105_000_000, 'факт месяца без НДС (122М+6,1М)/1,22');
   // план дня: (160М − 100М до сегодня) / 11 оставшихся дней (21..31)
   assert.equal(Math.round(dash.dayPlan), Math.round(60_000_000 / 11));
