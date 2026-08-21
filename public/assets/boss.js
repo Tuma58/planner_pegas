@@ -5,6 +5,7 @@
 // Тема «панель приборов» (спидометры, лобовое стекло) выведена из продукта.
 // Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
 import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker } from './api.js';
+import { demurrageDialog } from './demurrage.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 const mln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} млн`;
@@ -328,6 +329,8 @@ export async function renderBoss(container, context) {
         <button class="button small" id="bossReport">📄 Сформировать</button>
         <button class="button ghost small" id="bossDaily"
           title="Ежедневный отчёт по использованию автопарка: срез состояний, выручка и порожняк за день">📆 Отчёт дня</button>
+        <button class="button ghost small" id="bossDemurrage"
+          title="Простой под погрузкой/выгрузкой: случаи сверх норматива, история претензий, печать документа на счёт">⏳ Простои П/В</button>
       </div>
       <nav class="brep-nav" id="brepNav">
         <a href="#brep-s1" class="on">01 Период</a><a href="#brep-s2">02 Каскад</a>
@@ -496,6 +499,7 @@ export async function renderBoss(container, context) {
   // ── Обработчики ──
   const rerender = () => renderBoss(container, context);
   container.querySelector('#bossDaily').onclick = dailyDialog;
+  container.querySelector('#bossDemurrage').onclick = () => demurrageDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;
     state.bossTo = b;

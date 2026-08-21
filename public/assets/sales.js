@@ -3,6 +3,7 @@
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, wireSelectSearch, dayPickerHtml, wireDayPicker } from './api.js';
+import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -807,6 +808,7 @@ export function renderSales(container, context) {
       <div class="skpi" title="Выручка без НДС по рейсам, завершённым в текущем календарном месяце (не зависит от листания периода; НДС ИП — 7%)">
         <span class="skl">Выручка б. НДС · ${escapeHtml(periodLabel)}</span><span class="skv">${money(periodNet)}</span>
         <small class="skm">${periodTrips.length} рейсов завершено</small></div>
+      ${demurrageChipHtml(data)}
       <div class="salesfilter">
         <span class="skl">Фильтр</span>
         <input id="salesSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС"
@@ -925,6 +927,7 @@ export function renderSales(container, context) {
     rerender();
   });
   const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
+  wireDemurrageChip(container, context);
   container.querySelector('#salesTask').onclick = () => salesTaskDialog(data, context);
   container.querySelector('#salesPresetToday').onclick = () => {
     filter.from = dayIsoLocal(0); filter.to = dayIsoLocal(0);

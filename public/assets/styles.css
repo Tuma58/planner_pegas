@@ -1065,3 +1065,14 @@ tbody tr:hover td { background: var(--hover); }
   .settings-content { padding: 14px; }
   .mapping { grid-template-columns: 1fr; }
 }
+
+/* ── Простой под погрузкой/выгрузкой ── */
+.dmr-list { display: flex; flex-direction: column; gap: 6px; }
+.dmr-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 10px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
+.dmr-kind { flex: none; font-size: var(--fs-xs); font-weight: 700; color: var(--muted);
+  white-space: nowrap; padding-top: 2px; }
+.dmr-sum { flex: none; text-align: right; }
+.dmr-actions { flex: none; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; max-width: 40%; }
+.dmr-off { opacity: .55; }

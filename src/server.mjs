@@ -13,7 +13,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, vehicleUtilization
 } from './planner-service.mjs';
 import {
@@ -418,6 +418,55 @@ function runDailyFleetReport() {
 setInterval(runDailyFleetReport, 5 * 60_000);
 setTimeout(runDailyFleetReport, 40_000);
 
+// ── Ежедневное формирование документов по простою ──
+// Раз в день после 07:00 МСК: каждый случай простоя сверх бесплатного
+// норматива (8 ч от планового времени операции по заявке) фиксируется
+// в истории претензий demurrage_claims — документ на счёт клиенту готов
+// к печати из плашки «⏳ Простои П/В». Незавершённые случаи (машина ещё
+// стоит) обновляются ежедневно, пока статус «к выставлению»; претензии,
+// уже выставленные или отменённые вручную, не трогаются.
+function runDailyDemurrage() {
+  try {
+    const mskNow = new Date(Date.now() + 3 * 3_600_000);
+    if (mskNow.getUTCHours() < 7) return;
+    const todayIso = mskNow.toISOString().slice(0, 10);
+    const done = db.prepare(`SELECT value FROM app_meta WHERE key='demurrage_claims_day'`).get();
+    if (done?.value === todayIso) return;
+    const cases = demurrageCases(db);
+    const existing = new Set(db.prepare(`SELECT trip_id||char(124)||stop_kind k FROM demurrage_claims`)
+      .all().map(row => row.k));
+    const upsert = db.prepare(`INSERT INTO demurrage_claims(id,trip_id,stop_kind,customer_name,
+        order_no,vehicle_plate,driver_name,point,plan_at,arrived_at,finished_at,
+        idle_hours,paid_hours,rate,amount,created_day)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(trip_id,stop_kind) DO UPDATE SET
+        finished_at=excluded.finished_at, idle_hours=excluded.idle_hours,
+        paid_hours=excluded.paid_hours, rate=excluded.rate, amount=excluded.amount,
+        updated_at=CURRENT_TIMESTAMP
+      WHERE demurrage_claims.status='new'`);
+    let created = 0;
+    let createdSum = 0;
+    for (const item of cases) {
+      upsert.run(randomUUID(), item.tripId, item.kind, item.customer, item.orderNo,
+        item.vehiclePlate, item.driverName, item.point, item.planAt, item.arrivedAt,
+        item.finishedAt, item.idleHours, item.paidHours, item.rate, item.amount, todayIso);
+      if (!existing.has(`${item.tripId}|${item.kind}`)) { created += 1; createdSum += item.amount; }
+    }
+    if (created) {
+      const rub = value => `${Math.round(value).toLocaleString('ru-RU')} ₽`;
+      notify('sales', `📑 Простой под погрузкой/выгрузкой: сформировано ${created} претензий` +
+        ` на ${rub(createdSum)} (сверх норматива от планового времени по заявке)` +
+        ` — плашка «⏳ Простои П/В», документ на печать в карточке случая`);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('demurrage_claims_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
+  } catch (error) {
+    console.error('Ежедневные претензии по простою:', error.message);
+  }
+}
+setInterval(runDailyDemurrage, 10 * 60_000);
+setTimeout(runDailyDemurrage, 50_000);
+
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
     if (!body[key]) throw Object.assign(new Error(`Поле ${key} обязательно`), { status: 422 });
@@ -556,8 +605,39 @@ async function api(request, response, url) {
       routes: db.prepare(`SELECT r.*,v.plate vehicle_plate FROM routes r
         LEFT JOIN vehicles v ON v.id=r.vehicle_id
         WHERE r.status IN ('draft','handed','assigned')
-        ORDER BY r.created_at DESC`).all()
+        ORDER BY r.created_at DESC`).all(),
+      demurrage: demurrageSummary(db)
     });
+  }
+
+  // ── Простой под погрузкой/выгрузкой: случаи и история претензий ──
+  if (request.method === 'GET' && pathname === '/api/demurrage') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, {
+      settings: demurrageSettings(db),
+      cases: demurrageCases(db),
+      claims: db.prepare(`SELECT * FROM demurrage_claims
+        ORDER BY status='new' DESC, created_at DESC LIMIT 300`).all()
+    });
+  }
+  // Статус претензии: new (к выставлению) → billed (выставлена) / cancelled.
+  if (request.method === 'PATCH' && pathname.startsWith('/api/demurrage/')) {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const id = pathname.split('/')[3];
+    const body = await readJson(request);
+    const status = String(body.status || '');
+    if (!['new', 'billed', 'cancelled'].includes(status)) {
+      return errorJson(response, 422, 'Статус: new, billed или cancelled');
+    }
+    const claim = db.prepare('SELECT * FROM demurrage_claims WHERE id=?').get(id);
+    if (!claim) return errorJson(response, 404, 'Претензия не найдена');
+    db.prepare(`UPDATE demurrage_claims SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(status, id);
+    audit(db, user, 'demurrage-status', 'demurrage', id,
+      { status, was: claim.status, tripId: claim.trip_id, kind: claim.stop_kind });
+    return json(response, 200, { ok: true, status });
   }
 
   // Отметки «отработано» в заданиях продаж и логиста: общие для команды,

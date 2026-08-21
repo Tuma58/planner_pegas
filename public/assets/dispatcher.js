@@ -6,6 +6,7 @@
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toLocalInput, toast } from './api.js';
+import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
@@ -768,6 +769,7 @@ export async function renderDispatcher(container, context) {
       <div class="skpi"><span class="skl">Ждут логиста</span><span class="skv">${waitingLogist.length}</span></div>
       <div class="skpi"><span class="skl">В подготовке</span><span class="skv">${preparing.length}</span></div>
       <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
+      ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:220px">
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: маршрут, ТС, водитель, заказчик"
           value="${escapeHtml(state.dispatcherQuery || '')}" style="flex:1">
@@ -792,6 +794,7 @@ export async function renderDispatcher(container, context) {
     </div>
   </div>`;
 
+  wireDemurrageChip(container, context);
   container.querySelectorAll('[data-worked]').forEach(button =>
     button.addEventListener('click', async () => {
       const key = button.dataset.worked;

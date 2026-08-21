@@ -187,6 +187,21 @@ CREATE TABLE IF NOT EXISTS trip_stops (
   updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_trip_stops_trip ON trip_stops(trip_id,seq);
+CREATE TABLE IF NOT EXISTS demurrage_claims (
+  id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  stop_kind TEXT NOT NULL CHECK(stop_kind IN ('load','unload')),
+  customer_name TEXT NOT NULL DEFAULT '', order_no TEXT NOT NULL DEFAULT '',
+  vehicle_plate TEXT NOT NULL DEFAULT '', driver_name TEXT NOT NULL DEFAULT '',
+  point TEXT NOT NULL DEFAULT '',
+  plan_at TEXT NOT NULL, arrived_at TEXT NOT NULL, finished_at TEXT,
+  idle_hours REAL NOT NULL DEFAULT 0, paid_hours REAL NOT NULL DEFAULT 0,
+  rate REAL NOT NULL DEFAULT 0, amount REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','billed','cancelled')),
+  created_day TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(trip_id, stop_kind)
+);
 CREATE TABLE IF NOT EXISTS revenue_plans (
   period_start TEXT PRIMARY KEY, target_net REAL NOT NULL DEFAULT 0,
   updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -381,6 +396,18 @@ function migrateColumns(db) {
       calculation.techSpeedKmh = 50;
       calculation.handlingHoursPerOperation = 2;
       calculation.transitFactor = 1.5;
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
+        .run(JSON.stringify(calculation));
+    }
+  }
+  // Нормативы простоя под погрузкой/выгрузкой: бесплатный порог 8 ч от
+  // планового времени операции, сверх — счёт клиенту по тарифу за начатый час.
+  const demurrageRow = db.prepare(`SELECT value_json FROM settings WHERE key='calculation'`).get();
+  if (demurrageRow) {
+    const calculation = JSON.parse(demurrageRow.value_json);
+    if (calculation.demurrageFreeHours == null) {
+      calculation.demurrageFreeHours = 8;
+      calculation.demurrageRatePerHour = 1000;
       db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
         .run(JSON.stringify(calculation));
     }

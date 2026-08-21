@@ -681,7 +681,7 @@ function renderMain() {
     renderTimeline();
   } else if (state.view === 'boss') {
     byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
-    renderBoss(byId('timeline'), { state, onReload: reload, openReport, showModal, closeModal });
+    renderBoss(byId('timeline'), { state, can, onReload: reload, openReport, showModal, closeModal });
   } else if (state.view === 'sales') {
     renderSales(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip,
@@ -689,7 +689,7 @@ function renderMain() {
     });
   } else if (state.view === 'resource') {
     renderResource(byId('timeline'), {
-      state, openDisposition, openFleet: openFleetDirectory,
+      state, can, openDisposition, openFleet: openFleetDirectory,
       openDrivers: openDriversDirectory, openStats: openResourceStats,
       showModal, closeModal,
       onReload: reload, taskContainer: byId('sidepanel')

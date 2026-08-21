@@ -4,6 +4,7 @@
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker } from './api.js';
+import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress, salesTaskFor } from './sales.js';
@@ -528,6 +529,7 @@ export function renderLogist(container, context) {
         title="Показать только рейсы в пути">
         <span class="skl">В пути</span><span class="skv">${runCount}</span>
         <small class="skm">${money(runSum)}</small></div>
+      ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:260px">
         <select id="logistZone" title="Фильтр по геозоне маршрута">
           <option value="">Все геозоны</option>
@@ -615,6 +617,7 @@ export function renderLogist(container, context) {
       const request = vehicleRequests[Number(button.dataset.pick)];
       if (request) pickOrderDialog(request, queue, data, context);
     }));
+  wireDemurrageChip(container, context);
   container.querySelector('#logistTask').onclick = () =>
     logistTaskDialog(data, context, allVehicleRequests, queueAll);
   container.querySelectorAll('[data-ask-sales]').forEach(button =>

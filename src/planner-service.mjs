@@ -726,3 +726,107 @@ export function vehicleUtilization(db, fromValue, toValue) {
   });
   return { from, to, days: dayCount, items };
 }
+
+// ── Простой под погрузкой и под выгрузкой (претензии клиентам) ──
+// Отсчёт — от планового времени операции по заявке клиента (окно «с»/«по»),
+// но не раньше фактического прибытия: опоздание машины на точку виной
+// клиента не является. Конец — факт завершения операции (убытие, окончание
+// работ, выгрузка); у стоящих сейчас — текущий момент, простой растёт.
+// Случай без отметки прибытия не фиксируется: претензия бездоказательна.
+// Сверх бесплатного норматива (demurrageFreeHours) клиенту выставляется
+// каждый начатый час по тарифу demurrageRatePerHour.
+const demurrageTs = value => value
+  ? Date.parse(String(value).includes('T') ? value : `${String(value).replace(' ', 'T')}Z`)
+  : NaN;
+
+export function demurrageSettings(db) {
+  const row = db.prepare(`SELECT value_json FROM settings WHERE key='calculation'`).get();
+  const calculation = row ? JSON.parse(row.value_json) : {};
+  return {
+    freeHours: Number(calculation.demurrageFreeHours ?? 8),
+    rate: Number(calculation.demurrageRatePerHour ?? 1000)
+  };
+}
+
+export function demurrageCases(db, nowMs = Date.now()) {
+  const { freeHours, rate } = demurrageSettings(db);
+  const since = new Date(nowMs - 45 * 86_400_000).toISOString();
+  const trips = db.prepare(`SELECT t.id,t.status,t.starts_at,t.ends_at,t.order_id,t.order_no,
+      t.customer_name,t.from_point,t.to_point,t.arrived_at,t.unloaded_at,t.on_line_at,
+      v.plate vehicle_plate,v.trailer_plate,v.driver_name
+    FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE t.status<>'rejected' AND t.ends_at>?`).all(since);
+  const orderStmt = db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL AND (trip_id=? OR id=?)`);
+  const stopsStmt = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq`);
+  const cases = [];
+  const push = (trip, order, kind, point, planMs, arrivedMs, endMs, open) => {
+    // План неизвестен (нет заявки и дат) — отсчёт от прибытия.
+    const startMs = Number.isFinite(planMs) ? Math.max(planMs, arrivedMs) : arrivedMs;
+    const idleHours = (endMs - startMs) / 3_600_000;
+    if (!(idleHours > freeHours)) return;
+    const paidHours = Math.ceil(idleHours - freeHours);
+    cases.push({
+      tripId: trip.id, kind, open,
+      customer: trip.customer_name || order?.customer_name || '',
+      orderNo: String(trip.order_no || order?.order_no || ''),
+      vehiclePlate: trip.vehicle_plate, trailerPlate: trip.trailer_plate || '',
+      driverName: trip.driver_name || '', point: point || '',
+      planAt: new Date(Number.isFinite(planMs) ? planMs : arrivedMs).toISOString(),
+      arrivedAt: new Date(arrivedMs).toISOString(),
+      finishedAt: open ? null : new Date(endMs).toISOString(),
+      idleHours: Math.round(idleHours * 10) / 10,
+      paidHours, rate, amount: paidHours * rate
+    });
+  };
+  for (const trip of trips) {
+    const order = orderStmt.get(trip.id, trip.order_id || '');
+    const stops = stopsStmt.all(trip.id);
+    const firstLoad = stops.find(stop => stop.kind === 'P');
+    const lastUnload = [...stops].reverse().find(stop => stop.kind === 'D');
+    // Погрузка: план — окно «с» заявки; факты — первая P-стоянка,
+    // завершение — убытие/окончание работ/вывод на линию.
+    const loadArrived = demurrageTs(firstLoad?.actual_arrival);
+    if (Number.isFinite(loadArrived)) {
+      const loadPlan = demurrageTs(order?.window_from) || demurrageTs(trip.starts_at);
+      const loadEnd = demurrageTs(firstLoad?.actual_departure)
+        || demurrageTs(firstLoad?.work_finished_at) || demurrageTs(trip.on_line_at);
+      const open = !Number.isFinite(loadEnd) && trip.status === 'plan';
+      if (Number.isFinite(loadEnd) || open) {
+        push(trip, order, 'load', firstLoad?.point || trip.from_point,
+          loadPlan, loadArrived, Number.isFinite(loadEnd) ? loadEnd : nowMs, open);
+      }
+    }
+    // Выгрузка: план — окно «по» заявки; факты — последняя D-стоянка
+    // либо этапы рейса (прибыл на выгрузку / выгружен).
+    const unloadArrived = demurrageTs(lastUnload?.actual_arrival) || demurrageTs(trip.arrived_at);
+    if (Number.isFinite(unloadArrived)) {
+      const unloadPlan = demurrageTs(order?.window_to) || demurrageTs(trip.ends_at);
+      const unloadEnd = demurrageTs(lastUnload?.actual_departure)
+        || demurrageTs(lastUnload?.work_finished_at) || demurrageTs(trip.unloaded_at);
+      const open = !Number.isFinite(unloadEnd) && trip.status === 'run';
+      if (Number.isFinite(unloadEnd) || open) {
+        push(trip, order, 'unload', lastUnload?.point || trip.to_point,
+          unloadPlan, unloadArrived, Number.isFinite(unloadEnd) ? unloadEnd : nowMs, open);
+      }
+    }
+  }
+  cases.sort((a, b) => Number(b.open) - Number(a.open) || b.amount - a.amount);
+  return cases;
+}
+
+// Лёгкая сводка для bootstrap: плашки во всех блоках.
+export function demurrageSummary(db, nowMs = Date.now()) {
+  const cases = demurrageCases(db, nowMs);
+  const open = cases.filter(item => item.open);
+  const monthPrefix = new Date(nowMs).toISOString().slice(0, 7);
+  const month = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(amount),0) s
+    FROM demurrage_claims WHERE status<>'cancelled' AND created_day LIKE ?`)
+    .get(`${monthPrefix}%`);
+  return {
+    openCount: open.length,
+    openLoad: open.filter(item => item.kind === 'load').length,
+    openUnload: open.filter(item => item.kind === 'unload').length,
+    openAmount: open.reduce((sum, item) => sum + item.amount, 0),
+    monthCount: month.c, monthAmount: month.s
+  };
+}

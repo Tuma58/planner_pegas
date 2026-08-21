@@ -54,6 +54,8 @@ function renderGeneral() {
       <label class="field">Грузовая операция, ч<input id="handlingHoursPerOperation" type="number" min="0" step=".5" value="${calculation.handlingHoursPerOperation ?? 2}"></label>
       <label class="field">Коэффициент транзита<input id="transitFactor" type="number" min="1" step=".1" value="${calculation.transitFactor ?? 1.5}" title="(км/скорость + 2 операции) × коэффициент — запас включает отдых водителя"></label>
       <label class="field">Целевая утилизация<input id="utilizationTarget" type="number" min="0" max="1" step=".001" value="${calculation.utilizationTarget}"></label>
+      <label class="field">Простой: бесплатно, ч<input id="demurrageFreeHours" type="number" min="0" step="1" value="${calculation.demurrageFreeHours ?? 8}" title="Норматив бесплатного простоя под погрузкой/выгрузкой от планового времени операции по заявке; сверх — претензия клиенту"></label>
+      <label class="field">Простой: тариф, ₽/ч<input id="demurrageRatePerHour" type="number" min="0" step="50" value="${calculation.demurrageRatePerHour ?? 1000}" title="Ставка за каждый начатый час сверхнормативного простоя — попадает в документ претензии"></label>
     </div></div>
     <div class="card"><h2>Статусы рейса</h2>
       <div class="table-wrap"><table><thead><tr><th>Код</th><th>Название</th><th>Цвет</th></tr></thead>
@@ -91,7 +93,9 @@ async function saveGeneral() {
       techSpeedKmh: numeric('techSpeedKmh'),
       handlingHoursPerOperation: numeric('handlingHoursPerOperation'),
       transitFactor: numeric('transitFactor'),
-      utilizationTarget: numeric('utilizationTarget')
+      utilizationTarget: numeric('utilizationTarget'),
+      demurrageFreeHours: numeric('demurrageFreeHours'),
+      demurrageRatePerHour: numeric('demurrageRatePerHour')
     },
     orderOptions: {
       temperatureModes: byId('temperatureModes').value.split('\n').map(item => item.trim()).filter(Boolean),

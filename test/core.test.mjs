@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, createDriverAssignment, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1327,4 +1327,48 @@ test('эффективная явка: рейс, отпуск и межвахт�
   assert.equal(codes.ea2, 'ОТ');
   assert.equal(codes.ea3, 'РВ');
   assert.equal(codes.ea4, 'ПР');
+});
+
+test('простой под погрузкой/выгрузкой: сверх 8 ч от плана — претензия, без факта прибытия — нет', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-dmr-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2, v3] = db.prepare('SELECT id FROM vehicles LIMIT 3').all().map(row => row.id);
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const nowMs = Date.parse('2026-08-21T12:00:00.000Z');
+  const trip = db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status,order_no,arrived_at,unloaded_at)
+    VALUES(?,?,?,?,?,?,?,500,90000,?,?,?,?)`);
+  const order = db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,
+    rate_vat,window_from,window_to,status,trip_id) VALUES(?,?,?,?,90000,?,?,'planned',?)`);
+  // Рейс 1: план выгрузки по заявке 19.08 06:00, прибыл вовремя, выгружен
+  // через 15 ч → простой 15 ч, сверх нормы 7 ч (начатые часы).
+  trip.run('dm1', v1, 'Клиент А', zone, zone, '2026-08-17T06:00:00.000Z',
+    '2026-08-19T07:30:00.000Z', 'unloaded', '3001',
+    '2026-08-19T06:00:00.000Z', '2026-08-19T21:00:00.000Z');
+  order.run('do1', 'Клиент А', zone, zone, '2026-08-17T06:00:00.000Z', '2026-08-19T06:00:00.000Z', 'dm1');
+  // Рейс 2: прибыл на выгрузку 20.08 06:00 (план 20.08 04:00), НЕ выгружен,
+  // рейс run → открытый случай, простой растёт до «сейчас» (21.08 12:00).
+  trip.run('dm2', v2, 'Клиент Б', zone, zone, '2026-08-18T06:00:00.000Z',
+    '2026-08-20T04:00:00.000Z', 'run', '3002', '2026-08-20T06:00:00.000Z', null);
+  order.run('do2', 'Клиент Б', zone, zone, '2026-08-18T06:00:00.000Z', '2026-08-20T04:00:00.000Z', 'dm2');
+  // Рейс 3: выгружен с опозданием, но факта прибытия нет — случая нет.
+  trip.run('dm3', v3, 'Клиент В', zone, zone, '2026-08-18T06:00:00.000Z',
+    '2026-08-19T06:00:00.000Z', 'unloaded', '3003', null, '2026-08-20T06:00:00.000Z');
+  const cases = demurrageCases(db, nowMs);
+  const byTrip = Object.fromEntries(cases.map(item => [item.tripId, item]));
+  assert.ok(byTrip.dm1, 'закрытый случай выгрузки зафиксирован');
+  assert.equal(byTrip.dm1.kind, 'unload');
+  assert.equal(byTrip.dm1.open, false);
+  assert.equal(byTrip.dm1.idleHours, 15, 'простой от плана (прибыл вовремя) до факта выгрузки');
+  assert.equal(byTrip.dm1.paidHours, 7, 'сверх 8 ч бесплатных, начатый час целиком');
+  assert.equal(byTrip.dm1.amount, 7 * 1000);
+  assert.ok(byTrip.dm2, 'стоящая под выгрузкой машина — открытый случай');
+  assert.equal(byTrip.dm2.open, true);
+  assert.equal(byTrip.dm2.idleHours, 30, 'от факта прибытия (позже плана) до «сейчас»');
+  assert.equal(byTrip.dm2.finishedAt, null);
+  assert.equal(byTrip.dm3, undefined, 'без отметки прибытия претензия не фиксируется');
 });
