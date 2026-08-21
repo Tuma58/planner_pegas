@@ -67,21 +67,55 @@ export function resolveAddress(data, value) {
     || null;
 }
 
+// Пункт, набранный мимо справочника («Пенза, ул совхозная»): город — первый
+// сегмент до запятой; берём любой адрес справочника этого города — регион,
+// геозона и координаты будут приблизительными, но честнее ошибочной зоны
+// заявки (кейс р550ту58: выгрузка в Пензе при зоне «Москва» → «в зоне»).
+export function cityAddress(data, point) {
+  const city = String(point || '').split(',')[0]
+    .replace(/\b(г|город|гор|пос|пгт|с|д|р-н)\.?\s*$/iu, '').trim().toLowerCase();
+  if (city.length < 4) return null;
+  const items = data.reference.addresses || [];
+  return items.find(item => item.name.toLowerCase().startsWith(city))
+    || items.find(item => `${item.name} ${item.address}`.toLowerCase().includes(city))
+    || null;
+}
+
+// Позиция сцепки по месту «пункт или зона»: адрес справочника (точно) →
+// адрес города (приблизительно) → центр геозоны (грубо). Отдаёт регион,
+// геозону и координаты для подгона — единый источник для подбора ТС.
+export function placeOf(data, point, zoneName) {
+  const exact = point ? resolveAddress(data, point) : null;
+  if (exact) {
+    return { region: exact.region || '', zoneName: exact.zone_name || zoneName || '',
+      latitude: exact.latitude, longitude: exact.longitude, approx: false };
+  }
+  const byCity = point ? cityAddress(data, point) : null;
+  if (byCity) {
+    return { region: byCity.region || '', zoneName: byCity.zone_name || zoneName || '',
+      latitude: byCity.latitude, longitude: byCity.longitude, approx: true };
+  }
+  const zone = (data.reference.zones || []).find(item => item.name === zoneName);
+  return { region: regionOfPlace(data, '', zoneName), zoneName: zoneName || '',
+    latitude: zone?.latitude, longitude: zone?.longitude, approx: true };
+}
+
 // Субъект РФ места «пункт или зона»: имя геозоны — самый частый субъект
-// её адресов (иначе «Дом» находил бы Домодедово), затем пункт по справочнику.
+// её адресов (иначе «Дом» находил бы Домодедово), затем пункт по справочнику
+// (точный адрес, иначе — по городу из текста пункта).
 export function regionOfPlace(data, point, zoneName) {
   const items = data.reference.addresses || [];
   const zone = String(zoneName || '').trim().toLowerCase();
+  const byPoint = point ? (resolveAddress(data, point)?.region || cityAddress(data, point)?.region) : '';
   if (zone) {
     const tally = {};
     items.filter(item => (item.zone_name || '').toLowerCase() === zone && item.region)
       .forEach(item => { tally[item.region] = (tally[item.region] || 0) + 1; });
     const top = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
     if (!point && top) return top[0];
-    const byPoint = point ? resolveAddress(data, point)?.region : '';
     return byPoint || (top ? top[0] : '');
   }
-  return (point ? resolveAddress(data, point)?.region : '') || '';
+  return byPoint || '';
 }
 
 // Плановый километраж пары адресов: прямая по координатам × дорожный 1,2 —
@@ -557,10 +591,11 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
 // с разным временем погрузки не конфликтуют.
 export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null) {
   const moment = Date.parse(windowFrom);
-  // Позиция кандидата — адрес выгрузки последнего рейса (по тексту пункта);
-  // подгон в км считается, когда известны обе точки.
-  const pointOf = trip => trip
-    ? resolveAddress(data, trip.to_point || trip.to_name) : null;
+  // Позиция кандидата — место выгрузки последнего рейса: адрес справочника,
+  // иначе город из текста пункта, иначе центр геозоны (placeOf). Регион
+  // заявки — по адресу погрузки; геозоне рейса одной не верим: заявка
+  // бывает вбита с чужой зоной (р550ту58: выгрузка в Пензе при зоне «Москва»).
+  const orderRegion = fromAddress?.region || regionOfPlace(data, '', fromZoneName);
   const busy = new Set(data.trips
     .filter(trip => trip.status !== 'rejected' &&
       Date.parse(trip.starts_at) <= moment && tripBusyUntilMs(trip) > moment)
@@ -578,16 +613,24 @@ export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null
         .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
           tripBusyUntilMs(trip) <= moment)
         .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
-      const zoneName = lastTrip ? lastTrip.to_name : vehicle.zone_name;
+      const place = lastTrip
+        ? placeOf(data, lastTrip.to_point, lastTrip.to_name)
+        : placeOf(data, '', vehicle.zone_name);
+      const zoneName = place.zoneName || (lastTrip ? lastTrip.to_name : vehicle.zone_name);
+      // «В зоне»: геозона совпадает И регион позиции не противоречит региону
+      // погрузки (когда оба известны) — регион точнее зоны.
+      const inZone = zoneName === fromZoneName &&
+        !(orderRegion && place.region && orderRegion !== place.region);
       // Порожний подгон: от позиции сцепки до адреса погрузки заявки.
-      const originPoint = pointOf(lastTrip);
-      const emptyKm = fromAddress && originPoint
-        ? plannedKmBetween(originPoint, fromAddress) : null;
+      const emptyKm = fromAddress ? plannedKmBetween(place, fromAddress) : null;
       // Готовность к подаче: 2 ч + время подгона (порожние км ÷ 50 км/ч).
       const feedMs = DISPATCH_LAG_MS + (emptyKm ? emptyKm / 50 * 3_600_000 : 0);
       const readyAt = lastTrip ? tripBusyUntilMs(lastTrip) + feedMs : null;
+      // Сцепка ещё едет (факта выгрузки нет) — освобождение расчётное, риск опоздания.
+      const stillRunning = Boolean(lastTrip && (lastTrip.status === 'plan' || lastTrip.status === 'run'));
       return {
-        vehicle, zoneName, inZone: zoneName === fromZoneName, emptyKm,
+        vehicle, zoneName, inZone, emptyKm, region: place.region, approx: place.approx,
+        lastTrip, stillRunning,
         readyAt, ready: !readyAt || readyAt <= moment
       };
     })
@@ -1532,10 +1575,13 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">
         <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
         <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name)}${candidate.emptyKm != null
-          ? ` · подгон ~${candidate.emptyKm} км` : ''}${candidate.readyAt
-          ? ` · свободна с ${fmtDateTime(candidate.readyAt)}` : ''}</small>
+          ? ` · подгон ~${candidate.emptyKm} км${candidate.approx ? ' (по городу/зоне)' : ''}` : ''}${candidate.readyAt
+          ? ` · ${candidate.ready ? 'готова с' : '⚠ готова только с'} ${fmtDateTime(candidate.readyAt)}` : ''}</small>
+        ${candidate.stillRunning ? `<small class="next-event warn">🛣 сейчас в рейсе → ${escapeHtml(candidate.lastTrip.to_point || candidate.lastTrip.to_name || '')}
+          · план выгрузки ${fmtDateTime(tripBusyUntilMs(candidate.lastTrip))} — освобождение расчётное</small>` : ''}
         ${nextEventHint(nextVehicleEvent(data, candidate.vehicle.id, loadMs), loadMs)}</span>
-        <span class="badge ${candidate.inZone ? 'ok' : 'warn'}" style="margin-left:auto">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.zoneName || 'перегон')}</span>
+        <span class="badge ${candidate.inZone ? 'ok' : 'warn'}" style="margin-left:auto"
+          title="${candidate.inZone ? 'Позиция в геозоне погрузки' : `Позиция: ${escapeHtml(candidate.region || candidate.zoneName || '—')}`}">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.region || candidate.zoneName || 'перегон')}</span>
       </button>`).join('') || '<p class="muted">Нет свободных к сроку — выберите вручную.</p>'}
     </div>
     <label class="field">Или вручную из парка

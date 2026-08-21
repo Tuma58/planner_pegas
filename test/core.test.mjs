@@ -12,6 +12,7 @@ import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
 import { ensureTripStops, rescheduleTripStops } from '../src/trip-control.mjs';
+import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
@@ -1503,4 +1504,31 @@ test('перепланирование стоянок: сдвиг рейса д�
   assert.equal(after[0].planned_arrival, '2026-08-25T06:00:00.000Z', 'пройденная погрузка не тронута');
   assert.equal(after[1].planned_departure, '2026-08-27T06:00:00.000Z', 'выгрузка следует за новым концом рейса');
   assert.equal(after[1].point, 'Софьино', 'пункт выгрузки обновлён из рейса');
+});
+
+test('подбор ТС: позиция по пункту выгрузки, а не по ошибочной геозоне (кейс р550ту58)', () => {
+  const addresses = [
+    { id: 'a-penza', name: 'Пенза г, ул Аустрина, стр. 178Б', address: 'Пенза', region: 'Пензенская обл',
+      zone_name: 'Дом', zone_id: 'z-home', latitude: 53.2, longitude: 45.0 },
+    { id: 'a-vidnoe', name: 'Видное г, пгт Горки Ленинские, промзона Технопарк', address: 'МО', region: 'Московская обл',
+      zone_name: 'Москва', zone_id: 'z-msk', latitude: 55.55, longitude: 37.7 }
+  ];
+  const data = {
+    reference: { addresses, zones: [{ id: 'z-home', name: 'Дом' }, { id: 'z-msk', name: 'Москва' }] },
+    vehicles: [{ id: 'V550', plate: 'р550ту58', status: 'work', type_name: 'Тушевоз', zone_name: 'Дом' }],
+    dispositions: [],
+    trips: [{ vehicle_id: 'V550', status: 'run', from_name: 'Дом', to_name: 'Москва',
+      to_point: 'Пенза, ул совхозная', starts_at: '2026-08-20T08:00:00.000Z', ends_at: '2026-08-22T05:00:00.000Z' }]
+  };
+  // Позиция по городу из текста пункта: регион Пензенская, а не Московская из зоны.
+  const place = placeOf(data, 'Пенза, ул совхозная', 'Москва');
+  assert.equal(place.region, 'Пензенская обл');
+  assert.equal(place.approx, true);
+  const [candidate] = matchVehicles(data, 'Москва', '2026-08-22T14:00:00.000Z', addresses[1]);
+  assert.equal(candidate.vehicle.id, 'V550');
+  assert.equal(candidate.inZone, false, 'машина будет в Пензе — не «в зоне» Москвы');
+  assert.equal(candidate.region, 'Пензенская обл');
+  assert.ok(candidate.emptyKm > 500, `подгон Пенза→Видное считается приблизительно: ${candidate.emptyKm} км`);
+  assert.equal(candidate.stillRunning, true, 'факта выгрузки нет — пометка «сейчас в рейсе»');
+  assert.equal(candidate.ready, false, 'с подгоном ~600 км к 17:00 МСК не успевает');
 });
