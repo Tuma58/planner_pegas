@@ -21,6 +21,14 @@ export async function api(path, options = {}) {
 // не освобождает — рейс опаздывает, но машина едет (кейс р892ху58: ехала в
 // Новосибирск, а по расчётному концу числилась «стоит»). Завершённый рейс
 // освобождает по фактическому времени выгрузки (может быть раньше расчёта).
+// Начало занятости: машина на линии с момента вывода (on_line_at), даже если
+// плановая погрузка позже — едет на погрузку, ресурс занят; иначе — плановый старт.
+export const tripBusyFromMs = trip => {
+  const planned = Date.parse(trip.starts_at);
+  const raw = String(trip.on_line_at || '');
+  const onLine = raw ? Date.parse(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`) : NaN;
+  return Number.isFinite(onLine) ? Math.min(onLine, planned) : planned;
+};
 export const tripBusyUntilMs = (trip, nowMs = Date.now()) => {
   const planned = Date.parse(trip.ends_at);
   if (trip.status === 'plan' || trip.status === 'run') return Math.max(planned, nowMs);

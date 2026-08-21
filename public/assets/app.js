@@ -1,4 +1,4 @@
-import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs } from './api.js';
+import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs } from './api.js';
 import { renderGeoMap } from './map.js';
 import { vehicleInfoDialog } from './vehicle-info.js';
 import { periodAssignDialog, shiftStateAt } from './resource.js';
@@ -543,7 +543,7 @@ function vehicleDayState(vehicle, dayIso) {
   // Рейс без факта выгрузки занимает день и после расчётного конца.
   const activeTrip = state.data.trips
     .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-      Date.parse(trip.starts_at) <= dayEndMs && tripBusyUntilMs(trip) > dayStartMs)
+      tripBusyFromMs(trip) <= dayEndMs && tripBusyUntilMs(trip) > dayStartMs)
     .sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
   if (activeTrip) {
     return { key: 'trip', cls: 'trip', color: 'var(--teal)',

@@ -2,7 +2,7 @@
 // месяца. Считается целиком из bootstrap (доступен каждой роли) — вкладку
 // видят все сотрудники, цель — общая видимость достижения плана.
 // Автообновление раз в 90 секунд, пока вкладка открыта.
-import { escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls } from './api.js';
+import { escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
 
@@ -112,7 +112,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   const fleet = (data.vehicles || []).filter(vehicle => vehicle.status === 'work');
   // Рейс без факта выгрузки занимает машину и после расчётного конца.
   const inTripIds = new Set(activeTrips.filter(trip =>
-    Date.parse(trip.starts_at) < dayEnd && tripBusyUntilMs(trip, nowMs) > dayStart)
+    tripBusyFromMs(trip) < dayEnd && tripBusyUntilMs(trip, nowMs) > dayStart)
     .map(trip => trip.vehicle_id));
   let unavailable = 0;
   let idle = 0;

@@ -14,7 +14,7 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  reportSnapshot, resolveZone, staffReport, transitHours, upcomingCustomerDates, vehicleUtilization
+  reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, upcomingCustomerDates, vehicleUtilization
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -344,9 +344,12 @@ function runDailyFleetReport() {
     const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
     const dayEnd = dayStart + 86_400_000;
     const fleet = db.prepare(`SELECT id,plate FROM vehicles WHERE status='work'`).all();
-    const dayTrips = db.prepare(`SELECT DISTINCT vehicle_id FROM trips
-      WHERE status<>'rejected' AND starts_at<? AND ends_at>?`)
-      .all(new Date(dayEnd).toISOString(), new Date(dayStart).toISOString());
+    // В рейсе — по факту (вывод на линию → фактическая выгрузка), как в
+    // отчётах и на дашборде; плановые даты занижали число машин на линии.
+    const dayTrips = db.prepare(`SELECT vehicle_id,status,starts_at,ends_at,on_line_at,unloaded_at FROM trips
+      WHERE status<>'rejected' AND starts_at<datetime(?,'+3 days') AND ends_at>datetime(?,'-3 days')`)
+      .all(new Date(dayEnd).toISOString(), new Date(dayStart).toISOString())
+      .filter(trip => { const r = tripBusyRange(trip); return r.from < dayEnd && r.to > dayStart; });
     const inTrip = new Set(dayTrips.map(row => row.vehicle_id));
     const dispositions = db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at FROM vehicle_dispositions
       WHERE starts_at<? AND ends_at>?`)

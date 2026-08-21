@@ -4,7 +4,7 @@
 // владельцам, баланс машино-дней, экономика по типам ТС и топ клиентов.
 // Тема «панель приборов» (спидометры, лобовое стекло) выведена из продукта.
 // Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
-import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
+import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, tripBusyFromMs, tripBusyUntilMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
@@ -366,9 +366,11 @@ export async function renderBoss(container, context) {
       // по большему пересечению → простой (методика ячеек Ганта).
       const buckets = { trip: [], repair: [], shift: [], no_driver: [], reserve: [], idle: [] };
       data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
+        // Занятость по факту: с вывода на линию до фактической выгрузки
+        // (незавершённый рейс — до «сейчас»), а не по плановым датам.
         const hasTrip = data.trips.some(trip => trip.vehicle_id === vehicle.id &&
           trip.status !== 'rejected' &&
-          Date.parse(trip.starts_at) < dayEnd && Date.parse(trip.ends_at) > dayStart);
+          tripBusyFromMs(trip) < dayEnd && tripBusyUntilMs(trip) > dayStart);
         if (hasTrip) { buckets.trip.push(vehicle); return; }
         const covering = (data.dispositions || []).filter(item =>
           item.vehicle_id === vehicle.id &&

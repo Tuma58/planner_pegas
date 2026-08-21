@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { effectivePermissions, hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1586,4 +1586,31 @@ test('карточка клиента: сводка, контакты с дня�
   assert.ok(!dates.some(item => item.kind === 'holiday'), 'в конце августа праздников в горизонте нет');
   const nyDates = upcomingCustomerDates(db, Date.parse('2026-12-26T09:00:00.000Z'), 7);
   assert.ok(nyDates.some(item => item.kind === 'holiday' && item.name === 'Новый год' && item.daysLeft === 6));
+});
+
+test('занятость по факту: вывод на линию раньше плана и опоздание — машина в рейсе; машино-день от 4 ч', () => {
+  const now = Date.parse('2026-08-21T12:00:00.000Z');
+  // Выведена на линию 20.08 18:00 при плановой погрузке 22.08 05:15 — занята с вывода.
+  const early = { status: 'run', starts_at: '2026-08-22T05:15:00.000Z', ends_at: '2026-08-23T06:27:00.000Z',
+    on_line_at: '2026-08-20T18:00:00.000Z', unloaded_at: null };
+  const rangeEarly = tripBusyRange(early, now);
+  assert.equal(new Date(rangeEarly.from).toISOString(), '2026-08-20T18:00:00.000Z');
+  // Опоздун: расчётный конец прошёл, факта нет — занята до «сейчас».
+  const late = { status: 'run', starts_at: '2026-08-20T15:00:00.000Z', ends_at: '2026-08-21T09:00:00.000Z',
+    on_line_at: null, unloaded_at: null };
+  assert.equal(tripBusyRange(late, now).to, now);
+  // Выгружен раньше расчёта — свободен по факту.
+  const done = { status: 'unloaded', starts_at: '2026-08-19T06:00:00.000Z', ends_at: '2026-08-20T18:00:00.000Z',
+    on_line_at: null, unloaded_at: '2026-08-20T10:00:00.000Z' };
+  assert.equal(new Date(tripBusyRange(done, now).to).toISOString(), '2026-08-20T10:00:00.000Z');
+  const day21 = Date.parse('2026-08-21T00:00:00.000Z');
+  assert.equal(dayStateOf([early], [], day21, now), 'work', 'выведенная заранее — в работе весь день');
+  assert.equal(dayStateOf([late], [], day21, now), 'work', 'опоздун 00:00–12:00 — в работе');
+  assert.equal(dayStateOf([done], [], day21, now), 'idle', 'выгружен вчера — сегодня простой');
+  // Рейс, коснувшийся дня на 2 часа, день не окрашивает; ремонт 6 ч — да.
+  const brief = { status: 'done', starts_at: '2026-08-20T06:00:00.000Z', ends_at: '2026-08-21T02:00:00.000Z',
+    on_line_at: null, unloaded_at: '2026-08-21T02:00:00.000Z' };
+  assert.equal(dayStateOf([brief], [], day21, now), 'idle');
+  assert.equal(dayStateOf([brief], [{ kind: 'repair', starts_at: '2026-08-21T08:00:00.000Z', ends_at: '2026-08-21T14:00:00.000Z' }], day21, now), 'repair');
+  assert.equal(dayStateOf([], [{ kind: 'reserve', starts_at: '2026-08-21T00:00:00.000Z', ends_at: '2026-08-22T00:00:00.000Z' }], day21, now), 'idle', 'резерв день не объясняет');
 });

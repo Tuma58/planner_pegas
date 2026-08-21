@@ -1,7 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
-import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls } from './api.js';
+import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
 
@@ -78,7 +78,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
   const trips = (data.trips || []).filter(trip => trip.status !== 'rejected');
   // Незавершённый рейс покрывает ячейку и после расчётного конца (до факта).
   const tripOf = (vehicleId, midMs) => trips.find(trip => trip.vehicle_id === vehicleId &&
-    Date.parse(trip.starts_at) <= midMs && midMs < tripBusyUntilMs(trip));
+    tripBusyFromMs(trip) <= midMs && midMs < tripBusyUntilMs(trip));
   const tripAt = (vehicleId, midMs) => Boolean(tripOf(vehicleId, midMs));
   // Куда едет — субъект РФ назначения (сокращённый), фолбэк — геозона/пункт.
   const shortRegion = value => String(value || '')
@@ -568,7 +568,7 @@ export function vehicleStateAt(vehicle, data, dayIso) {
   if (vehicle.status === 'repair') return kindMeta('repair');
   if (vehicle.status === 'no_driver' || !vehicle.driver_name) return kindMeta('no_driver');
   const onTrip = data.trips.some(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-    Date.parse(trip.starts_at) <= midpoint && midpoint < tripBusyUntilMs(trip));
+    tripBusyFromMs(trip) <= midpoint && midpoint < tripBusyUntilMs(trip));
   return onTrip ? kindMeta('work') : kindMeta('idle');
 }
 

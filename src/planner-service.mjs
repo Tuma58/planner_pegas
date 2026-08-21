@@ -530,6 +530,51 @@ export function attendanceSummary(db, day) {
   };
 }
 
+// ── Занятость сцепки рейсом — по ФАКТУ, единая методика для отчётов ──
+// Начало — вывод на линию (on_line_at), если он раньше плановой погрузки
+// (машина едет на погрузку, ресурс занят); конец — фактическая выгрузка,
+// у незавершённого (план/в пути) — не раньше «сейчас». Плановые даты рейса
+// занижали «машин на линии»: выведенные заранее и опаздывающие выпадали.
+const busyTs = value => value
+  ? Date.parse(String(value).includes('T') ? value : `${String(value).replace(' ', 'T')}Z`) : NaN;
+export function tripBusyRange(trip, nowMs = Date.now()) {
+  const plannedFrom = Date.parse(trip.starts_at);
+  const onLine = busyTs(trip.on_line_at);
+  const from = Number.isFinite(onLine) ? Math.min(onLine, plannedFrom) : plannedFrom;
+  const plannedTo = Date.parse(trip.ends_at);
+  let to;
+  if (trip.status === 'plan' || trip.status === 'run') to = Math.max(plannedTo, nowMs);
+  else {
+    const fact = busyTs(trip.unloaded_at);
+    to = Number.isFinite(fact) ? fact : plannedTo;
+  }
+  return { from, to: Math.max(to, from) };
+}
+
+// Состояние машино-дня: диспозиция (кроме резерва) с наибольшим пересечением
+// с днём от 4 часов → её вид; иначе рейсы по факту суммарно ≥ 4 часов в дне
+// → «в работе»; иначе простой. Порог в четверть суток вместо прежней
+// «пробы по полудню»: короткий дневной ремонт или рейс, начатый после
+// обеда, больше не теряются, а 10-минутное касание день не окрашивает.
+export const DAY_STATE_MIN_MS = 4 * 3_600_000;
+export function dayStateOf(trips, dispositions, dayStartMs, nowMs = Date.now()) {
+  const dayEndMs = dayStartMs + 86_400_000;
+  const overlap = (from, to) => Math.max(0, Math.min(to, dayEndMs) - Math.max(from, dayStartMs));
+  let best = null;
+  for (const row of dispositions) {
+    if (row.kind === 'reserve') continue;
+    const ms = overlap(Date.parse(row.starts_at), Date.parse(row.ends_at));
+    if (ms >= DAY_STATE_MIN_MS && (!best || ms > best.ms)) best = { ms, kind: row.kind };
+  }
+  if (best) return best.kind === 'repair' ? 'repair' : best.kind === 'no_driver' ? 'noDriver'
+    : best.kind === 'shift' ? 'shift' : 'out';
+  const tripMs = trips.reduce((sum, trip) => {
+    const range = tripBusyRange(trip, nowMs);
+    return sum + overlap(range.from, range.to);
+  }, 0);
+  return tripMs >= DAY_STATE_MIN_MS ? 'work' : 'idle';
+}
+
 export function reportSnapshot(db, fromValue, toValue) {
   const from = isoDate(fromValue, 'from');
   const to = isoDate(toValue, 'to');
@@ -580,30 +625,19 @@ export function reportSnapshot(db, fromValue, toValue) {
   const fleet = db.prepare(`SELECT id FROM vehicles WHERE status<>'out'`).all();
   const dispositionRows = db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at
     FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(to, from);
-  const tripRows = db.prepare(`SELECT vehicle_id,starts_at,ends_at FROM trips
-    WHERE status<>'rejected' AND starts_at<? AND ends_at>?`).all(to, from);
+  // Рейсы — с запасом по датам (вывод на линию раньше плана, опоздание позже).
+  const tripRows = db.prepare(`SELECT vehicle_id,status,starts_at,ends_at,on_line_at,unloaded_at FROM trips
+    WHERE status<>'rejected' AND starts_at<datetime(?,'+3 days') AND ends_at>datetime(?,'-3 days')`).all(to, from);
   const byVehicleDispositions = Map.groupBy(dispositionRows, row => row.vehicle_id);
   const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
   const dayCount = Math.round(days);
   const fromMs = Date.parse(from);
   const machineDays = { work: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
-  const covers = (row, momentMs) => Date.parse(row.starts_at) <= momentMs && momentMs < Date.parse(row.ends_at);
   for (const vehicle of fleet) {
     const vehicleDispositions = byVehicleDispositions.get(vehicle.id) || [];
     const vehicleTrips = byVehicleTrips.get(vehicle.id) || [];
     for (let day = 0; day < dayCount; day += 1) {
-      const midpoint = fromMs + (day + 0.5) * 86_400_000;
-      const disposition = vehicleDispositions.find(row => row.kind !== 'reserve' && covers(row, midpoint));
-      if (disposition) {
-        if (disposition.kind === 'repair') machineDays.repair += 1;
-        else if (disposition.kind === 'no_driver') machineDays.noDriver += 1;
-        else if (disposition.kind === 'shift') machineDays.shift += 1;
-        else machineDays.out += 1;
-      } else if (vehicleTrips.some(row => covers(row, midpoint))) {
-        machineDays.work += 1;
-      } else {
-        machineDays.idle += 1;
-      }
+      machineDays[dayStateOf(vehicleTrips, vehicleDispositions, fromMs + day * 86_400_000)] += 1;
     }
   }
   const calendarDays = fleet.length * dayCount;
@@ -674,8 +708,8 @@ export function vehicleUtilization(db, fromValue, toValue) {
     JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.status<>'out' ORDER BY v.plate`).all();
   const dispositionRows = db.prepare(`SELECT vehicle_id,kind,starts_at,ends_at
     FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(to, from);
-  const tripRows = db.prepare(`SELECT vehicle_id,starts_at,ends_at FROM trips
-    WHERE status<>'rejected' AND starts_at<? AND ends_at>?`).all(to, from);
+  const tripRows = db.prepare(`SELECT vehicle_id,status,starts_at,ends_at,on_line_at,unloaded_at FROM trips
+    WHERE status<>'rejected' AND starts_at<datetime(?,'+3 days') AND ends_at>datetime(?,'-3 days')`).all(to, from);
   const revenueRows = db.prepare(`SELECT vehicle_id,customer_name,revenue_vat,cash,distance_km,empty_km
     FROM trips WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`).all(from, to);
   const repairKmByVehicle = new Map(db.prepare(`SELECT vehicle_id, SUM(repair_km) total
@@ -685,24 +719,12 @@ export function vehicleUtilization(db, fromValue, toValue) {
   const byVehicleDispositions = Map.groupBy(dispositionRows, row => row.vehicle_id);
   const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
   const byVehicleRevenue = Map.groupBy(revenueRows, row => row.vehicle_id);
-  const covers = (row, momentMs) => Date.parse(row.starts_at) <= momentMs && momentMs < Date.parse(row.ends_at);
   const items = fleet.map(vehicle => {
     const dispositions = byVehicleDispositions.get(vehicle.id) || [];
     const trips = byVehicleTrips.get(vehicle.id) || [];
     const counts = { work: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
     for (let day = 0; day < dayCount; day += 1) {
-      const midpoint = fromMs + (day + 0.5) * 86_400_000;
-      const disposition = dispositions.find(row => row.kind !== 'reserve' && covers(row, midpoint));
-      if (disposition) {
-        if (disposition.kind === 'repair') counts.repair += 1;
-        else if (disposition.kind === 'no_driver') counts.noDriver += 1;
-        else if (disposition.kind === 'shift') counts.shift += 1;
-        else counts.out += 1;
-      } else if (trips.some(row => covers(row, midpoint))) {
-        counts.work += 1;
-      } else {
-        counts.idle += 1;
-      }
+      counts[dayStateOf(trips, dispositions, fromMs + day * 86_400_000)] += 1;
     }
     const netRevenue = (byVehicleRevenue.get(vehicle.id) || []).reduce((sum, trip) => {
       const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
