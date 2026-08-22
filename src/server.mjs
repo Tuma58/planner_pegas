@@ -256,6 +256,17 @@ function notify(targetRole, text, entity = null, entityId = null) {
     VALUES('Конвейер','auto',?,?,?,?)`).run(text, targetRole, entity, entityId);
 }
 
+// Персональная рассылка всем действующим сотрудникам: каждому — своё
+// авто-сообщение (recipient_id), видно в его ленте «⚙ Конвейер» с тостом и
+// звуком как адресованное. Так уходит утренний отчёт дня.
+function notifyEveryone(text, entity = null, entityId = null) {
+  const users = db.prepare(`SELECT id FROM users WHERE active=1 AND deleted_at IS NULL`).all();
+  const insert = db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
+    VALUES('Конвейер','auto',?,?,?,?)`);
+  for (const user of users) insert.run(text, user.id, entity, entityId);
+  return users.length;
+}
+
 // Маршрут для текста уведомления: пункты, при их отсутствии — геозоны.
 function routeText(row) {
   const zoneName = id => db.prepare('SELECT name FROM zones WHERE id=?').get(id)?.name || '';
@@ -392,7 +403,7 @@ function runDailyFleetReport() {
       WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`)
       .get(`${dayIso}T00:00:00.000Z`, `${todayIso}T00:00:00.000Z`).c;
     const avgCheck = tripsDone ? (snap.netRevenue || 0) / tripsDone : 0;
-    notify('manager', `📆 Отчёт дня за ${dayLabel}: парк ${fleet.length} · в рейсе ${inTrip.size}` +
+    notifyEveryone(`📆 Отчёт дня за ${dayLabel}: парк ${fleet.length} · в рейсе ${inTrip.size}` +
       ` (${pctShort(inTrip.size / (fleet.length || 1))}) · простой без причины ${idlePlates.length}` +
       `${idlePlates.length ? ` (${idlePlates.slice(0, 6).join(', ')}${idlePlates.length > 6 ? '…' : ''})` : ''}` +
       ` · ремонт ${counts.repair}, пересм. ${counts.shift}, без вод. ${counts.no_driver}, резерв ${counts.reserve}` +

@@ -114,7 +114,9 @@ export function setupChat(state) {
   const input = el('chatInput');
   const unreadBadge = document.getElementById('chatUnread');
   const isOpen = () => !panel.classList.contains('hidden');
-  const forMe = message => message.target_role && myRoles.includes(message.target_role);
+  // Адресовано мне: авто-уведомление моей роли либо персональное (recipient_id).
+  const forMe = message => (message.target_role && myRoles.includes(message.target_role))
+    || (message.kind === 'auto' && message.recipient_id === myId);
 
   // Модель: все видимые сообщения, группы, собеседники; активная переписка.
   const allMessages = [];
@@ -135,6 +137,8 @@ export function setupChat(state) {
   // Ключ переписки для сообщения (с чьей стороны смотрим — myId).
   const roomKeyOf = message => {
     if (message.chat_id) return `group:${message.chat_id}`;
+    // Персональные авто-уведомления (утренний отчёт всем) — в ленте «⚙ Конвейер».
+    if (message.kind === 'auto') return 'auto';
     if (message.recipient_id) {
       return `dm:${message.author_id === myId ? message.recipient_id : message.author_id}`;
     }

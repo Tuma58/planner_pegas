@@ -1470,6 +1470,13 @@ test('чат: личное сообщение видят только отпра
   const first = chatMessages(db, 'cu3', ['dispatcher']).items[0].id;
   assert.deepEqual(chatMessages(db, 'cu3', ['dispatcher'], first).items, []);
   assert.equal(chatMessages(db, 'cu2', ['logist'], first).items.length, 4);
+  // Персональное авто-уведомление (утренний отчёт всем): видно только адресату.
+  db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id)
+    VALUES('Конвейер','auto','📆 Отчёт дня лично','cu3')`).run();
+  assert.ok(chatMessages(db, 'cu3', ['dispatcher']).items.some(m => m.text === '📆 Отчёт дня лично'),
+    'адресат видит персональный отчёт');
+  assert.ok(!chatMessages(db, 'cu1', ['sales']).items.some(m => m.text === '📆 Отчёт дня лично'),
+    'другим персональный отчёт не виден');
   // Мягкое удаление группы: сообщения и группа пропадают у участников,
   // восстановление возвращает всё вместе с историей.
   db.prepare(`UPDATE chats SET deleted_at=CURRENT_TIMESTAMP WHERE id='gr1'`).run();
