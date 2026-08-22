@@ -354,6 +354,12 @@ export async function renderDispatcher(container, context) {
   // событие уже сменилось: отметка «✓ отработано» привязана к конкретному
   // событию и с новым шагом карточка возвращается в очередь, но контекст
   // прошлого звонка терять нельзя.
+  // Время отметки контроля (done_at в UTC «ГГГГ-ММ-ДД ЧЧ:ММ:СС») — в МСК.
+  const markTime = mark => {
+    const raw = String(mark?.done_at || '');
+    if (!raw) return '';
+    return formatDateTime(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`);
+  };
   const lastNoteOf = trip => {
     let best = null;
     for (const [key, mark] of workedMap) {
@@ -767,10 +773,10 @@ export async function renderDispatcher(container, context) {
       ${hot && !overdue && nextEvent.at !== 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
       ${claimBadge(claim, claimMine)}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
-        · ${escapeHtml(worked.done_by || '')}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
+        · ${escapeHtml(worked.done_by || '')} · ${markTime(worked)}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
       ${(() => { const last = lastNoteOf(trip);
         return !worked && last ? `<span class="ctrl-last-note" title="${escapeHtml(last.note)}">💬 прошлый контроль
-          · ${escapeHtml(last.done_by || '')} — «${escapeHtml(String(last.note).slice(0, 60))}»</span>` : ''; })()}
+          · ${escapeHtml(last.done_by || '')} · ${markTime(last)} — «${escapeHtml(String(last.note).slice(0, 60))}»</span>` : ''; })()}
       ${canAct && nextEvent.docsStep && !worked ? `<button class="button small ctrl-quick"
         data-docs="${trip.id}" title="Фото документов получены и проверены (без печатей и актов) — рейс уйдёт с контроля">✔ Документы получены</button>` : ''}
       ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"

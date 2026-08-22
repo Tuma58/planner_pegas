@@ -1006,3 +1006,22 @@ export function customerCard(db, name, nowMs = Date.now()) {
     dates: upcomingCustomerDates(db, nowMs, 30).filter(item => item.kind === 'holiday' || item.customer === name)
   };
 }
+
+
+// ── Правило «два рейса»: машины в пути без назначенного следующего рейса ──
+// Выборка для сигнала логисту: плановая выгрузка в ближайшие horizonMs
+// (по умолчанию 2 часа) или уже просрочена, а следующего рейса (план с
+// началом не раньше текущего) у машины нет; по каждому рейсу — один раз
+// (trips.next_alert_at).
+export function tripsWithoutNext(db, nowMs = Date.now(), horizonMs = 2 * 3_600_000, onlyUnalerted = true) {
+  const until = new Date(nowMs + horizonMs).toISOString();
+  const rows = db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.ends_at, t.to_point, t.customer_name,
+      t.next_alert_at, v.plate,
+      (SELECT name FROM zones WHERE id=t.to_zone_id) to_name
+    FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE t.status='run' AND t.ends_at<=? ORDER BY t.ends_at`).all(until);
+  const hasNext = db.prepare(`SELECT 1 FROM trips WHERE vehicle_id=? AND status='plan'
+    AND id<>? AND starts_at>=? LIMIT 1`);
+  return rows.filter(trip => (!onlyUnalerted || !trip.next_alert_at) &&
+    !hasNext.get(trip.vehicle_id, trip.id, trip.starts_at));
+}

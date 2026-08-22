@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { effectivePermissions, hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, tripsWithoutNext, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -1645,4 +1645,30 @@ test('отчёт: будущие дни периода не считаются �
   assert.ok(snap.utilization.futureDays >= 0);
   assert.equal(snap.utilization.days + snap.utilization.futureDays, snap.utilization.periodDays);
   assert.ok(snap.netRevenueDone <= snap.netRevenue);
+});
+
+test('сигнал «следующий рейс не назначен»: выгрузка в ближайшие 2 часа без плана после — в списке', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-next-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2, v3] = db.prepare('SELECT id FROM vehicles LIMIT 3').all().map(row => row.id);
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const now = Date.now();
+  const iso = ms => new Date(ms).toISOString();
+  const ins = db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,to_point,
+    starts_at,ends_at,distance_km,revenue_vat,status) VALUES(?,?,?,?,?,?,?,?,500,90000,?)`);
+  // V1: в пути, выгрузка через 1 час, следующего нет → в списке
+  ins.run('nx1', v1, 'К', zone, zone, 'Пенза', iso(now - 20 * 3600e3), iso(now + 3600e3), 'run');
+  // V2: в пути, выгрузка через 1 час, НО следующий план назначен → не в списке
+  ins.run('nx2', v2, 'К', zone, zone, 'Тула', iso(now - 20 * 3600e3), iso(now + 3600e3), 'run');
+  ins.run('nx2b', v2, 'К', zone, zone, 'Москва', iso(now + 5 * 3600e3), iso(now + 30 * 3600e3), 'plan');
+  // V3: в пути, выгрузка через 5 часов → вне горизонта 2 ч
+  ins.run('nx3', v3, 'К', zone, zone, 'Самара', iso(now - 10 * 3600e3), iso(now + 5 * 3600e3), 'run');
+  const rows = tripsWithoutNext(db, now, 2 * 3600e3, true);
+  assert.deepEqual(rows.map(r => r.id), ['nx1']);
+  db.prepare(`UPDATE trips SET next_alert_at=CURRENT_TIMESTAMP WHERE id='nx1'`).run();
+  assert.deepEqual(tripsWithoutNext(db, now, 2 * 3600e3, true), [], 'повторно по тому же рейсу не сигналит');
 });

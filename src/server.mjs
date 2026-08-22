@@ -14,7 +14,7 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, upcomingCustomerDates, vehicleUtilization
+  reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -559,6 +559,28 @@ function runCustomerRemindersWatch() {
 }
 setInterval(runCustomerRemindersWatch, 15 * 60_000);
 setTimeout(runCustomerRemindersWatch, 55_000);
+
+// ── Сигнал логисту: выгрузка через ≤2 часа, следующий рейс не назначен ──
+// Правило «минимум два назначенных рейса»: машина не должна освобождаться
+// без следующего задания. Раз в 10 минут — одно сообщение логисту со
+// списком таких машин (по каждому рейсу — один раз, trips.next_alert_at).
+function runNextTripWatch() {
+  try {
+    const rows = tripsWithoutNext(db, Date.now(), 2 * 3_600_000, true);
+    if (!rows.length) return;
+    const fmt = iso => new Date(Date.parse(iso) + 3 * 3_600_000).toISOString().slice(11, 16);
+    const lines = rows.slice(0, 12).map(trip => `${trip.plate} → ${trip.to_point || trip.to_name || '—'}` +
+      ` (выгрузка ${fmt(trip.ends_at)} МСК${Date.parse(trip.ends_at) < Date.now() ? ', время вышло' : ''})`);
+    notify('logist', `⏭ Следующий рейс не назначен — выгрузка в ближайшие 2 часа: ${lines.join('; ')}` +
+      `${rows.length > 12 ? ` и ещё ${rows.length - 12}` : ''}. Назначьте рейс из очереди или запросите загрузку у продаж («Логист → Сцепки»)`);
+    const stamp = db.prepare('UPDATE trips SET next_alert_at=CURRENT_TIMESTAMP WHERE id=?');
+    for (const trip of rows) stamp.run(trip.id);
+  } catch (error) {
+    console.error('Сигнал «следующий рейс не назначен»:', error.message);
+  }
+}
+setInterval(runNextTripWatch, 10 * 60_000);
+setTimeout(runNextTripWatch, 65_000);
 
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
