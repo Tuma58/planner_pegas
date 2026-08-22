@@ -462,6 +462,9 @@ test('потребность от логистики: ремонт и «без �
   const dash = dashboardMetrics(dashData, dashNow);
   assert.ok(dash.monthDone <= dash.monthFact, '«выгружено» не больше «забито»');
   assert.ok(dash.dispatcher.online <= dashData.vehicles.length, '«на линии» — машины, не больше парка');
+  assert.equal(typeof dash.logist.noNext, 'number');
+  assert.ok(dash.logist.noNext <= dash.dispatcher.online, 'без следующего — не больше, чем на линии');
+  assert.ok(Array.isArray(dash.details.logistNoNext) && dash.details.logistNoNext.length === dash.logist.noNext);
   assert.ok(dash.dispatcher.onlineTripCount >= dash.dispatcher.online);
   assert.equal(typeof dash.monthDone, 'number');
   assert.equal(Math.round(dash.monthFact), 105_000_000, 'факт месяца без НДС (122М+6,1М)/1,22');

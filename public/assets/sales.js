@@ -565,6 +565,9 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       vehicle, zone,
       region: regionOfTrip(last),
       overdueTrip,
+      // Последний рейс ещё в работе, а следующего нет — нарушение правила
+      // «у машины на линии назначен следующий рейс».
+      nextMissing: Boolean(last && (last.status === 'plan' || last.status === 'run')),
       freeAt: endsAt.toISOString(),
       // Простой: сцепка уже стоит без загрузки (idleMs > 0) — приоритет продаж.
       idleMs: Math.max(0, idleMs),

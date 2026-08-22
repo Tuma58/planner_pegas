@@ -423,6 +423,7 @@ export function renderLogist(container, context) {
           : `освободится ${formatDateTime(request.freeAt)}`}${blockedNote}</small>
         <small class="muted" style="display:block">📍 ${escapeHtml(request.region || 'субъект не определён')}
           · ${stateNote(request)}</small>
+        ${request.nextMissing ? '<small class="next-missing">⏭ следующий рейс не назначен — назначьте до освобождения</small>' : ''}
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <span class="badge ${fits ? 'ok' : 'warn'}" title="Заявок очереди, подходящих по времени">${fits

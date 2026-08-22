@@ -546,8 +546,12 @@ function vehicleDayState(vehicle, dayIso) {
       tripBusyFromMs(trip) <= dayEndMs && tripBusyUntilMs(trip) > dayStartMs)
     .sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
   if (activeTrip) {
+    // Правило «два рейса»: у машины в пути должен быть назначен следующий.
+    const hasNext = activeTrip.status !== 'run' || state.data.trips.some(trip =>
+      trip.vehicle_id === vehicle.id && trip.status === 'plan' && trip.id !== activeTrip.id &&
+      Date.parse(trip.starts_at) >= Date.parse(activeTrip.starts_at));
     return { key: 'trip', cls: 'trip', color: 'var(--teal)',
-      text: `⇢ из ${shortPlace(activeTrip.from_point || activeTrip.from_name)} в ${shortPlace(activeTrip.to_point || activeTrip.to_name)}` };
+      text: `⇢ из ${shortPlace(activeTrip.from_point || activeTrip.from_name)} в ${shortPlace(activeTrip.to_point || activeTrip.to_name)}${hasNext ? '' : ' · ⏭ след. не назначен'}` };
   }
   // Диспозиция объясняет день, если ПЕРЕСЕКАЕТ его (короткий дневной ремонт
   // 08:00–15:00 — тоже причина); из нескольких берётся большая по перекрытию.
@@ -697,7 +701,7 @@ function renderMain() {
       onReload: reload, taskContainer: byId('sidepanel')
     });
   } else if (state.view === 'dashboard') {
-    renderDashboard(byId('timeline'), { state, can, onReload: reload });
+    renderDashboard(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'routes') {
     renderRoutes(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'dispatcher') {

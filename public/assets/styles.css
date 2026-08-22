@@ -1191,3 +1191,11 @@ tbody tr:hover td { background: var(--hover); }
   font-weight: 800; letter-spacing: .02em; padding: 2px 8px; border-radius: 10px;
   background: #3b82c4; color: #fff; white-space: nowrap; }
 .ctrl-claim-note.mine { background: var(--teal); }
+
+/* ── Дашборд: кликабельные плашки ролей и детализация ── */
+.dash-row.clickable { cursor: pointer; border-radius: 6px; }
+.dash-row.clickable:hover { background: var(--soft); }
+.dash-more { color: var(--teal); font-weight: 800; margin-left: 2px; }
+.dash-detail-list { max-height: 62vh; overflow: auto; }
+.dash-detail-row { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: var(--fs-sm); }
+.next-missing { display: block; color: var(--bad); font-weight: 700; font-size: var(--fs-xs); }

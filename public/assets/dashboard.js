@@ -117,6 +117,24 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   const online = new Set(onlineTrips.map(trip => trip.vehicle_id)).size;
   const onlineTripCount = onlineTrips.length;
 
+  // Правило «минимум два назначенных рейса»: у каждой машины на линии (в пути)
+  // должен быть назначен СЛЕДУЮЩИЙ рейс (план после текущего). Машины без
+  // следующего — задача логисту назначить / продажам найти груз до освобождения.
+  const tripsByVehicle = new Map();
+  for (const trip of activeTrips) {
+    if (!tripsByVehicle.has(trip.vehicle_id)) tripsByVehicle.set(trip.vehicle_id, []);
+    tripsByVehicle.get(trip.vehicle_id).push(trip);
+  }
+  const noNextList = [];
+  for (const vehicleId of new Set(onlineTrips.map(trip => trip.vehicle_id))) {
+    const list = tripsByVehicle.get(vehicleId) || [];
+    const current = list.filter(trip => trip.status === 'run')
+      .sort((a, b) => b.starts_at.localeCompare(a.starts_at))[0];
+    const hasNext = list.some(trip => trip.status === 'plan' &&
+      Date.parse(trip.starts_at) >= Date.parse(current.starts_at));
+    if (!hasNext) noNextList.push({ vehicle_id: vehicleId, current });
+  }
+
   // Ресурс/парк: занятость сегодня.
   const fleet = (data.vehicles || []).filter(vehicle => vehicle.status === 'work');
   // Рейс без факта выгрузки занимает машину и после расчётного конца.
@@ -172,9 +190,27 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     remainingDays, dayTripsCount: dayTrips.length,
     avgDayCheck: dayTrips.length ? dayFact / dayTrips.length : 0,
     sales: { createdToday: createdToday.length, createdSum, avgCheck, queue },
-    logist: { assignedToday, queue },
+    logist: { assignedToday, queue, noNext: noNextList.length },
     dispatcher: { onLineToday, startingToday, unloadedToday, online, onlineTripCount },
-    fleet: { total: fleet.length, inTrip: inTripIds.size, unavailable, idle } };
+    fleet: { total: fleet.length, inTrip: inTripIds.size, unavailable, idle },
+    // Списки для раскрытия плашек по клику.
+    details: {
+      salesCreated: createdToday,
+      salesQueue: orders.filter(order => orderStage(order, data).stage === 1),
+      logistAssigned: activeTrips.filter(trip => trip.order_id && trip.source_system !== '1c' &&
+        tsMs(trip.created_at) >= dayStart && tsMs(trip.created_at) < dayEnd),
+      logistNoNext: noNextList,
+      dispOnLine: activeTrips.filter(trip => tsMs(trip.on_line_at) >= dayStart && tsMs(trip.on_line_at) < dayEnd),
+      dispStarting: activeTrips.filter(trip => trip.status === 'plan' &&
+        Date.parse(trip.starts_at) >= dayStart && Date.parse(trip.starts_at) < dayEnd),
+      dispUnloaded: activeTrips.filter(trip => tsMs(trip.unloaded_at) >= dayStart && tsMs(trip.unloaded_at) < dayEnd),
+      dispOnline: onlineTrips,
+      fleetInTrip: fleet.filter(vehicle => inTripIds.has(vehicle.id)),
+      fleetIdle: fleet.filter(vehicle => !inTripIds.has(vehicle.id) && !(data.dispositions || []).some(item =>
+        item.vehicle_id === vehicle.id && Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart)),
+      fleetUnavailable: fleet.filter(vehicle => !inTripIds.has(vehicle.id) && (data.dispositions || []).some(item =>
+        item.vehicle_id === vehicle.id && Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart))
+    } };
 }
 
 // Столбики выручки по дням месяца: прошлые и сегодня — насыщенные,
@@ -228,6 +264,50 @@ const pctOf = (value, base) => base ? Math.round(value / base * 100) : 0;
 const shortMln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU',
   { maximumFractionDigits: 1 })} млн`;
 
+const DETAIL_TITLES = {
+  salesCreated: 'Внесено заявок сегодня', salesQueue: 'Очередь на назначение (без ТС)',
+  logistAssigned: 'Назначено рейсов сегодня', logistNoNext: 'На линии без следующего рейса',
+  dispOnLine: 'Выведено на линию сегодня', dispStarting: 'Ждут выхода сегодня',
+  dispUnloaded: 'Выгружено сегодня', dispOnline: 'В пути сейчас',
+  fleetInTrip: 'Парк в рейсе сегодня', fleetIdle: 'Простой без причины', fleetUnavailable: 'Недоступны (оформлено)'
+};
+const fmtDt = value => value ? new Date(String(value).includes('T') ? value : `${String(value).replace(' ', 'T')}Z`)
+  .toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' }) : '—';
+const placeShort = value => String(value || '').split(',')[0].trim().slice(0, 28);
+
+// Детализация плашки дашборда: список строк того типа, что стоит за цифрой.
+function dashDetailDialog(key, metrics, data, context) {
+  if (typeof context.showModal !== 'function') return;
+  const items = metrics.details?.[key] || [];
+  const vehicleById = id => (data.vehicles || []).find(item => item.id === id);
+  let rows = '';
+  if (key === 'salesCreated' || key === 'salesQueue') {
+    rows = items.map(order => `<div class="dash-detail-row"><b>${order.order_no ? `№ ${escapeHtml(order.order_no)}` : '—'}</b>
+      · ${escapeHtml(order.customer_name)} · ${escapeHtml(placeShort(order.from_point || order.from_name))} → ${escapeHtml(placeShort(order.to_point || order.to_name))}
+      <small class="muted" style="display:block">окно ${fmtDt(order.window_from)} → ${fmtDt(order.window_to)} · ${money(order.rate_vat)}</small></div>`).join('');
+  } else if (key === 'logistNoNext') {
+    rows = items.map(({ vehicle_id, current }) => {
+      const vehicle = vehicleById(vehicle_id);
+      return `<div class="dash-detail-row"><b class="mono">${escapeHtml(vehicle?.plate || '')}</b>
+        · сейчас: ${escapeHtml(placeShort(current.from_point || current.from_name))} → ${escapeHtml(placeShort(current.to_point || current.to_name))}
+        <small class="muted" style="display:block">план выгрузки ${fmtDt(current.ends_at)} · ${escapeHtml(current.customer_name || '')}
+          · <b class="danger">следующий рейс не назначен</b></small></div>`;
+    }).join('');
+  } else if (key.startsWith('disp') || key === 'logistAssigned') {
+    rows = items.map(trip => `<div class="dash-detail-row"><b class="mono">${escapeHtml(trip.vehicle_plate || '')}</b>
+      · ${escapeHtml(placeShort(trip.from_point || trip.from_name))} → ${escapeHtml(placeShort(trip.to_point || trip.to_name))} · ${escapeHtml(trip.customer_name || '')}
+      <small class="muted" style="display:block">выход ${fmtDt(trip.starts_at)} · выгрузка ${fmtDt(trip.ends_at)}${trip.on_line_at ? ` · на линии с ${fmtDt(trip.on_line_at)}` : ''}${trip.unloaded_at ? ` · выгружен ${fmtDt(trip.unloaded_at)}` : ''} · ${money(trip.revenue_vat)}</small></div>`).join('');
+  } else {
+    rows = items.map(vehicle => `<div class="dash-detail-row"><b class="mono">${escapeHtml(vehicle.plate)}</b>
+      · ${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
+      <small class="muted" style="display:block">${escapeHtml(vehicle.zone_name || '')}</small></div>`).join('');
+  }
+  context.showModal(`<h2>${DETAIL_TITLES[key] || key} <span class="badge">${items.length}</span></h2>
+    ${key === 'logistNoNext' ? '<p class="muted">Правило: у машины на линии должен быть назначен следующий рейс — логист назначает из очереди, продажи ищут груз под освобождение.</p>' : ''}
+    <div class="dash-detail-list">${rows || '<p class="muted">Пусто.</p>'}</div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+}
+
 export function renderDashboard(container, context) {
   const { state } = context;
   const metrics = dashboardMetrics(state.data);
@@ -240,8 +320,9 @@ export function renderDashboard(container, context) {
     style="width:${Math.min(100, share)}%"></i></div>`;
   const roleCard = (title, rows) => `<div class="dash-role">
     <div class="dash-role-title">${title}</div>
-    ${rows.map(row => `<div class="dash-row ${row.cls || ''}">
-      <span>${row.label}</span><b>${row.value}</b></div>`).join('')}
+    ${rows.map(row => `<div class="dash-row ${row.cls || ''} ${row.detail ? 'clickable' : ''}"
+        ${row.detail ? `data-dash-detail="${row.detail}" title="Раскрыть список"` : ''}>
+      <span>${row.label}</span><b>${row.value}${row.detail ? ' <small class="dash-more">›</small>' : ''}</b></div>`).join('')}
   </div>`;
 
   const fmtDayShort = iso => new Intl.DateTimeFormat('ru-RU',
@@ -330,30 +411,32 @@ export function renderDashboard(container, context) {
     </div>
     <div class="dash-roles">
       ${roleCard('📦 Продажи', [
-        { label: 'Внесено заявок сегодня', value: metrics.sales.createdToday },
+        { label: 'Внесено заявок сегодня', value: metrics.sales.createdToday, detail: 'salesCreated' },
         { label: 'Сумма внесённого (бНДС)', value: money(Math.round(metrics.sales.createdSum)) },
         { label: 'Средний чек внесённого', value: money(Math.round(metrics.sales.avgCheck)) },
-        { label: 'Очередь без ТС', value: metrics.sales.queue, cls: metrics.sales.queue ? 'warn' : 'ok' }
+        { label: 'Очередь без ТС', value: metrics.sales.queue, cls: metrics.sales.queue ? 'warn' : 'ok', detail: 'salesQueue' }
       ])}
       ${roleCard('🚚 Логист', [
-        { label: 'Назначено рейсов сегодня', value: metrics.logist.assignedToday },
-        { label: 'Очередь на назначение', value: metrics.logist.queue, cls: metrics.logist.queue ? 'warn' : 'ok' },
-        { label: 'Парк в рейсе сегодня', value: `${metrics.fleet.inTrip} из ${metrics.fleet.total}` },
-        { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok' }
+        { label: 'Назначено рейсов сегодня', value: metrics.logist.assignedToday, detail: 'logistAssigned' },
+        { label: 'Очередь на назначение', value: metrics.logist.queue, cls: metrics.logist.queue ? 'warn' : 'ok', detail: 'salesQueue' },
+        { label: 'На линии без следующего рейса', value: `${metrics.logist.noNext} из ${metrics.dispatcher.online}`,
+          cls: metrics.logist.noNext ? 'bad' : 'ok', detail: 'logistNoNext' },
+        { label: 'Парк в рейсе сегодня', value: `${metrics.fleet.inTrip} из ${metrics.fleet.total}`, detail: 'fleetInTrip' },
+        { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
       ])}
       ${roleCard('🎧 Диспетчер', [
-        { label: 'Выведено на линию сегодня', value: metrics.dispatcher.onLineToday },
+        { label: 'Выведено на линию сегодня', value: metrics.dispatcher.onLineToday, detail: 'dispOnLine' },
         { label: 'Ждут выхода сегодня', value: metrics.dispatcher.startingToday,
-          cls: metrics.dispatcher.startingToday ? 'warn' : 'ok' },
-        { label: 'Выгружено сегодня', value: metrics.dispatcher.unloadedToday },
-        { label: 'На линии сейчас · машин', value: metrics.dispatcher.online },
-        { label: 'Рейсов в пути', value: metrics.dispatcher.onlineTripCount }
+          cls: metrics.dispatcher.startingToday ? 'warn' : 'ok', detail: 'dispStarting' },
+        { label: 'Выгружено сегодня', value: metrics.dispatcher.unloadedToday, detail: 'dispUnloaded' },
+        { label: 'На линии сейчас · машин', value: metrics.dispatcher.online, detail: 'dispOnline' },
+        { label: 'Рейсов в пути', value: metrics.dispatcher.onlineTripCount, detail: 'dispOnline' }
       ])}
       ${roleCard('🔧 Ресурс', [
         { label: 'Парк в работе', value: metrics.fleet.total },
-        { label: 'В рейсе сегодня', value: `${metrics.fleet.inTrip} (${pctOf(metrics.fleet.inTrip, metrics.fleet.total)}%)` },
-        { label: 'Недоступны (оформлено)', value: metrics.fleet.unavailable },
-        { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok' }
+        { label: 'В рейсе сегодня', value: `${metrics.fleet.inTrip} (${pctOf(metrics.fleet.inTrip, metrics.fleet.total)}%)`, detail: 'fleetInTrip' },
+        { label: 'Недоступны (оформлено)', value: metrics.fleet.unavailable, detail: 'fleetUnavailable' },
+        { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
       ])}
     </div>
     <p class="muted dash-note">Факт — по выгрузкам, без НДС (ИП 7%). Дневной план —
@@ -361,6 +444,10 @@ export function renderDashboard(container, context) {
       на весь месяц. Обновляется автоматически.</p>
   </div>`;
   restoreScrolls(container, savedScrolls);
+
+  // Раскрытие плашек ролей: список за цифрой (заявки / рейсы / машины).
+  container.querySelectorAll('[data-dash-detail]').forEach(row =>
+    row.addEventListener('click', () => dashDetailDialog(row.dataset.dashDetail, metrics, context.state.data, context)));
 
   // Бары «наполняются» при каждой отрисовке: вставляем нулевыми и через
   // кадр отпускаем к целевой ширине (CSS transition делает движение).
