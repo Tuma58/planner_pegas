@@ -7,6 +7,7 @@
 import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, tripBusyFromMs, tripBusyUntilMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { reconcileDialog } from './reconcile.js';
+import { shiftDialog } from './shift-report.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 const mln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} млн`;
@@ -336,6 +337,8 @@ export async function renderBoss(container, context) {
           title="Простой под погрузкой/выгрузкой: случаи сверх норматива, история претензий, печать документа на счёт">⏳ Простои П/В</button>
         <button class="button ghost small" id="bossReconcile"
           title="Загрузить выгрузку 1С «Заказы для отчёта» (.xlsx) и сверить с планером: излишки, недостающие заказы, расхождения сумм и НДС">⚖ Сверка 1С</button>
+        <button class="button ghost small" id="bossShift"
+          title="Отчёт за 12-часовую смену (08–20 / 20–08): операции сотрудников по именам, время обработки заданий, очереди каскада">🕐 Смена</button>
       </div>
       <nav class="brep-nav" id="brepNav">
         <a href="#brep-s1" class="on">01 Период</a><a href="#brep-s2">02 Каскад</a>
@@ -509,6 +512,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossDaily').onclick = dailyDialog;
   container.querySelector('#bossDemurrage').onclick = () => demurrageDialog(context);
   container.querySelector('#bossReconcile').onclick = () => reconcileDialog(context);
+  container.querySelector('#bossShift').onclick = () => shiftDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;
     state.bossTo = b;

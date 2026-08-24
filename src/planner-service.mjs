@@ -1025,3 +1025,202 @@ export function tripsWithoutNext(db, nowMs = Date.now(), horizonMs = 2 * 3_600_0
   return rows.filter(trip => (!onlyUnalerted || !trip.next_alert_at) &&
     !hasNext.get(trip.vehicle_id, trip.id, trip.starts_at));
 }
+
+// ── Отчёт за смену: операции сотрудников по именам и время обработки ──
+// Смены по 12 часов (МСК): дневная 08:00–20:00, ночная 20:00–08:00
+// следующего дня. Источник операций — журнал аудита (каждое действие несёт
+// исполнителя и момент); «время обработки» — сколько задание ждало этого
+// шага от момента, когда предыдущее звено каскада его передало.
+
+const MSK_MS = 3 * 3_600_000;
+
+// Границы смены: dayIso — дата НАЧАЛА смены (по МСК), kind: day | night.
+export function shiftBounds(dayIso, kind = 'day') {
+  const startHour = kind === 'night' ? 20 : 8;
+  const startMs = Date.parse(`${dayIso}T00:00:00Z`) + startHour * 3_600_000 - MSK_MS;
+  return {
+    fromIso: new Date(startMs).toISOString(),
+    toIso: new Date(startMs + 12 * 3_600_000).toISOString(),
+    label: kind === 'night'
+      ? `ночная смена ${dayIso} 20:00 — 08:00`
+      : `дневная смена ${dayIso} 08:00 — 20:00`
+  };
+}
+
+// Текущая смена на момент nowMs: дата начала + вид.
+export function currentShift(nowMs = Date.now()) {
+  const msk = new Date(nowMs + MSK_MS);
+  const hour = msk.getUTCHours();
+  if (hour >= 8 && hour < 20) return { day: msk.toISOString().slice(0, 10), kind: 'day' };
+  // Ночная: началась сегодня в 20:00 либо вчера (если сейчас до 08:00).
+  const startDay = hour >= 20 ? msk : new Date(msk.getTime() - 86_400_000);
+  return { day: startDay.toISOString().slice(0, 10), kind: 'night' };
+}
+
+// Имя собственное операции по записи аудита; null — операция не конвейерная
+// (настройки, чат, справочники) и в отчёт смены не входит.
+export function operationNameOf(row) {
+  const details = (() => { try { return JSON.parse(row.details_json || '{}'); } catch { return {}; } })();
+  if (row.entity === 'order') {
+    if (row.action === 'create') return details.from === 'rejected-trip' ? null : 'Внесение заявки';
+    if (row.action === 'assign') return 'Назначение ТС';
+    if (row.action === 'delete') return 'Удаление заявки';
+    if (row.action === 'update') {
+      if (details.status === 'cancelled') return 'Отклонение заявки';
+      if (details.status === 'new' && Number(details.stage) === 0) return 'Возврат заявки в работу';
+      if (Number(details.stage) === 1 && Object.keys(details).length === 1) return 'Подтверждение заявки';
+      return 'Правка заявки';
+    }
+    return null;
+  }
+  if (row.entity === 'trip') {
+    if (row.action === 'dispatch_step') {
+      return {
+        logist_confirm: 'Подтверждение назначения',
+        entered_1c: 'Проведение заказа в 1С',
+        driver_notified: 'Задание водителю',
+        on_line: 'Вывод на контроль линии',
+        docs_checked: 'Проверка документов'
+      }[details.step] || null;
+    }
+    if (row.action === 'confirm-sum') return 'Уточнение суммы по заявке';
+    if (row.action === 'arrived') return 'Отметка прибытия';
+    if (row.action === 'demurrage') return 'Фиксация простоя';
+    if (row.action === 'notify_delay') return 'Уведомление об опоздании';
+    if (row.action === 'create') return 'Создание рейса вручную';
+    if (row.action === 'update') {
+      if (details.status === 'rejected') return 'Снятие рейса';
+      if (details.status === 'run') return 'Отметка выхода в рейс';
+      if (details.status === 'unloaded') return 'Отметка выгрузки';
+      if (details.status === 'done') return 'Завершение рейса';
+      if (details.status === 'paid') return 'Отметка оплаты';
+      return 'Правка рейса';
+    }
+    return null;
+  }
+  if (row.entity === 'control' && row.action === 'control-worked') return 'Контроль на линии';
+  if (row.entity === 'demurrage') {
+    if (row.action === 'demurrage-status') {
+      const status = details.status;
+      if (status === 'billed') return 'Выставление претензии';
+      if (status === 'cancelled') return 'Отмена претензии';
+      return 'Возврат претензии в работу';
+    }
+    return null;
+  }
+  if (row.entity === 'driver' && row.action === 'attendance') return 'Отметка явки водителя';
+  if (row.entity === 'trip_stop') return 'Правка стоянки контроля';
+  if (row.entity === 'route') {
+    if (row.action === 'create') return 'Сборка маршрута';
+    if (row.action === 'assign') return 'Назначение маршрута';
+    return null;
+  }
+  return null;
+}
+
+// Метки времени в базе двух видов: ISO с зоной (клиентские) и
+// «ГГГГ-ММ-ДД ЧЧ:ММ:СС» без зоны (CURRENT_TIMESTAMP, это UTC) — вторые
+// без явного «Z» парсились бы как местное время (сдвиг на 3 часа).
+const serverTimeMs = value => {
+  const text = String(value || '');
+  return Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(text)
+    ? `${text.replace(' ', 'T')}Z` : text);
+};
+
+// Время обработки: момент, когда задание стало доступно исполнителю
+// (передано предыдущим звеном каскада), — для операции из аудита.
+function operationBaseMs(db, row, name) {
+  const order = () => db.prepare(
+    'SELECT created_at, confirmed_at FROM orders WHERE id=?').get(row.entity_id);
+  const trip = () => db.prepare(
+    `SELECT created_at, logist_confirmed_at, entered_1c_at, driver_notified_at
+     FROM trips WHERE id=?`).get(row.entity_id);
+  try {
+    if (name === 'Подтверждение заявки') return serverTimeMs(order()?.created_at);
+    if (name === 'Назначение ТС') {
+      const found = order();
+      return serverTimeMs(found?.confirmed_at || found?.created_at);
+    }
+    if (name === 'Подтверждение назначения') return serverTimeMs(trip()?.created_at);
+    if (name === 'Проведение заказа в 1С') return serverTimeMs(trip()?.logist_confirmed_at);
+    if (name === 'Задание водителю') return serverTimeMs(trip()?.entered_1c_at);
+    if (name === 'Вывод на контроль линии') return serverTimeMs(trip()?.driver_notified_at);
+  } catch { return NaN; }
+  return NaN;
+}
+
+const median = values => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
+
+// Каскад: очередь каждого звена в момент atIso (состояние восстанавливается
+// по колонкам времени — отчёт честен и для прошлых смен).
+export function cascadeQueues(db, atIso) {
+  const at = atIso;
+  const confirmQueue = db.prepare(`SELECT COUNT(*) c FROM orders
+    WHERE deleted_at IS NULL AND created_at<=? AND (confirmed_at IS NULL OR confirmed_at>?)
+      AND (status<>'cancelled' OR updated_at>?) AND trip_id IS NULL AND stage=0`).get(at, at, at).c;
+  const assignQueue = db.prepare(`SELECT COUNT(*) c FROM orders
+    WHERE deleted_at IS NULL AND status='new' AND stage=1 AND trip_id IS NULL
+      AND confirmed_at<=?`).get(at).c;
+  const dispatchQueue = db.prepare(`SELECT COUNT(*) c FROM trips
+    WHERE status='plan' AND logist_confirmed_at<=? AND (on_line_at IS NULL OR on_line_at>?)`).get(at, at).c;
+  const logistConfirmQueue = db.prepare(`SELECT COUNT(*) c FROM trips
+    WHERE status='plan' AND created_at<=? AND (logist_confirmed_at IS NULL OR logist_confirmed_at>?)`).get(at, at).c;
+  const payQueue = db.prepare(`SELECT COUNT(*) c FROM trips
+    WHERE status IN ('unloaded','done') AND unloaded_at<=?`).get(at).c;
+  return {
+    sales: confirmQueue, logistConfirm: logistConfirmQueue,
+    logist: assignQueue, dispatcher: dispatchQueue, accountant: payQueue
+  };
+}
+
+export function shiftReport(db, dayIso, kind = 'day') {
+  const bounds = shiftBounds(dayIso, kind);
+  const rows = db.prepare(`SELECT a.action, a.entity, a.entity_id, a.details_json,
+      a.created_at, u.full_name, u.job_role
+    FROM audit_log a LEFT JOIN users u ON u.id=a.user_id
+    WHERE a.created_at>=? AND a.created_at<? AND a.user_id IS NOT NULL
+    ORDER BY a.created_at`).all(
+    bounds.fromIso.replace('T', ' ').slice(0, 19), bounds.toIso.replace('T', ' ').slice(0, 19));
+  const staff = new Map();
+  const operations = new Map();
+  let otherCount = 0;
+  for (const row of rows) {
+    const name = operationNameOf(row);
+    if (!name) { otherCount += 1; continue; }
+    const who = row.full_name || '—';
+    const atMs = serverTimeMs(row.created_at);
+    const baseMs = operationBaseMs(db, row, name);
+    const waitMs = Number.isFinite(baseMs) && Number.isFinite(atMs) && atMs >= baseMs
+      ? atMs - baseMs : null;
+    if (!staff.has(who)) staff.set(who, { name: who, jobRole: row.job_role || '', total: 0, ops: new Map(), waits: [] });
+    const person = staff.get(who);
+    person.total += 1;
+    person.ops.set(name, (person.ops.get(name) || 0) + 1);
+    if (waitMs !== null) person.waits.push(waitMs);
+    if (!operations.has(name)) operations.set(name, { name, total: 0, waits: [], by: new Map() });
+    const operation = operations.get(name);
+    operation.total += 1;
+    operation.by.set(who, (operation.by.get(who) || 0) + 1);
+    if (waitMs !== null) operation.waits.push(waitMs);
+  }
+  const pack = list => [...list.values()].map(item => ({
+    ...item,
+    ops: item.ops ? [...item.ops.entries()].sort((a, b) => b[1] - a[1]) : undefined,
+    by: item.by ? [...item.by.entries()].sort((a, b) => b[1] - a[1]) : undefined,
+    medianWaitMs: median(item.waits), waits: undefined,
+    withTime: item.waits.length
+  }));
+  return {
+    ...bounds, day: dayIso, kind,
+    staff: pack(staff).sort((a, b) => b.total - a.total),
+    operations: pack(operations).sort((a, b) => b.total - a.total),
+    otherCount,
+    queuesStart: cascadeQueues(db, bounds.fromIso),
+    queuesEnd: cascadeQueues(db, bounds.toIso)
+  };
+}

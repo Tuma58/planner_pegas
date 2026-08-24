@@ -1727,3 +1727,60 @@ test('сверка с 1С: пары по сумме/НДС/заказчику, �
   assert.ok(Math.abs(netOf(122, 'Ромашка ООО') - 100) < 0.01);
   assert.ok(Math.abs(netOf(107, 'Мазова Ольга ИП') - 100) < 0.01);
 });
+
+test('отчёт за смену: имена операций, время обработки и очереди каскада', async t => {
+  const { shiftBounds, currentShift, operationNameOf, shiftReport } =
+    await import('../src/planner-service.mjs');
+  // Границы смен: дневная 08–20 МСК = 05–17 UTC.
+  const bounds = shiftBounds('2026-08-24', 'day');
+  assert.equal(bounds.fromIso, '2026-08-24T05:00:00.000Z');
+  assert.equal(bounds.toIso, '2026-08-24T17:00:00.000Z');
+  const night = shiftBounds('2026-08-24', 'night');
+  assert.equal(night.fromIso, '2026-08-24T17:00:00.000Z');
+  assert.equal(night.toIso, '2026-08-25T05:00:00.000Z');
+  // Текущая смена: 23:30 МСК = ночная, начавшаяся в тот же день.
+  assert.deepEqual(currentShift(Date.parse('2026-08-24T20:30:00Z')),
+    { day: '2026-08-24', kind: 'night' });
+  assert.deepEqual(currentShift(Date.parse('2026-08-24T02:00:00Z')),
+    { day: '2026-08-23', kind: 'night' }, 'до 08 МСК — ночная вчерашнего начала');
+  // Имена собственные операций.
+  assert.equal(operationNameOf({ entity: 'order', action: 'update', details_json: '{"stage":1}' }),
+    'Подтверждение заявки');
+  assert.equal(operationNameOf({ entity: 'trip', action: 'dispatch_step', details_json: '{"step":"driver_notified"}' }),
+    'Задание водителю');
+  assert.equal(operationNameOf({ entity: 'control', action: 'control-worked', details_json: '{}' }),
+    'Контроль на линии');
+  assert.equal(operationNameOf({ entity: 'settings', action: 'update', details_json: '{}' }), null,
+    'служебные действия — не операции конвейера');
+
+  // Живой отчёт на синтетике: заявка внесена и подтверждена в смену.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-shift-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const admin = db.prepare('SELECT id FROM users LIMIT 1').get().id;
+  db.prepare(`UPDATE users SET full_name='Киселёва Л', job_role='Логист' WHERE id=?`).run(admin);
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  // Смена — сегодняшняя дневная (аудит пишет CURRENT_TIMESTAMP).
+  const shift = currentShift();
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,stage,created_at,confirmed_at)
+    VALUES('sh-o1','Клиент',?,?,90000,'2026-08-25T10:00:00.000Z','2026-08-26T10:00:00.000Z',1,
+      datetime('now','-30 minutes'),CURRENT_TIMESTAMP)`).run(zone, zone);
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
+    VALUES('sh-a1',?, 'create','order','sh-o1','{}',datetime('now','-30 minutes')),
+      ('sh-a2',?, 'update','order','sh-o1','{"stage":1}',CURRENT_TIMESTAMP)`).run(admin, admin);
+  const report = shiftReport(db, shift.day, shift.kind);
+  const person = report.staff.find(item => item.name === 'Киселёва Л');
+  assert.ok(person, 'исполнитель в отчёте по имени');
+  assert.equal(person.total, 2);
+  const confirm = report.operations.find(item => item.name === 'Подтверждение заявки');
+  assert.ok(confirm, 'операция названа по имени');
+  // Время обработки подтверждения ≈ 30 минут (заявка ждала с создания).
+  assert.ok(confirm.medianWaitMs > 25 * 60_000 && confirm.medianWaitMs < 35 * 60_000,
+    `медиана обработки ~30 мин, получили ${confirm.medianWaitMs}`);
+  // Очереди каскада: на конец смены подтверждённая заявка ждёт логиста.
+  assert.ok(report.queuesEnd.logist >= 1, 'подтверждённая заявка в очереди логиста');
+});

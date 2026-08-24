@@ -14,7 +14,8 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization
+  reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
+  currentShift, shiftReport
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -872,6 +873,19 @@ async function api(request, response, url) {
         ORDER BY status='new' DESC, created_at DESC LIMIT 300`).all()
     });
   }
+  // ── Отчёт за смену: операции сотрудников по именам, время обработки,
+  // очереди каскада на начало и конец смены (12 ч: 08–20 и 20–08 МСК) ──
+  if (request.method === 'GET' && pathname === '/api/shift-report') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const fallback = currentShift();
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(url.searchParams.get('day')))
+      ? url.searchParams.get('day') : fallback.day;
+    const kind = ['day', 'night'].includes(url.searchParams.get('shift'))
+      ? url.searchParams.get('shift') : fallback.kind;
+    return json(response, 200, shiftReport(db, day, kind));
+  }
+
   // ── Сверка с 1С: история снимков (сам разбор xlsx идёт в браузере,
   // сервер хранит только итоговые сводки для сравнения по месяцам) ──
   if (request.method === 'GET' && pathname === '/api/reconciliation') {
@@ -958,6 +972,10 @@ async function api(request, response, url) {
     }
     const existing = db.prepare(`SELECT 1 FROM task_marks WHERE kind=? AND day=? AND item_key=?`)
       .get(kind, day, key);
+    // Отметка контроля на линии — операция диспетчера: фиксируем в аудите
+    // для отчёта смены (учёт операций и исполнителей по именам). Ключи
+    // claim| (захват) и prepnote| (заметка подготовки) операцией не считаются.
+    const isControlOp = kind === 'dispatcher' && !key.startsWith('claim|') && !key.startsWith('prepnote|');
     // Отметка с комментарием — всегда ПОСТАНОВКА (создать или обновить):
     // переключение здесь молча снимало свежий контроль при повторе.
     if (note) {
@@ -968,6 +986,7 @@ async function api(request, response, url) {
         db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by,note) VALUES(?,?,?,?,?)`)
           .run(kind, day, key, author, note);
       }
+      if (isControlOp) audit(db, user, 'control-worked', 'control', key, { note: true });
       return json(response, 200, { done: true });
     }
     // Явная постановка без комментария (захват «Беру»): создать или обновить
@@ -988,6 +1007,7 @@ async function api(request, response, url) {
     } else {
       db.prepare(`INSERT INTO task_marks(kind,day,item_key,done_by,note) VALUES(?,?,?,?,?)`)
         .run(kind, day, key, author, '');
+      if (isControlOp) audit(db, user, 'control-worked', 'control', key, {});
     }
     return json(response, 200, { done: !existing });
   }
