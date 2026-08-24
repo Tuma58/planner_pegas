@@ -1817,3 +1817,50 @@ test('отчёт за смену: имена операций, время обр
   // Очереди каскада: на конец смены подтверждённая заявка ждёт логиста.
   assert.ok(report.queuesEnd.logist >= 1, 'подтверждённая заявка в очереди логиста');
 });
+
+test('план вывоза: сетка слотов из истории и план-факт месяца', async t => {
+  const { seedDeliverySlots, deliveryPlan } = await import('../src/planner-service.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-dplan-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const [z1, z2] = db.prepare('SELECT id FROM zones LIMIT 2').all().map(row => row.id);
+  const iso = ms => new Date(ms).toISOString();
+  const now = Date.now();
+  // 9 рейсов клиента за 9 недель — каждый понедельник МСК (≥1/нед в окне 60 дней).
+  const monday = (() => { // ближайший прошлый понедельник 09:00 МСК
+    const date = new Date(now + 3 * 3600e3);
+    const shift = (date.getUTCDay() + 6) % 7;
+    date.setUTCDate(date.getUTCDate() - shift);
+    date.setUTCHours(9, 0, 0, 0);
+    return date.getTime() - 3 * 3600e3;
+  })();
+  const ins = db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status) VALUES(?,?,?,?,?,?,?,600,90000,'done')`);
+  for (let week = 0; week < 9; week += 1) {
+    const start = monday - week * 7 * 86400e3;
+    ins.run(`dp-${week}`, vehicle, 'Регуляр ООО', z1, z2, iso(start), iso(start + 24 * 3600e3));
+  }
+  const created = seedDeliverySlots(db);
+  assert.ok(created >= 1, 'слот понедельника создан');
+  const slot = db.prepare(`SELECT * FROM delivery_slots WHERE customer_name='Регуляр ООО'`).all();
+  assert.equal(slot.length, 1, 'ровно один день недели');
+  assert.equal(slot[0].weekday, 1, 'понедельник');
+  assert.ok(slot[0].per_day >= 0.9 && slot[0].per_day <= 1.1, `≈1 рейс в день, получили ${slot[0].per_day}`);
+  assert.equal(slot[0].rate, 90000);
+  // План-факт: заявка клиента в этом месяце → факт со стадией «внесена».
+  const month = new Date(now + 3 * 3600e3).toISOString().slice(0, 7);
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,stage) VALUES('dp-o1','Регуляр ООО',?,?,95000,?,?,0)`)
+    .run(z1, z2, iso(now + 24 * 3600e3), iso(now + 48 * 3600e3));
+  const plan = deliveryPlan(db, month);
+  assert.ok(plan.slots.length >= 1);
+  const day = new Date(now + 24 * 3600e3 + 3 * 3600e3).getUTCDate();
+  const fact = plan.facts[`Регуляр ООО|${z1}|${z2}|${day}`];
+  assert.ok(fact, 'факт заявки в сетке');
+  assert.equal(fact.stage, 1, 'стадия «заявка внесена»');
+  assert.equal(fact.rv, 95000);
+});

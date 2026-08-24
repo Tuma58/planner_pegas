@@ -15,7 +15,7 @@ import { processOutbox, runPull, startIntegrationScheduler, testConnection } fro
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
-  currentShift, shiftReport
+  currentShift, shiftReport, deliveryPlan, seedDeliverySlots
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -922,6 +922,57 @@ async function api(request, response, url) {
     const kind = ['day', 'night'].includes(url.searchParams.get('shift'))
       ? url.searchParams.get('shift') : fallback.kind;
     return json(response, 200, shiftReport(db, day, kind));
+  }
+
+  // ── План вывоза грузов от клиентов: сетка слотов, план-факт месяца ──
+  if (request.method === 'GET' && pathname === '/api/delivery-plan') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const month = /^\d{4}-\d{2}$/.test(String(url.searchParams.get('month')))
+      ? url.searchParams.get('month')
+      : new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 7);
+    return json(response, 200, deliveryPlan(db, month));
+  }
+  // Заполнение сетки из истории (регулярные плечи за 60 суток).
+  if (request.method === 'POST' && pathname === '/api/delivery-plan/seed') {
+    const actor = currentUser(request);
+    const permission = hasPermission(actor, 'orders:write') ? 'orders:write' : 'shifts:write';
+    const user = requirePermission(request, response, permission);
+    if (!user) return;
+    const created = seedDeliverySlots(db, user.id);
+    audit(db, user, 'seed', 'delivery-plan', null, { created }, requestIp(request));
+    return json(response, 200, { created });
+  }
+  // Правка слота: perDay=0 удаляет, иначе upsert.
+  if (request.method === 'POST' && pathname === '/api/delivery-plan/slot') {
+    const actor = currentUser(request);
+    const permission = hasPermission(actor, 'orders:write') ? 'orders:write' : 'shifts:write';
+    const user = requirePermission(request, response, permission);
+    if (!user) return;
+    const body = await readJson(request);
+    const customer = String(body.customer || '').trim();
+    const weekday = Number(body.weekday);
+    const fromZone = db.prepare('SELECT id FROM zones WHERE id=?').get(String(body.fromZoneId || ''));
+    const toZone = db.prepare('SELECT id FROM zones WHERE id=?').get(String(body.toZoneId || ''));
+    if (!customer || !fromZone || !toZone || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+      return errorJson(response, 422, 'Нужны customer, fromZoneId, toZoneId и weekday (0–6)');
+    }
+    const perDay = Math.max(0, Number(body.perDay) || 0);
+    if (!perDay) {
+      db.prepare(`DELETE FROM delivery_slots WHERE customer_name=? AND from_zone_id=? AND to_zone_id=? AND weekday=?`)
+        .run(customer, fromZone.id, toZone.id, weekday);
+    } else {
+      db.prepare(`INSERT INTO delivery_slots(id,customer_name,from_zone_id,to_zone_id,weekday,per_day,rate,transit_hours,updated_by)
+        VALUES(?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(customer_name,from_zone_id,to_zone_id,weekday) DO UPDATE SET
+          per_day=excluded.per_day, rate=excluded.rate,
+          updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
+        .run(randomUUID(), customer, fromZone.id, toZone.id, weekday, perDay,
+          Math.max(0, Number(body.rate) || 0), Math.max(1, Number(body.transitHours) || 24), user.id);
+    }
+    audit(db, user, 'slot', 'delivery-plan', null,
+      { customer, weekday, perDay }, requestIp(request));
+    return json(response, 200, { ok: true });
   }
 
   // ── График смен сотрудников: план-факт по людям в отчёте смены ──

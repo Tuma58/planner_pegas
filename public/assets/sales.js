@@ -4,6 +4,7 @@
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
+import { deliveryPlanDialog } from './delivery-plan.js';
 import { customerCardDialog } from './customer-card.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -947,6 +948,8 @@ export function renderSales(container, context) {
         <input type="date" id="salesFilterTo" value="${filter.to}" title="Окно заявки / освобождение сцепки — по дату">
         <button class="button small" id="salesTask"
           title="Срез на дату: свободные и освобождающиеся сцепки, ремонты и пересменки, незакрытые регионы">📋 Задание</button>
+        <button class="button ghost small" id="salesDeliveryPlan"
+          title="График вывоза на месяц: жёлтые слоты без заявок — ваши задачи на прозвон">📅 План вывоза</button>
         <button class="button ghost small" id="salesPresetToday" title="Только сегодняшний день">Сегодня</button>
         <button class="button ghost small" id="salesPresetWeek" title="Ближайшие 7 дней">7 дн</button>
         ${filterActive ? '<button class="button ghost small" id="salesFilterReset">✕ Сброс</button>' : ''}
@@ -1052,6 +1055,7 @@ export function renderSales(container, context) {
   const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
   wireDemurrageChip(container, context);
   container.querySelector('#salesTask').onclick = () => salesTaskDialog(data, context);
+  container.querySelector('#salesDeliveryPlan').onclick = () => deliveryPlanDialog(context);
   container.querySelector('#salesPresetToday').onclick = () => {
     filter.from = dayIsoLocal(0); filter.to = dayIsoLocal(0);
     rerender();

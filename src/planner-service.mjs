@@ -1391,3 +1391,74 @@ export function shiftReport(db, dayIso, kind = 'day') {
     queuesEnd: cascadeQueues(db, bounds.toIso)
   };
 }
+
+// ── План вывоза грузов от клиентов: недельная сетка слотов и план-факт ──
+// Слот: клиент + плечо (зоны) + день недели (0=вс) + рейсов в день + ставка.
+// «Заполнить из истории» строит сетку из регулярных плеч за 60 суток
+// (клиент+направление с частотой ≥1 рейс/нед) — распределение по дням
+// недели нормируется к фактической частоте.
+
+export function seedDeliverySlots(db, userId = null, nowMs = Date.now()) {
+  const fromIso = new Date(nowMs - 60 * 86_400_000).toISOString();
+  const rows = db.prepare(`SELECT t.customer_name, t.from_zone_id, t.to_zone_id,
+      t.starts_at, t.ends_at, t.revenue_vat
+    FROM trips t WHERE t.status<>'rejected' AND t.starts_at>=?`).all(fromIso);
+  const weeksSpan = (nowMs - Date.parse(fromIso)) / (7 * 86_400_000);
+  const legs = new Map();
+  for (const trip of rows) {
+    const key = `${trip.customer_name}|${trip.from_zone_id}|${trip.to_zone_id}`;
+    if (!legs.has(key)) legs.set(key, { n: 0, rv: 0, transit: 0, days: new Array(7).fill(0) });
+    const leg = legs.get(key);
+    leg.n += 1; leg.rv += trip.revenue_vat;
+    leg.transit += (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 3_600_000;
+    leg.days[new Date(Date.parse(trip.starts_at) + 3 * 3_600_000).getUTCDay()] += 1;
+  }
+  const upsert = db.prepare(`INSERT INTO delivery_slots(id,customer_name,from_zone_id,to_zone_id,
+      weekday,per_day,rate,transit_hours,updated_by)
+    VALUES(?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(customer_name,from_zone_id,to_zone_id,weekday) DO UPDATE SET
+      per_day=excluded.per_day, rate=excluded.rate, transit_hours=excluded.transit_hours,
+      updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`);
+  let created = 0;
+  for (const [key, leg] of legs) {
+    if (leg.n / weeksSpan < 1) continue;
+    const [customer, fromZone, toZone] = key.split('|');
+    const perWeek = leg.n / weeksSpan;
+    for (let weekday = 0; weekday < 7; weekday += 1) {
+      const perDay = Math.round(leg.days[weekday] / leg.n * perWeek * 100) / 100;
+      if (perDay < 0.3) continue;
+      upsert.run(randomUUID(), customer, fromZone, toZone, weekday,
+        perDay, Math.round(leg.rv / leg.n), Math.round(leg.transit / leg.n), userId);
+      created += 1;
+    }
+  }
+  return created;
+}
+
+// План-факт месяца: слоты + факт заявок по «клиент|плечо|день» + параметры сетки.
+export function deliveryPlan(db, month) {
+  const slots = db.prepare(`SELECT s.*, f.name from_name, t.name to_name
+    FROM delivery_slots s JOIN zones f ON f.id=s.from_zone_id JOIN zones t ON t.id=s.to_zone_id
+    ORDER BY s.customer_name, f.name, t.name, s.weekday`).all();
+  const monthStart = Date.parse(`${month}-01T00:00:00Z`);
+  const daysInMonth = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+  const orders = db.prepare(`SELECT o.customer_name, o.from_zone_id, o.to_zone_id,
+      o.window_from, o.rate_vat, o.trip_id,
+      (SELECT status FROM trips WHERE id=o.trip_id) trip_status
+    FROM orders o WHERE o.deleted_at IS NULL AND o.status<>'cancelled'
+      AND o.window_from>=? AND o.window_from<?`).all(
+    new Date(monthStart - 3 * 3_600_000).toISOString(),
+    new Date(monthStart + daysInMonth * 86_400_000 - 3 * 3_600_000).toISOString());
+  const facts = {};
+  for (const order of orders) {
+    const day = new Date(Date.parse(order.window_from) + 3 * 3_600_000).getUTCDate();
+    const key = `${order.customer_name}|${order.from_zone_id}|${order.to_zone_id}|${day}`;
+    if (!facts[key]) facts[key] = { n: 0, rv: 0, stage: 0 };
+    const fact = facts[key];
+    fact.n += 1; fact.rv += order.rate_vat;
+    const stage = ['unloaded', 'done', 'paid'].includes(order.trip_status) ? 3
+      : order.trip_id ? 2 : 1;
+    fact.stage = Math.max(fact.stage, stage);
+  }
+  return { month, daysInMonth, slots, facts, firstWeekday: new Date(monthStart).getUTCDay() };
+}

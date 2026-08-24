@@ -245,6 +245,18 @@ CREATE TABLE IF NOT EXISTS demurrage_claims (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(trip_id, stop_kind)
 );
+CREATE TABLE IF NOT EXISTS delivery_slots (
+  id TEXT PRIMARY KEY, customer_name TEXT NOT NULL,
+  from_zone_id TEXT NOT NULL REFERENCES zones(id),
+  to_zone_id TEXT NOT NULL REFERENCES zones(id),
+  weekday INTEGER NOT NULL CHECK(weekday BETWEEN 0 AND 6),
+  per_day REAL NOT NULL DEFAULT 1,
+  rate REAL NOT NULL DEFAULT 0,
+  transit_hours REAL NOT NULL DEFAULT 24,
+  updated_by TEXT REFERENCES users(id),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(customer_name, from_zone_id, to_zone_id, weekday)
+);
 CREATE TABLE IF NOT EXISTS staff_shifts (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   day TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('day','night')),
