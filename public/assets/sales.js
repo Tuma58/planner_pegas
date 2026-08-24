@@ -1695,6 +1695,27 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
           title="${candidate.inZone ? 'Позиция в геозоне погрузки' : `Позиция: ${escapeHtml(candidate.region || candidate.zoneName || '—')}`}">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.region || candidate.zoneName || 'перегон')}</span>
       </button>`).join('') || '<p class="muted">Нет свободных к сроку — выберите вручную.</p>'}
     </div>
+    ${(() => {
+    // «Как в прошлый раз»: 84% заявок — повторяющиеся маршруты. Машины,
+    // возившие этого клиента по этому направлению за 30 дней, — в один клик.
+    const monthAgo = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const usual = new Map();
+    for (const trip of data.trips) {
+      if (trip.status === 'rejected' || trip.starts_at < monthAgo) continue;
+      if (trip.customer_name !== order.customer_name ||
+          trip.from_zone_id !== order.from_zone_id || trip.to_zone_id !== order.to_zone_id) continue;
+      if (!usual.has(trip.vehicle_id)) usual.set(trip.vehicle_id, { count: 0, plate: trip.vehicle_plate });
+      usual.get(trip.vehicle_id).count += 1;
+    }
+    const top = [...usual.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 5)
+      .filter(([id]) => workFleet.some(vehicle => vehicle.id === id));
+    return top.length ? `<div class="via-box" style="margin-bottom:8px">
+        <div class="via-head">🔁 По этому маршруту обычно ходят <small class="muted">(клиент + направление, 30 дней)</small></div>
+        <div class="via-chips">${top.map(([id, info]) =>
+    `<button type="button" class="button ghost small" data-usual="${id}"
+          title="Рейсов за 30 дней: ${info.count} — выбрать эту машину">${escapeHtml(info.plate)} · ${info.count}</button>`).join('')}
+        </div></div>` : '';
+  })()}
     <label class="field">Или вручную из парка
       <input id="assignVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off">
       <select id="assignVehicle" style="margin-top:4px">
@@ -1718,6 +1739,8 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
   showNext();
   document.querySelectorAll('.sugtruck').forEach(element =>
     element.addEventListener('click', () => { select.value = element.dataset.plate; showNext(); }));
+  document.querySelectorAll('[data-usual]').forEach(button =>
+    button.addEventListener('click', () => { select.value = button.dataset.usual; showNext(); }));
   document.getElementById('assignOk').onclick = async () => {
     try {
       await api(`/api/orders/${order.id}/assign`, {

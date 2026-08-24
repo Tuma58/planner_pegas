@@ -441,11 +441,23 @@ export function renderLogist(container, context) {
     ? Date.now() - Date.parse(String(order.stage_changed_at).replace(' ', 'T') +
         (String(order.stage_changed_at).includes('Z') ? '' : 'Z'))
     : 0;
+  // Светофор дедлайна: норматив — ТС назначено за 6 часов до погрузки.
+  // Красный — норматив сорван или окно началось, жёлтый — меньше 6 часов.
+  const ASSIGN_SLA_MS = 6 * 3_600_000;
+  const deadlineBadge = order => {
+    const deadline = Date.parse(order.window_from) - ASSIGN_SLA_MS;
+    const leftMs = deadline - Date.now();
+    const at = formatDateTime(deadline);
+    if (leftMs <= 0) return `<span class="badge bad" title="Норматив: ТС за 6 ч до погрузки — время вышло">⏰ назначить было до ${at}</span>`;
+    if (leftMs <= ASSIGN_SLA_MS) return `<span class="badge warn" title="Норматив: ТС за 6 ч до погрузки">⏰ назначить до ${at}</span>`;
+    return `<span class="badge" title="Норматив: ТС за 6 ч до погрузки">назначить до ${at}</span>`;
+  };
   const queueCard = order => {
     const waiting = orderWaitMs(order);
     return `<div class="list-item ordrow ${order.returned_at ? 'pipe-returned' : 'pipe-mine'}">
       <span style="flex:1;min-width:0">
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
+        ${deadlineBadge(order)}
         <small class="muted" style="display:block">окно ${formatDateTime(order.window_from)} → ${formatDateTime(order.window_to)}
           · ${escapeHtml(order.body_type || 'Реф')} ${waiting > 3_600_000 ? ` · ждёт ${waitingLabel(waiting)}` : ''}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}

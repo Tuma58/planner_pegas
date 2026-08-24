@@ -144,6 +144,11 @@ export async function shiftDialog(context, day = '', kind = '') {
       <tr><th>Сотрудник</th><th title="К среднему по должности за 7 дней: 60% нагрузка + 40% скорость обработки">Эффективность</th><th>Операций</th><th>Обработка (медиана)</th><th>Что делал</th></tr>
       ${staffRows || '<tr><td colspan="5" class="muted">Операций за смену не зафиксировано.</td></tr>'}
     </table></div>
+    ${report.assignSla ? `<p style="margin:8px 0 0">
+      <b>SLA назначения ТС:</b> вовремя (за ≥6 ч до погрузки) —
+      <span class="badge ${report.assignSla.pct >= 95 ? 'ok' : report.assignSla.pct >= 80 ? 'warn' : 'bad'}">
+        <b>${report.assignSla.onTime} из ${report.assignSla.total} · ${report.assignSla.pct}%</b></span>
+      <small class="muted">цель ≥95%</small></p>` : ''}
     <h3 style="margin:14px 0 6px">Операции <span class="badge">${report.operations.length}</span></h3>
     <div class="table-wrap"><table>
       <tr><th>Операция</th><th>Всего</th><th>Обработка (медиана)</th><th>Кто выполнял</th></tr>

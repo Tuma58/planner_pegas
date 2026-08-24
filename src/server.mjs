@@ -564,6 +564,44 @@ function runUnconfirmedOrdersWatch() {
 setInterval(runUnconfirmedOrdersWatch, 5 * 60_000);
 setTimeout(runUnconfirmedOrdersWatch, 45_000);
 
+// ── Сторож SLA назначения ТС: норматив — машина назначена за 6 часов до
+// погрузки. Подтверждённая заявка без ТС ближе норматива — сигнал логистам
+// в чат, повтор каждый час до назначения (данные 14 дней: 79 заявок
+// назначались уже после начала окна погрузки — очередь разбиралась
+// без оглядки на дедлайны). ──
+const ASSIGN_SLA_MS = 6 * 3_600_000;
+const ASSIGN_ALERT_REPEAT_MS = 60 * 60_000;
+function runAssignWatch() {
+  try {
+    const nowMs = Date.now();
+    const rows = db.prepare(`SELECT o.*, f.name from_name, t.name to_name FROM orders o
+      LEFT JOIN zones f ON f.id=o.from_zone_id LEFT JOIN zones t ON t.id=o.to_zone_id
+      WHERE o.status='new' AND o.stage=1 AND o.trip_id IS NULL AND o.deleted_at IS NULL
+        AND o.window_from <= ? AND o.window_to > ?
+        AND (o.assign_alert_at IS NULL OR o.assign_alert_at <= ?)`)
+      .all(new Date(nowMs + ASSIGN_SLA_MS).toISOString(),
+        new Date(nowMs).toISOString(),
+        new Date(nowMs - ASSIGN_ALERT_REPEAT_MS).toISOString());
+    const stamp = db.prepare('UPDATE orders SET assign_alert_at=? WHERE id=?');
+    for (const order of rows) {
+      const leftMs = Date.parse(order.window_from) - nowMs;
+      const hours = Math.floor(Math.abs(leftMs) / 3_600_000);
+      const minutes = Math.round((Math.abs(leftMs) % 3_600_000) / 60_000);
+      const when = leftMs > 0
+        ? `погрузка через ${hours} ч ${minutes} мин`
+        : `погрузка началась ${hours} ч ${minutes} мин назад`;
+      notify('logist', `⏰ Заявка ${order.order_no ? `№ ${order.order_no} ` : ''}${order.customer_name}: ` +
+        `${routeText(order)} без ТС — ${when} (норматив: назначить за 6 ч). ` +
+        `Назначьте в «Логист → Очередь на назначение»; сигнал повторится через час`, 'order', order.id);
+      stamp.run(new Date(nowMs).toISOString(), order.id);
+    }
+  } catch (error) {
+    console.error('Сторож назначения ТС:', error.message);
+  }
+}
+setInterval(runAssignWatch, 5 * 60_000);
+setTimeout(runAssignWatch, 55_000);
+
 // ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
 // Раз в день после 08:00 МСК: продажам в чат — кого поздравить (ДР контакта
 // сегодня/завтра/через 3 дня, праздник за N дней и в день), и с кем пора

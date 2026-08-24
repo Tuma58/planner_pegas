@@ -1765,10 +1765,13 @@ test('отчёт за смену: имена операций, время обр
   const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
   // Смена — сегодняшняя дневная (аудит пишет CURRENT_TIMESTAMP).
   const shift = currentShift();
+  // Окно погрузки — относительное (+30 ч), фиксированные даты протухают.
   db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
     window_from,window_to,stage,created_at,confirmed_at)
-    VALUES('sh-o1','Клиент',?,?,90000,'2026-08-25T10:00:00.000Z','2026-08-26T10:00:00.000Z',1,
-      datetime('now','-30 minutes'),CURRENT_TIMESTAMP)`).run(zone, zone);
+    VALUES('sh-o1','Клиент',?,?,90000,?,?,1,
+      datetime('now','-30 minutes'),CURRENT_TIMESTAMP)`).run(zone, zone,
+    new Date(Date.now() + 30 * 3_600_000).toISOString(),
+    new Date(Date.now() + 54 * 3_600_000).toISOString());
   db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
     VALUES('sh-a1',?, 'create','order','sh-o1','{}',datetime('now','-30 minutes')),
       ('sh-a2',?, 'update','order','sh-o1','{"stage":1}',CURRENT_TIMESTAMP)`).run(admin, admin);
@@ -1799,6 +1802,13 @@ test('отчёт за смену: имена операций, время обр
   assert.equal(roleRow.people, 1);
   assert.equal(roleRow.totalOps, 2);
   assert.ok(roleRow.opsPerPerson === 2 && roleRow.loadIdx > 0);
+  // SLA назначения: назначение за 30 часов до погрузки — вовремя.
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
+    VALUES('sh-a3',?, 'assign','order','sh-o1','{}',CURRENT_TIMESTAMP)`).run(admin);
+  const withAssign = shiftReport(db, shift.day, shift.kind);
+  assert.equal(withAssign.assignSla.total, 1);
+  assert.equal(withAssign.assignSla.onTime, 1, 'погрузка завтра — назначено вовремя');
+  assert.equal(withAssign.assignSla.pct, 100);
   const confirm = report.operations.find(item => item.name === 'Подтверждение заявки');
   assert.ok(confirm, 'операция названа по имени');
   // Время обработки подтверждения ≈ 30 минут (заявка ждала с создания).

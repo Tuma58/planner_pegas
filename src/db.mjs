@@ -586,6 +586,8 @@ function migrateColumns(db) {
   ensure('trips', 'sum_confirmed_by', 'TEXT');
   ensure('trips', 'next_alert_at', 'TEXT');
   ensure('orders', 'confirm_alert_at', 'TEXT');
+  // Сторож SLA назначения: время последнего сигнала «ТС не назначено».
+  ensure('orders', 'assign_alert_at', 'TEXT');
   // Этап «документы получены» введён 13.08.2026: рейсам, выгруженным
   // до внедрения, отметка проставляется задним числом — иначе диспетчеры
   // получили бы сотни исторических задач разом. Однократно.

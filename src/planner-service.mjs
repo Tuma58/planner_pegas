@@ -1199,6 +1199,7 @@ function collectOperations(db, fromIso, toIso) {
       name,
       who: row.full_name || '—',
       jobRole: row.job_role || row.role || '—',
+      entityId: row.entity_id,
       atMs,
       waitMs: Number.isFinite(baseMs) && Number.isFinite(atMs) && atMs >= baseMs
         ? atMs - baseMs : null
@@ -1338,6 +1339,28 @@ export function shiftReport(db, dayIso, kind = 'day') {
         `от обычной (${Math.round(avgNow)} операций на человека при средней ${Math.round(baseline.avgLoad)}) — возможен перегруз, рассмотрите усиление` });
     }
   }
+  // SLA назначения: доля машин, назначенных за ≥6 часов до погрузки, —
+  // честная метрика логистов вместо «времени от подтверждения» (ранние
+  // заявки раздували медиану и маскировали реальные срывы).
+  const ASSIGN_SLA_MS = 6 * 3_600_000;
+  const windowOf = db.prepare('SELECT window_from FROM orders WHERE id=?');
+  let assignTotal = 0;
+  let assignOnTime = 0;
+  for (const op of list) {
+    if (op.name !== 'Назначение ТС') continue;
+    const loadMs = serverTimeMs(windowOf.get(op.entityId)?.window_from);
+    if (!Number.isFinite(loadMs)) continue;
+    assignTotal += 1;
+    if (op.atMs <= loadMs - ASSIGN_SLA_MS) assignOnTime += 1;
+  }
+  const assignSla = assignTotal
+    ? { total: assignTotal, onTime: assignOnTime, pct: Math.round(assignOnTime / assignTotal * 100) }
+    : null;
+  if (assignSla && assignSla.total >= 5 && assignSla.pct < 95) {
+    signals.push({ kind: 'process', text: `SLA назначения ТС: вовремя (за ≥6 ч до погрузки) ${assignSla.onTime} ` +
+      `из ${assignSla.total} (${assignSla.pct}% при цели 95%) — смотрите светофор дедлайнов в очереди логиста` });
+  }
+
   // Узкое место процесса: операция с наибольшим суммарным временем ожидания.
   const slowest = pack(operations)
     .filter(operation => operation.medianWaitMs && operation.total >= 3)
@@ -1352,6 +1375,7 @@ export function shiftReport(db, dayIso, kind = 'day') {
     ...bounds, day: dayIso, kind,
     staff: packedStaff,
     roles,
+    assignSla,
     operations: pack(operations).sort((a, b) => b.total - a.total),
     otherCount,
     signals,
