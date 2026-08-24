@@ -1332,7 +1332,10 @@ export function renderSales(container, context) {
   container.querySelectorAll('[data-act]').forEach(button =>
     button.addEventListener('click', async event => {
       event.stopPropagation();
-      const order = orders.find(item => item.id === button.dataset.order);
+      // Ищем по всем заявкам: кнопки живут не только в портфеле (стадии 0–1),
+      // но и в заказах карточки клиента (стадии 0–3) — поиск по портфелю
+      // делал их «некликабельными» для назначенных и идущих заказов.
+      const order = data.orders.find(item => item.id === button.dataset.order);
       if (!order) return;
       const kind = button.dataset.act;
       if (kind === 'assign') return context.openAssign(order);
@@ -1377,7 +1380,8 @@ export function renderSales(container, context) {
   container.querySelectorAll('[data-copy-order]').forEach(button =>
     button.addEventListener('click', async event => {
       event.stopPropagation();
-      const order = orders.find(item => item.id === button.dataset.copyOrder);
+      // По всем заявкам — копию делают и из карточки клиента (стадии 0–3).
+      const order = data.orders.find(item => item.id === button.dataset.copyOrder);
       if (!order) return;
       button.disabled = true;
       try {
@@ -1404,7 +1408,7 @@ export function renderSales(container, context) {
   container.querySelectorAll('[data-edit-order]').forEach(button =>
     button.addEventListener('click', event => {
       event.stopPropagation();
-      const order = orders.find(item => item.id === button.dataset.editOrder);
+      const order = data.orders.find(item => item.id === button.dataset.editOrder);
       if (order) editOrderDialog(order, data, context);
     }));
 
