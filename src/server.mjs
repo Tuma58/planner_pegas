@@ -877,11 +877,14 @@ async function api(request, response, url) {
     if (!user) return;
     const note = String(body.note || '').trim().slice(0, 300);
     const author = user.full_name || user.username || '';
-    // Явное снятие (а не переключение): удаляется отметка за указанный день;
-    // вчерашняя по тому же стабильному ключу остаётся историей «прошлого
-    // контроля» — на «отработано» она уже не влияет (протухла).
+    // Явное снятие (а не переключение): отметка удаляется за оба читаемых дня
+    // (сегодня и вчера) — карточка живёт через полночь, и «↩» по вчерашней
+    // отметке иначе не срабатывал (кейс р930нт58: отметка 23-го, снятие 24-го
+    // удаляло пустоту за «сегодня», вчерашняя продолжала держать карточку).
     if (body.remove) {
-      db.prepare(`DELETE FROM task_marks WHERE kind=? AND item_key=? AND day=?`).run(kind, key, day);
+      const prevDay = new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+      db.prepare(`DELETE FROM task_marks WHERE kind=? AND item_key=? AND day IN (?,?)`)
+        .run(kind, key, day, prevDay);
       return json(response, 200, { done: false });
     }
     const existing = db.prepare(`SELECT 1 FROM task_marks WHERE kind=? AND day=? AND item_key=?`)

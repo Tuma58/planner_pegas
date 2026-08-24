@@ -1531,14 +1531,19 @@ test('подбор ТС: позиция по пункту выгрузки, а �
     reference: { addresses, zones: [{ id: 'z-home', name: 'Дом' }, { id: 'z-msk', name: 'Москва' }] },
     vehicles: [{ id: 'V550', plate: 'р550ту58', status: 'work', type_name: 'Тушевоз', zone_name: 'Дом' }],
     dispositions: [],
+    // Даты — относительно «сейчас», чтобы тест не протухал: рейс идёт 30 ч,
+    // расчётный конец 2 ч назад (опоздун), окно погрузки — через 6 ч.
     trips: [{ vehicle_id: 'V550', status: 'run', from_name: 'Дом', to_name: 'Москва',
-      to_point: 'Пенза, ул совхозная', starts_at: '2026-08-20T08:00:00.000Z', ends_at: '2026-08-22T05:00:00.000Z' }]
+      to_point: 'Пенза, ул совхозная',
+      starts_at: new Date(Date.now() - 30 * 3600e3).toISOString(),
+      ends_at: new Date(Date.now() - 2 * 3600e3).toISOString() }]
   };
   // Позиция по городу из текста пункта: регион Пензенская, а не Московская из зоны.
   const place = placeOf(data, 'Пенза, ул совхозная', 'Москва');
   assert.equal(place.region, 'Пензенская обл');
   assert.equal(place.approx, true);
-  const [candidate] = matchVehicles(data, 'Москва', '2026-08-22T14:00:00.000Z', addresses[1]);
+  const [candidate] = matchVehicles(data, 'Москва',
+    new Date(Date.now() + 6 * 3600e3).toISOString(), addresses[1]);
   assert.equal(candidate.vehicle.id, 'V550');
   assert.equal(candidate.inZone, false, 'машина будет в Пензе — не «в зоне» Москвы');
   assert.equal(candidate.region, 'Пензенская обл');
