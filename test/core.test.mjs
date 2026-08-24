@@ -1793,6 +1793,12 @@ test('отчёт за смену: имена операций, время обр
     `единственный в должности близок к средней, получили ${person.efficiency}%`);
   assert.ok(person.loadIdx > 0 && person.speedIdx > 0);
   assert.ok(Array.isArray(report.signals), 'сигналы эффективности отдаются');
+  // Сравнение должностей: объём/время и отклонение от нормы.
+  const roleRow = report.roles.find(item => item.role === 'Логист');
+  assert.ok(roleRow, 'должность в сравнении');
+  assert.equal(roleRow.people, 1);
+  assert.equal(roleRow.totalOps, 2);
+  assert.ok(roleRow.opsPerPerson === 2 && roleRow.loadIdx > 0);
   const confirm = report.operations.find(item => item.name === 'Подтверждение заявки');
   assert.ok(confirm, 'операция названа по имени');
   // Время обработки подтверждения ≈ 30 минут (заявка ждала с создания).

@@ -1301,6 +1301,34 @@ export function shiftReport(db, dayIso, kind = 'day') {
     if (!byRole.has(key)) byRole.set(key, []);
     byRole.get(key).push(person);
   }
+
+  // Сравнение должностей: те же объём и время — сколько людей и операций,
+  // операций на человека, медиана обработки смены и отклонение должности
+  // от СВОЕЙ базы за 7 дней (между собой должности сравниваются по
+  // отклонению от нормы: операции у ролей разные по природе).
+  const roleWaitsShift = new Map();
+  for (const op of list) {
+    if (op.waitMs === null) continue;
+    if (!roleWaitsShift.has(op.jobRole)) roleWaitsShift.set(op.jobRole, []);
+    roleWaitsShift.get(op.jobRole).push(op.waitMs);
+  }
+  const roles = [...byRole.entries()].map(([role, people]) => {
+    const totalOps = people.reduce((sum, person) => sum + person.total, 0);
+    const opsPerPerson = totalOps / people.length;
+    const medianWaitMs = median(roleWaitsShift.get(role) || []);
+    const baseline = roleBaseline.get(role);
+    return {
+      role, people: people.length, totalOps,
+      opsPerPerson: Math.round(opsPerPerson * 10) / 10,
+      medianWaitMs,
+      baseLoad: baseline ? Math.round(baseline.avgLoad * 10) / 10 : null,
+      baseWaitMs: baseline?.medianWait ?? null,
+      // Шкала едина с личной эффективностью: индексы ограничены ×2,5.
+      loadIdx: baseline?.avgLoad ? Math.round(clamp(opsPerPerson / baseline.avgLoad) * 100) / 100 : null,
+      speedIdx: baseline?.medianWait && medianWaitMs
+        ? Math.round(clamp(baseline.medianWait / medianWaitMs) * 100) / 100 : null
+    };
+  }).sort((a, b) => b.totalOps - a.totalOps);
   for (const [role, people] of byRole) {
     const baseline = roleBaseline.get(role);
     if (!baseline?.avgLoad) continue;
@@ -1323,6 +1351,7 @@ export function shiftReport(db, dayIso, kind = 'day') {
   return {
     ...bounds, day: dayIso, kind,
     staff: packedStaff,
+    roles,
     operations: pack(operations).sort((a, b) => b.total - a.total),
     otherCount,
     signals,

@@ -54,6 +54,23 @@ export async function shiftDialog(context, day = '', kind = '') {
     return `<li style="margin:3px 0">${icon} ${escapeHtml(signal.text)}</li>`;
   }).join('');
 
+  // Сравнение должностей: объём и время против собственной нормы за 7 дней.
+  const idxBadge = (value, goodHigh) => {
+    if (value == null) return '—';
+    const good = goodHigh ? value >= 1.2 : value >= 1.2;
+    const bad = value < 0.7;
+    return `<span class="badge ${good ? 'ok' : bad ? 'bad' : ''}">×${value}</span>`;
+  };
+  const roleRows = (report.roles || []).map(role => `<tr>
+    <td><b>${escapeHtml(role.role)}</b></td>
+    <td style="text-align:right">${role.people}</td>
+    <td style="text-align:right"><b>${role.totalOps}</b></td>
+    <td style="text-align:right" title="${role.baseLoad ? `обычно ${role.baseLoad} операций на человеко-смену` : 'базы нет'}">${role.opsPerPerson}</td>
+    <td style="text-align:right" title="${role.baseWaitMs ? `обычно ${waitLabel(role.baseWaitMs)}` : 'нет измеримых операций'}">${waitLabel(role.medianWaitMs)}</td>
+    <td style="text-align:right" title="Нагрузка на человека к средней по должности за 7 дней">${idxBadge(role.loadIdx, true)}</td>
+    <td style="text-align:right" title="Скорость обработки к средней по должности за 7 дней (больше — быстрее)">${idxBadge(role.speedIdx, true)}</td>
+  </tr>`).join('');
+
   // План-факт по людям: назначенные на смену — вышли или нет.
   const planRows = (report.plan?.planned || []).map(person => `<tr>
     <td><b>${escapeHtml(person.name)}</b>${person.jobRole ? ` <small class="muted">· ${escapeHtml(person.jobRole)}</small>` : ''}</td>
@@ -112,6 +129,16 @@ export async function shiftDialog(context, day = '', kind = '') {
     </table></div>
     ${signalRows ? `<h3 style="margin:14px 0 6px">Сигналы эффективности</h3>
     <ul style="margin:0;padding-left:18px">${signalRows}</ul>` : ''}
+    <h3 style="margin:14px 0 6px">Сравнение должностей</h3>
+    <div class="table-wrap"><table>
+      <tr><th>Должность</th><th>Людей</th><th>Операций</th><th>На человека</th>
+        <th>Обработка (медиана)</th><th title="Нагрузка на человека к средней по должности за 7 дней">Нагрузка к норме</th>
+        <th title="Скорость обработки к средней по должности за 7 дней; больше — быстрее">Скорость к норме</th></tr>
+      ${roleRows || '<tr><td colspan="7" class="muted">Операций за смену нет.</td></tr>'}
+    </table></div>
+    <p class="muted" style="margin:4px 0 0">Между собой должности сравниваются по отклонению от
+      собственной нормы («к норме» — база 7 дней): операции у ролей разные по природе, поэтому
+      прямое сравнение штук и минут между должностями — только ориентир.</p>
     <h3 style="margin:14px 0 6px">Сотрудники — фактически работали <span class="badge">${report.staff.length}</span></h3>
     <div class="table-wrap"><table>
       <tr><th>Сотрудник</th><th title="К среднему по должности за 7 дней: 60% нагрузка + 40% скорость обработки">Эффективность</th><th>Операций</th><th>Обработка (медиана)</th><th>Что делал</th></tr>
