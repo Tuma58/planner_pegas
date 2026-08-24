@@ -886,6 +886,48 @@ async function api(request, response, url) {
     return json(response, 200, shiftReport(db, day, kind));
   }
 
+  // ── График смен сотрудников: план-факт по людям в отчёте смены ──
+  if (request.method === 'GET' && pathname === '/api/staff-shifts') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      return errorJson(response, 422, 'Нужен период from/to (ГГГГ-ММ-ДД)');
+    }
+    return json(response, 200, {
+      items: db.prepare(`SELECT s.id, s.user_id, s.day, s.kind
+        FROM staff_shifts s JOIN users u ON u.id=s.user_id
+        WHERE s.day>=? AND s.day<=? AND u.active=1 AND u.deleted_at IS NULL`).all(from, to),
+      staff: db.prepare(`SELECT id, full_name, job_role, role FROM users
+        WHERE active=1 AND deleted_at IS NULL ORDER BY full_name`).all()
+    });
+  }
+  // Переключатель назначения: есть → снять, нет → поставить.
+  if (request.method === 'POST' && pathname === '/api/staff-shifts') {
+    const user = requirePermission(request, response, 'shifts:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const day = String(body.day || '').slice(0, 10);
+    const kind = ['day', 'night'].includes(body.kind) ? body.kind : null;
+    const target = db.prepare(`SELECT id FROM users WHERE id=? AND active=1 AND deleted_at IS NULL`)
+      .get(String(body.userId || ''));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !kind || !target) {
+      return errorJson(response, 422, 'Нужны userId, day (ГГГГ-ММ-ДД) и kind (day|night)');
+    }
+    const existing = db.prepare(`SELECT id FROM staff_shifts WHERE user_id=? AND day=? AND kind=?`)
+      .get(target.id, day, kind);
+    if (existing) {
+      db.prepare('DELETE FROM staff_shifts WHERE id=?').run(existing.id);
+      audit(db, user, 'shift-unassign', 'user', target.id, { day, kind }, requestIp(request));
+      return json(response, 200, { assigned: false });
+    }
+    db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind,created_by) VALUES(?,?,?,?,?)`)
+      .run(randomUUID(), target.id, day, kind, user.id);
+    audit(db, user, 'shift-assign', 'user', target.id, { day, kind }, requestIp(request));
+    return json(response, 200, { assigned: true });
+  }
+
   // ── Сверка с 1С: история снимков (сам разбор xlsx идёт в браузере,
   // сервер хранит только итоговые сводки для сравнения по месяцам) ──
   if (request.method === 'GET' && pathname === '/api/reconciliation') {

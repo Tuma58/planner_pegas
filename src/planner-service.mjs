@@ -1215,11 +1215,29 @@ export function shiftReport(db, dayIso, kind = 'day') {
     medianWaitMs: median(item.waits), waits: undefined,
     withTime: item.waits.length
   }));
+  // План-факт по людям: назначенные на смену по графику против фактически
+  // работавших (по операциям). Не вышедшие и работавшие вне графика — отдельно.
+  const planned = db.prepare(`SELECT s.user_id, u.full_name, u.job_role
+    FROM staff_shifts s JOIN users u ON u.id=s.user_id
+    WHERE s.day=? AND s.kind=? AND u.active=1 AND u.deleted_at IS NULL
+    ORDER BY u.full_name`).all(dayIso, kind);
+  const worked = new Set(staff.keys());
+  const plannedNames = new Set(planned.map(person => person.full_name));
+  const packedStaff = pack(staff).sort((a, b) => b.total - a.total)
+    .map(person => ({ ...person, planned: plannedNames.has(person.name) }));
   return {
     ...bounds, day: dayIso, kind,
-    staff: pack(staff).sort((a, b) => b.total - a.total),
+    staff: packedStaff,
     operations: pack(operations).sort((a, b) => b.total - a.total),
     otherCount,
+    plan: {
+      planned: planned.map(person => ({
+        name: person.full_name, jobRole: person.job_role || '',
+        worked: worked.has(person.full_name)
+      })),
+      noShow: planned.filter(person => !worked.has(person.full_name)).length,
+      offPlan: packedStaff.filter(person => !person.planned).length
+    },
     queuesStart: cascadeQueues(db, bounds.fromIso),
     queuesEnd: cascadeQueues(db, bounds.toIso)
   };

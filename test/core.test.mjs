@@ -1772,10 +1772,20 @@ test('отчёт за смену: имена операций, время обр
   db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
     VALUES('sh-a1',?, 'create','order','sh-o1','{}',datetime('now','-30 minutes')),
       ('sh-a2',?, 'update','order','sh-o1','{"stage":1}',CURRENT_TIMESTAMP)`).run(admin, admin);
+  // График смен: Киселёва назначена и работала; Новиков назначен и не вышел.
+  db.prepare(`INSERT INTO users(id,username,password_hash,full_name,role,active)
+    VALUES('sh-u2','novikov','x','Новиков П','dispatcher',1)`).run();
+  db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind) VALUES
+    ('sh-s1',?,?,?),('sh-s2','sh-u2',?,?)`).run(admin, shift.day, shift.kind, shift.day, shift.kind);
   const report = shiftReport(db, shift.day, shift.kind);
   const person = report.staff.find(item => item.name === 'Киселёва Л');
   assert.ok(person, 'исполнитель в отчёте по имени');
   assert.equal(person.total, 2);
+  assert.equal(person.planned, true, 'работавший по графику помечен');
+  assert.equal(report.plan.noShow, 1, 'назначенный без операций — не вышел');
+  const absent = report.plan.planned.find(item => item.name === 'Новиков П');
+  assert.equal(absent?.worked, false);
+  assert.equal(report.plan.offPlan, 0, 'вне графика никто не работал');
   const confirm = report.operations.find(item => item.name === 'Подтверждение заявки');
   assert.ok(confirm, 'операция названа по имени');
   // Время обработки подтверждения ≈ 30 минут (заявка ждала с создания).

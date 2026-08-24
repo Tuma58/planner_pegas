@@ -11,7 +11,8 @@ export const ROLE_LABELS = {
 const ALL = [
   'planner:read', 'trips:write', 'trip-status:write', 'orders:write',
   'fleet:write', 'payments:write', 'reports:read', 'customers:read',
-  'settings:write', 'users:write', 'integration:write', 'audit:read'
+  'settings:write', 'users:write', 'integration:write', 'audit:read',
+  'shifts:write'
 ];
 
 export const ROLE_PERMISSIONS = {
@@ -21,7 +22,8 @@ export const ROLE_PERMISSIONS = {
   dispatcher: ['planner:read', 'trip-status:write', 'customers:read'],
   sales: ['planner:read', 'orders:write', 'customers:read'],
   accountant: ['planner:read', 'payments:write', 'customers:read'],
-  manager: ['planner:read', 'reports:read', 'customers:read']
+  // График смен сотрудников ведёт руководитель (и админ через ALL).
+  manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write']
 };
 
 export function permissionsFor(role) {

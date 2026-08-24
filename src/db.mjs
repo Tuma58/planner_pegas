@@ -245,6 +245,13 @@ CREATE TABLE IF NOT EXISTS demurrage_claims (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(trip_id, stop_kind)
 );
+CREATE TABLE IF NOT EXISTS staff_shifts (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('day','night')),
+  created_by TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, day, kind)
+);
 CREATE TABLE IF NOT EXISTS reconciliation_snapshots (
   id TEXT PRIMARY KEY, month TEXT NOT NULL, file_name TEXT NOT NULL DEFAULT '',
   summary_json TEXT NOT NULL,
