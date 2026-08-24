@@ -64,8 +64,16 @@ export async function shiftDialog(context, day = '', kind = '') {
       <td style="text-align:right"><b class="${delta > 0 ? 'danger' : ''}">${delta > 0 ? '+' : ''}${delta}</b></td></tr>`;
   }).join('');
 
+  // Смена ещё идёт: план пополняется по мере внесения заказов, операции и
+  // медианы растут — окончательные цифры будут после конца смены.
+  const nowMs = Date.now();
+  const stateBadge = nowMs < Date.parse(report.fromIso)
+    ? '<span class="badge">смена ещё не началась</span>'
+    : nowMs < Date.parse(report.toIso)
+      ? '<span class="badge warn" title="План пополняется по мере внесения заказов, операции и очереди меняются — окончательные цифры после конца смены">⏳ смена идёт — данные предварительные</span>'
+      : '<span class="badge ok" title="Смена завершена — операции и очереди зафиксированы">✓ смена завершена — итог</span>';
   context.showModal(`<div class="report printable-block">
-    <h2 style="margin-bottom:2px">🕐 Отчёт за смену</h2>
+    <h2 style="margin-bottom:2px">🕐 Отчёт за смену ${stateBadge}</h2>
     <div class="geohint">${escapeHtml(report.label)} · операции с именами исполнителей по журналу системы
       · «обработка» — медианное время от передачи задания предыдущим звеном до выполнения</div>
     <div class="console no-print" style="margin:10px 0">
