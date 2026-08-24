@@ -245,6 +245,12 @@ CREATE TABLE IF NOT EXISTS demurrage_claims (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(trip_id, stop_kind)
 );
+CREATE TABLE IF NOT EXISTS reconciliation_snapshots (
+  id TEXT PRIMARY KEY, month TEXT NOT NULL, file_name TEXT NOT NULL DEFAULT '',
+  summary_json TEXT NOT NULL,
+  created_by TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS revenue_plans (
   period_start TEXT PRIMARY KEY, target_net REAL NOT NULL DEFAULT 0,
   updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

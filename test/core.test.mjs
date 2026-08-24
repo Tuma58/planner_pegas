@@ -1677,3 +1677,53 @@ test('сигнал «следующий рейс не назначен»: выг
   db.prepare(`UPDATE trips SET next_alert_at=CURRENT_TIMESTAMP WHERE id='nx1'`).run();
   assert.deepEqual(tripsWithoutNext(db, now, 2 * 3600e3, true), [], 'повторно по тому же рейсу не сигналит');
 });
+
+test('сверка с 1С: пары по сумме/НДС/заказчику, излишки и «ещё не занесённые»', async () => {
+  const { parse1cRows, fileMonths, reconcileOrders, netOf } =
+    await import('../public/assets/reconcile.js');
+  // Сырые строки листа: мусорная шапка, затем заголовки и заказы.
+  const rows = [
+    ['Отчёт по заказам'],
+    ['Дата отправления', 'Дата выполнения', 'ТС', 'Водитель', 'Заказчик', 'Адрес отправления', 'Адрес назначения', 'Сумма документа'],
+    ['05.08.2026', '06.08.2026', 'а001аа58', 'Иванов', 'Клиент-Точный ООО', 'Москва', 'Пенза', 122000],
+    ['06.08.2026', '07.08.2026', 'а002аа58', 'Петров', 'Клиент-БезНДС ООО', 'Москва', 'Курск', 100000],
+    ['07.08.2026', '08.08.2026', 'а003аа58', 'Сидоров', 'Клиент-Ушедший ООО', 'Тверь', 'Уфа', 90000],
+    ['20.08.2026', '21.08.2026', 'а001аа58', 'Иванов', 'Клиент-Точный ООО', 'Пенза', 'Москва', 80000],
+    ['не дата', '', '', '', '', '', '', 0]
+  ];
+  const orders = parse1cRows(rows);
+  assert.equal(orders.length, 4, 'строки без даты отправления отброшены');
+  assert.equal(fileMonths(orders)[0].month, '2026-08', 'по умолчанию — последний месяц файла');
+  // Рейсы планера: даты — UTC (день по МСК совпадает с 1С).
+  const trips = [
+    { id: 't1', vehicle_plate: 'а001аа58 / прицеп', customer_name: 'Клиент-Точный ООО',
+      starts_at: '2026-08-05T08:00:00.000Z', revenue_vat: 122000, status: 'done', order_no: '10' },
+    // Сумма в планере с НДС, в 1С — без: пара должна найтись и попасть в НДС-путаницу.
+    { id: 't2', vehicle_plate: 'а002аа58', customer_name: 'Клиент-БезНДС ООО',
+      starts_at: '2026-08-06T08:00:00.000Z', revenue_vat: 122000, status: 'done', order_no: '11' },
+    // Излишек: в 1С такого рейса нет, дата раньше края файла (20.08).
+    { id: 't3', vehicle_plate: 'а009аа58', customer_name: 'Лишний ООО',
+      starts_at: '2026-08-10T08:00:00.000Z', revenue_vat: 70000, status: 'unloaded', order_no: '12' },
+    // Не излишек: день края файла — в 1С просто ещё не занесён.
+    { id: 't4', vehicle_plate: 'а010аа58', customer_name: 'Свежий ООО',
+      starts_at: '2026-08-20T10:00:00.000Z', revenue_vat: 50000, status: 'plan', order_no: '13' },
+    { id: 't5', vehicle_plate: 'а001аа58', customer_name: 'Клиент-Точный ООО',
+      starts_at: '2026-08-20T05:00:00.000Z', revenue_vat: 80000, status: 'run', order_no: '14' },
+    { id: 'tr', vehicle_plate: 'а011аа58', customer_name: 'Снятый ООО',
+      starts_at: '2026-08-11T08:00:00.000Z', revenue_vat: 60000, status: 'rejected', order_no: '15' }
+  ];
+  const result = reconcileOrders(orders, trips, '2026-08');
+  assert.equal(result.pairs, 3, 'точная + НДС + вторая точная');
+  assert.equal(result.exact, 2);
+  assert.equal(result.vatErr.length, 1, 'пара 100000 ↔ 122000 — НДС-путаница');
+  assert.deepEqual(result.surplus.map(trip => trip.id), ['t3'], 'излишек только до края файла');
+  assert.deepEqual(result.notYet.map(trip => trip.id), ['t4'], 'рейс дня выгрузки файла — ещё не занесён');
+  assert.equal(result.onlyC1.length, 1, 'заказ «Ушедшего» в планере отсутствует');
+  assert.equal(result.onlyC1[0].customer, 'Клиент-Ушедший ООО');
+  assert.equal(result.trueSum, result.c1.sum + 50000, 'истина = 1С + не занесённое');
+  // Отклонённые рейсы в сверке не участвуют.
+  assert.ok(!result.surplus.some(trip => trip.id === 'tr'));
+  // Очистка НДС: ИП — 7%, остальные — 22%.
+  assert.ok(Math.abs(netOf(122, 'Ромашка ООО') - 100) < 0.01);
+  assert.ok(Math.abs(netOf(107, 'Мазова Ольга ИП') - 100) < 0.01);
+});

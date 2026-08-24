@@ -872,6 +872,33 @@ async function api(request, response, url) {
         ORDER BY status='new' DESC, created_at DESC LIMIT 300`).all()
     });
   }
+  // ── Сверка с 1С: история снимков (сам разбор xlsx идёт в браузере,
+  // сервер хранит только итоговые сводки для сравнения по месяцам) ──
+  if (request.method === 'GET' && pathname === '/api/reconciliation') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    return json(response, 200, {
+      items: db.prepare(`SELECT r.*, u.full_name created_by_name
+        FROM reconciliation_snapshots r LEFT JOIN users u ON u.id=r.created_by
+        ORDER BY r.created_at DESC LIMIT 24`).all()
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/reconciliation') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    if (Number(user.guest)) return errorJson(response, 403, 'Гостевой доступ — только просмотр');
+    const body = await readJson(request);
+    const month = String(body.month || '').slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) return errorJson(response, 422, 'Некорректный месяц сверки');
+    const id = randomUUID();
+    db.prepare(`INSERT INTO reconciliation_snapshots(id,month,file_name,summary_json,created_by)
+      VALUES(?,?,?,?,?)`).run(id, month,
+      String(body.fileName || '').slice(0, 200),
+      JSON.stringify(body.summary || {}), user.id);
+    audit(db, user, 'create', 'reconciliation', id, { month }, requestIp(request));
+    return json(response, 201, { id });
+  }
+
   // Статус претензии: new (к выставлению) → billed (выставлена) / cancelled.
   if (request.method === 'PATCH' && pathname.startsWith('/api/demurrage/')) {
     const user = requirePermission(request, response, 'orders:write');
