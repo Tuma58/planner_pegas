@@ -31,13 +31,28 @@ export async function shiftDialog(context, day = '', kind = '') {
     report = await api(`/api/shift-report${query}`);
   } catch (error) { toast(error.message, 'error'); return; }
 
+  const effCell = person => {
+    const value = person.efficiency;
+    const cls = value >= 120 ? 'ok' : value < 70 ? 'bad' : '';
+    const hint = `Эффективность к среднему по должности за 7 дней: нагрузка ×${person.loadIdx}` +
+      `${person.baseLoad ? ` (средняя ${person.baseLoad} операций за смену)` : ''}, ` +
+      `скорость ×${person.speedIdx}${person.baseWaitMs ? ` (средняя обработка ${waitLabel(person.baseWaitMs)})` : ''}. ` +
+      'Формула: 60% нагрузка + 40% скорость.';
+    return `<td style="text-align:right" title="${escapeHtml(hint)}"><span class="badge ${cls}"><b>${value}%</b></span></td>`;
+  };
   const staffRows = report.staff.map(person => `<tr>
     <td><b>${escapeHtml(person.name)}</b>${person.jobRole ? ` <small class="muted">· ${escapeHtml(person.jobRole)}</small>` : ''}
       ${person.planned ? '' : ' <span class="badge warn" title="Работал, но в график этой смены не назначен">⚡ вне графика</span>'}</td>
+    ${effCell(person)}
     <td style="text-align:right"><b>${person.total}</b></td>
     <td style="text-align:right" title="Медиана по ${person.withTime} операциям с измеримым временем">${waitLabel(person.medianWaitMs)}</td>
     <td>${person.ops.map(([name, count]) => `${escapeHtml(name)} — ${count}`).join(' · ')}</td>
   </tr>`).join('');
+
+  const signalRows = (report.signals || []).map(signal => {
+    const icon = signal.kind === 'low' ? '🔻' : signal.kind === 'overload' ? '🔥' : '🛠';
+    return `<li style="margin:3px 0">${icon} ${escapeHtml(signal.text)}</li>`;
+  }).join('');
 
   // План-факт по людям: назначенные на смену — вышли или нет.
   const planRows = (report.plan?.planned || []).map(person => `<tr>
@@ -95,10 +110,12 @@ export async function shiftDialog(context, day = '', kind = '') {
       ${planRows || `<tr><td colspan="2" class="muted">На эту смену никто не назначен —
         заполните «📅 График смен», чтобы видеть план-факт.</td></tr>`}
     </table></div>
+    ${signalRows ? `<h3 style="margin:14px 0 6px">Сигналы эффективности</h3>
+    <ul style="margin:0;padding-left:18px">${signalRows}</ul>` : ''}
     <h3 style="margin:14px 0 6px">Сотрудники — фактически работали <span class="badge">${report.staff.length}</span></h3>
     <div class="table-wrap"><table>
-      <tr><th>Сотрудник</th><th>Операций</th><th>Обработка (медиана)</th><th>Что делал</th></tr>
-      ${staffRows || '<tr><td colspan="4" class="muted">Операций за смену не зафиксировано.</td></tr>'}
+      <tr><th>Сотрудник</th><th title="К среднему по должности за 7 дней: 60% нагрузка + 40% скорость обработки">Эффективность</th><th>Операций</th><th>Обработка (медиана)</th><th>Что делал</th></tr>
+      ${staffRows || '<tr><td colspan="5" class="muted">Операций за смену не зафиксировано.</td></tr>'}
     </table></div>
     <h3 style="margin:14px 0 6px">Операции <span class="badge">${report.operations.length}</span></h3>
     <div class="table-wrap"><table>

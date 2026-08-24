@@ -1786,6 +1786,13 @@ test('отчёт за смену: имена операций, время обр
   const absent = report.plan.planned.find(item => item.name === 'Новиков П');
   assert.equal(absent?.worked, false);
   assert.equal(report.plan.offPlan, 0, 'вне графика никто не работал');
+  // Эффективность: проценты и разложение присутствуют, база — сама смена
+  // (истории нет), поэтому единственный работник должности ≈ 100%.
+  assert.ok(Number.isFinite(person.efficiency), 'эффективность посчитана');
+  assert.ok(person.efficiency >= 70 && person.efficiency <= 130,
+    `единственный в должности близок к средней, получили ${person.efficiency}%`);
+  assert.ok(person.loadIdx > 0 && person.speedIdx > 0);
+  assert.ok(Array.isArray(report.signals), 'сигналы эффективности отдаются');
   const confirm = report.operations.find(item => item.name === 'Подтверждение заявки');
   assert.ok(confirm, 'операция названа по имени');
   // Время обработки подтверждения ≈ 30 минут (заявка ждала с создания).

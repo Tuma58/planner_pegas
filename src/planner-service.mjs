@@ -1178,26 +1178,43 @@ export function cascadeQueues(db, atIso) {
   };
 }
 
-export function shiftReport(db, dayIso, kind = 'day') {
-  const bounds = shiftBounds(dayIso, kind);
+// Строки аудита за интервал → операции конвейера с исполнителем,
+// должностью и временем обработки (общий проход для смены и для базы
+// «средний показатель системы»).
+function collectOperations(db, fromIso, toIso) {
   const rows = db.prepare(`SELECT a.action, a.entity, a.entity_id, a.details_json,
-      a.created_at, u.full_name, u.job_role
+      a.created_at, u.full_name, u.job_role, u.role
     FROM audit_log a LEFT JOIN users u ON u.id=a.user_id
     WHERE a.created_at>=? AND a.created_at<? AND a.user_id IS NOT NULL
     ORDER BY a.created_at`).all(
-    bounds.fromIso.replace('T', ' ').slice(0, 19), bounds.toIso.replace('T', ' ').slice(0, 19));
-  const staff = new Map();
-  const operations = new Map();
+    fromIso.replace('T', ' ').slice(0, 19), toIso.replace('T', ' ').slice(0, 19));
+  const list = [];
   let otherCount = 0;
   for (const row of rows) {
     const name = operationNameOf(row);
     if (!name) { otherCount += 1; continue; }
-    const who = row.full_name || '—';
     const atMs = serverTimeMs(row.created_at);
     const baseMs = operationBaseMs(db, row, name);
-    const waitMs = Number.isFinite(baseMs) && Number.isFinite(atMs) && atMs >= baseMs
-      ? atMs - baseMs : null;
-    if (!staff.has(who)) staff.set(who, { name: who, jobRole: row.job_role || '', total: 0, ops: new Map(), waits: [] });
+    list.push({
+      name,
+      who: row.full_name || '—',
+      jobRole: row.job_role || row.role || '—',
+      atMs,
+      waitMs: Number.isFinite(baseMs) && Number.isFinite(atMs) && atMs >= baseMs
+        ? atMs - baseMs : null
+    });
+  }
+  return { list, otherCount };
+}
+
+export function shiftReport(db, dayIso, kind = 'day') {
+  const bounds = shiftBounds(dayIso, kind);
+  const { list, otherCount } = collectOperations(db, bounds.fromIso, bounds.toIso);
+  const staff = new Map();
+  const operations = new Map();
+  for (const op of list) {
+    const { who, name, waitMs } = op;
+    if (!staff.has(who)) staff.set(who, { name: who, jobRole: op.jobRole === '—' ? '' : op.jobRole, total: 0, ops: new Map(), waits: [] });
     const person = staff.get(who);
     person.total += 1;
     person.ops.set(name, (person.ops.get(name) || 0) + 1);
@@ -1223,13 +1240,92 @@ export function shiftReport(db, dayIso, kind = 'day') {
     ORDER BY u.full_name`).all(dayIso, kind);
   const worked = new Set(staff.keys());
   const plannedNames = new Set(planned.map(person => person.full_name));
+
+  // ── Эффективность в процентах против «среднего показателя системы» ──
+  // База — операции той же ДОЛЖНОСТИ за 7 суток до конца смены (включая её):
+  // средняя нагрузка на человеко-смену и медиана времени обработки.
+  // Эффективность = 60% индекс нагрузки (операций к средней) +
+  // 40% индекс скорости (средняя медиана к личной); компоненты ограничены
+  // ×2,5, чтобы один выброс не рисовал «1000%».
+  const baseFrom = new Date(Date.parse(bounds.toIso) - 7 * 86_400_000).toISOString();
+  const base = collectOperations(db, baseFrom, bounds.toIso).list;
+  const roleShiftLoad = new Map(); // должность → Map(сотрудник|смена → операций)
+  const roleWaits = new Map();     // должность → все времена обработки
+  for (const op of base) {
+    const shiftKey = `${op.who}|${Math.floor(op.atMs / (12 * 3_600_000))}`;
+    if (!roleShiftLoad.has(op.jobRole)) roleShiftLoad.set(op.jobRole, new Map());
+    const loads = roleShiftLoad.get(op.jobRole);
+    loads.set(shiftKey, (loads.get(shiftKey) || 0) + 1);
+    if (op.waitMs !== null) {
+      if (!roleWaits.has(op.jobRole)) roleWaits.set(op.jobRole, []);
+      roleWaits.get(op.jobRole).push(op.waitMs);
+    }
+  }
+  const roleBaseline = new Map();
+  for (const [role, loads] of roleShiftLoad) {
+    const perShift = [...loads.values()];
+    roleBaseline.set(role, {
+      avgLoad: perShift.reduce((sum, value) => sum + value, 0) / perShift.length,
+      medianWait: median(roleWaits.get(role) || [])
+    });
+  }
+  const clamp = value => Math.min(2.5, value);
   const packedStaff = pack(staff).sort((a, b) => b.total - a.total)
-    .map(person => ({ ...person, planned: plannedNames.has(person.name) }));
+    .map(person => {
+      const roleKey = person.jobRole || '—';
+      const baseline = roleBaseline.get(roleKey);
+      const loadIdx = baseline?.avgLoad ? clamp(person.total / baseline.avgLoad) : 1;
+      const speedIdx = baseline?.medianWait && person.medianWaitMs
+        ? clamp(baseline.medianWait / person.medianWaitMs) : 1;
+      return {
+        ...person, planned: plannedNames.has(person.name),
+        efficiency: Math.round(100 * (0.6 * loadIdx + 0.4 * speedIdx)),
+        loadIdx: Math.round(loadIdx * 100) / 100,
+        speedIdx: Math.round(speedIdx * 100) / 100,
+        baseLoad: baseline ? Math.round(baseline.avgLoad * 10) / 10 : null,
+        baseWaitMs: baseline?.medianWait ?? null
+      };
+    });
+
+  // Сигналы: неэффективные, перегруженные должности, узкое место процесса.
+  const signals = [];
+  for (const person of packedStaff) {
+    if (person.total >= 3 && person.efficiency < 70) {
+      signals.push({ kind: 'low', text: `${person.name} — ${person.efficiency}% ` +
+        `(нагрузка ×${person.loadIdx} от средней по должности, скорость ×${person.speedIdx}): разобрать причины` });
+    }
+  }
+  const byRole = new Map();
+  for (const person of packedStaff) {
+    const key = person.jobRole || '—';
+    if (!byRole.has(key)) byRole.set(key, []);
+    byRole.get(key).push(person);
+  }
+  for (const [role, people] of byRole) {
+    const baseline = roleBaseline.get(role);
+    if (!baseline?.avgLoad) continue;
+    const avgNow = people.reduce((sum, person) => sum + person.total, 0) / people.length;
+    if (avgNow >= baseline.avgLoad * 1.5 && avgNow >= 10) {
+      signals.push({ kind: 'overload', text: `Должность «${role}»: нагрузка ×${Math.round(avgNow / baseline.avgLoad * 10) / 10} ` +
+        `от обычной (${Math.round(avgNow)} операций на человека при средней ${Math.round(baseline.avgLoad)}) — возможен перегруз, рассмотрите усиление` });
+    }
+  }
+  // Узкое место процесса: операция с наибольшим суммарным временем ожидания.
+  const slowest = pack(operations)
+    .filter(operation => operation.medianWaitMs && operation.total >= 3)
+    .sort((a, b) => b.medianWaitMs * b.total - a.medianWaitMs * a.total)[0];
+  if (slowest && slowest.medianWaitMs > 3_600_000) {
+    const hours = Math.round(slowest.medianWaitMs / 360_000) / 10;
+    signals.push({ kind: 'process', text: `Узкое место процесса: «${slowest.name}» — задания ждут в среднем ${hours} ч ` +
+      `(${slowest.total} за смену). Здесь процесс стоит упростить или добавить руки` });
+  }
+
   return {
     ...bounds, day: dayIso, kind,
     staff: packedStaff,
     operations: pack(operations).sort((a, b) => b.total - a.total),
     otherCount,
+    signals,
     plan: {
       planned: planned.map(person => ({
         name: person.full_name, jobRole: person.job_role || '',
