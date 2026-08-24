@@ -440,6 +440,48 @@ setTimeout(runDailyFleetReport, 40_000);
 // к печати из плашки «⏳ Простои П/В». Незавершённые случаи (машина ещё
 // стоит) обновляются ежедневно, пока статус «к выставлению»; претензии,
 // уже выставленные или отменённые вручную, не трогаются.
+// Срыв заявки клиентом: рейс снят с причиной «Отказ клиента» или «Нет груза» —
+// машина уже была назначена (а часто и подана), поэтому случай сразу падает
+// в реестр «⏳ Простои П/В» претензией к выставлению. Часы — от планового
+// времени погрузки до момента отказа, каждый начатый час по тарифу простоя,
+// минимум 1 час (отказ до подачи — минимальная претензия, решение о
+// выставлении или отмене за продажами). Бесплатный норматив не применяется:
+// погрузка не состоялась вовсе. Если по рейсу уже есть претензия за реальный
+// простой под погрузкой — она сохраняется (ON CONFLICT DO NOTHING).
+const FALSE_CALL_REASONS = ['Отказ клиента', 'Нет груза'];
+function falseCallClaim(trip, reason) {
+  const { rate } = demurrageSettings(db);
+  const planMs = Date.parse(trip.starts_at);
+  const nowMs = Date.now();
+  const idleHours = Math.max(0, (nowMs - planMs) / 3_600_000);
+  // Потолок — сутки: старый план, снятый через неделю, не должен рождать
+  // претензию на сотни часов; спорную сумму продажи правят при выставлении.
+  const paidHours = Math.min(24, Math.max(1, Math.ceil(idleHours)));
+  const amount = paidHours * rate;
+  const vehicle = db.prepare('SELECT plate, driver_name FROM vehicles WHERE id=?').get(trip.vehicle_id);
+  const order = trip.order_id
+    ? db.prepare('SELECT order_no, from_point, window_from FROM orders WHERE id=?').get(trip.order_id)
+    : null;
+  const inserted = db.prepare(`INSERT INTO demurrage_claims(id,trip_id,stop_kind,customer_name,
+      order_no,vehicle_plate,driver_name,point,plan_at,arrived_at,finished_at,
+      idle_hours,paid_hours,rate,amount,created_day,reason)
+    VALUES(?,?,'load',?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(trip_id,stop_kind) DO NOTHING`).run(
+    randomUUID(), trip.id, trip.customer_name || '',
+    order?.order_no || trip.order_no || '',
+    vehicle?.plate || '', vehicle?.driver_name || '',
+    order?.from_point || trip.from_point || '',
+    order?.window_from || trip.starts_at, order?.window_from || trip.starts_at,
+    new Date(nowMs).toISOString(),
+    Math.round(idleHours * 10) / 10, paidHours, rate, amount,
+    new Date(nowMs + 3 * 3_600_000).toISOString().slice(0, 10), reason);
+  if (inserted.changes) {
+    const rub = `${Math.round(amount).toLocaleString('ru-RU')} ₽`;
+    notify('sales', `📑 Срыв заявки (${reason}): претензия клиенту «${trip.customer_name || '—'}»` +
+      ` на ${rub} (${paidHours} ч × тариф простоя) — реестр «⏳ Простои П/В», проверьте и выставьте`);
+  }
+}
+
 function runDailyDemurrage() {
   try {
     const mskNow = new Date(Date.now() + 3 * 3_600_000);
@@ -1097,6 +1139,12 @@ async function api(request, response, url) {
       merged.fromPoint, merged.toPoint,
       merged.startsAt, merged.endsAt, merged.distanceKm, merged.revenueVat, merged.status,
       merged.rejectionReason, merged.temperatureMode, merged.bodyType, user.id, match[0]);
+    // Срыв по вине клиента — случай сразу падает претензией в «⏳ Простои П/В».
+    if (merged.status === 'rejected' && current.status !== 'rejected' &&
+        FALSE_CALL_REASONS.includes(String(merged.rejectionReason || '').trim())) {
+      falseCallClaim({ ...current, order_id: merged.orderId ?? current.order_id },
+        String(merged.rejectionReason).trim());
+    }
     if (merged.status === 'rejected' && !merged.orderId && current.status !== 'rejected') {
       // Рейс без связанной заявки (например, загружен из 1С): при отклонении
       // потребность не должна пропасть — в продажах создаётся заявка-возврат

@@ -183,7 +183,7 @@ function checklistBlock(trip, canAct) {
   return `<div class="list" style="margin-top:6px">${rows}</div>`;
 }
 
-export async function renderDispatcher(container, context) {
+export async function renderDispatcher(container, context, options = {}) {
   const { state, can } = context;
   const data = state.data;
   const canAct = can('trip-status:write');
@@ -193,30 +193,37 @@ export async function renderDispatcher(container, context) {
   // (план + накопленное отставание; для идущих — не раньше «сейчас»).
   let delayByTrip = new Map();
   let controlByTrip = new Map();
-  try {
-    const { items } = await api('/api/control');
-    delayByTrip = new Map(items.map(item => [item.id, item.delay_ms || 0]));
-    controlByTrip = new Map(items.map(item => [item.id, item]));
-  } catch { /* без расчёта задержек карточки просто не показывают опоздание */ }
-  // Отметки «событие отработано»: общие для смены, ключ привязан к конкретному
-  // событию рейса — сменилось событие, отметка сама теряет силу.
   const todayIso = new Date().toISOString().slice(0, 10);
   const yesterdayIso = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
   let workedMap = new Map();
-  try {
-    const days = await Promise.all([
-      api(`/api/task-marks?kind=dispatcher&day=${todayIso}`),
-      api(`/api/task-marks?kind=dispatcher&day=${yesterdayIso}`)
-    ]);
-    // Ключи событий стабильны — одна и та же отметка может быть и вчера, и
-    // сегодня: в карте остаётся самая свежая (иначе вчерашняя перекрывала
-    // сегодняшнюю и карточка «не отрабатывалась»).
-    workedMap = new Map();
-    for (const item of days.flatMap(result => result.items)) {
-      const prev = workedMap.get(item.item_key);
-      if (!prev || String(item.done_at) > String(prev.done_at)) workedMap.set(item.item_key, item);
-    }
-  } catch { workedMap = new Map(); }
+  // Фильтрация по уже загруженным данным (options.reuseNetwork — путь поиска)
+  // не ходит в сеть: три запроса на каждый ввод делали набор текста рваным.
+  if (options.reuseNetwork && state.dispatcherNetCache) {
+    ({ delayByTrip, controlByTrip, workedMap } = state.dispatcherNetCache);
+  } else {
+    try {
+      const { items } = await api('/api/control');
+      delayByTrip = new Map(items.map(item => [item.id, item.delay_ms || 0]));
+      controlByTrip = new Map(items.map(item => [item.id, item]));
+    } catch { /* без расчёта задержек карточки просто не показывают опоздание */ }
+    // Отметки «событие отработано»: общие для смены, ключ привязан к конкретному
+    // событию рейса — сменилось событие, отметка сама теряет силу.
+    try {
+      const days = await Promise.all([
+        api(`/api/task-marks?kind=dispatcher&day=${todayIso}`),
+        api(`/api/task-marks?kind=dispatcher&day=${yesterdayIso}`)
+      ]);
+      // Ключи событий стабильны — одна и та же отметка может быть и вчера, и
+      // сегодня: в карте остаётся самая свежая (иначе вчерашняя перекрывала
+      // сегодняшнюю и карточка «не отрабатывалась»).
+      workedMap = new Map();
+      for (const item of days.flatMap(result => result.items)) {
+        const prev = workedMap.get(item.item_key);
+        if (!prev || String(item.done_at) > String(prev.done_at)) workedMap.set(item.item_key, item);
+      }
+    } catch { workedMap = new Map(); }
+    state.dispatcherNetCache = { delayByTrip, controlByTrip, workedMap };
+  }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
     `${routeLabel(trip)} ${trip.vehicle_plate} ${trip.driver_name || ''} ${trip.customer_name || ''}`
@@ -1060,7 +1067,7 @@ export async function renderDispatcher(container, context) {
   });
   attachSearch(container.querySelector('#dispatcherSearch'), async value => {
     state.dispatcherQuery = value;
-    await renderDispatcher(container, context);
+    await renderDispatcher(container, context, { reuseNetwork: true });
   });
 
   container.querySelectorAll('[data-step]').forEach(button =>

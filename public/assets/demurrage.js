@@ -38,17 +38,27 @@ export function wireDemurrageChip(container, context) {
 const hoursLabel = value => `${(Math.round(value * 10) / 10).toLocaleString('ru-RU')} ч`;
 
 // Печатная форма претензии — документ для выставления счёта клиенту.
+// Два вида: сверхнормативный простой (ежедневный расчёт) и срыв заявки
+// клиентом (claim.reason: «Отказ клиента» / «Нет груза» — рейс был снят).
 function printClaim(claim, settings, context) {
   const finished = claim.finished_at
     ? formatDateTime(claim.finished_at)
     : 'стоит по настоящее время (простой продолжается)';
   const opLabel = claim.stop_kind === 'load' ? 'погрузкой' : 'выгрузкой';
-  context.showModal(`<div class="report printable-block">
-    <h3><span style="color:var(--teal);font-weight:800">ООО «ПегасЛогистик»</span></h3>
-    <h2 style="margin:8px 0 2px">ПРЕТЕНЗИЯ по простою № ${escapeHtml(claim.order_no || '—')}-${claim.stop_kind === 'load' ? 'П' : 'В'}</h2>
-    <div class="geohint">Сформирована ${formatDateTime(claim.updated_at || claim.created_at)} · система PegasLogistic</div>
-    <p style="margin:12px 0 4px"><b>Кому:</b> ${escapeHtml(claim.customer_name || '—')}</p>
-    <p>По заявке № ${escapeHtml(claim.order_no || '—')} (ТС ${escapeHtml(claim.vehicle_plate)},
+  const body = claim.reason
+    ? `<p>По заявке № ${escapeHtml(claim.order_no || '—')} на перевозку было назначено
+      транспортное средство ${escapeHtml(claim.vehicle_plate)}
+      (водитель ${escapeHtml(claim.driver_name || '—')}), подача к погрузке в пункте
+      «${escapeHtml(claim.point || '—')}». Перевозка не состоялась по причине
+      «<b>${escapeHtml(claim.reason)}</b>» — заявка сорвана по обстоятельствам заказчика.</p>
+    <div class="table-wrap"><table>
+      <tr><td>Плановое время погрузки по заявке</td><td><b>${formatDateTime(claim.plan_at)}</b></td></tr>
+      <tr><td>Отказ зафиксирован</td><td>${finished}</td></tr>
+      <tr><td>Время простоя / срыва подачи (к оплате)</td><td><b>${claim.paid_hours} ч</b> (каждый начатый час, минимум 1 ч)</td></tr>
+      <tr><td>Тариф</td><td>${money(claim.rate)} / ч</td></tr>
+      <tr><td><b>Сумма к оплате</b></td><td><b>${money(claim.amount)}</b></td></tr>
+    </table></div>`
+    : `<p>По заявке № ${escapeHtml(claim.order_no || '—')} (ТС ${escapeHtml(claim.vehicle_plate)},
       водитель ${escapeHtml(claim.driver_name || '—')}) допущен сверхнормативный простой
       транспортного средства под ${opLabel} в пункте «${escapeHtml(claim.point || '—')}».</p>
     <div class="table-wrap"><table>
@@ -60,9 +70,17 @@ function printClaim(claim, settings, context) {
       <tr><td>Сверхнормативный простой (к оплате)</td><td><b>${claim.paid_hours} ч</b> (каждый начатый час)</td></tr>
       <tr><td>Тариф</td><td>${money(claim.rate)} / ч</td></tr>
       <tr><td><b>Сумма к оплате</b></td><td><b>${money(claim.amount)}</b></td></tr>
-    </table></div>
-    <p style="margin-top:10px">Основание: отметки контроля перевозки в системе PegasLogistic
-      (факты прибытия и завершения операции, зафиксированные диспетчером).
+    </table></div>`;
+  context.showModal(`<div class="report printable-block">
+    <h3><span style="color:var(--teal);font-weight:800">ООО «ПегасЛогистик»</span></h3>
+    <h2 style="margin:8px 0 2px">ПРЕТЕНЗИЯ ${claim.reason ? 'по срыву заявки' : 'по простою'} № ${escapeHtml(claim.order_no || '—')}-${claim.reason ? 'С' : claim.stop_kind === 'load' ? 'П' : 'В'}</h2>
+    <div class="geohint">Сформирована ${formatDateTime(claim.updated_at || claim.created_at)} · система PegasLogistic</div>
+    <p style="margin:12px 0 4px"><b>Кому:</b> ${escapeHtml(claim.customer_name || '—')}</p>
+    ${body}
+    <p style="margin-top:10px">Основание: ${claim.reason
+      ? 'фиксация снятия рейса в системе PegasLogistic (причина, время отказа и назначенное ТС)'
+      : `отметки контроля перевозки в системе PegasLogistic
+      (факты прибытия и завершения операции, зафиксированные диспетчером)`}.
       Просим оплатить указанную сумму либо направить мотивированный ответ.</p>
   </div>
   <div class="modal-actions no-print">
@@ -98,7 +116,8 @@ export async function demurrageDialog(context) {
       <span style="flex:1;min-width:0"><b class="mono">${escapeHtml(claim.vehicle_plate)}</b>
         · ${escapeHtml(claim.customer_name || '—')}${claim.order_no ? ` · № ${escapeHtml(claim.order_no)}` : ''}
         <span class="badge ${cls}">${label}</span>
-        ${claim.finished_at ? '' : '<span class="badge warn">ещё стоит</span>'}
+        ${claim.reason ? `<span class="badge danger" title="Рейс снят с причиной «${escapeHtml(claim.reason)}» — претензия за срыв подачи">⚠ срыв: ${escapeHtml(claim.reason)}</span>` : ''}
+        ${claim.finished_at || claim.reason ? '' : '<span class="badge warn">ещё стоит</span>'}
         <small class="muted" style="display:block">${escapeHtml(claim.point || '—')}
           · план ${formatDateTime(claim.plan_at)} · простой ${hoursLabel(claim.idle_hours)}
           · сверх ${claim.paid_hours} ч · <b>${money(claim.amount)}</b> · от ${String(claim.created_day).split('-').reverse().join('.')}</small></span>
