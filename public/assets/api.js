@@ -195,10 +195,15 @@ export function wireSelectSearch(input, select) {
     html: option.outerHTML, text: option.textContent.toLowerCase()
   }));
   input.addEventListener('input', () => {
+    const before = select.value;
     const needle = input.value.trim().toLowerCase();
     const kept = all.filter(item => !needle || item.text.includes(needle));
     select.innerHTML = kept.map(item => item.html).join('')
       || '<option value="" disabled selected>ничего не найдено</option>';
+    // Пересборка опций меняет выбор селекта без события change, и зависимые
+    // подсказки не пересчитываются — например, «⏭ Запланирован рейс…» в
+    // назначении ТС показывала план прежней машины (кейс т508ве58).
+    if (select.value !== before) select.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
 

@@ -1704,8 +1704,10 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
   const select = document.getElementById('assignVehicle');
   wireSelectSearch(document.getElementById('assignVehicleSearch'), select);
   const showNext = () => {
-    document.getElementById('assignNext').innerHTML =
-      nextEventHint(nextVehicleEvent(data, select.value, loadMs), loadMs);
+    // Пустой выбор (поиск ничего не нашёл) — без подсказки: иначе она
+    // обещала бы «сцепка свободна» про несуществующее ТС.
+    document.getElementById('assignNext').innerHTML = select.value
+      ? nextEventHint(nextVehicleEvent(data, select.value, loadMs), loadMs) : '';
   };
   select.addEventListener('change', showNext);
   if (candidates[0]) select.value = candidates[0].vehicle.id;
