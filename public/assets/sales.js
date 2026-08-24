@@ -643,29 +643,50 @@ export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null
       Number(b.ready) - Number(a.ready));
 }
 
-export function renderSales(container, context) {
-  const { state, can } = context;
-  const data = state.data;
-  const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
-  // Фильтр доски: геозона + диапазон дат (хранится в state, переживает перерисовки).
-  const filter = state.salesFilter || (state.salesFilter = { zone: '', region: '', from: '', to: '', q: '' });
-  // Субъект РФ заявки — по адресам погрузки/выгрузки из справочника.
+// Единый предикат фильтра доски продаж: зона участвует в маршруте, окно
+// погрузки пересекает диапазон, текст поиска найден в заказчике или маршруте.
+// Используется и при отрисовке, и при проверке видимости заявки после
+// создания/копии/правки — логика обязана совпадать.
+function salesFilterPredicate(data, filter) {
   const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
   const orderRegions = order => [addressById(order.from_address_id)?.region,
     addressById(order.to_address_id)?.region].filter(Boolean);
-  const regionList = [...new Set((data.reference.addresses || [])
-    .map(item => item.region).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
-  filter.q ||= '';
-  const query = filter.q.toLowerCase();
-  // Заявка проходит фильтр, если зона участвует в маршруте, окно погрузки
-  // пересекает диапазон, а текст поиска найден в заказчике или маршруте.
-  const matchesFilter = order =>
+  const query = String(filter.q || '').toLowerCase();
+  return order =>
     (!filter.zone || order.from_name === filter.zone || order.to_name === filter.zone) &&
     (!filter.region || orderRegions(order).includes(filter.region)) &&
     (!filter.from || String(order.window_to).slice(0, 10) >= filter.from) &&
     (!filter.to || String(order.window_from).slice(0, 10) <= filter.to) &&
     (!query || `${order.customer_name} ${routeLabel(order)} ${order.order_no || ''} ${order.rejection_reason || ''}`
       .toLowerCase().includes(query));
+}
+
+// После «Забронировать», «⧉ Копия» и правки карточка обязана остаться на
+// глазах у сотрудника. Если активный фильтр доски её прячет (например,
+// пресет «Сегодня», а погрузка завтра) — заявка «пропадает практически
+// сразу», сотрудник вбивает её заново и в портфеле копятся дубли
+// (кейс 24.08: шесть заявок «Останкино» за пять минут). Поэтому перед
+// перерисовкой фильтр снимается с пояснением. Вызывать ДО onReload().
+function dropFilterIfHides(state, orderLike, orderNo) {
+  // Правка может открываться и вне вкладки продаж (карточка рейса в app.js) —
+  // там контекст без state и фильтра доски нет, прятать нечего.
+  const filter = state?.salesFilter;
+  if (!filter) return;
+  if (salesFilterPredicate(state.data, filter)(orderLike)) return;
+  state.salesFilter = { zone: '', region: '', from: '', to: '', q: '' };
+  toast(`Заявка № ${orderNo || '—'} не проходила фильтр доски — фильтр сброшен, карточка в списке`);
+}
+
+export function renderSales(container, context) {
+  const { state, can } = context;
+  const data = state.data;
+  const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
+  // Фильтр доски: геозона + диапазон дат (хранится в state, переживает перерисовки).
+  const filter = state.salesFilter || (state.salesFilter = { zone: '', region: '', from: '', to: '', q: '' });
+  const regionList = [...new Set((data.reference.addresses || [])
+    .map(item => item.region).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+  filter.q ||= '';
+  const matchesFilter = salesFilterPredicate(data, filter);
   // Портфель продаж — заявки до назначения ТС: после назначения заявка уходит
   // к логисту в план и возвращается только при отклонении рейса.
   // Отклонённые (cancelled с причиной) — в отдельном реестре ниже.
@@ -1288,6 +1309,14 @@ export function renderSales(container, context) {
       state.salesAttach = [];
       toast(`Забронировано — заявка № ${created.orderNo}${uploaded ? ` · 📎 файлов: ${uploaded}` : ''} в портфеле и в карточке клиента`);
       state.salesVia = [];
+      const zoneName = id => data.reference.zones.find(zone => zone.id === id)?.name || '';
+      dropFilterIfHides(state, {
+        customer_name: values.customerName,
+        from_name: zoneName(values.fromZoneId), to_name: zoneName(values.toZoneId),
+        from_point: values.fromPoint, to_point: values.toPoint,
+        from_address_id: values.fromAddressId, to_address_id: values.toAddressId,
+        window_from: values.windowFrom, window_to: values.windowTo
+      }, created.orderNo);
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -1363,6 +1392,9 @@ export function renderSales(container, context) {
           via: (() => { try { return JSON.parse(order.via_json || '[]'); } catch { return []; } })()
         }) });
         toast(`Копия создана — заявка № ${created.orderNo}, новый ID. Проверьте окно погрузки.`);
+        // Копия наследует поля исходной заявки, но № и статус — свои:
+        // при поиске по номеру исходной копия иначе «пропадёт» из списка.
+        dropFilterIfHides(state, { ...order, order_no: created.orderNo, rejection_reason: '' }, created.orderNo);
         await context.onReload();
         const copy = (context.state.data.orders || []).find(item => item.id === created.id);
         if (copy) editOrderDialog(copy, context.state.data, context);
@@ -1581,6 +1613,17 @@ export function editOrderDialog(order, data, context) {
       });
       context.closeModal();
       toast('Потребность обновлена');
+      // Правка могла вывести заявку из активного фильтра (сменили зону,
+      // пункт или окно) — карточка не должна «пропасть» после сохранения.
+      const zoneName = id => data.reference.zones.find(zone => zone.id === id)?.name || '';
+      dropFilterIfHides(context.state, {
+        customer_name: values.customerName,
+        from_name: zoneName(values.fromZoneId), to_name: zoneName(values.toZoneId),
+        from_point: values.fromPoint, to_point: values.toPoint,
+        from_address_id: values.fromAddressId, to_address_id: values.toAddressId,
+        window_from: values.windowFrom, window_to: values.windowTo,
+        order_no: order.order_no
+      }, order.order_no);
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
