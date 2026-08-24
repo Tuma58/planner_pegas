@@ -383,7 +383,7 @@ export function renderLogist(container, context) {
     .filter(request => (!zone || request.zone.name === zone) &&
       (!region || request.region === region) &&
       rangeMatches(request.freeAt, request.freeAt) &&
-      matches(`${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name}`))
+      matches(`${request.vehicle.plate} ${request.vehicle.type_name} ${request.zone.name} ${request.region || ''}`))
     .sort((a, b) => a.freeAt.localeCompare(b.freeAt));
   // Состояние сцепки сейчас — как в ячейке Ганта: действующая диспозиция
   // («ремонт до…»), а простой без неё — «причины нет».
@@ -416,12 +416,12 @@ export function renderLogist(container, context) {
     return `<div class="list-item ordrow ${idleDays > 2 ? 'pipe-returned' : ''}">
       <span style="flex:1;min-width:0">
         <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong>
-        · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.zone.name)}
+        · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.region || request.zone.name || 'субъект не определён')}
         <small class="muted" style="display:block">${request.idleMs > 0
           ? `${idleLabel} с ${formatDateTime(request.freeAt)}`
           : request.overdueTrip ? '⏳ выгрузка ожидается — расчётное время вышло'
           : `освободится ${formatDateTime(request.freeAt)}`}${blockedNote}</small>
-        <small class="muted" style="display:block">📍 ${escapeHtml(request.region || 'субъект не определён')}
+        <small class="muted" style="display:block">📍 геозона ${escapeHtml(request.zone.name || '—')}
           · ${stateNote(request)}</small>
         ${request.nextMissing ? '<small class="next-missing">⏭ следующий рейс не назначен — назначьте до освобождения</small>' : ''}
       </span>
