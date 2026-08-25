@@ -2,7 +2,7 @@
 // месяца. Считается целиком из bootstrap (доступен каждой роли) — вкладку
 // видят все сотрудники, цель — общая видимость достижения плана.
 // Автообновление раз в 90 секунд, пока вкладка открыта.
-import { escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
+import { api, escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
 
@@ -308,6 +308,33 @@ function dashDetailDialog(key, metrics, data, context) {
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
 }
 
+// «Обычно к этому часу» — средний кумулятивный счёт события к текущему
+// времени суток за 7 прошлых дней. Норматив автоматический: сравниваем не
+// с выдуманным планом, а с тем, как команда реально работает.
+export function usualByNow(rows, pickTs, nowMs = Date.now()) {
+  const msk = 3 * 3_600_000;
+  const dayStartMsk = ms => Math.floor((ms + msk) / 86_400_000) * 86_400_000 - msk;
+  const today0 = dayStartMsk(nowMs);
+  const timeOfDay = nowMs - today0;
+  let total = 0;
+  for (let back = 1; back <= 7; back += 1) {
+    const start = today0 - back * 86_400_000;
+    for (const row of rows) {
+      const ts = pickTs(row);
+      if (ts >= start && ts < start + timeOfDay) total += 1;
+    }
+  }
+  return total / 7;
+}
+
+// Светофор «факт против обычного»: ✅ не хуже, ⚠ просели, ❌ сильно ниже.
+function normBadge(fact, usual) {
+  if (usual < 0.5) return '';
+  const ratio = fact / usual;
+  const icon = ratio >= 0.95 ? '✅' : ratio >= 0.6 ? '⚠' : '❌';
+  return ` <small class="muted" title="Среднее к этому часу за 7 дней">· обычно ~${Math.round(usual)} ${icon}</small>`;
+}
+
 export function renderDashboard(container, context) {
   const { state } = context;
   const metrics = dashboardMetrics(state.data);
@@ -367,14 +394,53 @@ export function renderDashboard(container, context) {
         const clock = new Date().toLocaleTimeString('ru-RU',
           { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' });
         if (pace.due < 1) return '<div class="dd-pace muted">⏱ выгрузок по графику пока не ожидалось</div>';
+        // Общий обратный отсчёт: сколько осталось до цели дня и когда закроем
+        // при текущем темпе (темп — от начала рабочего дня 08:00 МСК).
+        const left = Math.max(0, metrics.dayPlan - metrics.dayDone);
+        const nowMs2 = Date.now();
+        const mskDay0 = Math.floor((nowMs2 + 3 * 3_600_000) / 86_400_000) * 86_400_000 - 3 * 3_600_000;
+        const workedH = Math.max(0.5, (nowMs2 - (mskDay0 + 8 * 3_600_000)) / 3_600_000);
+        const rate = metrics.dayDone / workedH;
+        const etaText = left < 1 ? ''
+          : rate > 0
+            ? ` · при текущем темпе закроем к ${new Date(nowMs2 + left / rate * 3_600_000)
+              .toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })}`
+            : '';
+        const goalLine = left < 1
+          ? `<div class="dd-pace good">🏁 Цель дня взята — ${money(Math.round(metrics.dayDone))} выгружено</div>`
+          : `<div class="dd-pace ${pace.diff >= -0.5 ? 'good' : 'bad'}">🎯 До цели дня осталось <b>${money(Math.round(left))}</b>${etaText}</div>`;
         return `<div class="dd-pace ${pace.diff >= -0.5 ? 'good' : 'bad'}">⏱ к ${clock} должно быть выгружено
           ${money(Math.round(pace.due))} — ${pace.diff >= -0.5
             ? `✓ в темпе${pace.diff > 0.5 ? ` +${money(Math.round(pace.diff))}` : ''}`
-            : `⚠ отстаём на ${money(Math.round(-pace.diff))}`}</div>`;
+            : `⚠ отстаём на ${money(Math.round(-pace.diff))}`}</div>${goalLine}`;
       })() : ''}
       <div class="dd-verdict">${verdict}</div>
     </div>`;
   };
+
+  // Нормы «к этому часу» для главных счётчиков дня.
+  const data = state.data;
+  const tsOf = value => {
+    const text = String(value || '');
+    return Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)
+      ? `${text.replace(' ', 'T')}Z` : text);
+  };
+  const norms = {
+    created: usualByNow(data.orders.filter(order => !order.deleted_at), order => tsOf(order.created_at)),
+    assigned: usualByNow(data.trips.filter(trip => trip.order_id && trip.source_system !== '1c' &&
+      trip.status !== 'rejected'), trip => tsOf(trip.created_at)),
+    onLine: usualByNow(data.trips.filter(trip => trip.on_line_at && trip.status !== 'rejected'),
+      trip => tsOf(trip.on_line_at)),
+    unloaded: usualByNow(data.trips.filter(trip => trip.unloaded_at && trip.status !== 'rejected'),
+      trip => tsOf(trip.unloaded_at))
+  };
+  // Воронка ресурса дня: можно задействовать → задействовано → упущено.
+  const canUse = metrics.fleet.total - metrics.fleet.unavailable;
+  const unusedLoss = metrics.fleet.idle * 77_000; // средняя выручка машино-дня (август)
+  // «Моя смена» — только сотрудникам конвейера; табло (manager) и гостям не показывается.
+  const myRoles = data.user.roles || [data.user.role];
+  const showMyShift = !Number(data.user.guest) &&
+    myRoles.some(role => ['sales', 'logist', 'dispatcher', 'resource', 'accountant', 'admin'].includes(role));
 
   const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="dashwrap" id="dashRoot">
@@ -409,15 +475,19 @@ export function renderDashboard(container, context) {
       ${dayCard(metrics.days.today, 'Сегодня', 'today')}
       ${dayCard(metrics.days.tomorrow, 'Завтра', 'future')}
     </div>
+    ${showMyShift ? `<div class="dash-role" id="myShiftCard" style="margin-bottom:10px">
+      <div class="dash-role-title">🏅 Моя смена</div>
+      <div class="dash-row"><span>Загружаю личную сводку…</span></div>
+    </div>` : ''}
     <div class="dash-roles">
       ${roleCard('📦 Продажи', [
-        { label: 'Внесено заявок сегодня', value: metrics.sales.createdToday, detail: 'salesCreated' },
+        { label: 'Внесено заявок сегодня', value: `${metrics.sales.createdToday}${normBadge(metrics.sales.createdToday, norms.created)}`, detail: 'salesCreated' },
         { label: 'Сумма внесённого (бНДС)', value: money(Math.round(metrics.sales.createdSum)) },
         { label: 'Средний чек внесённого', value: money(Math.round(metrics.sales.avgCheck)) },
         { label: 'Очередь без ТС', value: metrics.sales.queue, cls: metrics.sales.queue ? 'warn' : 'ok', detail: 'salesQueue' }
       ])}
       ${roleCard('🚚 Логист', [
-        { label: 'Назначено рейсов сегодня', value: metrics.logist.assignedToday, detail: 'logistAssigned' },
+        { label: 'Назначено рейсов сегодня', value: `${metrics.logist.assignedToday}${normBadge(metrics.logist.assignedToday, norms.assigned)}`, detail: 'logistAssigned' },
         { label: 'Очередь на назначение', value: metrics.logist.queue, cls: metrics.logist.queue ? 'warn' : 'ok', detail: 'salesQueue' },
         { label: 'На линии без следующего рейса', value: `${metrics.logist.noNext} из ${metrics.dispatcher.online}`,
           cls: metrics.logist.noNext ? 'bad' : 'ok', detail: 'logistNoNext' },
@@ -425,18 +495,21 @@ export function renderDashboard(container, context) {
         { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
       ])}
       ${roleCard('🎧 Диспетчер', [
-        { label: 'Выведено на линию сегодня', value: metrics.dispatcher.onLineToday, detail: 'dispOnLine' },
+        { label: 'Выведено на линию сегодня', value: `${metrics.dispatcher.onLineToday}${normBadge(metrics.dispatcher.onLineToday, norms.onLine)}`, detail: 'dispOnLine' },
         { label: 'Ждут выхода сегодня', value: metrics.dispatcher.startingToday,
           cls: metrics.dispatcher.startingToday ? 'warn' : 'ok', detail: 'dispStarting' },
-        { label: 'Выгружено сегодня', value: metrics.dispatcher.unloadedToday, detail: 'dispUnloaded' },
+        { label: 'Выгружено сегодня', value: `${metrics.dispatcher.unloadedToday}${normBadge(metrics.dispatcher.unloadedToday, norms.unloaded)}`, detail: 'dispUnloaded' },
         { label: 'На линии сейчас · машин', value: metrics.dispatcher.online, detail: 'dispOnline' },
         { label: 'Рейсов на контроле', value: metrics.dispatcher.onlineTripCount, detail: 'dispOnline' }
       ])}
-      ${roleCard('🔧 Ресурс', [
+      ${roleCard('🔧 Ресурс — воронка дня', [
         { label: 'Парк в работе', value: metrics.fleet.total },
-        { label: 'В рейсе сегодня', value: `${metrics.fleet.inTrip} (${pctOf(metrics.fleet.inTrip, metrics.fleet.total)}%)`, detail: 'fleetInTrip' },
-        { label: 'Недоступны (оформлено)', value: metrics.fleet.unavailable, detail: 'fleetUnavailable' },
-        { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
+        { label: '− Недоступны (ремонт, пересменка, без вод., резерв)', value: `−${metrics.fleet.unavailable}`, detail: 'fleetUnavailable' },
+        { label: '= Можно задействовать сегодня', value: `<b>${canUse}</b>` },
+        { label: 'Задействовано (в рейсе сегодня)', value: `${metrics.fleet.inTrip} из ${canUse} (${pctOf(metrics.fleet.inTrip, canUse)}%)`,
+          cls: metrics.fleet.inTrip >= canUse * 0.85 ? 'ok' : 'warn', detail: 'fleetInTrip' },
+        { label: 'НЕ задействовано — упущено', value: `${metrics.fleet.idle}${metrics.fleet.idle ? ` · ≈ −${money(unusedLoss)}` : ''}`,
+          cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
       ])}
     </div>
     <p class="muted dash-note">Факт — по выгрузкам, без НДС (ИП 7%). Дневной план —
@@ -444,6 +517,29 @@ export function renderDashboard(container, context) {
       на весь месяц. Обновляется автоматически.</p>
   </div>`;
   restoreScrolls(container, savedScrolls);
+
+  // «Моя смена»: личная сводка подгружается отдельно — дашборд не ждёт её.
+  if (showMyShift) {
+    api('/api/my-shift').then(my => {
+      const card = document.getElementById('myShiftCard');
+      if (!card) return;
+      const barPct = Math.min(100, my.normToNow ? Math.round(my.ops / my.normToNow * 100) : 100);
+      const effCls = my.effPct >= 120 ? 'ok' : my.effPct < 70 ? 'bad' : '';
+      card.innerHTML = `
+        <div class="dash-role-title">🏅 Моя смена <small class="muted">${escapeHtml(my.shiftLabel)}</small></div>
+        <div class="dash-row"><span>Операций за смену</span>
+          <b>${my.ops}${my.normToNow ? ` <small class="muted" title="Норма должности к этому часу (среднее за 7 дней)">· норма к часу ~${my.normToNow}</small>` : ''}</b></div>
+        <div class="dash-gauge"><i class="${barPct >= 95 ? 'ok' : 'ride'}" style="width:${barPct}%"></i></div>
+        <div class="dash-row ${effCls}"><span>Эффективность</span>
+          <b title="60% нагрузка (×${my.loadIdx}) + 40% скорость (×${my.speedIdx}) к средней по должности «${escapeHtml(my.roleKey)}» за 7 дней">${my.effPct}%</b></div>
+        ${my.medianWaitMs ? `<div class="dash-row"><span>Обработка задания (медиана)</span>
+          <b>${Math.round(my.medianWaitMs / 60000)} мин${my.baseWaitMs ? ` <small class="muted">· по должности ${Math.round(my.baseWaitMs / 60000)} мин</small>` : ''}</b></div>` : ''}
+        <div class="dash-row"><span>Вклад в операции смены</span><b>${my.sharePct}%</b></div>`;
+    }).catch(() => {
+      const card = document.getElementById('myShiftCard');
+      if (card) card.remove();
+    });
+  }
 
   // Раскрытие плашек ролей: список за цифрой (заявки / рейсы / машины).
   container.querySelectorAll('[data-dash-detail]').forEach(row =>

@@ -1462,3 +1462,52 @@ export function deliveryPlan(db, month) {
   }
   return { month, daysInMonth, slots, facts, firstWeekday: new Date(monthStart).getUTCDay() };
 }
+
+// ── «Моя смена»: личная мотивационная сводка сотрудника на дашборде ──
+// Операции пользователя за текущую смену против нормы его должности
+// (среднее на человеко-смену за 7 суток, пропорционально прошедшей части
+// смены). Эффективность — та же формула, что в отчёте смены: 60% нагрузка
+// + 40% скорость, компоненты ограничены ×2,5.
+export function myShiftStats(db, user, nowMs = Date.now()) {
+  const shift = currentShift(nowMs);
+  const bounds = shiftBounds(shift.day, shift.kind);
+  const elapsed = Math.min(1, Math.max(0.05,
+    (nowMs - Date.parse(bounds.fromIso)) / (12 * 3_600_000)));
+  const current = collectOperations(db, bounds.fromIso, new Date(nowMs).toISOString()).list;
+  const myName = user.full_name || user.username || '';
+  const mine = current.filter(op => op.who === myName);
+  const myWaits = mine.filter(op => op.waitMs !== null).map(op => op.waitMs);
+  // База должности за 7 суток (включая текущую смену).
+  const roleKey = user.job_role || user.role || '—';
+  const baseFrom = new Date(nowMs - 7 * 86_400_000).toISOString();
+  const base = collectOperations(db, baseFrom, new Date(nowMs).toISOString()).list
+    .filter(op => op.jobRole === roleKey || (roleKey === (user.role || '') && op.jobRole === roleKey));
+  const perShift = new Map();
+  const baseWaits = [];
+  for (const op of base) {
+    const key = `${op.who}|${Math.floor(op.atMs / (12 * 3_600_000))}`;
+    perShift.set(key, (perShift.get(key) || 0) + 1);
+    if (op.waitMs !== null) baseWaits.push(op.waitMs);
+  }
+  const shifts = [...perShift.values()];
+  const avgShift = shifts.length ? shifts.reduce((sum, value) => sum + value, 0) / shifts.length : 0;
+  const normToNow = avgShift * elapsed;
+  const clamp = value => Math.min(2.5, value);
+  const loadIdx = normToNow ? clamp(mine.length / normToNow) : 1;
+  const myMedian = median(myWaits);
+  const baseMedian = median(baseWaits);
+  const speedIdx = baseMedian && myMedian ? clamp(baseMedian / myMedian) : 1;
+  return {
+    shiftLabel: bounds.label,
+    ops: mine.length,
+    normToNow: Math.round(normToNow * 10) / 10,
+    avgShift: Math.round(avgShift * 10) / 10,
+    effPct: Math.round(100 * (0.6 * loadIdx + 0.4 * speedIdx)),
+    loadIdx: Math.round(loadIdx * 100) / 100,
+    speedIdx: Math.round(speedIdx * 100) / 100,
+    medianWaitMs: myMedian || null,
+    baseWaitMs: baseMedian || null,
+    sharePct: current.length ? Math.round(mine.length / current.length * 100) : 0,
+    roleKey
+  };
+}

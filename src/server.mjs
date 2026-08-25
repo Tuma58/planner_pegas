@@ -15,7 +15,7 @@ import { processOutbox, runPull, startIntegrationScheduler, testConnection } fro
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
-  currentShift, shiftReport, deliveryPlan, seedDeliverySlots
+  currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -924,6 +924,13 @@ async function api(request, response, url) {
     const kind = ['day', 'night'].includes(url.searchParams.get('shift'))
       ? url.searchParams.get('shift') : fallback.kind;
     return json(response, 200, shiftReport(db, day, kind));
+  }
+
+  // ── «Моя смена»: личная сводка сотрудника для мотивационной плашки ──
+  if (request.method === 'GET' && pathname === '/api/my-shift') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    return json(response, 200, myShiftStats(db, user));
   }
 
   // ── Бронь ТС: «предварительно назначена в голове логиста» — держит машину

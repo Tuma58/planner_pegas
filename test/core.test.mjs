@@ -1906,3 +1906,26 @@ test('радар продаж: рынок направлений и свобод
   const held = zones.flatMap(group => group.list).find(item => item.vehicle.id === 'v3');
   assert.ok(held?.hold, 'бронь видна на свободной машине');
 });
+
+test('моя смена: личные операции против нормы должности', async t => {
+  const { myShiftStats, currentShift } = await import('../src/planner-service.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-myshift-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const admin = db.prepare('SELECT * FROM users LIMIT 1').get();
+  db.prepare(`UPDATE users SET full_name='Оператор Тест', job_role='Диспетчер' WHERE id=?`).run(admin.id);
+  const me = db.prepare('SELECT * FROM users WHERE id=?').get(admin.id);
+  // 3 операции контроля в текущую смену.
+  const ins = db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
+    VALUES(?,?,?,?,?,?,datetime('now','-10 minutes'))`);
+  for (let i = 0; i < 3; i += 1) ins.run(`ms-${i}`, me.id, 'control-worked', 'control', `k${i}`, '{}');
+  const stats = myShiftStats(db, me);
+  assert.equal(stats.ops, 3, 'личные операции за смену');
+  assert.ok(stats.effPct > 0 && Number.isFinite(stats.effPct));
+  assert.equal(stats.sharePct, 100, 'единственный работавший — 100% вклада');
+  assert.equal(stats.roleKey, 'Диспетчер');
+  assert.ok(stats.normToNow >= 0);
+});
