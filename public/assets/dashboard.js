@@ -268,7 +268,7 @@ const DETAIL_TITLES = {
   salesCreated: 'Внесено заявок сегодня', salesQueue: 'Очередь на назначение (без ТС)',
   logistAssigned: 'Назначено рейсов сегодня', logistNoNext: 'На линии без следующего рейса',
   dispOnLine: 'Выведено на линию сегодня', dispStarting: 'Ждут выхода сегодня',
-  dispUnloaded: 'Выгружено сегодня', dispOnline: 'В пути сейчас',
+  dispUnloaded: 'Выгружено сегодня', dispOnline: 'Рейсы на контроле',
   fleetInTrip: 'Парк в рейсе сегодня', fleetIdle: 'Простой без причины', fleetUnavailable: 'Недоступны (оформлено)'
 };
 const fmtDt = value => value ? new Date(String(value).includes('T') ? value : `${String(value).replace(' ', 'T')}Z`)
@@ -430,7 +430,7 @@ export function renderDashboard(container, context) {
           cls: metrics.dispatcher.startingToday ? 'warn' : 'ok', detail: 'dispStarting' },
         { label: 'Выгружено сегодня', value: metrics.dispatcher.unloadedToday, detail: 'dispUnloaded' },
         { label: 'На линии сейчас · машин', value: metrics.dispatcher.online, detail: 'dispOnline' },
-        { label: 'Рейсов в пути', value: metrics.dispatcher.onlineTripCount, detail: 'dispOnline' }
+        { label: 'Рейсов на контроле', value: metrics.dispatcher.onlineTripCount, detail: 'dispOnline' }
       ])}
       ${roleCard('🔧 Ресурс', [
         { label: 'Парк в работе', value: metrics.fleet.total },
