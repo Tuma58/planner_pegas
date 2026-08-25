@@ -442,6 +442,8 @@ export function renderLogist(container, context) {
           <button class="button small" data-pick="${index}" title="Заявки очереди, подходящие по времени освобождения">Подобрать рейс</button>
           <button class="button ghost small" data-ask-sales="${request.vehicle.id}"
             title="Уведомить продажи: сцепка свободна, нужна загрузка">→ Продажи</button>
+          <button class="button ghost small" data-hold-toggle="${request.vehicle.id}"
+            title="${hold ? `Снять бронь (${escapeHtml(hold.held_by_name)})` : 'Забронировать под свой план на 24 ч — продажи не продадут её под другую сделку'}">${hold ? '🔓 Снять' : '🔒 Бронь'}</button>
         </span>
       </span>
     </div>`;
@@ -690,6 +692,24 @@ export function renderLogist(container, context) {
   wireDemurrageChip(container, context);
   container.querySelector('#logistTask').onclick = () =>
     logistTaskDialog(data, context, allVehicleRequests, queueAll);
+  container.querySelectorAll('[data-hold-toggle]').forEach(button =>
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      const vehicleId = button.dataset.holdToggle;
+      const held = (data.vehicleHolds || []).some(item => item.vehicle_id === vehicleId);
+      try {
+        if (held) {
+          await api('/api/vehicle-holds', { method: 'POST', body: JSON.stringify({ vehicleId, remove: true }) });
+          toast('Бронь снята');
+        } else {
+          const note = prompt('Бронь на 24 часа. Под что держите машину:', '') ?? null;
+          if (note === null) return;
+          await api('/api/vehicle-holds', { method: 'POST', body: JSON.stringify({ vehicleId, note, hours: 24 }) });
+          toast('Забронирована на 24 ч — продажи видят бронь в радаре и форме');
+        }
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    }));
   container.querySelectorAll('[data-ask-sales]').forEach(button =>
     button.addEventListener('click', async () => {
       try {

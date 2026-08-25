@@ -5,7 +5,7 @@
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
-import { salesRadarDialog, directionMarket } from './sales-radar.js';
+import { salesRadarDialog, directionMarket, freeVehiclesByZone } from './sales-radar.js';
 import { customerCardDialog } from './customer-card.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -271,6 +271,7 @@ export function salesTaskFor(data, dayIso) {
       return;
     }
     free.push({ vehicle, since: lastBefore?.ends_at || null,
+      hold: (data.vehicleHolds || []).find(item => item.vehicle_id === vehicle.id) || null,
       place: место(lastBefore), region: регион(lastBefore), position: positionOf(lastBefore) });
   });
   free.sort((a, b) => String(a.since || '').localeCompare(String(b.since || '')));
@@ -433,7 +434,7 @@ function salesTaskDialog(data, context) {
     </div>`;
     box.innerHTML = `
       <div class="task-kpis">
-        <div class="task-kpi"><b>${task.free.length}</b><span>свободны</span></div>
+        <div class="task-kpi"><b>${task.free.filter(item => !item.hold).length}</b><span>свободны без брони${task.free.some(item => item.hold) ? ` · 🔒 ${task.free.filter(item => item.hold).length}` : ''}</span></div>
         <div class="task-kpi"><b>${task.freeing.length}</b><span>освободятся</span></div>
         <div class="task-kpi muted"><b>${task.unavailable.length}</b><span>недоступны</span></div>
         <div class="task-kpi ${lackLanes.length ? 'warn' : ''}"><b>${task.needs.length}</b>
@@ -453,8 +454,8 @@ function salesTaskDialog(data, context) {
       <div class="task-sec"><b>Свободны с прошлых дней (${task.free.length})</b>
         ${[...freeByRegion.entries()].sort((a, b) => b[1].length - a[1].length).map(([region, list]) =>
           `<details class="task-fold"><summary>${escapeHtml(region)} — <b>${list.length}</b></summary>
-            <div class="task-chips">${list.map(item => `<span class="tt-chip mono"
-              title="${escapeHtml(item.place)}${item.since ? ` · стоит с ${formatDateTime(item.since)}` : ''}">${escapeHtml(item.vehicle.plate)}</span>`).join(' ')}</div>
+            <div class="task-chips">${list.map(item => `<span class="tt-chip mono" ${item.hold ? 'style="opacity:.55"' : ''}
+              title="${escapeHtml(item.place)}${item.since ? ` · стоит с ${formatDateTime(item.since)}` : ''}${item.hold ? ` · 🔒 бронь: ${escapeHtml(item.hold.held_by_name)}${item.hold.note ? ` — ${escapeHtml(item.hold.note)}` : ''}` : ''}">${item.hold ? '🔒 ' : ''}${escapeHtml(item.vehicle.plate)}</span>`).join(' ')}</div>
           </details>`).join('') || '<p class="muted">нет</p>'}</div>
       <div class="task-sec"><b>Освободятся в течение дня (${task.freeing.length})</b>
         ${task.freeing.map(item => `<div class="task-row">⏱ <b>${item.at ? formatDateTime(item.at) : '⚠'}</b>
@@ -1225,7 +1226,12 @@ export function renderSales(container, context) {
     // Значение datetime-local не содержит зоны — трактуем как UTC, как и остальные метки времени.
     const startsAt = windowFrom ? `${windowFrom}:00.000Z` : null;
     const candidates = startsAt ? matchVehicles(data, fromName, startsAt) : [];
-    const best = candidates[0];
+    // Ёмкость честная: забронированные логистом машины не предлагаются
+    // как «свободная сцепка» — под них уже есть план.
+    const heldIds = new Set((data.vehicleHolds || []).map(hold => hold.vehicle_id));
+    const freeCandidates = candidates.filter(candidate => !heldIds.has(candidate.vehicle.id));
+    const heldCount = candidates.length - freeCandidates.length;
+    const best = freeCandidates[0];
     const arrival = startsAt
       ? new Date(Date.parse(startsAt) + info.transit * 86_400_000).toISOString() : null;
     const hours = Math.round(info.transit * 24);
@@ -1250,7 +1256,9 @@ export function renderSales(container, context) {
       <div class="feas-row ${best ? 'ok' : 'bad'}"><span>Свободная сцепка</span>
         <b>${best
           ? `${escapeHtml(best.vehicle.plate)} · ${best.inZone ? 'в зоне' : escapeHtml(best.zoneName || 'перегон')}`
-          : 'нет свободной к сроку'}</b></div>
+          : heldCount ? `все под бронью (🔒 ${heldCount}) — согласуйте с логистом` : 'нет свободной к сроку'}</b></div>
+      ${best && heldCount ? `<div class="feas-row"><span>Ёмкость к сроку</span>
+        <b>${freeCandidates.length} без брони · 🔒 ${heldCount}</b></div>` : ''}
       ${best && !best.ready
         ? `<div class="feas-row bad"><span>Готова к подаче</span><b>${fmtDateTime(best.readyAt)}</b></div>` : ''}`;
   };
@@ -1310,6 +1318,15 @@ export function renderSales(container, context) {
     values.rateVat = parseMoney(values.rateVat) || '';
     if (!values.rateVat) {
       values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
+    }
+    // Мягкое предупреждение: в зоне погрузки нет свободных машин без брони —
+    // заявку создать можно (машина может освободиться или прийти перегоном),
+    // но вслепую набирать заказы нельзя.
+    const fromZoneNameWarn = data.reference.zones.find(zone => zone.id === values.fromZoneId)?.name;
+    const zoneCapacity = freeVehiclesByZone(data).find(group => group.zone === fromZoneNameWarn);
+    if ((!zoneCapacity || zoneCapacity.freeNoHold === 0) &&
+        !confirm(`В зоне «${fromZoneNameWarn || '—'}» свободных машин без брони сейчас нет — согласуйте с логистом.\nВсё равно создать заявку?`)) {
+      return;
     }
     // Защита от дублей: похожая заявка уже в портфеле (тот же заказчик,
     // направление и пересекающееся окно) — вероятно, её просто не нашли в списке.
