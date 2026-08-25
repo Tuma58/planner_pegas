@@ -413,16 +413,23 @@ export function renderLogist(container, context) {
     const blockedNote = request.blockedKind
       ? ` · ⚙ ${({ repair: 'из ремонта', no_driver: 'получит водителя', reserve: 'выйдет из резерва' })[request.blockedKind] || request.blockedKind}`
       : '';
+    // Строка 3: ближайшее БУДУЩЕЕ событие сцепки (пересменка, ремонт,
+    // запланированный рейс…) со временем — логист видит горизонт, а не
+    // только текущее состояние.
+    const nextEvent = nextVehicleEvent(data, request.vehicle.id, nowMs);
+    const nextLabel = nextEvent
+      ? `⏭ ${escapeHtml(String(nextEvent.label).replace('Запланирован рейс ', 'рейс ').slice(0, 52))} — <b>${formatDateTime(nextEvent.at)}</b>`
+      : '⏭ планов нет — можно продавать';
     return `<div class="list-item ordrow ${idleDays > 2 ? 'pipe-returned' : ''}">
       <span style="flex:1;min-width:0">
         <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong>
         · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.region || request.zone.name || 'субъект не определён')}
-        <small class="muted" style="display:block">${request.idleMs > 0
-          ? `${idleLabel} с ${formatDateTime(request.freeAt)}`
-          : request.overdueTrip ? '⏳ выгрузка ожидается — расчётное время вышло'
-          : `освободится ${formatDateTime(request.freeAt)}`}${blockedNote}</small>
+        <span style="display:block;margin:2px 0 1px">${request.idleMs > 0
+          ? `<b style="color:var(--warn)">⌛ ${idleLabel}</b> · с <b>${formatDateTime(request.freeAt)}</b>`
+          : request.overdueTrip ? '<b class="danger">⏳ выгрузка ожидается — расчётное время вышло</b>'
+          : `⏱ освободится <b>${formatDateTime(request.freeAt)}</b>`}${blockedNote}</span>
         <small class="muted" style="display:block">📍 геозона ${escapeHtml(request.zone.name || '—')}
-          · ${stateNote(request)}</small>
+          · ${stateNote(request)} · ${nextLabel}</small>
         ${request.nextMissing ? '<small class="next-missing">⏭ следующий рейс не назначен — назначьте до освобождения</small>' : ''}
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
