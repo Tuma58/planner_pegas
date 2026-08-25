@@ -1864,3 +1864,45 @@ test('план вывоза: сетка слотов из истории и пл
   assert.equal(fact.stage, 1, 'стадия «заявка внесена»');
   assert.equal(fact.rv, 95000);
 });
+
+test('радар продаж: рынок направлений и свободные машины без блокирующих диспозиций', async () => {
+  const { directionMarket, freeVehiclesByZone } = await import('../public/assets/sales-radar.js');
+  const now = Date.now();
+  const iso = ms => new Date(ms).toISOString();
+  const data = {
+    vehicles: [
+      { id: 'v1', plate: 'а001аа58', status: 'work', zone_name: 'Дом' },
+      { id: 'v2', plate: 'а002аа58', status: 'work', zone_name: 'Дом' },
+      { id: 'v3', plate: 'а003аа58', status: 'work', zone_name: 'Дом' }
+    ],
+    trips: [
+      // v1 выгрузилась в Москве 30 часов назад — свободна, стоит сутки+.
+      { vehicle_id: 'v1', status: 'done', from_name: 'Дом', to_name: 'Москва',
+        starts_at: iso(now - 54 * 3600e3), ends_at: iso(now - 30 * 3600e3),
+        revenue_vat: 80000, distance_km: 640, customer_name: 'Клиент А' },
+      // ещё 8 рейсов Дом→Москва для регулярности (≥1/нед за 60 дней)
+      ...Array.from({ length: 8 }, (_, i) => ({
+        vehicle_id: 'v9', status: 'done', from_name: 'Дом', to_name: 'Москва',
+        starts_at: iso(now - (i + 2) * 6 * 86400e3), ends_at: iso(now - (i + 2) * 6 * 86400e3 + 24 * 3600e3),
+        revenue_vat: 70000 + i * 5000, distance_km: 640, customer_name: i % 2 ? 'Клиент А' : 'Клиент Б' }))
+    ],
+    dispositions: [
+      // v2 в ремонте сейчас — в радар не попадает.
+      { vehicle_id: 'v2', kind: 'repair', starts_at: iso(now - 3600e3), ends_at: iso(now + 48 * 3600e3) }
+    ],
+    vehicleHolds: [{ vehicle_id: 'v3', until: iso(now + 3600e3), note: 'под сделку', held_by_name: 'Логист' }]
+  };
+  const market = directionMarket(data, now);
+  const dir = market.find(item => item.key === 'Дом→Москва');
+  assert.ok(dir, 'направление в рынке');
+  assert.ok(dir.median >= 70000 && dir.median <= 100000);
+  assert.ok(dir.topCustomers.length >= 2, 'клиенты направления собраны');
+  const zones = freeVehiclesByZone(data, now);
+  const moscow = zones.find(group => group.zone === 'Москва');
+  assert.ok(moscow, 'v1 свободна в зоне выгрузки');
+  assert.equal(moscow.idleDayPlus, 1, 'стоит сутки+');
+  const allPlates = zones.flatMap(group => group.list.map(item => item.vehicle.plate));
+  assert.ok(!allPlates.includes('а002аа58'), 'машина в ремонте не предлагается к продаже');
+  const held = zones.flatMap(group => group.list).find(item => item.vehicle.id === 'v3');
+  assert.ok(held?.hold, 'бронь видна на свободной машине');
+});

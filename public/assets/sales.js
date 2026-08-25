@@ -5,6 +5,7 @@
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
+import { salesRadarDialog, directionMarket } from './sales-radar.js';
 import { customerCardDialog } from './customer-card.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -950,6 +951,8 @@ export function renderSales(container, context) {
           title="Срез на дату: свободные и освобождающиеся сцепки, ремонты и пересменки, незакрытые регионы">📋 Задание</button>
         <button class="button ghost small" id="salesDeliveryPlan"
           title="График вывоза на месяц: жёлтые слоты без заявок — ваши задачи на прозвон">📅 План вывоза</button>
+        <button class="button small" id="salesRadar"
+          title="Куда продавать: горящие зоны со свободными машинами, рынок направлений и дыры плана — с бронированием ТС">🎯 Куда продавать</button>
         <button class="button ghost small" id="salesPresetToday" title="Только сегодняшний день">Сегодня</button>
         <button class="button ghost small" id="salesPresetWeek" title="Ближайшие 7 дней">7 дн</button>
         ${filterActive ? '<button class="button ghost small" id="salesFilterReset">✕ Сброс</button>' : ''}
@@ -1056,6 +1059,7 @@ export function renderSales(container, context) {
   wireDemurrageChip(container, context);
   container.querySelector('#salesTask').onclick = () => salesTaskDialog(data, context);
   container.querySelector('#salesDeliveryPlan').onclick = () => deliveryPlanDialog(context);
+  container.querySelector('#salesRadar').onclick = () => salesRadarDialog(context);
   container.querySelector('#salesPresetToday').onclick = () => {
     filter.from = dayIsoLocal(0); filter.to = dayIsoLocal(0);
     rerender();
@@ -1225,9 +1229,22 @@ export function renderSales(container, context) {
     const arrival = startsAt
       ? new Date(Date.parse(startsAt) + info.transit * 86_400_000).toISOString() : null;
     const hours = Math.round(info.transit * 24);
+    // Рынок плеча по фактическим рейсам за 60 дней — точнее прейскуранта:
+    // введённая ставка сразу сравнивается с медианой (лечит дешёвые обратки).
+    const fromZoneName = data.reference.zones.find(zone => zone.id === fromId)?.name;
+    const toZoneName = data.reference.zones.find(zone => zone.id === toId)?.name;
+    const marketDir = directionMarket(data).find(dir =>
+      dir.from === fromZoneName && dir.to === toZoneName);
+    const entered = parseMoney(rateInput.value) || 0;
+    const marketLine = marketDir
+      ? `<div class="feas-row ${entered && entered < marketDir.p25 ? 'bad' : ''}"><span>Рынок плеча (60 дн)</span>
+          <b>${money(marketDir.median)} <small class="muted">(${money(marketDir.p25)}–${money(marketDir.p75)})</small>${entered
+    ? ` · ваша ${entered < marketDir.median ? '−' : '+'}${Math.abs(Math.round((entered / marketDir.median - 1) * 100))}%` : ''}</b></div>`
+      : '';
     container.querySelector('#salesFeas').innerHTML = `
       <div class="feas-t">Осуществимость</div>
       <div class="feas-row"><span>Рыночная ставка</span><b>${money(info.rate)}</b></div>
+      ${marketLine}
       <div class="feas-row"><span>Срок доставки</span><b>${hours} ч · ${info.distance.toLocaleString('ru-RU')} км</b></div>
       ${arrival ? `<div class="feas-row"><span>Прибытие ~</span><b>${fmtDateTime(arrival)}</b></div>` : ''}
       <div class="feas-row ${best ? 'ok' : 'bad'}"><span>Свободная сцепка</span>
@@ -1239,6 +1256,7 @@ export function renderSales(container, context) {
   };
   ['salesFrom', 'salesTo', 'salesWinFrom'].forEach(id =>
     container.querySelector(`#${id}`).addEventListener('change', feasibility));
+  container.querySelector('#salesRate').addEventListener('input', feasibility);
   feasibility();
 
   // Карточка клиента: раскрыть/свернуть его заказы.
@@ -1689,6 +1707,8 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
     <div class="list" style="max-height:220px;overflow:auto;margin-bottom:10px">
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">
         <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
+        ${(data.vehicleHolds || []).some(hold => hold.vehicle_id === candidate.vehicle.id)
+    ? `<span class="badge warn" title="${escapeHtml((data.vehicleHolds || []).filter(hold => hold.vehicle_id === candidate.vehicle.id).map(hold => `Бронь: ${hold.held_by_name}${hold.note ? ` — ${hold.note}` : ''} до окончания`).join(''))}">🔒 бронь</span>` : ''}
         <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name)}${candidate.emptyKm != null
           ? ` · подгон ~${candidate.emptyKm} км${candidate.approx ? ' (по городу/зоне)' : ''}` : ''}${candidate.readyAt
           ? ` · ${candidate.ready ? 'готова с' : '⚠ готова только с'} ${fmtDateTime(candidate.readyAt)}` : ''}</small>

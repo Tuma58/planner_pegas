@@ -803,7 +803,9 @@ async function api(request, response, url) {
         WHERE r.status IN ('draft','handed','assigned')
         ORDER BY r.created_at DESC`).all(),
       demurrage: demurrageSummary(db),
-      customerDates: upcomingCustomerDates(db, Date.now(), 7)
+      customerDates: upcomingCustomerDates(db, Date.now(), 7),
+      vehicleHolds: db.prepare(`SELECT h.vehicle_id, h.until, h.note, h.held_by_name
+        FROM vehicle_holds h WHERE h.until > datetime('now')`).all()
     });
   }
 
@@ -922,6 +924,40 @@ async function api(request, response, url) {
     const kind = ['day', 'night'].includes(url.searchParams.get('shift'))
       ? url.searchParams.get('shift') : fallback.kind;
     return json(response, 200, shiftReport(db, day, kind));
+  }
+
+  // ── Бронь ТС: «предварительно назначена в голове логиста» — держит машину
+  // от продажи под чужую сделку. Переключатель: повторный запрос владельца
+  // брони снимает её; чужую бронь снимает только админ. ──
+  if (request.method === 'POST' && pathname === '/api/vehicle-holds') {
+    const actor = currentUser(request);
+    const permission = hasPermission(actor, 'trips:write') ? 'trips:write' : 'orders:write';
+    const user = requirePermission(request, response, permission);
+    if (!user) return;
+    const body = await readJson(request);
+    const vehicle = db.prepare(`SELECT id, plate FROM vehicles WHERE id=?`).get(String(body.vehicleId || ''));
+    if (!vehicle) return errorJson(response, 404, 'ТС не найдено');
+    const existing = db.prepare(`SELECT * FROM vehicle_holds WHERE vehicle_id=? AND until > datetime('now')`)
+      .get(vehicle.id);
+    if (body.remove || (existing && !body.note && !body.hours)) {
+      if (existing && existing.held_by !== user.id &&
+          !(rolesOf(user).includes('admin'))) {
+        return errorJson(response, 403, `Бронь поставил ${existing.held_by_name || 'другой сотрудник'} — снять может он или админ`);
+      }
+      db.prepare('DELETE FROM vehicle_holds WHERE vehicle_id=?').run(vehicle.id);
+      audit(db, user, 'hold-remove', 'vehicle', vehicle.id, {}, requestIp(request));
+      return json(response, 200, { held: false });
+    }
+    const hours = Math.min(72, Math.max(1, Number(body.hours) || 24));
+    const until = new Date(Date.now() + hours * 3_600_000).toISOString();
+    db.prepare(`INSERT INTO vehicle_holds(vehicle_id,until,note,held_by,held_by_name)
+      VALUES(?,?,?,?,?)
+      ON CONFLICT(vehicle_id) DO UPDATE SET until=excluded.until, note=excluded.note,
+        held_by=excluded.held_by, held_by_name=excluded.held_by_name, created_at=CURRENT_TIMESTAMP`)
+      .run(vehicle.id, until, String(body.note || '').trim().slice(0, 120),
+        user.id, user.full_name || user.username || '');
+    audit(db, user, 'hold', 'vehicle', vehicle.id, { hours, note: body.note }, requestIp(request));
+    return json(response, 200, { held: true, until });
   }
 
   // ── План вывоза грузов от клиентов: сетка слотов, план-факт месяца ──

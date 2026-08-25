@@ -420,9 +420,12 @@ export function renderLogist(container, context) {
     const nextLabel = nextEvent
       ? `⏭ ${escapeHtml(String(nextEvent.label).replace('Запланирован рейс ', 'рейс ').slice(0, 52))} — <b>${formatDateTime(nextEvent.at)}</b>`
       : '⏭ планов нет — можно продавать';
+    // Бронь «🔒»: машина предварительно занята под сделку (радар продаж).
+    const hold = (data.vehicleHolds || []).find(item => item.vehicle_id === request.vehicle.id);
     return `<div class="list-item ordrow ${idleDays > 2 ? 'pipe-returned' : ''}">
       <span style="flex:1;min-width:0">
         <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong>
+        ${hold ? `<span class="badge warn" title="Забронирована: ${escapeHtml(hold.held_by_name)}${hold.note ? ` — ${escapeHtml(hold.note)}` : ''}">🔒 до ${formatDateTime(hold.until)}</span>` : ''}
         · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.region || request.zone.name || 'субъект не определён')}
         <span style="display:block;margin:2px 0 1px">${request.idleMs > 0
           ? `<b style="color:var(--warn)">⌛ ${idleLabel}</b> · с <b>${formatDateTime(request.freeAt)}</b>`

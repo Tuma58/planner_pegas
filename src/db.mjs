@@ -245,6 +245,12 @@ CREATE TABLE IF NOT EXISTS demurrage_claims (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(trip_id, stop_kind)
 );
+CREATE TABLE IF NOT EXISTS vehicle_holds (
+  vehicle_id TEXT PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
+  until TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+  held_by TEXT REFERENCES users(id), held_by_name TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS delivery_slots (
   id TEXT PRIMARY KEY, customer_name TEXT NOT NULL,
   from_zone_id TEXT NOT NULL REFERENCES zones(id),
