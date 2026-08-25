@@ -74,7 +74,10 @@ export async function deliveryPlanDialog(context, month = '') {
         : fact.stage >= 2 ? 'background:#2e7d6b;color:#fff'
           : 'background:#3b6ea5;color:#fff'
       : p ? 'background:#fff3cd' : '';
-    const text = fact ? fact.n : p ? Math.round(p * 10) / 10 : '';
+    // План в ячейке — математическое округление (0,5 → 1); редкие слоты
+    // (<0,5 рейса в день) остаются жёлтыми без цифры, точное значение —
+    // в подсказке при наведении.
+    const text = fact ? fact.n : p ? (Math.round(p) || '') : '';
     const hint = `${row.customer} · ${row.leg} · ${day}.${plan.month.slice(5, 7)}: план ${p ? Math.round(p * 100) / 100 : 0}` +
       (fact ? `, заявок ${fact.n} (${['', 'внесена', 'ТС назначено', 'выгружено'][fact.stage]}) на ${money(Math.round(fact.rv))}` : ', заявок нет');
     return `<td style="text-align:center;${stageClass}" title="${escapeHtml(hint)}">${text}</td>`;
