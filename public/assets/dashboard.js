@@ -309,22 +309,33 @@ function dashDetailDialog(key, metrics, data, context) {
 }
 
 // «Обычно к этому часу» — средний кумулятивный счёт события к текущему
-// времени суток за 7 прошлых дней. Норматив автоматический: сравниваем не
-// с выдуманным планом, а с тем, как команда реально работает.
+// времени суток за четыре последних ТАКИХ ЖЕ дня недели (нагрузка по
+// неделе неравномерна: понедельник сравнивается с понедельниками), плюс
+// +5% на прогрессию — норма всегда чуть выше вчерашней, команда растёт.
 export function usualByNow(rows, pickTs, nowMs = Date.now()) {
   const msk = 3 * 3_600_000;
   const dayStartMsk = ms => Math.floor((ms + msk) / 86_400_000) * 86_400_000 - msk;
   const today0 = dayStartMsk(nowMs);
   const timeOfDay = nowMs - today0;
   let total = 0;
-  for (let back = 1; back <= 7; back += 1) {
-    const start = today0 - back * 86_400_000;
+  let daysCounted = 0;
+  for (let week = 1; week <= 4; week += 1) {
+    const start = today0 - week * 7 * 86_400_000;
+    let dayTotal = 0;
     for (const row of rows) {
       const ts = pickTs(row);
-      if (ts >= start && ts < start + timeOfDay) total += 1;
+      if (ts >= start && ts < start + timeOfDay) dayTotal += 1;
     }
+    // День без единого события за весь такой день недели считаем «не рабочим»
+    // для события (данные могли ещё не вестись) — в среднее не включаем.
+    const wholeDay = rows.some(row => {
+      const ts = pickTs(row);
+      return ts >= start && ts < start + 86_400_000;
+    });
+    if (wholeDay) { total += dayTotal; daysCounted += 1; }
   }
-  return total / 7;
+  if (!daysCounted) return 0;
+  return (total / daysCounted) * 1.05;
 }
 
 // Светофор «факт против обычного»: ✅ не хуже, ⚠ просели, ❌ сильно ниже.
@@ -332,7 +343,7 @@ function normBadge(fact, usual) {
   if (usual < 0.5) return '';
   const ratio = fact / usual;
   const icon = ratio >= 0.95 ? '✅' : ratio >= 0.6 ? '⚠' : '❌';
-  return ` <small class="muted" title="Среднее к этому часу за 7 дней">· обычно ~${Math.round(usual)} ${icon}</small>`;
+  return ` <small class="muted" title="Среднее к этому часу по четырём последним таким же дням недели, +5% на рост">· обычно ~${Math.round(usual)} ${icon}</small>`;
 }
 
 export function renderDashboard(container, context) {
@@ -475,11 +486,11 @@ export function renderDashboard(container, context) {
       ${dayCard(metrics.days.today, 'Сегодня', 'today')}
       ${dayCard(metrics.days.tomorrow, 'Завтра', 'future')}
     </div>
-    ${showMyShift ? `<div class="dash-role" id="myShiftCard" style="margin-bottom:10px">
+    <div class="dash-roles">
+      ${showMyShift ? `<div class="dash-role my-shift" id="myShiftCard">
       <div class="dash-role-title">🏅 Моя смена</div>
       <div class="dash-row"><span>Загружаю личную сводку…</span></div>
     </div>` : ''}
-    <div class="dash-roles">
       ${roleCard('📦 Продажи', [
         { label: 'Внесено заявок сегодня', value: `${metrics.sales.createdToday}${normBadge(metrics.sales.createdToday, norms.created)}`, detail: 'salesCreated' },
         { label: 'Сумма внесённого (бНДС)', value: money(Math.round(metrics.sales.createdSum)) },
@@ -512,9 +523,7 @@ export function renderDashboard(container, context) {
           cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
       ])}
     </div>
-    <p class="muted dash-note">Факт — по выгрузкам, без НДС (ИП 7%). Дневной план —
-      остаток месячного плана, делённый на оставшиеся дни. Прогноз — текущий темп
-      на весь месяц. Обновляется автоматически.</p>
+
   </div>`;
   restoreScrolls(container, savedScrolls);
 

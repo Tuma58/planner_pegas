@@ -1929,3 +1929,19 @@ test('моя смена: личные операции против нормы �
   assert.equal(stats.roleKey, 'Диспетчер');
   assert.ok(stats.normToNow >= 0);
 });
+
+test('норма «обычно»: тот же день недели и +5% прогрессии', async () => {
+  const { usualByNow } = await import('../public/assets/dashboard.js');
+  const now = Date.now();
+  const msk = 3 * 3600e3;
+  const day0 = Math.floor((now + msk) / 86400e3) * 86400e3 - msk;
+  const rows = [];
+  // По 10 событий утром в каждый из 4 прошлых таких же дней недели…
+  for (let week = 1; week <= 4; week += 1) {
+    for (let i = 0; i < 10; i += 1) rows.push({ ts: day0 - week * 7 * 86400e3 + 3600e3 + i });
+  }
+  // …и по 99 событий во «вчера» (другой день недели) — не должны влиять.
+  for (let i = 0; i < 99; i += 1) rows.push({ ts: day0 - 86400e3 + 3600e3 + i });
+  const usual = usualByNow(rows, row => row.ts, day0 + 12 * 3600e3);
+  assert.ok(Math.abs(usual - 10.5) < 0.01, `10 × 1.05 = 10.5, получили ${usual}`);
+});
