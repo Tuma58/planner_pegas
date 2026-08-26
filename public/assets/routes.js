@@ -26,6 +26,10 @@ function basePoint(data, region) {
   return items.find(item => (item.zone_name || '') === 'Дом') || items[0] || null;
 }
 
+// Точка выгрузки рейса (для старта цепочки от машины): адрес по тексту
+// пункта, иначе — по имени геозоны.
+const tripToPoint = (data, trip) => resolveAddress(data, trip.to_point || trip.to_name) || null;
+
 const orderRegionFrom = (data, order) => addressById(data, order.from_address_id)?.region
   || regionOfPlace(data, order.from_point, order.from_name);
 const orderRegionTo = (data, order) => addressById(data, order.to_address_id)?.region
@@ -52,14 +56,77 @@ const legKm = (data, order) => Number(order.planned_km) ||
 // выручка без НДС и рублей в сутки против плана маршрута.
 // Порог спота: порожний перегон длиннее — кандидат на поиск попутного груза.
 export const SPOT_KM = 150;
+// Допуск планирования по транзитному времени: если расчёт выходит за окно
+// заявки не более чем на 3 часа, цепочку не бракуем — плечо берётся с
+// пометкой «договориться с клиентом» (сдвинуть погрузку/выгрузку на часы
+// проще, чем искать другой груз). Сверх допуска — плечо неисполнимо.
+export const TOLERANCE_H = 3;
+// Порожний подгон между звеньями: цель — в пределах города/области,
+// предел — дальше маршрут теряет смысл (кроме первого плеча от базы).
+export const FEED_TARGET_KM = 50;
+export const FEED_LIMIT_KM = 250;
+// Себестоимость порожнего километра — для оценки «деньги минус порожняк».
+export const EMPTY_KM_COST = 35;
 
-export function routeMetrics(data, routeOrders, { baseRegion, plannedStart, targetPerDay }) {
+// Фактический транзит плеча: медиана рейсов этого направления за 60 дней.
+// Формула (км/скорость + операции) × 1,5 завышает короткие плечи в 1,5–1,7
+// раза (Дзержинск→Москва: формула 21 ч, факт 12 ч) и отбраковывала
+// исполнимые цепочки — факт точнее, формула остаётся фолбэком.
+export function legTransitHours(data, order, calc) {
+  const since = Date.now() - 60 * DAY_MS;
+  const list = (data.trips || [])
+    .filter(trip => trip.status !== 'rejected' &&
+      trip.from_name === order.from_name && trip.to_name === order.to_name &&
+      Date.parse(trip.starts_at) >= since)
+    .map(trip => (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 3_600_000)
+    .sort((a, b) => a - b);
+  if (list.length >= 5) return list[Math.floor(list.length / 2)];
+  return transitHours(legKm(data, order), calc, 2 + viaCount(order));
+}
+
+// Есть ли чем продолжить цепочку после этого плеча: свободная заявка с
+// погрузкой рядом с точкой выгрузки и сходящимся окном. История потока
+// (outflowPerWeek) говорит о направлении «вообще», а это — о конкретных
+// днях: без такой проверки алгоритм заходит в зону, где заявок сейчас нет,
+// и маршрут обрывается на первом же плече.
+function hasContinuation(data, pool, pick, { feedLimitKm, bodyType, baseRegion }) {
+  if (pick.toRegion === baseRegion) return true; // кольцо замкнулось — продолжение не нужно
+  const calc = data.settings.calculation;
+  const to = orderToAddress(data, pick.order);
+  return pool.some(order => {
+    if (order === pick.order) return false;
+    if (bodyType && order.body_type && order.body_type !== bodyType &&
+      !['Рефрижератор', 'Изотерм'].includes(order.body_type)) return false;
+    const feed = plannedKmBetween(to, orderFromAddress(data, order)) ?? 9999;
+    if (feed > feedLimitKm) return false;
+    const readyAt = pick.unloadAt + transitHours(feed, calc, 0) * 3_600_000;
+    const loadAt = Math.max(readyAt, Date.parse(order.window_from));
+    const unloadAt = loadAt + legTransitHours(data, order, calc) * 3_600_000;
+    return (unloadAt - Date.parse(order.window_to)) / 3_600_000 <= TOLERANCE_H;
+  });
+}
+
+// Регулярность обратного потока из зоны выгрузки: рейсов в неделю за 60 дней.
+// Ноль — тупик: заходить в такую зону нельзя, оттуда нечем выехать
+// (жадность по подгону загоняла машину в Питер, а дальше 3 697 км порожняком).
+export function outflowPerWeek(data, zoneName) {
+  const since = Date.now() - 60 * DAY_MS;
+  const count = (data.trips || []).filter(trip => trip.status !== 'rejected' &&
+    trip.from_name === zoneName && trip.to_name !== zoneName &&
+    Date.parse(trip.starts_at) >= since).length;
+  return count / (60 / 7);
+}
+
+export function routeMetrics(data, routeOrders, { baseRegion, plannedStart, targetPerDay, startPoint = null }) {
   const calc = data.settings.calculation;
   // Время порожнего перегона — с тем же коэффициентом 1,5 (отдых водителя),
   // что и гружёный транзит, только без грузовых операций.
   const emptyLegMs = km => transitHours(km || 0, calc, 0) * 3_600_000;
+  // Старт цепочки: от машины (место выгрузки текущего задания), если передан,
+  // иначе — от базы, как раньше.
   const base = basePoint(data, baseRegion || HOME_REGION);
-  let position = base;
+  const origin = startPoint || base;
+  let position = origin;
   let cursor = plannedStart ? Date.parse(plannedStart) : Date.now();
   const startMs = cursor;
   let loadedKm = 0;
@@ -72,10 +139,21 @@ export function routeMetrics(data, routeOrders, { baseRegion, plannedStart, targ
     if (feed != null) emptyKm += feed;
     const km = legKm(data, order);
     loadedKm += km;
-    const loadAt = Math.max(cursor + emptyLegMs(feed), Date.parse(order.window_from));
-    const unloadAt = loadAt + transitHours(km, calc, 2 + viaCount(order)) * 3_600_000;
+    // Готовность машины = предыдущая выгрузка + порожний подгон; погрузка не
+    // раньше окна «с». Разница между ними — ОЖИДАНИЕ: простой бьёт по
+    // эффективности так же, как порожняк, поэтому он считается отдельно.
+    const readyAt = cursor + emptyLegMs(feed);
+    const loadAt = Math.max(readyAt, Date.parse(order.window_from));
+    const waitMs = Math.max(0, loadAt - readyAt);
+    const unloadAt = loadAt + legTransitHours(data, order, calc) * 3_600_000;
+    // Допуск ±3 часа: выход за окно в его пределах — не брак, а разговор
+    // с клиентом; сверх допуска плечо неисполнимо.
+    const overshootMs = Math.max(0, unloadAt - Date.parse(order.window_to));
+    const needDeal = overshootMs > 0 && overshootMs <= TOLERANCE_H * 3_600_000;
+    const impossible = overshootMs > TOLERANCE_H * 3_600_000;
     const lateStart = Date.parse(order.window_to) < loadAt;
     legs.push({ order, feed, km, loadAt, unloadAt, lateStart,
+      readyAt, waitMs, overshootMs, needDeal, impossible,
       fromRegion: orderRegionFrom(data, order), toRegion: orderRegionTo(data, order),
       feedFromRegion: position?.region || (baseRegion || HOME_REGION), feedAtIso: new Date(cursor).toISOString() });
     cursor = unloadAt;
@@ -91,7 +169,12 @@ export function routeMetrics(data, routeOrders, { baseRegion, plannedStart, targ
   const target = Number(targetPerDay) || 48000;
   const lastRegion = routeOrders.length
     ? orderRegionTo(data, routeOrders[routeOrders.length - 1]) : (baseRegion || HOME_REGION);
+  const waitMs = legs.reduce((sum, leg) => sum + (leg.waitMs || 0), 0);
+  const dealLegs = legs.filter(leg => leg.needDeal).length;
+  const impossibleLegs = legs.filter(leg => leg.impossible).length;
+  const driveMs = legs.reduce((sum, leg) => sum + (leg.unloadAt - leg.loadAt), 0);
   return { legs, loadedKm: Math.round(loadedKm), emptyKm: Math.round(emptyKm),
+    waitMs, dealLegs, impossibleLegs, driveMs,
     returnKm: Math.round(returnKm || 0), days, revenueNet, revenueVat, perDay, target,
     targetShare: target ? perDay / target : 0, endMs, lastRegion,
     emptyShare: loadedKm ? emptyKm / (loadedKm + emptyKm) : 0,
@@ -102,41 +185,73 @@ export function routeMetrics(data, routeOrders, { baseRegion, plannedStart, targ
 
 // Полуавтомат: жадная сборка кольца. Первая заявка — погрузка в базовом
 // субъекте, дальше минимальный порожний перегон, замыкание — выгрузкой в базу.
-export function buildAutoRoute(data, { startIso, baseRegion, targetPerDay, maxOrders = 4, exclude = new Set() }) {
+export function buildAutoRoute(data, { startIso, baseRegion, targetPerDay, maxOrders = 4,
+  exclude = new Set(), startPoint = null, bodyType = null, feedLimitKm = FEED_LIMIT_KM,
+  horizonDays = null }) {
+  const calc = data.settings.calculation;
   const base = basePoint(data, baseRegion);
+  const origin = startPoint || base;
   const pool = freeOrders(data).filter(order =>
     !exclude.has(order.id) && Date.parse(order.window_to) > Date.parse(startIso));
   const chain = [];
-  let position = base;
+  let position = origin;
   let cursor = Date.parse(startIso);
+  const horizonMs = horizonDays ? Date.parse(startIso) + horizonDays * DAY_MS : null;
   while (chain.length < maxOrders) {
-    const lastLeg = chain.length ? chain[chain.length - 1] : null;
     const candidates = pool
-      .filter(order => !chain.includes(order) &&
-        Date.parse(order.window_to) > cursor)
+      .filter(order => !chain.includes(order))
+      // Кузов: тип парка в заявке — жёсткое требование, «Рефрижератор»,
+      // «Изотерм» и пустой берёт любая машина (правило задания продаж).
+      .filter(order => !bodyType || !order.body_type ||
+        order.body_type === bodyType || ['Рефрижератор', 'Изотерм'].includes(order.body_type))
       .map(order => {
         const from = orderFromAddress(data, order);
-        const feed = plannedKmBetween(position, from);
-        return { order, feed: feed ?? 9999,
-          fromRegion: orderRegionFrom(data, order), toRegion: orderRegionTo(data, order) };
+        const feed = plannedKmBetween(position, from) ?? 9999;
+        const readyAt = cursor + transitHours(feed === 9999 ? 0 : feed, calc, 0) * 3_600_000;
+        const loadAt = Math.max(readyAt, Date.parse(order.window_from));
+        const waitH = Math.max(0, (loadAt - readyAt) / 3_600_000);
+        const transit = legTransitHours(data, order, calc);
+        const unloadAt = loadAt + transit * 3_600_000;
+        const overshootH = Math.max(0, (unloadAt - Date.parse(order.window_to)) / 3_600_000);
+        const toRegion = orderRegionTo(data, order);
+        const busyH = (unloadAt - cursor) / 3_600_000;
+        // Оценка: деньги минус стоимость порожняка, делённые на всё время
+        // занятости (подгон + ожидание + транзит). Так один критерий сразу
+        // жмёт и порожняк, и простой в ожидании окна.
+        const score = (orderNet(order, data) - (feed === 9999 ? 0 : feed) * EMPTY_KM_COST) /
+          Math.max(1, busyH);
+        return { order, feed, loadAt, unloadAt, waitH, overshootH, toRegion, score,
+          fromRegion: orderRegionFrom(data, order) };
       })
-      .filter(item => chain.length > 0 || item.fromRegion === baseRegion)
-      .sort((a, b) => a.feed - b.feed);
+      // Первое плечо — от места старта (машина/база), дальше подгон в пределах лимита.
+      .filter(item => item.feed <= (chain.length === 0 ? Math.max(feedLimitKm, 400) : feedLimitKm))
+      // Допуск ±3 часа: сверх него плечо неисполнимо и в цепочку не идёт.
+      .filter(item => item.overshootH <= TOLERANCE_H)
+      // Не заходить в зону, откуда нет обратного потока: тупик рождает
+      // тысячи километров порожняком.
+      .filter(item => item.toRegion === baseRegion ||
+        outflowPerWeek(data, item.order.to_name) >= 1)
+      .filter(item => !horizonMs || item.unloadAt <= horizonMs + 12 * 3_600_000)
+      .sort((a, b) => b.score - a.score);
     if (!candidates.length) break;
-    // Последняя позиция — стараемся замкнуть кольцо выгрузкой в базе.
-    const closing = candidates.find(item => item.toRegion === baseRegion);
-    const metricsNow = routeMetrics(data, chain.map(l => l), { baseRegion, plannedStart: startIso, targetPerDay });
+    // Тупики отсекаются: плечо, после которого цепочку нечем продолжить,
+    // берётся только если других нет (тогда оно закрывает маршрут).
+    const lastStep = chain.length + 1 >= maxOrders;
+    const withNext = lastStep ? candidates
+      : candidates.filter(item => hasContinuation(data, pool.filter(o => !chain.includes(o)), item,
+        { feedLimitKm, bodyType, baseRegion }));
+    const usable = withNext.length ? withNext : candidates;
+    // Замыкание кольца: на последнем шаге или при выполненном плане ₽/сутки
+    // предпочитаем плечо с выгрузкой в базовом субъекте.
+    const closing = usable.find(item => item.toRegion === baseRegion);
+    const metricsNow = routeMetrics(data, chain, { baseRegion, plannedStart: startIso, targetPerDay, startPoint: origin });
     const preferClosing = chain.length + 1 >= maxOrders ||
       (chain.length >= 1 && metricsNow.perDay >= (Number(targetPerDay) || 48000));
-    const pick = (preferClosing && closing) ? closing : candidates[0];
+    const pick = (preferClosing && closing) ? closing : usable[0];
     chain.push(pick.order);
-    const km = legKm(data, pick.order);
-    const loadAt = Math.max(
-      cursor + transitHours(pick.feed === 9999 ? 0 : pick.feed, data.settings.calculation, 0) * 3_600_000,
-      Date.parse(pick.order.window_from));
-    cursor = loadAt + transitHours(km, data.settings.calculation, 2 + viaCount(pick.order)) * 3_600_000;
+    cursor = pick.unloadAt;
     position = orderToAddress(data, pick.order) || position;
-    if (pick.toRegion === baseRegion && chain.length > 1) break;
+    if (pick.toRegion === baseRegion && chain.length > 1 && !horizonDays) break;
   }
   return chain.map(order => order.id);
 }
@@ -237,7 +352,21 @@ export function renderRoutes(container, context) {
   // ── Диалог сборки ──
   const autoDialog = () => {
     const tomorrow = new Date(Date.now() + DAY_MS).toISOString().slice(0, 10);
+    // Машины со свободным ближайшим временем: старт цепочки — от места и
+    // времени, где машина освободится (выгрузка последнего задания).
+    const fleet = (data.vehicles || []).filter(vehicle => vehicle.status === 'work')
+      .map(vehicle => {
+        const trips = (data.trips || []).filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected')
+          .sort((a, b) => a.ends_at.localeCompare(b.ends_at));
+        const last = trips[trips.length - 1] || null;
+        return { vehicle, last };
+      }).sort((a, b) => (a.vehicle.plate || '').localeCompare(b.vehicle.plate || ''));
     context.showModal(`<h2>🧮 Собрать маршрут</h2>
+      <label class="field">Машина <small class="muted">(старт цепочки — от её освобождения)</small>
+        <select id="rbVehicle">
+          <option value="">— от базы, без привязки к ТС —</option>
+          ${fleet.map(item => `<option value="${item.vehicle.id}">${escapeHtml(item.vehicle.plate)} · ${escapeHtml(item.vehicle.type_name || '')}${item.last ? ` · свободна с ${formatDateTime(item.last.ends_at)} (${escapeHtml(item.last.to_point || item.last.to_name || '')})` : ''}</option>`).join('')}
+        </select></label>
       <label class="field">Субъект базирования
         <select id="rbRegion">${regionList.map(region =>
           `<option ${region === HOME_REGION ? 'selected' : ''}>${escapeHtml(region)}</option>`).join('')}</select></label>
@@ -249,7 +378,16 @@ export function renderRoutes(container, context) {
       const baseRegion = document.getElementById('rbRegion').value;
       const startIso = `${document.getElementById('rbStart').value}T06:00:00.000Z`;
       const targetPerDay = Number(document.getElementById('rbTarget').value) || 48000;
-      const orderIds = buildAutoRoute(data, { startIso, baseRegion, targetPerDay,
+      // Старт от машины: место и время выгрузки её последнего задания,
+      // кузов — тип ТС (жёсткое требование по заявкам своего типа).
+      const vehicleId = document.getElementById('rbVehicle').value;
+      const picked = fleet.find(item => item.vehicle.id === vehicleId);
+      const startPoint = picked?.last ? tripToPoint(data, picked.last) : null;
+      const startFrom = picked?.last ? Math.max(Date.parse(picked.last.ends_at), Date.now()) : null;
+      const orderIds = buildAutoRoute(data, {
+        startIso: startFrom ? new Date(startFrom).toISOString() : startIso,
+        baseRegion, targetPerDay, startPoint,
+        bodyType: picked?.vehicle.type_name || null,
         maxOrders: Number(document.getElementById('rbMax').value) || 4 });
       if (!orderIds.length) { toast('Не из чего собрать: нет свободных заявок из этого субъекта', 'error'); return; }
       try {
@@ -308,11 +446,13 @@ export function renderRoutes(container, context) {
                 <span class="muted">(${escapeHtml(leg.fromRegion || '?')})</span>
                 · окно ${formatDateTime(leg.order.window_from)}–${formatDateTime(leg.order.window_to)}
                 · погрузка ~${formatDateTime(new Date(leg.loadAt).toISOString())}${leg.lateStart
-                  ? ' <span class="danger">⚠ позже окна</span>' : ''}</small>
+                  ? ' <span class="danger">⚠ позже окна</span>' : ''}${leg.waitMs > 6 * 3_600_000
+                  ? ` <span class="badge warn" title="Машина готова раньше окна погрузки — простой в ожидании">⏳ ожидание ${Math.round(leg.waitMs / 3_600_000)} ч</span>` : ''}</small>
               <small class="muted" style="display:block">⬇ ${escapeHtml(leg.order.to_point || leg.order.to_name)}
                 <span class="muted">(${escapeHtml(leg.toRegion || '?')})</span>
                 · выгрузка ~${formatDateTime(new Date(leg.unloadAt).toISOString())}
-                · ${leg.km} км · ${money(leg.order.rate_vat)}
+                · ${leg.km} км · ${money(leg.order.rate_vat)}${leg.needDeal
+                  ? ` <span class="badge bad" title="Расчётная выгрузка выходит за окно клиента на ${(leg.overshootMs / 3_600_000).toFixed(1)} ч — в пределах допуска планирования ${TOLERANCE_H} ч: согласуйте сдвиг с клиентом">🤝 договориться: +${(leg.overshootMs / 3_600_000).toFixed(1)} ч к окну</span>` : ''}
                 <span class="muted">(без НДС ${money(Math.round(orderNet(leg.order, state.data)))})</span></small>
             </span>
             <span class="rt-lane-btns">
@@ -334,7 +474,9 @@ export function renderRoutes(container, context) {
           ${routeOrders.length} заявок · гружёные ${metrics.loadedKm} км · порожние ${metrics.emptyKm} км
           · ~${metrics.days.toFixed(1)} сут · без НДС ${money(Math.round(metrics.revenueNet))}
           · <b>${money(Math.round(metrics.perDay))}/сутки</b> (план ${money(metrics.target)} —
-          ${Math.round(metrics.targetShare * 100)}%)</div>
+          ${Math.round(metrics.targetShare * 100)}%)
+          ${metrics.waitMs > 6 * 3_600_000 ? ` · <span class="badge warn" title="Суммарный простой в ожидании окон погрузки — бьёт по эффективности так же, как порожняк">⏳ ожидание ${Math.round(metrics.waitMs / 3_600_000)} ч</span>` : ''}
+          ${metrics.dealLegs ? ` · <span class="badge bad" title="Плечи, где расчёт выходит за окно клиента в пределах допуска ${TOLERANCE_H} ч — согласуйте сдвиг">🤝 договориться: ${metrics.dealLegs}</span>` : ''}</div>
         <details class="task-fold" ${candidates.length ? '' : ''}>
           <summary>+ Добавить заявку (${candidates.length} кандидатов, ближайшие к последней выгрузке)</summary>
           ${candidates.map(item => `<div class="rt-cand">

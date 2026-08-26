@@ -1974,3 +1974,60 @@ test('долги 1С: отложенное внесение открывает �
   assert.equal(after.entered_1c_at, null, 'долг 1С не закрыт');
   assert.ok(after.deferred_1c_at, 'пометка отложенности висит');
 });
+
+test('конструктор: допуск ±3 ч, ожидание и отсев тупиков', async () => {
+  const { routeMetrics, buildAutoRoute, legTransitHours, outflowPerWeek, TOLERANCE_H } =
+    await import('../public/assets/routes.js');
+  const now = Date.now();
+  const iso = ms => new Date(ms).toISOString();
+  const addr = (name, region, lat, lon) => ({ id: name, name, region, zone_name: region, latitude: lat, longitude: lon });
+  const data = {
+    settings: { calculation: { techSpeedKmh: 50, handlingHoursPerOperation: 2, transitFactor: 1.5, vatRate: 0.22 } },
+    reference: { addresses: [
+      addr('Пенза', 'Пензенская обл', 53.2, 45.0), addr('Москва', 'Московская обл', 55.75, 37.6),
+      addr('Тупик', 'Тупиковая обл', 60.0, 30.3)
+    ] },
+    vehicles: [], routes: [],
+    // История: Пенза→Москва 6 рейсов по 20 ч (медиана 20 — вместо формулы 26),
+    // из Москвы поток есть, из Тупика — нет.
+    trips: [
+      ...Array.from({ length: 6 }, (_, i) => ({ id: `h${i}`, status: 'done',
+        from_name: 'Пенза', to_name: 'Москва',
+        starts_at: iso(now - (i + 2) * 86400e3), ends_at: iso(now - (i + 2) * 86400e3 + 20 * 3600e3) })),
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `m${i}`, status: 'done',
+        from_name: 'Москва', to_name: 'Пенза',
+        starts_at: iso(now - (i + 2) * 86400e3), ends_at: iso(now - (i + 2) * 86400e3 + 22 * 3600e3) }))
+    ],
+    orders: [
+      { id: 'o1', order_no: '1', customer_name: 'К1', stage: 1, status: 'new',
+        from_name: 'Пенза', to_name: 'Москва', from_address_id: 'Пенза', to_address_id: 'Москва',
+        planned_km: 640, rate_vat: 100000, window_from: iso(now + 2 * 3600e3), window_to: iso(now + 24 * 3600e3) },
+      // Тупиковое плечо: дороже, но из «Тупика» нет ни потока, ни заявок.
+      { id: 'o2', order_no: '2', customer_name: 'К2', stage: 1, status: 'new',
+        from_name: 'Пенза', to_name: 'Тупик', from_address_id: 'Пенза', to_address_id: 'Тупик',
+        planned_km: 700, rate_vat: 200000, window_from: iso(now + 2 * 3600e3), window_to: iso(now + 40 * 3600e3) },
+      { id: 'o3', order_no: '3', customer_name: 'К3', stage: 1, status: 'new',
+        from_name: 'Москва', to_name: 'Пенза', from_address_id: 'Москва', to_address_id: 'Пенза',
+        planned_km: 640, rate_vat: 90000, window_from: iso(now + 26 * 3600e3), window_to: iso(now + 60 * 3600e3) }
+    ]
+  };
+  // Транзит берётся из факта (20 ч), а не из формулы (26 ч).
+  const tr = legTransitHours(data, data.orders[0], data.settings.calculation);
+  assert.ok(Math.abs(tr - 20) < 0.5, `факт 20 ч, получили ${tr}`);
+  assert.equal(outflowPerWeek(data, 'Тупик'), 0, 'из тупика потока нет');
+  // Сборка: тупиковое плечо не берётся, несмотря на вдвое большую ставку.
+  const ids = buildAutoRoute(data, { startIso: iso(now), baseRegion: 'Пензенская обл',
+    targetPerDay: 48000, maxOrders: 3 });
+  assert.ok(ids.includes('o1'), 'взято плечо с продолжением');
+  assert.ok(!ids.includes('o2'), 'тупиковое плечо отсеяно');
+  // Метрики: ожидание считается, допуск помечает «договориться».
+  const m = routeMetrics(data, ids.map(id => data.orders.find(o => o.id === id)),
+    { baseRegion: 'Пензенская обл', plannedStart: iso(now), targetPerDay: 48000 });
+  assert.ok(m.waitMs >= 0 && Number.isFinite(m.waitMs), 'ожидание посчитано');
+  assert.ok(m.legs.every(leg => !leg.impossible), 'неисполнимых плеч в цепочке нет');
+  assert.equal(TOLERANCE_H, 3);
+  // Плечо с выходом за окно на 2 ч — в допуске (needDeal), на 5 ч — нет.
+  const late = { ...data.orders[0], id: 'o4', window_to: iso(now + 2 * 3600e3 + 22 * 3600e3) };
+  const m2 = routeMetrics(data, [late], { baseRegion: 'Пензенская обл', plannedStart: iso(now), targetPerDay: 48000 });
+  assert.ok(m2.legs[0].needDeal || m2.legs[0].overshootMs === 0, 'выход за окно в пределах 3 ч — это «договориться»');
+});
