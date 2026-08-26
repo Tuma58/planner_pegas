@@ -458,6 +458,29 @@ tbody tr:hover td { background: var(--hover); }
   background: var(--navy); color: #fff; font-size: var(--fs-xs); font-weight: 800; flex: none; }
 .rt-lane-btns { display: flex; gap: 3px; flex: none; }
 .rt-lane-btns .button { min-height: 24px; padding: 1px 7px; }
+/* Лента маршрута: сутки — строка, блоки по времени (как в плане вывоза) */
+.rt-ribbon { margin: 0 0 10px; padding: 8px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--soft); }
+.rt-day { display: flex; align-items: center; gap: 7px; margin: 2px 0; }
+.rt-day-t { flex: none; width: 74px; font-size: var(--fs-xs); color: var(--muted); text-transform: capitalize; }
+.rt-track { position: relative; flex: 1; height: 18px; border-radius: 5px;
+  background: repeating-linear-gradient(90deg, transparent 0, transparent calc(100% / 24 - 1px),
+    var(--line) calc(100% / 24 - 1px), var(--line) calc(100% / 24)); }
+.rt-b { position: absolute; top: 2px; height: 14px; border-radius: 4px; font-size: 10px;
+  color: #fff; line-height: 14px; padding: 0 4px; overflow: hidden; white-space: nowrap;
+  font-style: normal; box-sizing: border-box; }
+.rt-b.load { background: var(--navy); }
+.rt-b.deal { background: var(--warn); color: var(--ink); }
+.rt-b.spot { background: transparent; border: 1px dashed var(--warn); color: var(--ink); }
+.rt-b.feed { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.rt-b.wait { background: repeating-linear-gradient(45deg, var(--line) 0 4px, transparent 4px 8px); }
+.rt-legend { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 7px;
+  font-size: var(--fs-xs); color: var(--muted); }
+.rt-legend .rt-b { position: static; display: inline-block; width: 16px; height: 10px; margin-left: 8px; }
+.rt-spots { margin-bottom: 6px; }
+.rt-lane.spot-lane { border-style: dashed; border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 6%, transparent); align-items: center; }
+.rt-lane.spot-lane .rt-idx { background: var(--warn); color: var(--ink); }
 .rt-empty-leg { margin: 0 0 0 28px; color: var(--muted); font-size: var(--fs-xs); }
 .rt-empty-leg.spot { padding: 4px 8px; margin: 3px 0 3px 28px; border: 1px dashed var(--warn);
   border-radius: 7px; color: var(--ink); background: color-mix(in srgb, var(--warn) 7%, transparent); }

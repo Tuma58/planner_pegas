@@ -245,6 +245,20 @@ CREATE TABLE IF NOT EXISTS demurrage_claims (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(trip_id, stop_kind)
 );
+CREATE TABLE IF NOT EXISTS route_spots (
+  id TEXT PRIMARY KEY, route_id TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL DEFAULT 0,
+  from_zone_id TEXT REFERENCES zones(id), to_zone_id TEXT REFERENCES zones(id),
+  from_label TEXT NOT NULL DEFAULT '', to_label TEXT NOT NULL DEFAULT '',
+  planned_load TEXT, planned_unload TEXT,
+  expected_rate REAL NOT NULL DEFAULT 0, expected_km REAL NOT NULL DEFAULT 0,
+  candidates TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','requested','closed')),
+  order_id TEXT REFERENCES orders(id),
+  created_by TEXT REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS vehicle_holds (
   vehicle_id TEXT PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
   until TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',

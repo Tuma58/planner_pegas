@@ -830,6 +830,8 @@ async function api(request, response, url) {
         FROM order_files f LEFT JOIN users u ON u.id=f.uploaded_by
         JOIN orders o ON o.id=f.order_id AND o.deleted_at IS NULL
         ORDER BY f.uploaded_at`).all(),
+      routeSpots: db.prepare(`SELECT s.* FROM route_spots s JOIN routes r ON r.id=s.route_id
+        WHERE r.status IN ('draft','handed','assigned') ORDER BY s.seq`).all(),
       routes: db.prepare(`SELECT r.*,v.plate vehicle_plate FROM routes r
         LEFT JOIN vehicles v ON v.id=r.vehicle_id
         WHERE r.status IN ('draft','handed','assigned')
@@ -2011,6 +2013,66 @@ async function api(request, response, url) {
   }
   // Спот-запрос пустого плеча: конструктор просит продажи найти груз
   // на порожний перегон маршрута — сообщение уходит роли «Продажи».
+  // ── Споты маршрута: плечо без заявки как полноценное звено цепочки.
+  // Дата берётся из расчёта маршрута («машина будет здесь тогда-то»),
+  // а не из наличия заявок — продажи продают под слот маршрута.
+  match = route(/^\/api\/routes\/([^/]+)\/spots$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const routeRow = db.prepare('SELECT * FROM routes WHERE id=?').get(match[0]);
+    if (!routeRow) return errorJson(response, 404, 'Маршрут не найден');
+    const body = await readJson(request);
+    const id = randomUUID();
+    db.prepare(`INSERT INTO route_spots(id,route_id,seq,from_zone_id,to_zone_id,from_label,to_label,
+        planned_load,planned_unload,expected_rate,expected_km,candidates,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, routeRow.id, Number(body.seq) || 0,
+      body.fromZoneId || null, body.toZoneId || null,
+      String(body.fromLabel || '').slice(0, 120), String(body.toLabel || '').slice(0, 120),
+      body.plannedLoad || null, body.plannedUnload || null,
+      Number(body.expectedRate) || 0, Number(body.expectedKm) || 0,
+      String(body.candidates || '').slice(0, 300), user.id);
+    audit(db, user, 'create', 'route-spot', id,
+      { routeNo: routeRow.route_no, from: body.fromLabel, to: body.toLabel }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/routes\/([^/]+)\/spots\/([^/]+)$/, pathname);
+  if (match && request.method === 'DELETE') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    db.prepare('DELETE FROM route_spots WHERE id=? AND route_id=?').run(match[1], match[0]);
+    audit(db, user, 'delete', 'route-spot', match[1], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  // Спот закрыт заявкой: продажи продали груз — привязываем заявку к маршруту.
+  match = route(/^\/api\/routes\/([^/]+)\/spots\/([^/]+)\/close$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const body = await readJson(request);
+    const spot = db.prepare('SELECT * FROM route_spots WHERE id=? AND route_id=?').get(match[1], match[0]);
+    if (!spot) return errorJson(response, 404, 'Спот не найден');
+    const order = db.prepare(`SELECT id FROM orders WHERE id=? AND stage<2 AND deleted_at IS NULL
+      AND (route_id IS NULL OR route_id=?)`).get(String(body.orderId || ''), match[0]);
+    if (!order) return errorJson(response, 422, 'Заявка занята или не найдена');
+    db.prepare(`UPDATE orders SET route_id=?,route_seq=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(match[0], spot.seq, order.id);
+    db.prepare(`UPDATE route_spots SET status='closed', order_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(order.id, spot.id);
+    audit(db, user, 'close', 'route-spot', spot.id, { orderId: order.id }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   match = route(/^\/api\/routes\/([^/]+)\/spot-request$/, pathname);
   if (match && request.method === 'POST') {
     const user = requireUser(request, response);
