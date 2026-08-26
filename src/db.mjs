@@ -620,6 +620,13 @@ function migrateColumns(db) {
   ensure('trips', 'unload_alert_at', 'TEXT');
   ensure('trips', 'unload_ping_at', 'TEXT');
   ensure('trips', 'demurrage_vat', 'REAL NOT NULL DEFAULT 0');
+  // Долги перед учётной системой: заказ отправлен в рейс без внесения в 1С
+  // (deferred_1c_at) или после замены ТС данные в 1С требуют обновления
+  // (needs_1c_update_at + пометка что изменилось); alert — антиспам сторожа.
+  ensure('trips', 'deferred_1c_at', 'TEXT');
+  ensure('trips', 'needs_1c_update_at', 'TEXT');
+  ensure('trips', 'needs_1c_note', "TEXT NOT NULL DEFAULT ''");
+  ensure('trips', 'debt_1c_alert_at', 'TEXT');
   // Причина срыва в претензии: заполнена у «ложных подач» (рейс снят с
   // причиной «Отказ клиента»/«Нет груза»), пустая — обычный сверхнормативный
   // простой из ежедневного расчёта.

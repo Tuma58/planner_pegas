@@ -138,6 +138,10 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // Ресурс/парк: занятость сегодня.
   const fleet = (data.vehicles || []).filter(vehicle => vehicle.status === 'work');
   // Рейс без факта выгрузки занимает машину и после расчётного конца.
+  // Долги перед 1С: заказ уехал без внесения или требует обновления после замены ТС.
+  const debt1c = activeTrips.filter(trip =>
+    (trip.deferred_1c_at && !trip.entered_1c_at) || trip.needs_1c_update_at);
+
   const inTripIds = new Set(activeTrips.filter(trip =>
     tripBusyFromMs(trip) < dayEnd && tripBusyUntilMs(trip, nowMs) > dayStart)
     .map(trip => trip.vehicle_id));
@@ -191,7 +195,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     avgDayCheck: dayTrips.length ? dayFact / dayTrips.length : 0,
     sales: { createdToday: createdToday.length, createdSum, avgCheck, queue },
     logist: { assignedToday, queue, noNext: noNextList.length },
-    dispatcher: { onLineToday, startingToday, unloadedToday, online, onlineTripCount },
+    dispatcher: { onLineToday, startingToday, unloadedToday, online, onlineTripCount, debt1c: debt1c.length },
     fleet: { total: fleet.length, inTrip: inTripIds.size, unavailable, idle },
     // Списки для раскрытия плашек по клику.
     details: {
@@ -205,6 +209,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
         Date.parse(trip.starts_at) >= dayStart && Date.parse(trip.starts_at) < dayEnd),
       dispUnloaded: activeTrips.filter(trip => tsMs(trip.unloaded_at) >= dayStart && tsMs(trip.unloaded_at) < dayEnd),
       dispOnline: onlineTrips,
+      dispDebt1c: debt1c,
       fleetInTrip: fleet.filter(vehicle => inTripIds.has(vehicle.id)),
       fleetIdle: fleet.filter(vehicle => !inTripIds.has(vehicle.id) && !(data.dispositions || []).some(item =>
         item.vehicle_id === vehicle.id && Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart)),
@@ -268,7 +273,7 @@ const DETAIL_TITLES = {
   salesCreated: 'Внесено заявок сегодня', salesQueue: 'Очередь на назначение (без ТС)',
   logistAssigned: 'Назначено рейсов сегодня', logistNoNext: 'На линии без следующего рейса',
   dispOnLine: 'Выведено на линию сегодня', dispStarting: 'Ждут выхода сегодня',
-  dispUnloaded: 'Выгружено сегодня', dispOnline: 'Рейсы на контроле',
+  dispUnloaded: 'Выгружено сегодня', dispOnline: 'Рейсы на контроле', dispDebt1c: 'Долги перед 1С',
   fleetInTrip: 'Парк в рейсе сегодня', fleetIdle: 'Простой без причины', fleetUnavailable: 'Недоступны (оформлено)'
 };
 const fmtDt = value => value ? new Date(String(value).includes('T') ? value : `${String(value).replace(' ', 'T')}Z`)
@@ -511,7 +516,9 @@ export function renderDashboard(container, context) {
           cls: metrics.dispatcher.startingToday ? 'warn' : 'ok', detail: 'dispStarting' },
         { label: 'Выгружено сегодня', value: `${metrics.dispatcher.unloadedToday}${normBadge(metrics.dispatcher.unloadedToday, norms.unloaded)}`, detail: 'dispUnloaded' },
         { label: 'На линии сейчас · машин', value: metrics.dispatcher.online, detail: 'dispOnline' },
-        { label: 'Рейсов на контроле', value: metrics.dispatcher.onlineTripCount, detail: 'dispOnline' }
+        { label: 'Рейсов на контроле', value: metrics.dispatcher.onlineTripCount, detail: 'dispOnline' },
+        { label: 'Долги перед 1С', value: metrics.dispatcher.debt1c,
+          cls: metrics.dispatcher.debt1c ? 'bad' : 'ok', detail: 'dispDebt1c' }
       ])}
       ${roleCard('🔧 Ресурс — воронка дня', [
         { label: 'Парк в работе', value: metrics.fleet.total },

@@ -65,7 +65,10 @@ async function runStep(tripId, step, onReload) {
     const result = await api(`/api/trips/${tripId}/step`, {
       method: 'POST', body: JSON.stringify({ step })
     });
-    toast(step === 'on_line' ? 'Рейс на линии — статус «В пути»' : 'Шаг отмечен');
+    toast(step === 'on_line' ? 'Рейс на линии — статус «В пути»'
+      : step === 'defer_1c' ? '1С отложена — следующие шаги открыты, долг с напоминанием каждые 3 часа'
+      : step === '1c_updated' ? 'Долг закрыт — данные в 1С обновлены'
+      : 'Шаг отмечен');
     await onReload();
     return result;
   } catch (error) { toast(error.message, 'error'); }
@@ -170,14 +173,26 @@ function incidentDialog(trip, data, context) {
 function checklistBlock(trip, canAct) {
   const rows = CHECKLIST.map((item, index) => {
     const done = trip[item.column];
-    const previousDone = index === 0 || trip[CHECKLIST[index - 1].column];
+    // Отложенная 1С (живой заявки ещё нет) открывает следующие шаги:
+    // водителя отправляем, долг «внести в 1С» остаётся висеть.
+    const deferredHere = item.step === 'entered_1c' && !done && trip.deferred_1c_at;
+    const previous = index === 0 ? null : CHECKLIST[index - 1];
+    const previousDone = !previous || trip[previous.column] ||
+      (previous.step === 'entered_1c' && trip.deferred_1c_at);
     return `<div class="list-item" style="padding:6px 10px">
       <span style="flex:1;min-width:0">
-        <strong style="${done ? 'color:var(--ok)' : ''}">${done ? '✓' : `${index + 1}.`} ${item.label}</strong>
-        <small class="muted" style="display:block">${done ? `выполнено ${formatDateTime(done)}` : item.hint}</small>
+        <strong style="${done ? 'color:var(--ok)' : deferredHere ? 'color:var(--warn)' : ''}">${done ? '✓' : deferredHere ? '⏳' : `${index + 1}.`} ${item.label}</strong>
+        <small class="muted" style="display:block">${done ? `выполнено ${formatDateTime(done)}`
+          : deferredHere ? `⚠ отложено ${formatDateTime(trip.deferred_1c_at)} — заявка появится, внесите и отметьте`
+          : item.hint}</small>
       </span>
       ${!done && canAct && previousDone
-        ? `<button class="button small" data-step="${item.step}" data-trip="${trip.id}">${item.action}</button>` : ''}
+        ? `<span style="display:flex;gap:5px">
+            <button class="button small" data-step="${item.step}" data-trip="${trip.id}">${item.action}</button>
+            ${item.step === 'entered_1c' && !trip.deferred_1c_at
+    ? `<button class="button ghost small" data-step="defer_1c" data-trip="${trip.id}"
+                title="Живой заявки от клиента ещё нет, а водителя отправлять пора: следующие шаги откроются, долг «внести в 1С» останется с напоминанием каждые 3 часа">⏭ Внесу позже</button>` : ''}
+          </span>` : ''}
     </div>`;
   }).join('');
   return `<div class="list" style="margin-top:6px">${rows}</div>`;
@@ -483,7 +498,7 @@ export async function renderDispatcher(container, context, options = {}) {
         после выгрузки забрать ${money(trip.revenue_vat)} у клиента</small>` : ''}
     </span>`;
 
-  const prepStepOf = trip => !trip.entered_1c_at ? ['1c', 'внести заказ в 1С']
+  const prepStepOf = trip => !trip.entered_1c_at && !trip.deferred_1c_at ? ['1c', 'внести заказ в 1С']
     : !trip.driver_notified_at ? ['driver', 'отправить задание водителю']
     : ['online', 'вывести на линию'];
   // Свободная заметка диспетчера на карточке подготовки: произвольный текст,
@@ -734,6 +749,20 @@ export async function renderDispatcher(container, context, options = {}) {
     const delay = delayByTrip.get(trip.id) || 0;
     const stuck = isStuck(trip);
     const late = !trip.arrived_at && delay > LATE_MS;
+    // Долги перед 1С: заказ уехал без внесения или после замены ТС данные
+    // устарели — бейдж с кнопкой закрытия висит, пока долг не погашен.
+    const debt1c = [];
+    if (trip.deferred_1c_at && !trip.entered_1c_at) {
+      debt1c.push(`<span class="badge bad" title="Рейс отправлен без внесения заказа в 1С (${formatDateTime(trip.deferred_1c_at)}) — внесите и закройте долг">📒 1С: заказ не внесён</span>
+        ${canAct ? `<button class="button small" data-step="entered_1c" data-trip="${trip.id}"
+          title="Заказ внесён в учётную систему — долг закрыт">✓ Внесено в 1С</button>` : ''}`);
+    }
+    if (trip.needs_1c_update_at) {
+      debt1c.push(`<span class="badge bad" title="После замены ТС данные в учётной системе устарели">📒 1С: ${escapeHtml(trip.needs_1c_note || 'обновить данные')}</span>
+        ${canAct ? `<button class="button small" data-step="1c_updated" data-trip="${trip.id}"
+          title="Данные в 1С обновлены — долг закрыт">✓ 1С обновлено</button>` : ''}`);
+    }
+    const debtBlock = debt1c.join(' ');
     // До факта прибытия рейс «в пути» (затянувшийся — опоздание, уведомление
     // продаж). «Прибыл на выгрузку» начинает отсчёт выгрузки: свыше 6 часов —
     // «не выгружают», особый контроль и выставление простоя клиенту.
@@ -800,7 +829,7 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}" style="border:0;padding:0">
       ${tripHead(trip)}
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        ${statusBlock}
+        ${statusBlock} ${debtBlock}
         <span style="display:flex;gap:5px">
           <button class="button ghost small" data-stops-toggle="${trip.id}"
             title="Лента контрольных точек: прибытие, работы, убытие, простой">🧭 Точки${stopsCount ? ` (${stopsCount})` : ''}</button>

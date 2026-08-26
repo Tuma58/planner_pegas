@@ -224,7 +224,12 @@ export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
       throw Object.assign(new Error('Документы проверяются после выгрузки — сначала отметьте «Выгружен»'), { status: 409 });
     }
   } else if (previous && !trip[previous.column]) {
-    throw Object.assign(new Error(`Сначала выполните шаг «${previous.label}»`), { status: 409 });
+    // Живой заявки может ещё не быть, а водителя отправлять пора: шаг
+    // «внесено в 1С» разрешено отложить (deferred_1c_at) — тогда задание
+    // водителю и вывод на линию идут дальше, а долг 1С висит до закрытия.
+    if (!(previous.step === 'entered_1c' && trip.deferred_1c_at)) {
+      throw Object.assign(new Error(`Сначала выполните шаг «${previous.label}»`), { status: 409 });
+    }
   }
   db.prepare(`UPDATE trips SET ${meta.column}=?,updated_by=?,
     updated_at=CURRENT_TIMESTAMP WHERE id=?`)

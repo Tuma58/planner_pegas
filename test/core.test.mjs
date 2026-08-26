@@ -1945,3 +1945,32 @@ test('норма «обычно»: тот же день недели и +5% пр
   const usual = usualByNow(rows, row => row.ts, day0 + 12 * 3600e3);
   assert.ok(Math.abs(usual - 10.5) < 0.01, `10 × 1.05 = 10.5, получили ${usual}`);
 });
+
+test('долги 1С: отложенное внесение открывает задание водителю', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-1cdebt-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const { applyDispatchStep } = await import('../src/trip-control.mjs');
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const iso = shift => new Date(Date.now() + shift).toISOString();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status,logist_confirmed_at)
+    VALUES('dc1',?,'К',?,?,?,?,500,90000,'plan',CURRENT_TIMESTAMP)`)
+    .run(vehicle, zone, zone, iso(3600e3), iso(30 * 3600e3));
+  const admin = db.prepare('SELECT id FROM users LIMIT 1').get().id;
+  // Без 1С и без отложки задание водителю не отметить.
+  assert.throws(() => applyDispatchStep(db, 'dc1', 'driver_notified', admin),
+    /Сначала выполните/);
+  // Отложили 1С — задание водителю проходит, долг остаётся видимым.
+  db.prepare(`UPDATE trips SET deferred_1c_at=CURRENT_TIMESTAMP WHERE id='dc1'`).run();
+  const { trip } = applyDispatchStep(db, 'dc1', 'driver_notified', admin);
+  assert.ok(trip);
+  const after = db.prepare(`SELECT driver_notified_at, entered_1c_at, deferred_1c_at FROM trips WHERE id='dc1'`).get();
+  assert.ok(after.driver_notified_at, 'задание водителю отмечено');
+  assert.equal(after.entered_1c_at, null, 'долг 1С не закрыт');
+  assert.ok(after.deferred_1c_at, 'пометка отложенности висит');
+});

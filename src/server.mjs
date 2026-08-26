@@ -599,6 +599,38 @@ function runAssignWatch() {
     console.error('Сторож назначения ТС:', error.message);
   }
 }
+// ── Сторож долгов перед 1С: отложенное внесение заказа и обновление после
+// замены ТС не должны забываться — напоминание диспетчерам каждые 3 часа,
+// пока долг не закрыт (внесение — шагом «Заказ внесён», обновление —
+// кнопкой «✓ 1С обновлено»). ──
+const DEBT_1C_REPEAT_MS = 3 * 3_600_000;
+function runDebt1cWatch() {
+  try {
+    const nowIso = new Date().toISOString();
+    const rows = db.prepare(`SELECT t.*, v.plate FROM trips t
+      JOIN vehicles v ON v.id=t.vehicle_id
+      WHERE t.status NOT IN ('rejected','paid')
+        AND ((t.deferred_1c_at IS NOT NULL AND t.entered_1c_at IS NULL)
+          OR t.needs_1c_update_at IS NOT NULL)
+        AND (t.debt_1c_alert_at IS NULL OR t.debt_1c_alert_at <= ?)`)
+      .all(new Date(Date.now() - DEBT_1C_REPEAT_MS).toISOString());
+    const stamp = db.prepare('UPDATE trips SET debt_1c_alert_at=? WHERE id=?');
+    for (const trip of rows) {
+      const debts = [];
+      if (trip.deferred_1c_at && !trip.entered_1c_at) debts.push('заказ не внесён');
+      if (trip.needs_1c_update_at) debts.push(trip.needs_1c_note || 'обновить данные');
+      notify('dispatcher', `📒 Долг перед 1С по рейсу ${routeText(trip)} (${trip.plate}): ` +
+        `${debts.join('; ')}. Закройте в карточке рейса — напоминание повторится через 3 часа`,
+      'trip', trip.id);
+      stamp.run(nowIso, trip.id);
+    }
+  } catch (error) {
+    console.error('Сторож долгов 1С:', error.message);
+  }
+}
+setInterval(runDebt1cWatch, 10 * 60_000);
+setTimeout(runDebt1cWatch, 65_000);
+
 setInterval(runAssignWatch, 5 * 60_000);
 setTimeout(runAssignWatch, 55_000);
 
@@ -1451,6 +1483,17 @@ async function api(request, response, url) {
         emptyKmFor(merged.vehicleId, merged.startsAt || current.starts_at, null,
           (merged.fromPoint ?? current.from_point) || fromZoneName, match[0]), match[0]);
       resetDriverNotificationOnVehicleChange(db, match[0]);
+      // Данные в 1С устарели: если заказ уже внесён (или внесение отложено),
+      // диспетчеру ставится задание обновить ТС в учётной системе.
+      if (current.entered_1c_at || current.deferred_1c_at) {
+        const oldPlate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(current.vehicle_id)?.plate || '—';
+        const newPlate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(merged.vehicleId)?.plate || '—';
+        db.prepare(`UPDATE trips SET needs_1c_update_at=?, needs_1c_note=?, debt_1c_alert_at=NULL
+          WHERE id=?`).run(new Date().toISOString(),
+          `ТС: было ${oldPlate} → стало ${newPlate}`, match[0]);
+        notify('dispatcher', `🔁 Замена ТС на рейсе ${routeText(current)}: ${oldPlate} → ${newPlate}. ` +
+          `Обновите данные в 1С и отметьте «✓ 1С обновлено» в карточке рейса`, 'trip', match[0]);
+      }
     }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
@@ -1488,10 +1531,15 @@ async function api(request, response, url) {
         WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`%${needle}%`)
       || null;
   }
-  const addressPointById = id => id
-    ? db.prepare(`SELECT latitude,longitude FROM addresses
-        WHERE id=? AND latitude IS NOT NULL`).get(id) || null
-    : null;
+  // function-объявление (hoisting): emptyKmFor вызывается из PATCH-ветки
+  // рейсов, которая в коде стоит ВЫШЕ, — стрелка в const давала TDZ и
+  // замена ТС падала 500 «Cannot access before initialization».
+  function addressPointById(id) {
+    return id
+      ? db.prepare(`SELECT latitude,longitude FROM addresses
+          WHERE id=? AND latitude IS NOT NULL`).get(id) || null
+      : null;
+  }
 
   // Позиция сцепки перед моментом: точка выгрузки последнего рейса ЛИБО
   // место ремонта, если ремонт с адресом был позже выгрузки.
@@ -2497,6 +2545,24 @@ async function api(request, response, url) {
   match = route(/^\/api\/trips\/([^/]+)\/step$/, pathname);
   if (match && request.method === 'POST') {
     const body = await readJson(request);
+    // Спец-шаги долгов 1С: «внесу позже» и «данные в 1С обновлены».
+    if (body.step === 'defer_1c' || body.step === '1c_updated') {
+      const user = requirePermission(request, response, 'trip-status:write');
+      if (!user) return;
+      const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
+      if (!trip) return errorJson(response, 404, 'Рейс не найден');
+      if (body.step === 'defer_1c') {
+        if (trip.entered_1c_at) return errorJson(response, 409, 'Заказ уже внесён в 1С');
+        db.prepare(`UPDATE trips SET deferred_1c_at=COALESCE(deferred_1c_at, ?),
+          updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(new Date().toISOString(), user.id, match[0]);
+      } else {
+        db.prepare(`UPDATE trips SET needs_1c_update_at=NULL, needs_1c_note='',
+          updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(user.id, match[0]);
+      }
+      audit(db, user, 'dispatch_step', 'trip', match[0], { step: body.step }, requestIp(request));
+      return json(response, 200, { ok: true });
+    }
     const meta = DISPATCH_STEPS.find(item => item.step === body.step);
     if (!meta) return errorJson(response, 422, 'Неизвестный шаг диспетчеризации');
     const user = requirePermission(request, response, meta.permission);
@@ -2506,6 +2572,10 @@ async function api(request, response, url) {
       ? new Date(Date.parse(body.at)).toISOString() : null;
     try {
       const { trip, statusChanged } = applyDispatchStep(db, match[0], body.step, user.id, factAt);
+      // Фактическое внесение в 1С гасит отложенный долг.
+      if (body.step === 'entered_1c') {
+        db.prepare(`UPDATE trips SET deferred_1c_at=NULL, debt_1c_alert_at=NULL WHERE id=?`).run(match[0]);
+      }
       if (statusChanged) {
         queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
           integrationPublic().writePolicy === 'automatic');
