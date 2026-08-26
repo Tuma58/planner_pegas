@@ -363,14 +363,31 @@ export async function renderDispatcher(container, context, options = {}) {
   // протухает и карточка снова загорается. Час от факта звонка честнее
   // календарной границы часа просрочки (отметка не сгорает через минуту).
   const WORKED_TTL_MS = 1.5 * 3_600_000;
+  // Событие ещё в будущем (дальнобой «в пути на выгрузку 29-го»): отметка
+  // не должна прятать карточку на несколько суток — водитель может
+  // выгрузиться раньше расчёта или встать. Повторный контроль каждые 12 ч.
+  const RECHECK_MS = 12 * 3_600_000;
+  const markDoneMs = mark => Date.parse(String(mark.done_at).replace(' ', 'T') + 'Z');
   const workedOf = trip => {
     const mark = workedMap.get(eventKeyOf(trip));
     if (!mark) return null;
     const event = nextControlEvent(trip);
     const overdue = event.at === 0 || (Number.isFinite(event.at) && event.at < Date.now());
-    if (!overdue) return mark;
-    const doneAt = Date.parse(String(mark.done_at).replace(' ', 'T') + 'Z');
-    return Number.isFinite(doneAt) && Date.now() - doneAt < WORKED_TTL_MS ? mark : null;
+    const doneAt = markDoneMs(mark);
+    if (!Number.isFinite(doneAt)) return overdue ? null : mark;
+    const ttl = overdue ? WORKED_TTL_MS : RECHECK_MS;
+    return Date.now() - doneAt < ttl ? mark : null;
+  };
+  // Протухшая отметка будущего события — карточка на повторный контроль:
+  // поднимается по моменту протухания (как «просроченная с этого времени»).
+  const recheckOf = trip => {
+    if (workedOf(trip)) return null;
+    const mark = workedMap.get(eventKeyOf(trip));
+    if (!mark) return null;
+    const event = nextControlEvent(trip);
+    if (!(Number.isFinite(event.at) && event.at > Date.now())) return null;
+    const doneAt = markDoneMs(mark);
+    return Number.isFinite(doneAt) ? { mark, sinceMs: Date.now() - doneAt } : null;
   };
   // Последний комментарий контролёра по рейсу (за сегодня-вчера) — даже если
   // событие уже сменилось: отметка «✓ отработано» привязана к конкретному
@@ -393,7 +410,11 @@ export async function renderDispatcher(container, context, options = {}) {
   // Ближайшее событие — наверх: просроченные и «не выгружают» первыми.
   // Отработанные события уходят под неотработанные и ждут своего следующего
   // события; выполненный рейс («Выгружен») из списка уходит сам.
-  const eventAt = trip => Number.isFinite(nextControlEvent(trip).at) ? nextControlEvent(trip).at : Infinity;
+  const eventAt = trip => {
+    const recheck = recheckOf(trip);
+    if (recheck) return markDoneMs(recheck.mark) + RECHECK_MS; // в прошлом — поднимает карточку
+    return Number.isFinite(nextControlEvent(trip).at) ? nextControlEvent(trip).at : Infinity;
+  };
   online.sort((a, b) => Number(!!workedOf(a)) - Number(!!workedOf(b)) || eventAt(a) - eventAt(b));
 
   // Заявка рейса — источник комментария продаж и «без НДС».
@@ -763,6 +784,11 @@ export async function renderDispatcher(container, context, options = {}) {
           title="Данные в 1С обновлены — долг закрыт">✓ 1С обновлено</button>` : ''}`);
     }
     const debtBlock = debt1c.join(' ');
+    // Повторный контроль: прошлый «✓ отработано» протух (12 ч), событие ещё
+    // впереди — карточка поднята, диспетчеру пора снова выйти на связь.
+    const recheck = recheckOf(trip);
+    const recheckBlock = recheck
+      ? `<span class="badge bad" title="Прошлый контроль: ${escapeHtml(recheck.mark.done_by || '')} ${markTime(recheck.mark)}${recheck.mark.note ? ` — «${escapeHtml(recheck.mark.note)}»` : ''}. По дальним рейсам контроль минимум дважды в сутки">🔁 повторный контроль — ${Math.floor(recheck.sinceMs / 3_600_000)} ч без связи</span>` : '';
     // До факта прибытия рейс «в пути» (затянувшийся — опоздание, уведомление
     // продаж). «Прибыл на выгрузку» начинает отсчёт выгрузки: свыше 6 часов —
     // «не выгружают», особый контроль и выставление простоя клиенту.
@@ -829,7 +855,7 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="list-item ordrow ${stuck ? 'pipe-rejected' : late ? 'pipe-returned' : ''}" style="border:0;padding:0">
       ${tripHead(trip)}
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        ${statusBlock} ${debtBlock}
+        ${statusBlock} ${recheckBlock} ${debtBlock}
         <span style="display:flex;gap:5px">
           <button class="button ghost small" data-stops-toggle="${trip.id}"
             title="Лента контрольных точек: прибытие, работы, убытие, простой">🧭 Точки${stopsCount ? ` (${stopsCount})` : ''}</button>
