@@ -2086,3 +2086,44 @@ test('конструктор: недельная цепочка со спота�
   assert.ok(chain.every(item => item.unloadAt > item.loadAt), 'выгрузка позже погрузки');
   assert.ok(chain[chain.length - 1].unloadAt <= now + 8 * 86_400_000, 'цепочка укладывается в горизонт');
 });
+
+test('замена ТС: рейс без фактов возвращается в подготовку к выходу', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-replace-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const { backToPreparationOnVehicleChange, tripHasMovementFacts, ensureTripStops } =
+    await import('../src/trip-control.mjs');
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const iso = shift => new Date(Date.now() + shift).toISOString();
+  const makeTrip = id => db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status,logist_confirmed_at,entered_1c_at,
+    driver_notified_at,on_line_at)
+    VALUES(?,?,'К',?,?,?,?,500,90000,'run',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+    .run(id, vehicle, zone, zone, iso(20 * 3600e3), iso(50 * 3600e3));
+
+  // Рейс вывели на линию заранее — фактов движения ещё нет.
+  makeTrip('rv1');
+  ensureTripStops(db, 'rv1');
+  assert.equal(tripHasMovementFacts(db, db.prepare('SELECT * FROM trips WHERE id=?').get('rv1')), false);
+  assert.equal(backToPreparationOnVehicleChange(db, db.prepare('SELECT * FROM trips WHERE id=?').get('rv1')), true);
+  const back = db.prepare('SELECT status,on_line_at,driver_notified_at,entered_1c_at FROM trips WHERE id=?').get('rv1');
+  assert.equal(back.status, 'plan', 'рейс вернулся в подготовку');
+  assert.equal(back.on_line_at, null, 'вывод на линию отозван — задание придёт заново');
+  assert.equal(back.driver_notified_at, null, 'задание прежнему водителю отозвано');
+  assert.ok(back.entered_1c_at, 'внесение в 1С не сбрасывается — заказ тот же');
+
+  // Машина уже в пути: есть факт прибытия — это перецепка, статус сохраняется.
+  makeTrip('rv2');
+  ensureTripStops(db, 'rv2');
+  db.prepare(`UPDATE trip_stops SET actual_arrival=CURRENT_TIMESTAMP
+    WHERE trip_id=? AND seq=(SELECT MIN(seq) FROM trip_stops WHERE trip_id=?)`).run('rv2', 'rv2');
+  assert.equal(tripHasMovementFacts(db, db.prepare('SELECT * FROM trips WHERE id=?').get('rv2')), true);
+  assert.equal(backToPreparationOnVehicleChange(db, db.prepare('SELECT * FROM trips WHERE id=?').get('rv2')), false);
+  assert.equal(db.prepare('SELECT status FROM trips WHERE id=?').get('rv2').status, 'run',
+    'рейс с фактами остаётся в пути');
+});

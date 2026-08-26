@@ -20,6 +20,7 @@ import {
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
+  backToPreparationOnVehicleChange, tripHasMovementFacts,
   stopsWithEstimates, syncTripFromStops, tripDelayMs
 } from './trip-control.mjs';
 
@@ -1372,6 +1373,13 @@ async function api(request, response, url) {
     if (!user) return;
     const current = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
     if (!current) return errorJson(response, 404, 'Рейс не найден');
+    // Замена ТС на рейсе, который вывели на линию заранее, но который ещё
+    // никуда не выехал: новая сцепка задания не получала — рейс возвращается
+    // в подготовку к выходу, иначе задание на вывод на линию диспетчеру
+    // не приходит и машина числится «в пути» без единой отметки.
+    const vehicleReplaced = body.vehicleId && body.vehicleId !== current.vehicle_id;
+    const backToPrep = vehicleReplaced && body.status === undefined &&
+      current.status === 'run' && !tripHasMovementFacts(db, current);
     const merged = normalizeTrip({
       vehicleId: body.vehicleId ?? current.vehicle_id, orderId: body.orderId ?? current.order_id,
       customerName: body.customerName ?? current.customer_name,
@@ -1379,7 +1387,8 @@ async function api(request, response, url) {
       fromPoint: body.fromPoint ?? current.from_point, toPoint: body.toPoint ?? current.to_point,
       startsAt: body.startsAt ?? current.starts_at, endsAt: body.endsAt ?? current.ends_at,
       distanceKm: body.distanceKm ?? current.distance_km, revenueVat: body.revenueVat ?? current.revenue_vat,
-      status: body.status ?? current.status, rejectionReason: body.rejectionReason ?? current.rejection_reason,
+      status: backToPrep ? 'plan' : (body.status ?? current.status),
+      rejectionReason: body.rejectionReason ?? current.rejection_reason,
       temperatureMode: body.temperatureMode ?? current.temperature_mode,
       bodyType: body.bodyType ?? current.body_type
     });
@@ -1485,16 +1494,32 @@ async function api(request, response, url) {
         emptyKmFor(merged.vehicleId, merged.startsAt || current.starts_at, null,
           (merged.fromPoint ?? current.from_point) || fromZoneName, match[0]), match[0]);
       resetDriverNotificationOnVehicleChange(db, match[0]);
+      const oldPlate = db.prepare('SELECT plate FROM vehicles WHERE id=?')
+        .get(current.vehicle_id)?.plate || '—';
+      const newPlate = db.prepare('SELECT plate FROM vehicles WHERE id=?')
+        .get(merged.vehicleId)?.plate || '—';
+      // Диспетчеру уходит ОДНО задание со всеми последствиями замены —
+      // иначе одно действие рождало два уведомления и работа дробилась.
+      const tasks = [];
+      if (backToPrep) {
+        backToPreparationOnVehicleChange(db, current);
+        tasks.push('рейс вернулся в подготовку — отправьте задание водителю и выведите на линию заново');
+      } else if (current.status === 'run') {
+        // Машина уже в пути (есть факты) — это перецепка: чек-листа у рейса
+        // на линии нет, поэтому про задание новому водителю напоминаем явно.
+        tasks.push('машина уже в пути — передайте задание новому водителю');
+      }
       // Данные в 1С устарели: если заказ уже внесён (или внесение отложено),
       // диспетчеру ставится задание обновить ТС в учётной системе.
       if (current.entered_1c_at || current.deferred_1c_at) {
-        const oldPlate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(current.vehicle_id)?.plate || '—';
-        const newPlate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(merged.vehicleId)?.plate || '—';
         db.prepare(`UPDATE trips SET needs_1c_update_at=?, needs_1c_note=?, debt_1c_alert_at=NULL
           WHERE id=?`).run(new Date().toISOString(),
           `ТС: было ${oldPlate} → стало ${newPlate}`, match[0]);
+        tasks.push('обновите данные в 1С и отметьте «✓ 1С обновлено» в карточке рейса');
+      }
+      if (tasks.length) {
         notify('dispatcher', `🔁 Замена ТС на рейсе ${routeText(current)}: ${oldPlate} → ${newPlate}. ` +
-          `Обновите данные в 1С и отметьте «✓ 1С обновлено» в карточке рейса`, 'trip', match[0]);
+          `${tasks.map((text, index) => `${index + 1}) ${text}`).join('; ')}`, 'trip', match[0]);
       }
     }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),

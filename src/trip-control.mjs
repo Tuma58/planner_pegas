@@ -248,10 +248,32 @@ export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
 }
 
 // Переназначение ТС отзывает отправленное водителю задание: новому водителю
-// его ещё не отправляли. Внесение в 1С и контроль на линии сохраняются.
+// его ещё не отправляли. Внесение в 1С сохраняется (заказ тот же).
 export function resetDriverNotificationOnVehicleChange(db, tripId) {
   db.prepare(`UPDATE trips SET driver_notified_at=NULL,updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND status IN ('plan','run')`).run(tripId);
+}
+
+// Есть ли по рейсу хоть один факт движения. Рейс часто выводят на линию
+// заранее (машина ещё стоит), поэтому статус «В пути» сам по себе не
+// доказывает, что сцепка выехала: доказывают факты — прибытие, работа
+// на стоянках, выгрузка.
+export function tripHasMovementFacts(db, trip) {
+  if (trip.arrived_at || trip.unloaded_at || trip.docs_checked_at) return true;
+  return db.prepare(`SELECT COUNT(*) c FROM trip_stops WHERE trip_id=? AND
+    (actual_arrival IS NOT NULL OR work_started_at IS NOT NULL
+      OR work_finished_at IS NOT NULL OR actual_departure IS NOT NULL)`).get(trip.id).c > 0;
+}
+
+// Замена ТС на рейсе, который ещё никуда не выехал, возвращает рейс в
+// подготовку: новая сцепка задания не получала и на линию не выводилась.
+// Без этого рейс оставался «В пути» на машине без единой отметки, а
+// диспетчер не получал задание на вывод новой сцепки на линию.
+export function backToPreparationOnVehicleChange(db, trip) {
+  if (trip.status !== 'run' || tripHasMovementFacts(db, trip)) return false;
+  db.prepare(`UPDATE trips SET status='plan',on_line_at=NULL,driver_notified_at=NULL,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(trip.id);
+  return true;
 }
 
 // ── «ТС не выгружают»: затянувшаяся выгрузка на линии ──

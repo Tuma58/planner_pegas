@@ -659,6 +659,23 @@ function migrateColumns(db) {
       WHERE status IN ('run','unloaded','done','paid');`);
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('dispatch_backfill_v1','1')`).run();
   }
+  // Разовое восстановление после дефекта замены ТС: до 26.08.2026 замена
+  // сцепки на рейсе, выведенном на линию, отзывала задание водителю, но
+  // оставляла рейс «В пути» — задание на вывод новой сцепки диспетчеру не
+  // приходило, а машина числилась занятой авансом. Признак испорченной
+  // записи точный: рейс на линии, задание водителю отозвано, фактов
+  // движения нет. Такие рейсы возвращаются в подготовку к выходу.
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='vehicle_change_prep_v1'`).get()) {
+    db.exec(`UPDATE trips SET status='plan', on_line_at=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE status='run' AND driver_notified_at IS NULL AND on_line_at IS NOT NULL
+        AND arrived_at IS NULL AND unloaded_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM trip_stops s WHERE s.trip_id=trips.id
+          AND (s.actual_arrival IS NOT NULL OR s.work_started_at IS NOT NULL
+            OR s.work_finished_at IS NOT NULL OR s.actual_departure IS NOT NULL));
+      UPDATE orders SET stage=2, updated_at=CURRENT_TIMESTAMP
+        WHERE stage=3 AND trip_id IN (SELECT id FROM trips WHERE status='plan');`);
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('vehicle_change_prep_v1','1')`).run();
+  }
   // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
   ensure('users', 'roles', 'TEXT');
   db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);
