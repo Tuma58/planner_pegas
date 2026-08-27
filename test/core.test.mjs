@@ -731,8 +731,8 @@ test('диспетчеризация: шаги идут по порядку, в�
   assert.equal(firstStop.actual_departure, null, 'факт убытия с погрузки пуст');
 
   // Этап «документы получены» отменён 27.08.2026: последний шаг рейса —
-  // «Выгружен», шага docs_checked в чек-листе больше нет.
-  assert.throws(() => applyDispatchStep(db, 'td-1', 'docs_checked'), /Неизвестный шаг/);
+  // «Выгружен», шага docs_checked в чек-листе больше нет. Сам вызов из
+  // старой вкладки не падает — проверено отдельным тестом совместимости.
 
   // Переназначение ТС отзывает задание водителю: шаг выполняется заново.
   resetDriverNotificationOnVehicleChange(db, 'td-1');
@@ -2130,4 +2130,35 @@ test('замена ТС: рейс без фактов возвращается �
   assert.equal(backToPreparationOnVehicleChange(db, db.prepare('SELECT * FROM trips WHERE id=?').get('rv2')), false);
   assert.equal(db.prepare('SELECT status FROM trips WHERE id=?').get('rv2').status, 'run',
     'рейс с фактами остаётся в пути');
+});
+
+test('устаревший шаг «документы» не блокирует работу старой вкладки', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-legacy-step-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const { applyDispatchStep, DISPATCH_STEPS } = await import('../src/trip-control.mjs');
+  assert.ok(!DISPATCH_STEPS.some(item => item.step === 'docs_checked'),
+    'этап документов из чек-листа убран');
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    starts_at,ends_at,distance_km,revenue_vat,status,unloaded_at)
+    VALUES('lg-1',?,'Клиент',?,?,'2026-08-26T05:00:00.000Z','2026-08-27T05:00:00.000Z',
+    640,90000,'unloaded','2026-08-27T05:41:00.000Z')`).run(vehicle, zone, zone);
+  // Вкладка, открытая до обновления, шлёт старый шаг — ответ успешный,
+  // иначе у диспетчера рейс «не проводится» до перезагрузки страницы.
+  const result = applyDispatchStep(db, 'lg-1', 'docs_checked', null, '2026-08-27T06:00:00.000Z');
+  assert.ok(result.trip, 'рейс возвращён без ошибки');
+  assert.equal(result.statusChanged, false);
+  assert.equal(db.prepare(`SELECT docs_checked_at FROM trips WHERE id='lg-1'`).get().docs_checked_at,
+    '2026-08-27T06:00:00.000Z', 'отметка проставлена — старый интерфейс уберёт карточку');
+  // Повторный вызов не ломается и не переписывает отметку.
+  applyDispatchStep(db, 'lg-1', 'docs_checked', null, '2026-08-27T07:00:00.000Z');
+  assert.equal(db.prepare(`SELECT docs_checked_at FROM trips WHERE id='lg-1'`).get().docs_checked_at,
+    '2026-08-27T06:00:00.000Z', 'первая отметка сохраняется');
+  // Действительно неизвестный шаг по-прежнему отвергается.
+  assert.throws(() => applyDispatchStep(db, 'lg-1', 'выдуманный_шаг', null), /Неизвестный шаг/);
 });

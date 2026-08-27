@@ -208,6 +208,18 @@ export const DISPATCH_STEPS = [
 // Выполнение шага с проверкой порядка. Возвращает { trip, statusChanged }.
 export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
   const index = DISPATCH_STEPS.findIndex(item => item.step === step);
+  // Устаревший шаг из вкладки, открытой до обновления: отвечаем успехом и
+  // ставим отметку, иначе у диспетчера «программа не даёт провести» рейс,
+  // пока он не перезагрузит страницу.
+  if (step === 'docs_checked') {
+    const legacy = db.prepare('SELECT * FROM trips WHERE id=?').get(tripId);
+    if (!legacy) throw Object.assign(new Error('Рейс не найден'), { status: 404 });
+    if (!legacy.docs_checked_at) {
+      db.prepare(`UPDATE trips SET docs_checked_at=?,updated_by=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(atIso || new Date().toISOString(), userId || null, tripId);
+    }
+    return { trip: db.prepare('SELECT * FROM trips WHERE id=?').get(tripId), statusChanged: false };
+  }
   if (index < 0) throw Object.assign(new Error('Неизвестный шаг диспетчеризации'), { status: 422 });
   const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(tripId);
   if (!trip) throw Object.assign(new Error('Рейс не найден'), { status: 404 });

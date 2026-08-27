@@ -2650,7 +2650,13 @@ async function api(request, response, url) {
       audit(db, user, 'dispatch_step', 'trip', match[0], { step: body.step }, requestIp(request));
       return json(response, 200, { ok: true });
     }
-    const meta = DISPATCH_STEPS.find(item => item.step === body.step);
+    // Устаревший шаг «документы получены» (этап отменён 27.08.2026): вкладка,
+    // открытая до обновления, шлёт его до перезагрузки страницы — отвечаем
+    // успехом, иначе у диспетчера рейс «не проводится».
+    const meta = DISPATCH_STEPS.find(item => item.step === body.step)
+      || (body.step === 'docs_checked'
+        ? { step: 'docs_checked', permission: 'trip-status:write', label: 'Документы получены' }
+        : null);
     if (!meta) return errorJson(response, 422, 'Неизвестный шаг диспетчеризации');
     const user = requirePermission(request, response, meta.permission);
     if (!user) return;

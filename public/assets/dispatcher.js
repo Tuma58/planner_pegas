@@ -601,7 +601,7 @@ export async function renderDispatcher(container, context, options = {}) {
     ${isAdmin ? (() => {
       const closable = stalePrep.filter(trip => trip.ends_at < new Date().toISOString());
       return closable.length ? `<button class="button small" id="staleCloseAll"
-        title="Только администратор. Каждый рейс станет «Выгружен» фактом планового времени, документы — «получены»: карточки уйдут из подготовки и не всплывут в контроле">✅ Закрыть всё как выполненное (${closable.length})</button>` : '';
+        title="Только администратор. Каждый рейс станет «Выгружен» фактом планового времени: карточки уйдут из подготовки и не всплывут в контроле">✅ Закрыть всё как выполненное (${closable.length})</button>` : '';
     })() : ''}
     ${stalePrep.map(prepCard).join('')}
   </details>` : '';
@@ -784,10 +784,7 @@ export async function renderDispatcher(container, context, options = {}) {
     // продаж). «Прибыл на выгрузку» начинает отсчёт выгрузки: свыше 6 часов —
     // «не выгружают», особый контроль и выставление простоя клиенту.
     let statusBlock;
-    if (trip.status === 'unloaded') {
-      statusBlock = `<span class="badge warn" title="Рейс выгружен ${formatDateTime(trip.unloaded_at || trip.ends_at)} —
-        остаётся на контроле до проверки фото документов (без печатей и актов)">📄 выгружен · документы не проверены</span>`;
-    } else if (stuck) {
+    if (stuck) {
       const stuckHours = Math.floor(stuckMsOf(trip) / 3_600_000);
       statusBlock = `<span class="badge bad" title="Прибыл ${formatDateTime(trip.arrived_at)}, выгрузка не отмечена более 6 часов — продажи и логисты уведомлены автоматически, диспетчерам пинг каждый час">🚨 не выгружают ${stuckHours} ч · особый контроль</span>
         ${Number(trip.demurrage_vat) > 0

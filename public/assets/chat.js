@@ -686,10 +686,31 @@ export function setupChat(state) {
       if (knownVersion === null) { knownVersion = health.assetVersion; return; }
       if (health.assetVersion !== knownVersion) {
         knownVersion = health.assetVersion;
-        toast('Вышло обновление планера — обновите страницу (Ctrl+R)', 'error');
+        showUpdateBanner();
       }
     } catch { /* сеть моргнула — проверим в следующий раз */ }
   };
   checkVersion();
-  setInterval(checkVersion, 5 * 60_000);
+  // Раз в минуту: на старой версии кнопки шлют устаревшие запросы, и работа
+  // встаёт («программа не даёт провести») — узнавать об обновлении надо быстро.
+  setInterval(checkVersion, 60_000);
+}
+
+// Баннер обновления — вместо всплывающей подсказки, которую легко пропустить:
+// висит поверх интерфейса, пока страницу не перезагрузят.
+function showUpdateBanner() {
+  if (document.getElementById('updateBanner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'updateBanner';
+  banner.className = 'update-banner';
+  banner.innerHTML = `<span>🔄 Вышло обновление планера. Обновите страницу —
+    до этого часть кнопок работает по-старому.</span>
+    <button class="button small" id="updateBannerGo">Обновить сейчас</button>
+    <button class="button ghost small" id="updateBannerLater" title="Скрыть на 10 минут">Позже</button>`;
+  document.body.appendChild(banner);
+  document.getElementById('updateBannerGo').onclick = () => location.reload();
+  document.getElementById('updateBannerLater').onclick = () => {
+    banner.remove();
+    setTimeout(showUpdateBanner, 10 * 60_000);
+  };
 }
