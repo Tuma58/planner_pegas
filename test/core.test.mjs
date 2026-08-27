@@ -2357,3 +2357,42 @@ test('состояние сцепки: рейс главнее интервал�
     starts_at: iso(-30), ends_at: iso(-6), unloaded_at: iso(-6) }], dispositions: [] };
   assert.equal(vehicleStateAt(vehicle, yesterday, day).kind, 'idle', 'вчерашний рейс не держит день');
 });
+
+test('дедлайн назначения ТС: окно минус подгон минус подготовка', async () => {
+  const { assignDeadline, feedHoursFor, PREP_HOURS, DEFAULT_FEED_HOURS } =
+    await import('../public/assets/assign-deadline.js');
+  const now = Date.now();
+  const iso = hours => new Date(now + hours * 3_600_000).toISOString();
+  const addr = (name, lat, lon) => ({ id: name, name, region: name, zone_name: name,
+    latitude: lat, longitude: lon });
+  const data = {
+    reference: { addresses: [addr('Пенза', 53.2, 45.0), addr('Москва', 55.75, 37.6)] },
+    vehicles: [
+      { id: 'near', status: 'work', zone_name: 'Пенза' },
+      { id: 'far', status: 'work', zone_name: 'Москва' }
+    ],
+    trips: [], dispositions: []
+  };
+  // Погрузка в Пензе: ближайшая свободная машина стоит там же — подгон почти нулевой.
+  const order = { window_from: iso(12), from_point: 'Пенза', from_name: 'Пенза' };
+  const near = assignDeadline(data, order, now);
+  assert.ok(near.feedHours <= 1, `подгон от ближней машины мал, получили ${near.feedHours} ч`);
+  assert.ok(near.leftMs > 9 * 3_600_000, 'запас времени большой — дедлайн далеко');
+  assert.equal(near.overdue, false);
+
+  // Та же заявка, но ближняя машина занята рейсом: считаем от московской.
+  const busy = { ...data, trips: [{ id: 't1', vehicle_id: 'near', status: 'run',
+    starts_at: iso(-5), ends_at: iso(20) }] };
+  const far = assignDeadline(busy, order, now);
+  assert.ok(far.feedHours > near.feedHours, 'дальняя машина требует большего подгона');
+
+  // Окно уже близко — дедлайн просрочен, назначать поздно.
+  const late = assignDeadline(data, { window_from: iso(1), from_point: 'Пенза' }, now);
+  assert.equal(late.overdue, true, 'за час до погрузки с подготовкой 2 ч дедлайн прошёл');
+
+  // Пункт без координат — берём медианный подгон августа, а не ноль.
+  const unknown = assignDeadline(data, { window_from: iso(12), from_point: 'Нет такого пункта' }, now);
+  assert.equal(unknown.feedHours, DEFAULT_FEED_HOURS);
+  assert.equal(PREP_HOURS, 2, 'подготовка выхода — два часа');
+  assert.ok(feedHoursFor(data, order, now) >= 0.5, 'подгон не бывает нулевым');
+});

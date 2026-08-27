@@ -583,7 +583,11 @@ setTimeout(runUnconfirmedOrdersWatch, 45_000);
 // в чат, повтор каждый час до назначения (данные 14 дней: 79 заявок
 // назначались уже после начала окна погрузки — очередь разбиралась
 // без оглядки на дедлайны). ──
-const ASSIGN_SLA_MS = 6 * 3_600_000;
+// Норматив назначения: раньше сигнал приходил за 6 часов до погрузки, и
+// это было поздно — медианный подгон 3 ч, но у каждой четвёртой машины
+// 8,4 ч, плюс два часа на подготовку выхода. Сигналим за 12 часов, чтобы
+// решение можно было принять, пока оно ещё что-то меняет.
+const ASSIGN_SLA_MS = 12 * 3_600_000;
 const ASSIGN_ALERT_REPEAT_MS = 60 * 60_000;
 function runAssignWatch() {
   try {
@@ -605,8 +609,9 @@ function runAssignWatch() {
         ? `погрузка через ${hours} ч ${minutes} мин`
         : `погрузка началась ${hours} ч ${minutes} мин назад`;
       notify('logist', `⏰ Заявка ${order.order_no ? `№ ${order.order_no} ` : ''}${order.customer_name}: ` +
-        `${routeText(order)} без ТС — ${when} (норматив: назначить за 6 ч). ` +
-        `Назначьте в «Логист → Очередь на назначение»; сигнал повторится через час`, 'order', order.id);
+        `${routeText(order)} без ТС — ${when}. Дедлайн назначения виден в очереди: ` +
+        `окно минус подгон машины минус подготовка выхода. ` +
+        `Сигнал повторится через час`, 'order', order.id);
       stamp.run(new Date(nowMs).toISOString(), order.id);
     }
   } catch (error) {
@@ -647,6 +652,39 @@ setTimeout(runDebt1cWatch, 65_000);
 
 setInterval(runAssignWatch, 5 * 60_000);
 setTimeout(runAssignWatch, 55_000);
+
+// ── Вечерняя передача смены по заявкам ──
+// Разбор августа: заявки, подтверждённые после 16:00 МСК, ждали назначения
+// 19–22 часа — до утра. Логист уходит, заявка ложится «в стол», а окно
+// погрузки часто уже завтра. В 17:30 МСК собираем такие заявки в одно
+// сообщение: либо назначить сейчас, либо осознанно передать ночной смене.
+let eveningHandoffDay = '';
+function runEveningHandoff() {
+  try {
+    const nowMs = Date.now();
+    const msk = new Date(nowMs + 3 * 3_600_000);
+    const day = msk.toISOString().slice(0, 10);
+    if (msk.getUTCHours() !== 17 || msk.getUTCMinutes() < 30) return;
+    if (eveningHandoffDay === day) return;
+    const rows = db.prepare(`SELECT o.*, f.name from_name, t.name to_name FROM orders o
+      LEFT JOIN zones f ON f.id=o.from_zone_id LEFT JOIN zones t ON t.id=o.to_zone_id
+      WHERE o.status='new' AND o.stage=1 AND o.trip_id IS NULL AND o.deleted_at IS NULL
+        AND o.window_from <= ?`).all(new Date(nowMs + 36 * 3_600_000).toISOString());
+    eveningHandoffDay = day;
+    if (!rows.length) return;
+    const sum = rows.reduce((acc, order) => acc + Number(order.rate_vat || 0), 0);
+    const list = rows.slice(0, 8).map(order => `${order.order_no ? `№${order.order_no} ` : ''}` +
+      `${order.customer_name} (погрузка ${String(order.window_from).slice(5, 16).replace('T', ' ')})`).join('; ');
+    notify('logist', `🌙 Передача смены: ${rows.length} заявок без ТС с погрузкой в ближайшие ` +
+      `36 часов на ${Math.round(sum / 1000)} тыс ₽. ${list}. ` +
+      `Назначьте сегодня — утром до части из них будет поздно`, 'order', rows[0].id);
+    notify('dispatcher', `🌙 На ночь остаётся ${rows.length} заявок без ТС с погрузкой ` +
+      `в ближайшие 36 часов — если логист не назначил, эскалируйте руководителю`, 'order', rows[0].id);
+  } catch (error) {
+    console.error('Вечерняя передача смены:', error.message);
+  }
+}
+setInterval(runEveningHandoff, 5 * 60_000);
 
 // ── Норматив ответа на вопрос водителя: 10 минут ──
 // Вопрос висит дольше — сигнал всей смене: водитель стоит на погрузке и

@@ -8,6 +8,7 @@ import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
+import { assignDeadline, deadlineBadge as deadlineBadgeHtml } from './assign-deadline.js';
 import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress, salesTaskFor } from './sales.js';
 
 const overlaps = (a, b) =>
@@ -349,7 +350,11 @@ export async function renderLogist(container, context) {
   // возвращённые из плана — с пометкой, залежавшиеся сверху.
   const queueAll = data.orders
     .filter(order => inSalesPortfolio(order, data) && orderStage(order, data).stage === 1)
-    .sort((a, b) => String(a.window_from).localeCompare(String(b.window_from)));
+    // Сверху — то, по чему время кончается раньше: сортируем по дедлайну
+    // назначения, а не по окну погрузки. Дальняя погрузка с длинным подгоном
+    // требует решения раньше, чем близкая с более ранним окном.
+    .sort((a, b) => (assignDeadline(data, a)?.deadlineMs ?? Infinity) -
+      (assignDeadline(data, b)?.deadlineMs ?? Infinity));
   const queue = queueAll
     .filter(order => zoneMatches(order) && regionMatches(order) &&
       rangeMatches(order.window_from, order.window_to) &&
@@ -454,17 +459,12 @@ export async function renderLogist(container, context) {
     ? Date.now() - Date.parse(String(order.stage_changed_at).replace(' ', 'T') +
         (String(order.stage_changed_at).includes('Z') ? '' : 'Z'))
     : 0;
-  // Светофор дедлайна: норматив — ТС назначено за 6 часов до погрузки.
-  // Красный — норматив сорван или окно началось, жёлтый — меньше 6 часов.
-  const ASSIGN_SLA_MS = 6 * 3_600_000;
-  const deadlineBadge = order => {
-    const deadline = Date.parse(order.window_from) - ASSIGN_SLA_MS;
-    const leftMs = deadline - Date.now();
-    const at = formatDateTime(deadline);
-    if (leftMs <= 0) return `<span class="badge bad" title="Норматив: ТС за 6 ч до погрузки — время вышло">⏰ назначить было до ${at}</span>`;
-    if (leftMs <= ASSIGN_SLA_MS) return `<span class="badge warn" title="Норматив: ТС за 6 ч до погрузки">⏰ назначить до ${at}</span>`;
-    return `<span class="badge" title="Норматив: ТС за 6 ч до погрузки">назначить до ${at}</span>`;
-  };
+  // Дедлайн назначения считается по каждой заявке отдельно: окно погрузки
+  // минус подгон ближайшей свободной машины минус подготовка выхода.
+  // Прежний плоский норматив «6 часов до погрузки» врал: подгон бывает и
+  // 8 часов, и заявка «в нормативе» уже была обречена опоздать.
+  const deadlineOf = order => assignDeadline(state.data, order);
+  const deadlineBadge = order => deadlineBadgeHtml(deadlineOf(order));
   const queueCard = order => {
     const waiting = orderWaitMs(order);
     return `<div class="list-item ordrow ${order.returned_at ? 'pipe-returned' : 'pipe-mine'}">
