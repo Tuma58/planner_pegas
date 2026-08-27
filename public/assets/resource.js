@@ -6,6 +6,7 @@ import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
 import { transferDialog, transferPickVehicleDialog } from './transfer.js';
 import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
+import { bindResourceKeys, brushPaletteHtml, wireResourceBrush } from './resource-brush.js';
 
 export const DISP_KINDS = [
   { kind: 'work', label: 'В работе', short: 'работа', color: 'var(--teal)' },
@@ -411,10 +412,19 @@ async function loadResourceSchedule(container, context) {
     refDay, canWrite });
   box.scrollLeft = keepLeft;
   box.scrollTop = keepTop;
-  // Клик по ячейке — периодное закрепление с подставленной машиной/водителем
-  // и датами от дня клика (неделя по умолчанию, в форме правится).
+  // Кисть состояний: протяжка по дням ставит интервал сразу, без формы.
+  // Работает только в виде «по сцепкам» — там ячейка = машина × день.
+  if (canWrite && state.resourceView !== 'drivers') {
+    wireResourceBrush(container, context);
+    bindResourceKeys(() => context);
+  }
+  // Клик по ячейке в режиме просмотра — периодное закрепление с
+  // подставленной машиной/водителем и датами от дня клика.
   if (canWrite) {
     box.addEventListener('click', event => {
+      // Кисть занимает клик под себя: иначе после каждой покраски
+      // открывалась бы форма закрепления водителя.
+      if ((state.resourceBrush || 'view') !== 'view') return;
       const cell = event.target.closest('[data-sched-day]');
       if (!cell || event.target.closest('.vlink')) return;
       const from = cell.dataset.schedDay;
@@ -639,13 +649,63 @@ function renderResourceTasks(container, context, refDay, withState) {
     if (gapFrom) noDriverTasks.push({ vehicle, gapFrom, gapTo });
   }
 
-  container.innerHTML = `<h2>Задания ресурса</h2>
-    <p class="muted">На ${refDay.split('-').reverse().join('.')}: ТС без заказа и без
-      заполненной диспозиции — оформите причину простоя или передайте логисту.</p>
+  // Колонка решений: не «вся картина, ищите сами», а список того, что
+  // сегодня требует действия. Каждая строка закрывается одним кликом.
+  const nowMs = Date.now();
+  const soonMs = nowMs + 36 * 3_600_000;
+  // Выходят из ремонта в ближайшие сутки-полтора: машину пора планировать.
+  const fromRepair = (data.dispositions || []).filter(item =>
+    ['repair', 'no_driver'].includes(item.kind) &&
+    Date.parse(item.ends_at) > nowMs && Date.parse(item.ends_at) <= soonMs)
+    .map(item => ({ item, vehicle: (data.vehicles || []).find(v => v.id === item.vehicle_id) }))
+    .filter(row => row.vehicle);
+  // Перегоны, где что-то встало: задание не отправлено или машина опаздывает.
+  const transferAlerts = (data.dispositions || []).filter(item => item.kind === 'transfer' &&
+    !item.arrived_at && (!item.driver_notified_at || Date.parse(item.ends_at) < nowMs - 2 * 3_600_000));
+  // Водители на межвахте, за которыми закреплена машина без подмены.
+  const restingDrivers = (data.drivers || []).filter(driver => {
+    if (!driver.vehicle_id || !driver.shift_on || !driver.shift_off) return false;
+    const rest = shiftStateAt(driver, refDay)?.rest;
+    if (!rest) return false;
+    return !(data.driverAssignments || []).some(item => item.vehicle_id === driver.vehicle_id &&
+      Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
+  });
+
+  container.innerHTML = `<h2>Что требует решения</h2>
+    <p class="muted">На ${refDay.split('-').reverse().join('.')} — по одному действию на строку.</p>
     <div class="summary-grid">
       <div class="metric"><span>Требуют внимания</span><strong>${tasks.length}</strong></div>
       <div class="metric"><span>Всего в парке</span><strong>${withState.length}</strong></div>
     </div>
+    ${transferAlerts.length ? `<div class="task-sec"><b>🚚 Перегоны без движения (${transferAlerts.length})</b>
+      <div class="list" style="margin-top:6px">${transferAlerts.slice(0, 6).map(item => `
+        <div class="list-item" style="flex-wrap:wrap">
+          <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(item.vehicle_plate)}</strong>
+            <small class="muted" style="display:block">→ ${escapeHtml(item.to_name || '')}
+              · ${item.driver_notified_at ? 'опаздывает' : 'задание водителю не отправлено'}</small></span>
+          <button class="button ghost small" data-vinfo="${item.vehicle_id}">🚛</button>
+        </div>`).join('')}</div></div>` : ''}
+    ${fromRepair.length ? `<div class="task-sec"><b>🔧 Освобождаются в ближайшие сутки (${fromRepair.length})</b>
+      <div class="list" style="margin-top:6px">${fromRepair.slice(0, 6).map(row => `
+        <div class="list-item" style="flex-wrap:wrap">
+          <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(row.vehicle.plate)}</strong>
+            <small class="muted" style="display:block">${row.item.kind === 'repair' ? 'из ремонта' : 'ждёт водителя'}
+              до ${formatDateTime(row.item.ends_at)}${row.item.note ? ` · ${escapeHtml(row.item.note)}` : ''}</small></span>
+          <button class="button small" data-task-load="${row.vehicle.id}"
+            title="Сообщить продажам: сцепка освобождается, нужна загрузка">Запросить загрузку</button>
+        </div>`).join('')}</div></div>` : ''}
+    ${restingDrivers.length ? `<div class="task-sec"><b>🛏 Водители на межвахте без подмены (${restingDrivers.length})</b>
+      <div class="list" style="margin-top:6px">${restingDrivers.slice(0, 6).map(driver => {
+    const vehicle = (data.vehicles || []).find(v => v.id === driver.vehicle_id);
+    return `<div class="list-item" style="flex-wrap:wrap">
+          <span style="flex:1;min-width:0"><strong>${escapeHtml(driver.full_name)}</strong>
+            <small class="muted" style="display:block">сцепка ${escapeHtml(vehicle?.plate || '—')}
+              · вахта ${driver.shift_on}/${driver.shift_off}</small></span>
+          <button class="button small" data-task-assign-driver="${driver.vehicle_id}"
+            data-gap-from="${refDay}" data-gap-to="${new Date(Date.parse(`${refDay}T00:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10)}"
+            title="Назначить подменного водителя на период">Подменный</button>
+        </div>`;
+  }).join('')}</div></div>` : ''}
     ${noDriverTasks.length ? `<div class="task-sec"><b>👤 Назначить водителя на ТС (${noDriverTasks.length})</b>
       <div class="list" style="margin-top:6px">${noDriverTasks.slice(0, 8).map(task => `
         <div class="list-item" style="padding:6px 9px">
@@ -865,6 +925,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
         <button class="button small" id="resourceAdd">+ диспозиция</button>
       </div>
     </div>
+    ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers'
+    ? brushPaletteHtml(state) : ''}
     ${state.resourceView === 'gantt' ? `<div class="resscroll">
       <div class="timeline">
         <div class="timeline-head"><div class="vehicle-cell">Сцепка · водитель</div>${headerDays}</div>

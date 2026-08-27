@@ -1254,3 +1254,32 @@ tbody tr:hover td { background: var(--hover); }
 .question-card { border-left: 4px solid var(--warn); }
 .question-card.late { border-left-color: var(--bad);
   background: color-mix(in srgb, var(--bad) 6%, transparent); }
+
+/* ── Ресурс: палитра-кисть, выделение, компактный режим ── */
+.brush-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 7px 9px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--soft); position: sticky; top: 0; z-index: 30; }
+.brush-title { font-size: var(--fs-xs); font-weight: 800; color: var(--muted);
+  text-transform: uppercase; }
+.brush { border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  border-radius: 7px; padding: 3px 9px; font-size: var(--fs-sm); cursor: pointer;
+  min-height: 26px; font-weight: 600; }
+.brush:hover { border-color: var(--navy); }
+.brush.active { background: var(--brush-color, var(--navy)); color: #fff;
+  border-color: var(--brush-color, var(--navy)); }
+.brush.ghost.on { background: var(--navy); color: #fff; }
+.brush[disabled] { opacity: .45; cursor: default; }
+.brush-sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; }
+.brush-hint { font-size: var(--fs-xs); color: var(--muted); flex: 1; min-width: 240px; }
+/* Курсор-кисть по всей сетке, пока состояние выбрано */
+body.brush-on .sched-table td[data-sched-vehicle] { cursor: cell; }
+.sched-table td.brush-sel { outline: 2px solid var(--navy); outline-offset: -2px;
+  background: color-mix(in srgb, var(--navy) 18%, transparent) !important; }
+/* Компактный режим: строк на экране вдвое больше */
+body.res-compact .sched-table td, body.res-compact .sched-table th { padding: 1px 3px;
+  font-size: 10px; line-height: 1.15; }
+body.res-compact .sched-table .sk-dim { font-size: 9px; }
+/* Госномер всегда виден при горизонтальной прокрутке */
+.sched-table th.sched-name { position: sticky; left: 0; z-index: 5; background: var(--card); }
+.sched-table thead th { position: sticky; top: 0; z-index: 6; background: var(--card); }
+.sched-table thead th.sched-name { z-index: 7; }
