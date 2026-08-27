@@ -1247,6 +1247,9 @@ tbody tr:hover td { background: var(--hover); }
 .call-note { padding: 4px 0; border-bottom: 1px solid var(--line); }
 .call-note:last-child { border-bottom: 0; }
 .callt-h .button { float: right; }
+.res-transfers { margin-bottom: 10px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--soft); }
+.res-transfers .list-item { background: var(--card); border-radius: 7px; margin-bottom: 4px; }
 .questions-strip { margin-bottom: 10px; }
 .question-card { border-left: 4px solid var(--warn); }
 .question-card.late { border-left-color: var(--bad);

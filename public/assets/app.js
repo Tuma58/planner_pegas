@@ -933,7 +933,8 @@ document.addEventListener('click', event => {
   const link = event.target.closest('[data-vinfo]');
   if (!link || !state.data) return;
   event.stopPropagation();
-  vehicleInfoDialog(link.dataset.vinfo, state.data, { showModal, closeModal });
+  // onReload нужен карточке для действий (перегон): без него кнопка скрыта.
+  vehicleInfoDialog(link.dataset.vinfo, state.data, { showModal, closeModal, onReload: reload, state, can });
 });
 
 function showModal(content, variant = '') {

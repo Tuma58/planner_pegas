@@ -4,7 +4,7 @@
 import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
-import { transferDialog } from './transfer.js';
+import { transferDialog, transferPickVehicleDialog } from './transfer.js';
 import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
 
 export const DISP_KINDS = [
@@ -796,7 +796,40 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
 
   const savedScrolls = captureScrolls(container);
   const questions = questionsForOwner(await loadOpenQuestions(), 'Ресурс');
+  // Перегоны порожним: ресурсник должен видеть, кто из парка едет пустым и
+  // когда освободится, — иначе машина «пропадает» из планирования.
+  const activeTransfers = (data.dispositions || [])
+    .filter(item => item.kind === 'transfer' && !item.arrived_at)
+    .sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
+  const transfersHtml = activeTransfers.length ? `<div class="res-transfers">
+    <div class="scolh">🚚 Перегоны порожним <span>${activeTransfers.length}</span></div>
+    <div class="list">${activeTransfers.map(item => {
+    const stage = !item.driver_notified_at ? '📋 задание не отправлено'
+      : !item.departed_at ? '⏳ ждём выезда' : '🛣 в пути';
+    const late = item.departed_at && Date.now() - Date.parse(item.ends_at) > 2 * 3_600_000;
+    return `<div class="list-item" style="flex-wrap:wrap">
+      <span style="flex:1;min-width:0">
+        <strong class="mono">${escapeHtml(item.vehicle_plate)}</strong>
+        <small class="muted"> · ${escapeHtml(item.driver_name || 'без водителя')}</small>
+        <small class="muted" style="display:block">${escapeHtml(item.from_label || '—')}
+          → <b>${escapeHtml(item.to_name || '—')}</b> · ${escapeHtml(item.purpose || '')}
+          ${item.empty_km ? ` · ~${Math.round(item.empty_km)} км` : ''}</small>
+        <small class="muted" style="display:block">выезд ${formatDateTime(item.starts_at)}
+          · прибытие ${formatDateTime(item.ends_at)}</small>
+      </span>
+      <span style="display:flex;gap:5px;align-items:center">
+        <span class="badge ${late ? 'bad' : 'warn'}">${stage}${late ? ' · опаздывает' : ''}</span>
+        <button class="button ghost small" data-vinfo="${item.vehicle_id}"
+          title="Карточка сцепки">🚛</button>
+      </span>
+    </div>`;
+  }).join('')}</div>
+    <div class="geohint">Этапы перегона отмечает диспетчер в «Контроле на линии».
+      После отметки «Прибыл» машина числится в точке назначения.</div>
+  </div>` : '';
+
   container.innerHTML = `${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу' })}
+    ${transfersHtml}
     <div class="resboard">
     <div class="reshead">
       <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
@@ -817,6 +850,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
           title="Табель явки за период: Я/РВ/В/ОТ/Б/ПР по каждому водителю, печать">📋 Табель</button>
         <button class="button ghost small" id="resourceDemurrage"
           title="Простой под погрузкой/выгрузкой: случаи сверх норматива и история претензий клиентам">⏳ Простои</button>
+        <button class="button ghost small" id="resourceTransfer"
+          title="Перегон порожним: отправить машину под погрузку, на базу, в ремонт или на пересменку">🚚 Перегон</button>
         <button class="button small ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers' ? '' : 'ghost'}"
           id="resViewTs" title="График работы: строка — сцепка, в ячейках водитель по дням">📅 По ТС</button>
         <button class="button small ${state.resourceView === 'drivers' ? '' : 'ghost'}"
@@ -875,6 +910,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resourceAttendance').onclick = () => attendanceDialog(context);
   container.querySelector('#resourceTimesheet').onclick = () => timesheetDialog(context);
   container.querySelector('#resourceDemurrage').onclick = () => demurrageDialog(context);
+  // Перегон из шапки: сначала выбираем сцепку, дальше обычная форма перегона.
+  container.querySelector('#resourceTransfer').onclick = () => transferPickVehicleDialog(context);
   container.querySelector('#resourcePeriod').onclick = () => periodAssignDialog(context);
   const setView = view => { state.resourceView = view; renderResource(container, context); };
   container.querySelector('#resViewTs').onclick = () => setView('ts');

@@ -48,6 +48,64 @@ export const transferTaskText = transfer => [
   transfer.note ? `Комментарий: ${transfer.note}` : ''
 ].filter(Boolean).join('\n');
 
+// Выбор сцепки для перегона: тот же поиск, что в замене ТС, — свободные
+// сверху, занятые с пометкой. Нужен для входа «сначала машина, потом куда».
+export function transferPickVehicleDialog(context, options = {}) {
+  const data = context.state.data;
+  const nowMs = Date.now();
+  const rows = (data.vehicles || []).filter(vehicle => vehicle.status === 'work')
+    .map(vehicle => {
+      const trip = (data.trips || []).filter(item => item.vehicle_id === vehicle.id &&
+        ['run', 'plan'].includes(item.status))
+        .sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)))[0];
+      const transfer = (data.dispositions || []).find(item => item.kind === 'transfer' &&
+        item.vehicle_id === vehicle.id && !item.arrived_at);
+      const lastTrip = (data.trips || []).filter(item => item.vehicle_id === vehicle.id &&
+        item.status !== 'rejected' && Date.parse(item.ends_at) <= nowMs)
+        .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0];
+      const place = transfer?.arrived_at ? transfer.to_name
+        : lastTrip ? (lastTrip.to_point || lastTrip.to_name) : vehicle.zone_name;
+      return { vehicle, trip, transfer, place };
+    })
+    .sort((a, b) => Number(Boolean(a.trip || a.transfer)) - Number(Boolean(b.trip || b.transfer))
+      || String(a.vehicle.plate).localeCompare(String(b.vehicle.plate)));
+  context.showModal(`<h2>🚚 Перегон порожним</h2>
+    <p class="muted">Выберите сцепку — дальше укажете, куда и зачем её гнать.
+      Свободные показаны первыми, занятые — с текущим заданием.</p>
+    <input id="transferVehicleSearch" placeholder="🔍 поиск: номер, водитель, место" autocomplete="off"
+      style="width:100%;margin-bottom:8px">
+    <div class="list" id="transferVehicleList" style="max-height:340px;overflow:auto">
+      ${rows.map(row => `<button type="button" class="list-item" data-transfer-pick="${row.vehicle.id}"
+        data-place="${escapeHtml(row.place || '')}">
+        <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(row.vehicle.plate)}</strong>
+          <small class="muted"> · ${escapeHtml(row.vehicle.driver_name || 'без водителя')}</small>
+          <small class="muted" style="display:block">${row.transfer
+    ? `🚚 уже в перегоне → ${escapeHtml(row.transfer.to_name || '')}`
+    : row.trip ? `в задании: ${escapeHtml(row.trip.to_point || row.trip.to_name || '')}`
+      : `стоит: ${escapeHtml(row.place || '—')}`}</small></span>
+        <span class="badge ${row.trip || row.transfer ? 'warn' : 'ok'}" style="margin-left:auto">${row.transfer
+    ? 'в перегоне' : row.trip ? 'занята' : 'свободна'}</span>
+      </button>`).join('')}
+    </div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button></div>`);
+  const input = document.getElementById('transferVehicleSearch');
+  const list = document.getElementById('transferVehicleList');
+  input.addEventListener('input', () => {
+    const needle = input.value.trim().toLowerCase();
+    list.querySelectorAll('[data-transfer-pick]').forEach(button => {
+      button.style.display = !needle || button.textContent.toLowerCase().includes(needle) ? '' : 'none';
+    });
+  });
+  list.querySelectorAll('[data-transfer-pick]').forEach(button =>
+    button.addEventListener('click', () => {
+      const vehicle = (data.vehicles || []).find(item => item.id === button.dataset.transferPick);
+      if (vehicle) {
+        transferDialog(vehicle, data, context, { ...options, fromLabel: button.dataset.place || '' });
+      }
+    }));
+  input.focus();
+}
+
 // Форма перегона: куда, зачем, когда выезд. Километры и расчётное время
 // прибытия считает сервер — от места, где сцепка освободилась.
 export function transferDialog(vehicle, data, context, options = {}) {

@@ -5,6 +5,7 @@
 import { api, escapeHtml, formatDateTime, money, routeLabel } from './api.js';
 import { orderFileLinks, orderNet } from './sales.js';
 import { shiftStateAt } from './resource.js';
+import { transferDialog, transferPlaceOf } from './transfer.js';
 
 const DAY_MS = 86_400_000;
 const KIND_LABEL = { repair: '🔧 Ремонт', shift: '🔁 Пересменка',
@@ -134,7 +135,21 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
     ${nextTrip || nextDispo ? `<div class="vinfo-next muted">Дальше по плану: ${nextTrip
       ? `рейс ${escapeHtml(routeLabel(nextTrip))} · выход ${formatDateTime(nextTrip.starts_at)}`
       : `${KIND_LABEL[nextDispo.kind] || nextDispo.kind} с ${formatDateTime(nextDispo.starts_at)}`}</div>` : ''}
-    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Закрыть</button>
+      ${context.onReload ? `<button type="button" class="button" id="vinfoTransfer"
+        title="Отправить сцепку порожним: под погрузку, на базу, в ремонт, на пересменку">🚚 Перегон</button>` : ''}
+    </div>`);
+
+  // Перегон прямо из карточки сцепки — самый короткий путь: увидел, где
+  // машина стоит, и тут же отправил её туда, где она нужна.
+  document.getElementById('vinfoTransfer')?.addEventListener('click', () => {
+    const moved = transferPlaceOf(data, vehicle.id);
+    const lastTrip = trips.filter(trip => Date.parse(trip.ends_at) <= nowMs)
+      .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0];
+    const place = moved?.name || (lastTrip ? (lastTrip.to_point || lastTrip.to_name) : vehicle.zone_name);
+    transferDialog(vehicle, data, { ...context, state: { data } }, { fromLabel: place || '' });
+  });
 
   // Отметки контролёра подгружаются после открытия окна (3 последних дня).
   if (active && document.getElementById('vinfoNotes')) {
