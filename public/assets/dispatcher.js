@@ -5,7 +5,7 @@
 // 3) рейс переведён на контроль на линии (статус «В пути»).
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast, captureScrolls, restoreScrolls, wireSelectSearch } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast, captureScrolls, restoreScrolls, wireSelectSearch, renderInto } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
@@ -1009,7 +1009,7 @@ export async function renderDispatcher(container, context, options = {}) {
   const questionCards = questions.map(questionCard).join('');
 
   const savedScrolls = captureScrolls(container);
-  container.innerHTML = `<div class="saleswrap">
+  const html = `<div class="saleswrap">
     ${!canAct ? `<div class="view-only">👁 Режим просмотра: отметки контроля доступны роли «Диспетчер».
       Если вы ведёте рейсы на линии — попросите администратора добавить вам роль
       в «Настройки → Пользователи».</div>` : ''}
@@ -1052,6 +1052,13 @@ export async function renderDispatcher(container, context, options = {}) {
       </div>
     </div>
   </div>`;
+
+  // Разметка не изменилась — DOM не трогаем: без мигания, без прыжков
+  // списков и прокрутки. Обработчики остались на прежних узлах.
+  if (!renderInto(container, html)) {
+    restoreScrolls(container, savedScrolls);
+    return;
+  }
   restoreScrolls(container, savedScrolls);
 
   wireDemurrageChip(container, context);

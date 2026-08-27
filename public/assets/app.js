@@ -1,4 +1,4 @@
-import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs } from './api.js';
+import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs, captureViewScroll, restoreViewScroll } from './api.js';
 import { renderGeoMap } from './map.js';
 import { vehicleInfoDialog } from './vehicle-info.js';
 import { periodAssignDialog, shiftStateAt } from './resource.js';
@@ -1750,6 +1750,15 @@ async function reload(prefetched = null) {
 // Пауза: фоновая вкладка браузера, открытый модал или фокус в поле ввода —
 // чтобы не сбивать заполняемые формы и открытые карточки.
 let lastAutoRefresh = Date.now();
+// Прокрутка и движение мыши по спискам = «сотрудник сейчас работает»:
+// перерисовка ждёт, пока он не оторвётся. Объявление до autoRefreshTick —
+// иначе первый тик поймал бы TDZ.
+let lastUserActivity = 0;
+const markActivity = () => { lastUserActivity = Date.now(); };
+window.addEventListener('scroll', markActivity, { passive: true, capture: true });
+window.addEventListener('wheel', markActivity, { passive: true });
+window.addEventListener('touchmove', markActivity, { passive: true });
+
 async function autoRefreshTick(force = false) {
   if (!state.data) return;
   if (!force) {
@@ -1758,11 +1767,11 @@ async function autoRefreshTick(force = false) {
     const tag = document.activeElement?.tagName;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
   }
-  // Позиции прокрутки основных канв переживают перерисовку.
-  const keepScroll = ['.board', '.resscroll', '.timeline'].map(selector => {
-    const element = document.querySelector(selector);
-    return element ? [selector, element.scrollLeft, element.scrollTop] : null;
-  }).filter(Boolean);
+  // Не дёргаем экран, пока сотрудник читает: если он только что прокручивал
+  // или водил мышью по списку, обновление ждёт следующего тика.
+  if (!force && Date.now() - lastUserActivity < 8_000) return;
+  // Полный снимок прокрутки: страница и все прокручиваемые области.
+  const viewScroll = captureViewScroll();
   // Без перемаргивания: если данные не изменились с прошлого раза —
   // DOM не трогаем вообще (это подавляющее большинство тиков).
   let fresh;
@@ -1773,11 +1782,11 @@ async function autoRefreshTick(force = false) {
   lastAutoRefresh = Date.now();
   if (JSON.stringify(fresh) === state.dataSnapshot) return;
   await reload(fresh);
-  for (const [selector, left, top] of keepScroll) {
-    const element = document.querySelector(selector);
-    if (element) { element.scrollLeft = left; element.scrollTop = top; }
-  }
+  // Восстанавливаем сразу: блоки, чья разметка не изменилась, вообще не
+  // перерисовывались, остальным возвращаем позицию до кадра отрисовки.
+  restoreViewScroll(viewScroll);
 }
+
 setInterval(() => autoRefreshTick(), 60_000);
 // Вернулись к вкладке после паузы — данные обновляются сразу, не дожидаясь тика.
 document.addEventListener('visibilitychange', () => {

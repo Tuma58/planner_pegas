@@ -3,7 +3,7 @@
 // отклонение рейса с возвратом заявки в продажи, создание рейса вручную.
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -559,7 +559,7 @@ export async function renderLogist(container, context) {
   // всё, что просрочено: вопрос не должен висеть ни у кого.
   const questions = questionsForOwner(await loadOpenQuestions(), 'Логист');
   const savedScrolls = captureScrolls(container);
-  container.innerHTML = `<div class="saleswrap">
+  const html = `<div class="saleswrap">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — логисту' })}
     <div class="salekpis">
       <div class="skpi clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
@@ -635,6 +635,13 @@ export async function renderLogist(container, context) {
       </div>
     </div>
   </div>`;
+
+  // Разметка не изменилась — DOM не трогаем: без мигания, без прыжков
+  // списков и прокрутки. Обработчики остались на прежних узлах.
+  if (!renderInto(container, html)) {
+    restoreScrolls(container, savedScrolls);
+    return;
+  }
   wireQuestionsStrip(container, context, questions);
   restoreScrolls(container, savedScrolls);
 

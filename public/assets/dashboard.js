@@ -2,7 +2,7 @@
 // месяца. Считается целиком из bootstrap (доступен каждой роли) — вкладку
 // видят все сотрудники, цель — общая видимость достижения плана.
 // Автообновление раз в 90 секунд, пока вкладка открыта.
-import { api, escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
+import { api, escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs, renderInto } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
 import { loadOpenQuestions } from './call-card.js';
@@ -465,7 +465,7 @@ export async function renderDashboard(container, context) {
     Date.parse(String(item.opened_at).replace(' ', 'T') +
       (String(item.opened_at).includes('Z') ? '' : 'Z')) > 10 * 60_000).length;
   const savedScrolls = captureScrolls(container);
-  container.innerHTML = `<div class="dashwrap" id="dashRoot">
+  const html = `<div class="dashwrap" id="dashRoot">
     <div class="dash-top">
       <span class="dash-title">🏁 ПегасLogistic · план-факт</span>
       <span class="dash-clock" id="dashClock"></span>
@@ -543,6 +543,13 @@ export async function renderDashboard(container, context) {
     </div>
 
   </div>`;
+
+  // Разметка не изменилась — DOM не трогаем: без мигания, без прыжков
+  // списков и прокрутки. Обработчики остались на прежних узлах.
+  if (!renderInto(container, html)) {
+    restoreScrolls(container, savedScrolls);
+    return;
+  }
   restoreScrolls(container, savedScrolls);
 
   // «Моя смена»: личная сводка подгружается отдельно — дашборд не ждёт её.

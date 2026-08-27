@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { salesRadarDialog, directionMarket, freeVehiclesByZone } from './sales-radar.js';
@@ -904,7 +904,7 @@ export async function renderSales(container, context) {
   // грузоотправителю, не тот адрес, нужен телефон клиента.
   const questions = questionsForOwner(await loadOpenQuestions(), 'Продажи');
   const savedScrolls = captureScrolls(container);
-  container.innerHTML = `<div class="saleswrap">
+  const html = `<div class="saleswrap">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам' })}
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
@@ -1054,6 +1054,13 @@ export async function renderSales(container, context) {
       </div>
     </div>
   </div>`;
+
+  // Разметка не изменилась — DOM не трогаем: без мигания, без прыжков
+  // списков и прокрутки. Обработчики остались на прежних узлах.
+  if (!renderInto(container, html)) {
+    restoreScrolls(container, savedScrolls);
+    return;
+  }
   wireQuestionsStrip(container, context, questions);
   restoreScrolls(container, savedScrolls);
 

@@ -1,7 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
-import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
+import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs, renderInto } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
 import { transferDialog, transferPickVehicleDialog } from './transfer.js';
@@ -828,7 +828,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       После отметки «Прибыл» машина числится в точке назначения.</div>
   </div>` : '';
 
-  container.innerHTML = `${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу' })}
+  const html = `${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу' })}
     ${transfersHtml}
     <div class="resboard">
     <div class="reshead">
@@ -874,6 +874,12 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       <p class="muted" style="padding:10px">⏳ Загружаю график работы…</p>
     </div>`}
   </div>`;
+
+  // Разметка не изменилась — DOM не трогаем: без мигания и прыжков.
+  if (!renderInto(container, html)) {
+    restoreScrolls(container, savedScrolls);
+    return;
+  }
   wireQuestionsStrip(container, context, questions);
   restoreScrolls(container, savedScrolls);
 

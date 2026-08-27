@@ -63,6 +63,65 @@ export function restoreScrolls(root, saved) {
   }
 }
 
+// Тихая перерисовка блока: если разметка не изменилась, DOM не трогаем
+// вовсе. Автообновление раз в минуту перерисовывало экран при ЛЮБОМ
+// изменении данных — даже когда на видимой вкладке ничего не менялось:
+// экран мигал, списки перескакивали, прокрутка сбивалась. Возвращает
+// false, если рендер не потребовался (вызывающий код может не навешивать
+// обработчики заново — старые остались на тех же узлах).
+// Отпечаток разметки держим НА САМОМ УЗЛЕ (data-render), а не во внешней
+// карте: вкладки рисуют в один и тот же контейнер, и после переключения
+// туда-обратно совпадение строки не означало бы, что в DOM сейчас именно
+// она — экран остался бы от чужой вкладки.
+function htmlFingerprint(text) {
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) | 0;
+  }
+  return `${text.length}:${hash}`;
+}
+export function renderInto(container, html) {
+  const fingerprint = htmlFingerprint(html);
+  if (container.dataset.render === fingerprint) return false;
+  container.innerHTML = html;
+  container.dataset.render = fingerprint;
+  return true;
+}
+
+// Полный снимок прокрутки страницы и всех прокручиваемых областей.
+// В отличие от captureScrolls привязывается к позиции узла в дереве, а не
+// к первому классу: пережидает перерисовку даже там, где классы совпадают.
+export function captureViewScroll(root = document.body) {
+  const path = element => {
+    const parts = [];
+    let node = element;
+    while (node && node !== root && node.parentElement) {
+      parts.push([...node.parentElement.children].indexOf(node));
+      node = node.parentElement;
+    }
+    return parts.reverse().join('.');
+  };
+  const items = [];
+  root.querySelectorAll('*').forEach(element => {
+    if (element.scrollTop || element.scrollLeft) {
+      items.push({ path: path(element), top: element.scrollTop, left: element.scrollLeft });
+    }
+  });
+  return { window: { x: window.scrollX, y: window.scrollY }, items };
+}
+export function restoreViewScroll(snapshot, root = document.body) {
+  if (!snapshot) return;
+  for (const item of snapshot.items) {
+    let node = root;
+    for (const index of String(item.path).split('.').filter(part => part !== '')) {
+      node = node?.children?.[Number(index)];
+      if (!node) break;
+    }
+    if (node) { node.scrollTop = item.top; node.scrollLeft = item.left; }
+  }
+  if (snapshot.window.y || snapshot.window.x) window.scrollTo(snapshot.window.x, snapshot.window.y);
+}
+
 export const money = value =>
   `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 
