@@ -10,6 +10,8 @@ import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, upl
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { QUESTION_TOPICS, checkQuestionSla, identifyCaller, listDriverQuestions,
   phoneDigits, phonePretty, questionStats } from './telephony.mjs';
+import { handoffMetrics, listInitiatives, listSnapshots, moneyMetrics, operationMetrics,
+  takeSnapshot } from './project160.mjs';
 import {
   encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
@@ -1628,6 +1630,11 @@ async function api(request, response, url) {
     return null;
   }
 
+  // Обрезка строк из формы. Именно function-объявление: стрелка в const
+  // давала TDZ — обработчики выше по файлу выполняются раньше объявления
+  // (та же ловушка, что с addressPointById в 8dd9c1f).
+  function clean(value) { return String(value || '').trim(); }
+
   // Контакты дежурных сотрудников для водителя: механик, начальник колонны,
   // диспетчер, логист. Берём тех, у кого заполнен телефон, — пустые карточки
   // в ответе водителю бесполезны.
@@ -2421,8 +2428,82 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // ── Проект «160 млн»: развитие продукта с измеримым эффектом ──
+  // Экран руководителя: где стоит время между ролями, сколько действий
+  // стоит работа, что мы меняем и что это дало.
+  if (request.method === 'GET' && pathname === '/api/project160') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const monthStart = url.searchParams.get('from')
+      || new Date().toISOString().slice(0, 8) + '01';
+    const next = new Date(Date.parse(`${monthStart}T00:00:00Z`));
+    next.setUTCMonth(next.getUTCMonth() + 1);
+    const monthEnd = url.searchParams.get('to') || next.toISOString().slice(0, 10);
+    return json(response, 200, {
+      period: { from: monthStart, to: monthEnd },
+      handoffs: handoffMetrics(db, monthStart, monthEnd),
+      operations: operationMetrics(db, monthStart, monthEnd),
+      money: moneyMetrics(db, monthStart, monthEnd),
+      initiatives: listInitiatives(db),
+      snapshots: listSnapshots(db)
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/project160/initiatives') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const body = await readJson(request);
+    if (!clean(body.title)) return errorJson(response, 422, 'Опишите инициативу');
+    const id = randomUUID();
+    db.prepare(`INSERT INTO project_initiatives(id,title,area,baseline,target,effect_rub,
+        status,sort_order,created_by) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+      id, clean(body.title).slice(0, 200), clean(body.area).slice(0, 60),
+      clean(body.baseline).slice(0, 160), clean(body.target).slice(0, 160),
+      Number(body.effectRub) || 0, ['todo', 'doing'].includes(body.status) ? body.status : 'todo',
+      Number(body.sortOrder) || 0, user.id);
+    audit(db, user, 'create', 'initiative', id, { title: body.title }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/project160\/initiatives\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const body = await readJson(request);
+    const current = db.prepare('SELECT * FROM project_initiatives WHERE id=?').get(match[0]);
+    if (!current) return errorJson(response, 404, 'Инициатива не найдена');
+    const status = ['todo', 'doing', 'done', 'dropped'].includes(body.status)
+      ? body.status : current.status;
+    db.prepare(`UPDATE project_initiatives SET status=?, result=?, effect_rub=?,
+        done_at=CASE WHEN ?='done' AND done_at IS NULL THEN CURRENT_TIMESTAMP
+          WHEN ?<>'done' THEN NULL ELSE done_at END,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      status, body.result !== undefined ? clean(body.result).slice(0, 400) : current.result,
+      body.effectRub !== undefined ? Number(body.effectRub) || 0 : current.effect_rub,
+      status, status, match[0]);
+    audit(db, user, 'update', 'initiative', match[0], { status }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  match = route(/^\/api\/project160\/initiatives\/([^/]+)$/, pathname);
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    db.prepare('DELETE FROM project_initiatives WHERE id=?').run(match[0]);
+    audit(db, user, 'delete', 'initiative', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (request.method === 'POST' && pathname === '/api/project160/snapshot') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const body = await readJson(request);
+    const from = body.from || new Date().toISOString().slice(0, 8) + '01';
+    const next = new Date(Date.parse(`${from}T00:00:00Z`));
+    next.setUTCMonth(next.getUTCMonth() + 1);
+    const snapshot = takeSnapshot(db, { label: body.label, fromIso: from,
+      toIso: body.to || next.toISOString().slice(0, 10), userId: user.id });
+    audit(db, user, 'create', 'project_snapshot', snapshot.id, { label: body.label }, requestIp(request));
+    return json(response, 201, snapshot);
+  }
+
   // ── Справочник точек сервиса: мойка, шиномонтаж, стоянка, заправка ──
-  const clean = value => String(value || '').trim();
   if (request.method === 'GET' && pathname === '/api/service-points') {
     const user = requireUser(request, response);
     if (!user) return;

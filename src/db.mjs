@@ -727,6 +727,28 @@ function migrateColumns(db) {
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_call_events_external
     ON call_events(provider,external_id) WHERE external_id IS NOT NULL`);
 
+  // ── Внутренний проект «160 млн» (27.08.2026) ──
+  // Инициативы развития продукта с ожидаемым и фактическим эффектом:
+  // каждое изменение должно быть привязано к метрике, а не к ощущению.
+  db.exec(`CREATE TABLE IF NOT EXISTS project_initiatives (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL, area TEXT NOT NULL DEFAULT '',
+    baseline TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
+    effect_rub REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','doing','done','dropped')),
+    result TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    done_at TEXT)`);
+  // Снимок метрик «как было»: без него эффект изменения недоказуем.
+  db.exec(`CREATE TABLE IF NOT EXISTS project_snapshots (
+    id TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '',
+    period_from TEXT NOT NULL, period_to TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+
   // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
   ensure('users', 'roles', 'TEXT');
   db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);

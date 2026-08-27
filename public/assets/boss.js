@@ -7,6 +7,7 @@
 import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, tripBusyFromMs, tripBusyUntilMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { reconcileDialog } from './reconcile.js';
+import { project160Dialog } from './project160.js';
 import { shiftDialog } from './shift-report.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 
@@ -338,6 +339,8 @@ export async function renderBoss(container, context) {
           title="Простой под погрузкой/выгрузкой: случаи сверх норматива, история претензий, печать документа на счёт">⏳ Простои П/В</button>
         <button class="button ghost small" id="bossReconcile"
           title="Загрузить выгрузку 1С «Заказы для отчёта» (.xlsx) и сверить с планером: излишки, недостающие заказы, расхождения сумм и НДС">⚖ Сверка 1С</button>
+        <button class="button ghost small" id="bossProject160"
+          title="Внутренний проект развития: где стоит время между ролями, сколько действий стоит работа, что дали изменения продукта">🎯 Проект 160</button>
         <button class="button ghost small" id="bossShift"
           title="Отчёт за 12-часовую смену (08–20 / 20–08): операции сотрудников по именам, время обработки заданий, очереди каскада">🕐 Смена</button>
         <button class="button ghost small" id="bossDeliveryPlan"
@@ -515,6 +518,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossDaily').onclick = dailyDialog;
   container.querySelector('#bossDemurrage').onclick = () => demurrageDialog(context);
   container.querySelector('#bossReconcile').onclick = () => reconcileDialog(context);
+  container.querySelector('#bossProject160').onclick = () => project160Dialog(context);
   container.querySelector('#bossShift').onclick = () => shiftDialog(context);
   container.querySelector('#bossDeliveryPlan').onclick = () => deliveryPlanDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {

@@ -1283,3 +1283,34 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .sched-table th.sched-name { position: sticky; left: 0; z-index: 5; background: var(--card); }
 .sched-table thead th { position: sticky; top: 0; z-index: 6; background: var(--card); }
 .sched-table thead th.sched-name { z-index: 7; }
+
+/* ── Проект «160 млн»: экран развития продукта ── */
+.p160 h3 { margin: 14px 0 6px; font-size: var(--fs-sm); text-transform: uppercase;
+  letter-spacing: .02em; color: var(--muted); }
+.p160-kpis { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  margin: 10px 0; }
+.p160-kpi { border: 1px solid var(--line); border-left: 4px solid var(--navy); border-radius: 9px;
+  padding: 8px 10px; background: var(--soft); }
+.p160-kpi.ok { border-left-color: var(--ok); }
+.p160-kpi.warn { border-left-color: var(--warn); }
+.p160-kpi.bad { border-left-color: var(--bad); }
+.p160-kpi span { display: block; font-size: var(--fs-xs); color: var(--muted); }
+.p160-kpi strong { display: block; font-size: 20px; line-height: 1.2; }
+.p160-kpi small { display: block; font-size: var(--fs-xs); color: var(--muted); }
+.p160-table { width: 100%; font-size: var(--fs-sm); }
+.p160-table td, .p160-table th { padding: 5px 7px; border-bottom: 1px solid var(--line); }
+.p160-table tr.p160-over td { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.p160-delta { display: inline-block; margin-left: 6px; font-size: var(--fs-xs); font-weight: 700; }
+.p160-delta.good { color: var(--ok); }
+.p160-delta.bad { color: var(--bad); }
+.p160-delta.same { color: var(--muted); font-weight: 400; }
+.p160-ops { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  font-size: var(--fs-sm); }
+.p160-ops div { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+.p160-effect { display: flex; gap: 16px; flex-wrap: wrap; font-size: var(--fs-sm); margin-bottom: 6px; }
+.p160-add { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.p160-add input, .p160-add select { flex: 1; min-width: 120px; min-height: 28px; }
+.p160-add input[name="title"] { flex: 3; min-width: 220px; }
+.p160-status { min-height: 24px; font-size: var(--fs-xs); }
+.p160-snap { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap;
+  font-size: var(--fs-xs); }
