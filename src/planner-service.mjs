@@ -1110,7 +1110,13 @@ export function operationNameOf(row) {
     return null;
   }
   if (row.entity === 'driver' && row.action === 'attendance') return 'Отметка явки водителя';
-  if (row.entity === 'trip_stop') return 'Правка стоянки контроля';
+  if (row.entity === 'trip_stop') {
+    // Этапы рейса отмечают парой фактов: приезд (прибытие + начало работ)
+    // и убытие (конец работ + отправление) — по ним и называем операцию.
+    if (details.actualArrival) return 'Отметка прибытия на точку';
+    if (details.actualDeparture) return 'Отметка убытия с точки';
+    return 'Правка стоянки контроля';
+  }
   if (row.entity === 'route') {
     if (row.action === 'create') return 'Сборка маршрута';
     if (row.action === 'assign') return 'Назначение маршрута';

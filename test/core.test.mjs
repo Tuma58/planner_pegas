@@ -2162,3 +2162,62 @@ test('устаревший шаг «документы» не блокирует
   // Действительно неизвестный шаг по-прежнему отвергается.
   assert.throws(() => applyDispatchStep(db, 'lg-1', 'выдуманный_шаг', null), /Неизвестный шаг/);
 });
+
+test('пять этапов рейса: два клика на точку, простой считается по-прежнему', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-stages-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const { ensureTripStops, listTripStops, syncTripFromStops } = await import('../src/trip-control.mjs');
+  const { demurrageCases, operationNameOf } = await import('../src/planner-service.mjs');
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const admin = db.prepare('SELECT id FROM users LIMIT 1').get().id;
+  const iso = shift => new Date(Date.now() + shift).toISOString();
+  const HOUR = 3_600_000;
+  // Заявка с окнами и рейс на линии: погрузка «с» — 30 ч назад, выгрузка «по» — 15 ч назад.
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,stage,status) VALUES('st-o1','Клиент',?,?,90000,?,?,3,'planned')`)
+    .run(zone, zone, iso(-30 * HOUR), iso(-15 * HOUR));
+  db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
+    from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status,on_line_at)
+    VALUES('st-1',?,'st-o1','Клиент',?,?,'Кораблино','Ногинск',?,?,640,90000,'run',?)`)
+    .run(vehicle, zone, zone, iso(-30 * HOUR), iso(-15 * HOUR), iso(-31 * HOUR));
+  ensureTripStops(db, 'st-1');
+  const stops = listTripStops(db, 'st-1');
+  const [load, unload] = [stops[0], stops[stops.length - 1]];
+  const mark = (stopId, fields, at) => {
+    const sets = fields.map(field => `${field}=?`).join(',');
+    db.prepare(`UPDATE trip_stops SET ${sets} WHERE id=?`).run(...fields.map(() => at), stopId);
+    return syncTripFromStops(db, 'st-1', admin);
+  };
+  // Этап «Погрузка»: приезд + начало работ одним кликом — 12 ч простоя на погрузке.
+  mark(load.id, ['actual_arrival', 'work_started_at'], iso(-30 * HOUR));
+  // Этап «В пути на выгрузку»: конец работ + убытие.
+  mark(load.id, ['work_finished_at', 'actual_departure'], iso(-18 * HOUR));
+  // Этап «Выгрузка»: приезд на выгрузку — это и есть trips.arrived_at.
+  mark(unload.id, ['actual_arrival', 'work_started_at'], iso(-14 * HOUR));
+  const midway = db.prepare(`SELECT status, arrived_at FROM trips WHERE id='st-1'`).get();
+  assert.equal(midway.status, 'run', 'до конца выгрузки рейс на линии');
+  assert.ok(midway.arrived_at, 'прибытие на выгрузку включает сторож «не выгружают» и простой');
+  // Этап «Освободился»: конец работ + убытие — рейс выгружен и уходит с контроля.
+  const status = mark(unload.id, ['work_finished_at', 'actual_departure'], iso(-1 * HOUR));
+  assert.equal(status, 'unloaded', 'после освобождения рейс выгружен');
+
+  // Простой не потерян: погрузка 12 ч от окна «с», выгрузка 13 ч от окна «по».
+  const cases = demurrageCases(db);
+  const load1 = cases.find(item => item.tripId === 'st-1' && item.kind === 'load');
+  const unload1 = cases.find(item => item.tripId === 'st-1' && item.kind === 'unload');
+  assert.ok(load1, 'случай простоя на погрузке найден');
+  assert.ok(Math.abs(load1.idleHours - 12) < 0.2, `простой погрузки ~12 ч, получили ${load1?.idleHours}`);
+  assert.ok(unload1, 'случай простоя на выгрузке найден');
+  assert.ok(Math.abs(unload1.idleHours - 13) < 0.2, `простой выгрузки ~13 ч, получили ${unload1?.idleHours}`);
+
+  // Имена операций для отчёта смены различают приезд и убытие.
+  assert.equal(operationNameOf({ entity: 'trip_stop', action: 'update',
+    details_json: '{"actualArrival":"2026-08-27T05:00:00.000Z"}' }), 'Отметка прибытия на точку');
+  assert.equal(operationNameOf({ entity: 'trip_stop', action: 'update',
+    details_json: '{"actualDeparture":"2026-08-27T05:00:00.000Z"}' }), 'Отметка убытия с точки');
+});

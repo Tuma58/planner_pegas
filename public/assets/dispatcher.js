@@ -292,31 +292,28 @@ export async function renderDispatcher(container, context, options = {}) {
     for (const stop of stops) {
       if (stop.actual_departure) continue;
       const point = stop.point || trip.to_name;
-      // Этапность словами конвейера: первая точка — погрузка, последняя —
-      // выгрузка, между ними промежуточные и контроль в пути.
+      // Пять этапов рейса вместо восьми отметок (27.08.2026): в пути на
+      // погрузку → погрузка → в пути на выгрузку → выгрузка → освободился.
+      // Один клик ставит сразу пару фактов (приезд + начало работ либо
+      // конец работ + убытие), поэтому расчёт простоя не теряется: он
+      // считается от прибытия до убытия на каждой точке.
       const isFirst = stop === stops[0];
       const isLast = stop === stops[stops.length - 1];
-      const stage = isFirst ? { arr: 'Прибыл на погрузку', start: 'Погрузка начата',
-          done: 'Загружен', dep: 'Выехал с погрузки' }
-        : isLast ? { arr: 'Прибыл на выгрузку', start: 'Выгрузка начата', done: 'Выгружен', dep: 'Убыл' }
-        : { arr: 'Прибыл', start: 'Начало работ', done: 'Работы завершены', dep: 'Убыл' };
       if (!stop.actual_arrival) {
         const candidates = [stop.estimated_arrival,
           Date.parse(stop.planned_arrival || ''), Date.parse(trip.ends_at)];
         const at = candidates.find(Number.isFinite) ?? Date.now();
-        return { at, label: `${isFirst ? 'в пути на погрузку' : isLast ? 'в пути на выгрузку' : 'прибытие'}: ${point}`,
-          point, zone: trip.to_name,
-          stopId: stop.id, stepField: 'actualArrival', stepLabel: stage.arr };
+        return { at,
+          label: `${isFirst ? '🛣 в пути на погрузку' : isLast ? '🛣 в пути на выгрузку' : '🛣 в пути'}: ${point}`,
+          point, zone: trip.to_name, stopId: stop.id,
+          stepFields: 'actualArrival,workStartedAt',
+          stepLabel: isFirst ? 'Погрузка' : isLast ? 'Выгрузка' : 'Прибыл' };
       }
-      if (!stop.work_finished_at) {
-        return { at: Date.parse(stop.actual_arrival) + normOpMs,
-          label: `${stop.kind === 'P' ? 'погрузка' : 'выгрузка'}: ${point}`, point, zone: trip.to_name,
-          stopId: stop.id,
-          stepField: stop.work_started_at ? 'workFinishedAt' : 'workStartedAt',
-          stepLabel: stop.work_started_at ? stage.done : stage.start };
-      }
-      return { at: Date.parse(stop.work_finished_at), label: `убытие: ${point}`, point, zone: trip.to_name,
-        stopId: stop.id, stepField: 'actualDeparture', stepLabel: stage.dep };
+      return { at: Date.parse(stop.actual_arrival) + normOpMs,
+        label: `${isFirst ? '📦 погрузка' : isLast ? '📥 выгрузка' : '⏸ стоянка'}: ${point}`,
+        point, zone: trip.to_name, stopId: stop.id,
+        stepFields: 'workFinishedAt,actualDeparture',
+        stepLabel: isFirst ? 'В пути на выгрузку' : isLast ? 'Освободился' : 'Убыл' };
     }
     return { at: Date.parse(trip.ends_at), label: 'завершение рейса',
       point: trip.to_point || trip.to_name, zone: trip.to_name };
@@ -627,12 +624,12 @@ export async function renderDispatcher(container, context, options = {}) {
   // убытие с погрузки → «В пути», конечная выгрузка → «Выгружен»).
   const HOUR = 3_600_000;
   const stopKindLabel = stop => stop.kind === 'P' ? '⬆ Погрузка' : '⬇ Выгрузка';
-  // Стоянка с фактом убытия пройдена: пропущенные отметки дозаполняются через ✎.
+  // Те же два шага, что и на карточке: приезд (начинает отсчёт на точке) и
+  // убытие (закрывает его). Отдельные отметки начала и конца работ остались
+  // в правке ✎ — для случаев, когда их нужно разнести по времени.
   const nextStopStep = stop => stop.actual_departure ? null
-    : !stop.actual_arrival ? ['Прибыл', 'actualArrival']
-    : !stop.work_started_at ? ['Начало работ', 'workStartedAt']
-    : !stop.work_finished_at ? ['Работы завершены', 'workFinishedAt']
-    : ['Убыл', 'actualDeparture'];
+    : !stop.actual_arrival ? ['Прибыл', 'actualArrival,workStartedAt']
+    : ['Убыл', 'workFinishedAt,actualDeparture'];
   const fmtShort = iso => iso ? formatDateTime(iso) : '—';
   const stopsBlock = trip => {
     const control = controlByTrip.get(trip.id);
@@ -828,7 +825,7 @@ export async function renderDispatcher(container, context, options = {}) {
         return !worked && last ? `<span class="ctrl-last-note" title="${escapeHtml(last.note)}">💬 прошлый контроль
           · ${escapeHtml(last.done_by || '')} · ${markTime(last)} — «${escapeHtml(String(last.note).slice(0, 60))}»</span>` : ''; })()}
       ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"
-        data-quick-stop="${nextEvent.stopId}" data-quick-field="${nextEvent.stepField}"
+        data-quick-stop="${nextEvent.stopId}" data-quick-field="${nextEvent.stepFields}"
         data-quick-label="${escapeHtml(nextEvent.stepLabel)}"
         title="Отметить факт «${escapeHtml(nextEvent.stepLabel)}» без открытия ленты точек">✔ ${escapeHtml(nextEvent.stepLabel)}</button>` : ''}
       ${canAct && !worked ? `<button class="button ghost small ctrl-worked-btn" data-claim="${trip.id}"
@@ -1036,15 +1033,19 @@ export async function renderDispatcher(container, context, options = {}) {
         toast(error.message, 'error');
       }
     }));
-  // «✔ Шаг»: факт следующего события прямо с карточки — без ленты точек.
+  // «✔ Этап»: переход к следующему этапу прямо с карточки. Один клик ставит
+  // пару фактов (приезд + начало работ либо конец работ + убытие) — этапов
+  // пять, а расчёт простоя на точке не теряется.
   container.querySelectorAll('[data-quick-stop]').forEach(button =>
     button.addEventListener('click', () => factDialog(
-      `Контрольная точка · ${button.dataset.quickLabel}`,
+      `Этап рейса · ${button.dataset.quickLabel}`,
       'Укажите фактическое время события на стоянке.', async iso => {
+        const body = {};
+        for (const field of String(button.dataset.quickField).split(',')) body[field] = iso;
         await api(`/api/stops/${button.dataset.quickStop}`, {
-          method: 'PATCH', body: JSON.stringify({ [button.dataset.quickField]: iso })
+          method: 'PATCH', body: JSON.stringify(body)
         });
-        toast('Факт отмечен');
+        toast('Этап отмечен');
       })));
 
   // Клик по плашке рейса — карточка с полными данными и копированием;
@@ -1153,8 +1154,10 @@ export async function renderDispatcher(container, context, options = {}) {
   scope.querySelectorAll('[data-stop-step]').forEach(button =>
     button.addEventListener('click', () => factDialog(`Контрольная точка · ${button.textContent.trim()}`,
       'Укажите фактическое время события на стоянке.', async iso => {
+        const body = {};
+        for (const field of String(button.dataset.stopField).split(',')) body[field] = iso;
         await api(`/api/stops/${button.dataset.stopStep}`, {
-          method: 'PATCH', body: JSON.stringify({ [button.dataset.stopField]: iso })
+          method: 'PATCH', body: JSON.stringify(body)
         });
         toast('Факт отмечен');
       })));
