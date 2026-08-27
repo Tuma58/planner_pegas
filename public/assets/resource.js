@@ -4,6 +4,7 @@
 import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
+import { transferDialog } from './transfer.js';
 
 export const DISP_KINDS = [
   { kind: 'work', label: 'В работе', short: 'работа', color: 'var(--teal)' },
@@ -11,6 +12,7 @@ export const DISP_KINDS = [
   { kind: 'repair', label: 'В ремонте', short: 'ремонт', color: '#bd8f42' },
   { kind: 'no_driver', label: 'Без водителя', short: 'без вод.', color: '#b06a55' },
   { kind: 'shift', label: 'Пересменка', short: 'пересм.', color: '#5e87ad' },
+  { kind: 'transfer', label: 'Перегон порожним', short: 'перегон', color: '#7a8ea8' },
   { kind: 'idle', label: 'Без заказа', short: 'без заказа', color: '#8a7fb3' },
   { kind: 'out', label: 'Выведен', short: 'выведен', color: '#8f9aa6' }
 ];
@@ -664,6 +666,8 @@ function renderResourceTasks(container, context, refDay, withState) {
         <span style="display:flex;gap:5px">
           ${stateNow.kind === 'idle' ? `<button class="button small" data-task-load="${vehicle.id}"
             title="Авто-сообщение продажам: сцепка свободна, подберите заявку">Запросить загрузку</button>` : ''}
+          <button class="button ghost small" data-task-transfer="${vehicle.id}"
+            title="Перегон порожним: под погрузку, на базу, в ремонт, на пересменку">🚚 Перегон</button>
           <button class="button ghost small" data-task-disposition="${vehicle.id}">Диспозиция</button>
         </span>
       </div>`).join('') || '<p class="muted">Все машины при деле: у каждой есть заказ или оформленный простой.</p>'}
@@ -674,6 +678,12 @@ function renderResourceTasks(container, context, refDay, withState) {
       vehicleId: button.dataset.taskAssignDriver,
       from: button.dataset.gapFrom, to: button.dataset.gapTo
     })));
+  container.querySelectorAll('[data-task-transfer]').forEach(button =>
+    button.addEventListener('click', () => {
+      const vehicle = (context.state.data.vehicles || [])
+        .find(item => item.id === button.dataset.taskTransfer);
+      if (vehicle) transferDialog(vehicle, context.state.data, context);
+    }));
   container.querySelectorAll('[data-task-disposition]').forEach(button =>
     button.addEventListener('click', () => context.openDisposition(null, {
       vehicle_id: button.dataset.taskDisposition,

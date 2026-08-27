@@ -2221,3 +2221,45 @@ test('пять этапов рейса: два клика на точку, пр�
   assert.equal(operationNameOf({ entity: 'trip_stop', action: 'update',
     details_json: '{"actualDeparture":"2026-08-27T05:00:00.000Z"}' }), 'Отметка убытия с точки');
 });
+
+test('порожний перегон: задание, контроль прибытия и новое место сцепки', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-transfer-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const { transferPlaceOf, transferStage, transferTaskText, openTransfers } =
+    await import('../public/assets/transfer.js');
+
+  // Вид «перегон» принимается таблицей диспозиций (CHECK пересоздан миграцией).
+  const vehicle = db.prepare('SELECT id, plate FROM vehicles LIMIT 1').get();
+  const address = db.prepare('SELECT id, name, region FROM addresses WHERE latitude IS NOT NULL LIMIT 1').get();
+  const iso = shift => new Date(Date.now() + shift).toISOString();
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,
+      address_id,from_label,purpose,empty_km) VALUES('tr-1',?,'transfer',?,?,?,'Самара','на базу',430)`)
+    .run(vehicle.id, iso(-6 * 3600e3), iso(4 * 3600e3), address.id);
+  const stored = db.prepare(`SELECT * FROM vehicle_dispositions WHERE id='tr-1'`).get();
+  assert.equal(stored.kind, 'transfer', 'перегон сохраняется как вид диспозиции');
+
+  // Этапы идут по порядку: задание → выезд → прибытие.
+  const data = { dispositions: [{ ...stored, to_name: address.name, to_region: address.region,
+    vehicle_plate: vehicle.plate, driver_name: 'Иванов И' }] };
+  assert.equal(transferStage(data.dispositions[0]).step, 'driver_notified');
+  assert.equal(openTransfers(data).length, 1, 'незавершённый перегон виден диспетчеру');
+  assert.match(transferTaskText(data.dispositions[0]), /ПЕРЕГОН ПОРОЖНИМ/);
+  assert.match(transferTaskText(data.dispositions[0]), /430 км порожним/);
+
+  data.dispositions[0].driver_notified_at = iso(-5 * 3600e3);
+  assert.equal(transferStage(data.dispositions[0]).step, 'departed');
+  data.dispositions[0].departed_at = iso(-4 * 3600e3);
+  assert.equal(transferStage(data.dispositions[0]).step, 'arrived');
+
+  // До прибытия место сцепки не меняется, после — она стоит в точке назначения.
+  assert.equal(transferPlaceOf(data, vehicle.id), null, 'машина в пути место не меняет');
+  data.dispositions[0].arrived_at = iso(-1 * 3600e3);
+  const place = transferPlaceOf(data, vehicle.id);
+  assert.equal(place.name, address.name, 'после прибытия сцепка числится в точке назначения');
+  assert.equal(place.region, address.region);
+  assert.equal(openTransfers(data).length, 0, 'завершённый перегон уходит с контроля');
+});

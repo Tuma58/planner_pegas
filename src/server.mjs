@@ -200,8 +200,12 @@ function listOrders() {
 }
 
 function listDispositions() {
-  return db.prepare(`SELECT d.*,v.plate vehicle_plate FROM vehicle_dispositions d
-    JOIN vehicles v ON v.id=d.vehicle_id ORDER BY d.starts_at,v.plate`).all();
+  // Перегон везёт с собой пункт назначения: карточка задания и контроль
+  // показывают, куда именно гонят машину, а не только «перегон».
+  return db.prepare(`SELECT d.*,v.plate vehicle_plate,v.driver_name,
+      a.name to_name,a.region to_region
+    FROM vehicle_dispositions d JOIN vehicles v ON v.id=d.vehicle_id
+    LEFT JOIN addresses a ON a.id=d.address_id ORDER BY d.starts_at,v.plate`).all();
 }
 
 function tripOutboxPayload(id) {
@@ -1575,15 +1579,35 @@ async function api(request, response, url) {
       FROM trips t JOIN zones z ON z.id=t.to_zone_id
       WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.id<>? AND t.starts_at<?
       ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, excludeTripId, beforeIso);
-    const prevRepair = db.prepare(`SELECT d.ends_at, a.latitude, a.longitude
+    // Ремонт с адресом и ЗАВЕРШЁННЫЙ перегон тоже задают место сцепки:
+    // после перегона машина стоит в точке прибытия, а не там, где выгрузилась.
+    const prevPlace = db.prepare(`SELECT COALESCE(d.arrived_at,d.ends_at) at, a.latitude, a.longitude
       FROM vehicle_dispositions d JOIN addresses a ON a.id=d.address_id
-      WHERE d.vehicle_id=? AND d.kind='repair' AND a.latitude IS NOT NULL AND d.starts_at<?
-      ORDER BY d.ends_at DESC LIMIT 1`).get(vehicleId, beforeIso);
-    if (prevRepair && (!prevTrip || prevRepair.ends_at >= prevTrip.ends_at)) {
-      return { latitude: prevRepair.latitude, longitude: prevRepair.longitude };
+      WHERE d.vehicle_id=? AND a.latitude IS NOT NULL AND d.starts_at<?
+        AND (d.kind='repair' OR (d.kind='transfer' AND d.arrived_at IS NOT NULL))
+      ORDER BY at DESC LIMIT 1`).get(vehicleId, beforeIso);
+    if (prevPlace && (!prevTrip || String(prevPlace.at) >= String(prevTrip.ends_at))) {
+      return { latitude: prevPlace.latitude, longitude: prevPlace.longitude };
     }
     if (prevTrip) return addressPointByText(prevTrip.to_point || prevTrip.to_zone_name);
     return null;
+  }
+
+  // Где сцепка стоит словами (для карточки задания и списков): точка
+  // прибытия завершённого перегона, иначе выгрузка последнего рейса.
+  function vehiclePlaceText(vehicleId, beforeIso = new Date().toISOString()) {
+    // Только УЖЕ НАЧАВШИЕСЯ рейсы: назначенный на послезавтра рейс не
+    // говорит о том, где машина стоит сейчас (иначе перегон, завершённый
+    // сегодня, проигрывал будущему рейсу и место показывалось старое).
+    const trip = db.prepare(`SELECT t.to_point, z.name to_zone_name, t.ends_at FROM trips t
+      JOIN zones z ON z.id=t.to_zone_id WHERE t.vehicle_id=? AND t.status<>'rejected'
+        AND t.starts_at<? ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, beforeIso);
+    const transfer = db.prepare(`SELECT a.name, d.arrived_at FROM vehicle_dispositions d
+      JOIN addresses a ON a.id=d.address_id
+      WHERE d.vehicle_id=? AND d.kind='transfer' AND d.arrived_at IS NOT NULL AND d.arrived_at<=?
+      ORDER BY d.arrived_at DESC LIMIT 1`).get(vehicleId, beforeIso);
+    if (transfer && (!trip || String(transfer.arrived_at) >= String(trip.ends_at))) return transfer.name;
+    return trip ? (trip.to_point || trip.to_zone_name) : '';
   }
 
   // Порожний подгон: от позиции сцепки до пункта погрузки (адрес заявки
@@ -2350,6 +2374,102 @@ async function api(request, response, url) {
       db.prepare('SELECT name FROM zones WHERE id=?').get(vehicle.zone_id)?.name || 'зона приписки';
     notify('sales', `Запрос загрузки: сцепка ${vehicle.plate} (${vehicle.type_name}) свободна в «${zoneName}»${lastTrip ? ` с ${lastTrip.ends_at.slice(0, 10)}` : ''} — подберите заявку в «Потребности от логистики»`, 'vehicle', match[0]);
     audit(db, user, 'request_load', 'vehicle', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
+  // ── Порожний перегон ──
+  // Машина освободилась не там, где нужна: гоним пустой под погрузку, домой,
+  // в ремонт или на пересменку. Не рейс (груза и выручки нет), а диспозиция
+  // с заданием водителю и контролем прибытия: факт прибытия становится
+  // местоположением сцепки для следующего назначения.
+  const TRANSFER_PURPOSES = ['под погрузку', 'на базу', 'в ремонт', 'на пересменку', 'к месту стоянки'];
+  if (request.method === 'POST' && pathname === '/api/transfers') {
+    // Перегон заводят и логист (планирует ресурс), и диспетчер (решение на линии).
+    const actor = currentUser(request);
+    const permission = hasPermission(actor, 'fleet:write') ? 'fleet:write'
+      : hasPermission(actor, 'trips:write') ? 'trips:write' : 'trip-status:write';
+    const user = requirePermission(request, response, permission);
+    if (!user) return;
+    const body = await readJson(request);
+    if (!body.vehicleId || !body.addressId) {
+      return errorJson(response, 422, 'Укажите ТС и точку назначения');
+    }
+    const target = db.prepare('SELECT id,name,region,latitude,longitude FROM addresses WHERE id=?')
+      .get(body.addressId);
+    if (!target) return errorJson(response, 404, 'Точка назначения не найдена');
+    const startsAt = Number.isFinite(Date.parse(body.startsAt))
+      ? new Date(Date.parse(body.startsAt)) : new Date();
+    // Откуда и сколько порожняком: от места освобождения сцепки. Время в пути —
+    // та же формула транзита, что и у рейса, только без грузовых операций.
+    // Позиция сцепки: по последнему рейсу/перегону, а если истории нет —
+    // по её геозоне, иначе перегон уходил бы с нулевым пробегом.
+    const zoneName = db.prepare(`SELECT z.name FROM vehicles v LEFT JOIN zones z ON z.id=v.zone_id
+      WHERE v.id=?`).get(body.vehicleId)?.name;
+    const origin = vehiclePositionBefore(body.vehicleId, startsAt.toISOString())
+      || addressPointByText(zoneName);
+    const km = origin && Number.isFinite(target.latitude)
+      ? roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude) : null;
+    const calc = settingsObject(db).calculation;
+    const hours = Number.isFinite(km)
+      ? (km / (Number(calc.techSpeedKmh) || 50)) * (Number(calc.transitFactor) || 1.5) : 12;
+    const endsAt = Number.isFinite(Date.parse(body.endsAt))
+      ? new Date(Date.parse(body.endsAt))
+      : new Date(startsAt.getTime() + Math.max(1, hours) * 3_600_000);
+    if (endsAt <= startsAt) return errorJson(response, 422, 'Прибытие должно быть позже выезда');
+    const purpose = TRANSFER_PURPOSES.includes(String(body.purpose)) ? String(body.purpose) : 'под погрузку';
+    const fromLabel = String(body.fromLabel || vehiclePlaceText(body.vehicleId) || '').slice(0, 120);
+    const id = randomUUID();
+    db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note,
+        address_id,from_label,purpose,empty_km,created_by,updated_by)
+      VALUES(?,?,'transfer',?,?,?,?,?,?,?,?,?)`).run(
+      id, body.vehicleId, startsAt.toISOString(), endsAt.toISOString(),
+      String(body.note || '').slice(0, 300), target.id, fromLabel, purpose,
+      Number.isFinite(km) ? Math.round(km) : 0, user.id, user.id);
+    const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(body.vehicleId)?.plate || '';
+    notify('dispatcher', `🚚 Перегон порожним ${plate}: ${fromLabel || '—'} → ${target.name} ` +
+      `(${purpose}). Передайте задание водителю и отметьте выезд`, 'vehicle', body.vehicleId);
+    audit(db, user, 'create', 'transfer', id, { vehicleId: body.vehicleId, to: target.name, purpose },
+      requestIp(request));
+    return json(response, 201, { id, km: Number.isFinite(km) ? Math.round(km) : null,
+      endsAt: endsAt.toISOString() });
+  }
+  match = route(/^\/api\/transfers\/([^/]+)\/step$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const column = ({ driver_notified: 'driver_notified_at', departed: 'departed_at',
+      arrived: 'arrived_at' })[body.step];
+    if (!column) return errorJson(response, 422, 'Неизвестный этап перегона');
+    const transfer = db.prepare(`SELECT * FROM vehicle_dispositions WHERE id=? AND kind='transfer'`)
+      .get(match[0]);
+    if (!transfer) return errorJson(response, 404, 'Перегон не найден');
+    const at = Number.isFinite(Date.parse(body.at)) ? new Date(Date.parse(body.at)).toISOString()
+      : new Date().toISOString();
+    if (transfer[column]) return json(response, 200, { ok: true });
+    db.prepare(`UPDATE vehicle_dispositions SET ${column}=?,updated_by=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(at, user.id, match[0]);
+    // Прибытие закрывает перегон фактическим временем: с этого момента сцепка
+    // стоит в точке назначения и доступна для следующего задания.
+    if (body.step === 'arrived') {
+      db.prepare(`UPDATE vehicle_dispositions SET ends_at=? WHERE id=? AND ends_at>?`)
+        .run(at, match[0], at);
+    }
+    audit(db, user, 'transfer_step', 'transfer', match[0], { step: body.step, at }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  match = route(/^\/api\/transfers\/([^/]+)$/, pathname);
+  if (match && request.method === 'DELETE') {
+    const actor = currentUser(request);
+    const user = requirePermission(request, response,
+      hasPermission(actor, 'fleet:write') ? 'fleet:write' : 'trip-status:write');
+    if (!user) return;
+    const transfer = db.prepare(`SELECT * FROM vehicle_dispositions WHERE id=? AND kind='transfer'`)
+      .get(match[0]);
+    if (!transfer) return errorJson(response, 404, 'Перегон не найден');
+    if (transfer.arrived_at) return errorJson(response, 409, 'Перегон завершён — отменить нельзя');
+    db.prepare('DELETE FROM vehicle_dispositions WHERE id=?').run(match[0]);
+    audit(db, user, 'delete', 'transfer', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
   }
 

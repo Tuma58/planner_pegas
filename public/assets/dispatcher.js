@@ -5,11 +5,12 @@
 // 3) рейс переведён на контроль на линии (статус «В пути»).
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast, captureScrolls, restoreScrolls } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast, captureScrolls, restoreScrolls, wireSelectSearch } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
+import { openTransfers, transferStage, transferTaskText, transferDialog } from './transfer.js';
 
 const LATE_MS = 30 * 60_000;
 // «ТС не выгружают»: плановое прибытие прошло более 6 часов назад,
@@ -143,6 +144,54 @@ function customerRefusalDialog(trip, context) {
   };
 }
 
+// Груз не принят получателем: машина гружёная, поэтому это не перегон —
+// к текущему рейсу добавляется точка возврата, и рейс идёт дальше по своим
+// этапам до выгрузки возврата. Так машина не считается свободной раньше
+// времени, а причина остаётся в истории рейса.
+function returnCargoDialog(trip, data, context) {
+  const addresses = (data.reference.addresses || [])
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'));
+  const now = new Date();
+  const local = new Date(now.getTime() + 12 * 3_600_000 - now.getTimezoneOffset() * 60_000)
+    .toISOString().slice(0, 16);
+  context.showModal(`<form id="returnCargoForm">
+    <h2>📦 Груз не принят получателем</h2>
+    <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
+      · ${escapeHtml(trip.customer_name || '')}</p>
+    <label class="field">Куда везём возврат
+      <input id="returnSearch" placeholder="🔍 поиск пункта" autocomplete="off">
+      <select name="point" id="returnPoint" required size="6">
+        ${addresses.map(item => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.name)}${item.region
+    ? ` · ${escapeHtml(item.region)}` : ''}</option>`).join('')}
+      </select></label>
+    <label class="field">Плановое прибытие<input type="datetime-local" name="plannedArrival" value="${local}"></label>
+    <label class="field">Причина отказа получателя
+      <input name="note" maxlength="200" required placeholder="например: брак упаковки, недостача, отказ по качеству"></label>
+    <p class="muted">К рейсу добавится точка возврата: этапы пойдут дальше
+      («в пути на выгрузку» → «выгрузка» → «освободился»), машина останется гружёной
+      и под контролем. Простой у получателя и претензия клиенту оформляются
+      как обычно — через «⏳ Простои П/В».</p>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button danger">Добавить точку возврата</button>
+    </div></form>`);
+  wireSelectSearch(document.getElementById('returnSearch'), document.getElementById('returnPoint'));
+  document.getElementById('returnCargoForm').onsubmit = async event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    try {
+      await api(`/api/trips/${trip.id}/stops`, { method: 'POST', body: JSON.stringify({
+        kind: 'D', point: values.point,
+        plannedArrival: values.plannedArrival ? new Date(values.plannedArrival).toISOString() : null,
+        note: `ВОЗВРАТ: ${values.note}`
+      }) });
+      context.closeModal();
+      toast('Точка возврата добавлена — рейс продолжается до неё');
+      await context.onReload();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
 // Меню внештатной ситуации: каждый сценарий продуман до конца —
 // переназначение, ремонт, возврат заявки в продажи.
 function incidentDialog(trip, data, context) {
@@ -159,6 +208,12 @@ function incidentDialog(trip, data, context) {
       <button type="button" class="list-item" id="incReassign">
         <span><strong>🔁 Переназначить ТС</strong>
         <small class="muted" style="display:block">Другая сцепка; задание водителю отправляется заново</small></span></button>
+      <button type="button" class="list-item" id="incReturn">
+        <span><strong>📦 Груз не принят получателем</strong>
+        <small class="muted" style="display:block">Везём возврат в другую точку — рейс продолжается</small></span></button>
+      <button type="button" class="list-item" id="incTransfer">
+        <span><strong>🚚 Перегон порожним</strong>
+        <small class="muted" style="display:block">Машина едет пустой: под погрузку, на базу, в ремонт, на пересменку</small></span></button>
       <button type="button" class="list-item" id="incOther">
         <span><strong>✕ Снять рейс по другой причине</strong>
         <small class="muted" style="display:block">ДТП, погода, опоздание и прочее — с обязательной причиной</small></span></button>
@@ -167,6 +222,11 @@ function incidentDialog(trip, data, context) {
   document.getElementById('incBreakdown').onclick = () => breakdownDialog(trip, data, context);
   document.getElementById('incRefusal').onclick = () => customerRefusalDialog(trip, context);
   document.getElementById('incReassign').onclick = () => replaceVehicleDialog(trip, data, context);
+  document.getElementById('incReturn').onclick = () => returnCargoDialog(trip, data, context);
+  document.getElementById('incTransfer').onclick = () => {
+    const vehicle = (data.vehicles || []).find(item => item.id === trip.vehicle_id);
+    if (vehicle) transferDialog(vehicle, data, context, { fromLabel: trip.to_point || trip.to_name });
+  };
   document.getElementById('incOther').onclick = () => rejectTripDialog(trip, data, context);
 }
 
@@ -853,6 +913,43 @@ export async function renderDispatcher(container, context, options = {}) {
   const inWork = online;
   const onlineCards = inWork.map(ctrlCard).join('')
     || '<p class="muted">На линии никого нет.</p>';
+  // Перегоны порожним: машина едет пустой туда, где нужна. Этапы короче
+  // рейса — задание водителю, выезд, прибытие; по прибытии сцепка числится
+  // в точке назначения и уходит с контроля.
+  const transfers = openTransfers(data).filter(item => !query ||
+    `${item.vehicle_plate} ${item.driver_name || ''} ${item.to_name || ''} ${item.from_label || ''}`
+      .toLowerCase().includes(query));
+  const transferCard = transfer => {
+    const stage = transferStage(transfer);
+    const lateMs = stage.key === 'run' ? Date.now() - Date.parse(transfer.ends_at) : 0;
+    return `<div class="card ctrl-transfer" style="margin-bottom:8px;padding:9px 11px">
+      <div class="list-item ordrow" style="border:0;padding:0 0 4px">
+        <span style="flex:1;min-width:0">
+          <strong class="mono">${escapeHtml(transfer.vehicle_plate)}</strong>
+          <small class="muted"> · ${escapeHtml(transfer.driver_name || 'без водителя')}</small>
+          <small class="muted" style="display:block">🚚 порожним: ${escapeHtml(transfer.from_label || '—')}
+            → <b>${escapeHtml(transfer.to_name || '—')}</b> · ${escapeHtml(transfer.purpose || '')}
+            ${transfer.empty_km ? ` · ~${Math.round(transfer.empty_km)} км` : ''}</small>
+          <small class="muted" style="display:block">выезд ${formatDateTime(transfer.starts_at)}
+            · прибытие ${formatDateTime(transfer.ends_at)}${transfer.note
+    ? ` · 💬 ${escapeHtml(transfer.note)}` : ''}</small>
+        </span>
+        <span class="badge ${lateMs > 2 * 3_600_000 ? 'bad' : stage.key === 'run' ? 'ok' : 'warn'}"
+          title="Этап перегона">${stage.label}${lateMs > 2 * 3_600_000
+    ? ` · опаздывает ${Math.floor(lateMs / 3_600_000)} ч` : ''}</span>
+      </div>
+      ${canAct ? `<div style="display:flex;gap:5px;flex-wrap:wrap">
+        <button class="button small" data-transfer-step="${transfer.id}"
+          data-transfer-action="${escapeHtml(stage.step)}"
+          data-transfer-label="${escapeHtml(stage.action)}">✔ ${escapeHtml(stage.action)}</button>
+        <button class="button ghost small" data-transfer-copy="${transfer.id}"
+          title="Скопировать задание для водителя">📋 Задание</button>
+        <button class="button ghost small danger" data-transfer-del="${transfer.id}"
+          title="Отменить перегон (пока машина не прибыла)">✕</button>
+      </div>` : ''}
+    </div>`;
+  };
+  const transferCards = transfers.map(transferCard).join('');
 
   const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
@@ -880,7 +977,13 @@ export async function renderDispatcher(container, context, options = {}) {
           задание водителю, вывод на контроль на линии. Шаги идут по порядку.</div>
       </div>
       <div class="scol">
-        <div class="scolh">Контроль на линии <span>${inWork.length}</span></div>
+        ${transferCards ? `<div class="scolh">🚚 Перегоны порожним <span>${transfers.length}</span></div>
+          <div class="geohint" style="margin:0 0 6px">Машина идёт пустой туда, где нужна.
+            Этапы: задание водителю → выехал → прибыл. После «Прибыл» сцепка числится
+            в точке назначения и доступна логисту для следующего задания.</div>
+          <div class="list">${transferCards}</div>
+          <div class="scolh" style="margin-top:12px">Контроль на линии <span>${inWork.length}</span></div>`
+    : `<div class="scolh">Контроль на линии <span>${inWork.length}</span></div>`}
         <div class="list">${onlineCards}</div>
         <div class="geohint">Внештатная ситуация: поломка (ремонт + пересадка или снятие),
           отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в продажи.</div>
@@ -1113,6 +1216,35 @@ export async function renderDispatcher(container, context, options = {}) {
         return;
       }
       runStep(button.dataset.trip, button.dataset.step, context.onReload);
+    }));
+  container.querySelectorAll('[data-transfer-step]').forEach(button =>
+    button.addEventListener('click', () => factDialog(
+      `Перегон · ${button.dataset.transferLabel}`,
+      'Укажите фактическое время события.', async iso => {
+        await api(`/api/transfers/${button.dataset.transferStep}/step`, {
+          method: 'POST', body: JSON.stringify({ step: button.dataset.transferAction, at: iso })
+        });
+        toast(button.dataset.transferAction === 'arrived'
+          ? 'Перегон завершён — машина числится в точке назначения'
+          : 'Этап перегона отмечен');
+      })));
+  container.querySelectorAll('[data-transfer-copy]').forEach(button =>
+    button.addEventListener('click', async () => {
+      const transfer = transfers.find(item => item.id === button.dataset.transferCopy);
+      if (!transfer) return;
+      try {
+        await navigator.clipboard.writeText(transferTaskText(transfer));
+        toast('Задание скопировано — отправьте водителю');
+      } catch { toast('Не удалось скопировать', 'error'); }
+    }));
+  container.querySelectorAll('[data-transfer-del]').forEach(button =>
+    button.addEventListener('click', async () => {
+      if (!confirm('Отменить перегон? Машина останется на прежнем месте.')) return;
+      try {
+        await api(`/api/transfers/${button.dataset.transferDel}`, { method: 'DELETE' });
+        toast('Перегон отменён');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
     }));
   container.querySelectorAll('[data-incident]').forEach(button =>
     button.addEventListener('click', () => {

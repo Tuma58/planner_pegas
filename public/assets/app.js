@@ -11,6 +11,7 @@ import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
 import { DISP_KINDS, renderResource } from './resource.js';
+import { transferPlaceOf, transferDialog } from './transfer.js';
 import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
 
@@ -149,6 +150,14 @@ function renderTimeline() {
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
         Date.parse(trip.starts_at) <= zoneDayEndMs)
       .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+    // Перегон порожним переставляет сцепку: после прибытия она стоит там,
+    // куда её пригнали, а не там, где выгрузилась.
+    const moved = transferPlaceOf(state.data, vehicle.id, zoneDayEndMs);
+    if (moved && (!lastTrip || moved.at >= Date.parse(lastTrip.ends_at))) {
+      const address = (state.data.reference.addresses || [])
+        .find(item => item.name === moved.name);
+      return address?.zone_name || moved.name || vehicle.zone_name;
+    }
     return lastTrip ? lastTrip.to_name : vehicle.zone_name;
   };
   const vehicleInZone = vehicle => zoneOfVehicleAt(vehicle) === state.ganttZone;
@@ -159,6 +168,10 @@ function renderTimeline() {
       .filter(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
         Date.parse(trip.starts_at) <= zoneDayEndMs)
       .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+    const movedTo = transferPlaceOf(state.data, vehicle.id, zoneDayEndMs);
+    if (movedTo && (!lastTrip || movedTo.at >= Date.parse(lastTrip.ends_at))) {
+      return movedTo.region || regionOfPlace(state.data, movedTo.name, '');
+    }
     if (!lastTrip) return regionOfPlace(state.data, '', vehicle.zone_name);
     const order = lastTrip.order_id
       ? (state.data.orders || []).find(item => item.id === lastTrip.order_id) : null;
@@ -565,6 +578,12 @@ function vehicleDayState(vehicle, dayIso) {
   if (disposition) {
     const meta = DISP_KINDS.find(item => item.kind === disposition.kind) ||
       { label: disposition.kind, color: 'var(--muted)' };
+    // Перегон объясняет день конкретнее вида: важно, куда и зачем гонят.
+    if (disposition.kind === 'transfer') {
+      return { key: 'transfer', cls: 'dispo', color: meta.color,
+        text: `🚚 перегон в ${shortPlace(disposition.to_name)}${disposition.arrived_at
+          ? ' · прибыл' : ` · ${disposition.purpose || 'порожним'}`}` };
+    }
     return { key: disposition.kind, cls: 'dispo', color: meta.color,
       text: `${meta.label} до ${formatDate(disposition.ends_at)}` };
   }
@@ -596,7 +615,7 @@ function renderLegend() {
   const stateChips = [
     { key: 'trip', label: 'в рейсе', color: 'var(--teal)' },
     { key: 'idle', label: 'простой', color: 'var(--warn)' },
-    ...DISP_KINDS.filter(item => ['reserve', 'repair', 'no_driver', 'shift'].includes(item.kind))
+    ...DISP_KINDS.filter(item => ['reserve', 'repair', 'no_driver', 'shift', 'transfer'].includes(item.kind))
       .map(item => ({ key: item.kind, label: item.short, color: item.color }))
   ];
   byId('legend').innerHTML += `<span class="lg-sep"></span>` + stateChips.map(chip =>

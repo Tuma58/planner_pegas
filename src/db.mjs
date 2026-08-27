@@ -705,6 +705,36 @@ function migrateColumns(db) {
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
   }
+  // Порожний перегон (27.08.2026): машина едет пустой из точки освобождения
+  // туда, где нужна — под погрузку, домой, в ремонт, на пересменку. Это не
+  // рейс (нет груза и выручки, иначе поехали бы в отчёты и сверку 1С), а вид
+  // диспозиции с заданием водителю и контролем прибытия. Факт прибытия
+  // становится местоположением сцепки для следующего назначения.
+  const dispositionsSqlNow = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='vehicle_dispositions'`).get()?.sql || '';
+  if (dispositionsSqlNow && !dispositionsSqlNow.includes("'transfer'")) {
+    // Пересоздаём таблицу ПО ЕЁ ЖЕ схеме, меняя только список видов: колонки
+    // за время жизни базы добавлялись через ensure (address_id, repair_km),
+    // и переписывать их список вручную — верный способ потерять данные.
+    const rebuilt = dispositionsSqlNow
+      .replace(/CREATE TABLE\s+"?vehicle_dispositions"?/i, 'CREATE TABLE vehicle_dispositions_new')
+      .replace(/kind IN \([^)]*\)/i, "kind IN ('reserve','repair','no_driver','shift','out','transfer')");
+    db.exec(`BEGIN IMMEDIATE;
+      ${rebuilt};
+      INSERT INTO vehicle_dispositions_new SELECT * FROM vehicle_dispositions;
+      DROP TABLE vehicle_dispositions;
+      ALTER TABLE vehicle_dispositions_new RENAME TO vehicle_dispositions;
+      CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
+        ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
+      COMMIT;`);
+  }
+  // Поля перегона: откуда вышли, зачем едем и три факта исполнения.
+  ensure('vehicle_dispositions', 'from_label', "TEXT NOT NULL DEFAULT ''");
+  ensure('vehicle_dispositions', 'purpose', "TEXT NOT NULL DEFAULT ''");
+  ensure('vehicle_dispositions', 'empty_km', 'REAL NOT NULL DEFAULT 0');
+  ensure('vehicle_dispositions', 'driver_notified_at', 'TEXT');
+  ensure('vehicle_dispositions', 'departed_at', 'TEXT');
+  ensure('vehicle_dispositions', 'arrived_at', 'TEXT');
 }
 
 // Справочник адресов из выгрузки 1С «АДРЕС.xlsx»: 611 пунктов с геозонами
