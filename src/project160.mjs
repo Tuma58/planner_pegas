@@ -131,7 +131,14 @@ export function moneyMetrics(db, fromIso, toIso) {
   }
   const plan = db.prepare(`SELECT target_net FROM revenue_plans
     WHERE period_start=? LIMIT 1`).get(fromIso.slice(0, 10))?.target_net || 0;
-  return { fact: Math.round(fact), planned: Math.round(planned), trips, targetNet: plan };
+  // План ставится БЕЗ НДС (так его считает руководитель), а выручка рейсов
+  // хранится с НДС — приводим к одной базе, иначе цель и факт несопоставимы.
+  const vatRate = Number(JSON.parse(db.prepare(`SELECT value_json v FROM settings
+    WHERE key='calculation'`).get()?.v || '{}').vatRate) || 0.22;
+  return { fact: Math.round(fact), planned: Math.round(planned), trips,
+    targetNet: plan, vatRate,
+    factNet: Math.round(fact / (1 + vatRate)),
+    plannedNet: Math.round(planned / (1 + vatRate)) };
 }
 
 // Метрики, которые считаются из данных: по ним прогресс инициативы виден

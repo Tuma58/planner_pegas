@@ -39,9 +39,11 @@ function render(context, payload) {
 
   const total = handoffs.find(item => item.key === 'managed_chain');
   const withWait = handoffs.find(item => item.key === 'total_chain');
-  const goalVat = 160_000_000;
-  const factAll = cash.fact + cash.planned;
-  const pct = Math.round(factAll / goalVat * 100);
+  // Цель берётся из плана выручки и считается БЕЗ НДС — так её ставит
+  // руководитель. Факт приводим к той же базе, иначе сравнение бессмысленно.
+  const goalNet = cash.targetNet || 0;
+  const factAllNet = (cash.factNet || 0) + (cash.plannedNet || 0);
+  const pct = goalNet ? Math.round(factAllNet / goalNet * 100) : 0;
 
   const handoffRows = handoffs.filter(item => !['total_chain', 'managed_chain'].includes(item.key)).map(item => {
     const over = item.medianHours > item.normHours;
@@ -98,9 +100,12 @@ function render(context, payload) {
       данных между участниками перевозки. Здесь видно, где стоит время и что дали наши изменения.</p>
 
     <div class="p160-kpis">
-      <div class="p160-kpi"><span>Цель месяца</span><strong>${money(goalVat)}</strong><small>с НДС</small></div>
+      <div class="p160-kpi"><span>Цель месяца</span>
+        <strong>${goalNet ? money(goalNet) : '— не задана —'}</strong>
+        <small>без НДС${goalNet ? ` · ${money(Math.round(goalNet * (1 + (cash.vatRate || 0.22))))} с НДС` : ''}</small></div>
       <div class="p160-kpi ${pct >= 100 ? 'ok' : pct >= 85 ? 'warn' : 'bad'}">
-        <span>Факт + в работе</span><strong>${money(factAll)}</strong><small>${pct}% цели · ${cash.trips} рейсов</small></div>
+        <span>Факт + в работе</span><strong>${money(factAllNet)}</strong>
+        <small>без НДС · ${pct}% цели · ${cash.trips} рейсов</small></div>
       <div class="p160-kpi ${(total?.medianHours || 0) > (total?.normHours || 8) ? 'warn' : 'ok'}">
         <span>Управляемое время заявки</span>
         <strong>${hoursLabel(total?.medianHours || 0)}</strong>
