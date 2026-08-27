@@ -23,11 +23,7 @@ function tripStage(trip) {
       ? `🛣 В пути · опаздывает ~${Math.round(lateMs / 3_600_000 * 10) / 10} ч к расчётной выгрузке`
       : '🛣 В пути · идёт по графику';
   }
-  if (trip.status === 'unloaded') {
-    return trip.docs_checked_at
-      ? `✅ Выгружен ${formatDateTime(trip.unloaded_at)} · документы проверены`
-      : `📄 Выгружен ${formatDateTime(trip.unloaded_at)} · документы НЕ проверены`;
-  }
+  if (trip.status === 'unloaded') return `✅ Выгружен ${formatDateTime(trip.unloaded_at)}`;
   return trip.status;
 }
 
@@ -51,10 +47,10 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
   const trips = (data.trips || []).filter(trip =>
     trip.vehicle_id === vehicle.id && trip.status !== 'rejected');
 
-  // Активный рейс: в пути / свежевыгружен без документов (на отслеживании) /
+  // Активный рейс: в пути / свежевыгружен (сцепка ещё на месте выгрузки) /
   // в подготовке с уже наступившим выходом.
   const active = trips.find(trip => trip.status === 'run')
-    || trips.filter(trip => trip.status === 'unloaded' && !trip.docs_checked_at &&
+    || trips.filter(trip => trip.status === 'unloaded' &&
         nowMs - tsOf(trip.unloaded_at || trip.ends_at) < 3 * DAY_MS)
       .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0]
     || trips.filter(trip => trip.status === 'plan' && Date.parse(trip.starts_at) <= nowMs + DAY_MS)

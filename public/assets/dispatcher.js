@@ -254,11 +254,10 @@ export async function renderDispatcher(container, context, options = {}) {
   const stuckMsOf = trip => trip.arrived_at ? nowMs - Date.parse(trip.arrived_at) : 0;
   const isStuck = trip => trip.status === 'run' && stuckMsOf(trip) > UNLOAD_STUCK_MS;
   // Особый контроль (не выгружают) — наверху списка линии.
-  const online = data.trips.filter(trip => (trip.status === 'run' ||
-    (trip.status === 'unloaded' && !trip.docs_checked_at &&
-      Date.now() - Date.parse(String(trip.unloaded_at || trip.ends_at).replace(' ', 'T') +
-        (String(trip.unloaded_at || trip.ends_at).includes('Z') ? '' : 'Z')) < 72 * 3_600_000)) &&
-    matches(trip));
+  // Контроль заканчивается фактом выгрузки: этап «документы получены»
+  // отменён 27.08.2026 — он держал карточку на линии ради отметки о фото
+  // и затягивал закрытие рейса.
+  const online = data.trips.filter(trip => trip.status === 'run' && matches(trip));
   const tsRaw = value => value ? Date.parse(String(value).replace(' ', 'T') +
     (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
 
@@ -284,15 +283,7 @@ export async function renderDispatcher(container, context, options = {}) {
     return ` · местное ${formatDateTime(local.toISOString())} (МСК+${offset - 3})`;
   };
   const normOpMs = Number(data.settings.calculation.handlingHoursPerOperation || 2) * 3_600_000;
-  const DOCS_NORM_MS = 2 * 3_600_000;
   const nextControlEvent = trip => {
-    // После выгрузки рейс остаётся на контроле до проверки документов
-    // (фото, без печатей и актов): норматив 2 часа, дальше — контроль каждые 1,5 ч.
-    if (trip.status === 'unloaded') {
-      const at = (Number.isFinite(tsRaw(trip.unloaded_at)) ? tsRaw(trip.unloaded_at) : Date.now()) + DOCS_NORM_MS;
-      return { at, label: `📄 документы: ${trip.customer_name || 'клиент'}`,
-        point: trip.to_point || trip.to_name, zone: trip.to_name, docsStep: true };
-    }
     if (isStuck(trip)) {
       return { at: 0, label: '🚨 не выгружают — вмешаться',
         point: trip.to_point || trip.to_name, zone: trip.to_name };
@@ -839,8 +830,6 @@ export async function renderDispatcher(container, context, options = {}) {
       ${(() => { const last = lastNoteOf(trip);
         return !worked && last ? `<span class="ctrl-last-note" title="${escapeHtml(last.note)}">💬 прошлый контроль
           · ${escapeHtml(last.done_by || '')} · ${markTime(last)} — «${escapeHtml(String(last.note).slice(0, 60))}»</span>` : ''; })()}
-      ${canAct && nextEvent.docsStep && !worked ? `<button class="button small ctrl-quick"
-        data-docs="${trip.id}" title="Фото документов получены и проверены (без печатей и актов) — рейс уйдёт с контроля">✔ Документы получены</button>` : ''}
       ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"
         data-quick-stop="${nextEvent.stopId}" data-quick-field="${nextEvent.stepField}"
         data-quick-label="${escapeHtml(nextEvent.stepLabel)}"
@@ -867,12 +856,7 @@ export async function renderDispatcher(container, context, options = {}) {
       ${opened ? `<div class="stops-inline">${stopsBlock(trip)}</div>` : ''}
     </div>`;
   };
-  // Выгруженные без документов — отдельной секцией НАД основным списком:
-  // после факта убытия карточка не проваливается на дно среди рейсов в пути,
-  // а сразу видна с кнопкой «✔ Документы получены» (норматив 2 часа).
-  const docsQueue = online.filter(trip => trip.status === 'unloaded');
-  const inWork = online.filter(trip => trip.status !== 'unloaded');
-  const docsCards = docsQueue.map(ctrlCard).join('');
+  const inWork = online;
   const onlineCards = inWork.map(ctrlCard).join('')
     || '<p class="muted">На линии никого нет.</p>';
 
@@ -902,11 +886,7 @@ export async function renderDispatcher(container, context, options = {}) {
           задание водителю, вывод на контроль на линии. Шаги идут по порядку.</div>
       </div>
       <div class="scol">
-        ${docsQueue.length ? `<div class="scolh docs-head">📄 Получить документы <span>${docsQueue.length}</span></div>
-          <div class="geohint" style="margin:0 0 6px">Рейс выгружен — осталось получить и проверить фото
-            документов (норматив 2 часа, дальше — контроль каждые 1,5 ч). «✔ Документы получены» закрывает контроль.</div>
-          <div class="list">${docsCards}</div>` : ''}
-        <div class="scolh" ${docsQueue.length ? 'style="margin-top:12px"' : ''}>Контроль на линии <span>${inWork.length}</span></div>
+        <div class="scolh">Контроль на линии <span>${inWork.length}</span></div>
         <div class="list">${onlineCards}</div>
         <div class="geohint">Внештатная ситуация: поломка (ремонт + пересадка или снятие),
           отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в продажи.</div>
@@ -1095,8 +1075,8 @@ export async function renderDispatcher(container, context, options = {}) {
 
   // Массовое закрытие разборника: рейсы с выходом старше суток и расчётной
   // выгрузкой в прошлом закрываются задним числом — «Выгружен» фактом
-  // планового времени + «Документы получены». Рейсы с выгрузкой в будущем
-  // не трогаются (машина может реально ехать — их выводят на линию).
+  // планового времени. Рейсы с выгрузкой в будущем не трогаются (машина
+  // может реально ехать — их выводят на линию).
   container.querySelector('#staleCloseAll')?.addEventListener('click', async event => {
     const nowIso = new Date().toISOString();
     const closable = preparing.filter(trip =>
@@ -1104,7 +1084,7 @@ export async function renderDispatcher(container, context, options = {}) {
     if (!closable.length) return;
     if (!confirm(`Закрыть ${closable.length} рейс(ов) как выполненные задним числом?
 `
-      + 'Каждый станет «Выгружен» фактом планового времени, документы — «получены». '
+      + 'Каждый станет «Выгружен» фактом планового времени. '
       + 'Действие видно в аудите. Рейсы, чья выгрузка ещё впереди, не трогаются.')) return;
     event.currentTarget.disabled = true;
     let done = 0;
@@ -1112,8 +1092,6 @@ export async function renderDispatcher(container, context, options = {}) {
       try {
         await api(`/api/trips/${trip.id}`, { method: 'PATCH',
           body: JSON.stringify({ status: 'unloaded', factAt: trip.ends_at }) });
-        await api(`/api/trips/${trip.id}/step`, { method: 'POST',
-          body: JSON.stringify({ step: 'docs_checked', at: trip.ends_at }) });
         done += 1;
       } catch (error) { toast(`${trip.vehicle_plate || ''}: ${error.message}`, 'error'); }
     }
@@ -1143,14 +1121,6 @@ export async function renderDispatcher(container, context, options = {}) {
       const trip = data.trips.find(item => item.id === button.dataset.incident);
       if (trip) incidentDialog(trip, data, context);
     }));
-  container.querySelectorAll('[data-docs]').forEach(button =>
-    button.addEventListener('click', () => factDialog('Документы получены',
-      'Фото документов получены и проверены (без печатей и актов) — рейс уйдёт с контроля.', async iso => {
-        await api(`/api/trips/${button.dataset.docs}/step`, {
-          method: 'POST', body: JSON.stringify({ step: 'docs_checked', at: iso })
-        });
-        toast('Документы проверены — рейс закрыт на контроле');
-      })));
   container.querySelectorAll('[data-notify-delay]').forEach(button =>
     button.addEventListener('click', async () => {
       button.disabled = true;

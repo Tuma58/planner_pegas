@@ -1080,6 +1080,7 @@ export function operationNameOf(row) {
         entered_1c: 'Проведение заказа в 1С',
         driver_notified: 'Задание водителю',
         on_line: 'Вывод на контроль линии',
+        // Этап отменён 27.08.2026, имя оставлено для отчётов за прошлые смены.
         docs_checked: 'Проверка документов'
       }[details.step] || null;
     }

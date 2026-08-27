@@ -730,20 +730,9 @@ test('диспетчеризация: шаги идут по порядку, в�
   assert.equal(firstStop.actual_arrival, null, 'факт прибытия на погрузку пуст');
   assert.equal(firstStop.actual_departure, null, 'факт убытия с погрузки пуст');
 
-  // Документы: у невыгруженного рейса шаг закрыт с понятной причиной...
-  assert.throws(() => applyDispatchStep(db, 'td-1', 'docs_checked'), /после выгрузки/);
-  // ...а выгруженному не нужен пройденный чек-лист подготовки: рейс мог
-  // стать «выгружен» через факты стоянок, минуя «Контроль на линии».
-  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
-    starts_at,ends_at,distance_km,revenue_vat,status,unloaded_at)
-    VALUES('td-2',?,'Клиент 2',?,?,'2026-08-10T06:00:00.000Z','2026-08-11T06:00:00.000Z',
-    640,90000,'unloaded','2026-08-11T06:00:00.000Z')`)
-    .run(db.prepare('SELECT id FROM vehicles LIMIT 1').get().id,
-      db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get().id,
-      db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get().id);
-  applyDispatchStep(db, 'td-2', 'docs_checked');
-  assert.ok(db.prepare(`SELECT docs_checked_at FROM trips WHERE id='td-2'`).get().docs_checked_at,
-    'документы отмечены без пройденного чек-листа подготовки');
+  // Этап «документы получены» отменён 27.08.2026: последний шаг рейса —
+  // «Выгружен», шага docs_checked в чек-листе больше нет.
+  assert.throws(() => applyDispatchStep(db, 'td-1', 'docs_checked'), /Неизвестный шаг/);
 
   // Переназначение ТС отзывает задание водителю: шаг выполняется заново.
   resetDriverNotificationOnVehicleChange(db, 'td-1');
@@ -1155,7 +1144,7 @@ test('отклонения конвейера: нормативы этапов �
         created_at: '2026-08-16 06:00:00', logist_confirmed_at: '2026-08-16T06:10:00.000Z',
         starts_at: '2026-08-17T06:00:00.000Z', ends_at: '2026-08-18T06:00:00.000Z',
         on_line_at: '2026-08-17T08:00:00.000Z' },
-      // выгружен вовремя, документы не проверены спустя 3 ч (> 2 ч)
+      // выгружен вовремя (этап документов отменён 27.08.2026 — отклонением не считается)
       { id: 't3', status: 'unloaded', customer_name: 'К3', vehicle_plate: 'а003',
         created_at: '2026-08-16 06:00:00', logist_confirmed_at: '2026-08-16T06:05:00.000Z',
         starts_at: '2026-08-16T08:00:00.000Z', ends_at: '2026-08-17T08:30:00.000Z',
@@ -1183,8 +1172,7 @@ test('отклонения конвейера: нормативы этапов �
   assert.equal(d.confirmSlow[0].trip.id, 't1');
   assert.equal(d.lateOnline.length, 1, 'поздний вывод на линию');
   assert.equal(d.lateOnline[0].trip.id, 't2');
-  assert.equal(d.docsSlow.length, 1, 'документы дольше 2 ч');
-  assert.equal(d.docsSlow[0].trip.id, 't3');
+  assert.equal(d.docsSlow, undefined, 'этап документов из отклонений убран');
   assert.equal(d.expiredNoVehicle.length, 1, 'окно истекло без ТС');
   assert.equal(d.salesSlow.length, 1, 'медленное подтверждение продаж');
   assert.equal(d.lateUnload.length, 0, 'выгрузка t3 позже расчётной лишь на 30 мин — не отклонение');

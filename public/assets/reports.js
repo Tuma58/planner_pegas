@@ -96,13 +96,10 @@ export function deviationsFor(data, fromMs, toMs, nowMs = Date.now()) {
   const salesSlow = orders.filter(order => inPeriod(devTs(order.created_at)))
     .map(order => ({ order, ms: lag(devTs(order.confirmed_at), devTs(order.created_at) + 4 * HOUR) }))
     .filter(item => item.ms > 0 && (item.order.confirmed_at || Number(item.order.stage) === 0));
-  const docsSlow = trips.filter(trip => trip.unloaded_at && inPeriod(devTs(trip.unloaded_at)))
-    .map(trip => ({ trip, ms: lag(devTs(trip.docs_checked_at), devTs(trip.unloaded_at) + 2 * HOUR) }))
-    .filter(item => item.ms > 0);
   const lateUnload = trips.filter(trip => trip.unloaded_at && inPeriod(Date.parse(trip.ends_at)))
     .map(trip => ({ trip, ms: devTs(trip.unloaded_at) - Date.parse(trip.ends_at) }))
     .filter(item => item.ms > 2 * HOUR);
-  return { confirmSlow, lateOnline, expiredNoVehicle, salesSlow, docsSlow, lateUnload };
+  return { confirmSlow, lateOnline, expiredNoVehicle, salesSlow, lateUnload };
 }
 
 export async function buildReport(kind, from, to, data) {
@@ -151,16 +148,16 @@ export async function buildReport(kind, from, to, data) {
       ${rows.length ? `<table class="rtable"><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
         <tbody>${rows.join('')}</tbody></table>` : '<p class="muted">Отклонений нет.</p>'}`;
     const total = d.confirmSlow.length + d.lateOnline.length + d.expiredNoVehicle.length +
-      d.salesSlow.length + d.docsSlow.length + d.lateUnload.length;
+      d.salesSlow.length + d.lateUnload.length;
     body = `<div class="rsums">
         <span class="rsum">Всего отклонений: <b>${total}</b></span>
         <span class="rsum">Логист: <b>${d.confirmSlow.length + d.expiredNoVehicle.length}</b></span>
-        <span class="rsum">Диспетчер: <b>${d.lateOnline.length + d.docsSlow.length}</b></span>
+        <span class="rsum">Диспетчер: <b>${d.lateOnline.length}</b></span>
         <span class="rsum">Продажи: <b>${d.salesSlow.length}</b></span>
         <span class="rsum">Дорога/клиент: <b>${d.lateUnload.length}</b></span></div>
       <div class="geohint">Несвоевременная обработка на каждом этапе конвейера за период.
         Нормативы — из регламентов: подтверждение логиста 1 ч, вывод на линию — к плановому
-        времени (+30 мин), подтверждение продажами 4 ч, документы после выгрузки 2 ч.
+        времени (+30 мин), подтверждение продажами 4 ч.
         Для отчёта «за смену» задайте период в один день.</div>
       ${section('Логист · подтверждение назначения дольше 1 часа',
         'Пока назначение не подтверждено, диспетчер не готовит выход.',
@@ -183,13 +180,6 @@ export async function buildReport(kind, from, to, data) {
           <td>${formatDateTime(trip.starts_at)}</td>
           <td class="num danger">+${lagLabel(ms)}${open(trip.on_line_at)}</td></tr>`),
         ['Рейс', 'ТС', 'Плановый выход', 'Задержка'])}
-      ${section('Диспетчер · документы позже 2 часов после выгрузки',
-        'Норматив проверки фото документов — 2 часа, дальше ежечасный сбой.',
-        d.docsSlow.map(({ trip, ms }) => `<tr><td>${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || '')}</td>
-          <td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
-          <td>${formatDateTime(trip.unloaded_at)}</td>
-          <td class="num danger">+${lagLabel(ms)}${open(trip.docs_checked_at)}</td></tr>`),
-        ['Рейс', 'ТС', 'Выгружен', 'Сверх норматива'])}
       ${section('Продажи · подтверждение заявки дольше 4 часов',
         'Заявка внесена, но не подтверждена — конвейер не начинается (порог 4 ч).',
         d.salesSlow.map(({ order, ms }) => `<tr><td>${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.customer_name)}</td>

@@ -198,10 +198,12 @@ export const DISPATCH_STEPS = [
   { step: 'driver_notified', column: 'driver_notified_at', permission: 'trip-status:write',
     label: 'Задание водителю отправлено' },
   { step: 'on_line', column: 'on_line_at', permission: 'trip-status:write',
-    label: 'Контроль на линии' },
-  { step: 'docs_checked', column: 'docs_checked_at', permission: 'trip-status:write',
-    label: 'Документы получены и проверены (фото, без печатей и актов)' }
+    label: 'Контроль на линии' }
 ];
+// Этап «документы получены» отменён 27.08.2026: он затягивал контроль —
+// рейс висел на линии после фактической выгрузки ради отметки о фото.
+// Последний этап рейса — «Выгружен». Колонка docs_checked_at сохранена
+// для исторических рейсов и в расчёте фактов движения.
 
 // Выполнение шага с проверкой порядка. Возвращает { trip, statusChanged }.
 export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
@@ -215,15 +217,7 @@ export function applyDispatchStep(db, tripId, step, userId, atIso = null) {
   const meta = DISPATCH_STEPS[index];
   if (trip[meta.column]) return { trip, statusChanged: false };
   const previous = DISPATCH_STEPS[index - 1];
-  if (step === 'docs_checked') {
-    // Документы проверяются по факту выгрузки. Рейс мог стать выгруженным
-    // через факты стоянок, минуя чек-лист подготовки (например, вывод на
-    // линию не отметили) — требовать пройти подготовку задним числом
-    // бессмысленно, важен только сам факт выгрузки.
-    if (!(['unloaded', 'done', 'paid'].includes(trip.status) || trip.unloaded_at)) {
-      throw Object.assign(new Error('Документы проверяются после выгрузки — сначала отметьте «Выгружен»'), { status: 409 });
-    }
-  } else if (previous && !trip[previous.column]) {
+  if (previous && !trip[previous.column]) {
     // Живой заявки может ещё не быть, а водителя отправлять пора: шаг
     // «внесено в 1С» разрешено отложить (deferred_1c_at) — тогда задание
     // водителю и вывод на линию идут дальше, а долг 1С висит до закрытия.
