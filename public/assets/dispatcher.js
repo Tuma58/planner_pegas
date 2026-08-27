@@ -11,7 +11,7 @@ import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 import { openTransfers, transferStage, transferTaskText, transferDialog } from './transfer.js';
-import { callCardDialog, closeQuestionDialog, questionDialog, topicLabel } from './call-card.js';
+import { callCardDialog, closeQuestionDialog, questionDialog, setTopics, topicLabel } from './call-card.js';
 
 const LATE_MS = 30 * 60_000;
 // «ТС не выгружают»: плановое прибытие прошло более 6 часов назад,
@@ -308,6 +308,9 @@ export async function renderDispatcher(container, context, options = {}) {
   } else {
     try {
       const payload = await api('/api/driver-questions?open=1');
+      // Справочник тем берём отсюда же: иначе карточка успевает отрисоваться
+      // раньше загрузки списка и показывает код темы вместо названия.
+      setTopics(payload.topics);
       questions = payload.items.filter(item => !item.closed_at);
     } catch { questions = []; }
     state.dispatcherQuestions = questions;
@@ -915,6 +918,8 @@ export async function renderDispatcher(container, context, options = {}) {
         <span style="display:flex;gap:5px">
           <button class="button ghost small" data-stops-toggle="${trip.id}"
             title="Лента контрольных точек: прибытие, работы, убытие, простой">🧭 Точки${stopsCount ? ` (${stopsCount})` : ''}</button>
+          <button class="button ghost small" data-question-new="${trip.id}"
+            title="Водитель позвонил с вопросом — зафиксировать (норматив ответа 10 минут)">📞 Вопрос</button>
           <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
         </span>
       </span>
@@ -1264,6 +1269,14 @@ export async function renderDispatcher(container, context, options = {}) {
         return;
       }
       runStep(button.dataset.trip, button.dataset.step, context.onReload);
+    }));
+  container.querySelectorAll('[data-question-new]').forEach(button =>
+    button.addEventListener('click', () => {
+      const trip = data.trips.find(item => item.id === button.dataset.questionNew);
+      if (!trip) return;
+      const driver = (data.drivers || []).find(item => item.vehicle_id === trip.vehicle_id);
+      questionDialog(context, { vehicleId: trip.vehicle_id, tripId: trip.id,
+        driverName: driver?.full_name || trip.driver_name || '', phone: driver?.phone || '' });
     }));
   container.querySelectorAll('[data-question-close]').forEach(button =>
     button.addEventListener('click', () => {
