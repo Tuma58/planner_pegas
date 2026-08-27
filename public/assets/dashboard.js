@@ -5,6 +5,7 @@
 import { api, escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs } from './api.js';
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
+import { loadOpenQuestions } from './call-card.js';
 
 const DAY_MS = 86_400_000;
 const DEFAULT_MONTH_PLAN = 160_000_000;
@@ -351,7 +352,7 @@ function normBadge(fact, usual) {
   return ` <small class="muted" title="Среднее к этому часу по четырём последним таким же дням недели, +5% на рост">· обычно ~${Math.round(usual)} ${icon}</small>`;
 }
 
-export function renderDashboard(container, context) {
+export async function renderDashboard(container, context) {
   const { state } = context;
   const metrics = dashboardMetrics(state.data);
   const donePct = Math.min(100, pctOf(metrics.monthFact, metrics.monthPlan));
@@ -458,6 +459,11 @@ export function renderDashboard(container, context) {
   const showMyShift = !Number(data.user.guest) &&
     myRoles.some(role => ['sales', 'logist', 'dispatcher', 'resource', 'accountant', 'admin'].includes(role));
 
+  // Открытые вопросы водителей — общая цифра смены на дашборде.
+  const questions = await loadOpenQuestions();
+  const overdueQuestions = questions.filter(item => Date.now() -
+    Date.parse(String(item.opened_at).replace(' ', 'T') +
+      (String(item.opened_at).includes('Z') ? '' : 'Z')) > 10 * 60_000).length;
   const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="dashwrap" id="dashRoot">
     <div class="dash-top">
@@ -518,7 +524,12 @@ export function renderDashboard(container, context) {
         { label: 'На линии сейчас · машин', value: metrics.dispatcher.online, detail: 'dispOnline' },
         { label: 'Рейсов на контроле', value: metrics.dispatcher.onlineTripCount, detail: 'dispOnline' },
         { label: 'Долги перед 1С', value: metrics.dispatcher.debt1c,
-          cls: metrics.dispatcher.debt1c ? 'bad' : 'ok', detail: 'dispDebt1c' }
+          cls: metrics.dispatcher.debt1c ? 'bad' : 'ok', detail: 'dispDebt1c' },
+        // Вопросы водителей: висящие дольше десяти минут — красным. Водитель
+        // стоит на погрузке и ждёт ответа, это дороже любой другой цифры.
+        { label: 'Вопросы водителей', value: `${questions.length}${overdueQuestions
+          ? ` · ⏱ ${overdueQuestions}` : ''}`,
+        cls: overdueQuestions ? 'bad' : questions.length ? 'warn' : 'ok' }
       ])}
       ${roleCard('🔧 Ресурс — воронка дня', [
         { label: 'Парк в работе', value: metrics.fleet.total },

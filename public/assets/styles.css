@@ -1244,6 +1244,9 @@ tbody tr:hover td { background: var(--hover); }
 .callt-b a { color: var(--navy); font-weight: 700; }
 .call-open-q { margin: 6px 0; padding: 7px 10px; border-radius: 8px; font-size: var(--fs-sm);
   background: color-mix(in srgb, var(--warn) 14%, transparent); border: 1px solid var(--warn); }
+.call-note { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.call-note:last-child { border-bottom: 0; }
+.callt-h .button { float: right; }
 .questions-strip { margin-bottom: 10px; }
 .question-card { border-left: 4px solid var(--warn); }
 .question-card.late { border-left-color: var(--bad);

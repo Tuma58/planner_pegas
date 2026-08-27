@@ -127,6 +127,18 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
 
   const openQuestions = card.openQuestions || [];
 
+  // Комментарии смены по рейсу — те же, что видит диспетчер в карточке
+  // контроля. Комментарий, оставленный отсюда, возвращается туда же:
+  // хранилище одно (общие отметки смены), кто бы ни говорил с водителем.
+  const notes = card.notes || [];
+  const notesBody = notes.length
+    ? notes.slice(0, 4).map(note => `<div class="call-note">
+        <b>${escapeHtml(note.done_by || '')}</b>
+        <small class="muted">· ${fmt(String(note.done_at).replace(' ', 'T') +
+          (String(note.done_at).includes('Z') ? '' : 'Z'))}</small><br>
+        ${escapeHtml(note.note)}</div>`).join('')
+    : '';
+
   context.showModal(`<h2>📞 <span class="mono">${escapeHtml(vehicle.plate)}</span>
       ${vehicle.trailer_plate ? `<span class="mono muted"> / ${escapeHtml(vehicle.trailer_plate)}</span>` : ''}</h2>
     <p class="muted">${escapeHtml(card.driver?.full_name || vehicle.driver_name || 'без водителя')}
@@ -144,11 +156,44 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
       ${tile('🔧 Наши контакты', contactsBody, 'телефоны сотрудников не заполнены (Настройки → Пользователи)')}
       ${tile('🔁 Пересменка', shiftBody, 'пересменка не запланирована — вопрос ресурснику')}
       ${tile('🚿 Мойка, сервис, стоянка', servicesBody, 'справочник сервисов пуст (Настройки → Сервисы)')}
+      ${tile(`💬 Комментарий по рейсу${trip ? `
+        <button class="button ghost small" id="callNoteBtn" style="float:right;min-height:20px;padding:0 7px"
+          title="Комментарий увидит вся смена — он же появится в карточке контроля">✎</button>` : ''}`,
+    notesBody, trip ? 'комментариев по рейсу пока нет' : 'рейса нет — комментировать нечего')}
     </div>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Закрыть</button>
       <button type="button" class="button" id="callQuestion">📞 Поступил вопрос</button>
     </div>`);
+
+  // Комментарий пишется в общие отметки смены (ключ заметки по рейсу) —
+  // ровно туда, откуда его читает карточка контроля у диспетчера.
+  document.getElementById('callNoteBtn')?.addEventListener('click', () => {
+    const existing = notes.find(note => String(note.item_key).startsWith('prepnote|'));
+    context.showModal(`<form id="callNoteForm">
+      <h2>💬 Комментарий по рейсу</h2>
+      <p class="muted">${escapeHtml(vehicle.plate)} · ${escapeHtml(trip?.customer_name || '')}</p>
+      <label class="field">Текст (видит вся смена, появится в карточке контроля; пусто — удалить)
+        <textarea name="note" maxlength="300" rows="3">${escapeHtml(existing?.note || '')}</textarea></label>
+      <div class="modal-actions">
+        <button type="button" class="button ghost" data-close>Отмена</button>
+        <button class="button">Сохранить</button>
+      </div></form>`);
+    document.getElementById('callNoteForm').onsubmit = async event => {
+      event.preventDefault();
+      const note = String(new FormData(event.currentTarget).get('note') || '').trim();
+      const day = new Date().toISOString().slice(0, 10);
+      try {
+        await api('/api/task-marks', { method: 'POST', body: JSON.stringify({
+          kind: 'dispatcher', day, key: `prepnote|${trip.id}`,
+          ...(note ? { note } : { remove: true })
+        }) });
+        toast(note ? 'Комментарий сохранён — виден смене в карточке контроля' : 'Комментарий удалён');
+        context.closeModal();
+        await callCardDialog(context, { vehicleId: vehicle.id });
+      } catch (error) { toast(error.message, 'error'); }
+    };
+  });
 
   document.getElementById('callQuestion').onclick = () => questionDialog(context, {
     vehicleId: vehicle.id, tripId: trip?.id || '',
@@ -225,6 +270,69 @@ export function closeQuestionDialog(context, question) {
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
+}
+
+// Полоса вопросов водителей для рабочего стола роли. Диспетчер видит все,
+// остальные — вопросы своей зоны ответственности (тема знает, чей это шаг
+// процесса) плюс всё просроченное: за 10 минут вопрос должен быть решён,
+// и висеть он не должен ни у кого.
+export const QUESTION_SLA_MS = 10 * 60_000;
+
+export async function loadOpenQuestions() {
+  try {
+    const payload = await api('/api/driver-questions?open=1');
+    setTopics(payload.topics);
+    return payload.items.filter(item => !item.closed_at);
+  } catch { return []; }
+}
+
+const questionOpenedMs = question => Date.parse(String(question.opened_at).replace(' ', 'T') +
+  (String(question.opened_at).includes('Z') ? '' : 'Z'));
+
+export function questionsForOwner(questions, owner) {
+  if (!owner) return questions;
+  return questions.filter(question => {
+    const topic = TOPICS.find(item => item.key === question.topic);
+    return topic?.owner === owner || Date.now() - questionOpenedMs(question) > QUESTION_SLA_MS;
+  });
+}
+
+export function questionsStripHtml(questions, { title = '📞 Вопросы водителей', canAct = true } = {}) {
+  if (!questions.length) return '';
+  return `<div class="questions-strip">
+    <div class="scolh">${title} <span>${questions.length}</span>
+      <small class="muted" style="font-weight:400"> · норматив ответа 10 минут</small></div>
+    <div class="list">${questions.map(question => {
+    const waitMs = Date.now() - questionOpenedMs(question);
+    const late = waitMs > QUESTION_SLA_MS;
+    return `<div class="card question-card ${late ? 'late' : ''}" style="padding:8px 10px;margin-bottom:6px">
+      <div class="list-item ordrow" style="border:0;padding:0 0 4px">
+        <span style="flex:1;min-width:0">
+          <strong>${escapeHtml(topicLabel(question.topic))}</strong>
+          ${question.vehicle_plate ? `<small class="muted"> · <span class="mono">${escapeHtml(question.vehicle_plate)}</span></small>` : ''}
+          <small class="muted" style="display:block">${escapeHtml(question.driver_name || question.vehicle_driver || '')}
+            ${question.phone ? ` · ${escapeHtml(question.phone)}` : ''}
+            ${question.note ? ` · «${escapeHtml(question.note)}»` : ''}</small>
+          <small class="muted" style="display:block">принял ${escapeHtml(question.opened_by_name || '')}</small>
+        </span>
+        <span class="badge ${late ? 'bad' : 'warn'}">⏱ ${Math.max(0, Math.floor(waitMs / 60_000))} мин${late ? ' · просрочен' : ''}</span>
+      </div>
+      ${canAct ? `<div style="display:flex;gap:5px;flex-wrap:wrap">
+        <button class="button small" data-question-close="${question.id}">✓ Отработано</button>
+        ${question.vehicle_id ? `<button class="button ghost small" data-question-card="${question.vehicle_id}">📞 Карточка</button>` : ''}
+      </div>` : ''}
+    </div>`;
+  }).join('')}</div></div>`;
+}
+
+export function wireQuestionsStrip(container, context, questions) {
+  container.querySelectorAll('[data-question-close]').forEach(button =>
+    button.addEventListener('click', () => {
+      const question = questions.find(item => item.id === button.dataset.questionClose);
+      if (question) closeQuestionDialog(context, question);
+    }));
+  container.querySelectorAll('[data-question-card]').forEach(button =>
+    button.addEventListener('click', () => callCardDialog(context, { vehicleId: button.dataset.questionCard })));
 }
 
 // Поиск карточки по звонку: номер ТС, фамилия водителя или телефон.

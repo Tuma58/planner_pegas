@@ -7,6 +7,7 @@ import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { salesRadarDialog, directionMarket, freeVehiclesByZone } from './sales-radar.js';
 import { customerCardDialog } from './customer-card.js';
+import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -680,7 +681,7 @@ function dropFilterIfHides(state, orderLike, orderNo) {
   toast(`Заявка № ${orderNo || '—'} не проходила фильтр доски — фильтр сброшен, карточка в списке`);
 }
 
-export function renderSales(container, context) {
+export async function renderSales(container, context) {
   const { state, can } = context;
   const data = state.data;
   const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
@@ -899,8 +900,12 @@ export function renderSales(container, context) {
           ${trip ? ` · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>` : ''}</small></span>
       <b>${money(order.rate_vat)}</b></div>`;
   };
+  // Вопросы водителей, где сбой на стороне продаж: данные не ушли
+  // грузоотправителю, не тот адрес, нужен телефон клиента.
+  const questions = questionsForOwner(await loadOpenQuestions(), 'Продажи');
   const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
+    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам' })}
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
         title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">
@@ -1049,6 +1054,7 @@ export function renderSales(container, context) {
       </div>
     </div>
   </div>`;
+  wireQuestionsStrip(container, context, questions);
   restoreScrolls(container, savedScrolls);
 
   const rerender = () => renderSales(container, context);

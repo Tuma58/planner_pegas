@@ -5,6 +5,7 @@ import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValue
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
 import { transferDialog } from './transfer.js';
+import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
 
 export const DISP_KINDS = [
   { kind: 'work', label: 'В работе', short: 'работа', color: 'var(--teal)' },
@@ -706,7 +707,7 @@ function renderResourceTasks(container, context, refDay, withState) {
     }));
 }
 
-export function renderResource(container, context) {
+export async function renderResource(container, context) {
   const { state } = context;
   const data = state.data;
   // Разметка и метрики главного ганта: та же ширина дня, sticky-шапка и колонка,
@@ -794,7 +795,9 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   }).join('');
 
   const savedScrolls = captureScrolls(container);
-  container.innerHTML = `<div class="resboard">
+  const questions = questionsForOwner(await loadOpenQuestions(), 'Ресурс');
+  container.innerHTML = `${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу' })}
+    <div class="resboard">
     <div class="reshead">
       <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
       <div class="resctl">
@@ -836,6 +839,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       <p class="muted" style="padding:10px">⏳ Загружаю график работы…</p>
     </div>`}
   </div>`;
+  wireQuestionsStrip(container, context, questions);
   restoreScrolls(container, savedScrolls);
 
   // Фокус как в главном ганте: «сегодня −3 дня» при первом показе месяца.

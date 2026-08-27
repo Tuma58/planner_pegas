@@ -1200,7 +1200,11 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Нужны kind (sales|logist|dispatcher), day (ГГГГ-ММ-ДД) и key');
     }
     const permissionByKind = { sales: 'orders:write', logist: 'trips:write', dispatcher: 'trip-status:write' };
-    const user = requirePermission(request, response, permissionByKind[kind]);
+    // Заметка по рейсу (prepnote) — исключение: её оставляет любой сотрудник,
+    // который принял звонок водителя, а не только диспетчер. Комментарий
+    // должен дойти до карточки контроля, кто бы ни говорил с водителем.
+    const permission = key.startsWith('prepnote|') ? 'planner:read' : permissionByKind[kind];
+    const user = requirePermission(request, response, permission);
     if (!user) return;
     const note = String(body.note || '').trim().slice(0, 300);
     const author = user.full_name || user.username || '';
@@ -2579,9 +2583,17 @@ async function api(request, response, url) {
       .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9)).slice(0, 6);
     const openQuestions = db.prepare(`SELECT * FROM driver_questions
       WHERE vehicle_id=? AND closed_at IS NULL ORDER BY opened_at`).all(vehicle.id);
+    // Комментарии смены по рейсу: заметка по рейсу и отметки контроля с
+    // текстом. Те же записи видит диспетчер в карточке контроля — комментарий
+    // ходит в обе стороны, кто бы его ни оставил.
+    const notes = active ? db.prepare(`SELECT item_key,done_by,done_at,note FROM task_marks
+      WHERE kind='dispatcher' AND note<>'' AND (item_key=? OR item_key LIKE ?)
+        AND day>=? ORDER BY done_at DESC LIMIT 8`)
+      .all(`prepnote|${active.id}`, `${active.id}|%`,
+        new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10)) : [];
     return json(response, 200, {
       caller, vehicle, driver, active, next, order, stops, transfer, dispositionNow,
-      nextShift, customerContacts, services, openQuestions,
+      nextShift, customerContacts, services, openQuestions, notes,
       placeText: vehiclePlaceText(vehicle.id), contacts: employeeContacts()
     });
   }

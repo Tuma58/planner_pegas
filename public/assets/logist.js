@@ -7,6 +7,7 @@ import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, route
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
+import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
 import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress, salesTaskFor } from './sales.js';
 
 const overlaps = (a, b) =>
@@ -315,7 +316,7 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
   };
 }
 
-export function renderLogist(container, context) {
+export async function renderLogist(container, context) {
   const { state, can } = context;
   const data = state.data;
   const query = (state.logistQuery || '').toLowerCase();
@@ -554,8 +555,12 @@ export function renderLogist(container, context) {
   const planSum = sum(confirmedTrips.filter(trip => trip.status === 'plan'), 'revenue_vat');
   const runSum = sum(runTrips, 'revenue_vat');
 
+  // Вопросы водителей по зоне ответственности логиста (следующее задание) и
+  // всё, что просрочено: вопрос не должен висеть ни у кого.
+  const questions = questionsForOwner(await loadOpenQuestions(), 'Логист');
   const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
+    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — логисту' })}
     <div class="salekpis">
       <div class="skpi clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
         title="Показать только очередь на назначение">
@@ -630,6 +635,7 @@ export function renderLogist(container, context) {
       </div>
     </div>
   </div>`;
+  wireQuestionsStrip(container, context, questions);
   restoreScrolls(container, savedScrolls);
 
   attachSearch(container.querySelector('#logistSearch'), value => {

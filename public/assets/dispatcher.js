@@ -900,6 +900,15 @@ export async function renderDispatcher(container, context, options = {}) {
       ${(() => { const last = lastNoteOf(trip);
         return !worked && last ? `<span class="ctrl-last-note" title="${escapeHtml(last.note)}">💬 прошлый контроль
           · ${escapeHtml(last.done_by || '')} · ${markTime(last)} — «${escapeHtml(String(last.note).slice(0, 60))}»</span>` : ''; })()}
+      ${(() => {
+    // Заметка по рейсу общая для смены: её оставляют и в подготовке, и в
+    // карточке звонка водителя — здесь она возвращается к диспетчеру.
+    const note = prepNoteOf(trip);
+    return note?.note ? `<span class="ctrl-last-note" title="${escapeHtml(note.note)}">💬 заметка
+      · ${escapeHtml(note.done_by || '')} · ${markTime(note)} — «${escapeHtml(String(note.note).slice(0, 60))}»</span>` : '';
+  })()}
+      ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-prepnote="${trip.id}"
+        title="Комментарий по рейсу: виден всей смене и в карточке звонка водителя">💬 Заметка</button>` : ''}
       ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"
         data-quick-stop="${nextEvent.stopId}" data-quick-field="${nextEvent.stepFields}"
         data-quick-label="${escapeHtml(nextEvent.stepLabel)}"
@@ -1131,8 +1140,8 @@ export async function renderDispatcher(container, context, options = {}) {
       const tripId = button.dataset.prepnote;
       const existing = workedMap.get(`prepnote|${tripId}`);
       context.showModal(`<form id="prepNoteForm">
-        <h2>💬 Заметка по подготовке</h2>
-        <label class="field">Произвольный комментарий (видит вся смена; пусто — удалить)
+        <h2>💬 Заметка по рейсу</h2>
+        <label class="field">Комментарий (видит вся смена и карточка звонка водителя; пусто — удалить)
           <textarea name="note" maxlength="300" rows="3">${escapeHtml(existing?.note || '')}</textarea></label>
         <div class="modal-actions">
           <button type="button" class="button ghost" data-close>Отмена</button>
