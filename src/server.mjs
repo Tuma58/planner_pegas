@@ -8,6 +8,8 @@ import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, set
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
+import { QUESTION_TOPICS, checkQuestionSla, identifyCaller, listDriverQuestions,
+  phoneDigits, phonePretty, questionStats } from './telephony.mjs';
 import {
   encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
@@ -66,8 +68,13 @@ function networkAccessAllowed(request, pathname) {
 }
 
 function plannerSettings() {
-  const { networkAccess: _networkAccess, ...settings } = settingsObject(db);
-  return settings;
+  const { networkAccess: _networkAccess, telephony, ...settings } = settingsObject(db);
+  // Токен вебхука — секрет интеграции: наружу уходит только признак, что он
+  // задан, сам токен виден в настройках отдельным запросом администратору.
+  return { ...settings, telephony: telephony
+    ? { enabled: Boolean(telephony.enabled), provider: telephony.provider || '',
+      hasToken: Boolean(telephony.token), popup: telephony.popup !== false }
+    : { enabled: false, provider: '', hasToken: false, popup: true } };
 }
 
 async function readJson(request, limit = 1_000_000) {
@@ -638,6 +645,30 @@ setTimeout(runDebt1cWatch, 65_000);
 
 setInterval(runAssignWatch, 5 * 60_000);
 setTimeout(runAssignWatch, 55_000);
+
+// ── Норматив ответа на вопрос водителя: 10 минут ──
+// Вопрос висит дольше — сигнал всей смене: водитель стоит на погрузке и
+// ждёт. Руководитель видит просрочки в отчёте за смену.
+function runQuestionSlaWatch() {
+  try {
+    for (const item of checkQuestionSla(db)) {
+      const topic = QUESTION_TOPICS.find(entry => entry.key === item.topic);
+      notify('dispatcher', `⏱ Вопрос водителя без ответа больше 10 минут: ` +
+        `${topic?.label || item.topic}${item.vehicle_plate ? ` · ${item.vehicle_plate}` : ''}` +
+        `${item.driver_name ? ` · ${item.driver_name}` : ''}. Возьмите в работу — водитель ждёт`,
+      'question', item.id);
+      if (topic?.owner === 'Логист') notify('logist', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id);
+      if (topic?.owner === 'Продажи') notify('sales', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id);
+      if (topic?.owner === 'Ресурс') notify('resource', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id);
+      notify('manager', `⏱ Просрочен вопрос водителя (>10 мин): ${topic?.label || item.topic}` +
+        `${item.vehicle_plate ? ` · ${item.vehicle_plate}` : ''}`, 'question', item.id);
+    }
+  } catch (error) {
+    console.error('Сторож вопросов водителей:', error.message);
+  }
+}
+setInterval(runQuestionSlaWatch, 60_000);
+setTimeout(runQuestionSlaWatch, 40_000);
 
 // ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
 // Раз в день после 08:00 МСК: продажам в чат — кого поздравить (ДР контакта
@@ -1593,6 +1624,15 @@ async function api(request, response, url) {
     return null;
   }
 
+  // Контакты дежурных сотрудников для водителя: механик, начальник колонны,
+  // диспетчер, логист. Берём тех, у кого заполнен телефон, — пустые карточки
+  // в ответе водителю бесполезны.
+  function employeeContacts() {
+    return db.prepare(`SELECT full_name, job_role, role, phone FROM users
+      WHERE deleted_at IS NULL AND active=1 AND phone<>''
+      ORDER BY job_role, full_name`).all();
+  }
+
   // Где сцепка стоит словами (для карточки задания и списков): точка
   // прибытия завершённого перегона, иначе выгрузка последнего рейса.
   function vehiclePlaceText(vehicleId, beforeIso = new Date().toISOString()) {
@@ -2375,6 +2415,225 @@ async function api(request, response, url) {
     notify('sales', `Запрос загрузки: сцепка ${vehicle.plate} (${vehicle.type_name}) свободна в «${zoneName}»${lastTrip ? ` с ${lastTrip.ends_at.slice(0, 10)}` : ''} — подберите заявку в «Потребности от логистики»`, 'vehicle', match[0]);
     audit(db, user, 'request_load', 'vehicle', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
+  }
+
+  // ── Справочник точек сервиса: мойка, шиномонтаж, стоянка, заправка ──
+  const clean = value => String(value || '').trim();
+  if (request.method === 'GET' && pathname === '/api/service-points') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    return json(response, 200, {
+      items: db.prepare('SELECT * FROM service_points ORDER BY kind,name').all()
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/service-points') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const kinds = ['wash', 'service', 'tire', 'parking', 'fuel', 'rest'];
+    if (!clean(body.name) || !kinds.includes(body.kind)) {
+      return errorJson(response, 422, 'Название и вид точки обязательны');
+    }
+    const id = randomUUID();
+    db.prepare(`INSERT INTO service_points(id,kind,name,address,region,latitude,longitude,
+        phone,work_hours,note,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, body.kind, clean(body.name).slice(0, 160), clean(body.address).slice(0, 240),
+      clean(body.region).slice(0, 120),
+      Number.isFinite(Number(body.latitude)) ? Number(body.latitude) : null,
+      Number.isFinite(Number(body.longitude)) ? Number(body.longitude) : null,
+      phonePretty(body.phone || ''), clean(body.workHours).slice(0, 120),
+      clean(body.note).slice(0, 300), user.id);
+    audit(db, user, 'create', 'service_point', id, { name: body.name, kind: body.kind }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/service-points\/([^/]+)$/, pathname);
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    db.prepare('DELETE FROM service_points WHERE id=?').run(match[0]);
+    audit(db, user, 'delete', 'service_point', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  // Настройки телефонии с токеном — только администратору настроек.
+  if (request.method === 'GET' && pathname === '/api/telephony/config') {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    const telephony = settingsObject(db).telephony || {};
+    return json(response, 200, {
+      enabled: Boolean(telephony.enabled), provider: telephony.provider || '',
+      token: telephony.token || '', popup: telephony.popup !== false,
+      webhookUrl: '/api/telephony/webhook'
+    });
+  }
+
+  // ── Телефония: вебхук АТС и карточка звонящего ──
+  // Приём событий работает и до подключения АТС: пока звонки заводятся
+  // вручную кнопкой «Звонок водителя», после интеграции те же записи придут
+  // от провайдера. Вебхук защищён токеном из настроек — без него ничего
+  // не принимается, чтобы посторонний не поднимал карточки сотрудникам.
+  if (request.method === 'POST' && pathname === '/api/telephony/webhook') {
+    const telephony = settingsObject(db).telephony || {};
+    const token = String(request.headers['x-telephony-token'] || '');
+    if (!telephony.enabled) return errorJson(response, 409, 'Телефония выключена в настройках');
+    if (!telephony.token || token !== telephony.token) {
+      return errorJson(response, 401, 'Неверный токен телефонии');
+    }
+    const body = await readJson(request);
+    const fromPhone = String(body.from || body.caller || '');
+    const digits = phoneDigits(fromPhone);
+    if (!digits) return errorJson(response, 422, 'В событии нет номера звонящего');
+    const caller = identifyCaller(db, fromPhone);
+    const targetUser = body.to
+      ? db.prepare(`SELECT id FROM users WHERE deleted_at IS NULL AND phone<>'' AND
+          REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') LIKE ?
+          LIMIT 1`).get(`%${phoneDigits(body.to)}`)?.id || null
+      : null;
+    const id = randomUUID();
+    try {
+      db.prepare(`INSERT INTO call_events(id,provider,external_id,direction,from_phone,to_phone,
+          from_digits,matched_kind,matched_id,matched_name,vehicle_id,target_user_id,started_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        id, String(body.provider || telephony.provider || 'ats').slice(0, 40),
+        body.callId ? String(body.callId).slice(0, 120) : null,
+        body.direction === 'out' ? 'out' : 'in', fromPhone, String(body.to || ''), digits,
+        caller.kind, caller.id, caller.name, caller.vehicleId, targetUser,
+        Number.isFinite(Date.parse(body.at)) ? new Date(Date.parse(body.at)).toISOString()
+          : new Date().toISOString());
+    } catch (error) {
+      // Повторная доставка того же события — не ошибка интеграции.
+      if (String(error.message).includes('UNIQUE')) return json(response, 200, { ok: true, duplicate: true });
+      throw error;
+    }
+    return json(response, 201, { id, caller: caller.kind, name: caller.name });
+  }
+  // Свежие входящие: интерфейс опрашивает раз в несколько секунд и поднимает
+  // карточку. Отдаём только неразобранные звонки за последние 5 минут.
+  if (request.method === 'GET' && pathname === '/api/telephony/incoming') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const since = new Date(Date.now() - 5 * 60_000).toISOString();
+    const items = db.prepare(`SELECT c.*, v.plate vehicle_plate FROM call_events c
+      LEFT JOIN vehicles v ON v.id=c.vehicle_id
+      WHERE c.direction='in' AND c.handled_at IS NULL AND c.started_at>=?
+        AND (c.target_user_id IS NULL OR c.target_user_id=?)
+      ORDER BY c.started_at DESC LIMIT 5`).all(since, user.id);
+    return json(response, 200, { items });
+  }
+  match = route(/^\/api\/telephony\/calls\/([^/]+)\/handled$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    db.prepare(`UPDATE call_events SET handled_by=?,handled_at=CURRENT_TIMESTAMP
+      WHERE id=? AND handled_at IS NULL`).run(user.id, match[0]);
+    return json(response, 200, { ok: true });
+  }
+  // Карточка звонящего: всё, чем можно ответить водителю, одним запросом —
+  // где машина, что за задание, следующее, контакты и ближайшие сервисы.
+  if (request.method === 'GET' && pathname === '/api/call-card') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const phone = url.searchParams.get('phone') || '';
+    const caller = phone ? identifyCaller(db, phone) : null;
+    const vehicleId = url.searchParams.get('vehicleId') || caller?.vehicleId || '';
+    const vehicle = vehicleId
+      ? db.prepare(`SELECT v.*, vt.name type_name, z.name zone_name FROM vehicles v
+          JOIN vehicle_types vt ON vt.id=v.type_id LEFT JOIN zones z ON z.id=v.zone_id
+          WHERE v.id=?`).get(vehicleId) : null;
+    if (!vehicle) {
+      return json(response, 200, { caller, vehicle: null, contacts: employeeContacts() });
+    }
+    const nowIso = new Date().toISOString();
+    const active = db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
+      JOIN zones f ON f.id=t.from_zone_id JOIN zones d ON d.id=t.to_zone_id
+      WHERE t.vehicle_id=? AND t.status IN ('run','plan') ORDER BY t.starts_at LIMIT 1`).get(vehicle.id);
+    const next = db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
+      JOIN zones f ON f.id=t.from_zone_id JOIN zones d ON d.id=t.to_zone_id
+      WHERE t.vehicle_id=? AND t.status='plan' AND t.starts_at>? ORDER BY t.starts_at LIMIT 1`)
+      .get(vehicle.id, nowIso);
+    const order = active?.order_id
+      ? db.prepare(`SELECT o.*, fa.address from_address_text, ta.address to_address_text
+          FROM orders o LEFT JOIN addresses fa ON fa.id=o.from_address_id
+          LEFT JOIN addresses ta ON ta.id=o.to_address_id WHERE o.id=?`).get(active.order_id) : null;
+    const stops = active ? listTripStops(db, active.id) : [];
+    const transfer = db.prepare(`SELECT d.*, a.name to_name FROM vehicle_dispositions d
+      LEFT JOIN addresses a ON a.id=d.address_id
+      WHERE d.vehicle_id=? AND d.kind='transfer' AND d.arrived_at IS NULL
+      ORDER BY d.starts_at DESC LIMIT 1`).get(vehicle.id);
+    const dispositionNow = db.prepare(`SELECT * FROM vehicle_dispositions
+      WHERE vehicle_id=? AND starts_at<=? AND ends_at>? ORDER BY starts_at DESC LIMIT 1`)
+      .get(vehicle.id, nowIso, nowIso);
+    const driver = db.prepare(`SELECT * FROM drivers WHERE vehicle_id=? AND status<>'fired' LIMIT 1`)
+      .get(vehicle.id);
+    const nextShift = db.prepare(`SELECT * FROM vehicle_dispositions
+      WHERE vehicle_id=? AND kind='shift' AND ends_at>? ORDER BY starts_at LIMIT 1`)
+      .get(vehicle.id, nowIso);
+    const customerContacts = order?.customer_name
+      ? db.prepare(`SELECT full_name, position, phone FROM customer_contacts
+          WHERE customer_name=? AND phone<>'' ORDER BY full_name LIMIT 5`).all(order.customer_name) : [];
+    // Ближайшие точки сервиса — от места, где машина сейчас.
+    const place = vehiclePositionBefore(vehicle.id, nowIso);
+    const services = db.prepare(`SELECT * FROM service_points WHERE active=1`).all()
+      .map(item => ({ ...item,
+        km: place && Number.isFinite(item.latitude)
+          ? Math.round(roadKm(place.latitude, place.longitude, item.latitude, item.longitude)) : null }))
+      .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9)).slice(0, 6);
+    const openQuestions = db.prepare(`SELECT * FROM driver_questions
+      WHERE vehicle_id=? AND closed_at IS NULL ORDER BY opened_at`).all(vehicle.id);
+    return json(response, 200, {
+      caller, vehicle, driver, active, next, order, stops, transfer, dispositionNow,
+      nextShift, customerContacts, services, openQuestions,
+      placeText: vehiclePlaceText(vehicle.id), contacts: employeeContacts()
+    });
+  }
+
+  // ── Вопросы водителей ──
+  if (request.method === 'POST' && pathname === '/api/driver-questions') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    if (!QUESTION_TOPICS.some(topic => topic.key === body.topic)) {
+      return errorJson(response, 422, 'Выберите тему вопроса');
+    }
+    const id = randomUUID();
+    db.prepare(`INSERT INTO driver_questions(id,vehicle_id,trip_id,driver_name,phone,topic,note,
+        opened_by,call_id) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+      id, body.vehicleId || null, body.tripId || null,
+      String(body.driverName || '').slice(0, 120), phonePretty(body.phone || ''),
+      body.topic, String(body.note || '').slice(0, 500), user.id, body.callId || null);
+    const topic = QUESTION_TOPICS.find(item => item.key === body.topic);
+    const plate = body.vehicleId
+      ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(body.vehicleId)?.plate || '' : '';
+    notify('dispatcher', `📞 Вопрос водителя${plate ? ` (${plate})` : ''}: ${topic.label}` +
+      `${body.note ? ` — ${String(body.note).slice(0, 120)}` : ''}. Норматив ответа — 10 минут`,
+    'question', id);
+    audit(db, user, 'create', 'driver_question', id, { topic: body.topic, plate }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/driver-questions\/([^/]+)\/close$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const resolution = String(body.resolution || '').trim();
+    if (!resolution) return errorJson(response, 422, 'Опишите, как решён вопрос');
+    const question = db.prepare('SELECT * FROM driver_questions WHERE id=?').get(match[0]);
+    if (!question) return errorJson(response, 404, 'Вопрос не найден');
+    if (question.closed_at) return json(response, 200, { ok: true });
+    db.prepare(`UPDATE driver_questions SET closed_by=?,closed_at=CURRENT_TIMESTAMP,resolution=?
+      WHERE id=?`).run(user.id, resolution.slice(0, 500), match[0]);
+    audit(db, user, 'close', 'driver_question', match[0], { resolution }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (request.method === 'GET' && pathname === '/api/driver-questions') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+    return json(response, 200, {
+      items: listDriverQuestions(db, { openOnly: url.searchParams.get('open') === '1' }),
+      topics: QUESTION_TOPICS,
+      stats: from && to ? questionStats(db, from, to) : []
+    });
   }
 
   // ── Порожний перегон ──
@@ -3202,6 +3461,24 @@ async function api(request, response, url) {
   }
 
   // Должность для отчётности (план/факт) — только admin; права не меняет.
+  // Телефон сотрудника: по нему определяется входящий звонок и его же
+  // диспетчер называет водителю («как связаться с механиком»).
+  match = route(/^\/api\/admin\/users\/([\w-]+)\/phone$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const digits = phoneDigits(body.phone);
+    if (body.phone && digits.length !== 10) {
+      return errorJson(response, 422, 'Телефон: 10 цифр номера, например +7 987 510-59-21');
+    }
+    const target = db.prepare('SELECT id FROM users WHERE id=?').get(match[0]);
+    if (!target) return errorJson(response, 404, 'Пользователь не найден');
+    db.prepare('UPDATE users SET phone=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .run(body.phone ? phonePretty(body.phone) : '', match[0]);
+    audit(db, user, 'phone', 'user', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true, phone: body.phone ? phonePretty(body.phone) : '' });
+  }
   match = route(/^\/api\/admin\/users\/([\w-]+)\/job-role$/, pathname);
   if (match && request.method === 'PATCH') {
     const user = requirePermission(request, response, 'users:write');
@@ -3223,8 +3500,8 @@ async function api(request, response, url) {
     if (!user) return;
     return json(response, 200, {
       roles: ROLE_LABELS,
-      items: db.prepare(`SELECT id,username,full_name,email,role,roles,active,guest,created_at,updated_at
-        FROM users WHERE deleted_at IS NULL ORDER BY active DESC,full_name`).all()
+      items: db.prepare(`SELECT id,username,full_name,email,role,roles,active,guest,phone,job_role,
+        created_at,updated_at FROM users WHERE deleted_at IS NULL ORDER BY active DESC,full_name`).all()
         .map(item => ({ ...item, roles: rolesOf(item) }))
     });
   }
@@ -3368,7 +3645,8 @@ async function api(request, response, url) {
     const update = db.prepare(`INSERT INTO settings(key,value_json,updated_by,updated_at)
       VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
-    for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons', 'orderOptions', 'networkAccess']) {
+    for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
+      'orderOptions', 'networkAccess', 'telephony']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));

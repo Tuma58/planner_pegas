@@ -2263,3 +2263,64 @@ test('порожний перегон: задание, контроль приб
   assert.equal(place.region, address.region);
   assert.equal(openTransfers(data).length, 0, 'завершённый перегон уходит с контроля');
 });
+
+test('телефония: определение звонящего, темы вопросов и норматив 10 минут', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-call-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const { phoneDigits, phonePretty, identifyCaller, QUESTION_TOPICS, QUESTION_SLA_MS,
+    checkQuestionSla, questionStats, listDriverQuestions } = await import('../src/telephony.mjs');
+
+  // Номер приводится к десяти цифрам в любом написании — иначе звонящий не найдётся.
+  assert.equal(phoneDigits('+7 (987) 510-59-21'), '9875105921');
+  assert.equal(phoneDigits('89875105921'), '9875105921');
+  assert.equal(phoneDigits('79875105921'), '9875105921');
+  assert.equal(phoneDigits(''), '');
+  assert.equal(phonePretty('89875105921'), '+7 (987) 510-59-21');
+
+  const vehicle = db.prepare('SELECT id, plate FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO drivers(id,full_name,phone,status,vehicle_id)
+    VALUES('dr-call','Водитель Тест','+7 (987) 510-59-21','active',?)`).run(vehicle.id);
+  const admin = db.prepare('SELECT id FROM users LIMIT 1').get().id;
+  db.prepare(`UPDATE users SET phone='89001234567' WHERE id=?`).run(admin);
+  db.prepare(`INSERT INTO customer_contacts(id,customer_name,full_name,phone)
+    VALUES('cc-1','ТД Клиент','Логист клиента','+7 495 111-22-33')`).run();
+
+  // Кто звонит: водитель важнее всех — ради него карточка и строится.
+  assert.equal(identifyCaller(db, '79875105921').kind, 'driver');
+  assert.equal(identifyCaller(db, '89875105921').vehicleId, vehicle.id, 'водитель приводит к своей машине');
+  assert.equal(identifyCaller(db, '9001234567').kind, 'employee');
+  assert.equal(identifyCaller(db, '4951112233').kind, 'customer');
+  assert.equal(identifyCaller(db, '9999999999').kind, 'unknown');
+
+  // Темы — фиксированный список: по нему считается, какой процесс сбоит.
+  assert.ok(QUESTION_TOPICS.length >= 9, 'типовые вопросы водителей перечислены');
+  assert.ok(QUESTION_TOPICS.some(topic => topic.key === 'no_data_sent' && topic.owner === 'Продажи'));
+  assert.equal(QUESTION_SLA_MS, 10 * 60_000, 'норматив ответа — 10 минут');
+
+  // Просрочка норматива поднимается один раз: карточка и так горит в списке.
+  const old = new Date(Date.now() - 15 * 60_000).toISOString();
+  db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,topic,note,opened_by,opened_at)
+    VALUES('q-1',?,'Водитель Тест','no_poa','нет доверенности',?,?)`).run(vehicle.id, admin, old);
+  db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,topic,opened_by,opened_at)
+    VALUES('q-2',?,'Водитель Тест','next_task',?,CURRENT_TIMESTAMP)`).run(vehicle.id, admin);
+  const overdue = checkQuestionSla(db);
+  assert.equal(overdue.length, 1, 'просрочен только висящий дольше 10 минут');
+  assert.equal(overdue[0].id, 'q-1');
+  assert.equal(checkQuestionSla(db).length, 0, 'повторно тревогу не поднимаем');
+  assert.equal(listDriverQuestions(db, { openOnly: true }).length, 2, 'оба вопроса ещё открыты');
+
+  // Статистика: что спрашивают чаще и укладываемся ли в норматив.
+  db.prepare(`UPDATE driver_questions SET closed_at=?, resolution='выдали доверенность' WHERE id='q-1'`)
+    .run(new Date(Date.parse(old) + 20 * 60_000).toISOString());
+  const stats = questionStats(db, new Date(Date.now() - 86_400_000).toISOString(),
+    new Date(Date.now() + 86_400_000).toISOString());
+  const poa = stats.find(item => item.topic === 'no_poa');
+  assert.equal(poa.total, 1);
+  assert.equal(poa.closed, 1);
+  assert.equal(poa.slaPct, 0, 'решение за 20 минут в норматив не попало');
+  assert.equal(poa.owner, 'Диспетчер', 'у темы есть ответственный процесс');
+});

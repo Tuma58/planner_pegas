@@ -611,6 +611,9 @@ function migrateColumns(db) {
   ensure('users', 'job_role', "TEXT NOT NULL DEFAULT ''");
   ensure('users', 'deleted_at', 'TEXT');
   ensure('users', 'guest', 'INTEGER NOT NULL DEFAULT 0');
+  // Телефон сотрудника: по нему определяется входящий звонок и по нему же
+  // водителю дают контакт механика, диспетчера смены, начальника колонны.
+  ensure('users', 'phone', "TEXT NOT NULL DEFAULT ''");
   ensure('messages', 'recipient_id', 'TEXT');
   ensure('messages', 'chat_id', 'TEXT');
   ensure('chats', 'deleted_at', 'TEXT');
@@ -676,6 +679,54 @@ function migrateColumns(db) {
         WHERE stage=3 AND trip_id IN (SELECT id FROM trips WHERE status='plan');`);
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('vehicle_change_prep_v1','1')`).run();
   }
+  // ── Работа с входящими вопросами водителей (27.08.2026) ──
+  // Точки сервиса: мойка, шиномонтаж, стоянка, заправка, ремзона. Водитель
+  // на линии спрашивает «где помыться» — ответ должен быть в системе, а не
+  // в памяти диспетчера. Координаты нужны, чтобы предложить ближайшую.
+  db.exec(`CREATE TABLE IF NOT EXISTS service_points (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('wash','service','tire','parking','fuel','rest')),
+    name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '',
+    latitude REAL, longitude REAL, phone TEXT NOT NULL DEFAULT '',
+    work_hours TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+
+  // Вопрос водителя: фиксируется в момент звонка, норматив решения 10 минут.
+  // Тема — из фиксированного списка: только так видно, какие сбои процесса
+  // порождают звонки, и что чинить в подготовке рейса.
+  db.exec(`CREATE TABLE IF NOT EXISTS driver_questions (
+    id TEXT PRIMARY KEY,
+    vehicle_id TEXT REFERENCES vehicles(id), trip_id TEXT REFERENCES trips(id),
+    driver_name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '',
+    topic TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+    opened_by TEXT REFERENCES users(id), opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    escalated_at TEXT,
+    closed_by TEXT REFERENCES users(id), closed_at TEXT, resolution TEXT NOT NULL DEFAULT '',
+    call_id TEXT)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_driver_questions_open
+    ON driver_questions(closed_at,opened_at)`);
+
+  // События телефонии: сюда пишет вебхук АТС, отсюда интерфейс поднимает
+  // карточку звонящего. Таблица живёт и до подключения телефонии — звонки
+  // можно заводить вручную, а после интеграции пойдут те же записи.
+  db.exec(`CREATE TABLE IF NOT EXISTS call_events (
+    id TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'manual',
+    external_id TEXT, direction TEXT NOT NULL DEFAULT 'in',
+    from_phone TEXT NOT NULL DEFAULT '', to_phone TEXT NOT NULL DEFAULT '',
+    from_digits TEXT NOT NULL DEFAULT '',
+    matched_kind TEXT NOT NULL DEFAULT 'unknown', matched_id TEXT,
+    matched_name TEXT NOT NULL DEFAULT '', vehicle_id TEXT REFERENCES vehicles(id),
+    target_user_id TEXT REFERENCES users(id),
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    handled_by TEXT REFERENCES users(id), handled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_call_events_time ON call_events(started_at)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_call_events_external
+    ON call_events(provider,external_id) WHERE external_id IS NOT NULL`);
+
   // Мульти-роли: JSON-массив; колонка role остаётся основной ролью (roles[0]).
   ensure('users', 'roles', 'TEXT');
   db.exec(`UPDATE users SET roles=json_array(role) WHERE roles IS NULL`);

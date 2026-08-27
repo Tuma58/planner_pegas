@@ -126,6 +126,14 @@ export const defaultSettings = {
   networkAccess: {
     allowedSubnets: ['127.0.0.1/32', '::1/128']
   },
+  // Телефония: вебхук АТС поднимает карточку звонящего. Пока не подключена —
+  // звонки заводятся вручную, механика та же.
+  telephony: {
+    enabled: false,
+    provider: '',
+    token: '',
+    popup: true
+  },
   general: {
     companyName: 'PegasLogistic',
     appName: 'Диспетчерская',

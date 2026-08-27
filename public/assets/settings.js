@@ -370,6 +370,8 @@ function editUser(user = null) {
       <label class="field">ФИО<input name="fullName" value="${escapeHtml(user?.full_name || '')}" required></label>
       <label class="field">Логин<input name="username" value="${escapeHtml(user?.username || '')}" required></label>
       <label class="field">Email<input name="email" type="email" value="${escapeHtml(user?.email || '')}"></label>
+      <label class="field" title="По телефону определяется входящий звонок, и его же диспетчер называет водителю">
+        Телефон<input name="phone" value="${escapeHtml(user?.phone || '')}" placeholder="+7 987 510-59-21"></label>
     </div>
     <fieldset class="roles-set"><legend>Роли (можно несколько — права объединяются)</legend>${roleChecks}</fieldset>
     <label class="field">${user ? 'Новый пароль (оставьте пустым, чтобы не менять)' : 'Временный пароль'}
@@ -390,10 +392,19 @@ function editUser(user = null) {
     values.active = form.elements.active.checked;
     values.guest = form.elements.guest.checked;
     if (!values.password) delete values.password;
+    const phone = String(values.phone || '').trim();
+    delete values.phone;
     try {
-      await api(user ? `/api/admin/users/${user.id}` : '/api/admin/users', {
+      const saved = await api(user ? `/api/admin/users/${user.id}` : '/api/admin/users', {
         method: user ? 'PATCH' : 'POST', body: JSON.stringify(values)
       });
+      // Телефон правится отдельным эндпоинтом — он же нормализует формат.
+      const userId = user?.id || saved?.id;
+      if (userId && phone !== String(user?.phone || '')) {
+        await api(`/api/admin/users/${userId}/phone`, {
+          method: 'PATCH', body: JSON.stringify({ phone })
+        }).catch(error => toast(`Телефон не сохранён: ${error.message}`, 'error'));
+      }
       state.users = null;
       closeModal();
       toast(user ? 'Пользователь обновлен' : 'Пользователь создан');
@@ -569,6 +580,100 @@ async function loadAdmin() {
   state.admin = await api('/api/admin/settings');
 }
 
+// Телефония и справочник сервисов: карточка звонка бесполезна без телефонов
+// сотрудников и точек, куда отправлять водителя, поэтому оба живут рядом.
+const SERVICE_KINDS = [
+  { kind: 'wash', label: '🚿 Мойка' }, { kind: 'service', label: '🔧 Сервис / ремзона' },
+  { kind: 'tire', label: '🛞 Шиномонтаж' }, { kind: 'parking', label: '🅿 Стоянка' },
+  { kind: 'fuel', label: '⛽ Заправка' }, { kind: 'rest', label: '🛏 Отдых' }
+];
+
+async function renderTelephony() {
+  const [config, points] = await Promise.all([
+    api('/api/telephony/config'), api('/api/service-points')
+  ]);
+  byId('settingsContent').innerHTML = `
+    <h2>Телефония</h2>
+    <p class="muted">Когда АТС подключена, входящий звонок сам поднимает карточку водителя
+      у сотрудника. До подключения та же карточка открывается кнопкой «📞 Звонок» в шапке —
+      процесс работы не меняется.</p>
+    <form id="telephonyForm" class="fields">
+      <label class="check"><input type="checkbox" name="enabled" ${config.enabled ? 'checked' : ''}>
+        Телефония подключена (принимать события от АТС)</label>
+      <label class="check"><input type="checkbox" name="popup" ${config.popup ? 'checked' : ''}>
+        Поднимать карточку автоматически при входящем звонке</label>
+      <label class="field">Провайдер (для себя)<input name="provider" value="${escapeHtml(config.provider || '')}"
+        placeholder="например: Mango, Билайн Облачная АТС, Asterisk"></label>
+      <label class="field">Токен вебхука<input name="token" value="${escapeHtml(config.token || '')}"
+        placeholder="придумайте длинную строку и укажите её в АТС"></label>
+      <button class="button">Сохранить</button>
+    </form>
+    <div class="hint" style="margin-top:10px">
+      <b>Что передать в АТС.</b> Адрес: <code>POST https://ваш-адрес/api/telephony/webhook</code>,
+      заголовок <code>X-Telephony-Token: ваш токен</code>, тело JSON:
+      <code>{"from":"+79875105921","to":"+7495...","callId":"уникальный-id","at":"2026-08-27T10:00:00Z"}</code>.
+      Система сама определит, кто звонит — водитель, сотрудник или контакт клиента, —
+      и поднимет карточку. Повторная доставка того же callId не создаёт дубль.
+    </div>
+    <h2 style="margin-top:18px">Точки сервиса</h2>
+    <p class="muted">Мойки, шиномонтаж, стоянки, заправки — то, что водитель спрашивает на линии.
+      В карточке звонка они показываются от ближайшей к машине.</p>
+    <form id="servicePointForm" class="fields">
+      <label class="field">Вид<select name="kind">${SERVICE_KINDS.map(item =>
+    `<option value="${item.kind}">${item.label}</option>`).join('')}</select></label>
+      <label class="field">Название<input name="name" required placeholder="например: Мойка на М5, 620 км"></label>
+      <label class="field">Адрес<input name="address" placeholder="город, улица, ориентир"></label>
+      <label class="field">Субъект<input name="region" placeholder="Пензенская обл"></label>
+      <label class="field">Телефон<input name="phone" placeholder="+7 ..."></label>
+      <label class="field">Часы работы<input name="workHours" placeholder="круглосуточно"></label>
+      <label class="field">Широта<input name="latitude" type="number" step="any" placeholder="53.2"></label>
+      <label class="field">Долгота<input name="longitude" type="number" step="any" placeholder="45.0"></label>
+      <label class="field">Комментарий<input name="note" placeholder="для наших — скидка, пропуск по номеру"></label>
+      <button class="button">Добавить точку</button>
+    </form>
+    <table class="grid" style="margin-top:12px"><thead><tr>
+      <th>Вид</th><th>Название</th><th>Адрес</th><th>Телефон</th><th>Часы</th><th></th></tr></thead>
+      <tbody>${points.items.length ? points.items.map(point => `<tr>
+        <td>${escapeHtml(SERVICE_KINDS.find(item => item.kind === point.kind)?.label || point.kind)}</td>
+        <td><b>${escapeHtml(point.name)}</b>${point.note ? `<small class="muted" style="display:block">${escapeHtml(point.note)}</small>` : ''}</td>
+        <td>${escapeHtml(point.address || point.region || '—')}</td>
+        <td>${escapeHtml(point.phone || '—')}</td>
+        <td>${escapeHtml(point.work_hours || '—')}</td>
+        <td><button class="button ghost small danger" data-point-del="${point.id}">✕</button></td>
+      </tr>`).join('') : '<tr><td colspan="6" class="muted">Точек пока нет — водителю нечего подсказать.</td></tr>'}
+      </tbody></table>`;
+  byId('telephonyForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
+        telephony: {
+          enabled: form.elements.enabled.checked, popup: form.elements.popup.checked,
+          provider: form.elements.provider.value.trim(), token: form.elements.token.value.trim()
+        }
+      }) });
+      toast('Настройки телефонии сохранены');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('servicePointForm').onsubmit = async event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    try {
+      await api('/api/service-points', { method: 'POST', body: JSON.stringify(values) });
+      toast('Точка добавлена');
+      await renderTelephony();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('settingsContent').querySelectorAll('[data-point-del]').forEach(button =>
+    button.addEventListener('click', async () => {
+      try {
+        await api(`/api/service-points/${button.dataset.pointDel}`, { method: 'DELETE' });
+        toast('Точка удалена');
+        await renderTelephony();
+      } catch (error) { toast(error.message, 'error'); }
+    }));
+}
+
 async function render() {
   try {
     if (state.section === 'general') renderGeneral();
@@ -577,6 +682,7 @@ async function render() {
     else if (state.section === 'customers') renderCustomers();
     else if (state.section === 'users') await renderUsers();
     else if (state.section === 'network') renderNetwork();
+    else if (state.section === 'telephony') await renderTelephony();
     else if (state.section === 'integration') renderIntegration();
     else if (state.section === 'outbox') renderOutbox();
   } catch (error) {

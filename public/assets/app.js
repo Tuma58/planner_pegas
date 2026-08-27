@@ -12,6 +12,7 @@ import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
 import { DISP_KINDS, renderResource } from './resource.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
+import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
 import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
 
@@ -1733,6 +1734,13 @@ async function reload(prefetched = null) {
   renderViewTabs();
   renderMain();
   refreshExceptions();
+  // Темы вопросов и подписка на входящие звонки — после первой загрузки:
+  // список тем приходит с сервера, чтобы форма и статистика не расходились.
+  if (!state.callWatchStarted) {
+    state.callWatchStarted = true;
+    api('/api/driver-questions?open=1').then(payload => setTopics(payload.topics)).catch(() => {});
+    watchIncomingCalls(callContext());
+  }
 }
 
 // ── Автообновление для всех вкладок ──
@@ -1778,6 +1786,10 @@ document.addEventListener('visibilitychange', () => {
 window.plRefresh = () => autoRefreshTick(true);
 
 byId('logout').onclick = logout;
+// Звонок водителя доступен любому сотруднику: вопрос может прилететь кому
+// угодно, а ответ должен быть под рукой без перехода по блокам.
+const callContext = () => ({ state, can, showModal, closeModal, onReload: reload });
+byId('callButton').onclick = () => callSearchDialog(callContext(), state.data);
 setupTheme();
 byId('customersButton').onclick = showCustomers;
 byId('addressesButton').onclick = () => openAddressBook();

@@ -11,6 +11,7 @@ import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 import { openTransfers, transferStage, transferTaskText, transferDialog } from './transfer.js';
+import { callCardDialog, closeQuestionDialog, questionDialog, topicLabel } from './call-card.js';
 
 const LATE_MS = 30 * 60_000;
 // «ТС не выгружают»: плановое прибытие прошло более 6 часов назад,
@@ -298,6 +299,18 @@ export async function renderDispatcher(container, context, options = {}) {
       }
     } catch { workedMap = new Map(); }
     state.dispatcherNetCache = { delayByTrip, controlByTrip, workedMap };
+  }
+  // Вопросы водителей: живут отдельно от рейсов — водитель звонит и когда
+  // рейса ещё нет. Норматив ответа 10 минут, поэтому список всегда на виду.
+  let questions = [];
+  if (options.reuseNetwork && state.dispatcherQuestions) {
+    questions = state.dispatcherQuestions;
+  } else {
+    try {
+      const payload = await api('/api/driver-questions?open=1');
+      questions = payload.items.filter(item => !item.closed_at);
+    } catch { questions = []; }
+    state.dispatcherQuestions = questions;
   }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
@@ -951,6 +964,36 @@ export async function renderDispatcher(container, context, options = {}) {
   };
   const transferCards = transfers.map(transferCard).join('');
 
+  const QUESTION_SLA_MS = 10 * 60_000;
+  const questionCard = question => {
+    const openedMs = Date.parse(String(question.opened_at).replace(' ', 'T') +
+      (String(question.opened_at).includes('Z') ? '' : 'Z'));
+    const waitMs = Date.now() - openedMs;
+    const late = waitMs > QUESTION_SLA_MS;
+    const minutes = Math.max(0, Math.floor(waitMs / 60_000));
+    return `<div class="card question-card ${late ? 'late' : ''}" style="padding:8px 10px;margin-bottom:6px">
+      <div class="list-item ordrow" style="border:0;padding:0 0 4px">
+        <span style="flex:1;min-width:0">
+          <strong>${escapeHtml(topicLabel(question.topic))}</strong>
+          ${question.vehicle_plate ? `<small class="muted"> · <span class="mono">${escapeHtml(question.vehicle_plate)}</span></small>` : ''}
+          <small class="muted" style="display:block">${escapeHtml(question.driver_name || question.vehicle_driver || '')}
+            ${question.phone ? ` · ${escapeHtml(question.phone)}` : ''}
+            ${question.note ? ` · «${escapeHtml(question.note)}»` : ''}</small>
+          <small class="muted" style="display:block">принял ${escapeHtml(question.opened_by_name || '')}
+            · ${formatDateTime(new Date(openedMs).toISOString())}</small>
+        </span>
+        <span class="badge ${late ? 'bad' : 'warn'}"
+          title="Норматив ответа — 10 минут">⏱ ${minutes} мин${late ? ' · просрочен' : ''}</span>
+      </div>
+      ${canAct ? `<div style="display:flex;gap:5px;flex-wrap:wrap">
+        <button class="button small" data-question-close="${question.id}">✓ Отработано</button>
+        ${question.vehicle_id ? `<button class="button ghost small" data-question-card="${question.vehicle_id}"
+          title="Открыть карточку по звонку">📞 Карточка</button>` : ''}
+      </div>` : ''}
+    </div>`;
+  };
+  const questionCards = questions.map(questionCard).join('');
+
   const savedScrolls = captureScrolls(container);
   container.innerHTML = `<div class="saleswrap">
     ${!canAct ? `<div class="view-only">👁 Режим просмотра: отметки контроля доступны роли «Диспетчер».
@@ -966,6 +1009,11 @@ export async function renderDispatcher(container, context, options = {}) {
           value="${escapeHtml(state.dispatcherQuery || '')}" style="flex:1">
       </div>
     </div>
+    ${questionCards ? `<div class="questions-strip">
+      <div class="scolh">📞 Вопросы водителей <span>${questions.length}</span>
+        <small class="muted" style="font-weight:400"> · норматив ответа 10 минут</small></div>
+      <div class="list">${questionCards}</div>
+    </div>` : ''}
     <div class="salesboard">
       <div class="scol">
         <div class="scolh">Подготовка выхода <span>${preparing.length}</span></div>
@@ -1217,6 +1265,13 @@ export async function renderDispatcher(container, context, options = {}) {
       }
       runStep(button.dataset.trip, button.dataset.step, context.onReload);
     }));
+  container.querySelectorAll('[data-question-close]').forEach(button =>
+    button.addEventListener('click', () => {
+      const question = questions.find(item => item.id === button.dataset.questionClose);
+      if (question) closeQuestionDialog(context, question);
+    }));
+  container.querySelectorAll('[data-question-card]').forEach(button =>
+    button.addEventListener('click', () => callCardDialog(context, { vehicleId: button.dataset.questionCard })));
   container.querySelectorAll('[data-transfer-step]').forEach(button =>
     button.addEventListener('click', () => factDialog(
       `Перегон · ${button.dataset.transferLabel}`,

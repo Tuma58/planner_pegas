@@ -1231,3 +1231,20 @@ tbody tr:hover td { background: var(--hover); }
   box-shadow: 0 6px 24px rgba(0, 0, 0, .28); }
 .update-banner .button { min-height: 26px; padding: 2px 10px; }
 .update-banner .button.ghost { color: #fff; border-color: rgba(255, 255, 255, .5); }
+
+/* ── Карточка по звонку и вопросы водителей ── */
+.call-btn { font-weight: 700; }
+.call-tiles { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  margin: 8px 0 4px; }
+.callt { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: var(--soft); }
+.callt.empty { opacity: .75; }
+.callt-h { font-size: var(--fs-xs); font-weight: 800; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .02em; margin-bottom: 4px; }
+.callt-b { font-size: var(--fs-sm); line-height: 1.45; word-break: break-word; }
+.callt-b a { color: var(--navy); font-weight: 700; }
+.call-open-q { margin: 6px 0; padding: 7px 10px; border-radius: 8px; font-size: var(--fs-sm);
+  background: color-mix(in srgb, var(--warn) 14%, transparent); border: 1px solid var(--warn); }
+.questions-strip { margin-bottom: 10px; }
+.question-card { border-left: 4px solid var(--warn); }
+.question-card.late { border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 6%, transparent); }
