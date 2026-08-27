@@ -24,39 +24,54 @@ export const DEFAULT_FEED_HOURS = 3;
 
 const HOUR = 3_600_000;
 
-// Свободна ли сцепка к моменту: нет рейса, накрывающего этот момент, и нет
-// интервала недоступности. Резерв не считаем занятостью — он про обещание.
-function freeAt(data, vehicleId, atMs) {
-  const busyTrip = (data.trips || []).some(trip => trip.vehicle_id === vehicleId &&
-    trip.status !== 'rejected' &&
-    Date.parse(trip.starts_at) <= atMs && Date.parse(trip.ends_at) > atMs);
-  if (busyTrip) return false;
-  return !(data.dispositions || []).some(item => item.vehicle_id === vehicleId &&
-    item.kind !== 'reserve' &&
-    Date.parse(item.starts_at) <= atMs && Date.parse(item.ends_at) > atMs);
-}
-
-// Где сцепка окажется к моменту: точка выгрузки последнего рейса до него.
-function placeAt(data, vehicleId, atMs) {
-  const last = (data.trips || [])
-    .filter(trip => trip.vehicle_id === vehicleId && trip.status !== 'rejected' &&
-      Date.parse(trip.ends_at) <= atMs)
-    .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0];
-  if (last) return resolveAddress(data, last.to_point || last.to_name);
-  const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
-  return vehicle ? resolveAddress(data, vehicle.zone_name) : null;
+// Позиции свободных машин на момент — считаются ОДИН раз на всю очередь.
+// Наивный вариант (перебор всех рейсов для каждой машины на каждую заявку)
+// давал 4,5 секунды на сортировке 182 заявок: 128 машин × 3000 рейсов на
+// каждое сравнение. Здесь тот же перебор делается однажды.
+export function freeVehiclePoints(data, nowMs = Date.now()) {
+  const tripsByVehicle = new Map();
+  for (const trip of data.trips || []) {
+    if (trip.status === 'rejected') continue;
+    if (!tripsByVehicle.has(trip.vehicle_id)) tripsByVehicle.set(trip.vehicle_id, []);
+    tripsByVehicle.get(trip.vehicle_id).push(trip);
+  }
+  const dispoByVehicle = new Map();
+  for (const item of data.dispositions || []) {
+    if (item.kind === 'reserve') continue;
+    if (!dispoByVehicle.has(item.vehicle_id)) dispoByVehicle.set(item.vehicle_id, []);
+    dispoByVehicle.get(item.vehicle_id).push(item);
+  }
+  const points = [];
+  for (const vehicle of data.vehicles || []) {
+    if (vehicle.status !== 'work') continue;
+    const trips = tripsByVehicle.get(vehicle.id) || [];
+    const busy = trips.some(trip => Date.parse(trip.starts_at) <= nowMs &&
+      Date.parse(trip.ends_at) > nowMs);
+    if (busy) continue;
+    const covered = (dispoByVehicle.get(vehicle.id) || []).some(item =>
+      Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
+    if (covered) continue;
+    let last = null;
+    for (const trip of trips) {
+      if (Date.parse(trip.ends_at) > nowMs) continue;
+      if (!last || String(trip.ends_at) > String(last.ends_at)) last = trip;
+    }
+    const place = last
+      ? resolveAddress(data, last.to_point || last.to_name)
+      : resolveAddress(data, vehicle.zone_name);
+    if (place) points.push(place);
+  }
+  return points;
 }
 
 // Часы подгона до пункта погрузки от ближайшей свободной машины.
-export function feedHoursFor(data, order, nowMs = Date.now()) {
+export function feedHoursFor(data, order, nowMs = Date.now(), points = null) {
   const target = resolveAddress(data, order.from_point || order.from_name);
   if (!target) return DEFAULT_FEED_HOURS;
+  const list = points || freeVehiclePoints(data, nowMs);
   let best = null;
-  for (const vehicle of data.vehicles || []) {
-    if (vehicle.status !== 'work') continue;
-    if (!freeAt(data, vehicle.id, nowMs)) continue;
-    const from = placeAt(data, vehicle.id, nowMs);
-    const km = from ? plannedKmBetween(from, target) : null;
+  for (const from of list) {
+    const km = plannedKmBetween(from, target);
     if (km == null) continue;
     if (best == null || km < best) best = km;
   }
@@ -65,11 +80,12 @@ export function feedHoursFor(data, order, nowMs = Date.now()) {
   return Math.max(0.5, (best / 50) * 1.5);
 }
 
-// Дедлайн назначения и остаток времени до него.
-export function assignDeadline(data, order, nowMs = Date.now()) {
+// Дедлайн назначения и остаток времени до него. Для списка заявок
+// используйте assignDeadlines: она считает позиции машин один раз.
+export function assignDeadline(data, order, nowMs = Date.now(), points = null) {
   const windowFrom = Date.parse(order.window_from);
   if (!Number.isFinite(windowFrom)) return null;
-  const feedHours = feedHoursFor(data, order, nowMs);
+  const feedHours = feedHoursFor(data, order, nowMs, points);
   const deadlineMs = windowFrom - (feedHours + PREP_HOURS) * HOUR;
   const leftMs = deadlineMs - nowMs;
   return {
@@ -96,4 +112,13 @@ export function deadlineBadge(deadline) {
   return `<span class="badge ${deadline.hot ? 'warn' : 'ok'}"
     title="Дедлайн = окно погрузки − подгон ближайшей свободной машины (${deadline.feedHours} ч) − подготовка выхода (${PREP_HOURS} ч)">
     ⏳ назначить до ${at} · осталось ${left}</span>`;
+}
+
+// Дедлайны для всей очереди разом: позиции свободных машин считаются один
+// раз, каждая заявка — один проход по ним. Возвращает Map по id заявки.
+export function assignDeadlines(data, orders, nowMs = Date.now()) {
+  const points = freeVehiclePoints(data, nowMs);
+  const result = new Map();
+  for (const order of orders) result.set(order.id, assignDeadline(data, order, nowMs, points));
+  return result;
 }

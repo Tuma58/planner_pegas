@@ -658,19 +658,26 @@ setTimeout(runAssignWatch, 55_000);
 // 19–22 часа — до утра. Логист уходит, заявка ложится «в стол», а окно
 // погрузки часто уже завтра. В 17:30 МСК собираем такие заявки в одно
 // сообщение: либо назначить сейчас, либо осознанно передать ночной смене.
-let eveningHandoffDay = '';
 function runEveningHandoff() {
   try {
     const nowMs = Date.now();
     const msk = new Date(nowMs + 3 * 3_600_000);
     const day = msk.toISOString().slice(0, 10);
-    if (msk.getUTCHours() !== 17 || msk.getUTCMinutes() < 30) return;
-    if (eveningHandoffDay === day) return;
+    const hour = msk.getUTCHours();
+    const minutes = msk.getUTCMinutes();
+    // Окно 17:30–21:59 МСК, а не одна минута: перезапуск сервера в 18:05
+    // иначе съедал сводку за целый день.
+    if (hour < 17 || hour >= 22 || (hour === 17 && minutes < 30)) return;
+    // Отметка дня — в базе, а не в памяти процесса: после перезапуска
+    // сводка не уйдёт второй раз.
+    const sent = db.prepare(`SELECT value FROM app_meta WHERE key='evening_handoff_day'`).get()?.value;
+    if (sent === day) return;
     const rows = db.prepare(`SELECT o.*, f.name from_name, t.name to_name FROM orders o
       LEFT JOIN zones f ON f.id=o.from_zone_id LEFT JOIN zones t ON t.id=o.to_zone_id
       WHERE o.status='new' AND o.stage=1 AND o.trip_id IS NULL AND o.deleted_at IS NULL
         AND o.window_from <= ?`).all(new Date(nowMs + 36 * 3_600_000).toISOString());
-    eveningHandoffDay = day;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('evening_handoff_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
     if (!rows.length) return;
     const sum = rows.reduce((acc, order) => acc + Number(order.rate_vat || 0), 0);
     const list = rows.slice(0, 8).map(order => `${order.order_no ? `№${order.order_no} ` : ''}` +
