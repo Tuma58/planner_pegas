@@ -565,9 +565,12 @@ const nextDayIso = dayIso => new Date(Date.parse(`${dayIso}T00:00:00Z`) + 86_400
 
 // Состояние сцепки на день: диспозиция > статус ТС > рейс > без заказа.
 export function vehicleStateAt(vehicle, data, dayIso) {
-  const midpoint = Date.parse(`${dayIso}T12:00:00Z`);
-  // Интервал объясняет день, если пересекает его: короткий дневной ремонт —
-  // тоже причина, а не «простой». Из нескольких — больший по перекрытию.
+  // РЕЙС ГЛАВНЕЕ ДИСПОЗИЦИИ (27.08.2026). Раньше приоритет был у интервала,
+  // и машина, которая весь день едет, показывалась «в ремонте» только из-за
+  // ремонта, назначенного на вечер. Отсюда же расходились цифры: ресурс
+  // считал «в работе 88», дашборд — «можно задействовать 102».
+  // Занятость рейсом считаем по пересечению суток — той же меркой, что и
+  // дашборд, иначе счётчики снова разъедутся.
   const dayStart = Date.parse(`${dayIso}T00:00:00Z`);
   const dayCeil = dayStart + 86_400_000;
   const overlapMs = item => Math.min(Date.parse(item.ends_at), dayCeil) -
@@ -576,13 +579,17 @@ export function vehicleStateAt(vehicle, data, dayIso) {
     .filter(item => item.vehicle_id === vehicle.id &&
       Date.parse(item.starts_at) < dayCeil && Date.parse(item.ends_at) > dayStart)
     .sort((a, b) => overlapMs(b) - overlapMs(a))[0];
+  const onTrip = data.trips.some(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
+    tripBusyFromMs(trip) < dayCeil && tripBusyUntilMs(trip) > dayStart);
+  // Машина в рейсе — «в работе», а назначенный на тот же день интервал
+  // остаётся пометкой: он важен (вечером она встанет), но не отменяет того,
+  // что сейчас она везёт груз.
+  if (onTrip) return { ...kindMeta('work'), pendingKind: disposition?.kind || null };
   if (disposition) return kindMeta(disposition.kind);
   if (vehicle.status === 'out') return kindMeta('out');
   if (vehicle.status === 'repair') return kindMeta('repair');
   if (vehicle.status === 'no_driver' || !vehicle.driver_name) return kindMeta('no_driver');
-  const onTrip = data.trips.some(trip => trip.vehicle_id === vehicle.id && trip.status !== 'rejected' &&
-    tripBusyFromMs(trip) <= midpoint && midpoint < tripBusyUntilMs(trip));
-  return onTrip ? kindMeta('work') : kindMeta('idle');
+  return kindMeta('idle');
 }
 
 // Задания ресурсника: машины, по которым на выбранную дату нет ни заказа,
@@ -663,6 +670,22 @@ function renderResourceTasks(container, context, refDay, withState) {
   const transferAlerts = (data.dispositions || []).filter(item => item.kind === 'transfer' &&
     !item.arrived_at && (!item.driver_notified_at || Date.parse(item.ends_at) < nowMs - 2 * 3_600_000));
   // Водители на межвахте, за которыми закреплена машина без подмены.
+  // Конфликт данных: машина в рейсе, и на тот же день висит интервал
+  // недоступности. Раньше такие случаи прятались — состояние показывалось
+  // по интервалу, и «в работе» было занижено на 10 машин.
+  const dayStartMs = Date.parse(`${refDay}T00:00:00Z`);
+  const dayCeilMs = dayStartMs + 86_400_000;
+  const conflicts = [];
+  for (const vehicle of (data.vehicles || []).filter(item => item.status === 'work')) {
+    const trip = (data.trips || []).find(item => item.vehicle_id === vehicle.id &&
+      item.status !== 'rejected' && tripBusyFromMs(item) < dayCeilMs && tripBusyUntilMs(item) > dayStartMs);
+    if (!trip) continue;
+    const item = (data.dispositions || []).find(entry => entry.vehicle_id === vehicle.id &&
+      entry.kind !== 'transfer' && Date.parse(entry.starts_at) < dayCeilMs &&
+      Date.parse(entry.ends_at) > dayStartMs);
+    if (item) conflicts.push({ vehicle, item, trip });
+  }
+
   const restingDrivers = (data.drivers || []).filter(driver => {
     if (!driver.vehicle_id || !driver.shift_on || !driver.shift_off) return false;
     const rest = shiftStateAt(driver, refDay)?.rest;
@@ -677,6 +700,23 @@ function renderResourceTasks(container, context, refDay, withState) {
       <div class="metric"><span>Требуют внимания</span><strong>${tasks.length}</strong></div>
       <div class="metric"><span>Всего в парке</span><strong>${withState.length}</strong></div>
     </div>
+    ${conflicts.length ? `<div class="task-sec"><b>⚠ Рейс и интервал в один день (${conflicts.length})</b>
+      <p class="muted" style="margin:4px 0">Машина едет, но на этот же день оформлен ремонт,
+        пересменка или «без водителя». Либо интервал пора закрыть, либо рейс нужно переносить.</p>
+      <div class="list" style="margin-top:6px">${conflicts.slice(0, 8).map(row => `
+        <div class="list-item" style="flex-wrap:wrap">
+          <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(row.vehicle.plate)}</strong>
+            <small class="muted" style="display:block">${escapeHtml(kindMeta(row.item.kind).label)}
+              ${formatDateTime(row.item.starts_at)} — ${formatDateTime(row.item.ends_at)}
+              ${row.item.note ? ` · ${escapeHtml(row.item.note)}` : ''}</small>
+            <small class="muted" style="display:block">рейс: ${escapeHtml(row.trip.from_name || '')}
+              → ${escapeHtml(row.trip.to_name || '')} · до ${formatDateTime(row.trip.ends_at)}</small></span>
+          <span style="display:flex;gap:5px">
+            <button class="button ghost small" data-vinfo="${row.vehicle.id}" title="Карточка сцепки">🚛</button>
+            <button class="button ghost small danger" data-conflict-drop="${row.item.id}"
+              title="Убрать интервал — рейс останется">✕ интервал</button>
+          </span>
+        </div>`).join('')}</div></div>` : ''}
     ${transferAlerts.length ? `<div class="task-sec"><b>🚚 Перегоны без движения (${transferAlerts.length})</b>
       <div class="list" style="margin-top:6px">${transferAlerts.slice(0, 6).map(item => `
         <div class="list-item" style="flex-wrap:wrap">
@@ -739,6 +779,15 @@ function renderResourceTasks(container, context, refDay, withState) {
       vehicleId: button.dataset.taskAssignDriver,
       from: button.dataset.gapFrom, to: button.dataset.gapTo
     })));
+  container.querySelectorAll('[data-conflict-drop]').forEach(button =>
+    button.addEventListener('click', async () => {
+      if (!confirm('Убрать интервал недоступности? Рейс останется на месте.')) return;
+      try {
+        await api(`/api/dispositions/${button.dataset.conflictDrop}`, { method: 'DELETE' });
+        toast('Интервал убран');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    }));
   container.querySelectorAll('[data-task-transfer]').forEach(button =>
     button.addEventListener('click', () => {
       const vehicle = (context.state.data.vehicles || [])

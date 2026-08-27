@@ -2324,3 +2324,36 @@ test('телефония: определение звонящего, темы в
   assert.equal(poa.slaPct, 0, 'решение за 20 минут в норматив не попало');
   assert.equal(poa.owner, 'Диспетчер', 'у темы есть ответственный процесс');
 });
+
+test('состояние сцепки: рейс главнее интервала недоступности', async () => {
+  const { vehicleStateAt } = await import('../public/assets/resource.js');
+  const day = '2026-08-27';
+  const iso = hours => new Date(Date.parse(`${day}T00:00:00Z`) + hours * 3_600_000).toISOString();
+  const vehicle = { id: 'v1', status: 'work', driver_name: 'Иванов И' };
+  const trip = { id: 't1', vehicle_id: 'v1', status: 'run',
+    starts_at: iso(-10), ends_at: iso(20), on_line_at: null, unloaded_at: null };
+
+  // Ремонт назначен на вечер, машина весь день едет — состояние «в работе»,
+  // иначе ресурс показывал бы «ремонт» с утра, а дашборд — «доступна».
+  const both = { trips: [trip], dispositions: [
+    { id: 'd1', vehicle_id: 'v1', kind: 'repair', starts_at: iso(21), ends_at: iso(45) }] };
+  const stateBoth = vehicleStateAt(vehicle, both, day);
+  assert.equal(stateBoth.kind, 'work', 'машина в рейсе считается работающей');
+  assert.equal(stateBoth.pendingKind, 'repair', 'назначенный интервал остаётся пометкой');
+
+  // Без рейса интервал объясняет день как раньше.
+  const onlyRepair = { trips: [], dispositions: both.dispositions };
+  assert.equal(vehicleStateAt(vehicle, onlyRepair, day).kind, 'repair');
+
+  // Ни рейса, ни интервала — простой без причины (это задача ресурснику).
+  assert.equal(vehicleStateAt(vehicle, { trips: [], dispositions: [] }, day).kind, 'idle');
+
+  // Машина без водителя и без рейса — «без водителя».
+  assert.equal(vehicleStateAt({ id: 'v1', status: 'work', driver_name: '' },
+    { trips: [], dispositions: [] }, day).kind, 'no_driver');
+
+  // Рейс, закончившийся вчера, сегодняшний день не занимает.
+  const yesterday = { trips: [{ id: 't2', vehicle_id: 'v1', status: 'unloaded',
+    starts_at: iso(-30), ends_at: iso(-6), unloaded_at: iso(-6) }], dispositions: [] };
+  assert.equal(vehicleStateAt(vehicle, yesterday, day).kind, 'idle', 'вчерашний рейс не держит день');
+});
