@@ -1751,18 +1751,29 @@ test('отчёт за смену: имена операций, время обр
   const admin = db.prepare('SELECT id FROM users LIMIT 1').get().id;
   db.prepare(`UPDATE users SET full_name='Киселёва Л', job_role='Логист' WHERE id=?`).run(admin);
   const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
-  // Смена — сегодняшняя дневная (аудит пишет CURRENT_TIMESTAMP).
-  const shift = currentShift();
+  // Отчёт строим по ЗАВЕРШИВШЕЙСЯ смене (вчерашней дневной) и все метки
+  // времени задаём явно внутри неё. Привязка к «сейчас» делала тест
+  // нестабильным: на стыке смен (08:00 и 20:00 МСК) операция «30 минут
+  // назад» попадала в предыдущую смену, а норма к часу зависела от того,
+  // сколько смены прошло к моменту запуска.
+  const shift = currentShift(Date.now() - 86_400_000);
+  const shiftFromMs = Date.parse(shiftBounds(shift.day, shift.kind).fromIso);
+  const at = minutes => new Date(shiftFromMs + minutes * 60_000).toISOString();
+  const sqlAt = minutes => at(minutes).replace('T', ' ').slice(0, 19);
+  const earlyIso = at(60);      // заявка внесена через час после начала смены
+  const lateIso = at(90);       // подтверждена ещё через 30 минут
   // Окно погрузки — относительное (+30 ч), фиксированные даты протухают.
   db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
     window_from,window_to,stage,created_at,confirmed_at)
-    VALUES('sh-o1','Клиент',?,?,90000,?,?,1,
-      datetime('now','-30 minutes'),CURRENT_TIMESTAMP)`).run(zone, zone,
-    new Date(Date.now() + 30 * 3_600_000).toISOString(),
-    new Date(Date.now() + 54 * 3_600_000).toISOString());
+    VALUES('sh-o1','Клиент',?,?,90000,?,?,1,?,?)`).run(zone, zone,
+    // Окно погрузки — через 30 ч после подтверждения (SLA назначения «вовремя»).
+    new Date(Date.parse(lateIso) + 30 * 3_600_000).toISOString(),
+    new Date(Date.parse(lateIso) + 54 * 3_600_000).toISOString(),
+    sqlAt(60), sqlAt(90));
   db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
-    VALUES('sh-a1',?, 'create','order','sh-o1','{}',datetime('now','-30 minutes')),
-      ('sh-a2',?, 'update','order','sh-o1','{"stage":1}',CURRENT_TIMESTAMP)`).run(admin, admin);
+    VALUES('sh-a1',?, 'create','order','sh-o1','{}',?),
+      ('sh-a2',?, 'update','order','sh-o1','{"stage":1}',?)`)
+    .run(admin, sqlAt(60), admin, sqlAt(90));
   // График смен: Киселёва назначена и работала; Новиков назначен и не вышел.
   db.prepare(`INSERT INTO users(id,username,password_hash,full_name,role,active)
     VALUES('sh-u2','novikov','x','Новиков П','dispatcher',1)`).run();
@@ -1780,11 +1791,10 @@ test('отчёт за смену: имена операций, время обр
   // Эффективность: проценты и разложение присутствуют, база — сама смена
   // (истории нет), поэтому единственный работник должности ≈ 100%.
   assert.ok(Number.isFinite(person.efficiency), 'эффективность посчитана');
-  // Точное значение зависит от того, какая часть смены прошла к моменту
-  // запуска (норма к часу пропорциональна elapsed) — проверяем разумность
-  // диапазона, а не конкретный процент: тест не должен падать от времени суток.
-  assert.ok(person.efficiency > 0 && person.efficiency <= 250,
-    `эффективность в разумных пределах, получили ${person.efficiency}%`);
+  // Смена завершилась, поэтому норма считается за полную смену: единственный
+  // работник должности задаёт среднюю и близок к 100%.
+  assert.ok(person.efficiency >= 70 && person.efficiency <= 130,
+    `единственный в должности близок к средней, получили ${person.efficiency}%`);
   assert.ok(person.loadIdx > 0 && person.speedIdx > 0);
   assert.ok(Array.isArray(report.signals), 'сигналы эффективности отдаются');
   // Сравнение должностей: объём/время и отклонение от нормы.
@@ -1795,7 +1805,7 @@ test('отчёт за смену: имена операций, время обр
   assert.ok(roleRow.opsPerPerson === 2 && roleRow.loadIdx > 0);
   // SLA назначения: назначение за 30 часов до погрузки — вовремя.
   db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
-    VALUES('sh-a3',?, 'assign','order','sh-o1','{}',CURRENT_TIMESTAMP)`).run(admin);
+    VALUES('sh-a3',?, 'assign','order','sh-o1','{}',?)`).run(admin, sqlAt(95));
   const withAssign = shiftReport(db, shift.day, shift.kind);
   assert.equal(withAssign.assignSla.total, 1);
   assert.equal(withAssign.assignSla.onTime, 1, 'погрузка завтра — назначено вовремя');
@@ -1899,7 +1909,7 @@ test('радар продаж: рынок направлений и свобод
 });
 
 test('моя смена: личные операции против нормы должности', async t => {
-  const { myShiftStats, currentShift } = await import('../src/planner-service.mjs');
+  const { myShiftStats, currentShift, shiftBounds } = await import('../src/planner-service.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-myshift-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const db = openDatabase(path.join(directory, 'planner.db'), {
@@ -1909,11 +1919,17 @@ test('моя смена: личные операции против нормы �
   const admin = db.prepare('SELECT * FROM users LIMIT 1').get();
   db.prepare(`UPDATE users SET full_name='Оператор Тест', job_role='Диспетчер' WHERE id=?`).run(admin.id);
   const me = db.prepare('SELECT * FROM users WHERE id=?').get(admin.id);
-  // 3 операции контроля в текущую смену.
+  // 3 операции контроля внутри ЗАВЕРШИВШЕЙСЯ смены (вчерашней дневной) —
+  // «10 минут назад» на стыке смен (08:00 и 20:00 МСК) уводило их в
+  // предыдущую смену, и тест падал в зависимости от времени запуска.
+  const shift = currentShift(Date.now() - 86_400_000);
+  const shiftFromMs = Date.parse(shiftBounds(shift.day, shift.kind).fromIso);
+  const opAt = new Date(shiftFromMs + 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
   const ins = db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,created_at)
-    VALUES(?,?,?,?,?,?,datetime('now','-10 minutes'))`);
-  for (let i = 0; i < 3; i += 1) ins.run(`ms-${i}`, me.id, 'control-worked', 'control', `k${i}`, '{}');
-  const stats = myShiftStats(db, me);
+    VALUES(?,?,?,?,?,?,?)`);
+  for (let i = 0; i < 3; i += 1) ins.run(`ms-${i}`, me.id, 'control-worked', 'control', `k${i}`, '{}', opAt);
+  // Момент «сейчас» — середина той смены: норма к часу считается от неё.
+  const stats = myShiftStats(db, me, shiftFromMs + 6 * 3_600_000);
   assert.equal(stats.ops, 3, 'личные операции за смену');
   assert.ok(stats.effPct > 0 && Number.isFinite(stats.effPct));
   assert.equal(stats.sharePct, 100, 'единственный работавший — 100% вклада');
