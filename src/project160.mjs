@@ -134,12 +134,128 @@ export function moneyMetrics(db, fromIso, toIso) {
   return { fact: Math.round(fact), planned: Math.round(planned), trips, targetNet: plan };
 }
 
+// Метрики, которые считаются из данных: по ним прогресс инициативы виден
+// сам, без ручных галочек. `less` — цель «не больше», `more` — «не меньше».
+export const METRICS = {
+  claims_open: { label: 'Претензий не выставлено', unit: 'шт', dir: 'less' },
+  idle_days: { label: 'Простой без причины', unit: 'машино-дней', dir: 'less' },
+  no_driver_days: { label: 'Машино-дни без водителя', unit: 'дней', dir: 'less' },
+  repair_days: { label: 'Машино-дни в ремонте', unit: 'дней', dir: 'less' },
+  expired_orders: { label: 'Заявки с истёкшим окном без ТС', unit: 'шт', dir: 'less' },
+  reject_other: { label: 'Срывы с причиной «Прочее»', unit: 'шт', dir: 'less' },
+  empty_pct: { label: 'Доля порожнего пробега', unit: '%', dir: 'less' },
+  assign_lag_h: { label: 'Подтверждена → назначено ТС', unit: 'ч', dir: 'less' },
+  assign_late_pct: { label: 'Назначено после начала окна', unit: '%', dir: 'less' },
+  rate_per_km: { label: 'Ставка', unit: '₽/км', dir: 'more' },
+  next_month_orders: { label: 'Портфель следующего месяца', unit: '₽', dir: 'more' },
+  question_sla_pct: { label: 'Ответы водителям в 10 минут', unit: '%', dir: 'more' }
+};
+
+// Текущее значение метрики за период. Одна функция на все инициативы —
+// иначе цифры в проекте разойдутся с отчётами.
+export function metricValue(db, key, fromIso, toIso) {
+  const one = (sql, ...args) => db.prepare(sql).get(...args);
+  switch (key) {
+    case 'claims_open':
+      return one(`SELECT COUNT(*) v FROM demurrage_claims WHERE status='new'`).v;
+    case 'expired_orders':
+      return one(`SELECT COUNT(*) v FROM orders WHERE deleted_at IS NULL AND status<>'rejected'
+        AND trip_id IS NULL AND window_to < CURRENT_TIMESTAMP AND window_to >= ?`, fromIso).v;
+    case 'reject_other':
+      return one(`SELECT COUNT(*) v FROM trips WHERE status='rejected'
+        AND rejection_reason='Прочее' AND starts_at>=? AND starts_at<?`, fromIso, toIso).v;
+    case 'question_sla_pct': {
+      const stats = operationMetrics(db, fromIso, toIso);
+      return stats.questionInSlaPct;
+    }
+    case 'assign_lag_h': {
+      const row = handoffMetrics(db, fromIso, toIso).find(item => item.key === 'logist_assign');
+      return row ? row.medianHours : 0;
+    }
+    case 'rate_per_km': {
+      const row = one(`SELECT SUM(revenue_vat) r, SUM(distance_km) k FROM trips
+        WHERE status IN ('unloaded','done','paid') AND unloaded_at>=? AND unloaded_at<?`, fromIso, toIso);
+      return row.k ? Math.round(row.r / row.k) : 0;
+    }
+    case 'empty_pct': {
+      const row = one(`SELECT SUM(distance_km) k, SUM(empty_km) e FROM trips
+        WHERE status<>'rejected' AND on_line_at>=? AND on_line_at<?`, fromIso, toIso);
+      const total = Number(row.k || 0) + Number(row.e || 0);
+      return total ? Math.round(Number(row.e || 0) / total * 1000) / 10 : 0;
+    }
+    case 'next_month_orders': {
+      const next = new Date(Date.parse(`${toIso}T00:00:00Z`));
+      next.setUTCMonth(next.getUTCMonth() + 1);
+      return Math.round(one(`SELECT COALESCE(SUM(rate_vat),0) v FROM orders
+        WHERE deleted_at IS NULL AND status<>'rejected' AND window_from>=? AND window_from<?`,
+      toIso, next.toISOString().slice(0, 10)).v);
+    }
+    case 'no_driver_days':
+    case 'repair_days':
+    case 'idle_days':
+      return dispositionDays(db, key, fromIso, toIso);
+    default:
+      return null;
+  }
+}
+
+// Машино-дни по видам за период. «Простой без причины» — дни, не покрытые
+// ни рейсом, ни интервалом: считаем перебором по паркам и дням.
+function dispositionDays(db, key, fromIso, toIso) {
+  const from = Date.parse(`${fromIso}T00:00:00Z`);
+  const to = Date.parse(`${toIso}T00:00:00Z`);
+  const DAY = 86_400_000;
+  if (key !== 'idle_days') {
+    const kind = key === 'no_driver_days' ? 'no_driver' : 'repair';
+    const rows = db.prepare(`SELECT starts_at, ends_at FROM vehicle_dispositions
+      WHERE kind=? AND starts_at<? AND ends_at>?`).all(kind, toIso, fromIso);
+    const days = rows.reduce((sum, row) => {
+      const a = Math.max(Date.parse(row.starts_at), from);
+      const b = Math.min(Date.parse(row.ends_at), to);
+      return sum + Math.max(0, b - a) / DAY;
+    }, 0);
+    return Math.round(days);
+  }
+  const fleet = db.prepare(`SELECT id FROM vehicles WHERE status='work'`).all();
+  const trips = db.prepare(`SELECT vehicle_id, starts_at, ends_at, on_line_at, unloaded_at
+    FROM trips WHERE status<>'rejected' AND starts_at<? AND ends_at>?`).all(toIso, fromIso);
+  const dispositions = db.prepare(`SELECT vehicle_id, starts_at, ends_at FROM vehicle_dispositions
+    WHERE starts_at<? AND ends_at>?`).all(toIso, fromIso);
+  let idle = 0;
+  const now = Date.now();
+  for (const vehicle of fleet) {
+    for (let at = from; at < Math.min(to, now); at += DAY) {
+      const dayEnd = at + DAY;
+      const busy = trips.some(trip => trip.vehicle_id === vehicle.id &&
+        Date.parse(trip.starts_at) < dayEnd &&
+        (Date.parse(trip.unloaded_at || trip.ends_at)) > at);
+      if (busy) continue;
+      const covered = dispositions.some(item => item.vehicle_id === vehicle.id &&
+        Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > at);
+      if (!covered) idle += 1;
+    }
+  }
+  return idle;
+}
+
 // Инициативы проекта: что меняем в продукте и какой ждём эффект.
-export function listInitiatives(db) {
-  return db.prepare(`SELECT i.*, u.full_name author FROM project_initiatives i
+export function listInitiatives(db, fromIso = null, toIso = null) {
+  const rows = db.prepare(`SELECT i.*, u.full_name author FROM project_initiatives i
     LEFT JOIN users u ON u.id=i.created_by
     ORDER BY CASE i.status WHEN 'doing' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END,
       i.sort_order, i.created_at`).all();
+  if (!fromIso || !toIso) return rows;
+  // Прогресс по измеримым инициативам считается сам: статус вручную нужен
+  // только там, где метрики нет.
+  return rows.map(row => {
+    if (!row.metric_key || !METRICS[row.metric_key]) return row;
+    const value = metricValue(db, row.metric_key, fromIso, toIso);
+    const meta = METRICS[row.metric_key];
+    const target = Number(row.metric_target);
+    const reached = value == null || !Number.isFinite(target) ? null
+      : meta.dir === 'less' ? value <= target : value >= target;
+    return { ...row, metric: { ...meta, value, target, reached } };
+  });
 }
 
 // Снимок метрик: фиксируем «как было» перед изменением продукта, чтобы

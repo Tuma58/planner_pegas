@@ -741,6 +741,13 @@ function migrateColumns(db) {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     done_at TEXT)`);
+  // Метрика инициативы: если её можно посчитать из данных, статус не надо
+  // проставлять вручную — прогресс виден сам. Вручную остаётся только то,
+  // что измерить нельзя.
+  ensure('project_initiatives', 'metric_key', "TEXT NOT NULL DEFAULT ''");
+  ensure('project_initiatives', 'metric_target', 'REAL');
+  ensure('project_initiatives', 'owner_side', "TEXT NOT NULL DEFAULT 'team'");
+
   // Снимок метрик «как было»: без него эффект изменения недоказуем.
   db.exec(`CREATE TABLE IF NOT EXISTS project_snapshots (
     id TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '',

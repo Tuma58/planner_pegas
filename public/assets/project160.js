@@ -56,12 +56,27 @@ function render(context, payload) {
     </tr>`;
   }).join('');
 
+  // Кто ведёт: продуктовые инициативы веду я (Claude) — статус меняется по
+  // факту деплоя; организационные — команда. Там, где есть метрика, факт
+  // считается из данных и ручная галочка не нужна.
+  const sideLabel = item => item.owner_side === 'product'
+    ? '<span class="p160-side product" title="Изменение в продукте — статус ведёт Claude">🤖 продукт</span>'
+    : '<span class="p160-side team" title="Организационная задача — статус ведёт команда">👥 команда</span>';
+  const metricCell = item => {
+    if (!item.metric) return '<small class="muted">без метрики</small>';
+    const { value, target, unit, reached, label } = item.metric;
+    const shown = unit === '₽' ? money(value) : `${value} ${unit}`;
+    const goal = unit === '₽' ? money(target) : `${target} ${unit}`;
+    return `<span class="p160-metric ${reached === true ? 'ok' : reached === false ? 'bad' : ''}"
+      title="${escapeHtml(label)}: считается из данных за период">
+      ${shown} <small class="muted">из ${goal}</small></span>`;
+  };
   const initiativeRows = initiatives.length ? initiatives.map(item => `<tr>
-    <td><b>${escapeHtml(item.title)}</b>
+    <td><b>${escapeHtml(item.title)}</b> ${sideLabel(item)}
       ${item.result ? `<small class="muted" style="display:block">итог: ${escapeHtml(item.result)}</small>` : ''}</td>
     <td>${escapeHtml(item.area || '')}</td>
     <td><small class="muted">${escapeHtml(item.baseline || '')}</small></td>
-    <td><small>${escapeHtml(item.target || '')}</small></td>
+    <td>${metricCell(item)}</td>
     <td class="num">${item.effect_rub ? money(item.effect_rub) : '—'}</td>
     <td>
       <select data-init-status="${item.id}" class="p160-status">
@@ -115,12 +130,15 @@ function render(context, payload) {
     </div>
 
     <h3>Что меняем в продукте</h3>
+    <p class="muted" style="margin:0 0 6px">🤖 продукт — веду я, статус меняется по факту
+      выката. 👥 команда — ведёте вы. Где есть метрика, «сейчас» считается из данных
+      автоматически: зелёная — цель достигнута, красная — ещё нет.</p>
     <div class="p160-effect">
       <span>Эффект внедрённого: <b>${money(doneEffect)}</b></span>
       <span>В работе и в очереди: <b>${money(planEffect)}</b></span>
     </div>
     <table class="grid p160-table"><thead><tr>
-      <th>Инициатива</th><th>Область</th><th>Было</th><th>Цель</th>
+      <th>Инициатива</th><th>Область</th><th>Было</th><th>Сейчас / цель</th>
       <th class="num">Эффект, ₽</th><th>Статус</th><th></th>
     </tr></thead><tbody>${initiativeRows}</tbody></table>
 

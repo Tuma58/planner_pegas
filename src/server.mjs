@@ -10,8 +10,8 @@ import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, upl
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { QUESTION_TOPICS, checkQuestionSla, identifyCaller, listDriverQuestions,
   phoneDigits, phonePretty, questionStats } from './telephony.mjs';
-import { handoffMetrics, listInitiatives, listSnapshots, moneyMetrics, operationMetrics,
-  takeSnapshot } from './project160.mjs';
+import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
+  operationMetrics, takeSnapshot } from './project160.mjs';
 import {
   encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
@@ -2489,7 +2489,8 @@ async function api(request, response, url) {
       handoffs: handoffMetrics(db, monthStart, monthEnd),
       operations: operationMetrics(db, monthStart, monthEnd),
       money: moneyMetrics(db, monthStart, monthEnd),
-      initiatives: listInitiatives(db),
+      initiatives: listInitiatives(db, monthStart, monthEnd),
+      metrics: METRICS,
       snapshots: listSnapshots(db)
     });
   }
@@ -2500,11 +2501,15 @@ async function api(request, response, url) {
     if (!clean(body.title)) return errorJson(response, 422, 'Опишите инициативу');
     const id = randomUUID();
     db.prepare(`INSERT INTO project_initiatives(id,title,area,baseline,target,effect_rub,
-        status,sort_order,created_by) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+        status,sort_order,metric_key,metric_target,owner_side,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, clean(body.title).slice(0, 200), clean(body.area).slice(0, 60),
       clean(body.baseline).slice(0, 160), clean(body.target).slice(0, 160),
       Number(body.effectRub) || 0, ['todo', 'doing'].includes(body.status) ? body.status : 'todo',
-      Number(body.sortOrder) || 0, user.id);
+      Number(body.sortOrder) || 0,
+      METRICS[body.metricKey] ? body.metricKey : '',
+      Number.isFinite(Number(body.metricTarget)) ? Number(body.metricTarget) : null,
+      ['team', 'product'].includes(body.ownerSide) ? body.ownerSide : 'team', user.id);
     audit(db, user, 'create', 'initiative', id, { title: body.title }, requestIp(request));
     return json(response, 201, { id });
   }

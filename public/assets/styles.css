@@ -1311,6 +1311,13 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .p160-add { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .p160-add input, .p160-add select { flex: 1; min-width: 120px; min-height: 28px; }
 .p160-add input[name="title"] { flex: 3; min-width: 220px; }
+.p160-side { font-size: 10px; padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line);
+  white-space: nowrap; }
+.p160-side.product { background: color-mix(in srgb, var(--navy) 10%, transparent); }
+.p160-side.team { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+.p160-metric { font-weight: 700; font-size: var(--fs-sm); }
+.p160-metric.ok { color: var(--ok); }
+.p160-metric.bad { color: var(--bad); }
 .p160-status { min-height: 24px; font-size: var(--fs-xs); }
 .p160-snap { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap;
   font-size: var(--fs-xs); }
