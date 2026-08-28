@@ -447,8 +447,9 @@ export async function renderLogist(container, context) {
         ${request.nextMissing ? '<small class="next-missing">⏭ следующий рейс не назначен — назначьте до освобождения</small>' : ''}
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        <span class="badge ${fits ? 'ok' : 'warn'}" title="Заявок очереди, подходящих по времени">${fits
-          ? `рейсов: ${fits}` : 'нет рейсов'}</span>
+        <span class="badge ${fits ? 'ok' : 'warn'}"
+          title="Сколько заявок из очереди подходят этой сцепке по времени освобождения">${fits
+    ? `подходит заявок: ${fits}` : 'нет подходящих заявок'}</span>
         <span style="display:flex;gap:5px">
           <button class="button small" data-pick="${index}" title="Заявки очереди, подходящие по времени освобождения">Подобрать рейс</button>
           <button class="button ghost small" data-ask-sales="${request.vehicle.id}"

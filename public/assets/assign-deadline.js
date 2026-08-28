@@ -12,6 +12,7 @@
 //
 // Поэтому считаем честный дедлайн: окно погрузки минус подгон ближайшей
 // свободной машины минус время на подготовку выхода.
+import { formatDateTime } from './api.js';
 import { plannedKmBetween, resolveAddress } from './sales.js';
 
 // Подготовка выхода: внести в 1С, передать задание водителю, вывести на
@@ -104,7 +105,10 @@ export function deadlineBadge(deadline) {
   const hours = Math.floor(abs / HOUR);
   const minutes = Math.round((abs % HOUR) / 60_000);
   const left = hours ? `${hours} ч ${minutes} мин` : `${minutes} мин`;
-  const at = new Date(deadline.deadlineMs).toISOString().slice(11, 16);
+  // Время показываем в часовом поясе предприятия и С ДАТОЙ: «до 11:24»
+  // без дня читалось как «сегодня», хотя дедлайн часто назавтра, да ещё и
+  // печаталось в UTC — на три часа раньше реального.
+  const at = formatDateTime(new Date(deadline.deadlineMs).toISOString());
   if (deadline.overdue) {
     return `<span class="badge bad" title="Дедлайн назначения прошёл: подгон ${deadline.feedHours} ч + подготовка ${PREP_HOURS} ч уже не укладываются в окно погрузки">
       ⛔ опоздание ${left}</span>`;
