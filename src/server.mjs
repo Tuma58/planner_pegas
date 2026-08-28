@@ -2907,7 +2907,12 @@ async function api(request, response, url) {
       : new Date(startsAt.getTime() + Math.max(1, hours) * 3_600_000);
     if (endsAt <= startsAt) return errorJson(response, 422, 'Прибытие должно быть позже выезда');
     const purpose = TRANSFER_PURPOSES.includes(String(body.purpose)) ? String(body.purpose) : 'под погрузку';
-    const fromLabel = String(body.fromLabel || vehiclePlaceText(body.vehicleId) || '').slice(0, 120);
+    // Подпись «откуда» — из той же позиции, от которой посчитан километраж,
+    // и на момент ВЫЕЗДА, а не «сейчас». Иначе в задании стояло «Откуда:
+    // Курск» при 222 км, посчитанных от Саратова: между ними был рейс,
+    // который к моменту перегона уже завершится (кейс р459ху58).
+    const fromLabel = String(vehiclePlaceText(body.vehicleId, startsAt.toISOString())
+      || body.fromLabel || zoneName || '').slice(0, 120);
     const id = randomUUID();
     db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note,
         address_id,from_label,purpose,empty_km,created_by,updated_by)

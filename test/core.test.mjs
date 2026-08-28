@@ -2438,6 +2438,41 @@ test('перегон нельзя превратить в диспозицию �
   assert.equal(transferPlaceOf(broken, vehicle), null, 'ремонт местоположение не задаёт');
 });
 
+test('перегон: место и выезд считаются на момент освобождения сцепки', async () => {
+  const { vehiclePlace, vehiclePlaceAt, vehicleFreeAt } = await import('../public/assets/transfer.js');
+  const now = Date.now();
+  const iso = hours => new Date(now + hours * 3_600_000).toISOString();
+  // Кейс р459ху58: выгрузилась в Курске, сейчас везёт груз в Саратов,
+  // на завтра назначен рейс из Пензы. Перегон под погрузку оформляют,
+  // пока машина ещё в пути.
+  const data = {
+    reference: { addresses: [], zones: [] },
+    vehicles: [{ id: 'v1', status: 'work', zone_name: 'Дом' }],
+    trips: [
+      { id: 't-kursk', vehicle_id: 'v1', status: 'unloaded', to_name: 'Черноземье',
+        to_point: 'Курск г, ул Магистральная', starts_at: iso(-50), ends_at: iso(-30),
+        unloaded_at: new Date(now - 30 * 3_600_000).toISOString() },
+      { id: 't-saratov', vehicle_id: 'v1', status: 'run', to_name: 'Дом',
+        to_point: 'Саратов г, поселок Дубки', starts_at: iso(-28), ends_at: iso(6) }
+    ],
+    dispositions: []
+  };
+  // «Где стоит сейчас» — Курск: рейс в Саратов ещё идёт.
+  assert.equal(vehiclePlace(data, 'v1', now).pointName, 'Курск г, ул Магистральная');
+  // Освободится через 6 часов — выезд перегона раньше не поставить.
+  const freeAt = vehicleFreeAt(data, 'v1', now);
+  assert.equal(freeAt, Date.parse(data.trips[1].ends_at), 'освобождение — конец текущего рейса');
+  // А «где будет к этому моменту» — Саратов: именно оттуда пойдёт перегон,
+  // и от этой же точки сервер считает порожние километры.
+  assert.equal(vehiclePlaceAt(data, 'v1', freeAt).pointName, 'Саратов г, поселок Дубки',
+    'место перегона — точка выгрузки текущего рейса, а не предыдущего');
+
+  // Перегон, прибывший позже рейса, снова главнее.
+  const withTransfer = { ...data, dispositions: [{ id: 'd1', vehicle_id: 'v1', kind: 'transfer',
+    starts_at: iso(7), ends_at: iso(9), arrived_at: iso(9), to_name: 'Пенза г, Пролетарская' }] };
+  assert.equal(vehiclePlaceAt(withTransfer, 'v1', Date.parse(iso(10))).pointName, 'Пенза г, Пролетарская');
+});
+
 test('объявления на табло: показываются по сроку, публикует только админ', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-board-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

@@ -3,7 +3,7 @@
 // выручки нет: рейс исказил бы выручку, план-факт и сверку с 1С), а вид
 // диспозиции с заданием водителю и контролем прибытия. Факт прибытия
 // становится местоположением сцепки для следующего назначения.
-import { api, escapeHtml, formatDateTime, toast, wireSelectSearch } from './api.js';
+import { api, escapeHtml, formatDateTime, toast, tripBusyUntilMs, wireSelectSearch } from './api.js';
 
 export const TRANSFER_PURPOSES = ['под погрузку', 'на базу', 'в ремонт', 'на пересменку', 'к месту стоянки'];
 
@@ -62,6 +62,54 @@ export function vehiclePlace(data, vehicleId, nowMs = Date.now()) {
   const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
   return { zoneName: vehicle?.zone_name || '', region: '', pointName: vehicle?.zone_name || '',
     at: -Infinity, source: 'base' };
+}
+
+// Где сцепка БУДЕТ к моменту atMs — не то же самое, что «где стоит сейчас».
+// Машина в рейсе едет к точке выгрузки, и задание, которое начнётся после
+// освобождения, отправляется именно оттуда. Раньше место для перегона брали
+// по последнему ЗАВЕРШЁННОМУ рейсу: р459ху58 везла груз Курск → Саратов, а в
+// задании стояло «Откуда: Курск» — с рейсом до Саратова посередине.
+// Правило то же, что на сервере (vehiclePositionBefore): учитываем рейсы,
+// начавшиеся до этого момента.
+export function vehiclePlaceAt(data, vehicleId, atMs) {
+  const started = (data.trips || [])
+    .filter(trip => trip.vehicle_id === vehicleId && trip.status !== 'rejected' &&
+      Date.parse(trip.starts_at) <= atMs)
+    .sort((a, b) => tripDoneAtMs(b) - tripDoneAtMs(a))[0] || null;
+  const moved = transferPlaceOf(data, vehicleId, atMs);
+  const tripAt = started ? tripDoneAtMs(started) : -Infinity;
+  if (moved && moved.at >= tripAt) {
+    const address = (data.reference?.addresses || []).find(item => item.name === moved.name);
+    return { zoneName: address?.zone_name || moved.name, region: moved.region || address?.region || '',
+      pointName: moved.name, at: moved.at, source: 'transfer' };
+  }
+  if (started) {
+    return { zoneName: started.to_name || '', region: '',
+      pointName: started.to_point || started.to_name || '', at: tripAt, source: 'trip', trip: started };
+  }
+  const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
+  return { zoneName: vehicle?.zone_name || '', region: '', pointName: vehicle?.zone_name || '',
+    at: -Infinity, source: 'base' };
+}
+
+// Когда сцепка освободится: конец текущего рейса или незавершённого перегона.
+// Раньше выезд перегона по умолчанию ставился «сейчас» — даже когда машина
+// стояла под выгрузкой ещё семь часов.
+// Занятость берём по ПЛАНОВОМУ началу рейса: машину выводят на линию заранее,
+// и on_line_at в прошлом не значит, что она уже едет по этому рейсу — иначе
+// «освободится» показывало конец завтрашнего рейса вместо сегодняшнего.
+export function vehicleFreeAt(data, vehicleId, nowMs = Date.now()) {
+  let free = nowMs;
+  for (const trip of data.trips || []) {
+    if (trip.vehicle_id !== vehicleId || trip.status === 'rejected') continue;
+    if (Date.parse(trip.starts_at) <= nowMs && tripBusyUntilMs(trip, nowMs) > nowMs) {
+      free = Math.max(free, tripBusyUntilMs(trip, nowMs));
+    }
+  }
+  const transfer = (data.dispositions || []).find(item => item.kind === 'transfer' &&
+    item.vehicle_id === vehicleId && !item.arrived_at);
+  if (transfer) free = Math.max(free, Date.parse(transfer.ends_at));
+  return free;
 }
 
 // Текущий этап перегона: задание → в пути → прибыл.
@@ -153,13 +201,23 @@ export function transferDialog(vehicle, data, context, options = {}) {
   const addresses = (data.reference.addresses || [])
     .filter(item => Number.isFinite(Number(item.latitude)))
     .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'));
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  const nowMs = Date.now();
+  // Выезд — от освобождения сцепки, а не «сейчас»: место и километраж
+  // считаются на этот же момент, иначе задание уходит из точки, которую
+  // машина уже покинула.
+  const freeAtMs = vehicleFreeAt(data, vehicle.id, nowMs);
+  const busy = freeAtMs > nowMs;
+  const place = vehiclePlaceAt(data, vehicle.id, freeAtMs);
+  const fromLabel = place.pointName || options.fromLabel || vehicle.zone_name || '';
+  const local = new Date(freeAtMs - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
   context.showModal(`<form id="transferForm">
     <h2>🚚 Перегон порожним</h2>
     <p class="muted"><span class="mono">${escapeHtml(vehicle.plate)}</span>
       · ${escapeHtml(vehicle.driver_name || 'без водителя')}
-      · сейчас: ${escapeHtml(options.fromLabel || vehicle.zone_name || '—')}</p>
+      · ${busy ? 'освободится' : 'стоит'}: ${escapeHtml(fromLabel || '—')}</p>
+    ${busy ? `<p class="badge warn" style="display:block">⏳ Сцепка ещё занята:
+      освободится ${formatDateTime(new Date(freeAtMs).toISOString())} — выезд и расстояние
+      считаются от этого момента и от точки ${escapeHtml(fromLabel || '—')}.</p>` : ''}
     <label class="field">Куда гоним
       <input id="transferSearch" placeholder="🔍 поиск пункта" autocomplete="off">
       <select name="addressId" id="transferAddress" required size="7">
@@ -188,7 +246,7 @@ export function transferDialog(vehicle, data, context, options = {}) {
       const result = await api('/api/transfers', { method: 'POST', body: JSON.stringify({
         vehicleId: vehicle.id, addressId: values.addressId, purpose: values.purpose,
         startsAt: values.startsAt ? new Date(values.startsAt).toISOString() : null,
-        note: values.note, fromLabel: options.fromLabel || ''
+        note: values.note
       }) });
       context.closeModal();
       toast(`Перегон создан${result.km ? `: ~${result.km} км порожним` : ''} — диспетчер получил задание`);
