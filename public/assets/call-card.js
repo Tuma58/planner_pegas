@@ -297,12 +297,14 @@ export function questionsForOwner(questions, owner) {
   });
 }
 
-export function questionsStripHtml(questions, { title = '📞 Вопросы водителей', canAct = true } = {}) {
+// compact — свёрнутая плашка со счётчиком: вопросы водителей адресованы
+// прежде всего диспетчерской, а у продаж, логиста и ресурса они не должны
+// занимать экран. Разворачивается кликом и запоминает состояние.
+export function questionsStripHtml(questions, { title = '📞 Вопросы водителей',
+  canAct = true, compact = false, open = false } = {}) {
   if (!questions.length) return '';
-  return `<div class="questions-strip">
-    <div class="scolh">${title} <span>${questions.length}</span>
-      <small class="muted" style="font-weight:400"> · норматив ответа 10 минут</small></div>
-    <div class="list">${questions.map(question => {
+  const late = questions.filter(item => Date.now() - questionOpenedMs(item) > QUESTION_SLA_MS).length;
+  const body = `<div class="list">${questions.map(question => {
     const waitMs = Date.now() - questionOpenedMs(question);
     const late = waitMs > QUESTION_SLA_MS;
     return `<div class="card question-card ${late ? 'late' : ''}" style="padding:8px 10px;margin-bottom:6px">
@@ -322,7 +324,18 @@ export function questionsStripHtml(questions, { title = '📞 Вопросы в�
         ${question.vehicle_id ? `<button class="button ghost small" data-question-card="${question.vehicle_id}">📞 Карточка</button>` : ''}
       </div>` : ''}
     </div>`;
-  }).join('')}</div></div>`;
+  }).join('')}</div>`;
+  if (!compact) {
+    return `<div class="questions-strip">
+      <div class="scolh">${title} <span>${questions.length}</span>
+        <small class="muted" style="font-weight:400"> · норматив ответа 10 минут</small></div>
+      ${body}</div>`;
+  }
+  return `<details class="questions-strip compact" data-questions-toggle ${open ? 'open' : ''}>
+    <summary>${title} <span class="scount ${late ? 'late' : ''}">${questions.length}</span>
+      ${late ? `<span class="q-late">⏱ просрочено ${late}</span>` : ''}
+      <small class="muted">— отвечает диспетчерская, норматив 10 минут</small></summary>
+    ${body}</details>`;
 }
 
 export function wireQuestionsStrip(container, context, questions) {

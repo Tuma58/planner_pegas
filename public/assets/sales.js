@@ -905,7 +905,7 @@ export async function renderSales(container, context) {
   const questions = questionsForOwner(await loadOpenQuestions(), 'Продажи');
   const savedScrolls = captureScrolls(container);
   const html = `<div class="saleswrap">
-    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам' })}
+    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам', compact: true, open: state.salesQuestionsOpen })}
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
         title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">
@@ -1062,6 +1062,9 @@ export async function renderSales(container, context) {
     return;
   }
   wireQuestionsStrip(container, context, questions);
+  container.querySelector('[data-questions-toggle]')?.addEventListener('toggle', event => {
+    state.salesQuestionsOpen = event.currentTarget.open;
+  });
   restoreScrolls(container, savedScrolls);
 
   const rerender = () => renderSales(container, context);

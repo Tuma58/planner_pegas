@@ -564,7 +564,7 @@ export async function renderLogist(container, context) {
   const questions = questionsForOwner(await loadOpenQuestions(), 'Логист');
   const savedScrolls = captureScrolls(container);
   const html = `<div class="saleswrap">
-    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — логисту' })}
+    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — логисту', compact: true, open: state.logistQuestionsOpen })}
     <div class="salekpis">
       <div class="skpi clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
         title="Показать только очередь на назначение">
@@ -647,6 +647,9 @@ export async function renderLogist(container, context) {
     return;
   }
   wireQuestionsStrip(container, context, questions);
+  container.querySelector('[data-questions-toggle]')?.addEventListener('toggle', event => {
+    state.logistQuestionsOpen = event.currentTarget.open;
+  });
   restoreScrolls(container, savedScrolls);
 
   attachSearch(container.querySelector('#logistSearch'), value => {

@@ -1251,6 +1251,21 @@ tbody tr:hover td { background: var(--hover); }
   border-radius: 9px; background: var(--soft); }
 .res-transfers .list-item { background: var(--card); border-radius: 7px; margin-bottom: 4px; }
 .questions-strip { margin-bottom: 10px; }
+/* Свёрнутая плашка вопросов: у продаж, логиста и ресурса они не должны
+   занимать экран — отвечает на них диспетчерская. */
+.questions-strip.compact { border: 1px solid var(--line); border-radius: 9px;
+  background: var(--soft); padding: 0; }
+.questions-strip.compact > summary { cursor: pointer; padding: 7px 10px; list-style: none;
+  display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: var(--fs-sm); }
+.questions-strip.compact > summary::-webkit-details-marker { display: none; }
+.questions-strip.compact > summary::before { content: '▸'; color: var(--muted); }
+.questions-strip.compact[open] > summary::before { content: '▾'; }
+.questions-strip.compact > summary small { font-weight: 400; }
+.questions-strip.compact .scount { background: var(--navy); color: #fff; border-radius: 10px;
+  padding: 0 7px; font-size: var(--fs-xs); }
+.questions-strip.compact .scount.late { background: var(--bad); }
+.questions-strip.compact .q-late { color: var(--bad); font-size: var(--fs-xs); }
+.questions-strip.compact .list { padding: 0 8px 8px; }
 .question-card { border-left: 4px solid var(--warn); }
 .question-card.late { border-left-color: var(--bad);
   background: color-mix(in srgb, var(--bad) 6%, transparent); }

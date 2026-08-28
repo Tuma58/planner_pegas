@@ -937,7 +937,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       После отметки «Прибыл» машина числится в точке назначения.</div>
   </div>` : '';
 
-  const html = `${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу' })}
+  const html = `${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу', compact: true, open: state.resourceQuestionsOpen })}
     ${transfersHtml}
     <div class="resboard">
     <div class="reshead">
@@ -992,6 +992,9 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     return;
   }
   wireQuestionsStrip(container, context, questions);
+  container.querySelector('[data-questions-toggle]')?.addEventListener('toggle', event => {
+    state.resourceQuestionsOpen = event.currentTarget.open;
+  });
   restoreScrolls(container, savedScrolls);
 
   // Фокус как в главном ганте: «сегодня −3 дня» при первом показе месяца.
