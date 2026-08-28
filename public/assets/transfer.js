@@ -23,6 +23,17 @@ export function transferPlaceOf(data, vehicleId, beforeMs = Date.now()) {
     region: arrived.to_region || '' } : null;
 }
 
+// Момент, когда рейс освободил сцепку: факт выгрузки, если он проставлен,
+// иначе плановое окончание. Сравнивать только с планом нельзя — машину,
+// выгруженную раньше плана, расчёт «пропускал» и брал позапрошлый рейс:
+// с569ко58 выгрузилась в Пензе в 09:47, план стоял на 13:22 — и до 13:22
+// сцепка числилась в Москве по предыдущему рейсу.
+export function tripDoneAtMs(trip) {
+  const raw = String(trip.unloaded_at || '');
+  const fact = raw ? Date.parse(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`) : NaN;
+  return Number.isFinite(fact) ? fact : Date.parse(trip.ends_at);
+}
+
 // Где сцепка находится СЕЙЧАС — единый расчёт для всех блоков.
 // Машину в ремонте могут перегнать в другой город доремонтироваться: место
 // задаёт последнее по времени событие — выгрузка рейса или прибытие
@@ -32,10 +43,10 @@ export function transferPlaceOf(data, vehicleId, beforeMs = Date.now()) {
 export function vehiclePlace(data, vehicleId, nowMs = Date.now()) {
   const lastTrip = (data.trips || [])
     .filter(trip => trip.vehicle_id === vehicleId && trip.status !== 'rejected' &&
-      Date.parse(trip.ends_at) <= nowMs)
-    .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0] || null;
+      tripDoneAtMs(trip) <= nowMs)
+    .sort((a, b) => tripDoneAtMs(b) - tripDoneAtMs(a))[0] || null;
   const moved = transferPlaceOf(data, vehicleId, nowMs);
-  const tripAt = lastTrip ? Date.parse(lastTrip.ends_at) : -Infinity;
+  const tripAt = lastTrip ? tripDoneAtMs(lastTrip) : -Infinity;
   if (moved && moved.at >= tripAt) {
     // Точка прибытия перегона: зону берём по справочнику адресов.
     const address = (data.reference?.addresses || []).find(item => item.name === moved.name);
@@ -43,8 +54,10 @@ export function vehiclePlace(data, vehicleId, nowMs = Date.now()) {
       pointName: moved.name, at: moved.at, source: 'transfer' };
   }
   if (lastTrip) {
+    // Сам рейс возвращаем, чтобы вызывающий взял субъект РФ из его заявки:
+    // иначе зона и субъект считались по разным рейсам и расходились.
     return { zoneName: lastTrip.to_name || '', region: '', pointName: lastTrip.to_point || lastTrip.to_name || '',
-      at: tripAt, source: 'trip' };
+      at: tripAt, source: 'trip', trip: lastTrip };
   }
   const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
   return { zoneName: vehicle?.zone_name || '', region: '', pointName: vehicle?.zone_name || '',
@@ -89,8 +102,8 @@ export function transferPickVehicleDialog(context, options = {}) {
       const transfer = (data.dispositions || []).find(item => item.kind === 'transfer' &&
         item.vehicle_id === vehicle.id && !item.arrived_at);
       const lastTrip = (data.trips || []).filter(item => item.vehicle_id === vehicle.id &&
-        item.status !== 'rejected' && Date.parse(item.ends_at) <= nowMs)
-        .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0];
+        item.status !== 'rejected' && tripDoneAtMs(item) <= nowMs)
+        .sort((a, b) => tripDoneAtMs(b) - tripDoneAtMs(a))[0];
       const place = transfer?.arrived_at ? transfer.to_name
         : lastTrip ? (lastTrip.to_point || lastTrip.to_name) : vehicle.zone_name;
       return { vehicle, trip, transfer, place };

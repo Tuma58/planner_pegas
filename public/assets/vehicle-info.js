@@ -5,7 +5,7 @@
 import { api, escapeHtml, formatDateTime, money, routeLabel } from './api.js';
 import { orderFileLinks, orderNet } from './sales.js';
 import { shiftStateAt } from './resource.js';
-import { transferDialog, transferPlaceOf } from './transfer.js';
+import { transferDialog, tripDoneAtMs, vehiclePlace } from './transfer.js';
 
 const DAY_MS = 86_400_000;
 const KIND_LABEL = { repair: '🔧 Ремонт', shift: '🔁 Пересменка',
@@ -62,9 +62,9 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
     Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
 
   // Простой: от последней выгрузки/окончания рейса до «сейчас».
-  const lastDone = trips.filter(trip => Date.parse(trip.ends_at) <= nowMs)
-    .sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
-  const idleDays = lastDone ? Math.floor((nowMs - Date.parse(lastDone.ends_at)) / DAY_MS) : null;
+  const lastDone = trips.filter(trip => tripDoneAtMs(trip) <= nowMs)
+    .sort((a, b) => tripDoneAtMs(b) - tripDoneAtMs(a))[0];
+  const idleDays = lastDone ? Math.floor((nowMs - tripDoneAtMs(lastDone)) / DAY_MS) : null;
 
   // Ближайший план после «сейчас» (рейс или недоступность).
   const nextTrip = trips.filter(trip => Date.parse(trip.starts_at) > nowMs &&
@@ -144,10 +144,7 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
   // Перегон прямо из карточки сцепки — самый короткий путь: увидел, где
   // машина стоит, и тут же отправил её туда, где она нужна.
   document.getElementById('vinfoTransfer')?.addEventListener('click', () => {
-    const moved = transferPlaceOf(data, vehicle.id);
-    const lastTrip = trips.filter(trip => Date.parse(trip.ends_at) <= nowMs)
-      .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0];
-    const place = moved?.name || (lastTrip ? (lastTrip.to_point || lastTrip.to_name) : vehicle.zone_name);
+    const place = vehiclePlace(data, vehicle.id, nowMs).pointName || vehicle.zone_name;
     transferDialog(vehicle, data, { ...context, state: { data } }, { fromLabel: place || '' });
   });
 

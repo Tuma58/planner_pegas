@@ -524,9 +524,14 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     if (!trip) return '';
     const order = trip.order_id
       ? (data.orders || []).find(item => item.id === trip.order_id) : null;
-    const byOrder = order ? addressById(order.to_address_id)?.region : '';
-    if (byOrder) return byOrder;
-    return regionOfPlace(data, trip.to_point, trip.to_name);
+    const orderAddress = order ? addressById(order.to_address_id) : null;
+    const point = String(trip.to_point || '').trim();
+    // Адрес заявки точнее текста, но берём его, только если рейс идёт
+    // именно туда: точку выгрузки в рейсе меняют, а адрес в заявке
+    // остаётся прежним — так машина, выгруженная в Пензе, числилась
+    // в Москве (с591ко58).
+    if (orderAddress?.region && (!point || orderAddress.name === point)) return orderAddress.region;
+    return regionOfPlace(data, trip.to_point, trip.to_name) || orderAddress?.region || '';
   };
   data.vehicles.filter(vehicle => vehicle.status === 'work').forEach(vehicle => {
     const trips = data.trips
@@ -559,7 +564,10 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     // Место сцепки — по последнему событию: выгрузка рейса или прибытие
     // перегона. Машину в ремонте могли перегнать доремонтироваться в другой
     // город, и предлагать её надо уже оттуда.
-    const place = vehiclePlace(data, vehicle.id, nowMs);
+    // Срез — момент освобождения (для уже стоящих — сейчас): у машины,
+    // которая ещё в рейсе, местом освобождения служит точка выгрузки этого
+    // рейса, а не предыдущего.
+    const place = vehiclePlace(data, vehicle.id, Math.max(endsAt.getTime(), nowMs));
     const zone = zoneByName[place.zoneName] || zoneByName[last?.to_name] || zoneByName[vehicle.zone_name];
     if (!zone) return;
     // Предложение обратного груза: самое доходное направление из зоны выгрузки.
@@ -572,7 +580,11 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       : null;
     requests.push({
       vehicle, zone,
-      region: place.source === 'transfer' ? (place.region || regionOfTrip(last)) : regionOfTrip(last),
+      // Субъект РФ — из той же точки, что и зона: раньше зона считалась по
+      // месту сцепки, а субъект по последнему рейсу, и они расходились
+      // («геозона Москва — Пензенская обл» у с569ко58).
+      region: place.source === 'transfer'
+        ? (place.region || regionOfTrip(last)) : regionOfTrip(place.trip || last),
       movedByTransfer: place.source === 'transfer' ? place.pointName : '',
       overdueTrip,
       // Последний рейс ещё в работе, а следующего нет — нарушение правила

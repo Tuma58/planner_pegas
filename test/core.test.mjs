@@ -2438,6 +2438,50 @@ test('перегон нельзя превратить в диспозицию �
   assert.equal(transferPlaceOf(broken, vehicle), null, 'ремонт местоположение не задаёт');
 });
 
+test('место сцепки: выгрузка раньше плана и субъект РФ из точки выгрузки', async () => {
+  const { vehiclePlace } = await import('../public/assets/transfer.js');
+  const { autoRequests } = await import('../public/assets/sales.js');
+  const now = Date.now();
+  const iso = hours => new Date(now + hours * 3_600_000).toISOString();
+  const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+  const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1));
+  const data = {
+    reference: {
+      zones: [{ id: 'z1', name: 'Дом' }, { id: 'z2', name: 'Москва' }],
+      routeRates: [],
+      addresses: [
+        { id: 'a-msk', name: 'Москва г, ул Пермская, д 3', zone_name: 'Москва', region: 'Москва г' },
+        { id: 'a-pnz', name: 'Пенза г, ул Перспективная, стр 2', zone_name: 'Дом', region: 'Пензенская обл' }
+      ]
+    },
+    vehicles: [{ id: 'v1', plate: 'с569ко58', status: 'work', type_name: 'Паллет 33', zone_name: 'Дом' }],
+    orders: [{ id: 'o1', to_address_id: 'a-msk', to_point: 'Москва г, ул Пермская, д 3' }],
+    trips: [
+      // Позапрошлый рейс: выгрузка в Москве двое суток назад.
+      { id: 't1', vehicle_id: 'v1', status: 'unloaded', to_name: 'Москва',
+        to_point: 'Москва г, ул Пермская, д 3', starts_at: iso(-72), ends_at: iso(-48),
+        unloaded_at: new Date(now - 48 * 3_600_000).toISOString() },
+      // Последний рейс: выгружен в Пензе час назад, ПЛАН стоит на через два
+      // часа — до правки расчёт этот рейс пропускал и брал московский.
+      { id: 't2', vehicle_id: 'v1', status: 'unloaded', to_name: 'Дом', order_id: 'o1',
+        to_point: 'Пенза г, ул Перспективная, стр 2', starts_at: iso(-24), ends_at: iso(2),
+        unloaded_at: new Date(now - 3_600_000).toISOString() }
+    ],
+    dispositions: []
+  };
+  const place = vehiclePlace(data, 'v1', now);
+  assert.equal(place.zoneName, 'Дом', 'место — по факту выгрузки, а не по плановому концу рейса');
+  assert.equal(place.trip.id, 't2', 'возвращён сам рейс — по нему считается субъект');
+
+  const request = autoRequests(data, monthStart, monthEnd)
+    .find(item => item.vehicle.id === 'v1');
+  assert.equal(request.zone.name, 'Дом', 'зона потребности — точка последней выгрузки');
+  // Адрес заявки остался московским (точку выгрузки в рейсе перенесли),
+  // но субъект обязан совпадать с зоной, иначе фильтры логиста дают
+  // «геозона Москва — Пензенская обл».
+  assert.equal(request.region, 'Пензенская обл', 'субъект РФ берётся из той же точки, что и зона');
+});
+
 test('место сцепки: перегон переставляет машину, даже если она в ремонте', async () => {
   const { vehiclePlace } = await import('../public/assets/transfer.js');
   const now = Date.now();
