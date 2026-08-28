@@ -2947,6 +2947,15 @@ async function api(request, response, url) {
     const body = await readJson(request);
     const current = db.prepare('SELECT * FROM vehicle_dispositions WHERE id=?').get(match[0]);
     if (!current) return errorJson(response, 404, 'Интервал не найден');
+    // Перегон — не «интервал недоступности», и форма диспозиции его не
+    // редактирует: у неё нет такого вида, поэтому сохранение молча
+    // превращало перегон в ремонт и стирало точку назначения с этапами
+    // (кейс с869рх58 Воронеж → Пенза 28.08: перегон исчез через минуту
+    // после отметки «Прибыл», машина осталась числиться в Воронеже).
+    if (current.kind === 'transfer') {
+      return errorJson(response, 409, 'Это перегон порожним — правьте его в «Контроле на линии» ' +
+        'или отмените кнопкой «✕» в списке перегонов. Форма диспозиции перегоны не меняет');
+    }
     const startsAt = Date.parse(body.startsAt ?? current.starts_at);
     const endsAt = Date.parse(body.endsAt ?? current.ends_at);
     const kind = body.kind ?? current.kind;

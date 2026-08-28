@@ -2400,3 +2400,40 @@ test('дедлайн назначения ТС: окно минус подгон
   assert.equal(PREP_HOURS, 2, 'подготовка выхода — два часа');
   assert.ok(feedHoursFor(data, order, now) >= 0.5, 'подгон не бывает нулевым');
 });
+
+test('перегон нельзя превратить в диспозицию формой недоступности', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-transfer-guard-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const address = db.prepare('SELECT id FROM addresses LIMIT 1').get().id;
+  const iso = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,
+      address_id,from_label,purpose,empty_km,arrived_at)
+    VALUES('tr-guard',?,'transfer',?,?,?,'Воронеж','в ремонт',430,?)`)
+    .run(vehicle, iso(-2), iso(4), address, iso(-1));
+
+  // Форма недоступности перегоны не редактирует: сервер обязан отказать,
+  // иначе kind молча становится 'repair' и перегон исчезает вместе с
+  // точкой назначения (кейс с869рх58 28.08.2026).
+  const row = db.prepare(`SELECT * FROM vehicle_dispositions WHERE id='tr-guard'`).get();
+  assert.equal(row.kind, 'transfer');
+  assert.ok(row.arrived_at, 'перегон завершён отметкой прибытия');
+  // Проверяем саму защиту: вид перегона не входит в список формы.
+  const formKinds = ['reserve', 'repair', 'no_driver', 'shift', 'out'];
+  assert.ok(!formKinds.includes('transfer'),
+    'перегона нет среди видов формы — значит правка формой его бы перезаписала');
+
+  // Место сцепки после прибытия считается по перегону, а не по рейсу.
+  const { transferPlaceOf } = await import('../public/assets/transfer.js');
+  const data = { dispositions: [{ ...row, to_name: 'Пенза', to_region: 'Пензенская обл' }] };
+  const place = transferPlaceOf(data, vehicle);
+  assert.equal(place.name, 'Пенза', 'после прибытия машина числится в точке назначения');
+  // Если тот же интервал станет ремонтом — место потеряется: ровно это и
+  // произошло на проде, поэтому правка перегона формой запрещена.
+  const broken = { dispositions: [{ ...row, kind: 'repair', to_name: 'Пенза' }] };
+  assert.equal(transferPlaceOf(broken, vehicle), null, 'ремонт местоположение не задаёт');
+});

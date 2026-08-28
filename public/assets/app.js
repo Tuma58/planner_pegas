@@ -357,8 +357,28 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       openTrip(state.data.trips.find(trip => trip.id === button.dataset.trip));
     }));
   document.querySelectorAll('[data-disposition]').forEach(block =>
-    block.addEventListener('click', () => openDisposition(
-      (state.data.dispositions || []).find(item => item.id === block.dataset.disposition))));
+    block.addEventListener('click', () => {
+      const item = (state.data.dispositions || []).find(entry => entry.id === block.dataset.disposition);
+      if (!item) return;
+      // Перегон правится своими этапами в контроле на линии, а не формой
+      // недоступности: у неё нет такого вида, и сохранение превращало
+      // перегон в ремонт (кейс с869рх58 28.08).
+      if (item.kind === 'transfer') {
+        showModal(`<h2>🚚 Перегон порожним</h2>
+          <p class="muted"><span class="mono">${escapeHtml(item.vehicle_plate || '')}</span>
+            · ${escapeHtml(item.from_label || '—')} → <b>${escapeHtml(item.to_name || '—')}</b>
+            · ${escapeHtml(item.purpose || '')}</p>
+          <p>Выезд ${formatDateTime(item.starts_at)} · прибытие ${formatDateTime(item.ends_at)}${item.empty_km
+    ? ` · ~${Math.round(item.empty_km)} км порожним` : ''}</p>
+          <p>Этап: ${item.arrived_at ? `✅ прибыл ${formatDateTime(item.arrived_at)}`
+    : item.departed_at ? '🛣 в пути' : item.driver_notified_at ? '⏳ ждём выезда' : '📋 задание не отправлено'}</p>
+          <p class="muted">Отметки этапов и отмена перегона — в блоке «Диспетчер» → «🚚 Перегоны порожним»
+            или в «Ресурсе» в списке перегонов.</p>
+          <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+        return;
+      }
+      openDisposition(item);
+    }));
   // Клик по полосе простоя: запрос загрузки в продажи по сцепке.
   document.querySelectorAll('[data-request-load]').forEach(bar =>
     bar.addEventListener('click', async () => {
