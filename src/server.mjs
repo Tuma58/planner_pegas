@@ -2473,6 +2473,24 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // Заявка принята в зону, где сейчас нет свободных машин: логисту нужно
+  // спланировать перегон или освободить сцепку — иначе окно закроется без ТС.
+  if (request.method === 'POST' && pathname === '/api/notify-capacity') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const order = db.prepare(`SELECT o.*, f.name from_name, t.name to_name FROM orders o
+      LEFT JOIN zones f ON f.id=o.from_zone_id LEFT JOIN zones t ON t.id=o.to_zone_id
+      WHERE o.id=?`).get(body.orderId);
+    if (!order) return errorJson(response, 404, 'Заявка не найдена');
+    notify('logist', `🚧 Заявка ${order.order_no ? `№ ${order.order_no} ` : ''}${order.customer_name}: ` +
+      `${routeText(order)}, погрузка ${String(order.window_from).slice(0, 16).replace('T', ' ')} — ` +
+      `в зоне «${clean(body.zone) || order.from_name}» свободных машин нет. ` +
+      `Нужен перегон порожним или освобождение сцепки`, 'order', order.id);
+    audit(db, user, 'capacity-alert', 'order', order.id, { zone: body.zone }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   // ── Проект «160 млн»: развитие продукта с измеримым эффектом ──
   // Экран руководителя: где стоит время между ролями, сколько действий
   // стоит работа, что мы меняем и что это дало.

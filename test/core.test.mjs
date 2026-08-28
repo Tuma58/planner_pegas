@@ -1845,7 +1845,11 @@ test('план вывоза: сетка слотов из истории и пл
     const start = monday - week * 7 * 86400e3;
     ins.run(`dp-${week}`, vehicle, 'Регуляр ООО', z1, z2, iso(start), iso(start + 24 * 3600e3));
   }
-  const created = seedDeliverySlots(db);
+  // Момент расчёта задаём явно (полдень того же понедельника): иначе окно
+  // истории в 60 дней сдвигается вместе с днём недели запуска, самый дальний
+  // рейс из него выпадает и регулярность не набирается — тест падал по
+  // пятницам.
+  const created = seedDeliverySlots(db, null, monday + 12 * 3600e3);
   assert.ok(created >= 1, 'слот понедельника создан');
   const slot = db.prepare(`SELECT * FROM delivery_slots WHERE customer_name='Регуляр ООО'`).all();
   assert.equal(slot.length, 1, 'ровно один день недели');

@@ -1332,15 +1332,15 @@ export async function renderSales(container, context) {
     if (!values.rateVat) {
       values.rateVat = routeInfo(data, values.fromZoneId, values.toZoneId).rate;
     }
-    // Мягкое предупреждение: в зоне погрузки нет свободных машин без брони —
-    // заявку создать можно (машина может освободиться или прийти перегоном),
-    // но вслепую набирать заказы нельзя.
+    // Нехватка машин в зоне погрузки — НЕ повод терять заявку. Раньше здесь
+    // стоял confirm, и отказ молча прерывал сохранение: для менеджера это
+    // выглядело как «заявка исчезла после сохранения» (кейс Форуминторг
+    // Мытищи → Кузнецк 28.08, в зоне Москва не было ни одной свободной
+    // машины). Теперь заявка создаётся всегда, а нехватка ёмкости уходит
+    // предупреждением менеджеру и сигналом логисту — он спланирует перегон.
     const fromZoneNameWarn = data.reference.zones.find(zone => zone.id === values.fromZoneId)?.name;
     const zoneCapacity = freeVehiclesByZone(data).find(group => group.zone === fromZoneNameWarn);
-    if ((!zoneCapacity || zoneCapacity.freeNoHold === 0) &&
-        !confirm(`В зоне «${fromZoneNameWarn || '—'}» свободных машин без брони сейчас нет — согласуйте с логистом.\nВсё равно создать заявку?`)) {
-      return;
-    }
+    const noCapacity = !zoneCapacity || zoneCapacity.freeNoHold === 0;
     // Защита от дублей: похожая заявка уже в портфеле (тот же заказчик,
     // направление и пересекающееся окно) — вероятно, её просто не нашли в списке.
     const duplicate = allOrders.find(order =>
@@ -1349,6 +1349,8 @@ export async function renderSales(container, context) {
       Date.parse(order.window_from) < Date.parse(values.windowTo) &&
       Date.parse(values.windowFrom) < Date.parse(order.window_to));
     if (duplicate && !confirm(`Похожая заявка «${duplicate.customer_name}» с пересекающимся окном уже в портфеле (наверху списка). Создать ещё одну?`)) {
+      // Явный отклик: иначе отказ выглядит как «сохранил, а заявки нет».
+      toast('Заявка НЕ создана — вы отказались от дубля. Данные остались в форме', 'error');
       return;
     }
     try {
@@ -1360,6 +1362,14 @@ export async function renderSales(container, context) {
       }
       state.salesAttach = [];
       toast(`Забронировано — заявка № ${created.orderNo}${uploaded ? ` · 📎 файлов: ${uploaded}` : ''} в портфеле и в карточке клиента`);
+      // Ёмкости в зоне нет — говорим об этом ПОСЛЕ создания и сообщаем логисту.
+      if (noCapacity) {
+        toast(`⚠ В зоне «${fromZoneNameWarn || '—'}» свободных машин сейчас нет — логист уведомлён, ` +
+          'нужен перегон или освобождение сцепки', 'error');
+        api('/api/notify-capacity', { method: 'POST', body: JSON.stringify({
+          orderId: created.id, zone: fromZoneNameWarn || ''
+        }) }).catch(() => { /* уведомление не критично для создания заявки */ });
+      }
       state.salesVia = [];
       const zoneName = id => data.reference.zones.find(zone => zone.id === id)?.name || '';
       dropFilterIfHides(state, {
