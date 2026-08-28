@@ -2,7 +2,7 @@
 // или километраж посчитаны не от той точки, где сцепка будет к моменту
 // выезда. Логика резолва точек — точная копия серверной (server.mjs:
 // addressPointByText / addressPointById / vehiclePositionBefore).
-// Запуск: node revizia-transfers.mjs <путь к базе> [--apply] [--history]
+// Запуск: node tools/revizia-empty-km.mjs <путь к базе> [--apply] [--history]
 import { DatabaseSync } from 'node:sqlite';
 
 const dbPath = process.argv[2];
