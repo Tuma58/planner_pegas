@@ -23,6 +23,34 @@ export function transferPlaceOf(data, vehicleId, beforeMs = Date.now()) {
     region: arrived.to_region || '' } : null;
 }
 
+// Где сцепка находится СЕЙЧАС — единый расчёт для всех блоков.
+// Машину в ремонте могут перегнать в другой город доремонтироваться: место
+// задаёт последнее по времени событие — выгрузка рейса или прибытие
+// перегона. Раньше каждый блок считал по-своему (по последнему рейсу), и
+// после перегона машина продолжала числиться в прежнем регионе
+// (кейс с869рх58: ремонт в Воронеже → перегон в Пензу, показывало Воронеж).
+export function vehiclePlace(data, vehicleId, nowMs = Date.now()) {
+  const lastTrip = (data.trips || [])
+    .filter(trip => trip.vehicle_id === vehicleId && trip.status !== 'rejected' &&
+      Date.parse(trip.ends_at) <= nowMs)
+    .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0] || null;
+  const moved = transferPlaceOf(data, vehicleId, nowMs);
+  const tripAt = lastTrip ? Date.parse(lastTrip.ends_at) : -Infinity;
+  if (moved && moved.at >= tripAt) {
+    // Точка прибытия перегона: зону берём по справочнику адресов.
+    const address = (data.reference?.addresses || []).find(item => item.name === moved.name);
+    return { zoneName: address?.zone_name || moved.name, region: moved.region || address?.region || '',
+      pointName: moved.name, at: moved.at, source: 'transfer' };
+  }
+  if (lastTrip) {
+    return { zoneName: lastTrip.to_name || '', region: '', pointName: lastTrip.to_point || lastTrip.to_name || '',
+      at: tripAt, source: 'trip' };
+  }
+  const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
+  return { zoneName: vehicle?.zone_name || '', region: '', pointName: vehicle?.zone_name || '',
+    at: -Infinity, source: 'base' };
+}
+
 // Текущий этап перегона: задание → в пути → прибыл.
 export function transferStage(transfer) {
   if (!transfer.driver_notified_at) {

@@ -11,6 +11,7 @@
 // считаются один раз при открытии, клик по чипу перерисовывает только
 // секции — без сети и пересчёта (иначе фильтр лагал).
 import { api, escapeHtml, formatDateTime, money, toast, tripBusyUntilMs } from './api.js';
+import { vehiclePlace } from './transfer.js';
 
 const H = 3_600_000;
 const DAY_RATE = 77_000; // средняя выручка занятого машино-дня (август)
@@ -73,7 +74,10 @@ export function freeVehiclesByZone(data, nowMs = Date.now()) {
       ((trip.status === 'plan' || trip.status === 'run') && Date.parse(trip.starts_at) > nowMs));
     if (active) continue;
     const last = trips[trips.length - 1];
-    const zone = last ? last.to_name : (vehicle.zone_name || '—');
+    // Прибытие перегона переставляет машину: после перегона она свободна
+    // уже в новой зоне, а не там, где выгрузилась.
+    const place = vehiclePlace(data, vehicle.id, nowMs);
+    const zone = place.zoneName || (last ? last.to_name : (vehicle.zone_name || '—'));
     const idleH = last ? Math.max(0, (nowMs - tripBusyUntilMs(last)) / H) : 999;
     if (!zones.has(zone)) zones.set(zone, []);
     zones.get(zone).push({ vehicle, idleH, hold: holds.get(vehicle.id) || null });

@@ -2437,3 +2437,35 @@ test('перегон нельзя превратить в диспозицию �
   const broken = { dispositions: [{ ...row, kind: 'repair', to_name: 'Пенза' }] };
   assert.equal(transferPlaceOf(broken, vehicle), null, 'ремонт местоположение не задаёт');
 });
+
+test('место сцепки: перегон переставляет машину, даже если она в ремонте', async () => {
+  const { vehiclePlace } = await import('../public/assets/transfer.js');
+  const now = Date.now();
+  const iso = hours => new Date(now + hours * 3_600_000).toISOString();
+  const data = {
+    reference: { addresses: [{ id: 'a1', name: 'Пенза, Пролетарская', zone_name: 'Дом', region: 'Пензенская обл' }] },
+    vehicles: [{ id: 'v1', status: 'work', zone_name: 'Черноземье' }],
+    trips: [{ id: 't1', vehicle_id: 'v1', status: 'unloaded', to_name: 'Черноземье',
+      to_point: 'Воронеж', starts_at: iso(-72), ends_at: iso(-48) }],
+    dispositions: [
+      // Ремонт продолжается, но машину перегнали доремонтироваться в Пензу.
+      { id: 'd1', vehicle_id: 'v1', kind: 'repair', starts_at: iso(-60), ends_at: iso(24) },
+      { id: 'd2', vehicle_id: 'v1', kind: 'transfer', starts_at: iso(-10), ends_at: iso(-2),
+        arrived_at: iso(-2), to_name: 'Пенза, Пролетарская', to_region: 'Пензенская обл' }
+    ]
+  };
+  const place = vehiclePlace(data, 'v1', now);
+  assert.equal(place.source, 'transfer', 'место задаёт прибытие перегона');
+  assert.equal(place.zoneName, 'Дом', 'зона берётся по справочнику адресов точки прибытия');
+  assert.equal(place.region, 'Пензенская обл');
+
+  // Пока перегон не завершён, машина числится там, где выгрузилась.
+  const inRoute = { ...data, dispositions: [data.dispositions[0],
+    { ...data.dispositions[1], arrived_at: null }] };
+  assert.equal(vehiclePlace(inRoute, 'v1', now).zoneName, 'Черноземье',
+    'машина в пути место не меняет');
+
+  // Рейс позже перегона возвращает приоритет рейсу.
+  const laterTrip = { ...data, trips: [{ ...data.trips[0], ends_at: iso(-1) }] };
+  assert.equal(vehiclePlace(laterTrip, 'v1', now).source, 'trip');
+});

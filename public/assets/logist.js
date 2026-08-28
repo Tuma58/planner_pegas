@@ -442,7 +442,8 @@ export async function renderLogist(container, context) {
           ? `<b style="color:var(--warn)">⌛ ${idleLabel}</b> · с <b>${formatDateTime(request.freeAt)}</b>`
           : request.overdueTrip ? '<b class="danger">⏳ выгрузка ожидается — расчётное время вышло</b>'
           : `⏱ освободится <b>${formatDateTime(request.freeAt)}</b>`}${blockedNote}</span>
-        <small class="muted" style="display:block">📍 геозона ${escapeHtml(request.zone.name || '—')}
+        <small class="muted" style="display:block">📍 геозона ${escapeHtml(request.zone.name || '—')}${request.movedByTransfer
+    ? ` <span class="badge ok" title="Машина переставлена перегоном порожним">🚚 после перегона: ${escapeHtml(String(request.movedByTransfer).slice(0, 28))}</span>` : ''}
           · ${stateNote(request)} · ${nextLabel}</small>
         ${request.nextMissing ? '<small class="next-missing">⏭ следующий рейс не назначен — назначьте до освобождения</small>' : ''}
       </span>

@@ -7,6 +7,7 @@ import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { salesRadarDialog, directionMarket, freeVehiclesByZone } from './sales-radar.js';
 import { customerCardDialog } from './customer-card.js';
+import { vehiclePlace } from './transfer.js';
 import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -555,7 +556,11 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     // освобождения — в пределах открытого месяца.
     const idleMs = nowMs - endsAt.getTime();
     if (idleMs <= 0 && (endsAt >= monthEndDate || endsAt < monthStartDate)) return;
-    const zone = zoneByName[last?.to_name] || zoneByName[vehicle.zone_name];
+    // Место сцепки — по последнему событию: выгрузка рейса или прибытие
+    // перегона. Машину в ремонте могли перегнать доремонтироваться в другой
+    // город, и предлагать её надо уже оттуда.
+    const place = vehiclePlace(data, vehicle.id, nowMs);
+    const zone = zoneByName[place.zoneName] || zoneByName[last?.to_name] || zoneByName[vehicle.zone_name];
     if (!zone) return;
     // Предложение обратного груза: самое доходное направление из зоны выгрузки.
     const lanes = data.reference.routeRates
@@ -567,7 +572,8 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
       : null;
     requests.push({
       vehicle, zone,
-      region: regionOfTrip(last),
+      region: place.source === 'transfer' ? (place.region || regionOfTrip(last)) : regionOfTrip(last),
+      movedByTransfer: place.source === 'transfer' ? place.pointName : '',
       overdueTrip,
       // Последний рейс ещё в работе, а следующего нет — нарушение правила
       // «у машины на линии назначен следующий рейс».
