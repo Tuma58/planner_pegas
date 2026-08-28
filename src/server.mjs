@@ -2681,10 +2681,20 @@ async function api(request, response, url) {
     const active = db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
       JOIN zones f ON f.id=t.from_zone_id JOIN zones d ON d.id=t.to_zone_id
       WHERE t.vehicle_id=? AND t.status IN ('run','plan') ORDER BY t.starts_at LIMIT 1`).get(vehicle.id);
-    const next = db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
-      JOIN zones f ON f.id=t.from_zone_id JOIN zones d ON d.id=t.to_zone_id
-      WHERE t.vehicle_id=? AND t.status='plan' AND t.starts_at>? ORDER BY t.starts_at LIMIT 1`)
-      .get(vehicle.id, nowIso);
+    // Следующее задание ищем среди ВСЕХ незавершённых рейсов, а не только
+    // «в плане»: следующий рейс часто выводят на линию заранее, он получает
+    // статус «в пути» — и тогда водителю отвечали «следующего задания нет»,
+    // хотя оно назначено (кейс т018ав58: два рейса подряд, оба run).
+    const next = active
+      ? db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
+        JOIN zones f ON f.id=t.from_zone_id JOIN zones d ON d.id=t.to_zone_id
+        WHERE t.vehicle_id=? AND t.id<>? AND t.status IN ('run','plan')
+          AND t.starts_at>=? ORDER BY t.starts_at LIMIT 1`)
+        .get(vehicle.id, active.id, active.starts_at)
+      : db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
+        JOIN zones f ON f.id=t.from_zone_id JOIN zones d ON d.id=t.to_zone_id
+        WHERE t.vehicle_id=? AND t.status IN ('run','plan') AND t.starts_at>?
+        ORDER BY t.starts_at LIMIT 1`).get(vehicle.id, nowIso);
     const order = active?.order_id
       ? db.prepare(`SELECT o.*, fa.address from_address_text, ta.address to_address_text
           FROM orders o LEFT JOIN addresses fa ON fa.id=o.from_address_id

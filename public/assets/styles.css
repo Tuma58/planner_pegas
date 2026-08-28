@@ -1321,3 +1321,20 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .p160-status { min-height: 24px; font-size: var(--fs-xs); }
 .p160-snap { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap;
   font-size: var(--fs-xs); }
+
+/* ── Подсказка по сцепке при наведении (задержка 1 с) ── */
+.vhov { position: absolute; z-index: 9500; max-width: 380px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: var(--fs-sm);
+  opacity: 0; pointer-events: none; transition: opacity .12s ease; }
+.vhov.open { opacity: 1; pointer-events: auto; }
+.vhov-head { padding-bottom: 5px; margin-bottom: 5px; border-bottom: 1px solid var(--line); }
+.vhov-head small { display: block; color: var(--muted); font-size: var(--fs-xs); }
+.vhov-row { margin: 3px 0; line-height: 1.35; }
+.vhov-row small { color: var(--muted); }
+.vhov-next { color: var(--ok); font-weight: 600; }
+.vhov-warn { color: var(--warn); font-weight: 600; }
+.vhov-bad { color: var(--bad); font-weight: 700; }
+.vhov-foot { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line);
+  font-size: var(--fs-xs); color: var(--muted); }
+[data-vinfo] { cursor: pointer; }

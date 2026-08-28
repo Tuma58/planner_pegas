@@ -13,6 +13,7 @@ import { setupGuide } from './guide.js';
 import { DISP_KINDS, renderResource } from './resource.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
+import { setupVehicleHover } from './vehicle-hover.js';
 import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
 
@@ -1799,6 +1800,9 @@ byId('logout').onclick = logout;
 // Звонок водителя доступен любому сотруднику: вопрос может прилететь кому
 // угодно, а ответ должен быть под рукой без перехода по блокам.
 const callContext = () => ({ state, can, showModal, closeModal, onReload: reload });
+// Подсказка по сцепке: задержал курсор на госномере секунду — видно
+// текущее состояние и следующее задание, без клика и без запроса к серверу.
+setupVehicleHover(() => state.data);
 byId('callButton').onclick = () => callSearchDialog(callContext(), state.data);
 setupTheme();
 byId('customersButton').onclick = showCustomers;
