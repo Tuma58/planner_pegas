@@ -336,6 +336,7 @@ export async function renderLogist(container, context) {
   // то есть заявки с погрузкой оттуда. Раньше фильтр брал оба конца маршрута
   // сразу, и в «Питере» показывались тверские заявки, которые в Питер едут —
   // выглядело как «фильтр не срабатывает».
+  const nowMsFilter = Date.now();
   const zoneDir = state.logistZoneDir || 'from';
   const zoneMatches = row => {
     if (!zone) return true;
@@ -405,6 +406,47 @@ export async function renderLogist(container, context) {
   // логист подбирает им рейсы из очереди или запрашивает загрузку у продаж.
   const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
   const allVehicleRequests = autoRequests(data, state.month, monthEnd);
+  // Фильтр состояния парка: логисту нужно видеть не только тех, кому нужна
+  // работа, но и «кто сейчас забронирован», «кто в ремонте и когда выйдет»,
+  // «кто в перегоне». Обычный список этих машин не показывает — они
+  // недоступны дольше суток и из потребности исключены.
+  const stateFilter = state.logistState || '';
+  const holdsByVehicle = new Map((data.vehicleHolds || [])
+    .filter(item => Date.parse(item.until) > nowMsFilter)
+    .map(item => [item.vehicle_id, item]));
+  const dispoOf = new Map();
+  for (const item of data.dispositions || []) {
+    // Перегон живёт до отметки о прибытии, остальные виды — по окну дат.
+    const active = item.kind === 'transfer'
+      ? !item.arrived_at
+      : Date.parse(item.starts_at) <= nowMsFilter && Date.parse(item.ends_at) > nowMsFilter;
+    if (!active) continue;
+    if (!dispoOf.has(item.kind)) dispoOf.set(item.kind, new Map());
+    dispoOf.get(item.kind).set(item.vehicle_id, item);
+  }
+  // Считаем и показываем по одному множеству — машинам парка, иначе счётчик
+  // в фильтре разойдётся с числом строк в списке.
+  const parkVehicles = (data.vehicles || []).filter(vehicle => vehicle.status === 'work');
+  const stateRowsOf = kind => parkVehicles.map(vehicle => {
+    if (kind === 'hold') {
+      const hold = holdsByVehicle.get(vehicle.id);
+      return hold ? { vehicle, until: hold.until, who: hold.held_by_name, note: hold.note } : null;
+    }
+    const item = dispoOf.get(kind)?.get(vehicle.id);
+    if (!item) return null;
+    const note = kind === 'transfer'
+      ? `→ ${item.to_name || ''}${item.purpose ? ` · ${item.purpose}` : ''}`
+      : item.note || '';
+    return { vehicle, until: item.ends_at, who: '', note };
+  }).filter(Boolean);
+  const stateCounts = {};
+  for (const kind of ['hold', 'repair', 'no_driver', 'shift', 'reserve', 'transfer', 'out']) {
+    stateCounts[kind] = stateRowsOf(kind).length;
+  }
+  const stateVehicles = (!stateFilter ? [] : stateRowsOf(stateFilter))
+    .filter(row => matches(`${row.vehicle.plate} ${row.vehicle.driver_name || ''} ${row.vehicle.type_name || ''}`))
+    .sort((a, b) => String(a.until).localeCompare(String(b.until)));
+
   const vehicleRequests = allVehicleRequests
     .filter(request => (!zone || request.zone.name === zone) &&
       (!region || request.region === region) &&
@@ -428,6 +470,24 @@ export async function renderLogist(container, context) {
     if (request.overdueTrip) return '<span style="color:var(--warn)">🛣 ещё в рейсе — расчётное время вышло, уточните у диспетчера</span>';
     return 'в рейсе';
   };
+  const stateLabels = { hold: '🔒 Забронированы', repair: '🔧 В ремонте',
+    no_driver: '👤 Без водителя', shift: '🔁 Пересменка', transfer: '🚚 В перегоне',
+    reserve: '🅿 Резерв под заказ', out: '⛔ Выведены из работы' };
+  const stateCards = stateVehicles.map(row => `<div class="list-item ordrow">
+    <span style="flex:1;min-width:0">
+      <strong class="mono vlink" data-vinfo="${row.vehicle.id}">${escapeHtml(row.vehicle.plate)}</strong>
+      <small class="muted"> · ${escapeHtml(row.vehicle.type_name || '')}
+        · ${escapeHtml(row.vehicle.driver_name || 'без водителя')}</small>
+      <small class="muted" style="display:block">${stateFilter === 'hold' ? 'бронь до' : 'до'}
+        ${formatDateTime(row.until)}${row.who ? ` · ${escapeHtml(row.who)}` : ''}${row.note
+    ? ` · ${escapeHtml(String(row.note).slice(0, 60))}` : ''}</small>
+    </span>
+    <span style="display:flex;gap:5px">
+      ${stateFilter === 'hold' ? `<button class="button ghost small" data-hold-toggle="${row.vehicle.id}"
+        title="Снять бронь">🔓 Снять</button>` : ''}
+    </span>
+  </div>`).join('') || '<p class="muted">В этом состоянии сейчас нет машин.</p>';
+
   const vehicleCards = vehicleRequests.map((request, index) => {
     // Честная длительность: часы до суток, затем дни (раньше даже 2 часа
     // простоя показывались как «стоит 1 дн»).
@@ -605,6 +665,16 @@ export async function renderLogist(container, context) {
         <small class="skm">рейсов ${runTrips.length} · ${money(runSum)}</small></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:260px">
+        <select id="logistState" title="Показать машины парка в выбранном состоянии: забронированные, в ремонте, без водителя, в перегоне">
+          <option value="">Кому нужна работа</option>
+          <option value="hold" ${stateFilter === 'hold' ? 'selected' : ''}>🔒 Забронированы (${stateCounts.hold})</option>
+          <option value="repair" ${stateFilter === 'repair' ? 'selected' : ''}>🔧 В ремонте (${stateCounts.repair})</option>
+          <option value="no_driver" ${stateFilter === 'no_driver' ? 'selected' : ''}>👤 Без водителя (${stateCounts.no_driver})</option>
+          <option value="shift" ${stateFilter === 'shift' ? 'selected' : ''}>🔁 Пересменка (${stateCounts.shift})</option>
+          <option value="transfer" ${stateFilter === 'transfer' ? 'selected' : ''}>🚚 В перегоне (${stateCounts.transfer})</option>
+          <option value="reserve" ${stateFilter === 'reserve' ? 'selected' : ''}>🅿 Резерв (${stateCounts.reserve})</option>
+          <option value="out" ${stateFilter === 'out' ? 'selected' : ''}>⛔ Выведены (${stateCounts.out})</option>
+        </select>
         <select id="logistZoneDir"
           title="К чему относятся фильтры геозоны и субъекта: к пункту погрузки, выгрузки или к любому концу маршрута">
           <option value="from" ${zoneDir === 'from' ? 'selected' : ''}>погрузка в…</option>
@@ -635,10 +705,12 @@ export async function renderLogist(container, context) {
     </div>
     <div class="salesboard">
       <div class="scol">
-        <div class="scolh">Сцепки: простаивают и освобождаются <span>${vehicleRequests.length}</span></div>
-        <div class="list">${vehicleCards}</div>
-        <div class="geohint">«Подобрать рейс» — заявки очереди, подходящие по времени освобождения;
-          «→ Продажи» — запрос загрузки, если подходящего рейса нет.</div>
+        <div class="scolh">${stateFilter ? stateLabels[stateFilter] : 'Сцепки: простаивают и освобождаются'}
+          <span>${stateFilter ? stateVehicles.length : vehicleRequests.length}</span></div>
+        <div class="list">${stateFilter ? stateCards : vehicleCards}</div>
+        <div class="geohint">${stateFilter
+    ? 'Показаны машины парка в выбранном состоянии. Вернуться к потребности — «Кому нужна работа» в фильтре состояния.'
+    : '«Подобрать рейс» — заявки очереди, подходящие по времени освобождения; «→ Продажи» — запрос загрузки, если подходящего рейса нет.'}</div>
       </div>
       <div class="scol">
         <div class="scolh">Назначение и подтверждение <span>${queue.length + needConfirm}</span>
@@ -694,9 +766,13 @@ export async function renderLogist(container, context) {
   };
   container.querySelector('#logistFilterReset')?.addEventListener('click', () => {
     state.logistZone = ''; state.logistRegion = ''; state.logistFrom = ''; state.logistTo = '';
-    state.logistZoneDir = 'from';
+    state.logistZoneDir = 'from'; state.logistState = '';
     state.logistQuery = ''; rerender();
   });
+  container.querySelector('#logistState').onchange = event => {
+    state.logistState = event.currentTarget.value;
+    renderLogist(container, context);
+  };
   container.querySelector('#logistZoneDir').onchange = event => {
     state.logistZoneDir = event.currentTarget.value;
     renderLogist(container, context);
