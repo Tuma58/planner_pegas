@@ -265,6 +265,19 @@ CREATE TABLE IF NOT EXISTS vehicle_holds (
   held_by TEXT REFERENCES users(id), held_by_name TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Объявления на общий экран (табло): админ выводит сообщение поверх
+-- дашборда — планёрка, сбой 1С, аврал. Живёт до срока (ends_at) или до
+-- снятия (removed_at), после чего перестаёт отдаваться клиенту.
+CREATE TABLE IF NOT EXISTS board_notes (
+  id TEXT PRIMARY KEY,
+  text TEXT NOT NULL, subtext TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'info' CHECK(kind IN ('info','warn','urgent')),
+  starts_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ends_at TEXT,
+  created_by TEXT REFERENCES users(id), created_by_name TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  removed_at TEXT, removed_by_name TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS delivery_slots (
   id TEXT PRIMARY KEY, customer_name TEXT NOT NULL,
   from_zone_id TEXT NOT NULL REFERENCES zones(id),

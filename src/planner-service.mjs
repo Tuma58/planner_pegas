@@ -306,7 +306,7 @@ export function driverCardData(db, driverId) {
       COALESCE(SUM(distance_km + COALESCE(empty_km, 0)), 0) km,
       COALESCE(SUM(revenue_vat), 0) revenue
     FROM trips WHERE vehicle_id=? AND status<>'rejected'
-      AND ends_at >= datetime('now','-30 days') AND ends_at <= datetime('now')`)
+      AND datetime(ends_at) >= datetime('now','-30 days') AND datetime(ends_at) <= datetime('now')`)
     .get(driver.vehicle_id) : { count: 0, km: 0, revenue: 0 };
   return {
     driver,

@@ -414,6 +414,29 @@ tbody tr:hover td { background: var(--hover); }
 @keyframes dashPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 28%, transparent); }
   50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--bad) 0%, transparent); } }
 .dash-day.lack .dd-verdict { animation: dashPulse 2.6s ease-in-out infinite; }
+/* Объявление админа на табло: одна крупная плашка поверх дашборда.
+   Несколько объявлений сменяют друг друга — на экране всегда одно. */
+.board-strip { position: relative; margin: 6px 0 2px; }
+.board-note { display: none; border-radius: 10px; padding: 12px 16px;
+  border: 2px solid var(--line); background: var(--card); }
+.board-note.on { display: block; }
+.board-note.info { border-color: #4e7ab0; background: color-mix(in srgb, #4e7ab0 12%, var(--card)); }
+.board-note.warn { border-color: #c99a2e; background: color-mix(in srgb, #c99a2e 14%, var(--card)); }
+.board-note.urgent { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--card));
+  animation: dashPulse 2.2s ease-in-out infinite; }
+.board-text { font-size: clamp(17px, 1.8vw, 26px); font-weight: 700; line-height: 1.25; }
+.board-sub { font-size: clamp(13px, 1.1vw, 17px); margin-top: 3px; }
+.board-meta { font-size: 11px; color: var(--muted); margin-top: 5px; }
+.board-dots { position: absolute; right: 10px; top: 8px; display: flex; gap: 4px; }
+.board-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
+.board-dots i.on { background: var(--muted); }
+.board-templates { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin: 6px 0; }
+/* На общем экране объявление читают от двери — оно крупнее всех цифр. */
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .board-note { background: #1a232d; }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .board-text { font-size: clamp(28px, 3.4vw, 56px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .board-sub { font-size: clamp(17px, 1.7vw, 30px); }
+:is(#dashRoot:fullscreen, #dashRoot.dash-tv) .board-meta { font-size: clamp(12px, 1vw, 17px); }
+
 /* Полноэкранный ТВ-режим (нативный fullscreen или киоск-класс .dash-tv):
    тёмная сцена, крупная типографика, растяжка на весь экран. */
 #dashRoot.dash-tv { position: fixed; inset: 0; z-index: 400; }

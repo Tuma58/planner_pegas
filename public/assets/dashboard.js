@@ -6,6 +6,7 @@ import { api, escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restore
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
 import { loadOpenQuestions } from './call-card.js';
+import { boardDialog, boardNotesHtml, wireBoardNotes } from './board.js';
 
 const DAY_MS = 86_400_000;
 const DEFAULT_MONTH_PLAN = 160_000_000;
@@ -471,8 +472,11 @@ export async function renderDashboard(container, context) {
       <span class="dash-clock" id="dashClock"></span>
       <span class="dash-upd muted">обновлено ${new Date().toLocaleTimeString('ru-RU',
         { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })} МСК · авто раз в 90 с</span>
+      ${context.can('settings:write') ? `<button class="button ghost small" id="dashBoard"
+        title="Вывести объявление на общий экран: планёрка, сбой 1С, аврал">📢 На табло</button>` : ''}
       <button class="button ghost small" id="dashFull" title="Полноэкранный режим для общего экрана (выход — Esc)">⛶ На весь экран</button>
     </div>
+    ${boardNotesHtml(context.state.data.boardNotes)}
     <div class="dash-goal dash-month">
       <div class="dash-goal-head">
         <span>Выручка без НДС · ${escapeHtml(monthLabel)} · <b>забито</b></span>
@@ -596,6 +600,8 @@ export async function renderDashboard(container, context) {
   };
   tickClock();
   state.dashClockTimer = setInterval(tickClock, 1000);
+  wireBoardNotes(container, state);
+  container.querySelector('#dashBoard')?.addEventListener('click', () => boardDialog(context));
   const fullButton = container.querySelector('#dashFull');
   const setTvButton = on => { if (fullButton) fullButton.textContent = on ? '✕ Выйти (Esc)' : '⛶ На весь экран'; };
   if (fullButton) fullButton.onclick = async () => {

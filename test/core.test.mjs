@@ -2438,6 +2438,44 @@ test('перегон нельзя превратить в диспозицию �
   assert.equal(transferPlaceOf(broken, vehicle), null, 'ремонт местоположение не задаёт');
 });
 
+test('объявления на табло: показываются по сроку, публикует только админ', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-board-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const insert = (id, text, kind, endsAt, removed = null) =>
+    db.prepare(`INSERT INTO board_notes(id,text,kind,ends_at,removed_at,created_by_name)
+      VALUES(?,?,?,?,?,'Администратор')`).run(id, text, kind, endsAt, removed);
+  const iso = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+  insert('b1', 'Планёрка в 15:00', 'urgent', iso(4));
+  insert('b2', 'Приёмка документов до 17:00', 'info', iso(2));
+  insert('b3', 'Вчерашняя планёрка', 'info', iso(-1));
+  insert('b4', 'Снятое объявление', 'warn', iso(5), new Date().toISOString());
+  insert('b5', 'Висит до отмены', 'warn', null);
+
+  // Тот же запрос, что отдаёт сервер: срочное первым, просроченное и
+  // снятое не показываем — иначе на общем экране висит вчерашний день.
+  // datetime(...) с обеих сторон обязателен: ends_at приходит в ISO
+  // («2026-08-28T11:00:00.000Z»), а datetime('now') даёт «2026-08-28
+  // 11:00:00» — при строковом сравнении «T» больше пробела, и объявление,
+  // истёкшее сегодня, продолжало бы висеть до полуночи.
+  const active = db.prepare(`SELECT id,kind FROM board_notes
+    WHERE removed_at IS NULL AND datetime(starts_at) <= datetime('now')
+      AND (ends_at IS NULL OR datetime(ends_at) > datetime('now'))
+    ORDER BY CASE kind WHEN 'urgent' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, created_at DESC`).all();
+  assert.deepEqual(active.map(note => note.id), ['b1', 'b5', 'b2'],
+    'срочное сверху, просроченное и снятое не выводятся, «до отмены» остаётся');
+
+  // Публикация — право settings:write: оно есть только у админа.
+  assert.ok(permissionsFor('admin').includes('settings:write'));
+  for (const role of ['manager', 'logist', 'dispatcher', 'sales', 'resource', 'accountant']) {
+    assert.ok(!permissionsFor(role).includes('settings:write'),
+      `${role} не должен публиковать на общий экран`);
+  }
+});
+
 test('место сцепки: выгрузка раньше плана и субъект РФ из точки выгрузки', async () => {
   const { vehiclePlace } = await import('../public/assets/transfer.js');
   const { autoRequests } = await import('../public/assets/sales.js');

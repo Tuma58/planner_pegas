@@ -282,6 +282,18 @@ function notifyEveryone(text, entity = null, entityId = null) {
   return users.length;
 }
 
+// ── Объявления на табло ──
+// Общий экран смотрят издалека и мельком, поэтому показываем только то,
+// что действует прямо сейчас: снятое или просроченное объявление клиенту
+// не отдаём вовсе — иначе на экране висит вчерашняя планёрка.
+function activeBoardNotes() {
+  return db.prepare(`SELECT id,text,subtext,kind,starts_at,ends_at,created_by_name,created_at
+    FROM board_notes
+    WHERE removed_at IS NULL AND datetime(starts_at) <= datetime('now')
+      AND (ends_at IS NULL OR datetime(ends_at) > datetime('now'))
+    ORDER BY CASE kind WHEN 'urgent' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, created_at DESC`).all();
+}
+
 // Маршрут для текста уведомления: пункты, при их отсутствии — геозоны.
 function routeText(row) {
   const zoneName = id => db.prepare('SELECT name FROM zones WHERE id=?').get(id)?.name || '';
@@ -922,7 +934,8 @@ async function api(request, response, url) {
       demurrage: demurrageSummary(db),
       customerDates: upcomingCustomerDates(db, Date.now(), 7),
       vehicleHolds: db.prepare(`SELECT h.vehicle_id, h.until, h.note, h.held_by_name
-        FROM vehicle_holds h WHERE h.until > datetime('now')`).all()
+        FROM vehicle_holds h WHERE datetime(h.until) > datetime('now')`).all(),
+      boardNotes: activeBoardNotes()
     });
   }
 
@@ -1061,7 +1074,8 @@ async function api(request, response, url) {
     const body = await readJson(request);
     const vehicle = db.prepare(`SELECT id, plate FROM vehicles WHERE id=?`).get(String(body.vehicleId || ''));
     if (!vehicle) return errorJson(response, 404, 'ТС не найдено');
-    const existing = db.prepare(`SELECT * FROM vehicle_holds WHERE vehicle_id=? AND until > datetime('now')`)
+    const existing = db.prepare(`SELECT * FROM vehicle_holds
+      WHERE vehicle_id=? AND datetime(until) > datetime('now')`)
       .get(vehicle.id);
     if (body.remove || (existing && !body.note && !body.hours)) {
       if (existing && existing.held_by !== user.id &&
@@ -1082,6 +1096,52 @@ async function api(request, response, url) {
         user.id, user.full_name || user.username || '');
     audit(db, user, 'hold', 'vehicle', vehicle.id, { hours, note: body.note }, requestIp(request));
     return json(response, 200, { held: true, until });
+  }
+
+  // ── Объявления на табло: список, публикация, снятие ──
+  // Читать может любой сотрудник (объявление и так висит на общем экране),
+  // публиковать и снимать — только админ: табло видят все, и случайная
+  // надпись на нём дороже, чем лишнее согласование.
+  if (request.method === 'GET' && pathname === '/api/board-notes') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const history = hasPermission(user, 'settings:write') && url.searchParams.get('history') === '1';
+    return json(response, 200, {
+      notes: activeBoardNotes(),
+      history: history ? db.prepare(`SELECT id,text,kind,ends_at,created_by_name,created_at,
+        removed_at,removed_by_name FROM board_notes ORDER BY created_at DESC LIMIT 30`).all() : []
+    });
+  }
+
+  if (request.method === 'POST' && pathname === '/api/board-notes') {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const text = clean(body.text).slice(0, 240);
+    if (!text) return errorJson(response, 422, 'Нужен текст объявления');
+    const kind = ['info', 'warn', 'urgent'].includes(body.kind) ? body.kind : 'info';
+    // hours = 0 означает «до отмены»: снимать будет админ руками.
+    const hours = Number(body.hours);
+    const endsAt = Number.isFinite(hours) && hours > 0
+      ? new Date(Date.now() + Math.min(720, hours) * 3_600_000).toISOString() : null;
+    const id = randomUUID();
+    db.prepare(`INSERT INTO board_notes(id,text,subtext,kind,ends_at,created_by,created_by_name)
+      VALUES(?,?,?,?,?,?,?)`).run(id, text, clean(body.subtext).slice(0, 160), kind, endsAt,
+      user.id, user.full_name || user.username || '');
+    audit(db, user, 'board-note', 'board', id, { kind, hours: hours || 0 }, requestIp(request));
+    return json(response, 201, { id, notes: activeBoardNotes() });
+  }
+
+  if (request.method === 'DELETE' && pathname.startsWith('/api/board-notes/')) {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    const id = pathname.split('/').pop();
+    const note = db.prepare('SELECT id FROM board_notes WHERE id=? AND removed_at IS NULL').get(id);
+    if (!note) return errorJson(response, 404, 'Объявление не найдено');
+    db.prepare(`UPDATE board_notes SET removed_at=CURRENT_TIMESTAMP, removed_by_name=? WHERE id=?`)
+      .run(user.full_name || user.username || '', id);
+    audit(db, user, 'board-note-remove', 'board', id, {}, requestIp(request));
+    return json(response, 200, { notes: activeBoardNotes() });
   }
 
   // ── План вывоза грузов от клиентов: сетка слотов, план-факт месяца ──
