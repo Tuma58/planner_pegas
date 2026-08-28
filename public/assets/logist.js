@@ -332,7 +332,17 @@ export async function renderLogist(container, context) {
     (!dateTo || String(fromIso).slice(0, 10) <= dateTo);
   const matches = text => !query || text.toLowerCase().includes(query);
   // Фильтр по геозонам: строка проходит, если зона участвует в маршруте.
-  const zoneMatches = row => !zone || row.from_name === zone || row.to_name === zone;
+  // Направление фильтра: логист чаще ищет груз ДЛЯ машины, стоящей в зоне,
+  // то есть заявки с погрузкой оттуда. Раньше фильтр брал оба конца маршрута
+  // сразу, и в «Питере» показывались тверские заявки, которые в Питер едут —
+  // выглядело как «фильтр не срабатывает».
+  const zoneDir = state.logistZoneDir || 'from';
+  const zoneMatches = row => {
+    if (!zone) return true;
+    if (zoneDir === 'from') return row.from_name === zone;
+    if (zoneDir === 'to') return row.to_name === zone;
+    return row.from_name === zone || row.to_name === zone;
+  };
   // Субъект РФ — по адресам заявки; у рейса — через связанную заявку.
   const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
   const orderRegions = order => [addressById(order?.from_address_id)?.region,
@@ -341,6 +351,11 @@ export async function renderLogist(container, context) {
     if (!region) return true;
     const order = row.window_from !== undefined
       ? row : data.orders.find(item => item.trip_id === row.id || item.id === row.order_id);
+    if (!order) return false;
+    const from = addressById(order.from_address_id)?.region;
+    const to = addressById(order.to_address_id)?.region;
+    if (zoneDir === 'from') return from === region;
+    if (zoneDir === 'to') return to === region;
     return orderRegions(order).includes(region);
   };
   const regionList = [...new Set((data.reference.addresses || [])
@@ -590,6 +605,12 @@ export async function renderLogist(container, context) {
         <small class="skm">рейсов ${runTrips.length} · ${money(runSum)}</small></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:260px">
+        <select id="logistZoneDir"
+          title="К чему относятся фильтры геозоны и субъекта: к пункту погрузки, выгрузки или к любому концу маршрута">
+          <option value="from" ${zoneDir === 'from' ? 'selected' : ''}>погрузка в…</option>
+          <option value="to" ${zoneDir === 'to' ? 'selected' : ''}>выгрузка в…</option>
+          <option value="any" ${zoneDir === 'any' ? 'selected' : ''}>любой конец</option>
+        </select>
         <select id="logistZone" title="Фильтр по геозоне маршрута">
           <option value="">Все геозоны</option>
           ${data.reference.zones.map(item =>
@@ -673,8 +694,13 @@ export async function renderLogist(container, context) {
   };
   container.querySelector('#logistFilterReset')?.addEventListener('click', () => {
     state.logistZone = ''; state.logistRegion = ''; state.logistFrom = ''; state.logistTo = '';
+    state.logistZoneDir = 'from';
     state.logistQuery = ''; rerender();
   });
+  container.querySelector('#logistZoneDir').onchange = event => {
+    state.logistZoneDir = event.currentTarget.value;
+    renderLogist(container, context);
+  };
   container.querySelector('#logistZone').onchange = event => {
     state.logistZone = event.currentTarget.value;
     renderLogist(container, context);
