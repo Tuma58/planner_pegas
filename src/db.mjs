@@ -282,6 +282,16 @@ CREATE TABLE IF NOT EXISTS assign_drafts (
   outcome TEXT CHECK(outcome IN ('accepted','overridden')),
   resolved_at TEXT
 );
+-- План парка: каждой машине назначается типовой круг (шаблон К1–К8 из
+-- rounds.js) — по нему «🚛 План парка» раскатывает прогноз занятости на
+-- месяц вперёд и показывает свободный ресурс под новых клиентов.
+CREATE TABLE IF NOT EXISTS vehicle_round_plans (
+  vehicle_id TEXT PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
+  round_key TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  updated_by TEXT REFERENCES users(id),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS board_notes (
   id TEXT PRIMARY KEY,
   text TEXT NOT NULL, subtext TEXT NOT NULL DEFAULT '',

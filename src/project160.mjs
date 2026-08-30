@@ -156,7 +156,8 @@ export const METRICS = {
   rate_per_km: { label: 'Ставка', unit: '₽/км', dir: 'more' },
   next_month_orders: { label: 'Портфель следующего месяца', unit: '₽', dir: 'more' },
   question_sla_pct: { label: 'Ответы водителям в 10 минут', unit: '%', dir: 'more' },
-  shipper_notified_pct: { label: 'Данные грузоотправителю до выхода', unit: '%', dir: 'more' }
+  shipper_notified_pct: { label: 'Данные грузоотправителю до выхода', unit: '%', dir: 'more' },
+  leg_gap_h: { label: 'Зазор стыковки между рейсами', unit: 'ч', dir: 'less' }
 };
 
 // Текущее значение метрики за период. Одна функция на все инициативы —
@@ -206,6 +207,26 @@ export function metricValue(db, key, fromIso, toIso) {
         FROM trips WHERE status<>'rejected' AND on_line_at IS NOT NULL
           AND on_line_at>=? AND on_line_at<?`, fromIso, toIso);
       return row.total ? Math.round(row.sent / row.total * 100) : null;
+    }
+    case 'leg_gap_h': {
+      // Средний простой сцепки между рейсами: от освобождения (факт выгрузки,
+      // иначе план) до старта следующего рейса. Август: 0,85 дня на рейс —
+      // машина в рейсе лишь 66% рабочего времени; каждый час зазора по парку
+      // стоит ~770 ₽ маржи на машину. Цель — 8 часов.
+      const rows = db.prepare(`SELECT vehicle_id, starts_at,
+          COALESCE(unloaded_at, ends_at) done_at
+        FROM trips WHERE status<>'rejected' AND starts_at>=? AND starts_at<?
+        ORDER BY vehicle_id, starts_at`).all(fromIso, toIso);
+      const gaps = [];
+      for (let i = 1; i < rows.length; i += 1) {
+        if (rows[i].vehicle_id !== rows[i - 1].vehicle_id) continue;
+        const doneMs = Date.parse(String(rows[i - 1].done_at).replace(' ', 'T') +
+          (String(rows[i - 1].done_at).includes('Z') || String(rows[i - 1].done_at).includes('+') ? '' : 'Z'));
+        const gap = (Date.parse(rows[i].starts_at) - doneMs) / 3_600_000;
+        if (Number.isFinite(gap) && gap >= 0 && gap < 24 * 7) gaps.push(gap);
+      }
+      if (!gaps.length) return null;
+      return Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length * 10) / 10;
     }
     case 'no_driver_days':
     case 'repair_days':

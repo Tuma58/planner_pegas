@@ -414,6 +414,15 @@ tbody tr:hover td { background: var(--hover); }
 @keyframes dashPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 28%, transparent); }
   50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--bad) 0%, transparent); } }
 .dash-day.lack .dd-verdict { animation: dashPulse 2.6s ease-in-out infinite; }
+/* План парка: сетка машин на месяц. */
+.fleet-plan td { padding: 2px 3px; }
+.fleet-plan .fp-plan { background: #3b6ea5; color: #fff; }
+.fleet-plan .fp-run { background: #2e7d6b; color: #fff; }
+.fleet-plan .fp-done { background: #20624f; color: #fff; }
+.fleet-plan .fp-disp { background: #5a6672; color: #fff; }
+.fleet-plan .fp-fore { color: var(--muted); background: color-mix(in srgb, #3b6ea5 12%, transparent); }
+.fleet-plan .fp-free { background: #fff3cd; }
+
 /* Объявление админа на табло: одна крупная плашка поверх дашборда.
    Несколько объявлений сменяют друг друга — на экране всегда одно. */
 .board-strip { position: relative; margin: 6px 0 2px; }

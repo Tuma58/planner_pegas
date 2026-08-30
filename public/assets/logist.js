@@ -4,6 +4,7 @@
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
+import { fleetPlanDialog } from './fleet-plan.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -711,6 +712,8 @@ export async function renderLogist(container, context) {
         <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
         <button class="button small" id="logistTask"
           title="Срез на дату: весь парк учтён — кто обеспечен рейсом, кто требует работы, баланс с очередью">📋 Задание</button>
+        <button class="button ghost small" id="logistFleetPlan"
+          title="Сетка машин на месяц: рейсы, круги, свободные дни — резерв под новых клиентов">🚛 План парка</button>
         ${can('trips:write') ? '<button class="button small" id="logistNewTrip">+ Рейс</button>' : ''}
       </div>
     </div>
@@ -780,6 +783,7 @@ export async function renderLogist(container, context) {
     state.logistZoneDir = 'from'; state.logistState = '';
     state.logistQuery = ''; rerender();
   });
+  container.querySelector('#logistFleetPlan')?.addEventListener('click', () => fleetPlanDialog(context));
   container.querySelector('#logistState').onchange = event => {
     state.logistState = event.currentTarget.value;
     renderLogist(container, context);

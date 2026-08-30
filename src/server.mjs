@@ -2971,6 +2971,48 @@ async function api(request, response, url) {
     });
   }
 
+  // ── План парка: машины × дни месяца, круги и свободный ресурс ──
+  if (request.method === 'GET' && pathname === '/api/fleet-plan') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const month = String(url.searchParams.get('month') || new Date().toISOString().slice(0, 7));
+    const monthStart = `${month}-01T00:00:00.000Z`;
+    const days = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+    const monthEnd = new Date(Date.parse(monthStart) + days * 86_400_000).toISOString();
+    return json(response, 200, {
+      month, days,
+      vehicles: db.prepare(`SELECT v.id, v.plate, v.driver_name, vt.name type_name
+        FROM vehicles v LEFT JOIN vehicle_types vt ON vt.id=v.type_id
+        WHERE v.status='work' ORDER BY v.plate`).all(),
+      trips: db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.ends_at, t.unloaded_at, t.status,
+          zf.name from_name, zt.name to_name, t.revenue_vat
+        FROM trips t JOIN zones zf ON zf.id=t.from_zone_id JOIN zones zt ON zt.id=t.to_zone_id
+        WHERE t.status<>'rejected' AND t.starts_at<? AND t.ends_at>?`).all(monthEnd, monthStart),
+      dispositions: db.prepare(`SELECT vehicle_id, kind, starts_at, ends_at
+        FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(monthEnd, monthStart),
+      rounds: db.prepare(`SELECT p.vehicle_id, p.round_key, p.note FROM vehicle_round_plans p`).all()
+    });
+  }
+
+  if (request.method === 'POST' && pathname === '/api/fleet-plan/round') {
+    const user = requirePermission(request, response, 'trips:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const vehicle = db.prepare('SELECT id FROM vehicles WHERE id=?').get(String(body.vehicleId || ''));
+    if (!vehicle) return errorJson(response, 404, 'ТС не найдено');
+    if (!body.roundKey) {
+      db.prepare('DELETE FROM vehicle_round_plans WHERE vehicle_id=?').run(vehicle.id);
+    } else {
+      db.prepare(`INSERT INTO vehicle_round_plans(vehicle_id,round_key,note,updated_by)
+        VALUES(?,?,?,?)
+        ON CONFLICT(vehicle_id) DO UPDATE SET round_key=excluded.round_key,
+          note=excluded.note, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
+        .run(vehicle.id, String(body.roundKey).slice(0, 20), String(body.note || '').slice(0, 200), user.id);
+    }
+    audit(db, user, 'fleet-round', 'vehicle', vehicle.id, { round: body.roundKey || null }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   // ── Отметка «данные направлены грузоотправителю» ──
   // Параллельная отметка подготовки выхода (не звено чек-листа): данные
   // водителя и ТС нужны клиенту для пропуска на погрузку. Без отметки рейс

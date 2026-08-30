@@ -4,6 +4,7 @@
 // из свободных потребностей, дальше — ручная правка. Готовый маршрут
 // передаётся логисту и назначается на сцепку целиком (рейсы цепочкой).
 import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch, captureScrolls, restoreScrolls } from './api.js';
+import { DAY_MARGIN, ROUND_TEMPLATES, roundKm, roundRevenue, roundVehicles } from './rounds.js';
 import { orderStage } from './pipeline.js';
 import { orderNet, plannedKmBetween, regionOfPlace, resolveAddress } from './sales.js';
 
@@ -420,7 +421,9 @@ export function renderRoutes(container, context) {
       <div class="salesfilter" style="flex:1;min-width:260px">
         ${canEdit ? `<button class="button" id="routeAuto"
           title="Полуавтомат: соберёт кольцо из свободных потребностей — от базы до базы, к плановой выручке">🧮 Собрать маршрут</button>
-        <button class="button ghost small" id="routeBlank">+ Пустой</button>` : ''}
+        <button class="button ghost small" id="routeBlank">+ Пустой</button>
+        <button class="button ghost small" id="routeTemplates"
+          title="Типовые круги парка из сентябрьской сетки: экономика каждого и создание маршрута-заготовки одним нажатием">📚 Шаблоны кругов</button>` : ''}
       </div>
     </div>
     <div class="salesboard">
@@ -524,6 +527,70 @@ export function renderRoutes(container, context) {
         editorDialog(created.id);
       } catch (error) { toast(error.message, 'error'); }
     };
+  };
+
+  // ── Шаблоны кругов: типовые циклы с экономикой и создание заготовки ──
+  // Круг из шаблона — маршрут со спот-плечами по зонам шаблона: логист
+  // в редакторе заменяет их реальными заявками сетки (или оставляет спотом).
+  const roundTemplatesDialog = () => {
+    const zoneByName = name => (data.reference.zones || []).find(zone => zone.name === name);
+    context.showModal(`<h2>📚 Шаблоны кругов</h2>
+      <p class="muted">Типовые циклы парка из сентябрьской сетки плана вывоза и ставок августа.
+        Маржа — над переменными 70 ₽/км; машин — на весь месячный объём шаблона при
+        сегодняшнем зазоре стыковки (0,85 дня на плечо).
+        Правило времени: <b>ожидание груза оправдано, пока ставка спота ÷ 18,5 т₽ больше дней
+        ожидания</b> — иначе порожний перегон выгоднее, он возвращает машину в круг.</p>
+      <div class="list" style="max-height:56vh;overflow:auto">
+        ${ROUND_TEMPLATES.map(round => `<div class="list-item ordrow">
+          <span style="flex:1;min-width:0">
+            <strong>${escapeHtml(round.name)}</strong>
+            <small class="muted" style="display:block">${round.legs.map(leg =>
+    `${leg.kind === 'П' ? '🚚' : leg.kind === 'С' ? '🔍' : '📦'} ${escapeHtml(leg.from)}→${escapeHtml(leg.to)}`).join(' · ')}
+              · ${Math.round(roundKm(round))} км · ~${round.days} сут</small>
+            <small class="muted" style="display:block">выручка круга ${money(roundRevenue(round))}
+              · маржа/день <b>${money(round.marginDay)}</b>
+              · объём ${round.volume}/мес · машин ≈ ${roundVehicles(round).toFixed(1)}</small>
+            <small style="display:block">${escapeHtml(round.note)}</small>
+          </span>
+          <button class="button small" data-round-make="${round.key}">Создать маршрут</button>
+        </div>`).join('')}
+      </div>
+      <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+    document.querySelectorAll('[data-round-make]').forEach(button =>
+      button.addEventListener('click', async () => {
+        const round = ROUND_TEMPLATES.find(item => item.key === button.dataset.roundMake);
+        if (!round) return;
+        button.disabled = true;
+        try {
+          const startIso = new Date(Date.now() + DAY_MS).toISOString();
+          const created = await api('/api/routes', { method: 'POST', body: JSON.stringify({
+            baseRegion: HOME_REGION, plannedStart: startIso,
+            targetPerDay: Math.round(roundRevenue(round) / 1.22 / round.days),
+            orderIds: [], comment: `Шаблон ${round.name}. ${round.note}`
+          }) });
+          // Плечи шаблона — спотами с плановыми датами по цепочке: гружёные
+          // плечи логист заменит заявками, порожняк остаётся пометкой.
+          let at = Date.parse(startIso);
+          for (const [index, leg] of round.legs.entries()) {
+            const transit = leg.km / 538 * 86_400_000;
+            if (leg.kind !== 'П') {
+              await api(`/api/routes/${created.id}/spots`, { method: 'POST', body: JSON.stringify({
+                seq: index + 1, fromLabel: leg.from, toLabel: leg.to,
+                fromZoneId: zoneByName(leg.from)?.id || null, toZoneId: zoneByName(leg.to)?.id || null,
+                plannedLoad: new Date(at).toISOString(),
+                plannedUnload: new Date(at + transit).toISOString(),
+                expectedRate: leg.rate, expectedKm: leg.km,
+                candidates: leg.kind === 'С' ? 'спот: искать груз' : 'плечо сетки — прикрепите заявку'
+              }) });
+            }
+            at += transit + 8 * 3_600_000;
+          }
+          toast(`Маршрут ${created.routeNo} создан из шаблона ${round.name}`);
+          context.closeModal();
+          await context.onReload();
+          editorDialog(created.id);
+        } catch (error) { button.disabled = false; toast(error.message, 'error'); }
+      }));
   };
 
   // ── Лента маршрута: цепочка по дням, как в «Плане вывоза» ──
@@ -784,6 +851,8 @@ export function renderRoutes(container, context) {
   if (canEdit) {
     const autoButton = container.querySelector('#routeAuto');
     if (autoButton) autoButton.onclick = autoDialog;
+    const templatesButton = container.querySelector('#routeTemplates');
+    if (templatesButton) templatesButton.onclick = () => roundTemplatesDialog();
     const blankButton = container.querySelector('#routeBlank');
     if (blankButton) blankButton.onclick = async () => {
       try {
