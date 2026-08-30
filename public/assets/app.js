@@ -129,7 +129,12 @@ function renderTimeline() {
   const viewStart = view.start;
   const viewEnd = new Date(viewStart.getTime() + days * 86_400_000);
   document.documentElement.style.setProperty('--planner-day-width', `${dayWidth}px`);
+  // Отклонённые рейсы на канву не попадают: оперативной информации они не
+  // несут, а полупрозрачные плашки съедали читаемость (30 наложений).
+  // История сохраняется в отчётности: «Руководитель → Отчёты → Отклонённые
+  // рейсы» и реестр заявок; причина — в карточке рейса.
   const visibleTrips = state.data.trips.filter(trip =>
+    trip.status !== 'rejected' &&
     new Date(trip.starts_at) < viewEnd && new Date(trip.ends_at) > viewStart);
   // Поиск по странице: строка остаётся, если совпала сцепка (номер, водитель,
   // тип) или любой её рейс месяца (маршрут, заказчик).
