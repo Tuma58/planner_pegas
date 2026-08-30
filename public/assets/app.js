@@ -1110,8 +1110,8 @@ function openTrip(trip) {
         ${state.data.settings.rejectionReasons.map(reason => `<option ${trip.rejection_reason === reason ? 'selected' : ''}>${escapeHtml(reason)}</option>`).join('')}
       </select></label>` : ''}
     ${editable ? `<div class="form-grid">
-      <label class="field">Начало<input name="startsAt" type="datetime-local" value="${isoInput(trip.starts_at)}"></label>
-      <label class="field">Окончание<input name="endsAt" type="datetime-local" value="${isoInput(trip.ends_at)}"></label>
+      <label class="field">Начало<input name="startsAt" type="datetime-local" value="${isoInput(trip.starts_at)}" required></label>
+      <label class="field">Окончание<input name="endsAt" type="datetime-local" value="${isoInput(trip.ends_at)}" required></label>
     </div>` : ''}
     <div class="modal-actions">
       ${editable ? '<button type="button" class="button danger" id="deleteTrip">Удалить</button>' : ''}

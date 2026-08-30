@@ -1829,11 +1829,14 @@ async function api(request, response, url) {
     const backToPrep = vehicleReplaced && body.status === undefined &&
       current.status === 'run' && !tripHasMovementFacts(db, current);
     const merged = normalizeTrip({
-      vehicleId: body.vehicleId ?? current.vehicle_id, orderId: body.orderId ?? current.order_id,
+      // Даты и ТС: пустая строка из формы означает «не менять», а не «стереть» —
+      // диспетчер, вернувший статус при случайно очищенном «Окончании», получал
+      // 422 «Поле endsAt обязательно» и не мог сохранить (кейс т726ву58).
+      vehicleId: body.vehicleId || current.vehicle_id, orderId: body.orderId ?? current.order_id,
       customerName: body.customerName ?? current.customer_name,
-      fromZoneId: body.fromZoneId ?? current.from_zone_id, toZoneId: body.toZoneId ?? current.to_zone_id,
+      fromZoneId: body.fromZoneId || current.from_zone_id, toZoneId: body.toZoneId || current.to_zone_id,
       fromPoint: body.fromPoint ?? current.from_point, toPoint: body.toPoint ?? current.to_point,
-      startsAt: body.startsAt ?? current.starts_at, endsAt: body.endsAt ?? current.ends_at,
+      startsAt: body.startsAt || current.starts_at, endsAt: body.endsAt || current.ends_at,
       distanceKm: body.distanceKm ?? current.distance_km, revenueVat: body.revenueVat ?? current.revenue_vat,
       status: backToPrep ? 'plan' : (body.status ?? current.status),
       rejectionReason: body.rejectionReason ?? current.rejection_reason,
@@ -1843,6 +1846,14 @@ async function api(request, response, url) {
     // Отклонение рейса возвращает заявку в продажи, поэтому причина обязательна.
     if (merged.status === 'rejected' && !String(merged.rejectionReason || '').trim()) {
       return errorJson(response, 422, 'Укажите причину отклонения рейса');
+    }
+    // Возврат статуса из «Выгружен» — рейс продолжается: отметка о выгрузке
+    // очищается, иначе машина числится свободной в точке выгрузки (место
+    // сцепки, стыковка плеч и занятость считают по unloaded_at), а рейс
+    // «В пути» с фактом выгрузки — противоречие, ломавшее все расчёты.
+    if (['plan', 'run'].includes(merged.status) &&
+        ['unloaded', 'done', 'paid'].includes(current.status)) {
+      db.prepare(`UPDATE trips SET unloaded_at=NULL, docs_checked_at=NULL WHERE id=?`).run(match[0]);
     }
     db.prepare(`UPDATE trips SET vehicle_id=?,order_id=?,customer_name=?,from_zone_id=?,to_zone_id=?,
       from_point=?,to_point=?,starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,rejection_reason=?,
@@ -3741,6 +3752,18 @@ async function api(request, response, url) {
     if ('note' in body) fields.note = String(body.note || '').trim();
     if ('distanceKm' in body) fields.distance_km = Math.max(0, Number(body.distanceKm || 0));
     if (!Object.keys(fields).length) return errorJson(response, 422, 'Нет полей для обновления');
+    // Хронология точек: прибыть на выгрузку раньше, чем уехал с погрузки,
+    // физически нельзя — такие отметки закрывали рейс «выгружен», когда
+    // машина ещё грузилась (кейс т726ву58: этап ткнули не на той точке).
+    if (fields.actual_arrival) {
+      const previous = db.prepare(`SELECT actual_departure, actual_arrival, point FROM trip_stops
+        WHERE trip_id=? AND seq<? ORDER BY seq DESC LIMIT 1`).get(current.trip_id, current.seq);
+      const prevMoment = previous && (previous.actual_departure || previous.actual_arrival);
+      if (prevMoment && Date.parse(fields.actual_arrival) < Date.parse(prevMoment)) {
+        return errorJson(response, 422, `Прибытие раньше события на предыдущей точке ` +
+          `(«${(previous.point || '').slice(0, 40)}», ${prevMoment.slice(11, 16)} UTC) — проверьте, ту ли точку отмечаете`);
+      }
+    }
     db.prepare(`UPDATE trip_stops SET ${Object.keys(fields).map(column => `${column}=?`).join(',')},
       updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(...Object.values(fields), user.id, match[0]);

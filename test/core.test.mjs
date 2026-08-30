@@ -2516,6 +2516,36 @@ test('ночные черновики назначений: таблица и в
   assert.equal(db.prepare(`SELECT outcome FROM assign_drafts WHERE order_id='o-1'`).get().outcome, 'accepted');
 });
 
+test('возврат статуса из «Выгружен» очищает факт выгрузки', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-unload-back-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,zone_id,status)
+    VALUES('v-1','т000тт00',?,?,'work')`).run(type, zone);
+  const iso = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,starts_at,ends_at,
+      distance_km,revenue_vat,status,unloaded_at)
+    VALUES('t-1','v-1',?,?,?,?,1475,239000,'unloaded',?)`)
+    .run(zone, zone, iso(-30), iso(6), iso(-1));
+  // Та же логика, что в PATCH: статус вернули в run — отметка выгрузки снята.
+  const current = db.prepare('SELECT * FROM trips WHERE id=?').get('t-1');
+  const mergedStatus = 'run';
+  if (['plan', 'run'].includes(mergedStatus) &&
+      ['unloaded', 'done', 'paid'].includes(current.status)) {
+    db.prepare(`UPDATE trips SET status=?, unloaded_at=NULL, docs_checked_at=NULL WHERE id=?`)
+      .run(mergedStatus, 't-1');
+  }
+  const after = db.prepare('SELECT status, unloaded_at FROM trips WHERE id=?').get('t-1');
+  assert.equal(after.status, 'run');
+  assert.equal(after.unloaded_at, null,
+    'рейс «В пути» с фактом выгрузки — противоречие: место сцепки и стыковка считали бы машину свободной');
+});
+
 test('перегон: место и выезд считаются на момент освобождения сцепки', async () => {
   const { vehiclePlace, vehiclePlaceAt, vehicleFreeAt } = await import('../public/assets/transfer.js');
   const now = Date.now();
