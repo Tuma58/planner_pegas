@@ -772,6 +772,23 @@ setTimeout(runCustomerRemindersWatch, 55_000);
 // Правило «минимум два назначенных рейса»: машина не должна освобождаться
 // без следующего задания. Раз в 10 минут — одно сообщение логисту со
 // списком таких машин (по каждому рейсу — один раз, trips.next_alert_at).
+// Ночной сторож порожняка: цепочки меняют и обходными путями (импорт из 1С,
+// прямое редактирование), поэтому раз в ночь пересчитываем подгон у всех
+// сцепок с будущими рейсами — страховка поверх пересчёта по событиям.
+function runEmptyKmWatch() {
+  try {
+    const vehicles = db.prepare(`SELECT DISTINCT vehicle_id FROM trips
+      WHERE status IN ('plan','run') AND datetime(starts_at) > datetime('now')`).all();
+    let total = 0;
+    for (const row of vehicles) total += refreshEmptyKm(row.vehicle_id);
+    if (total) console.log(`Сторож порожняка: пересчитан подгон у ${total} рейсов`);
+  } catch (error) {
+    console.error('Сторож порожняка:', error.message);
+  }
+}
+setInterval(runEmptyKmWatch, 6 * 3_600_000);
+setTimeout(runEmptyKmWatch, 40_000);
+
 function runNextTripWatch() {
   try {
     const rows = tripsWithoutNext(db, Date.now(), 2 * 3_600_000, true);
@@ -789,6 +806,118 @@ function runNextTripWatch() {
 }
 setInterval(runNextTripWatch, 10 * 60_000);
 setTimeout(runNextTripWatch, 65_000);
+
+// Координаты пункта по тексту: точное имя адреса, затем начало, затем
+// подстрока (пункты 1С — свободный текст, имена зон — алиасы справочника).
+function addressPointByText(text) {
+  const needle = String(text || '').trim();
+  if (needle.length < 2) return null;
+  // Имя геозоны — координаты её центра (иначе «Дом» находил бы Домодедово).
+  return db.prepare(`SELECT latitude,longitude FROM zones
+      WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL`).get(needle)
+    || db.prepare(`SELECT latitude,longitude FROM addresses
+      WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL LIMIT 1`).get(needle)
+    || db.prepare(`SELECT latitude,longitude FROM addresses
+      WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`${needle}%`)
+    || db.prepare(`SELECT latitude,longitude FROM addresses
+      WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`%${needle}%`)
+    || null;
+}
+// function-объявление (hoisting): emptyKmFor вызывается из PATCH-ветки
+// рейсов, которая в коде стоит ВЫШЕ, — стрелка в const давала TDZ и
+// замена ТС падала 500 «Cannot access before initialization».
+function addressPointById(id) {
+  return id
+    ? db.prepare(`SELECT latitude,longitude FROM addresses
+        WHERE id=? AND latitude IS NOT NULL`).get(id) || null
+    : null;
+}
+
+// Позиция сцепки перед моментом: точка выгрузки последнего рейса ЛИБО
+// место ремонта, если ремонт с адресом был позже выгрузки.
+function vehiclePositionBefore(vehicleId, beforeIso, excludeTripId = '') {
+  const prevTrip = db.prepare(`SELECT t.to_point, z.name to_zone_name, t.ends_at
+    FROM trips t JOIN zones z ON z.id=t.to_zone_id
+    WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.id<>? AND t.starts_at<?
+    ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, excludeTripId, beforeIso);
+  // Ремонт с адресом и ЗАВЕРШЁННЫЙ перегон тоже задают место сцепки:
+  // после перегона машина стоит в точке прибытия, а не там, где выгрузилась.
+  const prevPlace = db.prepare(`SELECT COALESCE(d.arrived_at,d.ends_at) at, a.latitude, a.longitude
+    FROM vehicle_dispositions d JOIN addresses a ON a.id=d.address_id
+    WHERE d.vehicle_id=? AND a.latitude IS NOT NULL AND d.starts_at<?
+      AND (d.kind='repair' OR (d.kind='transfer' AND d.arrived_at IS NOT NULL))
+    ORDER BY at DESC LIMIT 1`).get(vehicleId, beforeIso);
+  if (prevPlace && (!prevTrip || String(prevPlace.at) >= String(prevTrip.ends_at))) {
+    return { latitude: prevPlace.latitude, longitude: prevPlace.longitude };
+  }
+  if (prevTrip) return addressPointByText(prevTrip.to_point || prevTrip.to_zone_name);
+  return null;
+}
+
+// Обрезка строк из формы. Именно function-объявление: стрелка в const
+// давала TDZ — обработчики выше по файлу выполняются раньше объявления
+// (та же ловушка, что с addressPointById в 8dd9c1f).
+function clean(value) { return String(value || '').trim(); }
+
+// Контакты дежурных сотрудников для водителя: механик, начальник колонны,
+// диспетчер, логист. Берём тех, у кого заполнен телефон, — пустые карточки
+// в ответе водителю бесполезны.
+function employeeContacts() {
+  return db.prepare(`SELECT full_name, job_role, role, phone FROM users
+    WHERE deleted_at IS NULL AND active=1 AND phone<>''
+    ORDER BY job_role, full_name`).all();
+}
+
+// Где сцепка стоит словами (для карточки задания и списков): точка
+// прибытия завершённого перегона, иначе выгрузка последнего рейса.
+function vehiclePlaceText(vehicleId, beforeIso = new Date().toISOString()) {
+  // Только УЖЕ НАЧАВШИЕСЯ рейсы: назначенный на послезавтра рейс не
+  // говорит о том, где машина стоит сейчас (иначе перегон, завершённый
+  // сегодня, проигрывал будущему рейсу и место показывалось старое).
+  const trip = db.prepare(`SELECT t.to_point, z.name to_zone_name, t.ends_at FROM trips t
+    JOIN zones z ON z.id=t.to_zone_id WHERE t.vehicle_id=? AND t.status<>'rejected'
+      AND t.starts_at<? ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, beforeIso);
+  const transfer = db.prepare(`SELECT a.name, d.arrived_at FROM vehicle_dispositions d
+    JOIN addresses a ON a.id=d.address_id
+    WHERE d.vehicle_id=? AND d.kind='transfer' AND d.arrived_at IS NOT NULL AND d.arrived_at<=?
+    ORDER BY d.arrived_at DESC LIMIT 1`).get(vehicleId, beforeIso);
+  if (transfer && (!trip || String(transfer.arrived_at) >= String(trip.ends_at))) return transfer.name;
+  return trip ? (trip.to_point || trip.to_zone_name) : '';
+}
+
+// Порожний подгон: от позиции сцепки до пункта погрузки (адрес заявки
+// приоритетнее текста). null — пункт не распознан, а не ноль.
+function emptyKmFor(vehicleId, startsAtIso, fromAddressId, fromText, excludeTripId = '') {
+  const origin = vehiclePositionBefore(vehicleId, startsAtIso, excludeTripId);
+  const target = addressPointById(fromAddressId) || addressPointByText(fromText);
+  if (!origin || !target) return null;
+  return roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
+}
+
+// Порожний подгон стареет: его считают один раз при назначении, а цепочка
+// потом меняется — вставили рейс между, прибыл перегон, сдвинули время. Так
+// у р459ху58 подгон 229 км от Саратова остался в рейсе после того, как
+// перегон уже привёз машину в Пензу: те же километры считались дважды.
+// Поэтому после каждого события, меняющего цепочку, пересчитываем подгон
+// у ещё не начавшихся рейсов сцепки. Начавшиеся не трогаем: подгон уже
+// совершён, это факт.
+function refreshEmptyKm(vehicleId) {
+  if (!vehicleId) return 0;
+  const trips = db.prepare(`SELECT t.id,t.starts_at,t.from_point,t.empty_km,o.from_address_id
+    FROM trips t LEFT JOIN orders o ON o.id=t.order_id
+    WHERE t.vehicle_id=? AND t.status IN ('plan','run')
+      AND datetime(t.starts_at) > datetime('now')`).all(vehicleId);
+  let changed = 0;
+  for (const trip of trips) {
+    const km = emptyKmFor(vehicleId, trip.starts_at, trip.from_address_id, trip.from_point, trip.id);
+    if (km == null) continue;
+    const current = Number(trip.empty_km);
+    if (Number.isFinite(current) && Math.abs(current - km) <= 1) continue;
+    db.prepare('UPDATE trips SET empty_km=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(km, trip.id);
+    changed += 1;
+  }
+  return changed;
+}
 
 function normalizeTrip(body) {
   for (const key of ['vehicleId', 'fromZoneId', 'toZoneId', 'startsAt', 'endsAt']) {
@@ -1549,6 +1678,10 @@ async function api(request, response, url) {
       merged.fromPoint, merged.toPoint,
       merged.startsAt, merged.endsAt, merged.distanceKm, merged.revenueVat, merged.status,
       merged.rejectionReason, merged.temperatureMode, merged.bodyType, user.id, match[0]);
+    // Цепочка сцепки изменилась (сдвиг времени, отклонение, смена ТС) —
+    // подгон следующих рейсов пересчитываем у обеих машин.
+    refreshEmptyKm(merged.vehicleId);
+    if (current.vehicle_id && current.vehicle_id !== merged.vehicleId) refreshEmptyKm(current.vehicle_id);
     // Срыв по вине клиента — случай сразу падает претензией в «⏳ Простои П/В».
     if (merged.status === 'rejected' && current.status !== 'rejected' &&
         FALSE_CALL_REASONS.includes(String(merged.rejectionReason || '').trim())) {
@@ -1682,98 +1815,13 @@ async function api(request, response, url) {
       WHERE trip_id=?`).run(match[0]);
     db.prepare('DELETE FROM trip_stops WHERE trip_id=?').run(match[0]);
     db.prepare('DELETE FROM trips WHERE id=?').run(match[0]);
+    refreshEmptyKm(current.vehicle_id);
     queueOutbox(db, 'trips', match[0], 'delete', { externalId: current.external_id },
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'delete', 'trip', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
   }
 
-  // Координаты пункта по тексту: точное имя адреса, затем начало, затем
-  // подстрока (пункты 1С — свободный текст, имена зон — алиасы справочника).
-  function addressPointByText(text) {
-    const needle = String(text || '').trim();
-    if (needle.length < 2) return null;
-    // Имя геозоны — координаты её центра (иначе «Дом» находил бы Домодедово).
-    return db.prepare(`SELECT latitude,longitude FROM zones
-        WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL`).get(needle)
-      || db.prepare(`SELECT latitude,longitude FROM addresses
-        WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL LIMIT 1`).get(needle)
-      || db.prepare(`SELECT latitude,longitude FROM addresses
-        WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`${needle}%`)
-      || db.prepare(`SELECT latitude,longitude FROM addresses
-        WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`%${needle}%`)
-      || null;
-  }
-  // function-объявление (hoisting): emptyKmFor вызывается из PATCH-ветки
-  // рейсов, которая в коде стоит ВЫШЕ, — стрелка в const давала TDZ и
-  // замена ТС падала 500 «Cannot access before initialization».
-  function addressPointById(id) {
-    return id
-      ? db.prepare(`SELECT latitude,longitude FROM addresses
-          WHERE id=? AND latitude IS NOT NULL`).get(id) || null
-      : null;
-  }
-
-  // Позиция сцепки перед моментом: точка выгрузки последнего рейса ЛИБО
-  // место ремонта, если ремонт с адресом был позже выгрузки.
-  function vehiclePositionBefore(vehicleId, beforeIso, excludeTripId = '') {
-    const prevTrip = db.prepare(`SELECT t.to_point, z.name to_zone_name, t.ends_at
-      FROM trips t JOIN zones z ON z.id=t.to_zone_id
-      WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.id<>? AND t.starts_at<?
-      ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, excludeTripId, beforeIso);
-    // Ремонт с адресом и ЗАВЕРШЁННЫЙ перегон тоже задают место сцепки:
-    // после перегона машина стоит в точке прибытия, а не там, где выгрузилась.
-    const prevPlace = db.prepare(`SELECT COALESCE(d.arrived_at,d.ends_at) at, a.latitude, a.longitude
-      FROM vehicle_dispositions d JOIN addresses a ON a.id=d.address_id
-      WHERE d.vehicle_id=? AND a.latitude IS NOT NULL AND d.starts_at<?
-        AND (d.kind='repair' OR (d.kind='transfer' AND d.arrived_at IS NOT NULL))
-      ORDER BY at DESC LIMIT 1`).get(vehicleId, beforeIso);
-    if (prevPlace && (!prevTrip || String(prevPlace.at) >= String(prevTrip.ends_at))) {
-      return { latitude: prevPlace.latitude, longitude: prevPlace.longitude };
-    }
-    if (prevTrip) return addressPointByText(prevTrip.to_point || prevTrip.to_zone_name);
-    return null;
-  }
-
-  // Обрезка строк из формы. Именно function-объявление: стрелка в const
-  // давала TDZ — обработчики выше по файлу выполняются раньше объявления
-  // (та же ловушка, что с addressPointById в 8dd9c1f).
-  function clean(value) { return String(value || '').trim(); }
-
-  // Контакты дежурных сотрудников для водителя: механик, начальник колонны,
-  // диспетчер, логист. Берём тех, у кого заполнен телефон, — пустые карточки
-  // в ответе водителю бесполезны.
-  function employeeContacts() {
-    return db.prepare(`SELECT full_name, job_role, role, phone FROM users
-      WHERE deleted_at IS NULL AND active=1 AND phone<>''
-      ORDER BY job_role, full_name`).all();
-  }
-
-  // Где сцепка стоит словами (для карточки задания и списков): точка
-  // прибытия завершённого перегона, иначе выгрузка последнего рейса.
-  function vehiclePlaceText(vehicleId, beforeIso = new Date().toISOString()) {
-    // Только УЖЕ НАЧАВШИЕСЯ рейсы: назначенный на послезавтра рейс не
-    // говорит о том, где машина стоит сейчас (иначе перегон, завершённый
-    // сегодня, проигрывал будущему рейсу и место показывалось старое).
-    const trip = db.prepare(`SELECT t.to_point, z.name to_zone_name, t.ends_at FROM trips t
-      JOIN zones z ON z.id=t.to_zone_id WHERE t.vehicle_id=? AND t.status<>'rejected'
-        AND t.starts_at<? ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, beforeIso);
-    const transfer = db.prepare(`SELECT a.name, d.arrived_at FROM vehicle_dispositions d
-      JOIN addresses a ON a.id=d.address_id
-      WHERE d.vehicle_id=? AND d.kind='transfer' AND d.arrived_at IS NOT NULL AND d.arrived_at<=?
-      ORDER BY d.arrived_at DESC LIMIT 1`).get(vehicleId, beforeIso);
-    if (transfer && (!trip || String(transfer.arrived_at) >= String(trip.ends_at))) return transfer.name;
-    return trip ? (trip.to_point || trip.to_zone_name) : '';
-  }
-
-  // Порожний подгон: от позиции сцепки до пункта погрузки (адрес заявки
-  // приоритетнее текста). null — пункт не распознан, а не ноль.
-  function emptyKmFor(vehicleId, startsAtIso, fromAddressId, fromText, excludeTripId = '') {
-    const origin = vehiclePositionBefore(vehicleId, startsAtIso, excludeTripId);
-    const target = addressPointById(fromAddressId) || addressPointByText(fromText);
-    if (!origin || !target) return null;
-    return roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
-  }
 
   // Промежуточные пункты заявки: [{point, kind P/D, addressId}], до 8 штук.
   function parseVia(value) {
@@ -2113,6 +2161,9 @@ async function api(request, response, url) {
       db.exec('ROLLBACK');
       throw error;
     }
+    // Новый рейс встал в цепочку: у рейсов этой сцепки, назначенных на более
+    // поздние даты, подгон теперь считается от другой точки.
+    refreshEmptyKm(vehicle.id);
     queueOutbox(db, 'trips', tripId, order.trip_id ? 'update' : 'create', tripOutboxPayload(tripId),
       integrationPublic().writePolicy === 'automatic');
     return tripId;
@@ -2949,6 +3000,9 @@ async function api(request, response, url) {
     if (body.step === 'arrived') {
       db.prepare(`UPDATE vehicle_dispositions SET ends_at=? WHERE id=? AND ends_at>?`)
         .run(at, match[0], at);
+      // Машина стоит в новой точке — подгон следующих рейсов считается уже
+      // отсюда, иначе километры перегона учитывались бы в рейсе повторно.
+      refreshEmptyKm(transfer.vehicle_id);
     }
     audit(db, user, 'transfer_step', 'transfer', match[0], { step: body.step, at }, requestIp(request));
     return json(response, 200, { ok: true });
