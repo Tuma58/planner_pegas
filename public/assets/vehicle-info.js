@@ -2,7 +2,7 @@
 // открывает окно с полной картиной по сцепке — текущий рейс со ставкой и
 // этапом контроля, ремонт/недоступность, простой, ближайший план, комментарий
 // продаж с файлами заявки и отметки контролёра (диспетчера) по рейсу.
-import { api, escapeHtml, formatDateTime, money, routeLabel } from './api.js';
+import { api, driverRatingBadge, driverRatingOf, escapeHtml, formatDateTime, money, routeLabel } from './api.js';
 import { orderFileLinks, orderNet } from './sales.js';
 import { shiftStateAt } from './resource.js';
 import { transferDialog, tripDoneAtMs, vehiclePlace } from './transfer.js';
@@ -65,6 +65,7 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
   const lastDone = trips.filter(trip => tripDoneAtMs(trip) <= nowMs)
     .sort((a, b) => tripDoneAtMs(b) - tripDoneAtMs(a))[0];
   const idleDays = lastDone ? Math.floor((nowMs - tripDoneAtMs(lastDone)) / DAY_MS) : null;
+  const rating = driverRatingOf(data, vehicle.id);
 
   // Ближайший план после «сейчас» (рейс или недоступность).
   const nextTrip = trips.filter(trip => Date.parse(trip.starts_at) > nowMs &&
@@ -115,7 +116,7 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
       return `<p class="muted">${sub
         ? `<b>${escapeHtml(sub.driver_name)}</b> <span class="badge warn">подменный до ${String(sub.ends_at).slice(0, 10).split('-').reverse().slice(0, 2).join('.')}</span>
            · постоянный: ${escapeHtml(vehicle.driver_name || '—')}`
-        : escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
+        : escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')} ${driverRatingBadge(rating, { small: true })}
       · приписка: ${escapeHtml(vehicle.zone_name || '—')}
       ${vehicle.status !== 'work' ? ' · <b class="danger">выведена из работы</b>' : ''}</p>`;
     })()}

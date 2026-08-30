@@ -37,6 +37,23 @@ export const tripBusyUntilMs = (trip, nowMs = Date.now()) => {
   return Number.isFinite(fact) ? fact : planned;
 };
 
+// Рейтинг водителя сцепки: бейдж «🟢 92» из bootstrap.driverRatings.
+// Один источник для подбора ТС, карточек и подсказок — чтобы цифры совпадали.
+export function driverRatingOf(data, vehicleId) {
+  return (data.driverRatings || []).find(item => item.vehicle_id === vehicleId) || null;
+}
+export function driverRatingBadge(rating, { small = false } = {}) {
+  if (!rating || rating.facts < 4) return '';
+  const icon = rating.grade === 'A' ? '🟢' : rating.grade === 'B' ? '🟡' : '🔴';
+  const title = `Рейтинг водителя за 60 дней: ${rating.score} из 100` +
+    `\nОпоздания на погрузку (>1 ч): ${rating.lateLoadPct ?? '—'}%` +
+    `\nПоздние прибытия на выгрузку (>2 ч): ${rating.lateUnloadPct ?? '—'}%` +
+    `\nСредняя задержка прибытия: ${rating.avgDelayH} ч · рейсов ${rating.tripsN}` +
+    `\nЗатяжка выгрузки у клиента в рейтинг не входит — это претензия клиенту`;
+  return `<span class="badge ${rating.grade === 'A' ? 'ok' : rating.grade === 'B' ? 'warn' : 'bad'}"
+    ${small ? 'style="font-size:10px;padding:1px 5px"' : ''} title="${title}">${icon} ${rating.score}</span>`;
+}
+
 // Полная перерисовка блока (container.innerHTML) сбрасывает прокрутку всех
 // его списков: клик по карточке в конце длинного списка «перекидывал
 // вверх». Снимок прокрученных элементов (по классу и порядковому номеру)

@@ -3,7 +3,7 @@
 //
 // Данные берутся из уже загруженного bootstrap, поэтому подсказка появляется
 // мгновенно и не создаёт запросов: наведение курсора не повод дёргать сервер.
-import { escapeHtml, formatDateTime, tripBusyFromMs, tripBusyUntilMs } from './api.js';
+import { driverRatingBadge, driverRatingOf, escapeHtml, formatDateTime, tripBusyFromMs, tripBusyUntilMs } from './api.js';
 
 const HOVER_DELAY_MS = 1000;
 const HOUR = 3_600_000;
@@ -78,7 +78,8 @@ function buildHtml(data, vehicleId) {
   return `<div class="vhov-head"><b class="mono">${escapeHtml(vehicle.plate)}</b>
       ${vehicle.trailer_plate ? `<span class="mono">/ ${escapeHtml(vehicle.trailer_plate)}</span>` : ''}
       <small>${escapeHtml(driver?.full_name || vehicle.driver_name || 'без водителя')}${driver?.phone
-  ? ` · ${escapeHtml(driver.phone)}` : ''}</small></div>
+  ? ` · ${escapeHtml(driver.phone)}` : ''}</small>
+      ${driverRatingBadge(driverRatingOf(data, vehicleId), { small: true })}</div>
     ${rows.map(row => `<div class="vhov-row">${row}</div>`).join('')}
     <div class="vhov-foot">клик — полная карточка сцепки</div>`;
 }

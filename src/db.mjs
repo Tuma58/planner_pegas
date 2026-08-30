@@ -499,6 +499,25 @@ function migrateColumns(db) {
   }
   // Кузова пополнены реальными типами парка: Тушевоз, Допельшток, Паллет 33/41.
   // Идемпотентно дополняем существующие настройки, не трогая правки админа.
+  // Классификатор отказов пополнен реальными причинами переназначений:
+  // «Прочее» съедало 59 случаев за две недели, потому что честных вариантов
+  // (машина не выгрузилась в слот, водитель опаздывает, перенос, дубль)
+  // в списке не было. Дополняем идемпотентно, правки админа не трогаем.
+  {
+    const row = db.prepare(`SELECT value_json FROM settings WHERE key='rejectionReasons'`).get();
+    if (row) {
+      const reasons = JSON.parse(row.value_json);
+      const extra = ['ТС не выгружено в слот (прошлый рейс)', 'Опоздание водителя',
+        'Перенос по дате', 'Дубль заявки', 'Замена ТС'];
+      const missing = extra.filter(reason => !reasons.includes(reason));
+      if (missing.length) {
+        const index = Math.max(0, reasons.indexOf('Прочее'));
+        reasons.splice(index, 0, ...missing);
+        db.prepare(`UPDATE settings SET value_json=? WHERE key='rejectionReasons'`)
+          .run(JSON.stringify(reasons));
+      }
+    }
+  }
   const orderOptionsRow = db.prepare(`SELECT value_json FROM settings WHERE key='orderOptions'`).get();
   if (orderOptionsRow) {
     const orderOptions = JSON.parse(orderOptionsRow.value_json);

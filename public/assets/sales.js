@@ -3,6 +3,7 @@
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
 import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
+import { driverRatingOf, driverRatingBadge } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { salesRadarDialog, directionMarket, freeVehiclesByZone } from './sales-radar.js';
@@ -1770,6 +1771,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
         <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
         ${(data.vehicleHolds || []).some(hold => hold.vehicle_id === candidate.vehicle.id)
     ? `<span class="badge warn" title="${escapeHtml((data.vehicleHolds || []).filter(hold => hold.vehicle_id === candidate.vehicle.id).map(hold => `Бронь: ${hold.held_by_name}${hold.note ? ` — ${hold.note}` : ''} до окончания`).join(''))}">🔒 бронь</span>` : ''}
+        ${driverRatingBadge(driverRatingOf(data, candidate.vehicle.id), { small: true })}
         <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name)}${candidate.emptyKm != null
           ? ` · подгон ~${candidate.emptyKm} км${candidate.approx ? ' (по городу/зоне)' : ''}` : ''}${candidate.readyAt
           ? ` · ${candidate.ready ? 'готова с' : '⚠ готова только с'} ${fmtDateTime(candidate.readyAt)}` : ''}</small>

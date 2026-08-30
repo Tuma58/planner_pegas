@@ -1026,6 +1026,58 @@ export function tripsWithoutNext(db, nowMs = Date.now(), horizonMs = 2 * 3_600_0
     !hasNext.get(trip.vehicle_id, trip.id, trip.starts_at));
 }
 
+// ── Рейтинг водителей ──
+// Переназначения ТС чаще всего случаются из-за того, что машина не
+// выгрузилась в слот или водитель опоздал, — рейтинг делает это видимым
+// ДО назначения. Считается по фактам точек контроля за 60 суток; водитель
+// берётся текущий по сцепке (пересадки размывают точность — честно живём
+// с этим, пока явка не свяжет водителя с рейсом).
+// Балл: 100 − 45×доля опозданий на погрузку (>1 ч) − 35×доля поздних
+// выгрузок (>2 ч) − 20×нормированная средняя задержка. 🟢 ≥85, 🟡 ≥65, 🔴 ниже.
+export function driverRatings(db, nowMs = Date.now()) {
+  const fromIso = new Date(nowMs - 60 * 86_400_000).toISOString();
+  const rows = db.prepare(`SELECT t.vehicle_id,
+      COUNT(DISTINCT t.id) trips_n,
+      SUM(CASE WHEN s.kind='P' AND s.seq=1 AND s.actual_arrival IS NOT NULL
+        AND s.planned_arrival IS NOT NULL
+        AND julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24 THEN 1 ELSE 0 END) late_load,
+      SUM(CASE WHEN s.kind='P' AND s.seq=1 AND s.actual_arrival IS NOT NULL
+        AND s.planned_arrival IS NOT NULL THEN 1 ELSE 0 END) load_facts,
+      AVG(CASE WHEN s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
+        THEN MAX(0, (julianday(s.actual_arrival) - julianday(s.planned_arrival)) * 24) END) avg_delay_h
+    FROM trips t JOIN trip_stops s ON s.trip_id=t.id
+    WHERE t.status<>'rejected' AND t.starts_at>=?
+    GROUP BY t.vehicle_id`).all(fromIso);
+  // Поздним считается ПРИБЫТИЕ на выгрузку (>2 ч к плану точки), а не сама
+  // выгрузка: затяжку под окном у клиента водителю не вменяем — это простой
+  // клиента, он идёт в претензии, не в рейтинг.
+  const lateUnload = new Map(db.prepare(`SELECT t.vehicle_id,
+      SUM(CASE WHEN julianday(s.actual_arrival) - julianday(s.planned_arrival) > 2.0/24 THEN 1 ELSE 0 END) late,
+      COUNT(*) n
+    FROM trips t JOIN trip_stops s ON s.trip_id=t.id
+    WHERE t.status<>'rejected' AND t.starts_at>=? AND s.kind='D'
+      AND s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
+      AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
+    GROUP BY t.vehicle_id`).all(fromIso).map(row => [row.vehicle_id, row]));
+  const out = [];
+  for (const row of rows) {
+    const unload = lateUnload.get(row.vehicle_id) || { late: 0, n: 0 };
+    const lateLoadShare = row.load_facts ? row.late_load / row.load_facts : 0;
+    const lateUnloadShare = unload.n ? unload.late / unload.n : 0;
+    const delayNorm = Math.min(1, (row.avg_delay_h || 0) / 6);
+    const score = Math.max(0, Math.round(100 - 45 * lateLoadShare - 35 * lateUnloadShare - 20 * delayNorm));
+    out.push({
+      vehicle_id: row.vehicle_id, tripsN: row.trips_n, score,
+      grade: score >= 85 ? 'A' : score >= 65 ? 'B' : 'C',
+      lateLoadPct: row.load_facts ? Math.round(lateLoadShare * 100) : null,
+      lateUnloadPct: unload.n ? Math.round(lateUnloadShare * 100) : null,
+      avgDelayH: row.avg_delay_h ? Math.round(row.avg_delay_h * 10) / 10 : 0,
+      facts: row.load_facts + unload.n
+    });
+  }
+  return out;
+}
+
 // ── Отчёт за смену: операции сотрудников по именам и время обработки ──
 // Смены по 12 часов (МСК): дневная 08:00–20:00, ночная 20:00–08:00
 // следующего дня. Источник операций — журнал аудита (каждое действие несёт

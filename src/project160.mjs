@@ -157,7 +157,8 @@ export const METRICS = {
   next_month_orders: { label: 'Портфель следующего месяца', unit: '₽', dir: 'more' },
   question_sla_pct: { label: 'Ответы водителям в 10 минут', unit: '%', dir: 'more' },
   shipper_notified_pct: { label: 'Данные грузоотправителю до выхода', unit: '%', dir: 'more' },
-  leg_gap_h: { label: 'Зазор стыковки между рейсами', unit: 'ч', dir: 'less' }
+  leg_gap_h: { label: 'Зазор стыковки между рейсами', unit: 'ч', dir: 'less' },
+  planned_3d_pct: { label: 'Заявки, внесённые за 3+ дня', unit: '%', dir: 'more' }
 };
 
 // Текущее значение метрики за период. Одна функция на все инициативы —
@@ -207,6 +208,16 @@ export function metricValue(db, key, fromIso, toIso) {
         FROM trips WHERE status<>'rejected' AND on_line_at IS NOT NULL
           AND on_line_at>=? AND on_line_at<?`, fromIso, toIso);
       return row.total ? Math.round(row.sent / row.total * 100) : null;
+    }
+    case 'planned_3d_pct': {
+      // Горизонт планирования: доля заявок, внесённых за 72+ часа до окна
+      // погрузки. Пока работа планируется «на сегодня», выходные продаж
+      // невозможны — двое людей работают 14 дней подряд без подмены.
+      const row = one(`SELECT COUNT(*) total,
+          SUM(CASE WHEN julianday(window_from) - julianday(created_at) >= 3 THEN 1 ELSE 0 END) early
+        FROM orders WHERE deleted_at IS NULL AND status<>'rejected'
+          AND created_at>=? AND created_at<?`, fromIso, toIso);
+      return row.total ? Math.round(row.early / row.total * 100) : null;
     }
     case 'leg_gap_h': {
       // Средний простой сцепки между рейсами: от освобождения (факт выгрузки,

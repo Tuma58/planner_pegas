@@ -19,7 +19,7 @@ import { processOutbox, runPull, startIntegrationScheduler, testConnection } fro
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
-  currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats
+  currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
@@ -835,6 +835,46 @@ function pickOrderForVehicle(vehicleId, freeAtIso) {
   return best;
 }
 
+// ── Утренние направления для продаж ──
+// Продажам не хватало ответа «из какого региона и куда брать грузы»: в
+// 06:55 МСК считаем, куда машины ПРИЕДУТ в ближайшие 72 часа, и сколько из
+// этих зон уже есть исходящих заявок. Дефицит — готовый список прозвона:
+// продаём маршруты (обратные плечи кругов), а не одиночные рейсы.
+function runMorningDirections() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCHours() !== 6 || msk.getUTCMinutes() < 55) return;
+    const day = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='morning_directions_day'`).get()?.value === day) return;
+    const arrivals = db.prepare(`SELECT z.name zone, COUNT(*) n FROM trips t
+      JOIN zones z ON z.id=t.to_zone_id
+      WHERE t.status IN ('plan','run') AND datetime(t.ends_at) BETWEEN datetime('now') AND datetime('now','+72 hours')
+      GROUP BY z.name`).all();
+    const outgoing = db.prepare(`SELECT z.name zone, COUNT(*) n FROM orders o
+      JOIN zones z ON z.id=o.from_zone_id
+      WHERE o.deleted_at IS NULL AND o.status<>'rejected' AND o.trip_id IS NULL
+        AND datetime(o.window_from) BETWEEN datetime('now') AND datetime('now','+96 hours')
+      GROUP BY z.name`).all();
+    const outMap = Object.fromEntries(outgoing.map(row => [row.zone, row.n]));
+    const deficit = arrivals
+      .map(row => ({ zone: row.zone, arrive: row.n, out: outMap[row.zone] || 0,
+        gap: row.n - (outMap[row.zone] || 0) }))
+      .filter(row => row.gap > 0 && row.zone !== 'Дом')
+      .sort((a, b) => b.gap - a.gap).slice(0, 5);
+    if (!deficit.length) return;
+    const lines = deficit.map(row =>
+      `${row.zone}: приедут ${row.arrive}, обратных заявок ${row.out} — нужно ещё ${row.gap}`);
+    notify('sales', `🧭 Направления дня (72 ч): машины освобождаются там, где нет обратных грузов — ` +
+      lines.join('; ') + `. Продаём маршрут целиком, а не одно плечо: заявка из зоны прибытия ` +
+      `дороже простоя и порожняка (пороги ставок — в «Конструктор → 📚 Шаблоны кругов»)`);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('morning_directions_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+  } catch (error) {
+    console.error('Утренние направления:', error.message);
+  }
+}
+setInterval(runMorningDirections, 5 * 60_000);
+
 function runDockingWatch() {
   try {
     const soon = db.prepare(`SELECT t.id, t.vehicle_id, t.ends_at, v.plate
@@ -1231,6 +1271,7 @@ async function api(request, response, url) {
       vehicleHolds: db.prepare(`SELECT h.vehicle_id, h.until, h.note, h.held_by_name
         FROM vehicle_holds h WHERE datetime(h.until) > datetime('now')`).all(),
       boardNotes: activeBoardNotes(),
+      driverRatings: driverRatings(db),
       // Черновики ночного подбора: утром логист подтверждает одним кликом.
       assignDrafts: db.prepare(`SELECT d.order_id, d.vehicle_id, d.empty_km, d.reason,
           d.computed_at, v.plate vehicle_plate
