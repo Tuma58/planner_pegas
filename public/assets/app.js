@@ -228,6 +228,18 @@ function renderTimeline() {
       const date = new Date(viewStart.getTime() + index * 86_400_000);
       return `<div class="grid-day ${view.range === 'week' ? 'hours6' : ''} ${[0, 6].includes(date.getUTCDay()) ? 'weekend' : ''} ${isToday(index) ? 'today' : ''} ${isSelected(index) ? 'selected' : ''}"></div>`;
     }).join('');
+    // Видимые границы рейсов строки (с min-width плашки) — по ним диспозиции
+    // и хвосты уходят на второй план, чтобы канва не превращалась в кашу.
+    const tripBoxes = vehicleTrips
+      .filter(trip => trip.status !== 'rejected')
+      .map(trip => {
+        const bs = Math.max(0, daysBetween(viewStart, new Date(Math.max(new Date(trip.starts_at), viewStart)))) * dayWidth;
+        return { l: bs, r: bs + Math.max(28,
+          daysBetween(new Date(Math.max(new Date(trip.starts_at), viewStart)),
+            new Date(Math.min(new Date(trip.ends_at), viewEnd))) * dayWidth - 3) };
+      });
+    const overlapsTrips = (l, r) => tripBoxes.some(box => l < box.r - 6 && box.l < r - 6);
+    const dispositionBoxes = [];
     const dispositionBlocks = (state.data.dispositions || [])
       .filter(item => item.vehicle_id === vehicle.id &&
         new Date(item.starts_at) < viewEnd && new Date(item.ends_at) > viewStart)
@@ -236,26 +248,63 @@ function renderTimeline() {
         const visibleEnd = new Date(Math.min(new Date(item.ends_at), viewEnd));
         const left = Math.max(0, daysBetween(viewStart, visibleStart)) * dayWidth;
         const width = Math.max(10, daysBetween(visibleStart, visibleEnd) * dayWidth - 2);
+        // Диспозиция, накрытая рейсом, — лентой по верхнему краю: цвет и
+        // подсказка остаются, рейс читается целиком. Пересечение двух
+        // диспозиций — вторая в нижней половине.
+        const under = overlapsTrips(left, left + width);
+        const lower = !under && dispositionBoxes.some(box => left < box.r - 6 && box.l < left + width - 6);
+        dispositionBoxes.push({ l: left, r: left + width });
         const meta = dispositionMeta(item.kind);
         // «Резерв» — фоновая пометка плана, не событие: приглушается,
         // чтобы не спорить с плашками рейсов и проблемными диспозициями.
-        return `<span class="dispo ${item.kind === 'reserve' ? 'reserve' : ''}" data-disposition="${item.id}"
+        return `<span class="dispo ${item.kind === 'reserve' ? 'reserve' : ''} ${under ? 'under' : ''} ${lower ? 'lower' : ''}" data-disposition="${item.id}"
           style="left:${left}px;width:${width}px;--dc:${meta.color}"
           title="${meta.label} · ${formatDateTime(item.starts_at)} → ${formatDateTime(item.ends_at)}${item.note ? `
 ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ? ` · ${escapeHtml(item.note)}` : ''}</span>`;
       }).join('');
     const calcSettings = state.data.settings.calculation;
-    // Пересекающиеся рейсы (конфликт назначения) раскладываются в два яруса
-    // половинной высоты — наложение видно, оба рейса читаются целиком.
-    let lastConflict = null;
-    const laneOf = trip => {
-      if (!conflicts.has(trip.id)) return '';
-      const overlapsPrev = lastConflict &&
-        Date.parse(trip.starts_at) < Date.parse(lastConflict.trip.ends_at);
-      const lane = overlapsPrev && lastConflict.lane === 0 ? 1 : 0;
-      lastConflict = { trip, lane };
-      return lane === 0 ? 'split-top' : 'split-bottom';
-    };
+    // Любое ВИДИМОЕ наложение плашек (конфликт назначения, вывод следующего
+    // рейса на линию заранее, короткие рейсы с минимальной шириной 28px)
+    // раскладывается в два яруса половинной высоты — обе плашки читаются.
+    // Раньше ярусы получали только конфликты назначения, и штатные
+    // пересечения плановых времён рисовались друг на друге.
+    const laneEnds = [-Infinity, -Infinity];
+    const sortedForLanes = [...vehicleTrips]
+      .sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
+    const laneByTrip = new Map();
+    for (const trip of sortedForLanes) {
+      const bs = Math.max(0, daysBetween(viewStart, new Date(Math.max(new Date(trip.starts_at), viewStart)))) * dayWidth;
+      const be = bs + Math.max(28,
+        daysBetween(new Date(Math.max(new Date(trip.starts_at), viewStart)),
+          new Date(Math.min(new Date(trip.ends_at), viewEnd))) * dayWidth - 3);
+      if (bs >= laneEnds[0] - 6) { laneByTrip.set(trip.id, ''); laneEnds[0] = be; }
+      else if (bs >= laneEnds[1] - 6) { laneByTrip.set(trip.id, 'split-bottom'); laneEnds[1] = be; }
+      else {
+        // Третье одновременное наложение — редкость: кладём в менее занятый ярус.
+        const lane = laneEnds[0] <= laneEnds[1] ? 0 : 1;
+        laneByTrip.set(trip.id, lane === 0 ? '' : 'split-bottom');
+        laneEnds[lane] = Math.max(laneEnds[lane], be);
+      }
+      // Верхний ярус ужимается, только если нижний занят рядом.
+    }
+    // Плашкам верхнего яруса, соседствующим с нижним, — половинная высота.
+    for (const trip of sortedForLanes) {
+      if (laneByTrip.get(trip.id) !== '') continue;
+      const bs = Math.max(0, daysBetween(viewStart, new Date(Math.max(new Date(trip.starts_at), viewStart)))) * dayWidth;
+      const be = bs + Math.max(28,
+        daysBetween(new Date(Math.max(new Date(trip.starts_at), viewStart)),
+          new Date(Math.min(new Date(trip.ends_at), viewEnd))) * dayWidth - 3);
+      const nearLower = sortedForLanes.some(other => laneByTrip.get(other.id) === 'split-bottom' &&
+        (() => {
+          const os = Math.max(0, daysBetween(viewStart, new Date(Math.max(new Date(other.starts_at), viewStart)))) * dayWidth;
+          const oe = os + Math.max(28,
+            daysBetween(new Date(Math.max(new Date(other.starts_at), viewStart)),
+              new Date(Math.min(new Date(other.ends_at), viewEnd))) * dayWidth - 3);
+          return bs < oe - 6 && os < be - 6;
+        })());
+      if (nearLower) laneByTrip.set(trip.id, 'split-top');
+    }
+    const laneOf = trip => laneByTrip.get(trip.id) || '';
     const trips = vehicleTrips.map(trip => {
       const visibleStart = new Date(Math.max(new Date(trip.starts_at), viewStart));
       const visibleEnd = new Date(Math.min(new Date(trip.ends_at), viewEnd));
@@ -268,7 +317,15 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       const emptyKm = Number(trip.empty_km) || 0;
       if (emptyKm > 0 && trip.status !== 'rejected') {
         const tailMs = transitHours(emptyKm, calcSettings, 0) * 3_600_000;
-        const tailStart = new Date(Math.max(Date.parse(trip.starts_at) - tailMs, viewStart.getTime()));
+        // Хвост не может начинаться, пока машина ещё в предыдущем рейсе:
+        // порожний подгон физически идёт после освобождения. Раньше хвост
+        // рисовался поверх плашки предыдущего рейса на всю высоту.
+        const prevEndMs = Math.max(-Infinity, ...vehicleTrips
+          .filter(other => other.id !== trip.id && other.status !== 'rejected' &&
+            Date.parse(other.ends_at) <= Date.parse(trip.starts_at) + 60_000)
+          .map(other => Date.parse(other.ends_at)));
+        const tailStart = new Date(Math.max(Date.parse(trip.starts_at) - tailMs,
+          Number.isFinite(prevEndMs) ? prevEndMs : -Infinity, viewStart.getTime()));
         const tailEnd = new Date(Math.min(Date.parse(trip.starts_at), viewEnd.getTime()));
         const tailWidth = daysBetween(tailStart, tailEnd) * dayWidth - 1;
         if (tailWidth > 3) {

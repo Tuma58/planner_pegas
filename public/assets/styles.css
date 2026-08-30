@@ -206,7 +206,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .trip.tiny strong, .trip.tiny small { display: none; }
 /* Порожний подгон перед рейсом: штрихованный «хвост» на треке. */
 .empty-tail {
-  position: absolute; top: 7px; height: 35px; border-radius: 6px 0 0 6px;
+  position: absolute; top: 24px; height: 18px; border-radius: 6px 0 0 6px;
   background: repeating-linear-gradient(45deg, rgb(120 130 140 / 55%) 0 4px, transparent 4px 8px);
   border: 1px dashed rgb(120 130 140 / 65%); border-right: 0; pointer-events: auto;
   cursor: pointer;
@@ -730,6 +730,13 @@ tbody tr:hover td { background: var(--hover); }
   font-size: 10px; font-weight: 700; overflow: hidden; white-space: nowrap;
   cursor: pointer;
 }
+/* Диспозиция, накрытая рейсом, — цветная лента по верхнему краю строки:
+   вид и подсказка сохраняются, плашка рейса читается целиком. */
+.dispo.under { top: 0; bottom: auto; height: 6px; padding: 0; border-radius: 3px;
+  border-style: solid; font-size: 0; }
+.dispo.under b { display: none; }
+/* Пересечение двух диспозиций: вторая — в нижней половине строки. */
+.dispo.lower { top: auto; bottom: 2px; height: 18px; font-size: 9px; }
 /* «Резерв» — второй план: бледная заливка, цветной текст, рейсы поверх читаются первыми */
 .dispo.reserve {
   background: color-mix(in srgb, var(--dc) 12%, transparent);
