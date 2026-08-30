@@ -1426,9 +1426,14 @@ export function seedDeliverySlots(db, userId = null, nowMs = Date.now()) {
     ON CONFLICT(customer_name,from_zone_id,to_zone_id,weekday) DO UPDATE SET
       per_day=excluded.per_day, rate=excluded.rate, transit_hours=excluded.transit_hours,
       updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`);
+  // Плечи с ручными слотами автопересев обходит стороной: продажи
+  // договорились с клиентом о конкретной сетке — статистика её не главнее.
+  const manualLegs = new Set(db.prepare(`SELECT DISTINCT customer_name||'|'||from_zone_id||'|'||to_zone_id key
+    FROM delivery_slots WHERE manual=1`).all().map(row => row.key));
   let created = 0;
   for (const [key, leg] of legs) {
     if (leg.n / weeksSpan < 1) continue;
+    if (manualLegs.has(key)) continue;
     const [customer, fromZone, toZone] = key.split('|');
     const perWeek = leg.n / weeksSpan;
     for (let weekday = 0; weekday < 7; weekday += 1) {
@@ -1467,7 +1472,27 @@ export function deliveryPlan(db, month) {
       : order.trip_id ? 2 : 1;
     fact.stage = Math.max(fact.stage, stage);
   }
-  return { month, daysInMonth, slots, facts, firstWeekday: new Date(monthStart).getUTCDay() };
+  // Цель месяца (без НДС) — чтобы шапка плана сразу показывала, закрывает
+  // ли сетка цель. Свежесть сетки — чтобы было видно, что она протухла.
+  const target = db.prepare(`SELECT target_net FROM revenue_plans WHERE period_start=?`)
+    .get(`${month}-01`)?.target_net || 0;
+  const gridUpdatedAt = db.prepare('SELECT MAX(updated_at) m FROM delivery_slots').get().m;
+  // Последние пункты по каждому плечу — заготовка для «+ Заявка из плана»:
+  // менеджер получает форму с адресами прошлой заявки, а не пустую.
+  const lastPoints = {};
+  for (const row of db.prepare(`SELECT customer_name, from_zone_id, to_zone_id,
+      from_point, to_point, from_address_id, to_address_id, temperature_mode, body_type,
+      MAX(created_at) m
+    FROM orders WHERE deleted_at IS NULL
+    GROUP BY customer_name, from_zone_id, to_zone_id`).all()) {
+    lastPoints[`${row.customer_name}|${row.from_zone_id}|${row.to_zone_id}`] = {
+      fromPoint: row.from_point, toPoint: row.to_point,
+      fromAddressId: row.from_address_id, toAddressId: row.to_address_id,
+      temperatureMode: row.temperature_mode, bodyType: row.body_type
+    };
+  }
+  return { month, daysInMonth, slots, facts, firstWeekday: new Date(monthStart).getUTCDay(),
+    targetNet: target, gridUpdatedAt, lastPoints };
 }
 
 // ── «Моя смена»: личная мотивационная сводка сотрудника на дашборде ──

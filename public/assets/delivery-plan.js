@@ -50,12 +50,32 @@ export async function deliveryPlanDialog(context, month = '') {
       const fact = factOf(row, day);
       if (fact) { factN += fact.n; factRv += fact.rv; }
     }
-    dayTotals.push({ planN, factN, busy, planRv, factRv });
+    dayTotals.push({ planN, factN, busy, planRv, factRv, gapN: 0 });
   }
   const monthPlanN = dayTotals.reduce((s, d) => s + d.planN, 0);
   const monthPlanRv = dayTotals.reduce((s, d) => s + d.planRv, 0);
   const monthFactN = dayTotals.reduce((s, d) => s + d.factN, 0);
   const monthFactRv = dayTotals.reduce((s, d) => s + d.factRv, 0);
+  // «Дыра» — недобор будущих дней: план есть, заявок меньше плана.
+  // Прошедшие дни не в счёт: их уже не закрыть, это отчёт, а не задача.
+  const todayIso = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+  const dayIso = day => `${plan.month}-${String(day).padStart(2, '0')}`;
+  const gapOf = (row, day) => dayIso(day) < todayIso ? 0
+    : Math.max(0, Math.round(planOf(row, day)) - (factOf(row, day)?.n || 0));
+  let gapN = 0; let gapRv = 0;
+  for (const row of rowList) {
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const gap = gapOf(row, day);
+      gapN += gap; gapRv += gap * row.rate;
+      dayTotals[day - 1].gapN += gap;
+    }
+  }
+  // Цель месяца хранится без НДС, ставки сетки — с НДС: приводим к одному
+  // знаменателю, иначе сравнение врёт на 22%.
+  const targetVat = (plan.targetNet || 0) * 1.22;
+  const gridAgeDays = plan.gridUpdatedAt
+    ? Math.floor((Date.now() - Date.parse(String(plan.gridUpdatedAt).replace(' ', 'T') + 'Z')) / 86_400_000)
+    : null;
 
   const dayHead = Array.from({ length: daysInMonth }, (_, i) => {
     const wd = weekdayOf(i + 1);
@@ -66,9 +86,10 @@ export async function deliveryPlanDialog(context, month = '') {
     `<tr style="font-weight:700"><td colspan="3">${label}</td>${dayTotals.map(d =>
       `<td style="text-align:center;background:var(--panel2,#f2f7f7)">${fmt(pick(d))}</td>`).join('')}</tr>`;
 
-  const cellHtml = (row, day) => {
+  const cellHtml = (row, rowIndex, day) => {
     const p = planOf(row, day);
     const fact = factOf(row, day);
+    const gap = gapOf(row, day);
     const stageClass = fact
       ? fact.stage >= 3 ? 'background:#20624f;color:#fff'
         : fact.stage >= 2 ? 'background:#2e7d6b;color:#fff'
@@ -78,16 +99,22 @@ export async function deliveryPlanDialog(context, month = '') {
     // (<0,5 рейса в день) остаются жёлтыми без цифры, точное значение —
     // в подсказке при наведении.
     const text = fact ? fact.n : p ? (Math.round(p) || '') : '';
+    // Незакрытый будущий слот кликабелен: одно нажатие открывает заявку с
+    // заполненными клиентом, плечом, окном дня и ставкой — план вывоза
+    // из смотрелки становится рабочим списком «кому звонить».
+    const clickable = canEdit && gap > 0;
     const hint = `${row.customer} · ${row.leg} · ${day}.${plan.month.slice(5, 7)}: план ${p ? Math.round(p * 100) / 100 : 0}` +
-      (fact ? `, заявок ${fact.n} (${['', 'внесена', 'ТС назначено', 'выгружено'][fact.stage]}) на ${money(Math.round(fact.rv))}` : ', заявок нет');
-    return `<td style="text-align:center;${stageClass}" title="${escapeHtml(hint)}">${text}</td>`;
+      (fact ? `, заявок ${fact.n} (${['', 'внесена', 'ТС назначено', 'выгружено'][fact.stage]}) на ${money(Math.round(fact.rv))}` : ', заявок нет') +
+      (clickable ? ' — клик: внести заявку в этот день' : '');
+    return `<td style="text-align:center;${stageClass}${clickable ? ';cursor:pointer;outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
+      ${clickable ? `data-dpl-order="${rowIndex}|${day}"` : ''} title="${escapeHtml(hint)}">${text}</td>`;
   };
 
   const bodyRows = rowList.map((row, index) => `<tr>
     <td style="white-space:nowrap;max-width:190px;overflow:hidden;text-overflow:ellipsis"><b>${escapeHtml(row.customer)}</b></td>
     <td style="white-space:nowrap">${escapeHtml(row.leg)}</td>
     <td style="white-space:nowrap">${money(row.rate)}${canEdit ? ` <button class="button ghost small" data-slot-edit="${index}" title="Слоты недели и ставка">✎</button>` : ''}</td>
-    ${Array.from({ length: daysInMonth }, (_, i) => cellHtml(row, i + 1)).join('')}
+    ${Array.from({ length: daysInMonth }, (_, i) => cellHtml(row, index, i + 1)).join('')}
   </tr>`).join('');
 
   const [year, monthNum] = plan.month.split('-').map(Number);
@@ -103,8 +130,15 @@ export async function deliveryPlanDialog(context, month = '') {
       ${canEdit ? `<button type="button" class="button small" id="dplSeed"
         title="Построить/обновить сетку слотов из регулярных плеч за 60 суток (клиент+направление ≥1 рейса в неделю)">⚙ Заполнить из истории</button>` : ''}
       <span class="filter-sum" style="margin-left:auto">план ${Math.round(monthPlanN)} рейсов · ${money(Math.round(monthPlanRv))}
-        · факт ${monthFactN} заявок · ${money(Math.round(monthFactRv))}</span>
+        · факт ${monthFactN} заявок · ${money(Math.round(monthFactRv))}${gridAgeDays != null && gridAgeDays > 10
+    ? ` · <span style="color:var(--warn,#c99a2e)" title="Сетка слотов давно не обновлялась из истории — «⚙ Заполнить из истории» (ручные плечи не тронет); пересев также идёт сам в ночь на понедельник">⚙ сетке ${gridAgeDays} дн</span>` : ''}</span>
     </div>
+    ${gapN > 0 ? `<p style="margin:0 0 6px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb, #c99a2e 14%, var(--card,#fff));border:1px solid #c99a2e">
+      🕳 <b>Не закрыто до конца месяца: ${gapN} рейсов ≈ ${money(Math.round(gapRv))}</b>${targetVat
+    ? ` · сетка целиком даёт ${money(Math.round(monthPlanRv))} из цели ${money(Math.round(targetVat))} с НДС (${Math.round(monthPlanRv / targetVat * 100)}%)${monthPlanRv < targetVat
+      ? ' — даже полная сетка цель не закрывает: нужны новые клиенты или плечи' : ''}` : ''}
+      <br><small class="muted">Пунктирные ячейки — незакрытые слоты будущих дней: клик открывает
+      заявку с заполненными клиентом, плечом, днём и ставкой. Это и есть список «кому звонить».</small></p>` : ''}
     <p class="muted" style="margin:0 0 8px">Ячейка: жёлтая — слот без заявки (задача продаж),
       синяя — заявка внесена, зелёная — ТС назначено, тёмная — выгружено. Число в ячейке — факт
       заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.</p>
@@ -114,6 +148,7 @@ export async function deliveryPlanDialog(context, month = '') {
       ${totalRow('Заявок факт', d => d.factN, v => v || '')}
       ${totalRow('Машин занято (оценка)', d => d.busy)}
       ${totalRow('Выручка план, т₽', d => d.planRv / 1000)}
+      ${totalRow('🕳 Дыра (не закрыто)', d => d.gapN, v => v || '')}
       ${bodyRows || `<tr><td colspan="${daysInMonth + 3}" class="muted">Сетка пуста — нажмите «⚙ Заполнить из истории».</td></tr>`}
     </table></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
@@ -121,6 +156,13 @@ export async function deliveryPlanDialog(context, month = '') {
 
   document.getElementById('dplPrev').onclick = () => deliveryPlanDialog(context, shiftMonth(-1));
   document.getElementById('dplNext').onclick = () => deliveryPlanDialog(context, shiftMonth(1));
+  // Клик по незакрытому слоту будущего дня: заявка с заполненным клиентом,
+  // плечом, окном дня, ставкой слота и адресами последней заявки плеча.
+  document.querySelectorAll('[data-dpl-order]').forEach(cell =>
+    cell.addEventListener('click', () => {
+      const [rowIndex, day] = cell.dataset.dplOrder.split('|');
+      orderFromSlotDialog(context, plan, rowList[Number(rowIndex)], Number(day));
+    }));
   if (canEdit) {
     const seed = document.getElementById('dplSeed');
     if (seed) {
@@ -165,6 +207,53 @@ function slotEditor(context, plan, row) {
         }) });
       }
       toast('Слоты сохранены');
+      deliveryPlanDialog(context, plan.month);
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+// «+ Заявка из плана»: слот знает клиента, плечо, день и ставку — менеджеру
+// остаётся проверить окно и пункты (подставлены из последней заявки плеча)
+// и нажать «Забронировать». Дальше заявка живёт обычным конвейером.
+function orderFromSlotDialog(context, plan, row, day) {
+  const dayIso = `${plan.month}-${String(day).padStart(2, '0')}`;
+  const last = (plan.lastPoints || {})[`${row.customer}|${row.fromZoneId}|${row.toZoneId}`] || {};
+  context.showModal(`<form id="dplOrderForm">
+    <h2>➕ Заявка из плана вывоза</h2>
+    <p class="muted">${escapeHtml(row.customer)} · ${escapeHtml(row.leg)} · ${day}.${plan.month.slice(5, 7)}
+      — по слоту сетки. Пункты подставлены из последней заявки этого плеча, проверьте.</p>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <label class="field">Погрузка с<input type="datetime-local" name="windowFrom" value="${dayIso}T08:00" required></label>
+      <label class="field">Погрузка по<input type="datetime-local" name="windowTo" value="${dayIso}T20:00" required></label>
+      <label class="field" style="grid-column:1/-1">Пункт погрузки
+        <input name="fromPoint" value="${escapeHtml(last.fromPoint || '')}" placeholder="город, адрес"></label>
+      <label class="field" style="grid-column:1/-1">Пункт выгрузки
+        <input name="toPoint" value="${escapeHtml(last.toPoint || '')}" placeholder="город, адрес"></label>
+      <label class="field">Ставка с НДС, ₽<input name="rateVat" type="number" min="0" value="${Math.round(row.rate)}"></label>
+      <label class="field">Комментарий<input name="comment" maxlength="200" placeholder="необязательно"></label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Забронировать</button>
+    </div>
+  </form>`);
+  document.getElementById('dplOrderForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      const created = await api('/api/orders', { method: 'POST', body: JSON.stringify({
+        customerName: row.customer,
+        fromZoneId: row.fromZoneId, toZoneId: row.toZoneId,
+        fromPoint: String(form.get('fromPoint') || '').trim(),
+        toPoint: String(form.get('toPoint') || '').trim(),
+        fromAddressId: last.fromAddressId || null, toAddressId: last.toAddressId || null,
+        windowFrom: new Date(form.get('windowFrom')).toISOString(),
+        windowTo: new Date(form.get('windowTo')).toISOString(),
+        rateVat: Number(form.get('rateVat')) || 0,
+        temperatureMode: last.temperatureMode || '', bodyType: last.bodyType || '',
+        comment: String(form.get('comment') || '').trim()
+      }) });
+      toast(`Забронировано — заявка № ${created.orderNo} в портфеле`);
       deliveryPlanDialog(context, plan.month);
     } catch (error) { toast(error.message, 'error'); }
   };

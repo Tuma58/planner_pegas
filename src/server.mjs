@@ -851,6 +851,26 @@ function runAssignDrafts() {
 setInterval(runAssignDrafts, 60 * 60_000);
 setTimeout(runAssignDrafts, 50_000);
 
+// Автопересев плана вывоза: сетку заполнили из истории один раз и забыли —
+// через месяц она врёт. Раз в неделю (в ночь на понедельник) пересеваем из
+// свежей истории; плечи, правленные вручную (manual=1), не трогаем.
+function runDeliverySeedWatch() {
+  try {
+    const mskNow = new Date(Date.now() + 3 * 3_600_000);
+    if (mskNow.getUTCDay() !== 1 || mskNow.getUTCHours() !== 4) return;
+    const day = mskNow.toISOString().slice(0, 10);
+    const doneKey = db.prepare(`SELECT value FROM app_meta WHERE key='delivery_seed_day'`).get()?.value;
+    if (doneKey === day) return;
+    const created = seedDeliverySlots(db, null);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('delivery_seed_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+    console.log(`План вывоза: сетка пересеяна из истории, слотов ${created}`);
+  } catch (error) {
+    console.error('Автопересев плана вывоза:', error.message);
+  }
+}
+setInterval(runDeliverySeedWatch, 30 * 60_000);
+
 function runEmptyKmWatch() {
   try {
     const vehicles = db.prepare(`SELECT DISTINCT vehicle_id FROM trips
@@ -1393,9 +1413,10 @@ async function api(request, response, url) {
       db.prepare(`DELETE FROM delivery_slots WHERE customer_name=? AND from_zone_id=? AND to_zone_id=? AND weekday=?`)
         .run(customer, fromZone.id, toZone.id, weekday);
     } else {
-      db.prepare(`INSERT INTO delivery_slots(id,customer_name,from_zone_id,to_zone_id,weekday,per_day,rate,transit_hours,updated_by)
-        VALUES(?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(customer_name,from_zone_id,to_zone_id,weekday) DO UPDATE SET
+      // manual=1: правка руками — автопересев это плечо больше не трогает.
+      db.prepare(`INSERT INTO delivery_slots(id,customer_name,from_zone_id,to_zone_id,weekday,per_day,rate,transit_hours,updated_by,manual)
+        VALUES(?,?,?,?,?,?,?,?,?,1)
+        ON CONFLICT(customer_name,from_zone_id,to_zone_id,weekday) DO UPDATE SET manual=1,
           per_day=excluded.per_day, rate=excluded.rate,
           updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
         .run(randomUUID(), customer, fromZone.id, toZone.id, weekday, perDay,
