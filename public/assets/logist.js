@@ -546,8 +546,13 @@ export async function renderLogist(container, context) {
   // Прежний плоский норматив «6 часов до погрузки» врал: подгон бывает и
   // 8 часов, и заявка «в нормативе» уже была обречена опоздать.
   const deadlineBadge = order => deadlineBadgeHtml(deadlines.get(order.id));
+  // Ночной черновик: пока логистов не было, система подобрала заявке машину.
+  // Рекомендация показывается прямо в карточке очереди с кнопкой «⚡»:
+  // одно нажатие — обычное назначение этой машины с автоподтверждением.
+  const draftByOrder = new Map((data.assignDrafts || []).map(item => [item.order_id, item]));
   const queueCard = order => {
     const waiting = orderWaitMs(order);
+    const draft = draftByOrder.get(order.id);
     return `<div class="list-item ordrow ${order.returned_at ? 'pipe-returned' : 'pipe-mine'}">
       <span style="flex:1;min-width:0">
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
@@ -556,10 +561,16 @@ export async function renderLogist(container, context) {
           · ${escapeHtml(order.body_type || 'Реф')} ${waiting > 3_600_000 ? ` · ждёт ${waitingLabel(waiting)}` : ''}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
+        ${draft ? `<small style="display:block">🌙 ночной подбор:
+          <strong class="mono vlink" data-vinfo="${draft.vehicle_id}">${escapeHtml(draft.vehicle_plate)}</strong>
+          <span class="muted">· ${escapeHtml(draft.reason)}</span></small>` : ''}
       </span>
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         <b>${money(order.rate_vat)}</b>
-        <button class="button small" data-assign="${order.id}">Назначить ТС</button>
+        ${draft ? `<button class="button small" data-draft-assign="${order.id}"
+          data-draft-vehicle="${draft.vehicle_id}"
+          title="Назначить машину ночного подбора: ${escapeHtml(draft.vehicle_plate)} — проверка занятости выполнится как при обычном назначении">⚡ ${escapeHtml(draft.vehicle_plate)}</button>` : ''}
+        <button class="button ${draft ? 'ghost ' : ''}small" data-assign="${order.id}">${draft ? 'Другое ТС' : 'Назначить ТС'}</button>
         <span style="display:flex;gap:5px">
           <button class="button ghost small" data-edit="${order.id}">Изменить</button>
           <button class="button ghost small" data-reject-order="${order.id}">Отклонить</button>
@@ -807,6 +818,23 @@ export async function renderLogist(container, context) {
     button.addEventListener('click', () => {
       const order = data.orders.find(item => item.id === button.dataset.assign);
       if (order) context.openAssign(order);
+    }));
+  // Назначение машины ночного подбора: тот же POST, что и обычное
+  // назначение, — сервер сам проверит занятость и пересчитает подгон.
+  container.querySelectorAll('[data-draft-assign]').forEach(button =>
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/orders/${button.dataset.draftAssign}/assign`, {
+          method: 'POST',
+          body: JSON.stringify({ vehicleId: button.dataset.draftVehicle, autoConfirm: true })
+        });
+        toast('Назначено по ночному подбору — рейс ушёл диспетчеру');
+        context.onReload();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message, 'error');
+      }
     }));
   container.querySelectorAll('[data-pick]').forEach(button =>
     button.addEventListener('click', () => {

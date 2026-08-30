@@ -2438,6 +2438,53 @@ test('перегон нельзя превратить в диспозицию �
   assert.equal(transferPlaceOf(broken, vehicle), null, 'ремонт местоположение не задаёт');
 });
 
+test('ночные черновики назначений: таблица и выбор исхода', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-drafts-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  const iso = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,zone_id,status) VALUES
+    ('v-a','а001аа58',?,?,'work'),('v-b','в002вв58',?,?,'work')`).run(type, zone, type, zone);
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,window_from,window_to,
+      rate_vat,status,confirmed_at) VALUES
+    ('o-1','Клиент',?,?,?,?,50000,'new',CURRENT_TIMESTAMP)`)
+    .run(zone, zone, iso(20), iso(30));
+
+  // Черновик: рекомендована машина v-a.
+  db.prepare(`INSERT INTO assign_drafts(order_id,vehicle_id,empty_km,reason)
+    VALUES('o-1','v-a',12,'подгон ~12 км')`).run();
+
+  // Логист назначил ДРУГУЮ машину — исход overridden (метрика доверия).
+  db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,starts_at,ends_at,
+      distance_km,revenue_vat,status) VALUES('t-1','v-b',?,?,?,?,100,50000,'plan')`)
+    .run(zone, zone, iso(20), iso(30));
+  db.prepare(`UPDATE orders SET trip_id='t-1' WHERE id='o-1'`).run();
+  // Тот же UPDATE, что выполняет сторож.
+  db.prepare(`UPDATE assign_drafts SET
+      outcome = CASE WHEN (SELECT t.vehicle_id FROM orders o JOIN trips t ON t.id=o.trip_id
+        WHERE o.id=assign_drafts.order_id) = assign_drafts.vehicle_id
+        THEN 'accepted' ELSE 'overridden' END,
+      resolved_at = CURRENT_TIMESTAMP
+    WHERE outcome IS NULL AND (SELECT o.trip_id FROM orders o WHERE o.id=assign_drafts.order_id) IS NOT NULL`).run();
+  assert.equal(db.prepare(`SELECT outcome FROM assign_drafts WHERE order_id='o-1'`).get().outcome,
+    'overridden', 'выбрана другая машина — рекомендация помечена перекрытой');
+
+  // Совпадение машины даёт accepted.
+  db.prepare(`UPDATE assign_drafts SET outcome=NULL, resolved_at=NULL, vehicle_id='v-b' WHERE order_id='o-1'`).run();
+  db.prepare(`UPDATE assign_drafts SET
+      outcome = CASE WHEN (SELECT t.vehicle_id FROM orders o JOIN trips t ON t.id=o.trip_id
+        WHERE o.id=assign_drafts.order_id) = assign_drafts.vehicle_id
+        THEN 'accepted' ELSE 'overridden' END,
+      resolved_at = CURRENT_TIMESTAMP
+    WHERE outcome IS NULL AND (SELECT o.trip_id FROM orders o WHERE o.id=assign_drafts.order_id) IS NOT NULL`).run();
+  assert.equal(db.prepare(`SELECT outcome FROM assign_drafts WHERE order_id='o-1'`).get().outcome, 'accepted');
+});
+
 test('перегон: место и выезд считаются на момент освобождения сцепки', async () => {
   const { vehiclePlace, vehiclePlaceAt, vehicleFreeAt } = await import('../public/assets/transfer.js');
   const now = Date.now();

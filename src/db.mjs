@@ -268,6 +268,20 @@ CREATE TABLE IF NOT EXISTS vehicle_holds (
 -- Объявления на общий экран (табло): админ выводит сообщение поверх
 -- дашборда — планёрка, сбой 1С, аврал. Живёт до срока (ends_at) или до
 -- снятия (removed_at), после чего перестаёт отдаваться клиенту.
+-- Ночные черновики назначений: с 20:00 до 08:00 логистов нет, заявки
+-- копятся (медиана вечерних — 17 часов против дневных 2–3). Ночью система
+-- сама подбирает каждой заявке лучшую машину; утром логист подтверждает в
+-- один клик или выбирает другую. Итог хранится ради метрики качества:
+-- accepted / overridden показывают, можно ли подбору доверять больше.
+CREATE TABLE IF NOT EXISTS assign_drafts (
+  order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+  vehicle_id TEXT NOT NULL REFERENCES vehicles(id),
+  empty_km REAL,
+  reason TEXT NOT NULL DEFAULT '',
+  computed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  outcome TEXT CHECK(outcome IN ('accepted','overridden')),
+  resolved_at TEXT
+);
 CREATE TABLE IF NOT EXISTS board_notes (
   id TEXT PRIMARY KEY,
   text TEXT NOT NULL, subtext TEXT NOT NULL DEFAULT '',

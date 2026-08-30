@@ -775,6 +775,82 @@ setTimeout(runCustomerRemindersWatch, 55_000);
 // Ночной сторож порожняка: цепочки меняют и обходными путями (импорт из 1С,
 // прямое редактирование), поэтому раз в ночь пересчитываем подгон у всех
 // сцепок с будущими рейсами — страховка поверх пересчёта по событиям.
+// ── Ночные черновики назначений ──
+// Логисты уходят в 20:00, приходят в 08:00 — заявки, подтверждённые вечером,
+// ждут утра (медиана 17 часов против дневных 2–3). Ночью система подбирает
+// каждой неназначенной заявке с погрузкой в ближайшие 48 часов лучшую
+// свободную машину; утром логист подтверждает одним кликом или выбирает
+// другую. Черновик — рекомендация, а не назначение: решение за человеком.
+function pickVehicleFor(order) {
+  const windowFrom = order.window_from;
+  // Свободна на момент погрузки: нет рейса, который перекрывает окно,
+  // и нет блокирующей диспозиции (ремонт, без водителя, пересменка, перегон
+  // без прибытия учтён её ends_at).
+  const candidates = db.prepare(`SELECT v.id, v.plate FROM vehicles v
+    WHERE v.status='work'
+      AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status<>'rejected'
+        AND datetime(t.starts_at) <= datetime(?) AND datetime(t.ends_at) > datetime(?))
+      AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d WHERE d.vehicle_id=v.id
+        AND datetime(d.starts_at) <= datetime(?) AND datetime(d.ends_at) > datetime(?))
+      AND NOT EXISTS (SELECT 1 FROM vehicle_holds h WHERE h.vehicle_id=v.id
+        AND datetime(h.until) > datetime('now'))`).all(windowFrom, windowFrom, windowFrom, windowFrom);
+  // Точка погрузки резолвится один раз на заявку: подгон каждой машины —
+  // только позиция сцепки против этой точки, иначе сотня LIKE-поисков
+  // адреса на каждую заявку.
+  const target = addressPointById(order.from_address_id) || addressPointByText(order.from_point);
+  if (!target) return null;
+  let best = null;
+  for (const vehicle of candidates) {
+    const origin = vehiclePositionBefore(vehicle.id, windowFrom);
+    if (!origin || !Number.isFinite(origin.latitude)) continue;
+    const km = roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
+    if (!best || km < best.km) best = { vehicle, km };
+  }
+  return best;
+}
+
+function runAssignDrafts() {
+  try {
+    // Только ночное окно (20:00–08:00 МСК): днём логисты назначают сами, и
+    // черновики только мешали бы. Заявки берём с погрузкой в ближайшие 48 ч.
+    const mskHour = new Date(Date.now() + 3 * 3_600_000).getUTCHours();
+    if (mskHour >= 8 && mskHour < 20) return;
+    const orders = db.prepare(`SELECT * FROM orders
+      WHERE trip_id IS NULL AND status='new' AND confirmed_at IS NOT NULL
+        AND datetime(window_from) > datetime('now')
+        AND datetime(window_from) < datetime('now','+2 days')`).all();
+    let made = 0;
+    for (const order of orders) {
+      const pick = pickVehicleFor(order);
+      if (!pick) continue;
+      db.prepare(`INSERT INTO assign_drafts(order_id,vehicle_id,empty_km,reason,computed_at)
+        VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(order_id) DO UPDATE SET vehicle_id=excluded.vehicle_id,
+          empty_km=excluded.empty_km, reason=excluded.reason,
+          computed_at=CURRENT_TIMESTAMP, outcome=NULL, resolved_at=NULL`)
+        .run(order.id, pick.vehicle.id, pick.km,
+          `подгон ~${Math.round(pick.km)} км, свободна на момент погрузки`);
+      made += 1;
+    }
+    // Итог черновиков, по которым решение принято: заявка получила рейс —
+    // сравниваем машину с рекомендованной (метрика доверия подбору);
+    // окно погрузки прошло без назначения — черновик удаляем.
+    db.prepare(`UPDATE assign_drafts SET
+        outcome = CASE WHEN (SELECT t.vehicle_id FROM orders o JOIN trips t ON t.id=o.trip_id
+          WHERE o.id=assign_drafts.order_id) = assign_drafts.vehicle_id
+          THEN 'accepted' ELSE 'overridden' END,
+        resolved_at = CURRENT_TIMESTAMP
+      WHERE outcome IS NULL AND (SELECT o.trip_id FROM orders o WHERE o.id=assign_drafts.order_id) IS NOT NULL`).run();
+    db.prepare(`DELETE FROM assign_drafts WHERE outcome IS NULL AND (SELECT datetime(o.window_from)
+      FROM orders o WHERE o.id=assign_drafts.order_id) < datetime('now')`).run();
+    if (made) console.log(`Черновики назначений: подобраны машины для ${made} заявок`);
+  } catch (error) {
+    console.error('Черновики назначений:', error.message);
+  }
+}
+setInterval(runAssignDrafts, 60 * 60_000);
+setTimeout(runAssignDrafts, 50_000);
+
 function runEmptyKmWatch() {
   try {
     const vehicles = db.prepare(`SELECT DISTINCT vehicle_id FROM trips
@@ -1064,7 +1140,13 @@ async function api(request, response, url) {
       customerDates: upcomingCustomerDates(db, Date.now(), 7),
       vehicleHolds: db.prepare(`SELECT h.vehicle_id, h.until, h.note, h.held_by_name
         FROM vehicle_holds h WHERE datetime(h.until) > datetime('now')`).all(),
-      boardNotes: activeBoardNotes()
+      boardNotes: activeBoardNotes(),
+      // Черновики ночного подбора: утром логист подтверждает одним кликом.
+      assignDrafts: db.prepare(`SELECT d.order_id, d.vehicle_id, d.empty_km, d.reason,
+          d.computed_at, v.plate vehicle_plate
+        FROM assign_drafts d JOIN vehicles v ON v.id=d.vehicle_id
+        JOIN orders o ON o.id=d.order_id
+        WHERE d.outcome IS NULL AND o.trip_id IS NULL`).all()
     });
   }
 
