@@ -562,7 +562,8 @@ export async function renderLogist(container, context) {
           · ${escapeHtml(order.body_type || 'Реф')} ${waiting > 3_600_000 ? ` · ждёт ${waitingLabel(waiting)}` : ''}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
-        ${draft ? `<small style="display:block">🌙 ночной подбор:
+        ${draft ? `<small style="display:block">${draft.reason.startsWith('стыковка')
+    ? '⏭ стыковка плеча' : '🌙 ночной подбор'}:
           <strong class="mono vlink" data-vinfo="${draft.vehicle_id}">${escapeHtml(draft.vehicle_plate)}</strong>
           <span class="muted">· ${escapeHtml(draft.reason)}</span></small>` : ''}
       </span>
