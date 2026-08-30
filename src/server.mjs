@@ -2950,6 +2950,32 @@ async function api(request, response, url) {
     });
   }
 
+  // ── Отметка «данные направлены грузоотправителю» ──
+  // Параллельная отметка подготовки выхода (не звено чек-листа): данные
+  // водителя и ТС нужны клиенту для пропуска на погрузку. Без отметки рейс
+  // не блокируется — просто карточка подсвечивает, что данные ещё не ушли.
+  match = route(/^\/api\/trips\/([^/]+)\/shipper-notified$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const trip = db.prepare('SELECT id, shipper_notified_at FROM trips WHERE id=?').get(match[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден');
+    const body = await readJson(request);
+    if (body.undo) {
+      // Отметили не тот рейс — снять может любой диспетчер.
+      db.prepare(`UPDATE trips SET shipper_notified_at=NULL, shipper_notified_by='',
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(match[0]);
+      audit(db, user, 'shipper-notified-undo', 'trip', match[0], {}, requestIp(request));
+      return json(response, 200, { ok: true });
+    }
+    if (trip.shipper_notified_at) return json(response, 200, { ok: true });
+    db.prepare(`UPDATE trips SET shipper_notified_at=?, shipper_notified_by=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(new Date().toISOString(), user.full_name || user.username || '', match[0]);
+    audit(db, user, 'shipper-notified', 'trip', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   // ── Вопросы водителей ──
   if (request.method === 'POST' && pathname === '/api/driver-questions') {
     const user = requireUser(request, response);

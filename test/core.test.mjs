@@ -2438,6 +2438,37 @@ test('перегон нельзя превратить в диспозицию �
   assert.equal(transferPlaceOf(broken, vehicle), null, 'ремонт местоположение не задаёт');
 });
 
+test('отметка «данные грузоотправителю»: не блокирует чек-лист, метрика считает долю', async t => {
+  const { DISPATCH_STEPS } = await import('../src/trip-control.mjs');
+  // Отметка — НЕ звено чек-листа: жёсткий шаг затягивал бы выход, как
+  // отменённый этап «документы получены».
+  assert.ok(!DISPATCH_STEPS.some(item => item.step === 'shipper_notified'),
+    'отметка не входит в цепочку шагов');
+
+  const { metricValue } = await import('../src/project160.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-shipper-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,zone_id,status)
+    VALUES('v-1','а001аа58',?,?,'work')`).run(type, zone);
+  const iso = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+  const insert = (id, notified) => db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,
+      to_zone_id,starts_at,ends_at,distance_km,revenue_vat,status,on_line_at,shipper_notified_at)
+    VALUES(?,'v-1',?,?,?,?,100,50000,'run',?,?)`)
+    .run(id, zone, zone, iso(-5), iso(5), iso(-4), notified ? iso(-4.5) : null);
+  insert('t-sent', true);
+  insert('t-not', false);
+  const from = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const to = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  assert.equal(metricValue(db, 'shipper_notified_pct', from, to), 50,
+    'один из двух рейсов на линии с отметкой — 50%');
+});
+
 test('ночные черновики назначений: таблица и выбор исхода', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-drafts-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

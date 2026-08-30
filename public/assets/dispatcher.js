@@ -639,6 +639,35 @@ export async function renderDispatcher(container, context, options = {}) {
         title="Сверить ставку с заявкой клиента: подтвердить или внести точную — до внесения заказа в учётную систему">Уточнить сумму по заявке клиента</button>`
       : '<b>Уточнить сумму по заявке клиента</b> (диспетчер)'}</div>`;
   };
+  // Данные водителя и ТС грузоотправителю: без них машину не пускают на
+  // погрузку. Отметка параллельная — чек-лист не блокирует (урок отменённого
+  // этапа «документы»), но после отправки задания водителю карточка
+  // подсвечивает, что данные клиенту ещё не ушли. «📋 Текст» собирает
+  // готовое сообщение из базы — водитель, телефон, ТС, прицеп.
+  const shipperDataText = trip => {
+    const driver = (data.drivers || []).find(item => item.vehicle_id === trip.vehicle_id);
+    return ['Данные на погрузку:',
+      `Водитель: ${driver?.full_name || trip.driver_name || '—'}`,
+      driver?.phone ? `Телефон: ${driver.phone}` : '',
+      `ТС: ${trip.vehicle_plate}${trip.trailer_plate ? ` / прицеп ${trip.trailer_plate}` : ''}`,
+      `Погрузка: ${trip.from_point || trip.from_name || ''} · ${formatDateTime(trip.starts_at)}`
+    ].filter(Boolean).join('\n');
+  };
+  const shipperLine = trip => {
+    if (trip.shipper_notified_at) {
+      return `<div class="sum-line ok">📨 Данные грузоотправителю отправлены
+        ${formatDateTime(trip.shipper_notified_at)}${trip.shipper_notified_by ? ` · ${escapeHtml(trip.shipper_notified_by)}` : ''}
+        ${canAct ? `<button class="button ghost small" data-shipper-undo="${trip.id}" title="Снять отметку">✎</button>` : ''}</div>`;
+    }
+    const urgent = Boolean(trip.driver_notified_at) ||
+      Date.parse(trip.starts_at) - Date.now() < 3 * 3_600_000;
+    return `<div class="sum-line ${urgent ? 'warn' : ''}">📨 Данные на водителя и ТС — грузоотправителю:
+      не отправлены${urgent ? ' ⚠' : ''}
+      ${canAct ? `<button class="button ghost small" data-shipper-copy="${trip.id}"
+        title="Скопировать готовый текст: водитель, телефон, ТС, прицеп, погрузка">📋 Текст</button>
+      <button class="button small" data-shipper-done="${trip.id}"
+        title="Отметить: данные переданы клиенту (почта, мессенджер, портал)">✓ Отправлены</button>` : ''}</div>`;
+  };
   const prepCard = trip => {
     const event = prepEventLine(trip, prepStepOf(trip)[1]);
     const overdue = Date.parse(trip.starts_at) < Date.now();
@@ -652,6 +681,7 @@ export async function renderDispatcher(container, context, options = {}) {
         </span>
       </div>
       ${sumLine(trip)}
+      ${shipperLine(trip)}
       ${event.html}
       ${salesCommentNote(trip)}
       ${checklistBlock(trip, canAct)}
@@ -1063,6 +1093,39 @@ export async function renderDispatcher(container, context, options = {}) {
 
   wireDemurrageChip(container, context);
   // Уточнение суммы: подтвердить текущую или внести точную из заявки клиента.
+  // Данные грузоотправителю: копирование текста и отметка отправки.
+  container.querySelectorAll('[data-shipper-copy]').forEach(button =>
+    button.addEventListener('click', async () => {
+      const trip = data.trips.find(item => item.id === button.dataset.shipperCopy);
+      if (!trip) return;
+      try {
+        await navigator.clipboard.writeText(shipperDataText(trip));
+        toast('Текст с данными скопирован — отправьте клиенту и отметьте «✓ Отправлены»');
+      } catch {
+        // Буфер недоступен (http, старый браузер) — показываем текст для ручного копирования.
+        context.showModal(`<h2>📨 Данные на погрузку</h2>
+          <textarea rows="7" style="width:100%" readonly>${escapeHtml(shipperDataText(trip))}</textarea>
+          <div class="modal-actions"><button class="button" data-close>Закрыть</button></div>`);
+      }
+    }));
+  container.querySelectorAll('[data-shipper-done]').forEach(button =>
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/trips/${button.dataset.shipperDone}/shipper-notified`, {
+          method: 'POST', body: JSON.stringify({}) });
+        toast('Отмечено: данные у грузоотправителя');
+        context.onReload();
+      } catch (error) { button.disabled = false; toast(error.message, 'error'); }
+    }));
+  container.querySelectorAll('[data-shipper-undo]').forEach(button =>
+    button.addEventListener('click', async () => {
+      try {
+        await api(`/api/trips/${button.dataset.shipperUndo}/shipper-notified`, {
+          method: 'POST', body: JSON.stringify({ undo: true }) });
+        context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    }));
   container.querySelectorAll('[data-confirm-sum]').forEach(button =>
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.confirmSum);

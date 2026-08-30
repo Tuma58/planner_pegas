@@ -155,7 +155,8 @@ export const METRICS = {
   assign_late_pct: { label: 'Назначено после начала окна', unit: '%', dir: 'less' },
   rate_per_km: { label: 'Ставка', unit: '₽/км', dir: 'more' },
   next_month_orders: { label: 'Портфель следующего месяца', unit: '₽', dir: 'more' },
-  question_sla_pct: { label: 'Ответы водителям в 10 минут', unit: '%', dir: 'more' }
+  question_sla_pct: { label: 'Ответы водителям в 10 минут', unit: '%', dir: 'more' },
+  shipper_notified_pct: { label: 'Данные грузоотправителю до выхода', unit: '%', dir: 'more' }
 };
 
 // Текущее значение метрики за период. Одна функция на все инициативы —
@@ -196,6 +197,15 @@ export function metricValue(db, key, fromIso, toIso) {
       return Math.round(one(`SELECT COALESCE(SUM(rate_vat),0) v FROM orders
         WHERE deleted_at IS NULL AND status<>'rejected' AND window_from>=? AND window_from<?`,
       toIso, next.toISOString().slice(0, 10)).v);
+    }
+    case 'shipper_notified_pct': {
+      // Доля рейсов, выведенных на линию с отметкой «данные направлены».
+      // Отметка появилась 30.08 — сравнивать с августом нельзя, растим с нуля.
+      const row = one(`SELECT COUNT(*) total,
+          SUM(CASE WHEN shipper_notified_at IS NOT NULL THEN 1 ELSE 0 END) sent
+        FROM trips WHERE status<>'rejected' AND on_line_at IS NOT NULL
+          AND on_line_at>=? AND on_line_at<?`, fromIso, toIso);
+      return row.total ? Math.round(row.sent / row.total * 100) : null;
     }
     case 'no_driver_days':
     case 'repair_days':
