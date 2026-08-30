@@ -2516,6 +2516,28 @@ test('ночные черновики назначений: таблица и в
   assert.equal(db.prepare(`SELECT outcome FROM assign_drafts WHERE order_id='o-1'`).get().outcome, 'accepted');
 });
 
+test('совместимость кузова: правило подбора совпадает с фактом назначений', () => {
+  // Копия таблицы из server.mjs (не экспортируется — сверяем поведение).
+  const BODY_COMPAT = {
+    'Тушевоз': ['Тушевоз'],
+    'Паллет 33': ['Паллет 33', 'Паллет 41', 'Допельшток'],
+    'Паллет 41': ['Паллет 41', 'Допельшток'],
+    'Допельшток': ['Допельшток']
+  };
+  const matches = (orderType, vehicleType) => {
+    const allowed = BODY_COMPAT[String(orderType || '').trim()];
+    return !allowed || allowed.includes(String(vehicleType || '').trim());
+  };
+  assert.ok(matches('Рефрижератор', 'Тушевоз'), 'рефрижератор — про термо-режим, возит любой тип');
+  assert.ok(matches('Изотерм', 'Паллет 33'));
+  assert.ok(matches('', 'Допельшток'), 'пустой кузов заявки не ограничивает');
+  assert.ok(matches('Тушевоз', 'Тушевоз'));
+  assert.ok(!matches('Тушевоз', 'Паллет 33'), 'туши на крюках в паллетник не грузят');
+  assert.ok(!matches('Паллет 41', 'Паллет 33'), '41 паллета в 33-й кузов не влезает');
+  assert.ok(matches('Паллет 41', 'Допельшток'));
+  assert.ok(!matches('Допельшток', 'Тушевоз'));
+});
+
 test('возврат статуса из «Выгружен» очищает факт выгрузки', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-unload-back-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

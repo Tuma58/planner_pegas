@@ -781,12 +781,31 @@ setTimeout(runCustomerRemindersWatch, 55_000);
 // каждой неназначенной заявке с погрузкой в ближайшие 48 часов лучшую
 // свободную машину; утром логист подтверждает одним кликом или выбирает
 // другую. Черновик — рекомендация, а не назначение: решение за человеком.
+// Совместимость кузова заявки и типа ТС — по факту 1300 назначений за
+// месяц: «Рефрижератор» и «Изотерм» возит любой тип (это про термо-режим,
+// не про кузов), тушевозный груз (туши на крюках) — только тушевоз,
+// паллетный — паллетники и допельшток, 41 паллета в 33-й кузов не влезает.
+// Из-за отсутствия этого фильтра логисты отклонили 7 из 8 черновиков
+// подбора: рекомендация с подгоном 0 км не подходила по кузову.
+const BODY_COMPAT = {
+  'Тушевоз': ['Тушевоз'],
+  'Паллет 33': ['Паллет 33', 'Паллет 41', 'Допельшток'],
+  'Паллет 41': ['Паллет 41', 'Допельшток'],
+  'Допельшток': ['Допельшток']
+};
+function bodyTypeMatches(orderBodyType, vehicleTypeName) {
+  const allowed = BODY_COMPAT[String(orderBodyType || '').trim()];
+  return !allowed || allowed.includes(String(vehicleTypeName || '').trim());
+}
+
 function pickVehicleFor(order) {
   const windowFrom = order.window_from;
   // Свободна на момент погрузки: нет рейса, который перекрывает окно,
   // и нет блокирующей диспозиции (ремонт, без водителя, пересменка, перегон
   // без прибытия учтён её ends_at).
-  const candidates = db.prepare(`SELECT v.id, v.plate FROM vehicles v
+  const candidates = db.prepare(`SELECT v.id, v.plate,
+      (SELECT name FROM vehicle_types WHERE id=v.type_id) type_name
+    FROM vehicles v
     WHERE v.status='work'
       AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status<>'rejected'
         AND datetime(t.starts_at) <= datetime(?) AND datetime(t.ends_at) > datetime(?))
@@ -801,6 +820,7 @@ function pickVehicleFor(order) {
   if (!target) return null;
   let best = null;
   for (const vehicle of candidates) {
+    if (!bodyTypeMatches(order.body_type, vehicle.type_name)) continue;
     const origin = vehiclePositionBefore(vehicle.id, windowFrom);
     if (!origin || !Number.isFinite(origin.latitude)) continue;
     const km = roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
@@ -819,6 +839,8 @@ function pickVehicleFor(order) {
 function pickOrderForVehicle(vehicleId, freeAtIso) {
   const origin = vehiclePositionBefore(vehicleId, new Date(Date.parse(freeAtIso) + 60_000).toISOString());
   if (!origin || !Number.isFinite(origin.latitude)) return null;
+  const vehicleType = db.prepare(`SELECT vt.name FROM vehicles v
+    JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.id=?`).get(vehicleId)?.name;
   const orders = db.prepare(`SELECT o.* FROM orders o
     WHERE o.trip_id IS NULL AND o.status='new' AND o.confirmed_at IS NOT NULL
       AND datetime(o.window_to) > datetime(?)
@@ -827,6 +849,7 @@ function pickOrderForVehicle(vehicleId, freeAtIso) {
     .all(freeAtIso, freeAtIso);
   let best = null;
   for (const order of orders) {
+    if (!bodyTypeMatches(order.body_type, vehicleType)) continue;
     const target = addressPointById(order.from_address_id) || addressPointByText(order.from_point);
     if (!target) continue;
     const km = roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
