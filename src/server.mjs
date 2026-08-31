@@ -2751,6 +2751,24 @@ async function api(request, response, url) {
       { routeNo: routeRow.route_no, from: body.fromLabel, to: body.toLabel }, requestIp(request));
     return json(response, 201, { id });
   }
+  // Смена вида плеча: «в продажу» (sell — задание продажам найти груз) или
+  // обратно «плечо сетки» (attach — закрывает логист). Кнопка «→ Продажи»
+  // в редакторе раньше слала только сообщение в чат — задание не рождалось.
+  match = route(/^\/api\/routes\/([^/]+)\/spots\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trips:write')) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
+    const body = await readJson(request);
+    const kind = body.kind === 'attach' ? 'attach' : 'sell';
+    const done = db.prepare(`UPDATE route_spots SET kind=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND route_id=?`).run(kind, match[1], match[0]);
+    if (!done.changes) return errorJson(response, 404, 'Спот не найден');
+    audit(db, user, 'update', 'route-spot', match[1], { kind }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   match = route(/^\/api\/routes\/([^/]+)\/spots\/([^/]+)$/, pathname);
   if (match && request.method === 'DELETE') {
     const user = requireUser(request, response);

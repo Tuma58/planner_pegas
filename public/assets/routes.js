@@ -688,7 +688,10 @@ export function renderRoutes(container, context) {
               · ориентир ${money(Math.round(spot.expected_rate))} с НДС · ~${Math.round(spot.expected_km)} км
               ${spot.candidates ? `· кандидаты: ${escapeHtml(spot.candidates)}` : ''}</small></span>
           <span class="rt-lane-btns">
-            <button class="button ghost small" data-spot-sales="${spot.id}" title="Запрос продажам на это плечо">→ Продажи</button>
+            ${spot.kind === 'sell'
+    ? `<span class="badge warn" title="Задание уже на доске продаж («🔍 Нужен груз»)">🔍 в продаже</span>`
+    : `<button class="button ghost small" data-spot-sales="${spot.id}"
+        title="Отдать плечо продажам: появится заданием «🔍 Нужен груз» на их доске + уведомление в чат">→ Продажи</button>`}
             <button class="button ghost small danger" data-spot-del="${spot.id}">✕</button>
           </span></div>`).join('')}</div>` : ''}
         <div class="rt-lane start">🏁 База: <b>${escapeHtml(route.base_region || HOME_REGION)}</b>
@@ -776,11 +779,17 @@ export function renderRoutes(container, context) {
           const spot = spots.find(item => item.id === button.dataset.spotSales);
           if (!spot) return;
           try {
+            // Плечо становится НАСТОЯЩИМ спотом: задание «🔍 Нужен груз»
+            // на доске продаж, а сообщение в чат — как звонок к нему.
+            await api(`/api/routes/${routeId}/spots/${spot.id}`, { method: 'PATCH',
+              body: JSON.stringify({ kind: 'sell' }) });
             await api(`/api/routes/${routeId}/spot-request`, { method: 'POST', body: JSON.stringify({
               fromRegion: spot.from_label, toRegion: spot.to_label,
               aroundIso: spot.planned_load, km: spot.expected_km
             }) });
-            toast('Запрос продажам отправлен');
+            toast('Плечо отдано продажам: задание «🔍 Нужен груз» на их доске');
+            await context.onReload();
+            renderEditor();
           } catch (error) { toast(error.message, 'error'); }
         }));
       box.querySelectorAll('[data-remove]').forEach(button => button.onclick = () => {
