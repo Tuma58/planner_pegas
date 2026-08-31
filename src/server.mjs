@@ -2936,11 +2936,24 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // Прицеп уникален: сохранение карточки ТС с прицепом, который висит на
+  // другом тягаче, отклоняется — иначе прицеп числился за двумя ТС и
+  // подсвечивался в Ганте дважды. Перестановка — только через «🔗 Перецепку».
+  function trailerConflict(trailerPlate, exceptVehicleId) {
+    const plate = String(trailerPlate || '').trim();
+    if (!plate || plate.toLowerCase() === 'без прицепа') return null;
+    return db.prepare(`SELECT plate FROM vehicles
+      WHERE TRIM(COALESCE(trailer_plate,''))=? AND id<>?`).get(plate, exceptVehicleId || '');
+  }
+
   if (request.method === 'POST' && pathname === '/api/vehicles') {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;
     const body = await readJson(request);
     if (!body.plate || !body.typeId) return errorJson(response, 422, 'Номер и тип обязательны');
+    const conflict = trailerConflict(body.trailerPlate, null);
+    if (conflict) return errorJson(response, 409,
+      `Прицеп ${String(body.trailerPlate).trim()} уже закреплён за ${conflict.plate} — перецепите через «Ресурс → 🔗 Перецепка»`);
     const id = randomUUID();
     db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status)
       VALUES(?,?,?,?,?,?,?)`).run(
@@ -2957,6 +2970,11 @@ async function api(request, response, url) {
     const body = await readJson(request);
     const current = db.prepare('SELECT * FROM vehicles WHERE id=?').get(match[0]);
     if (!current) return errorJson(response, 404, 'ТС не найдено');
+    if (body.trailerPlate !== undefined) {
+      const conflict = trailerConflict(body.trailerPlate, match[0]);
+      if (conflict) return errorJson(response, 409,
+        `Прицеп ${String(body.trailerPlate).trim()} уже закреплён за ${conflict.plate} — перецепите через «Ресурс → 🔗 Перецепка»`);
+    }
     db.prepare(`UPDATE vehicles SET plate=?,trailer_plate=?,type_id=?,driver_name=?,zone_id=?,status=?,
       unavailable_from=?,unavailable_to=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       body.plate ?? current.plate, body.trailerPlate ?? current.trailer_plate,
@@ -3332,6 +3350,77 @@ async function api(request, response, url) {
     }
     audit(db, user, 'fleet-round', 'vehicle', vehicle.id, { round: body.roundKey || null }, requestIp(request));
     return json(response, 200, { ok: true });
+  }
+
+  // ── Перецепка прицепов ──
+  // Прицеп закреплён ровно за одним тягачом; перестановка — атомарная
+  // операция с журналом: снять со старого, повесить на нового, при занятом
+  // приёмнике — обмен (swap) или отцеп его прицепа в свободные. Раньше
+  // прицеп переписывали руками в двух карточках ТС и он числился за обоими.
+  if (request.method === 'GET' && pathname === '/api/trailers') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const attached = db.prepare(`SELECT TRIM(trailer_plate) tp, id vehicle_id, plate
+      FROM vehicles WHERE TRIM(COALESCE(trailer_plate,''))<>''
+        AND LOWER(TRIM(trailer_plate)) NOT IN ('без прицепа','нет','-','—')`).all();
+    // Свободные: последняя запись журнала по прицепу — «отцеплен», и сейчас
+    // он не висит ни на одном ТС.
+    const detached = db.prepare(`SELECT trailer_plate tp, MAX(moved_at) at FROM trailer_moves
+      GROUP BY trailer_plate HAVING (SELECT to_vehicle_id FROM trailer_moves m2
+        WHERE m2.trailer_plate=trailer_moves.trailer_plate ORDER BY moved_at DESC LIMIT 1) IS NULL`).all()
+      .filter(row => !attached.some(item => item.tp === row.tp));
+    return json(response, 200, { attached, detached });
+  }
+
+  if (request.method === 'POST' && pathname === '/api/trailer-move') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const trailerPlate = String(body.trailerPlate || '').trim();
+    if (!trailerPlate) return errorJson(response, 422, 'Укажите прицеп');
+    const holder = db.prepare(`SELECT id, plate, trailer_plate FROM vehicles
+      WHERE TRIM(COALESCE(trailer_plate,''))=?`).get(trailerPlate);
+    const target = body.toVehicleId
+      ? db.prepare('SELECT id, plate, trailer_plate FROM vehicles WHERE id=?').get(String(body.toVehicleId))
+      : null;
+    if (body.toVehicleId && !target) return errorJson(response, 404, 'ТС-приёмник не найдено');
+    if (target && holder && target.id === holder.id) {
+      return errorJson(response, 422, 'Прицеп уже на этой сцепке');
+    }
+    const note = String(body.note || '').slice(0, 200);
+    const move = db.prepare(`INSERT INTO trailer_moves(id,trailer_plate,from_vehicle_id,to_vehicle_id,note,moved_by)
+      VALUES(?,?,?,?,?,?)`);
+    const targetOld = target ? String(target.trailer_plate || '').trim() : '';
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (holder) db.prepare(`UPDATE vehicles SET trailer_plate='', updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(holder.id);
+      if (target) {
+        if (targetOld && targetOld.toLowerCase() !== 'без прицепа') {
+          if (body.swap && holder) {
+            // Обмен: прицеп приёмника уезжает на прежний тягач.
+            db.prepare(`UPDATE vehicles SET trailer_plate=?, updated_at=CURRENT_TIMESTAMP
+              WHERE id=?`).run(targetOld, holder.id);
+            move.run(randomUUID(), targetOld, target.id, holder.id, `обмен: ${note}`, user.id);
+          } else {
+            // Прицеп приёмника отцепляется в свободные.
+            move.run(randomUUID(), targetOld, target.id, null, `отцеплен при перецепке: ${note}`, user.id);
+          }
+        }
+        db.prepare(`UPDATE vehicles SET trailer_plate=?, updated_at=CURRENT_TIMESTAMP
+          WHERE id=?`).run(trailerPlate, target.id);
+      }
+      move.run(randomUUID(), trailerPlate, holder?.id || null, target?.id || null, note, user.id);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    audit(db, user, 'trailer-move', 'vehicle', target?.id || holder?.id || null,
+      { trailerPlate, from: holder?.plate || null, to: target?.plate || null, swap: Boolean(body.swap) },
+      requestIp(request));
+    return json(response, 200, { ok: true,
+      moved: `${trailerPlate}: ${holder?.plate || 'свободен'} → ${target?.plate || 'отцеплен'}` });
   }
 
   // ── Отметка «данные направлены грузоотправителю» ──

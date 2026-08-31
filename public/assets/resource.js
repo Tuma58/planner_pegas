@@ -1021,6 +1021,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
           title="Простой под погрузкой/выгрузкой: случаи сверх норматива и история претензий клиентам">⏳ Простои</button>
         <button class="button ghost small" id="resourceTransfer"
           title="Перегон порожним: отправить машину под погрузку, на базу, в ремонт или на пересменку">🚚 Перегон</button>
+        <button class="button ghost small" id="resourceTrailerMove"
+          title="Перецепка прицепа: снять с одного тягача и повесить на другой (или отцепить) — прицеп числится ровно за одной сцепкой">🔗 Перецепка</button>
         <button class="button small ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers' ? '' : 'ghost'}"
           id="resViewTs" title="График работы: строка — сцепка, в ячейках водитель по дням">📅 По ТС</button>
         <button class="button small ${state.resourceView === 'drivers' ? '' : 'ghost'}"
@@ -1092,6 +1094,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resourceDemurrage').onclick = () => demurrageDialog(context);
   // Перегон из шапки: сначала выбираем сцепку, дальше обычная форма перегона.
   container.querySelector('#resourceTransfer').onclick = () => transferPickVehicleDialog(context);
+  container.querySelector('#resourceTrailerMove').onclick = () => trailerMoveDialog(context);
   container.querySelector('#resourcePeriod').onclick = () => periodAssignDialog(context);
   const setView = view => { state.resourceView = view; renderResource(container, context); };
   container.querySelector('#resViewTs').onclick = () => setView('ts');
@@ -1206,4 +1209,59 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       context.openDisposition(item);
     });
   });
+}
+
+// Перецепка прицепа: прицеп → тягач-приёмник. Если у приёмника уже есть
+// прицеп — обмен (галка) или отцеп его прицепа в свободные. Каждая
+// перестановка пишется в журнал — история для экономики и разборов.
+async function trailerMoveDialog(context) {
+  let pool;
+  try {
+    pool = await api('/api/trailers');
+  } catch (error) { toast(error.message, 'error'); return; }
+  const data = context.state.data;
+  const vehicles = (data.vehicles || []).filter(vehicle => vehicle.status !== 'out')
+    .sort((a, b) => a.plate.localeCompare(b.plate, 'ru'));
+  const options = [
+    ...pool.attached.map(item => ({ value: item.tp, label: `${item.tp} · сейчас на ${item.plate}` })),
+    ...pool.detached.map(item => ({ value: item.tp, label: `${item.tp} · без тягача` }))
+  ];
+  context.showModal(`<form id="trailerMoveForm">
+    <h2>🔗 Перецепка прицепа</h2>
+    <p class="muted">Прицеп числится ровно за одной сцепкой. Перестановка снимает его со
+      старого тягача и вешает на новый; журнал сохраняет историю.</p>
+    <label class="field">Прицеп
+      <select name="trailerPlate" required>
+        <option value="">— выберите —</option>
+        ${options.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('')}
+      </select></label>
+    <label class="field">Куда
+      <select name="toVehicleId">
+        <option value="">🅿 Отцепить (без тягача)</option>
+        ${vehicles.map(vehicle => `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)}
+          · ${escapeHtml(vehicle.driver_name || 'без водителя')}${String(vehicle.trailer_plate || '').trim()
+    ? ` · сейчас с ${escapeHtml(vehicle.trailer_plate)}` : ' · без прицепа'}</option>`).join('')}
+      </select></label>
+    <label class="checkline"><input type="checkbox" name="swap"> Обменять прицепы
+      <small class="muted">— если у приёмника есть свой прицеп, он уедет на прежний тягач;
+      без галки прицеп приёмника отцепится в свободные</small></label>
+    <label class="field">Причина / примечание<input name="note" maxlength="200"
+      placeholder="например: 875 в ремонте — прицеп работать должен"></label>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">🔗 Перецепить</button>
+    </div></form>`);
+  document.getElementById('trailerMoveForm').onsubmit = async event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    try {
+      const result = await api('/api/trailer-move', { method: 'POST', body: JSON.stringify({
+        trailerPlate: values.trailerPlate, toVehicleId: values.toVehicleId || null,
+        swap: Boolean(values.swap), note: values.note || ''
+      }) });
+      context.closeModal();
+      toast(`Перецеплено: ${result.moved}`);
+      await context.onReload();
+    } catch (error) { toast(error.message, 'error'); }
+  };
 }

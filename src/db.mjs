@@ -292,6 +292,19 @@ CREATE TABLE IF NOT EXISTS vehicle_round_plans (
   updated_by TEXT REFERENCES users(id),
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+-- Журнал перецепок: прицеп в момент времени закреплён ровно за одним
+-- тягачом (vehicles.trailer_plate — источник правды), а перестановки
+-- фиксируются здесь — история для экономики и разборов. to_vehicle_id NULL
+-- означает «отцеплен, стоит без тягача».
+CREATE TABLE IF NOT EXISTS trailer_moves (
+  id TEXT PRIMARY KEY,
+  trailer_plate TEXT NOT NULL,
+  from_vehicle_id TEXT REFERENCES vehicles(id),
+  to_vehicle_id TEXT REFERENCES vehicles(id),
+  note TEXT NOT NULL DEFAULT '',
+  moved_by TEXT REFERENCES users(id),
+  moved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS board_notes (
   id TEXT PRIMARY KEY,
   text TEXT NOT NULL, subtext TEXT NOT NULL DEFAULT '',
