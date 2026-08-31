@@ -1003,37 +1003,43 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     <div class="reshead">
       <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
       <div class="resctl">
-        ${dayPickerHtml('resourceDay', refDay, 'день')}
-        ${state.resourceView !== 'gantt' ? dayPickerHtml('resSchedStart',
+        <span class="resctl-group">
+          ${dayPickerHtml('resourceDay', refDay, 'день')}
+          ${state.resourceView !== 'gantt' ? dayPickerHtml('resSchedStart',
           state.resourceSchedStart || new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10),
           'график с') : ''}
-        <input id="resourceSearch" class="block-search" placeholder="Поиск: тягач, прицеп, водитель"
-          value="${escapeHtml(state.resourceQuery || '')}">
-        ${filter || query ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
-
-        ${context.openStats ? '<button class="button ghost small" id="resourceStats" title="Машино-дни, КТГ и выручка по каждой сцепке за месяц">Аналитика</button>' : ''}
-        ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
-        <button class="button ghost small" id="resourceAttendance"
-          title="Явка водителей на день: невыход — только с причиной из классификатора">Явка</button>
-        <button class="button ghost small" id="resourceTimesheet"
-          title="Табель явки за период: Я/РВ/В/ОТ/Б/ПР по каждому водителю, печать">📋 Табель</button>
-        <button class="button ghost small" id="resourceDemurrage"
-          title="Простой под погрузкой/выгрузкой: случаи сверх норматива и история претензий клиентам">⏳ Простои</button>
-        <button class="button ghost small" id="resourceTransfer"
-          title="Перегон порожним: отправить машину под погрузку, на базу, в ремонт или на пересменку">🚚 Перегон</button>
-        <button class="button ghost small" id="resourceTrailerMove"
-          title="Перецепка прицепа: снять с одного тягача и повесить на другой (или отцепить) — прицеп числится ровно за одной сцепкой">🔗 Перецепка</button>
-        <button class="button small ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers' ? '' : 'ghost'}"
-          id="resViewTs" title="График работы: строка — сцепка, в ячейках водитель по дням">📅 По ТС</button>
-        <button class="button small ${state.resourceView === 'drivers' ? '' : 'ghost'}"
-          id="resViewDrivers" title="График работы: строка — водитель, в ячейках сцепка по дням">👤 По водителям</button>
-        <button class="button small ${state.resourceView === 'gantt' ? '' : 'ghost'}"
-          id="resViewGantt" title="Классический гант ресурса: рейсы и интервалы недоступности">Гант</button>
-
-        <button class="button ghost small" id="resourcePeriod"
-          title="Периодные закрепления водителей за ТС: подмены на межвахту, командировки">📌 На период</button>
-        ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
-        <button class="button small" id="resourceAdd">+ диспозиция</button>
+          <input id="resourceSearch" class="block-search" placeholder="Поиск: тягач, прицеп, водитель"
+            value="${escapeHtml(state.resourceQuery || '')}">
+          ${filter || query ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
+        </span>
+        <span class="resctl-group">
+          <button class="button small ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers' ? '' : 'ghost'}"
+            id="resViewTs" title="График работы: строка — сцепка, в ячейках водитель по дням">📅 По ТС</button>
+          <button class="button small ${state.resourceView === 'drivers' ? '' : 'ghost'}"
+            id="resViewDrivers" title="График работы: строка — водитель, в ячейках сцепка по дням">👤 По водителям</button>
+          <button class="button small ${state.resourceView === 'gantt' ? '' : 'ghost'}"
+            id="resViewGantt" title="Классический гант ресурса: рейсы и интервалы недоступности">Гант</button>
+        </span>
+        <span class="resctl-group">
+          ${context.openStats ? '<button class="button ghost small" id="resourceStats" title="Машино-дни, КТГ и выручка по каждой сцепке за месяц">Аналитика</button>' : ''}
+          ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
+          <button class="button ghost small" id="resourceAttendance"
+            title="Явка водителей на день: невыход — только с причиной из классификатора">Явка</button>
+          <button class="button ghost small" id="resourceTimesheet"
+            title="Табель явки за период: Я/РВ/В/ОТ/Б/ПР по каждому водителю, печать">📋 Табель</button>
+          <button class="button ghost small" id="resourceDemurrage"
+            title="Простой под погрузкой/выгрузкой: случаи сверх норматива и история претензий клиентам">⏳ Простои</button>
+        </span>
+        <span class="resctl-group">
+          <button class="button ghost small" id="resourceTransfer"
+            title="Перегон порожним: отправить машину под погрузку, на базу, в ремонт или на пересменку">🚚 Перегон</button>
+          <button class="button ghost small" id="resourceTrailerMove"
+            title="Перецепка прицепа: снять с одного тягача и повесить на другой (или отцепить) — прицеп числится ровно за одной сцепкой">🔗 Перецепка</button>
+          <button class="button ghost small" id="resourcePeriod"
+            title="Периодные закрепления водителей за ТС: подмены на межвахту, командировки">📌 На период</button>
+          ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
+          <button class="button small" id="resourceAdd">+ диспозиция</button>
+        </span>
       </div>
     </div>
     ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers'

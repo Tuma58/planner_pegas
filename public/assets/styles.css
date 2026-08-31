@@ -1105,7 +1105,10 @@ input.warn-border { border-color: #c99a2e; }
 .dbadge.on { background: var(--navy); border-color: var(--navy); }
 .dbadge.on .dbn, .dbadge.on .dbl { color: #fff; }
 .dbadge.clear { justify-content: center; font-size: var(--fs-xs); color: var(--muted); }
-.resctl { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.resctl { display: flex; align-items: center; gap: 6px 14px; margin-left: auto;
+  flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
+.resctl-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.reshead { flex-wrap: wrap; row-gap: 6px; }
 .resctl input[type="date"] { width: auto; min-height: 32px; }
 .rgridwrap { border: 1px solid var(--line); border-radius: 10px; overflow: auto; background: var(--card); }
 .rrow { display: flex; align-items: stretch; border-bottom: 1px solid var(--grid); min-width: max-content; }
