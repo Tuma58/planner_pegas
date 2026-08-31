@@ -863,6 +863,50 @@ function pickOrderForVehicle(vehicleId, freeAtIso) {
 // 06:55 МСК считаем, куда машины ПРИЕДУТ в ближайшие 72 часа, и сколько из
 // этих зон уже есть исходящих заявок. Дефицит — готовый список прозвона:
 // продаём маршруты (обратные плечи кругов), а не одиночные рейсы.
+// ── Зависшие перегоны ──
+// На проде три перегона висели «в пути» на 1–2 суток после планового
+// прибытия без единой отметки: машина давно в Пензе на пересменке, а по
+// данным — едет. Пока перегон открыт, сцепка числится в пути: место
+// неверное, стыковка её не видит. Через 6 часов просрочки — напоминание
+// диспетчерам; через 24 часа — автозакрытие плановым временем с пометкой
+// (для сервисных целей риск мал, а место сцепки становится честным).
+function runStaleTransfersWatch() {
+  try {
+    const stale = db.prepare(`SELECT d.id, d.ends_at, d.purpose, d.note, v.plate,
+        (SELECT name FROM addresses WHERE id=d.address_id) to_name
+      FROM vehicle_dispositions d JOIN vehicles v ON v.id=d.vehicle_id
+      WHERE d.kind='transfer' AND d.arrived_at IS NULL
+        AND datetime(d.ends_at) < datetime('now','-6 hours')`).all();
+    if (!stale.length) return;
+    const toClose = stale.filter(item =>
+      Date.now() - Date.parse(item.ends_at) > 24 * 3_600_000);
+    for (const item of toClose) {
+      db.prepare(`UPDATE vehicle_dispositions SET arrived_at=ends_at,
+          note=CASE WHEN note='' THEN 'закрыт автоматически: сутки после планового прибытия без отметок'
+            ELSE note || ' · закрыт автоматически' END,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(item.id);
+      audit(db, null, 'transfer-autoclose', 'transfer', item.id, { endsAt: item.ends_at }, '');
+    }
+    const remind = stale.filter(item => !toClose.includes(item));
+    if (remind.length) {
+      const key = new Date().toISOString().slice(0, 10);
+      const done = db.prepare(`SELECT value FROM app_meta WHERE key='stale_transfer_day'`).get()?.value;
+      if (done !== key) {
+        notify('dispatcher', `🚚 Перегоны без отметок дольше 6 часов после планового прибытия: ` +
+          remind.map(item => `${item.plate} → ${(item.to_name || '').slice(0, 30)} (план ${item.ends_at.slice(5, 16)})`).join('; ') +
+          `. Отметьте этапы — или через сутки перегон закроется сам плановым временем`);
+        db.prepare(`INSERT INTO app_meta(key,value) VALUES('stale_transfer_day',?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key);
+      }
+    }
+    if (toClose.length) console.log(`Перегоны: автозакрыто ${toClose.length} (сутки без отметок)`);
+  } catch (error) {
+    console.error('Зависшие перегоны:', error.message);
+  }
+}
+setInterval(runStaleTransfersWatch, 30 * 60_000);
+setTimeout(runStaleTransfersWatch, 70_000);
+
 function runMorningDirections() {
   try {
     const msk = new Date(Date.now() + 3 * 3_600_000);
