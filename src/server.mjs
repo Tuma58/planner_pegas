@@ -870,6 +870,70 @@ function pickOrderForVehicle(vehicleId, freeAtIso) {
 // неверное, стыковка её не видит. Через 6 часов просрочки — напоминание
 // диспетчерам; через 24 часа — автозакрытие плановым временем с пометкой
 // (для сервисных целей риск мал, а место сцепки становится честным).
+// ── Ревизия зазоров между назначенными рейсами ──
+// Три раза в день (10:00, 14:00, 16:00 МСК) сверяем назначенный план: пары
+// заданий сцепки, между которыми простой больше 12 часов чистыми — за
+// вычетом времени подгона и без диспозиции в зазоре. Отчёт уходит лично
+// каждому действующему сотруднику: 133 часа таких дыр за первый прогон —
+// это ~102 т₽ маржи, которые закрываются сдвигом рейса, локалкой или спотом.
+const GAP_REVIEW_HOURS_MSK = [10, 14, 16];
+function runGapReviewWatch() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    const hour = msk.getUTCHours();
+    if (!GAP_REVIEW_HOURS_MSK.includes(hour)) return;
+    const slot = `${msk.toISOString().slice(0, 10)}:${hour}`;
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='gap_review_slot'`).get()?.value === slot) return;
+    const rows = db.prepare(`SELECT t.id, t.vehicle_id, t.order_no, t.starts_at, t.ends_at,
+        t.unloaded_at, t.empty_km, v.plate,
+        (SELECT name FROM zones WHERE id=t.to_zone_id) to_name
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      WHERE t.status IN ('plan','run') ORDER BY t.vehicle_id, t.starts_at`).all();
+    const byVehicle = new Map();
+    for (const row of rows) {
+      if (!byVehicle.has(row.vehicle_id)) byVehicle.set(row.vehicle_id, []);
+      byVehicle.get(row.vehicle_id).push(row);
+    }
+    const mskLabel = ms => new Date(ms + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
+    const gaps = [];
+    for (const list of byVehicle.values()) {
+      for (let i = 1; i < list.length; i += 1) {
+        const prev = list[i - 1];
+        const next = list[i];
+        const prevEnd = Date.parse(prev.unloaded_at
+          ? String(prev.unloaded_at).replace(' ', 'T') + (String(prev.unloaded_at).includes('Z') ? '' : 'Z')
+          : prev.ends_at);
+        const feedH = (Number(next.empty_km) || 0) / 50 * 1.5;
+        const gapH = (Date.parse(next.starts_at) - prevEnd) / 3_600_000 - feedH;
+        if (gapH <= 12) continue;
+        const covered = db.prepare(`SELECT COUNT(*) c FROM vehicle_dispositions
+          WHERE vehicle_id=? AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+          .get(prev.vehicle_id, next.starts_at, new Date(prevEnd).toISOString()).c;
+        if (covered) continue;
+        gaps.push({ plate: prev.plate, gapH: Math.round(gapH), prevNo: prev.order_no,
+          prevTo: prev.to_name, prevEnd, nextNo: next.order_no, nextStart: Date.parse(next.starts_at) });
+      }
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('gap_review_slot',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(slot);
+    if (!gaps.length) return;
+    gaps.sort((a, b) => b.gapH - a.gapH);
+    const totalH = gaps.reduce((sum, gap) => sum + gap.gapH, 0);
+    const lines = gaps.slice(0, 12).map(gap =>
+      `${gap.plate}: после №${gap.prevNo} (${gap.prevTo}) до №${gap.nextNo} — ~${gap.gapH} ч ` +
+      `(${mskLabel(gap.prevEnd)} → ${mskLabel(gap.nextStart)} МСК)`);
+    const text = `📋 Ревизия плана (${hour}:00): у ${gaps.length} пар заданий завышен простой между ` +
+      `рейсами (больше 12 ч сверх подгона, без ремонта/пересменки) — суммарно ${totalH} ч ` +
+      `≈ ${Math.round(totalH * 770 / 1000)} т₽ маржи. ${lines.join('; ')}${gaps.length > 12
+        ? ` и ещё ${gaps.length - 12}` : ''}. Сдвиньте следующий рейс раньше, вставьте локалку ` +
+      `или спот — «Логист → Сцепки», «⏭ стыковка плеча»`;
+    notifyEveryone(text);
+  } catch (error) {
+    console.error('Ревизия зазоров:', error.message);
+  }
+}
+setInterval(runGapReviewWatch, 10 * 60_000);
+
 function runStaleTransfersWatch() {
   try {
     const stale = db.prepare(`SELECT d.id, d.ends_at, d.purpose, d.note, v.plate,
