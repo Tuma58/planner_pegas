@@ -17,11 +17,13 @@ const KIND_SHORT = { repair: '🔧', no_driver: '👤', shift: '🔁', reserve: 
 const zoneShort = name => ({ 'Москва': 'М', 'Дом': 'Д', 'Самара': 'С', 'Питер': 'П',
   'Черноземье': 'Ч', 'Восток': 'В', 'Юг': 'Ю', 'Запад': 'З', 'Золотое кольцо': 'К', 'Урал': 'У' }[name] || (name || '')[0] || '·');
 
-export async function fleetPlanDialog(context, month = '') {
+export async function fleetPlanDialog(context, month = '', filters = {}) {
   let plan;
   try {
     plan = await api(`/api/fleet-plan${month ? `?month=${month}` : ''}`);
   } catch (error) { toast(error.message, 'error'); return; }
+  // Рабочее поле: поиск, фильтр по кругу, «только резерв под новых клиентов».
+  const flt = { query: '', round: '', freeOnly: false, ...filters };
   const { days, vehicles, trips, dispositions } = plan;
   const canEdit = context.can('trips:write');
   const monthStartMs = Date.parse(`${plan.month}-01T00:00:00.000Z`);
@@ -76,8 +78,14 @@ export async function fleetPlanDialog(context, month = '') {
     return { cells, freeDays, template };
   };
 
-  const rowsData = vehicles.map(vehicle => ({ vehicle, ...rowCells(vehicle) }))
+  const allRowsData = vehicles.map(vehicle => ({ vehicle, ...rowCells(vehicle) }))
     .sort((a, b) => b.freeDays - a.freeDays || a.vehicle.plate.localeCompare(b.vehicle.plate, 'ru'));
+  const query = flt.query.trim().toLowerCase();
+  const rowsData = allRowsData.filter(row =>
+    (!query || `${row.vehicle.plate} ${row.vehicle.driver_name || ''} ${row.vehicle.type_name || ''}`
+      .toLowerCase().includes(query)) &&
+    (flt.round === '' || (flt.round === 'none' ? !row.template : row.template?.key === flt.round)) &&
+    (!flt.freeOnly || (row.freeDays >= 10 && !row.template)));
 
   // Итог по дням: занято рейсами / прогноз / свободно.
   const totals = Array.from({ length: days }, (_, i) => ({ busy: 0, free: 0 }));
@@ -90,9 +98,12 @@ export async function fleetPlanDialog(context, month = '') {
 
   const [year, monthNum] = plan.month.split('-').map(Number);
   const firstWd = new Date(monthStartMs).getUTCDay();
+  const todayIso = new Date().toISOString().slice(0, 10);
   const dayHead = Array.from({ length: days }, (_, i) => {
     const wd = (firstWd + i) % 7;
-    return `<th class="${wd === 0 || wd === 6 ? 'muted' : ''}" style="text-align:center;min-width:26px">${i + 1}<br><small>${WD[wd]}</small></th>`;
+    const isToday = `${plan.month}-${String(i + 1).padStart(2, '0')}` === todayIso;
+    return `<th class="${wd === 0 || wd === 6 ? 'muted' : ''}"
+      style="text-align:center;min-width:26px${isToday ? ';background:color-mix(in srgb, #c99a2e 25%, transparent)' : ''}">${i + 1}<br><small>${WD[wd]}</small></th>`;
   }).join('');
 
   const freeTotal = rowsData.filter(row => row.freeDays >= 10 && !row.template).length;
@@ -102,8 +113,18 @@ export async function fleetPlanDialog(context, month = '') {
   context.showModal(`<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>
     <div class="console" style="margin:8px 0">
       <button type="button" class="button ghost small" id="fpPrev">←</button>
+      <button type="button" class="button ghost small" id="fpToday" title="Вернуться к текущему месяцу">Сегодня</button>
       <button type="button" class="button ghost small" id="fpNext">→</button>
-      <span class="filter-sum" style="margin-left:auto">машин ${vehicles.length}
+      <input id="fpQuery" class="block-search" placeholder="🔍 номер, водитель, тип" value="${escapeHtml(flt.query)}"
+        style="width:170px" autocomplete="off">
+      <select id="fpRound" title="Фильтр по назначенному кругу">
+        <option value="">— все круги —</option>
+        <option value="none" ${flt.round === 'none' ? 'selected' : ''}>без круга</option>
+        ${ROUND_TEMPLATES.map(item => `<option value="${item.key}" ${flt.round === item.key ? 'selected' : ''}>${escapeHtml(item.name.split(' · ')[0])}</option>`).join('')}
+      </select>
+      <label class="checkline" style="margin:0"><input type="checkbox" id="fpFreeOnly"
+        ${flt.freeOnly ? 'checked' : ''}> 🟢 только резерв</label>
+      <span class="filter-sum" style="margin-left:auto">машин ${rowsData.length}${rowsData.length !== allRowsData.length ? ` / ${allRowsData.length}` : ''}
         · 🟢 резерв под новых клиентов: <b>${freeTotal}</b> (10+ свободных дней без круга)</span>
     </div>
     <p class="muted" style="margin:0 0 8px">Ячейка: синяя — рейс в плане, зелёная — в пути,
@@ -131,15 +152,27 @@ export async function fleetPlanDialog(context, month = '') {
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
   'wide');
 
-  document.getElementById('fpPrev').onclick = () => fleetPlanDialog(context, shiftMonth(-1));
-  document.getElementById('fpNext').onclick = () => fleetPlanDialog(context, shiftMonth(1));
+  const rerender = (newMonth = plan.month) => fleetPlanDialog(context, newMonth, {
+    query: document.getElementById('fpQuery')?.value ?? flt.query,
+    round: document.getElementById('fpRound')?.value ?? flt.round,
+    freeOnly: document.getElementById('fpFreeOnly')?.checked ?? flt.freeOnly
+  });
+  document.getElementById('fpPrev').onclick = () => rerender(shiftMonth(-1));
+  document.getElementById('fpNext').onclick = () => rerender(shiftMonth(1));
+  document.getElementById('fpToday').onclick = () => rerender(new Date().toISOString().slice(0, 7));
+  let fpTimer = null;
+  document.getElementById('fpQuery').addEventListener('input', () => {
+    clearTimeout(fpTimer); fpTimer = setTimeout(() => rerender(), 400);
+  });
+  document.getElementById('fpRound').addEventListener('change', () => rerender());
+  document.getElementById('fpFreeOnly').addEventListener('change', () => rerender());
   document.querySelectorAll('[data-fp-round]').forEach(select =>
     select.addEventListener('change', async () => {
       try {
         await api('/api/fleet-plan/round', { method: 'POST', body: JSON.stringify({
           vehicleId: select.dataset.fpRound, roundKey: select.value }) });
         toast(select.value ? 'Круг назначен — прогноз перестроен' : 'Круг снят');
-        fleetPlanDialog(context, plan.month);
+        fleetPlanDialog(context, plan.month, flt);
       } catch (error) { toast(error.message, 'error'); }
     }));
 }

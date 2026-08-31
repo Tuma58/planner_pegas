@@ -10,13 +10,15 @@ const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
 
-export async function deliveryPlanDialog(context, month = '') {
+export async function deliveryPlanDialog(context, month = '', filters = {}) {
   let plan;
   try {
     plan = await api(`/api/delivery-plan${month ? `?month=${month}` : ''}`);
   } catch (error) { toast(error.message, 'error'); return; }
   const { daysInMonth, firstWeekday, slots, facts } = plan;
   const canEdit = context.can('orders:write') || context.can('shifts:write');
+  // Рабочее поле: поиск по клиенту, фильтр зоны плеча, «только с дырами».
+  const flt = { query: '', zone: '', gapsOnly: false, ...filters };
 
   // Слоты группируются в строки «клиент + плечо» с недельным профилем.
   const rows = new Map();
@@ -32,8 +34,12 @@ export async function deliveryPlanDialog(context, month = '') {
     row.rate = slot.rate || row.rate;
     row.transit = slot.transit_hours || row.transit;
   }
-  const rowList = [...rows.values()].sort((a, b) =>
+  const allRows = [...rows.values()].sort((a, b) =>
     (b.week.reduce((s, v) => s + v, 0) * b.rate) - (a.week.reduce((s, v) => s + v, 0) * a.rate));
+  const query = flt.query.trim().toLowerCase();
+  const rowList = allRows.filter(row =>
+    (!query || row.customer.toLowerCase().includes(query)) &&
+    (!flt.zone || row.leg.includes(flt.zone)));
 
   const weekdayOf = day => (firstWeekday + day - 1) % 7;
   const planOf = (row, day) => row.week[weekdayOf(day)];
@@ -79,7 +85,9 @@ export async function deliveryPlanDialog(context, month = '') {
 
   const dayHead = Array.from({ length: daysInMonth }, (_, i) => {
     const wd = weekdayOf(i + 1);
-    return `<th style="text-align:center;min-width:30px" class="${wd === 0 || wd === 6 ? 'muted' : ''}">${i + 1}<br><small>${WD[wd]}</small></th>`;
+    const isToday = dayIso(i + 1) === todayIso;
+    return `<th style="text-align:center;min-width:30px${isToday ? ';background:color-mix(in srgb, #c99a2e 25%, transparent)' : ''}"
+      class="${wd === 0 || wd === 6 ? 'muted' : ''}">${i + 1}<br><small>${WD[wd]}</small></th>`;
   }).join('');
 
   const totalRow = (label, pick, fmt = v => v ? Math.round(v) : '') =>
@@ -110,12 +118,17 @@ export async function deliveryPlanDialog(context, month = '') {
       ${clickable ? `data-dpl-order="${rowIndex}|${day}"` : ''} title="${escapeHtml(hint)}">${text}</td>`;
   };
 
-  const bodyRows = rowList.map((row, index) => `<tr>
+  const rowHasGap = row => {
+    for (let day = 1; day <= daysInMonth; day += 1) if (gapOf(row, day) > 0) return true;
+    return false;
+  };
+  const shownRows = flt.gapsOnly ? rowList.filter(rowHasGap) : rowList;
+  const bodyRows = shownRows.map(row => { const index = rowList.indexOf(row); return `<tr>
     <td style="white-space:nowrap;max-width:190px;overflow:hidden;text-overflow:ellipsis"><b>${escapeHtml(row.customer)}</b></td>
     <td style="white-space:nowrap">${escapeHtml(row.leg)}</td>
     <td style="white-space:nowrap">${money(row.rate)}${canEdit ? ` <button class="button ghost small" data-slot-edit="${index}" title="Слоты недели и ставка">✎</button>` : ''}</td>
     ${Array.from({ length: daysInMonth }, (_, i) => cellHtml(row, index, i + 1)).join('')}
-  </tr>`).join('');
+  </tr>`; }).join('');
 
   const [year, monthNum] = plan.month.split('-').map(Number);
   const shiftMonth = delta => {
@@ -126,10 +139,21 @@ export async function deliveryPlanDialog(context, month = '') {
   context.showModal(`<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>
     <div class="console" style="margin:8px 0">
       <button type="button" class="button ghost small" id="dplPrev">←</button>
+      <button type="button" class="button ghost small" id="dplToday" title="Вернуться к текущему месяцу">Сегодня</button>
       <button type="button" class="button ghost small" id="dplNext">→</button>
+      <input id="dplQuery" class="block-search" placeholder="🔍 клиент" value="${escapeHtml(flt.query)}"
+        style="width:150px" autocomplete="off">
+      <select id="dplZone" title="Плечи, где зона участвует в маршруте">
+        <option value="">— все зоны —</option>
+        ${[...new Set(slots.flatMap(slot => [slot.from_name, slot.to_name]))].sort()
+    .map(name => `<option ${flt.zone === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
+      </select>
+      <label class="checkline" style="margin:0"><input type="checkbox" id="dplGapsOnly"
+        ${flt.gapsOnly ? 'checked' : ''}> только с дырами</label>
       ${canEdit ? `<button type="button" class="button small" id="dplSeed"
         title="Построить/обновить сетку слотов из регулярных плеч за 60 суток (клиент+направление ≥1 рейса в неделю)">⚙ Заполнить из истории</button>` : ''}
-      <span class="filter-sum" style="margin-left:auto">план ${Math.round(monthPlanN)} рейсов · ${money(Math.round(monthPlanRv))}
+      <span class="filter-sum" style="margin-left:auto">плеч ${shownRows.length}${shownRows.length !== allRows.length ? ` / ${allRows.length}` : ''}
+        · план ${Math.round(monthPlanN)} рейсов · ${money(Math.round(monthPlanRv))}
         · факт ${monthFactN} заявок · ${money(Math.round(monthFactRv))}${gridAgeDays != null && gridAgeDays > 10
     ? ` · <span style="color:var(--warn,#c99a2e)" title="Сетка слотов давно не обновлялась из истории — «⚙ Заполнить из истории» (ручные плечи не тронет); пересев также идёт сам в ночь на понедельник">⚙ сетке ${gridAgeDays} дн</span>` : ''}</span>
     </div>
@@ -154,8 +178,20 @@ export async function deliveryPlanDialog(context, month = '') {
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
   'wide');
 
-  document.getElementById('dplPrev').onclick = () => deliveryPlanDialog(context, shiftMonth(-1));
-  document.getElementById('dplNext').onclick = () => deliveryPlanDialog(context, shiftMonth(1));
+  const rerender = (newMonth = plan.month) => deliveryPlanDialog(context, newMonth, {
+    query: document.getElementById('dplQuery')?.value ?? flt.query,
+    zone: document.getElementById('dplZone')?.value ?? flt.zone,
+    gapsOnly: document.getElementById('dplGapsOnly')?.checked ?? flt.gapsOnly
+  });
+  document.getElementById('dplPrev').onclick = () => rerender(shiftMonth(-1));
+  document.getElementById('dplNext').onclick = () => rerender(shiftMonth(1));
+  document.getElementById('dplToday').onclick = () => rerender(new Date().toISOString().slice(0, 7));
+  let dplTimer = null;
+  document.getElementById('dplQuery').addEventListener('input', () => {
+    clearTimeout(dplTimer); dplTimer = setTimeout(() => rerender(), 400);
+  });
+  document.getElementById('dplZone').addEventListener('change', () => rerender());
+  document.getElementById('dplGapsOnly').addEventListener('change', () => rerender());
   // Клик по незакрытому слоту будущего дня: заявка с заполненным клиентом,
   // плечом, окном дня, ставкой слота и адресами последней заявки плеча.
   document.querySelectorAll('[data-dpl-order]').forEach(cell =>
@@ -170,7 +206,7 @@ export async function deliveryPlanDialog(context, month = '') {
         try {
           const { created } = await api('/api/delivery-plan/seed', { method: 'POST', body: '{}' });
           toast(`Сетка обновлена из истории: слотов ${created}`);
-          deliveryPlanDialog(context, plan.month);
+          deliveryPlanDialog(context, plan.month, flt);
         } catch (error) { toast(error.message, 'error'); }
       };
     }
@@ -207,7 +243,7 @@ function slotEditor(context, plan, row) {
         }) });
       }
       toast('Слоты сохранены');
-      deliveryPlanDialog(context, plan.month);
+      deliveryPlanDialog(context, plan.month, flt);
     } catch (error) { toast(error.message, 'error'); }
   };
 }
@@ -254,7 +290,7 @@ function orderFromSlotDialog(context, plan, row, day) {
         comment: String(form.get('comment') || '').trim()
       }) });
       toast(`Забронировано — заявка № ${created.orderNo} в портфеле`);
-      deliveryPlanDialog(context, plan.month);
+      deliveryPlanDialog(context, plan.month, flt);
     } catch (error) { toast(error.message, 'error'); }
   };
 }
