@@ -5,6 +5,7 @@
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
 import { fleetPlanDialog } from './fleet-plan.js';
+import { vehicleZoneAt } from './transfer.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -722,6 +723,16 @@ export async function renderLogist(container, context) {
       <div class="scol">
         <div class="scolh">${stateFilter ? stateLabels[stateFilter] : 'Сцепки: простаивают и освобождаются'}
           <span>${stateFilter ? stateVehicles.length : vehicleRequests.length}</span></div>
+        ${zone && !stateFilter ? (() => {
+    const dayEndMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T23:59:59Z');
+    const inZoneAll = (data.vehicles || []).filter(vehicle => vehicle.status === 'work' &&
+      vehicleZoneAt(data, vehicle.id, dayEndMs) === zone);
+    const busyCount = inZoneAll.length - vehicleRequests.length;
+    return `<div class="geohint" style="margin:0 0 6px">📍 В зоне «${escapeHtml(zone)}» сейчас
+      <b>${inZoneAll.length}</b> машин (как в Ганте): <b>${vehicleRequests.length}</b> в потребности${busyCount > 0
+      ? `, <b>${busyCount}</b> занятых или недоступных — их видно в Ганте (легенда зоны), в «🚛 Плане парка» и в фильтре состояния`
+      : ''}.</div>`;
+  })() : ''}
         <div class="list">${stateFilter ? stateCards : vehicleCards}</div>
         <div class="geohint">${stateFilter
     ? 'Показаны машины парка в выбранном состоянии. Вернуться к потребности — «Кому нужна работа» в фильтре состояния.'

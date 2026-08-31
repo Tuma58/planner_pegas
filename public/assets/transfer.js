@@ -112,6 +112,23 @@ export function vehicleFreeAt(data, vehicleId, nowMs = Date.now()) {
   return free;
 }
 
+// Зона сцепки «как в Ганте»: последний рейс, начавшийся к моменту (идущий —
+// зона, КУДА движется), с поправкой на прибывший перегон. Единая формула для
+// легенды Ганта и сводки зоны у логиста — чтобы счётчики совпадали.
+export function vehicleZoneAt(data, vehicleId, atMs = Date.now()) {
+  const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
+  const lastTrip = (data.trips || [])
+    .filter(trip => trip.vehicle_id === vehicleId && trip.status !== 'rejected' &&
+      Date.parse(trip.starts_at) <= atMs)
+    .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0];
+  const moved = transferPlaceOf(data, vehicleId, atMs);
+  if (moved && (!lastTrip || moved.at >= Date.parse(lastTrip.ends_at))) {
+    const address = (data.reference?.addresses || []).find(item => item.name === moved.name);
+    return address?.zone_name || moved.name || vehicle?.zone_name || '';
+  }
+  return lastTrip ? lastTrip.to_name : (vehicle?.zone_name || '');
+}
+
 // Текущий этап перегона: задание → в пути → прибыл.
 export function transferStage(transfer) {
   if (!transfer.driver_notified_at) {

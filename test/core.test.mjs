@@ -2606,6 +2606,28 @@ test('перегон: место и выезд считаются на моме�
   assert.equal(vehiclePlaceAt(withTransfer, 'v1', Date.parse(iso(10))).pointName, 'Пенза г, Пролетарская');
 });
 
+
+test('потребность: освобождение в первые дни следующего месяца видно без переключения', async () => {
+  const { autoRequests } = await import('../public/assets/sales.js');
+  const now = Date.now();
+  const iso = ms => new Date(ms).toISOString();
+  // Открыт ТЕКУЩИЙ месяц, а машина освобождается через 2 суток — возможно,
+  // уже в следующем календарном месяце (кейс 31 августа: «в Ганте семь
+  // машин, у логиста одна»).
+  const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+  const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1));
+  const data = {
+    reference: { zones: [{ id: 'z1', name: 'Черноземье' }], routeRates: [] },
+    vehicles: [{ id: 'v1', plate: 'А1', status: 'work', zone_name: 'Черноземье' }],
+    trips: [{ vehicle_id: 'v1', status: 'run', to_name: 'Черноземье',
+      starts_at: iso(now - 12 * 3_600_000), ends_at: iso(now + 2 * 86_400_000) }],
+    dispositions: []
+  };
+  const requests = autoRequests(data, monthStart, monthEnd);
+  assert.ok(requests.some(request => request.vehicle.plate === 'А1'),
+    'освобождение в ближайшие 7 суток видно, даже если это уже следующий месяц');
+});
+
 test('объявления на табло: показываются по сроку, публикует только админ', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-board-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

@@ -559,9 +559,13 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     if (!tripFreeMs && !blockEndMs) return;
     // Уже простаивающие показываются независимо от месяца последнего рейса
     // (июльские хвосты — самый долгий и дорогой простой); будущие
-    // освобождения — в пределах открытого месяца.
+    // освобождения — в пределах открытого месяца ЛИБО ближайших 7 суток:
+    // граница месяца — не граница работы. 31 августа логист не видел машин,
+    // освобождающихся 1 сентября («в Ганте семь, у меня одна»), пока не
+    // переключал месяц руками.
     const idleMs = nowMs - endsAt.getTime();
-    if (idleMs <= 0 && (endsAt >= monthEndDate || endsAt < monthStartDate)) return;
+    const horizonMs = Math.max(monthEndDate.getTime(), nowMs + 7 * 86_400_000);
+    if (idleMs <= 0 && (endsAt.getTime() >= horizonMs || endsAt < monthStartDate)) return;
     // Место сцепки — по последнему событию: выгрузка рейса или прибытие
     // перегона. Машину в ремонте могли перегнать доремонтироваться в другой
     // город, и предлагать её надо уже оттуда.

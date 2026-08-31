@@ -414,6 +414,14 @@ tbody tr:hover td { background: var(--hover); }
 @keyframes dashPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 28%, transparent); }
   50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--bad) 0%, transparent); } }
 .dash-day.lack .dd-verdict { animation: dashPulse 2.6s ease-in-out infinite; }
+/* Вопросы водителей у диспетчера: строка на вопрос, не карточка. */
+.q-row { padding: 4px 9px; gap: 7px; align-items: center; }
+.q-row .q-row-main { flex: 1; min-width: 0; display: flex; gap: 7px; align-items: baseline;
+  overflow: hidden; white-space: nowrap; }
+.q-row .q-row-main .muted { overflow: hidden; text-overflow: ellipsis; }
+.q-row.q-late-row { background: color-mix(in srgb, var(--bad) 9%, transparent); }
+.q-row .button.small { padding: 2px 8px; }
+
 /* План парка: сетка машин на месяц. */
 .fleet-plan td { padding: 2px 3px; }
 .fleet-plan .fp-plan { background: #3b6ea5; color: #fff; }

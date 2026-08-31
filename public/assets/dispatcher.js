@@ -1009,34 +1009,33 @@ export async function renderDispatcher(container, context, options = {}) {
   const transferCards = transfers.map(transferCard).join('');
 
   const QUESTION_SLA_MS = 10 * 60_000;
-  const questionCard = question => {
+  // Вопрос — одна строка, не карточка: на скринах три вопроса съедали
+  // треть экрана и с накоплением вытесняли бы подготовку и контроль.
+  // Вся суть в строке: тема · ТС · водитель · «текст» · таймер · действия.
+  const questionRow = question => {
     const openedMs = Date.parse(String(question.opened_at).replace(' ', 'T') +
       (String(question.opened_at).includes('Z') ? '' : 'Z'));
     const waitMs = Date.now() - openedMs;
     const late = waitMs > QUESTION_SLA_MS;
     const minutes = Math.max(0, Math.floor(waitMs / 60_000));
-    return `<div class="card question-card ${late ? 'late' : ''}" style="padding:8px 10px;margin-bottom:6px">
-      <div class="list-item ordrow" style="border:0;padding:0 0 4px">
-        <span style="flex:1;min-width:0">
-          <strong>${escapeHtml(topicLabel(question.topic))}</strong>
-          ${question.vehicle_plate ? `<small class="muted"> · <span class="mono">${escapeHtml(question.vehicle_plate)}</span></small>` : ''}
-          <small class="muted" style="display:block">${escapeHtml(question.driver_name || question.vehicle_driver || '')}
-            ${question.phone ? ` · ${escapeHtml(question.phone)}` : ''}
-            ${question.note ? ` · «${escapeHtml(question.note)}»` : ''}</small>
-          <small class="muted" style="display:block">принял ${escapeHtml(question.opened_by_name || '')}
-            · ${formatDateTime(new Date(openedMs).toISOString())}</small>
-        </span>
-        <span class="badge ${late ? 'bad' : 'warn'}"
-          title="Норматив ответа — 10 минут">⏱ ${minutes} мин${late ? ' · просрочен' : ''}</span>
-      </div>
-      ${canAct ? `<div style="display:flex;gap:5px;flex-wrap:wrap">
-        <button class="button small" data-question-close="${question.id}">✓ Отработано</button>
+    return `<div class="list-item q-row ${late ? 'q-late-row' : ''}"
+      title="принял ${escapeHtml(question.opened_by_name || '')} · ${formatDateTime(new Date(openedMs).toISOString())}${question.phone ? `\n${escapeHtml(question.phone)}` : ''}">
+      <span class="q-row-main">
+        <strong>${escapeHtml(topicLabel(question.topic))}</strong>
+        ${question.vehicle_plate ? `<span class="mono">${escapeHtml(question.vehicle_plate)}</span>` : ''}
+        <span class="muted">${escapeHtml(question.driver_name || question.vehicle_driver || '')}${question.note
+    ? ` · «${escapeHtml(String(question.note).slice(0, 60))}»` : ''}</span>
+      </span>
+      <span class="badge ${late ? 'bad' : 'warn'}" title="Норматив ответа — 10 минут">⏱ ${minutes}${late ? '!' : ''}</span>
+      ${canAct ? `<button class="button small" data-question-close="${question.id}">✓</button>
         ${question.vehicle_id ? `<button class="button ghost small" data-question-card="${question.vehicle_id}"
-          title="Открыть карточку по звонку">📞 Карточка</button>` : ''}
-      </div>` : ''}
+          title="Карточка по звонку">📞</button>` : ''}` : ''}
     </div>`;
   };
-  const questionCards = questions.map(questionCard).join('');
+  const lateQuestions = questions.filter(question =>
+    Date.now() - Date.parse(String(question.opened_at).replace(' ', 'T') +
+      (String(question.opened_at).includes('Z') ? '' : 'Z')) > QUESTION_SLA_MS).length;
+  const questionCards = questions.map(questionRow).join('');
 
   const savedScrolls = captureScrolls(container);
   const html = `<div class="saleswrap">
@@ -1053,11 +1052,13 @@ export async function renderDispatcher(container, context, options = {}) {
           value="${escapeHtml(state.dispatcherQuery || '')}" style="flex:1">
       </div>
     </div>
-    ${questionCards ? `<div class="questions-strip">
-      <div class="scolh">📞 Вопросы водителей <span>${questions.length}</span>
-        <small class="muted" style="font-weight:400"> · норматив ответа 10 минут</small></div>
+    ${questionCards ? `<details class="questions-strip compact" data-disp-questions
+      ${state.dispQuestionsOpen ?? true ? 'open' : ''}>
+      <summary>📞 Вопросы водителей <span class="scount ${lateQuestions ? 'late' : ''}">${questions.length}</span>
+        ${lateQuestions ? `<span class="q-late">⏱ просрочено ${lateQuestions}</span>` : ''}
+        <small class="muted">— строка на вопрос, норматив 10 минут; ✓ — отработано</small></summary>
       <div class="list">${questionCards}</div>
-    </div>` : ''}
+    </details>` : ''}
     <div class="salesboard">
       <div class="scol">
         <div class="scolh">Подготовка выхода <span>${preparing.length}</span></div>
@@ -1091,6 +1092,9 @@ export async function renderDispatcher(container, context, options = {}) {
   }
   restoreScrolls(container, savedScrolls);
 
+  container.querySelector('[data-disp-questions]')?.addEventListener('toggle', event => {
+    state.dispQuestionsOpen = event.currentTarget.open;
+  });
   wireDemurrageChip(container, context);
   // Уточнение суммы: подтвердить текущую или внести точную из заявки клиента.
   // Данные грузоотправителю: копирование текста и отметка отправки.
