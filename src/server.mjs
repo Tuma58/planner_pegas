@@ -2523,6 +2523,16 @@ async function api(request, response, url) {
       err.status = 422;
       throw err;
     }
+    // Последний рубеж кузова — для ВСЕХ путей назначения (логист, черновики,
+    // конструктор): тушевозный груз в паллетник сервер не пропустит.
+    const vehicleTypeName = db.prepare(`SELECT vt.name FROM vehicle_types vt
+      WHERE vt.id=?`).get(vehicle.type_id)?.name;
+    if (!bodyTypeMatches(order.body_type, vehicleTypeName)) {
+      const err = new Error(`Кузов заявки «${order.body_type}» не подходит типу ТС ` +
+        `«${vehicleTypeName || '—'}» — выберите совместимую сцепку`);
+      err.status = 422;
+      throw err;
+    }
     // Последний рубеж: клиентский подбор фильтрует занятых, но назначение
     // приходит и из черновиков, и из API — машина в ремонте/без водителя
     // на интервале рейса не назначается (резерв — можно: он и означает

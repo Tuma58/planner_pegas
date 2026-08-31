@@ -4,6 +4,7 @@
 // из свободных потребностей, дальше — ручная правка. Готовый маршрут
 // передаётся логисту и назначается на сцепку целиком (рейсы цепочкой).
 import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch, captureScrolls, restoreScrolls } from './api.js';
+import { driverRatingBadge, driverRatingOf } from './api.js';
 import { DAY_MARGIN, ROUND_TEMPLATES, roundKm, roundRevenue, roundVehicles } from './rounds.js';
 import { orderStage } from './pipeline.js';
 import { orderNet, plannedKmBetween, regionOfPlace, resolveAddress } from './sales.js';
@@ -835,15 +836,33 @@ export function renderRoutes(container, context) {
   const assignDialogRoute = routeId => {
     const route = (state.data.routes || []).find(item => item.id === routeId);
     if (!route) return;
-    const vehicles = state.data.vehicles.filter(vehicle => vehicle.status === 'work');
+    // Тот же разбор, что в автоназначении: рейтинг водителя, занятость
+    // диспозицией и совместимость кузова видны ДО выбора; сервер всё равно
+    // проверит (assignOrderCore), но лучше не предлагать негодных.
+    const nowMs = Date.now();
+    const routeOrders = (state.data.orders || []).filter(order => order.route_id === routeId);
+    const bodyNeeds = [...new Set(routeOrders.map(order => order.body_type).filter(Boolean))];
+    const vehicles = state.data.vehicles.filter(vehicle => vehicle.status === 'work')
+      .map(vehicle => {
+        const rating = driverRatingOf(state.data, vehicle.id);
+        const dispo = (state.data.dispositions || []).find(item => item.vehicle_id === vehicle.id &&
+          Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs && item.kind !== 'reserve');
+        return { vehicle, rating, dispo };
+      })
+      .sort((a, b) => Number(Boolean(a.dispo)) - Number(Boolean(b.dispo)) ||
+        (b.rating?.score || 0) - (a.rating?.score || 0));
     context.showModal(`<h2>Назначить ТС на ${escapeHtml(route.route_no)}</h2>
       <p class="muted">Рейсы по каждой заявке создадутся цепочкой и уйдут диспетчеру
-        в подготовку (назначение подтверждается автоматически).</p>
-      <label class="field">Сцепка
+        в подготовку (назначение подтверждается автоматически).${bodyNeeds.length
+    ? ` Кузов по заявкам маршрута: <b>${bodyNeeds.map(escapeHtml).join(', ')}</b> —
+        несовместимую сцепку сервер отклонит.` : ''}</p>
+      <label class="field">Сцепка <small class="muted">(лучший рейтинг — сверху; занятые диспозицией — внизу)</small>
         <input id="routeVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off">
-        <select id="routeVehicle" style="margin-top:4px">${vehicles.map(vehicle =>
+        <select id="routeVehicle" style="margin-top:4px" size="9">${vehicles.map(({ vehicle, rating, dispo }) =>
           `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name || '')}
-            · ${escapeHtml(vehicle.driver_name || 'без водителя')}</option>`).join('')}</select></label>
+            · ${escapeHtml(vehicle.driver_name || 'без водителя')}${rating && rating.facts >= 4
+    ? ` · ${rating.grade === 'A' ? '🟢' : rating.grade === 'B' ? '🟡' : '🔴'} ${rating.score}` : ''}${dispo
+    ? ` · ⛔ ${dispo.kind === 'repair' ? 'в ремонте' : dispo.kind === 'no_driver' ? 'без водителя' : dispo.kind === 'shift' ? 'пересменка' : dispo.kind}` : ''}</option>`).join('')}</select></label>
       <button class="button full" id="routeAssignGo">Назначить маршрут</button>`);
     wireSelectSearch(document.getElementById('routeVehicleSearch'),
       document.getElementById('routeVehicle'));
