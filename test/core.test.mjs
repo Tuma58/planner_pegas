@@ -2519,6 +2519,41 @@ test('ночные черновики назначений: таблица и в
   assert.equal(db.prepare(`SELECT outcome FROM assign_drafts WHERE order_id='o-1'`).get().outcome, 'accepted');
 });
 
+test('назначение блокируется диспозицией на интервале рейса', t => {
+  // Кейс р264ма58: ночной подбор рекомендовал машину, чей ремонт продлили
+  // через час после расчёта; серверное назначение пропустило бы её молча.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-dispo-block-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,zone_id,status)
+    VALUES('v-1','р000ма58',?,?,'work')`).run(type, zone);
+  const iso = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('d-1','v-1','repair',?,?)`).run(iso(2), iso(30));
+  // Та же проверка, что в assignOrderCore: диспозиция (кроме резерва и
+  // прибывшего перегона), пересекающая интервал рейса, блокирует назначение.
+  const startsAt = iso(4);
+  const endsAt = iso(20);
+  const blocking = db.prepare(`SELECT kind FROM vehicle_dispositions
+    WHERE vehicle_id=? AND kind<>'reserve'
+      AND (kind<>'transfer' OR arrived_at IS NULL)
+      AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+    .get('v-1', endsAt, startsAt);
+  assert.equal(blocking?.kind, 'repair', 'ремонт на интервале рейса найден — назначение вернёт 422');
+  // Резерв назначению не мешает: он и означает «обещана заказу».
+  db.prepare(`UPDATE vehicle_dispositions SET kind='reserve' WHERE id='d-1'`).run();
+  const reserveBlock = db.prepare(`SELECT kind FROM vehicle_dispositions
+    WHERE vehicle_id=? AND kind<>'reserve'
+      AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+    .get('v-1', endsAt, startsAt);
+  assert.equal(reserveBlock, undefined, 'резерв не блокирует');
+});
+
 test('совместимость кузова: правило подбора совпадает с фактом назначений', () => {
   // Копия таблицы из server.mjs (не экспортируется — сверяем поведение).
   const BODY_COMPAT = {

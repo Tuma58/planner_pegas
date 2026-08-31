@@ -810,9 +810,11 @@ function pickVehicleFor(order) {
       AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status<>'rejected'
         AND datetime(t.starts_at) <= datetime(?) AND datetime(t.ends_at) > datetime(?))
       AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d WHERE d.vehicle_id=v.id
-        AND datetime(d.starts_at) <= datetime(?) AND datetime(d.ends_at) > datetime(?))
+        AND d.kind<>'reserve'
+        AND datetime(d.starts_at) < datetime(?) AND datetime(d.ends_at) > datetime(?))
       AND NOT EXISTS (SELECT 1 FROM vehicle_holds h WHERE h.vehicle_id=v.id
-        AND datetime(h.until) > datetime('now'))`).all(windowFrom, windowFrom, windowFrom, windowFrom);
+        AND datetime(h.until) > datetime('now'))`)
+    .all(windowFrom, windowFrom, order.window_to || windowFrom, windowFrom);
   // Точка погрузки резолвится один раз на заявку: подгон каждой машины —
   // только позиция сцепки против этой точки, иначе сотня LIKE-поисков
   // адреса на каждую заявку.
@@ -841,12 +843,18 @@ function pickOrderForVehicle(vehicleId, freeAtIso) {
   if (!origin || !Number.isFinite(origin.latitude)) return null;
   const vehicleType = db.prepare(`SELECT vt.name FROM vehicles v
     JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.id=?`).get(vehicleId)?.name;
+  // Окно заявки не должно попадать под диспозицию ЭТОЙ машины: сторож
+  // проверяет занятость только на 12 часов после выгрузки, а окно заявки —
+  // до +36; ремонт, начинающийся в этом промежутке, раньше не ловился.
   const orders = db.prepare(`SELECT o.* FROM orders o
     WHERE o.trip_id IS NULL AND o.status='new' AND o.confirmed_at IS NOT NULL
       AND datetime(o.window_to) > datetime(?)
       AND datetime(o.window_from) < datetime(?, '+36 hours')
-      AND NOT EXISTS (SELECT 1 FROM assign_drafts d WHERE d.order_id=o.id AND d.outcome IS NULL)`)
-    .all(freeAtIso, freeAtIso);
+      AND NOT EXISTS (SELECT 1 FROM assign_drafts d WHERE d.order_id=o.id AND d.outcome IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions x WHERE x.vehicle_id=?
+        AND x.kind<>'reserve'
+        AND datetime(x.starts_at) < datetime(o.window_to) AND datetime(x.ends_at) > datetime(o.window_from))`)
+    .all(freeAtIso, freeAtIso, vehicleId);
   let best = null;
   for (const order of orders) {
     if (!bodyTypeMatches(order.body_type, vehicleType)) continue;
@@ -876,6 +884,16 @@ function pickOrderForVehicle(vehicleId, freeAtIso) {
 // вычетом времени подгона и без диспозиции в зазоре. Отчёт уходит лично
 // каждому действующему сотруднику: 133 часа таких дыр за первый прогон —
 // это ~102 т₽ маржи, которые закрываются сдвигом рейса, локалкой или спотом.
+// Черновики подбора живут до утра, а парк меняется ночью: ремонт р264ма58
+// продлили в 08:23 МСК — через час после ночного подбора, и черновик
+// «свободна, подгон 6 км» остался висеть на машину в ремонте. Любое
+// изменение диспозиций или брони машины сбрасывает её активные черновики —
+// следующий круг сторожа пересчитает по свежим данным.
+function invalidateDraftsForVehicle(vehicleId) {
+  if (!vehicleId) return;
+  db.prepare(`DELETE FROM assign_drafts WHERE vehicle_id=? AND outcome IS NULL`).run(vehicleId);
+}
+
 const GAP_REVIEW_HOURS_MSK = [10, 14, 16];
 function runGapReviewWatch() {
   try {
@@ -1568,6 +1586,7 @@ async function api(request, response, url) {
         held_by=excluded.held_by, held_by_name=excluded.held_by_name, created_at=CURRENT_TIMESTAMP`)
       .run(vehicle.id, until, String(body.note || '').trim().slice(0, 120),
         user.id, user.full_name || user.username || '');
+    invalidateDraftsForVehicle(vehicle.id);
     audit(db, user, 'hold', 'vehicle', vehicle.id, { hours, note: body.note }, requestIp(request));
     return json(response, 200, { held: true, until });
   }
@@ -2460,6 +2479,24 @@ async function api(request, response, url) {
     if (clash) {
       const err = new Error(`Сцепка занята рейсом ${clash.order_no ? `№${clash.order_no} ` : ''}` +
         `${clash.from_point || ''} → ${clash.to_point || ''} до ${clash.ends_at.slice(0, 16).replace('T', ' ')} — выберите другое ТС или время`);
+      err.status = 422;
+      throw err;
+    }
+    // Последний рубеж: клиентский подбор фильтрует занятых, но назначение
+    // приходит и из черновиков, и из API — машина в ремонте/без водителя
+    // на интервале рейса не назначается (резерв — можно: он и означает
+    // «обещана заказу»; перегон блокирует, пока не прибыл).
+    const blockingDispo = db.prepare(`SELECT kind, ends_at FROM vehicle_dispositions
+      WHERE vehicle_id=? AND kind<>'reserve'
+        AND (kind<>'transfer' OR arrived_at IS NULL)
+        AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)
+      ORDER BY ends_at DESC LIMIT 1`).get(vehicle.id, endsAt, startsAt);
+    if (blockingDispo) {
+      const label = ({ repair: 'в ремонте', no_driver: 'без водителя', shift: 'на пересменке',
+        out: 'выведена', transfer: 'в перегоне' })[blockingDispo.kind] || blockingDispo.kind;
+      const err = new Error(`Сцепка ${label} до ` +
+        `${blockingDispo.ends_at.slice(0, 16).replace('T', ' ')} (UTC) — рейс пересекает интервал. ` +
+        `Выберите другое ТС или скорректируйте интервал в «Ресурсе»`);
       err.status = 422;
       throw err;
     }
@@ -3399,6 +3436,7 @@ async function api(request, response, url) {
     const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(body.vehicleId)?.plate || '';
     notify('dispatcher', `🚚 Перегон порожним ${plate}: ${fromLabel || '—'} → ${target.name} ` +
       `(${purpose}). Передайте задание водителю и отметьте выезд`, 'vehicle', body.vehicleId);
+    invalidateDraftsForVehicle(body.vehicleId);
     audit(db, user, 'create', 'transfer', id, { vehicleId: body.vehicleId, to: target.name, purpose },
       requestIp(request));
     return json(response, 201, { id, km: Number.isFinite(km) ? Math.round(km) : null,
@@ -3481,6 +3519,7 @@ async function api(request, response, url) {
       id, body.vehicleId, body.kind, new Date(startsAt).toISOString(),
       new Date(endsAt).toISOString(), String(body.note || ''),
       repairAddressId, repairKm, user.id, user.id);
+    invalidateDraftsForVehicle(body.vehicleId);
     audit(db, user, 'create', 'disposition', id, body, requestIp(request));
     return json(response, 201, { id });
   }
@@ -3521,6 +3560,8 @@ async function api(request, response, url) {
       patchVehicleId, kind, new Date(startsAt).toISOString(),
       new Date(endsAt).toISOString(), String(body.note ?? current.note),
       patchAddressId, patchRepairKm, user.id, match[0]);
+    invalidateDraftsForVehicle(patchVehicleId);
+    if (patchVehicleId !== current.vehicle_id) invalidateDraftsForVehicle(current.vehicle_id);
     audit(db, user, 'update', 'disposition', match[0], body, requestIp(request));
     return json(response, 200, { ok: true });
   }
