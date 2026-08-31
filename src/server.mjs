@@ -1295,6 +1295,7 @@ async function api(request, response, url) {
         FROM vehicle_holds h WHERE datetime(h.until) > datetime('now')`).all(),
       boardNotes: activeBoardNotes(),
       driverRatings: driverRatings(db),
+      attendanceLastDay: db.prepare('SELECT MAX(day) d FROM driver_attendance').get().d,
       // Черновики ночного подбора: утром логист подтверждает одним кликом.
       assignDrafts: db.prepare(`SELECT d.order_id, d.vehicle_id, d.empty_km, d.reason,
           d.computed_at, v.plate vehicle_plate
@@ -4011,6 +4012,29 @@ async function api(request, response, url) {
     audit(db, user, 'attendance', 'driver', row.driver_id,
       { day: row.day, status: row.status, reason: row.reason }, requestIp(request));
     return json(response, 200, { ok: true, item: row });
+  }
+
+  // Массовая отметка явки: 180 водителей по одному клику — это 144 отметки
+  // в день, ресурсник вёл явку три дня и бросил. Одна кнопка закрывает всех
+  // неотмеченных как «вышел»; исключения отмечаются после, поштучно.
+  if (request.method === 'POST' && pathname === '/api/attendance/bulk') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const day = String(body.day || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return errorJson(response, 422, 'Нужен day (ГГГГ-ММ-ДД)');
+    const driverIds = Array.isArray(body.driverIds) ? body.driverIds.slice(0, 400) : [];
+    if (!driverIds.length) return errorJson(response, 422, 'Пустой список водителей');
+    let marked = 0;
+    for (const driverId of driverIds) {
+      try {
+        markAttendance(db, { driverId: String(driverId), day, status: 'present',
+          reason: '', note: '', userId: user.id });
+        marked += 1;
+      } catch { /* уволенный или чужой id — пропускаем, остальных отмечаем */ }
+    }
+    audit(db, user, 'attendance-bulk', 'driver', null, { day, marked }, requestIp(request));
+    return json(response, 200, { ok: true, marked });
   }
 
   if (request.method === 'GET' && pathname === '/api/reports/staff') {

@@ -529,6 +529,8 @@ async function attendanceDialog(context) {
         <span class="badge ok">вышли: ${summary.present}</span>
         <span class="badge ${summary.absent ? 'bad' : ''}">невыход: ${summary.absent}</span>
         <span class="badge ${summary.unmarked ? 'warn' : 'ok'}" title="Рейсы, отпуска и межвахты система закрывает сама — отметьте только этих">требуют отметки: ${summary.unmarked}</span>
+        ${summary.unmarked > 3 ? `<button class="button small" id="attBulkPresent"
+          title="Отметить всех неотмеченных как «вышел» одним нажатием — исключения (невыходы) отметьте после поштучно">✓ Все неотмеченные вышли (${summary.unmarked})</button>` : ''}
         ${summary.overwork ? `<span class="badge warn" title="Работа в выходной — повышенная оплата">⚡ в выходной: ${summary.overwork}</span>` : ''}
         <span class="badge ${staffingOk ? 'ok' : 'bad'}"
           title="Норматив укомплектованности — 1,45 водителя на сцепку">
@@ -543,6 +545,15 @@ async function attendanceDialog(context) {
         render();
       } catch (error) { toast(error.message, 'error'); }
     };
+    document.getElementById('attBulkPresent')?.addEventListener('click', async () => {
+      const ids = sorted.filter(item => item.source === null).map(item => item.driver_id);
+      try {
+        const result = await api('/api/attendance/bulk', { method: 'POST',
+          body: JSON.stringify({ day, driverIds: ids }) });
+        toast(`Отмечено «вышел»: ${result.marked} — теперь отметьте только невыходы`);
+        render();
+      } catch (error) { toast(error.message, 'error'); }
+    });
     document.querySelectorAll('[data-att]').forEach(button => button.onclick = () => {
       const driverId = button.dataset.driver;
       if (button.dataset.att === 'present') return mark({ driverId, status: 'present' });
@@ -598,6 +609,49 @@ export function vehicleStateAt(vehicle, data, dayIso) {
 function renderResourceTasks(container, context, refDay, withState) {
   const { state } = context;
   const data = state.data;
+  // Подсветка заданий, которые иначе живут «на словах»: телефоны водителей
+  // (без них карточка звонка не опознаёт звонящего), брошенная явка и
+  // машины, зависшие после окончания ремонта/подмены.
+  const tasksNowMs = Date.now();
+  const phones = (data.drivers || []).filter(item => !item.dismissed_at);
+  const phoneFilled = phones.filter(item => String(item.phone || '').trim()).length;
+  const attLastDay = data.attendanceLastDay || null;
+  const attGapDays = attLastDay
+    ? Math.floor((tasksNowMs - Date.parse(`${attLastDay}T00:00:00Z`)) / 86_400_000) : null;
+  const hangingAfterDispo = (data.dispositions || []).filter(item =>
+    ['repair', 'no_driver', 'shift'].includes(item.kind) &&
+    Date.parse(item.ends_at) < tasksNowMs && tasksNowMs - Date.parse(item.ends_at) < 3 * 86_400_000 &&
+    !(data.trips || []).some(trip => trip.vehicle_id === item.vehicle_id &&
+      ['plan', 'run'].includes(trip.status) && Date.parse(trip.ends_at) > Date.parse(item.ends_at)) &&
+    !(data.dispositions || []).some(other => other.vehicle_id === item.vehicle_id &&
+      other.id !== item.id && Date.parse(other.starts_at) >= Date.parse(item.ends_at)));
+  const adminTasks = [];
+  if (phones.length && phoneFilled < phones.length * 0.9) {
+    adminTasks.push(`<div class="list-item" style="padding:6px 9px">
+      <span style="flex:1;min-width:0"><strong>📞 Телефоны водителей: ${phoneFilled} из ${phones.length}</strong>
+        <small class="muted" style="display:block">Без телефона карточка звонка не опознаёт водителя —
+          вопросы и SLA не работают. Заполняйте в справочнике водителей.</small></span>
+      <button class="button small" id="taskPhones">Открыть</button>
+    </div>`);
+  }
+  if (attGapDays === null || attGapDays > 1) {
+    adminTasks.push(`<div class="list-item" style="padding:6px 9px">
+      <span style="flex:1;min-width:0"><strong>📋 Явка не велась ${attGapDays === null ? 'ни разу' : `${attGapDays} дн`}</strong>
+        <small class="muted" style="display:block">Кнопка «✓ Все неотмеченные вышли» закрывает день
+          одним нажатием — руками отмечаются только невыходы.</small></span>
+      <button class="button small" id="taskAttendance">Отметить</button>
+    </div>`);
+  }
+  for (const item of hangingAfterDispo.slice(0, 4)) {
+    const vehicle = (data.vehicles || []).find(v => v.id === item.vehicle_id);
+    if (!vehicle) continue;
+    adminTasks.push(`<div class="list-item" style="padding:6px 9px">
+      <span style="flex:1;min-width:0"><strong>⏰ <span class="mono vlink" data-vinfo="${vehicle.id}">${escapeHtml(vehicle.plate)}</span>:
+        ${item.kind === 'repair' ? 'ремонт' : item.kind === 'shift' ? 'пересменка' : 'подмена'} закончился ${formatDateTime(item.ends_at)}</strong>
+        <small class="muted" style="display:block">Рейса после нет — машина вышла? Продлите интервал
+          или передайте логисту в работу.</small></span>
+    </div>`);
+  }
   const midpoint = Date.parse(`${refDay}T12:00:00Z`);
   const tasks = withState
     .filter(({ stateNow }) => stateNow.kind === 'idle' || stateNow.kind === 'no_driver')
@@ -700,6 +754,9 @@ function renderResourceTasks(container, context, refDay, withState) {
       <div class="metric"><span>Требуют внимания</span><strong>${tasks.length}</strong></div>
       <div class="metric"><span>Всего в парке</span><strong>${withState.length}</strong></div>
     </div>
+    ${adminTasks.length ? `<div class="task-sec"><b>📌 Задания руководителя (${adminTasks.length})</b>
+      <div class="list" style="margin-top:6px">${adminTasks.join('')}</div>
+    </div>` : ''}
     ${conflicts.length ? `<div class="task-sec"><b>⚠ Рейс и интервал в один день (${conflicts.length})</b>
       <p class="muted" style="margin:4px 0">Машина едет, но на этот же день оформлен ремонт,
         пересменка или «без водителя». Либо интервал пора закрыть, либо рейс нужно переносить.</p>
@@ -745,6 +802,9 @@ function renderResourceTasks(container, context, refDay, withState) {
             data-gap-from="${refDay}" data-gap-to="${new Date(Date.parse(`${refDay}T00:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10)}"
             title="Назначить подменного водителя на период">Подменный</button>
         </div>`;
+  container.querySelector('#taskPhones')?.addEventListener('click', () => context.openDrivers?.());
+  container.querySelector('#taskAttendance')?.addEventListener('click', () => attendanceDialog(context));
+
   }).join('')}</div></div>` : ''}
     ${noDriverTasks.length ? `<div class="task-sec"><b>👤 Назначить водителя на ТС (${noDriverTasks.length})</b>
       <div class="list" style="margin-top:6px">${noDriverTasks.slice(0, 8).map(task => `

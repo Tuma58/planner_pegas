@@ -1857,7 +1857,10 @@ test('план вывоза: сетка слотов из истории и пл
   assert.ok(slot[0].per_day >= 0.9 && slot[0].per_day <= 1.1, `≈1 рейс в день, получили ${slot[0].per_day}`);
   assert.equal(slot[0].rate, 90000);
   // План-факт: заявка клиента в этом месяце → факт со стадией «внесена».
-  const month = new Date(now + 3 * 3600e3).toISOString().slice(0, 7);
+  // Месяц — тот, куда попадает окно заявки (now+24ч), а не «сейчас»: на
+  // границе месяца (31-е число) иначе заявка уезжала в следующий месяц
+  // и тест падал раз в месяц.
+  const month = new Date(now + 24 * 3600e3 + 3 * 3600e3).toISOString().slice(0, 7);
   db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
     window_from,window_to,stage) VALUES('dp-o1','Регуляр ООО',?,?,95000,?,?,0)`)
     .run(z1, z2, iso(now + 24 * 3600e3), iso(now + 48 * 3600e3));
