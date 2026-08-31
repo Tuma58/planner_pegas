@@ -2265,8 +2265,26 @@ async function api(request, response, url) {
     const user = requirePermission(request, response, 'orders:write');
     if (!user) return;
     const body = await readJson(request);
+    // Геозоны убраны из формы продаж — они определяются по пункту сами:
+    // зона адреса справочника, иначе алиас/имя зоны из текста. Менеджер
+    // заполняет адреса, а не служебную географию.
+    const zoneOfPlace = (addressId, text) => {
+      const byAddress = addressId
+        ? db.prepare('SELECT zone_id FROM addresses WHERE id=?').get(addressId)?.zone_id : null;
+      if (byAddress) return byAddress;
+      const byCity = db.prepare(`SELECT zone_id FROM addresses
+        WHERE name LIKE ? AND zone_id IS NOT NULL LIMIT 1`)
+        .get(`${String(text || '').split(',')[0].trim()}%`)?.zone_id;
+      return byCity || resolveZone(db, String(text || '').split(',')[0])?.id || null;
+    };
+    if (!body.fromZoneId) body.fromZoneId = zoneOfPlace(body.fromAddressId, body.fromPoint);
+    if (!body.toZoneId) body.toZoneId = zoneOfPlace(body.toAddressId, body.toPoint);
     for (const key of ['customerName', 'fromZoneId', 'toZoneId', 'windowFrom', 'windowTo']) {
-      if (!body[key]) return errorJson(response, 422, `Поле ${key} обязательно`);
+      if (!body[key]) {
+        return errorJson(response, 422, key.includes('ZoneId')
+          ? `Не удалось определить геозону по пункту ${key === 'fromZoneId' ? 'погрузки' : 'выгрузки'} — выберите адрес из справочника`
+          : `Поле ${key} обязательно`);
+      }
     }
     const windowFrom = Date.parse(body.windowFrom);
     const windowTo = Date.parse(body.windowTo);

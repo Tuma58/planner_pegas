@@ -1029,10 +1029,10 @@ export async function renderSales(container, context) {
             </div>
           </div>
           <div id="salesPlannedKm" class="next-event" style="margin:0 0 6px"></div>
-          <div class="form-grid">
-            <label class="field">Геозона откуда<select name="fromZoneId" id="salesFrom">${zoneOptions}</select></label>
-            <label class="field">Геозона куда<select name="toZoneId" id="salesTo">${zoneOptions}</select></label>
-          </div>
+          <select name="fromZoneId" id="salesFrom" hidden>${zoneOptions}</select>
+          <select name="toZoneId" id="salesTo" hidden>${zoneOptions}</select>
+          <div id="salesZoneHint" class="next-event" style="margin:0 0 6px"
+            title="Геозоны определяются по пунктам сами — заполнять их не нужно"></div>
           <div class="form-grid">
             <label class="field">Темп. режим<select name="temperatureMode">${temps}</select></label>
             <label class="field">Кузов<select name="bodyType">${bodies}</select></label>
@@ -1232,9 +1232,20 @@ export async function renderSales(container, context) {
         container.querySelector(`#${zoneId}`).value = zone.id;
         feasibility();
       }
+      salesZoneHint();
       salesPlannedKm();
     });
   });
+  // Подпись «геозоны: Дом → Москва (авто)» — контроль без ручного выбора.
+  function salesZoneHint() {
+    const hint = container.querySelector('#salesZoneHint');
+    if (!hint) return;
+    const nameOf = id => data.reference.zones.find(zone => zone.id === id)?.name || '?';
+    const fromId = container.querySelector('#salesFrom').value;
+    const toId = container.querySelector('#salesTo').value;
+    hint.textContent = `📍 геозоны: ${nameOf(fromId)} → ${nameOf(toId)} (определены по пунктам)`;
+  }
+  salesZoneHint();
 
   // Выбор известного клиента подставляет его основное направление и рыночную ставку.
   wireNetField(container.querySelector('#salesForm'),
@@ -1246,6 +1257,7 @@ export async function renderSales(container, context) {
     const main = entries.sort((a, b) => b.trip_count - a.trip_count)[0];
     if (main.from_zone_id) container.querySelector('#salesFrom').value = main.from_zone_id;
     if (main.to_zone_id) container.querySelector('#salesTo').value = main.to_zone_id;
+    salesZoneHint();
     feasibility();
     // Средняя ставка клиента — точнее рыночной по направлению, ставим после пересчёта.
     const rate = container.querySelector('#salesRate');
