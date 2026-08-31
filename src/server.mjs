@@ -838,195 +838,10 @@ function pickVehicleFor(order) {
 // «машине заявку» — из очереди, с окном от освобождения до +36 часов и
 // минимальным подгоном от точки выгрузки. Итог кладётся в те же черновики
 // (assign_drafts): у логиста это кнопка «⚡» в карточке заявки.
-function pickOrderForVehicle(vehicleId, freeAtIso) {
-  const origin = vehiclePositionBefore(vehicleId, new Date(Date.parse(freeAtIso) + 60_000).toISOString());
-  if (!origin || !Number.isFinite(origin.latitude)) return null;
-  const vehicleType = db.prepare(`SELECT vt.name FROM vehicles v
-    JOIN vehicle_types vt ON vt.id=v.type_id WHERE v.id=?`).get(vehicleId)?.name;
-  // Окно заявки не должно попадать под диспозицию ЭТОЙ машины: сторож
-  // проверяет занятость только на 12 часов после выгрузки, а окно заявки —
-  // до +36; ремонт, начинающийся в этом промежутке, раньше не ловился.
-  const orders = db.prepare(`SELECT o.* FROM orders o
-    WHERE o.trip_id IS NULL AND o.status='new' AND o.confirmed_at IS NOT NULL
-      AND datetime(o.window_to) > datetime(?)
-      AND datetime(o.window_from) < datetime(?, '+36 hours')
-      AND NOT EXISTS (SELECT 1 FROM assign_drafts d WHERE d.order_id=o.id AND d.outcome IS NULL)
-      AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions x WHERE x.vehicle_id=?
-        AND x.kind<>'reserve'
-        AND datetime(x.starts_at) < datetime(o.window_to) AND datetime(x.ends_at) > datetime(o.window_from))`)
-    .all(freeAtIso, freeAtIso, vehicleId);
-  let best = null;
-  for (const order of orders) {
-    if (!bodyTypeMatches(order.body_type, vehicleType)) continue;
-    const target = addressPointById(order.from_address_id) || addressPointByText(order.from_point);
-    if (!target) continue;
-    const km = roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
-    if (!best || km < best.km) best = { order, km };
-  }
-  return best;
-}
-
-// ── Утренние направления для продаж ──
-// Продажам не хватало ответа «из какого региона и куда брать грузы»: в
-// 06:55 МСК считаем, куда машины ПРИЕДУТ в ближайшие 72 часа, и сколько из
-// этих зон уже есть исходящих заявок. Дефицит — готовый список прозвона:
-// продаём маршруты (обратные плечи кругов), а не одиночные рейсы.
-// ── Зависшие перегоны ──
-// На проде три перегона висели «в пути» на 1–2 суток после планового
-// прибытия без единой отметки: машина давно в Пензе на пересменке, а по
-// данным — едет. Пока перегон открыт, сцепка числится в пути: место
-// неверное, стыковка её не видит. Через 6 часов просрочки — напоминание
-// диспетчерам; через 24 часа — автозакрытие плановым временем с пометкой
-// (для сервисных целей риск мал, а место сцепки становится честным).
-// ── Ревизия зазоров между назначенными рейсами ──
-// Три раза в день (10:00, 14:00, 16:00 МСК) сверяем назначенный план: пары
-// заданий сцепки, между которыми простой больше 12 часов чистыми — за
-// вычетом времени подгона и без диспозиции в зазоре. Отчёт уходит лично
-// каждому действующему сотруднику: 133 часа таких дыр за первый прогон —
-// это ~102 т₽ маржи, которые закрываются сдвигом рейса, локалкой или спотом.
-// Черновики подбора живут до утра, а парк меняется ночью: ремонт р264ма58
-// продлили в 08:23 МСК — через час после ночного подбора, и черновик
-// «свободна, подгон 6 км» остался висеть на машину в ремонте. Любое
-// изменение диспозиций или брони машины сбрасывает её активные черновики —
-// следующий круг сторожа пересчитает по свежим данным.
-function invalidateDraftsForVehicle(vehicleId) {
-  if (!vehicleId) return;
-  db.prepare(`DELETE FROM assign_drafts WHERE vehicle_id=? AND outcome IS NULL`).run(vehicleId);
-}
-
-const GAP_REVIEW_HOURS_MSK = [10, 14, 16];
-function runGapReviewWatch() {
-  try {
-    const msk = new Date(Date.now() + 3 * 3_600_000);
-    const hour = msk.getUTCHours();
-    if (!GAP_REVIEW_HOURS_MSK.includes(hour)) return;
-    const slot = `${msk.toISOString().slice(0, 10)}:${hour}`;
-    if (db.prepare(`SELECT value FROM app_meta WHERE key='gap_review_slot'`).get()?.value === slot) return;
-    const rows = db.prepare(`SELECT t.id, t.vehicle_id, t.order_no, t.starts_at, t.ends_at,
-        t.unloaded_at, t.empty_km, v.plate,
-        (SELECT name FROM zones WHERE id=t.to_zone_id) to_name
-      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
-      WHERE t.status IN ('plan','run') ORDER BY t.vehicle_id, t.starts_at`).all();
-    const byVehicle = new Map();
-    for (const row of rows) {
-      if (!byVehicle.has(row.vehicle_id)) byVehicle.set(row.vehicle_id, []);
-      byVehicle.get(row.vehicle_id).push(row);
-    }
-    const mskLabel = ms => new Date(ms + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
-    const gaps = [];
-    for (const list of byVehicle.values()) {
-      for (let i = 1; i < list.length; i += 1) {
-        const prev = list[i - 1];
-        const next = list[i];
-        const prevEnd = Date.parse(prev.unloaded_at
-          ? String(prev.unloaded_at).replace(' ', 'T') + (String(prev.unloaded_at).includes('Z') ? '' : 'Z')
-          : prev.ends_at);
-        const feedH = (Number(next.empty_km) || 0) / 50 * 1.5;
-        const gapH = (Date.parse(next.starts_at) - prevEnd) / 3_600_000 - feedH;
-        if (gapH <= 12) continue;
-        const covered = db.prepare(`SELECT COUNT(*) c FROM vehicle_dispositions
-          WHERE vehicle_id=? AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
-          .get(prev.vehicle_id, next.starts_at, new Date(prevEnd).toISOString()).c;
-        if (covered) continue;
-        gaps.push({ plate: prev.plate, gapH: Math.round(gapH), prevNo: prev.order_no,
-          prevTo: prev.to_name, prevEnd, nextNo: next.order_no, nextStart: Date.parse(next.starts_at) });
-      }
-    }
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('gap_review_slot',?)
-      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(slot);
-    if (!gaps.length) return;
-    gaps.sort((a, b) => b.gapH - a.gapH);
-    const totalH = gaps.reduce((sum, gap) => sum + gap.gapH, 0);
-    const lines = gaps.slice(0, 12).map(gap =>
-      `${gap.plate}: после №${gap.prevNo} (${gap.prevTo}) до №${gap.nextNo} — ~${gap.gapH} ч ` +
-      `(${mskLabel(gap.prevEnd)} → ${mskLabel(gap.nextStart)} МСК)`);
-    const text = `📋 Ревизия плана (${hour}:00): у ${gaps.length} пар заданий завышен простой между ` +
-      `рейсами (больше 12 ч сверх подгона, без ремонта/пересменки) — суммарно ${totalH} ч ` +
-      `≈ ${Math.round(totalH * 770 / 1000)} т₽ маржи. ${lines.join('; ')}${gaps.length > 12
-        ? ` и ещё ${gaps.length - 12}` : ''}. Сдвиньте следующий рейс раньше, вставьте локалку ` +
-      `или спот — «Логист → Сцепки», «⏭ стыковка плеча»`;
-    notifyEveryone(text);
-  } catch (error) {
-    console.error('Ревизия зазоров:', error.message);
-  }
-}
-setInterval(runGapReviewWatch, 10 * 60_000);
-
-function runStaleTransfersWatch() {
-  try {
-    const stale = db.prepare(`SELECT d.id, d.ends_at, d.purpose, d.note, v.plate,
-        (SELECT name FROM addresses WHERE id=d.address_id) to_name
-      FROM vehicle_dispositions d JOIN vehicles v ON v.id=d.vehicle_id
-      WHERE d.kind='transfer' AND d.arrived_at IS NULL
-        AND datetime(d.ends_at) < datetime('now','-6 hours')`).all();
-    if (!stale.length) return;
-    const toClose = stale.filter(item =>
-      Date.now() - Date.parse(item.ends_at) > 24 * 3_600_000);
-    for (const item of toClose) {
-      db.prepare(`UPDATE vehicle_dispositions SET arrived_at=ends_at,
-          note=CASE WHEN note='' THEN 'закрыт автоматически: сутки после планового прибытия без отметок'
-            ELSE note || ' · закрыт автоматически' END,
-          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(item.id);
-      audit(db, null, 'transfer-autoclose', 'transfer', item.id, { endsAt: item.ends_at }, '');
-    }
-    const remind = stale.filter(item => !toClose.includes(item));
-    if (remind.length) {
-      const key = new Date().toISOString().slice(0, 10);
-      const done = db.prepare(`SELECT value FROM app_meta WHERE key='stale_transfer_day'`).get()?.value;
-      if (done !== key) {
-        notify('dispatcher', `🚚 Перегоны без отметок дольше 6 часов после планового прибытия: ` +
-          remind.map(item => `${item.plate} → ${(item.to_name || '').slice(0, 30)} (план ${item.ends_at.slice(5, 16)})`).join('; ') +
-          `. Отметьте этапы — или через сутки перегон закроется сам плановым временем`);
-        db.prepare(`INSERT INTO app_meta(key,value) VALUES('stale_transfer_day',?)
-          ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key);
-      }
-    }
-    if (toClose.length) console.log(`Перегоны: автозакрыто ${toClose.length} (сутки без отметок)`);
-  } catch (error) {
-    console.error('Зависшие перегоны:', error.message);
-  }
-}
-setInterval(runStaleTransfersWatch, 30 * 60_000);
-setTimeout(runStaleTransfersWatch, 70_000);
-
-function runMorningDirections() {
-  try {
-    const msk = new Date(Date.now() + 3 * 3_600_000);
-    if (msk.getUTCHours() !== 6 || msk.getUTCMinutes() < 55) return;
-    const day = msk.toISOString().slice(0, 10);
-    if (db.prepare(`SELECT value FROM app_meta WHERE key='morning_directions_day'`).get()?.value === day) return;
-    const arrivals = db.prepare(`SELECT z.name zone, COUNT(*) n FROM trips t
-      JOIN zones z ON z.id=t.to_zone_id
-      WHERE t.status IN ('plan','run') AND datetime(t.ends_at) BETWEEN datetime('now') AND datetime('now','+72 hours')
-      GROUP BY z.name`).all();
-    const outgoing = db.prepare(`SELECT z.name zone, COUNT(*) n FROM orders o
-      JOIN zones z ON z.id=o.from_zone_id
-      WHERE o.deleted_at IS NULL AND o.status<>'rejected' AND o.trip_id IS NULL
-        AND datetime(o.window_from) BETWEEN datetime('now') AND datetime('now','+96 hours')
-      GROUP BY z.name`).all();
-    const outMap = Object.fromEntries(outgoing.map(row => [row.zone, row.n]));
-    const deficit = arrivals
-      .map(row => ({ zone: row.zone, arrive: row.n, out: outMap[row.zone] || 0,
-        gap: row.n - (outMap[row.zone] || 0) }))
-      .filter(row => row.gap > 0 && row.zone !== 'Дом')
-      .sort((a, b) => b.gap - a.gap).slice(0, 5);
-    if (!deficit.length) return;
-    const lines = deficit.map(row =>
-      `${row.zone}: приедут ${row.arrive}, обратных заявок ${row.out} — нужно ещё ${row.gap}`);
-    notify('sales', `🧭 Направления дня (72 ч): машины освобождаются там, где нет обратных грузов — ` +
-      lines.join('; ') + `. Продаём маршрут целиком, а не одно плечо: заявка из зоны прибытия ` +
-      `дороже простоя и порожняка (пороги ставок — в «Конструктор → 📚 Шаблоны кругов»)`);
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('morning_directions_day',?)
-      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
-  } catch (error) {
-    console.error('Утренние направления:', error.message);
-  }
-}
-setInterval(runMorningDirections, 5 * 60_000);
-
 function runDockingWatch() {
   try {
-    const soon = db.prepare(`SELECT t.id, t.vehicle_id, t.ends_at, v.plate
+    const soon = db.prepare(`SELECT t.id, t.vehicle_id, t.ends_at, v.plate,
+        (SELECT vt.name FROM vehicle_types vt WHERE vt.id=v.type_id) type_name
       FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
       WHERE t.status='run' AND t.unloaded_at IS NULL
         AND datetime(t.ends_at) < datetime('now', '+6 hours')
@@ -1035,20 +850,59 @@ function runDockingWatch() {
         AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d WHERE d.vehicle_id=t.vehicle_id
           AND datetime(d.starts_at) < datetime(t.ends_at, '+12 hours')
           AND datetime(d.ends_at) > datetime(t.ends_at))`).all();
-    let made = 0;
+    if (!soon.length) return;
+    // Глобальное паросочетание вместо «каждой машине лучшую из оставшихся»:
+    // жадность по порядку цикла отдавала первой машине московскую заявку с
+    // подгоном 20 км, а последней — огрызок за 685 км (кейс р892ху58 →
+    // Пензенская кондитерская). Теперь собираются ВСЕ пары машина×заявка,
+    // сортируются по подгону и назначаются от лучших — сумма подгонов
+    // минимальна, а пары дальше порога не создаются вовсе.
+    const MAX_DOCK_KM = 350;
+    const pairs = [];
     for (const trip of soon) {
-      const pick = pickOrderForVehicle(trip.vehicle_id, trip.ends_at);
-      if (!pick) continue;
-      db.prepare(`INSERT INTO assign_drafts(order_id,vehicle_id,empty_km,reason,computed_at)
-        VALUES(?,?,?,?,CURRENT_TIMESTAMP)
-        ON CONFLICT(order_id) DO UPDATE SET vehicle_id=excluded.vehicle_id,
-          empty_km=excluded.empty_km, reason=excluded.reason,
-          computed_at=CURRENT_TIMESTAMP, outcome=NULL, resolved_at=NULL`)
-        .run(pick.order.id, trip.vehicle_id, pick.km,
-          `стыковка: ${trip.plate} выгружается ${new Date(Date.parse(trip.ends_at) + 3 * 3_600_000)
-            .toISOString().slice(11, 16)} МСК, подгон ~${Math.round(pick.km)} км`);
-      made += 1;
+      const origin = vehiclePositionBefore(trip.vehicle_id,
+        new Date(Date.parse(trip.ends_at) + 60_000).toISOString());
+      if (!origin || !Number.isFinite(origin.latitude)) continue;
+      const orders = db.prepare(`SELECT o.* FROM orders o
+        WHERE o.trip_id IS NULL AND o.status='new' AND o.confirmed_at IS NOT NULL
+          AND datetime(o.window_to) > datetime(?)
+          AND datetime(o.window_from) < datetime(?, '+36 hours')
+          AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions x WHERE x.vehicle_id=?
+            AND x.kind<>'reserve'
+            AND datetime(x.starts_at) < datetime(o.window_to) AND datetime(x.ends_at) > datetime(o.window_from))`)
+        .all(trip.ends_at, trip.ends_at, trip.vehicle_id);
+      for (const order of orders) {
+        if (!bodyTypeMatches(order.body_type, trip.type_name)) continue;
+        const target = addressPointById(order.from_address_id) || addressPointByText(order.from_point);
+        if (!target) continue;
+        const km = roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
+        if (km > MAX_DOCK_KM) continue;
+        pairs.push({ trip, order, km });
+      }
     }
+    pairs.sort((a, b) => a.km - b.km);
+    const usedVehicles = new Set();
+    const usedOrders = new Set();
+    let made = 0;
+    const upsert = db.prepare(`INSERT INTO assign_drafts(order_id,vehicle_id,empty_km,reason,computed_at)
+      VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(order_id) DO UPDATE SET vehicle_id=excluded.vehicle_id,
+        empty_km=excluded.empty_km, reason=excluded.reason,
+        computed_at=CURRENT_TIMESTAMP, outcome=NULL, resolved_at=NULL
+      WHERE assign_drafts.outcome IS NULL AND excluded.empty_km + 20 < assign_drafts.empty_km`);
+    for (const pair of pairs) {
+      if (usedVehicles.has(pair.trip.vehicle_id) || usedOrders.has(pair.order.id)) continue;
+      usedVehicles.add(pair.trip.vehicle_id);
+      usedOrders.add(pair.order.id);
+      const changed = upsert.run(pair.order.id, pair.trip.vehicle_id, pair.km,
+        `стыковка: ${pair.trip.plate} выгружается ${new Date(Date.parse(pair.trip.ends_at) + 3 * 3_600_000)
+          .toISOString().slice(11, 16)} МСК, подгон ~${Math.round(pair.km)} км`).changes;
+      made += changed;
+    }
+    // Черновики с подгоном за порогом больше не имеют права висеть: их
+    // рекомендации хуже, чем решение логиста по кругам.
+    db.prepare(`DELETE FROM assign_drafts WHERE outcome IS NULL AND empty_km > ?
+      AND reason LIKE 'стыковка:%'`).run(MAX_DOCK_KM);
     if (made) console.log(`Стыковка плеч: черновики для ${made} освобождающихся машин`);
   } catch (error) {
     console.error('Стыковка плеч:', error.message);
