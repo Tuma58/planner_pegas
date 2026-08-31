@@ -2071,6 +2071,17 @@ async function api(request, response, url) {
     refreshEmptyKm(merged.vehicleId);
     if (current.vehicle_id && current.vehicle_id !== merged.vehicleId) refreshEmptyKm(current.vehicle_id);
     // Срыв по вине клиента — случай сразу падает претензией в «⏳ Простои П/В».
+    // Рейс, уже внесённый в 1С, отклоняется: заказ в учётной системе остаётся
+    // висеть — при следующем назначении диспетчер завёл бы второй (дубль).
+    // Явное задание: аннулировать или переоформить существующий заказ.
+    if (merged.status === 'rejected' && current.status !== 'rejected' &&
+        (current.entered_1c_at || current.deferred_1c_at)) {
+      const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(current.vehicle_id)?.plate || '—';
+      db.prepare(`UPDATE trips SET needs_1c_update_at=?, needs_1c_note=? WHERE id=?`)
+        .run(new Date().toISOString(), `рейс отклонён — аннулируйте заказ в 1С (был на ${plate})`, match[0]);
+      notify('dispatcher', `🧾 Рейс ${routeText(current)} (${plate}) отклонён, а заказ в 1С уже внесён — ` +
+        `аннулируйте или переоформите его, иначе при новом назначении получится дубль`, 'trip', match[0]);
+    }
     if (merged.status === 'rejected' && current.status !== 'rejected' &&
         FALSE_CALL_REASONS.includes(String(merged.rejectionReason || '').trim())) {
       falseCallClaim({ ...current, order_id: merged.orderId ?? current.order_id },
@@ -2535,10 +2546,29 @@ async function api(request, response, url) {
       const assignEmptyKm = emptyKmFor(vehicle.id, startsAt,
         order.from_address_id, order.from_point || null, tripId);
       if (order.trip_id) {
+        // Переназначение: заявка уже имела рейс с другой машиной. Если заказ
+        // внесён в 1С — диспетчер обязан узнать, ВМЕСТО какой машины пришла
+        // новая, иначе он заведёт второй заказ и в учётной системе дубль.
+        const previous = db.prepare(`SELECT t.vehicle_id, t.entered_1c_at, t.deferred_1c_at,
+            v.plate FROM trips t JOIN vehicles v ON v.id=t.vehicle_id WHERE t.id=?`).get(tripId);
         db.prepare(`UPDATE trips SET vehicle_id=?,status='plan',cash=?,order_no=?,empty_km=?,
           updated_by=?,updated_at=CURRENT_TIMESTAMP
           WHERE id=?`).run(vehicle.id, Number(order.cash || 0), order.order_no || '',
           assignEmptyKm, user.id, tripId);
+        if (previous && previous.vehicle_id !== vehicle.id) {
+          resetDriverNotificationOnVehicleChange(db, tripId);
+          if (previous.entered_1c_at || previous.deferred_1c_at) {
+            db.prepare(`UPDATE trips SET needs_1c_update_at=?, needs_1c_note=?, debt_1c_alert_at=NULL
+              WHERE id=?`).run(new Date().toISOString(),
+              `ТС: было ${previous.plate} → стало ${vehicle.plate}`, tripId);
+          }
+          notify('dispatcher', `🔁 Переназначение ТС на заявке №${order.order_no || '—'} ` +
+            `(${order.from_point || ''} → ${order.to_point || ''}): ` +
+            `новое ТС ${vehicle.plate} ВМЕСТО ${previous.plate}. ` +
+            `${previous.entered_1c_at || previous.deferred_1c_at
+              ? 'Замените ТС в СУЩЕСТВУЮЩЕМ заказе 1С (не заводите новый — будет дубль) и отметьте «✓ 1С обновлено»'
+              : 'Заказ в 1С ещё не вносился — внесите сразу с новым ТС'}`, 'trip', tripId);
+        }
       } else {
         db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,customer_name,from_zone_id,to_zone_id,
           from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status,temperature_mode,
