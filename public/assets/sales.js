@@ -6,6 +6,7 @@ import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parse
 import { driverRatingOf, driverRatingBadge } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
+import { orderImportDialog } from './order-import.js';
 import { salesRadarDialog, directionMarket, freeVehiclesByZone } from './sales-radar.js';
 import { customerCardDialog } from './customer-card.js';
 import { vehiclePlace } from './transfer.js';
@@ -980,6 +981,8 @@ export async function renderSales(container, context) {
           title="Срез на дату: свободные и освобождающиеся сцепки, ремонты и пересменки, незакрытые регионы">📋 Задание</button>
         <button class="button ghost small" id="salesDeliveryPlan"
           title="График вывоза на месяц: жёлтые слоты без заявок — ваши задачи на прозвон">📅 План вывоза</button>
+        <button class="button ghost small" id="salesMailImport"
+          title="Вставьте письмо клиента (таблицей или прописью) — строки распознаются в заявки пакетом">📥 Из письма</button>
         <button class="button small" id="salesRadar"
           title="Куда продавать: горящие зоны со свободными машинами, рынок направлений и дыры плана — с бронированием ТС">🎯 Куда продавать</button>
         <button class="button ghost small" id="salesPresetToday" title="Только сегодняшний день">Сегодня</button>
@@ -1099,6 +1102,7 @@ export async function renderSales(container, context) {
   wireDemurrageChip(container, context);
   container.querySelector('#salesTask').onclick = () => salesTaskDialog(data, context);
   container.querySelector('#salesDeliveryPlan').onclick = () => deliveryPlanDialog(context);
+  container.querySelector('#salesMailImport').onclick = () => orderImportDialog(context);
   container.querySelector('#salesRadar').onclick = () => salesRadarDialog(context);
   container.querySelector('#salesPresetToday').onclick = () => {
     filter.from = dayIsoLocal(0); filter.to = dayIsoLocal(0);

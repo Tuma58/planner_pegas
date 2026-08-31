@@ -2554,6 +2554,33 @@ test('назначение блокируется диспозицией на и
   assert.equal(reserveBlock, undefined, 'резерв не блокирует');
 });
 
+test('импорт из письма: таблица и прописной текст распознаются в черновики', async () => {
+  const { parseMailOrders } = await import('../public/assets/order-import.js');
+  const data = { reference: { addresses: [
+    { id: 'a1', name: 'Пенза г, ул. Аустрина, стр. 178Б', address: '', zone_name: 'Дом', region: 'Пензенская обл' },
+    { id: 'a2', name: 'Москва г, р-н Метрогородок, ул Пермская, д 3 стр 21', address: '', zone_name: 'Москва', region: 'Москва г' }
+  ] } };
+  const nowMs = Date.parse('2026-08-31T10:00:00Z');
+  // Прописной текст с «→», ставкой с пробелом и количеством машин.
+  const prose = parseMailOrders(data, '01.09 Пенза, Аустрина → Москва, Пермская 3, 95 000, 2 маш', nowMs);
+  assert.equal(prose.length, 1);
+  assert.equal(prose[0].dateIso, '2026-09-01');
+  assert.ok(prose[0].fromResolved && prose[0].toResolved, 'оба пункта нашлись в справочнике');
+  assert.equal(prose[0].rate, 95000);
+  assert.equal(prose[0].count, 2);
+  assert.ok(prose[0].ok);
+  // Таблица из Excel: колонки через таб.
+  const table = parseMailOrders(data, '02.09\tПенза, Аустрина\tМосква, Пермская\t97000', nowMs);
+  assert.equal(table.length, 1);
+  assert.equal(table[0].dateIso, '2026-09-02');
+  assert.equal(table[0].rate, 97000);
+  assert.ok(table[0].fromResolved && table[0].toResolved);
+  // Дата без года в прошлом — следующий год, мусорные строки пропускаются.
+  const mixed = parseMailOrders(data, 'Добрый день!\nпросим машины:\n05.01 из Пензы в Москву', nowMs);
+  assert.equal(mixed.length, 1);
+  assert.equal(mixed[0].dateIso, '2027-01-05', 'прошедшая дата без года уходит в следующий год');
+});
+
 test('совместимость кузова: правило подбора совпадает с фактом назначений', () => {
   // Копия таблицы из server.mjs (не экспортируется — сверяем поведение).
   const BODY_COMPAT = {

@@ -132,15 +132,15 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
       <b>жёлтая — свободный день</b> (ресурс под новых клиентов). Колонка «Круг» —
       типовой цикл машины: по нему считается прогноз и утренняя стыковка.
       Машины отсортированы по свободным дням — резерв сверху.</p>
-    <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px" class="fleet-plan">
-      <tr><th style="min-width:90px">ТС</th><th style="min-width:120px">Круг</th><th title="Свободных дней до конца месяца">🟢</th>${dayHead}</tr>
-      <tr style="font-weight:700"><td colspan="3">Занято рейсами</td>${totals.map(t =>
-    `<td style="text-align:center;background:var(--panel2,#f2f7f7)">${t.busy || ''}</td>`).join('')}</tr>
-      <tr style="font-weight:700"><td colspan="3">🟢 Свободно</td>${totals.map(t =>
-    `<td style="text-align:center;background:var(--panel2,#f2f7f7);${t.free ? 'color:#c99a2e' : ''}">${t.free || ''}</td>`).join('')}</tr>
+    <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid">
+      <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:90px">ТС</th><th class="plan-fix2" style="left:90px;min-width:120px">Круг</th><th title="Свободных дней до конца месяца">🟢</th>${dayHead}</tr>
+      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:34px">Занято рейсами</td>${totals.map(t =>
+    `<td style="text-align:center;top:34px">${t.busy || ''}</td>`).join('')}</tr>
+      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:58px">🟢 Свободно</td>${totals.map(t =>
+    `<td style="text-align:center;top:58px;${t.free ? 'color:#c99a2e' : ''}">${t.free || ''}</td>`).join('')}</tr>
       ${rowsData.map(row => `<tr>
-        <td class="mono" style="white-space:nowrap"><span class="vlink" data-vinfo="${row.vehicle.id}">${escapeHtml(row.vehicle.plate)}</span></td>
-        <td style="white-space:nowrap">${canEdit ? `<select data-fp-round="${row.vehicle.id}" style="max-width:118px;font-size:10px">
+        <td class="mono plan-fix" style="white-space:nowrap"><span class="vlink" data-vinfo="${row.vehicle.id}">${escapeHtml(row.vehicle.plate)}</span></td>
+        <td class="plan-fix2" style="white-space:nowrap;left:90px">${canEdit ? `<select data-fp-round="${row.vehicle.id}" style="max-width:118px;font-size:10px">
             <option value="">— без круга —</option>
             ${ROUND_TEMPLATES.map(item => `<option value="${item.key}" ${row.template?.key === item.key ? 'selected' : ''}>${escapeHtml(item.name.split(' · ')[0])} · ${escapeHtml(item.name.split(' · ')[1] || '')}</option>`).join('')}
           </select>` : escapeHtml(row.template?.name || '—')}</td>
@@ -150,7 +150,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
       </tr>`).join('')}
     </table></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
-  'wide');
+  'fullscreen');
 
   const rerender = (newMonth = plan.month) => fleetPlanDialog(context, newMonth, {
     query: document.getElementById('fpQuery')?.value ?? flt.query,

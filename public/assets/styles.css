@@ -414,6 +414,9 @@ tbody tr:hover td { background: var(--hover); }
 @keyframes dashPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 28%, transparent); }
   50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--bad) 0%, transparent); } }
 .dash-day.lack .dd-verdict { animation: dashPulse 2.6s ease-in-out infinite; }
+/* Импорт заявок из письма: нераспознанный пункт подсвечен рамкой. */
+input.warn-border { border-color: #c99a2e; }
+
 /* Вопросы водителей у диспетчера: строка на вопрос, не карточка. */
 .q-row { padding: 4px 9px; gap: 7px; align-items: center; }
 .q-row .q-row-main { flex: 1; min-width: 0; display: flex; gap: 7px; align-items: baseline;
@@ -764,6 +767,23 @@ tbody tr:hover td { background: var(--hover); }
 
 /* Широкая модалка (карта, отчёты, кабина) */
 .modal.wide { width: min(1200px, 96vw); }
+/* Рабочие поля (план вывоза, план парка): весь экран, шапка дней и первые
+   колонки закреплены при прокрутке — большая сетка читается из любого угла. */
+.modal.fullscreen { width: 97vw; max-width: none; height: 94vh; max-height: 94vh;
+  display: flex; flex-direction: column; }
+.modal.fullscreen .table-wrap { flex: 1; max-height: none !important; }
+.plan-grid { border-collapse: separate; border-spacing: 0; }
+.plan-grid thead th, .plan-grid tr.plan-sticky-head th, .plan-grid tr.plan-sticky-head td {
+  position: sticky; top: 0; z-index: 3; background: var(--card, #fff); }
+.plan-grid tr.plan-totals td { position: sticky; z-index: 2;
+  background: var(--panel2, #f2f7f7); }
+.plan-grid td.plan-fix, .plan-grid th.plan-fix { position: sticky; left: 0; z-index: 2;
+  background: var(--card, #fff); }
+.plan-grid td.plan-fix2, .plan-grid th.plan-fix2 { position: sticky; z-index: 2;
+  background: var(--card, #fff); }
+.plan-grid tr.plan-sticky-head th.plan-fix, .plan-grid tr.plan-sticky-head td.plan-fix,
+.plan-grid tr.plan-sticky-head th.plan-fix2 { z-index: 4; }
+
 
 /* Инструкции сотрудников: памятка по блокам из кнопки «?» */
 .guide-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }

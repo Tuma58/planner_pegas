@@ -90,9 +90,13 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
       class="${wd === 0 || wd === 6 ? 'muted' : ''}">${i + 1}<br><small>${WD[wd]}</small></th>`;
   }).join('');
 
-  const totalRow = (label, pick, fmt = v => v ? Math.round(v) : '') =>
-    `<tr style="font-weight:700"><td colspan="3">${label}</td>${dayTotals.map(d =>
-      `<td style="text-align:center;background:var(--panel2,#f2f7f7)">${fmt(pick(d))}</td>`).join('')}</tr>`;
+  let totalRowIndex = 0;
+  const totalRow = (label, pick, fmt = v => v ? Math.round(v) : '') => {
+    const top = 34 + totalRowIndex * 24;
+    totalRowIndex += 1;
+    return `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:${top}px">${label}</td>${dayTotals.map(d =>
+      `<td style="text-align:center;top:${top}px">${fmt(pick(d))}</td>`).join('')}</tr>`;
+  };
 
   const cellHtml = (row, rowIndex, day) => {
     const p = planOf(row, day);
@@ -124,8 +128,8 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
   };
   const shownRows = flt.gapsOnly ? rowList.filter(rowHasGap) : rowList;
   const bodyRows = shownRows.map(row => { const index = rowList.indexOf(row); return `<tr>
-    <td style="white-space:nowrap;max-width:190px;overflow:hidden;text-overflow:ellipsis"><b>${escapeHtml(row.customer)}</b></td>
-    <td style="white-space:nowrap">${escapeHtml(row.leg)}</td>
+    <td class="plan-fix" style="white-space:nowrap;max-width:150px;min-width:150px;overflow:hidden;text-overflow:ellipsis"><b>${escapeHtml(row.customer)}</b></td>
+    <td class="plan-fix2" style="white-space:nowrap;left:150px">${escapeHtml(row.leg)}</td>
     <td style="white-space:nowrap">${money(row.rate)}${canEdit ? ` <button class="button ghost small" data-slot-edit="${index}" title="Слоты недели и ставка">✎</button>` : ''}</td>
     ${Array.from({ length: daysInMonth }, (_, i) => cellHtml(row, index, i + 1)).join('')}
   </tr>`; }).join('');
@@ -166,8 +170,8 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
     <p class="muted" style="margin:0 0 8px">Ячейка: жёлтая — слот без заявки (задача продаж),
       синяя — заявка внесена, зелёная — ТС назначено, тёмная — выгружено. Число в ячейке — факт
       заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.</p>
-    <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px">
-      <tr><th style="min-width:150px">Клиент</th><th>Плечо</th><th>Ставка</th>${dayHead}</tr>
+    <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px" class="plan-grid">
+      <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:150px">Клиент</th><th class="plan-fix2" style="left:150px">Плечо</th><th>Ставка</th>${dayHead}</tr>
       ${totalRow('Рейсов план', d => d.planN)}
       ${totalRow('Заявок факт', d => d.factN, v => v || '')}
       ${totalRow('Машин занято (оценка)', d => d.busy)}
@@ -176,7 +180,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
       ${bodyRows || `<tr><td colspan="${daysInMonth + 3}" class="muted">Сетка пуста — нажмите «⚙ Заполнить из истории».</td></tr>`}
     </table></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
-  'wide');
+  'fullscreen');
 
   const rerender = (newMonth = plan.month) => deliveryPlanDialog(context, newMonth, {
     query: document.getElementById('dplQuery')?.value ?? flt.query,
