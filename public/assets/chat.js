@@ -137,8 +137,10 @@ export function setupChat(state) {
   // Ключ переписки для сообщения (с чьей стороны смотрим — myId).
   const roomKeyOf = message => {
     if (message.chat_id) return `group:${message.chat_id}`;
-    // Персональные авто-уведомления (утренний отчёт всем) — в ленте «⚙ Конвейер».
-    if (message.kind === 'auto') return 'auto';
+    // Персональные авто-сообщения (отчёт дня, ревизия зазоров плана) — своя
+    // личная лента «📬 Планер — лично»: в общем конвейере они тонули среди
+    // ролевых уведомлений, а это адресовано именно вам.
+    if (message.kind === 'auto') return message.recipient_id ? 'personal' : 'auto';
     if (message.recipient_id) {
       return `dm:${message.author_id === myId ? message.recipient_id : message.author_id}`;
     }
@@ -155,6 +157,7 @@ export function setupChat(state) {
   const roomTitle = key => {
     if (key === 'all') return '📢 Общий';
     if (key === 'auto') return '⚙ Конвейер';
+    if (key === 'personal') return '📬 Планер — лично';
     if (key.startsWith('dm:')) return peerName(key.slice(3));
     const group = groups.find(item => item.id === key.slice(6));
     return group ? `👥 ${group.title}` : '👥 Группа';
@@ -165,7 +168,7 @@ export function setupChat(state) {
   // Список переписок: закреплённые «Общий» и «Конвейер», затем диалоги и
   // группы по времени последнего сообщения (как в Telegram).
   const roomList = () => {
-    const keys = new Set(['all', 'auto']);
+    const keys = new Set(['all', 'auto', 'personal']);
     for (const message of allMessages) keys.add(roomKeyOf(message));
     for (const group of groups) keys.add(`group:${group.id}`);
     const lastMsg = {};
@@ -173,7 +176,7 @@ export function setupChat(state) {
       const key = roomKeyOf(message);
       if (!lastMsg[key] || message.id > lastMsg[key].id) lastMsg[key] = message;
     }
-    const pinned = ['all', 'auto'];
+    const pinned = ['all', 'personal', 'auto'];
     const rest = [...keys].filter(key => !pinned.includes(key))
       .filter(key => {
         // Удалённая группа пропадает из списка сразу (сообщения в памяти не в счёт).
@@ -189,14 +192,15 @@ export function setupChat(state) {
     rooms.innerHTML = roomList().map(({ key, last }) => {
       const count = unreadOf(key);
       const title = roomTitle(key);
-      const avatar = key === 'all' ? '📢' : key === 'auto' ? '⚙'
+      const avatar = key === 'all' ? '📢' : key === 'auto' ? '⚙' : key === 'personal' ? '📬'
         : key.startsWith('group:') ? '👥' : initials(title);
       const time = last ? formatDateTime(last.created_at.includes('Z')
         ? last.created_at : last.created_at.replace(' ', 'T') + 'Z') : '';
       const preview = last
         ? `${last.author_id === myId ? 'Вы: ' : (key.startsWith('group:') || key === 'all')
             ? `${shortName(last.author_name || '⚙')}: ` : ''}${last.text}`
-        : (key === 'auto' ? 'Уведомления процесса — по вашим ролям' : 'Сообщений пока нет');
+        : (key === 'auto' ? 'Уведомления процесса — по вашим ролям'
+          : key === 'personal' ? 'Личные отчёты планера: отчёт дня, ревизия зазоров' : 'Сообщений пока нет');
       return `<div class="chat-room ${count ? 'has-unread' : ''}" data-room="${key}">
         <span class="chat-ava ${key.startsWith('dm:') ? 'human' : ''}">${avatar}</span>
         <span class="chat-room-body">
@@ -343,6 +347,7 @@ export function setupChat(state) {
     list.scrollTop = list.scrollHeight;
     el('chatDialogTitle').textContent = roomTitle(active.key);
     const sub = active.key === 'all' ? 'все сотрудники'
+      : active.key === 'personal' ? '🔒 личные отчёты планера — видите только вы'
       : active.key === 'auto' ? `уведомления по ролям: ${myRoles.map(role => ROLE_LABELS[role] || role).join(', ')}`
       : active.key.startsWith('dm:') ? '🔒 личная переписка — видите только вы двое'
       : (() => {
@@ -359,8 +364,8 @@ export function setupChat(state) {
     const deletable = active.key.startsWith('dm:')
       || (group && (group.created_by === myId || myRoles.includes('admin')));
     el('chatDelete').classList.toggle('hidden', !deletable);
-    // В «Конвейер» не пишут — это лента процесса.
-    el('chatForm').classList.toggle('hidden', active.key === 'auto');
+    // В «Конвейер» и личную ленту планера не пишут — это ленты процесса.
+    el('chatForm').classList.toggle('hidden', active.key === 'auto' || active.key === 'personal');
     input.placeholder = active.key === 'all' ? 'Сообщение всем…'
       : active.key.startsWith('dm:') ? `Лично: ${shortName(roomTitle(active.key))}…` : 'Сообщение группе…';
   };
