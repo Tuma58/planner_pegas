@@ -1003,6 +1003,25 @@ export async function renderSales(container, context) {
           продажам идёт сигнал в чат каждые 30 минут.</div>
       </div>
       <div class="scol">
+        ${(() => {
+    const openSpots = (data.routeSpots || []).filter(spot => spot.status !== 'closed');
+    if (!openSpots.length) return '';
+    const routeNo = id => (data.routes || []).find(route => route.id === id)?.route_no || '—';
+    return `<details class="questions-strip compact" ${state.salesSpotsOpen ? 'open' : ''} data-sales-spots>
+      <summary>🔍 Споты маршрутов <span class="scount">${openSpots.length}</span>
+        <small class="muted">— пустые плечи кругов, которые ждут вашего груза</small></summary>
+      <div class="list">${openSpots.map(spot => `<div class="list-item ordrow">
+        <span style="flex:1;min-width:0">
+          <b>${escapeHtml(routeNo(spot.route_id))}</b>
+          ${escapeHtml(spot.from_label || '')} → ${escapeHtml(spot.to_label || '')}
+          <small class="muted" style="display:block">погрузка ${spot.planned_load ? fmtDateTime(spot.planned_load) : '—'}
+            · ~${Math.round(spot.expected_km || 0)} км · ориентир ${money(Math.round(spot.expected_rate || 0))}</small>
+        </span>
+        <button class="button small" data-spot-fill="${spot.id}"
+          title="Заполнить форму заявки этим плечом: продадите груз — спот закроется сам">➕ Заявка</button>
+      </div>`).join('')}</div>
+    </details>`;
+  })()}
         <div class="scolh">Потребность клиента <span>${orders.length}</span></div>
         <form id="salesForm">
           <label class="field">Заказчик
@@ -1363,6 +1382,45 @@ export async function renderSales(container, context) {
   // защита от дублей по заказчику/направлению/окну. (Обработчик был утерян
   // при переработке левой колонки 21.08 — форма уходила нативным submit,
   // страницу перезагружало в Гант, заявка не создавалась.)
+  // Спот маршрута → форма заявки: плечо, даты и ориентир ставки
+  // подставляются; после бронирования спот закрывается созданной заявкой.
+  container.querySelector('[data-sales-spots]')?.addEventListener('toggle', event => {
+    state.salesSpotsOpen = event.currentTarget.open;
+  });
+  container.querySelectorAll('[data-spot-fill]').forEach(button =>
+    button.addEventListener('click', () => {
+      const spot = (data.routeSpots || []).find(item => item.id === button.dataset.spotFill);
+      if (!spot) return;
+      const form = container.querySelector('#salesForm');
+      // Плечо шаблонного спота хранит ИМЯ ЗОНЫ («Дом»), а не пункт: такое
+      // имя выставляем зоной напрямую, иначе резолв по подстроке превращал
+      // «Дом» в Домодедово. Настоящий пункт менеджер впишет по заявке клиента.
+      const fillSide = (label, pointId, zoneSelectId) => {
+        const zone = data.reference.zones.find(item => item.name === (label || '').trim());
+        if (zone) {
+          container.querySelector(`#${pointId}`).value = '';
+          container.querySelector(`#${zoneSelectId}`).value = zone.id;
+        } else {
+          container.querySelector(`#${pointId}`).value = label || '';
+          container.querySelector(`#${pointId}`).dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      };
+      fillSide(spot.from_label, 'salesFromPoint', 'salesFrom');
+      fillSide(spot.to_label, 'salesToPoint', 'salesTo');
+      container.querySelector('#salesZoneHint') && (() => {
+        const nameOf = id => data.reference.zones.find(zone => zone.id === id)?.name || '?';
+        container.querySelector('#salesZoneHint').textContent =
+          `📍 геозоны: ${nameOf(form.fromZoneId.value)} → ${nameOf(form.toZoneId.value)} (из спота маршрута)`;
+      })();
+      if (spot.planned_load) {
+        form.windowFrom.value = toLocalInput(spot.planned_load);
+        form.windowTo.value = toLocalInput(new Date(Date.parse(spot.planned_load) + 12 * 3_600_000).toISOString());
+      }
+      if (spot.expected_rate) form.rateVat.value = Math.round(spot.expected_rate);
+      state.salesSpotToClose = { spotId: spot.id, routeId: spot.route_id };
+      toast('Форма заполнена плечом спота — выберите заказчика и забронируйте');
+      form.customerName.focus();
+    }));
   container.querySelector('#salesForm').onsubmit = async event => {
     event.preventDefault();
     const values = formValues(event.currentTarget);
@@ -1397,6 +1455,14 @@ export async function renderSales(container, context) {
     }
     try {
       const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
+      if (state.salesSpotToClose) {
+        try {
+          await api(`/api/routes/${state.salesSpotToClose.routeId}/spots/${state.salesSpotToClose.spotId}/close`,
+            { method: 'POST', body: JSON.stringify({ orderId: created.id }) });
+          toast('Спот маршрута закрыт этой заявкой');
+        } catch (error) { toast(`Заявка создана, но спот не закрылся: ${error.message}`, 'error'); }
+        state.salesSpotToClose = null;
+      }
       let uploaded = 0;
       for (const file of state.salesAttach || []) {
         try { await uploadOrderFile(created.id, file); uploaded += 1; }
