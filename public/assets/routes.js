@@ -580,6 +580,7 @@ export function renderRoutes(container, context) {
                 plannedLoad: new Date(at).toISOString(),
                 plannedUnload: new Date(at + transit).toISOString(),
                 expectedRate: leg.rate, expectedKm: leg.km,
+                kind: leg.kind === 'С' ? 'sell' : 'attach',
                 candidates: leg.kind === 'С' ? 'спот: искать груз' : 'плечо сетки — прикрепите заявку'
               }) });
             }

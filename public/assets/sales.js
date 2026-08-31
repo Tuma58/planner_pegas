@@ -1004,23 +1004,40 @@ export async function renderSales(container, context) {
       </div>
       <div class="scol">
         ${(() => {
-    const openSpots = (data.routeSpots || []).filter(spot => spot.status !== 'closed');
+    // Споты — задания продажам: только настоящие 'sell' (гарантированные
+    // плечи сетки закрывает логист — они тут только путали). Акцент плашки:
+    // ОТКУДА → КУДА нужен груз и К КАКОМУ СРОКУ; маршрут — мелко.
+    const openSpots = (data.routeSpots || [])
+      .filter(spot => spot.status !== 'closed' && spot.kind !== 'attach')
+      .sort((a, b) => String(a.planned_load || '').localeCompare(String(b.planned_load || '')));
     if (!openSpots.length) return '';
     const routeNo = id => (data.routes || []).find(route => route.id === id)?.route_no || '—';
-    return `<details class="questions-strip compact" ${state.salesSpotsOpen ? 'open' : ''} data-sales-spots>
-      <summary>🔍 Споты маршрутов <span class="scount">${openSpots.length}</span>
-        <small class="muted">— пустые плечи кругов, которые ждут вашего груза</small></summary>
-      <div class="list">${openSpots.map(spot => `<div class="list-item ordrow">
-        <span style="flex:1;min-width:0">
-          <b>${escapeHtml(routeNo(spot.route_id))}</b>
-          ${escapeHtml(spot.from_label || '')} → ${escapeHtml(spot.to_label || '')}
-          <small class="muted" style="display:block">погрузка ${spot.planned_load ? fmtDateTime(spot.planned_load) : '—'}
-            · ~${Math.round(spot.expected_km || 0)} км · ориентир ${money(Math.round(spot.expected_rate || 0))}</small>
-        </span>
-        <button class="button small" data-spot-fill="${spot.id}"
-          title="Заполнить форму заявки этим плечом: продадите груз — спот закроется сам">➕ Заявка</button>
-      </div>`).join('')}</div>
-    </details>`;
+    const nowMs = Date.now();
+    const spotCard = spot => {
+      const loadMs = spot.planned_load ? Date.parse(spot.planned_load) : null;
+      const hoursLeft = loadMs ? Math.round((loadMs - nowMs) / 3_600_000) : null;
+      const urgency = hoursLeft == null ? ''
+        : hoursLeft < 24 ? 'bad' : hoursLeft < 48 ? 'warn' : 'ok';
+      return `<div class="card question-card ${urgency === 'bad' ? 'late' : ''}" style="padding:8px 11px;margin-bottom:6px">
+        <div class="list-item ordrow" style="border:0;padding:0">
+          <span style="flex:1;min-width:0">
+            <strong style="font-size:14px">🔍 ${escapeHtml(spot.from_label || '?')} → ${escapeHtml(spot.to_label || '?')}</strong>
+            <small class="muted" style="display:block">погрузка ${spot.planned_load
+    ? `${fmtDateTime(spot.planned_load)}${hoursLeft != null ? ` · через ${hoursLeft < 48 ? `${Math.max(0, hoursLeft)} ч` : `${Math.round(hoursLeft / 24)} дн`}` : ''}`
+    : 'дата не задана'} · ~${Math.round(spot.expected_km || 0)} км
+              · ориентир ${money(Math.round(spot.expected_rate || 0))} · маршрут ${escapeHtml(routeNo(spot.route_id))}</small>
+          </span>
+          <span style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+            ${loadMs ? `<span class="badge ${urgency}">${hoursLeft < 0 ? '⏰ срок вышел' : hoursLeft < 24 ? `🔥 ${Math.max(0, hoursLeft)} ч` : fmtDateTime(spot.planned_load).split(',')[0]}</span>` : ''}
+            <button class="button small" data-spot-fill="${spot.id}"
+              title="Заполнить форму заявки этим плечом — продадите груз, спот закроется сам">➕ Заявка</button>
+          </span>
+        </div>
+      </div>`;
+    };
+    return `<div class="scolh">🔍 Нужен груз — споты маршрутов <span>${openSpots.length}</span>
+        <small class="muted" style="font-weight:400"> · пустые плечи кругов: продайте груз на плечо к сроку</small></div>
+      ${openSpots.map(spotCard).join('')}`;
   })()}
         <div class="scolh">Потребность клиента <span>${orders.length}</span></div>
         <form id="salesForm">
@@ -1384,9 +1401,6 @@ export async function renderSales(container, context) {
   // страницу перезагружало в Гант, заявка не создавалась.)
   // Спот маршрута → форма заявки: плечо, даты и ориентир ставки
   // подставляются; после бронирования спот закрывается созданной заявкой.
-  container.querySelector('[data-sales-spots]')?.addEventListener('toggle', event => {
-    state.salesSpotsOpen = event.currentTarget.open;
-  });
   container.querySelectorAll('[data-spot-fill]').forEach(button =>
     button.addEventListener('click', () => {
       const spot = (data.routeSpots || []).find(item => item.id === button.dataset.spotFill);

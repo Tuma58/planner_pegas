@@ -2708,14 +2708,15 @@ async function api(request, response, url) {
     const body = await readJson(request);
     const id = randomUUID();
     db.prepare(`INSERT INTO route_spots(id,route_id,seq,from_zone_id,to_zone_id,from_label,to_label,
-        planned_load,planned_unload,expected_rate,expected_km,candidates,created_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        planned_load,planned_unload,expected_rate,expected_km,candidates,kind,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, routeRow.id, Number(body.seq) || 0,
       body.fromZoneId || null, body.toZoneId || null,
       String(body.fromLabel || '').slice(0, 120), String(body.toLabel || '').slice(0, 120),
       body.plannedLoad || null, body.plannedUnload || null,
       Number(body.expectedRate) || 0, Number(body.expectedKm) || 0,
-      String(body.candidates || '').slice(0, 300), user.id);
+      String(body.candidates || '').slice(0, 300),
+      body.kind === 'attach' ? 'attach' : 'sell', user.id);
     audit(db, user, 'create', 'route-spot', id,
       { routeNo: routeRow.route_no, from: body.fromLabel, to: body.toLabel }, requestIp(request));
     return json(response, 201, { id });
