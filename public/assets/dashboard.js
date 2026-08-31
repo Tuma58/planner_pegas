@@ -82,6 +82,21 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // 1-го числа темпа ещё нет — прогнозом служит забитое на месяц.
   const forecast = dayOfMonth > 1
     ? factPast / (dayOfMonth - 1) * daysInMonth : monthFact;
+  // Урок августа: прогноз «129» опирался на забитое, из которого 116 рейсов
+  // отклонили, а 100 выгрузились уже в сентябре — итог 110. Раскладываем
+  // честно: выгружено + доедет (за вычетом риска отклонений по доле
+  // последних 14 дней) + переходящие в следующий месяц (выручка не месяца).
+  const monthBooked = monthFact - monthDone; // назначено, ещё не выгружено
+  const rej14 = (data.trips || []).filter(trip => trip.status === 'rejected' &&
+    tsMs(trip.updated_at) >= nowMs - 14 * 86_400_000)
+    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  const base14 = factPast > 0 ? factPast / Math.max(1, dayOfMonth - 1) * 14 : 0;
+  const rejShare = base14 > 0 ? Math.min(0.35, rej14 / (base14 + rej14)) : 0.1;
+  const carryOver = activeTrips.filter(trip => {
+    const starts = Date.parse(trip.starts_at);
+    return starts >= monthStart && starts < monthEnd && Date.parse(trip.ends_at) >= monthEnd;
+  }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  const forecastHonest = monthDone + monthBooked * (1 - rejShare);
 
   // Продажи: внесено за день, суммы и средний чек, назначено из внесённого пула.
   const orders = (data.orders || []).filter(order => order.status !== 'cancelled');
@@ -186,7 +201,8 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   };
   const days = { yesterday: dayMetricsAt(-1), today: dayMetricsAt(0), tomorrow: dayMetricsAt(1) };
 
-  return { monthPlan, monthFact, monthDone, dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
+  return { monthPlan, monthFact, monthDone, monthBooked, rejShare, carryOver, forecastHonest,
+    dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
     dayPace: { due: dueByNow, done: dayDone, diff: dayDone - dueByNow },
     dayLoads: { count: dayLoads.length, sum: dayLoadsSum,
       online: dayLoads.filter(trip => trip.on_line_at).length },
@@ -487,6 +503,11 @@ export async function renderDashboard(container, context) {
           ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
           · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
       </div>
+      <div class="dash-pace" title="Урок августа: прогноз опирался на «забитое», из которого часть рейсов отклонили, а часть выгрузилась уже в следующем месяце. Риск отклонений — по доле отклонённой выручки за последние 14 дней">
+        🧮 Честно: <b>${shortMln(metrics.forecastHonest)}</b> = выгружено ${shortMln(metrics.monthDone)}
+        + доедет ~${shortMln(metrics.monthBooked * (1 - metrics.rejShare))}
+        <span class="muted">(назначено ${shortMln(metrics.monthBooked)}, риск отклонений −${Math.round(metrics.rejShare * 100)}%)</span>${metrics.carryOver > 100_000
+    ? ` · переходят в следующий месяц: <b>${shortMln(metrics.carryOver)}</b> <span class="muted">(выгрузка за пределами месяца — не в этой цели)</span>` : ''}</div>
       <div class="dash-pace ${metrics.monthPace.diff >= 0 ? 'good' : 'bad'}">
         ⏱ По графику к концу ${metrics.dayOfMonth}-го: <b>${shortMln(metrics.monthPace.schedule)}</b>
         · выгружено: <b>${shortMln(metrics.monthPace.fact)}</b>
