@@ -10,6 +10,7 @@ import { reconcileDialog } from './reconcile.js';
 import { project160Dialog } from './project160.js';
 import { shiftDialog } from './shift-report.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
+import { parkReportDialog } from './park-report.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 const mln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} млн`;
@@ -345,6 +346,8 @@ export async function renderBoss(container, context) {
           title="Отчёт за 12-часовую смену (08–20 / 20–08): операции сотрудников по именам, время обработки заданий, очереди каскада">🕐 Смена</button>
         <button class="button ghost small" id="bossDeliveryPlan"
           title="Визуальный график вывоза грузов от клиентов на месяц: слоты, заявки, ресурс и выручка план-факт">📅 План вывоза</button>
+        <button class="button ghost small" id="bossParkReport"
+          title="Отчёт эксплуатации автопарка из выгрузок 1С (Заказы/Путевые листы/Ремонты): каскад по ЧАСАМ под грузом, разбор причин, честные сценарии">🏭 Эксплуатация (1С)</button>
       </div>
       <nav class="brep-nav" id="brepNav">
         <a href="#brep-s1" class="on">01 Период</a><a href="#brep-s2">02 Каскад</a>
@@ -521,6 +524,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossProject160').onclick = () => project160Dialog(context);
   container.querySelector('#bossShift').onclick = () => shiftDialog(context);
   container.querySelector('#bossDeliveryPlan').onclick = () => deliveryPlanDialog(context);
+  container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;
     state.bossTo = b;
