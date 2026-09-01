@@ -58,24 +58,48 @@ export function parkReportDialog(context) {
       выезда/возвращения. Ремонты: ТС + даты начала/окончания + вид/причина.</p></div>`,
   'fullscreen');
 
+  const body = document.getElementById('prBody');
+  let parsed = null; // прочитанные файлы: период можно менять без перечтения
+
+  const render = async period => {
+    body.innerHTML = '<p class="muted">⏳ Считаю…</p>';
+    try {
+      body.innerHTML = await buildReport(context, parsed, period);
+    } catch (error) {
+      body.innerHTML = `<p class="muted">Не получилось: ${escapeHtml(error.message)}</p>`;
+    }
+  };
+
+  // Панель периода: кнопки с готовым диапазоном + произвольные даты.
+  body.addEventListener('click', event => {
+    const btn = event.target.closest('[data-pr-from]');
+    if (btn) { render({ fromIso: btn.dataset.prFrom, toIso: btn.dataset.prTo }); return; }
+    if (event.target.closest('#prApply')) {
+      const from = document.getElementById('prFrom')?.value;
+      const to = document.getElementById('prTo')?.value;
+      if (from && to && from < to) render({ fromIso: from, toIso: to });
+    }
+  });
+
   document.getElementById('prBuild').onclick = async () => {
-    const body = document.getElementById('prBody');
     const fileOf = id => document.getElementById(id).files[0];
     if (!fileOf('prOrders')) { body.innerHTML = '<p class="muted">Выберите файл «Заказы».</p>'; return; }
     body.innerHTML = '<p class="muted">⏳ Читаю файлы и считаю…</p>';
     try {
-      body.innerHTML = await buildReport(context, {
+      parsed = {
         orders: await readXlsx(fileOf('prOrders')),
         sheets: fileOf('prSheets') ? await readXlsx(fileOf('prSheets')) : null,
         repairs: fileOf('prRepairs') ? await readXlsx(fileOf('prRepairs')) : null
-      });
+      };
+      await render(null);
     } catch (error) {
       body.innerHTML = `<p class="muted">Не получилось: ${escapeHtml(error.message)}</p>`;
     }
   };
 }
 
-async function buildReport(context, files) {
+// export — для проверки расчёта в Node (node --test и ручные прогоны).
+export async function buildReport(context, files, periodSel) {
   const data = context.state.data;
   // ── Заказы ──
   const om = mapColumns(files.orders, {
@@ -101,32 +125,103 @@ async function buildReport(context, files) {
   }
   if (!orders.length) throw new Error('В «Заказах» не распознано ни одной строки');
   // Excel из 1С несёт ПЛАНОВЫЕ времена. Для честного транзита сматчиваем
-  // заказы с рейсами планера (машина + дата ±1) и берём ФАКТ: прибытие на
-  // выгрузку и фактическую выгрузку — сверхнормативный простой у клиента
-  // перестаёт прятаться в «плановой доставке».
+  // заказы с рейсами планера и берём ФАКТ: прибытие на выгрузку и фактическую
+  // выгрузку — сверхнормативный простой у клиента перестаёт прятаться в
+  // «плановой доставке». Матчим БЛИЖАЙШИЙ рейс машины (не первый попавшийся),
+  // мультистоп 1С (несколько строк на один рейс) получает факт только
+  // последней строкой — иначе часы под грузом задваиваются.
   const tsOf = value => value ? Date.parse(String(value).replace(' ', 'T') +
     (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : null;
   const plannerTrips = (data.trips || []).filter(trip => trip.status !== 'rejected')
     .map(trip => ({ plate: normPlate(trip.vehicle_plate), startMs: Date.parse(trip.starts_at),
       arrivedMs: tsOf(trip.arrived_at), unloadedMs: tsOf(trip.unloaded_at) }));
-  let enriched = 0;
+  const byTrip = new Map();
   for (const order of orders) {
-    const match = plannerTrips.find(trip => trip.plate === order.plate &&
-      Math.abs(trip.startMs - order.depMs) < 36 * H);
-    if (!match) continue;
-    if (match.unloadedMs && match.unloadedMs > order.depMs) {
-      order.doneMs = match.unloadedMs;
-      order.factUnload = true;
-      enriched += 1;
+    let match = null;
+    for (const trip of plannerTrips) {
+      if (trip.plate !== order.plate || Math.abs(trip.startMs - order.depMs) >= 36 * H) continue;
+      if (!match || Math.abs(trip.startMs - order.depMs) < Math.abs(match.startMs - order.depMs)) match = trip;
     }
-    if (match.arrivedMs && match.unloadedMs && match.unloadedMs > match.arrivedMs) {
-      order.custWaitH = (match.unloadedMs - match.arrivedMs) / H;
+    if (!match) continue;
+    const group = byTrip.get(match) || [];
+    group.push(order);
+    byTrip.set(match, group);
+  }
+  for (const [trip, group] of byTrip) {
+    // Факт выгрузки — последней строке рейса (мультистоп: остальные стопы
+    // остаются на плановых временах); факт дальше плана на 5+ суток — чужой
+    // рейс, не обогащаем.
+    const last = group.reduce((a, b) => (b.doneMs > a.doneMs ? b : a));
+    if (trip.unloadedMs && trip.unloadedMs > last.depMs &&
+        trip.unloadedMs < last.doneMs + 5 * DAY) {
+      last.doneMs = Math.max(last.depMs + H, trip.unloadedMs);
+      last.factUnload = true;
+      if (trip.arrivedMs && trip.unloadedMs > trip.arrivedMs) {
+        last.custWaitH = (trip.unloadedMs - trip.arrivedMs) / H;
+      }
     }
   }
-  const fromMs = Math.min(...orders.map(o => o.depMs));
-  const toMs = Math.max(...orders.map(o => o.doneMs));
+  // Обрезка перекрытий: обогащённая выгрузка не может заходить на погрузку
+  // следующего заказа той же машины — иначе часы под грузом считаются дважды.
+  const byPlateSorted = {};
+  for (const order of orders) (byPlateSorted[order.plate] = byPlateSorted[order.plate] || []).push(order);
+  for (const mine of Object.values(byPlateSorted)) {
+    mine.sort((a, b) => a.depMs - b.depMs);
+    for (let i = 1; i < mine.length; i += 1) {
+      if (mine[i - 1].doneMs > mine[i].depMs) {
+        mine[i - 1].doneMs = Math.max(mine[i - 1].depMs + H, mine[i].depMs);
+      }
+    }
+  }
+
+  // ── Период: по умолчанию месяц с наибольшим числом погрузок; кнопками —
+  // другой месяц, последние 7 дней или весь файл. Часы клэмпятся к границам.
+  const monthCount = {};
+  for (const order of orders) {
+    const key = new Date(order.depMs).toISOString().slice(0, 7);
+    monthCount[key] = (monthCount[key] || 0) + 1;
+  }
+  const months = Object.keys(monthCount).sort();
+  const monthRange = key => {
+    const [y, m] = key.split('-').map(Number);
+    return [Date.UTC(y, m - 1, 1), Date.UTC(y, m, 1)];
+  };
+  const maxDepMs = Math.max(...orders.map(o => o.depMs));
+  const allRange = [Math.min(...orders.map(o => o.depMs)), maxDepMs + DAY];
+  let fromMs;
+  let toMs;
+  if (periodSel?.fromIso) {
+    fromMs = Date.parse(`${periodSel.fromIso}T00:00:00Z`);
+    toMs = Date.parse(`${periodSel.toIso}T00:00:00Z`) + DAY;
+  } else {
+    const best = months.reduce((a, b) => (monthCount[b] > monthCount[a] ? b : a));
+    [fromMs, toMs] = monthRange(best);
+  }
+  const inPeriod = orders.filter(o => o.depMs < toMs && o.doneMs > fromMs);
+  const loaded = inPeriod.filter(o => o.depMs >= fromMs && o.depMs < toMs);
+  if (!loaded.length) throw new Error('В выбранном периоде нет погрузок');
+  // Часы заказа внутри периода (заказ может выходить за края).
+  const clampH = o => Math.max(0, (Math.min(o.doneMs, toMs) - Math.max(o.depMs, fromMs)) / H);
   const periodDays = Math.max(1, Math.round((toMs - fromMs) / DAY));
-  const label = `${new Date(fromMs).toLocaleDateString('ru-RU')} — ${new Date(toMs).toLocaleDateString('ru-RU')}`;
+  const dLabel = ms => new Date(ms).toLocaleDateString('ru-RU', { timeZone: 'UTC' });
+  const label = `${dLabel(fromMs)} — ${dLabel(toMs - 1)}`;
+  const isoOf = ms => new Date(ms).toISOString().slice(0, 10);
+  const periodBar = `<div class="resctl-group" style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <small class="muted">Период:</small>
+      ${months.slice(-3).map(key => {
+        const [f, t] = monthRange(key);
+        const active = f === fromMs && t === toMs;
+        return `<button type="button" class="button small ${active ? '' : 'ghost'}"
+          data-pr-from="${isoOf(f)}" data-pr-to="${isoOf(t - DAY)}">${new Date(f).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric', timeZone: 'UTC' })} · ${monthCount[key]}</button>`;
+      }).join('')}
+      <button type="button" class="button small ghost" data-pr-from="${isoOf(maxDepMs - 6 * DAY)}"
+        data-pr-to="${isoOf(maxDepMs)}">7 дней</button>
+      <button type="button" class="button small ghost" data-pr-from="${isoOf(allRange[0])}"
+        data-pr-to="${isoOf(allRange[1] - DAY)}">Весь файл</button>
+      <input type="date" id="prFrom" value="${isoOf(fromMs)}" style="width:135px">
+      <input type="date" id="prTo" value="${isoOf(toMs - DAY)}" style="width:135px">
+      <button type="button" class="button small ghost" id="prApply">↻ Пересчитать</button>
+    </div>`;
 
   // ── Путевые листы (линия) ──
   let sheetHours = null;
@@ -143,8 +238,10 @@ async function buildReport(context, files) {
         const out = parseDateCell(row[sm.map.out]);
         if (!plate || !out) continue;
         const back = parseDateCell(row[sm.map.back >= 0 ? sm.map.back : sm.map.out]) || out;
-        const hours = Math.max(4, (Date.parse(back) - Date.parse(out)) / H + 24);
-        sheetHours[plate] = (sheetHours[plate] || 0) + hours;
+        // Пересечение ПЛ с выбранным периодом (даты без времени → сутки целиком).
+        const overlap = Math.min(Date.parse(back) + DAY, toMs) - Math.max(Date.parse(out), fromMs);
+        if (overlap <= 0) continue;
+        sheetHours[plate] = (sheetHours[plate] || 0) + Math.max(4, overlap / H);
       }
     }
   }
@@ -165,7 +262,10 @@ async function buildReport(context, files) {
         const start = parseDateCell(row[rm.map.from]);
         if (!plate || !start) continue;
         const end = parseDateCell(row[rm.map.to >= 0 ? rm.map.to : rm.map.from]) || start;
-        const days = Math.max(0.25, (Date.parse(end) - Date.parse(start)) / DAY + 0.5);
+        // Пересечение ремонта с периодом; ремонт целиком вне периода не считается.
+        const overlap = Math.min(Date.parse(end) + DAY / 2, toMs) - Math.max(Date.parse(start), fromMs);
+        if (overlap <= 0) continue;
+        const days = Math.max(0.25, overlap / DAY);
         repairs[plate] = (repairs[plate] || 0) + days;
         const kind = String(row[rm.map.kind >= 0 ? rm.map.kind : rm.map.cause] || 'не указан').trim().slice(0, 60) || 'не указан';
         const bucket = repairKinds.get(kind) || { days: 0, n: 0 };
@@ -175,22 +275,26 @@ async function buildReport(context, files) {
     }
   }
 
-  // ── Каскад по часам на машину ──
-  const plates = [...new Set(orders.map(o => o.plate))];
+  // ── Каскад по часам на машину: только заказы, пересекающие период,
+  // часы клэмпятся к его границам, выручка — по погрузке в периоде. ──
+  const plates = [...new Set(inPeriod.map(o => o.plate))];
   const perVehicle = plates.map(plate => {
-    const mine = orders.filter(o => o.plate === plate).sort((a, b) => a.depMs - b.depMs);
-    const loadH = mine.reduce((s, o) => s + (o.doneMs - o.depMs) / H, 0);
-    // Ожидание следующего задания: разрыв между заказами < 5 суток.
+    const mine = inPeriod.filter(o => o.plate === plate).sort((a, b) => a.depMs - b.depMs);
+    const loadH = mine.reduce((s, o) => s + clampH(o), 0);
+    // Ожидание следующего задания: разрыв между заказами < 5 суток,
+    // обрезанный границами периода.
     let waitH = 0;
     for (let i = 1; i < mine.length; i += 1) {
-      const gap = (mine[i].depMs - mine[i - 1].doneMs) / H;
+      const gapFrom = Math.max(mine[i - 1].doneMs, fromMs);
+      const gapTo = Math.min(mine[i].depMs, toMs);
+      const gap = (gapTo - gapFrom) / H;
       if (gap > 2 && gap < 120) waitH += gap;
     }
     const calH = periodDays * 24;
-    const repH = (repairs?.[plate] || 0) * 24;
+    const repH = Math.min(calH, (repairs?.[plate] || 0) * 24);
     const lineH = sheetHours ? Math.min(calH - repH, sheetHours[plate] || (loadH + waitH))
-      : loadH + waitH;
-    const rev = mine.reduce((s, o) => s + o.sum, 0);
+      : Math.min(calH - repH, loadH + waitH);
+    const rev = mine.reduce((s, o) => s + (o.depMs >= fromMs && o.depMs < toMs ? o.sum : 0), 0);
     return { plate, type: mine[0].type, trips: mine.length, loadH, waitH, repH,
       lineH: Math.max(lineH, loadH), calH, rev };
   });
@@ -228,7 +332,7 @@ async function buildReport(context, files) {
   const worst = [...perVehicle].filter(v => v.trips >= 2)
     .sort((a, b) => (a.loadH / a.calH) - (b.loadH / b.calH)).slice(0, 10);
   const customers = {};
-  for (const o of orders) {
+  for (const o of loaded) {
     const c = customers[o.customer || '—'] = customers[o.customer || '—']
       || { rev: 0, n: 0, waitH: 0, overH: 0, waited: 0, loadH: 0 };
     c.rev += o.sum; c.n += 1;
@@ -254,10 +358,11 @@ async function buildReport(context, files) {
 
   const pct = v => `${Math.round(v * 100)}%`;
   const hrs = v => `${Math.round(v).toLocaleString('ru-RU')} ч`;
-  return `<div class="summary-grid" style="grid-template-columns:repeat(5,1fr)">
-      <div class="metric"><span>Период · машин · заказов</span><strong>${label} · ${plates.length} · ${orders.length}</strong></div>
-      <div class="metric"><span>Выручка (сумма документов)</span><strong>${money(Math.round(rev))}
-        <small class="muted" style="display:block">факт выгрузки из планера: ${enriched} из ${orders.length}</small></strong></div>
+  const enrichedIn = loaded.filter(o => o.factUnload).length;
+  return `${periodBar}<div class="summary-grid" style="grid-template-columns:repeat(5,1fr)">
+      <div class="metric"><span>Период · машин · погрузок</span><strong>${label} · ${plates.length} · ${loaded.length}</strong></div>
+      <div class="metric"><span>Выручка (погрузка в периоде)</span><strong>${money(Math.round(rev))}
+        <small class="muted" style="display:block">факт выгрузки из планера: ${enrichedIn} из ${loaded.length}</small></strong></div>
       <div class="metric"><span>КТГ (ремонты)</span><strong>${repairs ? pct(ktg) : '— загрузите «Ремонты»'}</strong></div>
       <div class="metric"><span>КВЛ (на линии)</span><strong>${pct(kvl)}${sheetHours ? '' : ' *'}</strong></div>
       <div class="metric"><span>КИП по часам под грузом</span><strong>${pct(kip)}</strong></div>
