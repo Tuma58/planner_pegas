@@ -3,6 +3,7 @@
 // видят все сотрудники, цель — общая видимость достижения плана.
 // Автообновление раз в 90 секунд, пока вкладка открыта.
 import { api, escapeHtml, money, toast, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs, renderInto } from './api.js';
+import { vehicleZoneAt } from './transfer.js';
 import { orderStage } from './pipeline.js';
 import { orderNet } from './sales.js';
 import { loadOpenQuestions } from './call-card.js';
@@ -162,13 +163,22 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   const inTripIds = new Set(activeTrips.filter(trip =>
     tripBusyFromMs(trip) < dayEnd && tripBusyUntilMs(trip, nowMs) > dayStart)
     .map(trip => trip.vehicle_id));
+  // «Простой без причины» — только машины БЕЗ назначения: машина с
+  // назначенным будущим рейсом (сегодня-послезавтра) едет к погрузке или
+  // ждёт её — это «⏭ ждёт следующей погрузки», а не простой (кейс т947ук58:
+  // выгрузилась в Новосибирске, погрузка через день из Омской области).
+  const pendingIds = new Set(activeTrips.filter(trip => trip.status === 'plan' &&
+    Date.parse(trip.starts_at) >= dayEnd && Date.parse(trip.starts_at) < dayEnd + 2 * DAY_MS)
+    .map(trip => trip.vehicle_id));
   let unavailable = 0;
   let idle = 0;
+  let pending = 0;
   for (const vehicle of fleet) {
     if (inTripIds.has(vehicle.id)) continue;
     const covered = (data.dispositions || []).some(item => item.vehicle_id === vehicle.id &&
       Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart);
     if (covered) unavailable += 1;
+    else if (pendingIds.has(vehicle.id)) pending += 1;
     else idle += 1;
   }
 
@@ -214,7 +224,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     sales: { createdToday: createdToday.length, createdSum, avgCheck, queue },
     logist: { assignedToday, queue, noNext: noNextList.length },
     dispatcher: { onLineToday, startingToday, unloadedToday, online, onlineTripCount, debt1c: debt1c.length },
-    fleet: { total: fleet.length, inTrip: inTripIds.size, unavailable, idle },
+    fleet: { total: fleet.length, inTrip: inTripIds.size, unavailable, idle, pending },
     // Списки для раскрытия плашек по клику.
     details: {
       salesCreated: createdToday,
@@ -229,7 +239,11 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
       dispOnline: onlineTrips,
       dispDebt1c: debt1c,
       fleetInTrip: fleet.filter(vehicle => inTripIds.has(vehicle.id)),
-      fleetIdle: fleet.filter(vehicle => !inTripIds.has(vehicle.id) && !(data.dispositions || []).some(item =>
+      fleetIdle: fleet.filter(vehicle => !inTripIds.has(vehicle.id) && !pendingIds.has(vehicle.id) &&
+        !(data.dispositions || []).some(item =>
+        item.vehicle_id === vehicle.id && Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart)),
+      fleetPending: fleet.filter(vehicle => !inTripIds.has(vehicle.id) && pendingIds.has(vehicle.id) &&
+        !(data.dispositions || []).some(item =>
         item.vehicle_id === vehicle.id && Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart)),
       fleetUnavailable: fleet.filter(vehicle => !inTripIds.has(vehicle.id) && (data.dispositions || []).some(item =>
         item.vehicle_id === vehicle.id && Date.parse(item.starts_at) < dayEnd && Date.parse(item.ends_at) > dayStart))
@@ -292,7 +306,8 @@ const DETAIL_TITLES = {
   logistAssigned: 'Назначено рейсов сегодня', logistNoNext: 'На линии без следующего рейса',
   dispOnLine: 'Выведено на линию сегодня', dispStarting: 'Ждут выхода сегодня',
   dispUnloaded: 'Выгружено сегодня', dispOnline: 'Рейсы на контроле', dispDebt1c: 'Долги перед 1С',
-  fleetInTrip: 'Парк в рейсе сегодня', fleetIdle: 'Простой без причины', fleetUnavailable: 'Недоступны (оформлено)'
+  fleetInTrip: 'Парк в рейсе сегодня', fleetIdle: 'Простой без причины',
+  fleetPending: 'Ждут следующей погрузки (рейс назначен)', fleetUnavailable: 'Недоступны (оформлено)'
 };
 const fmtDt = value => value ? new Date(String(value).includes('T') ? value : `${String(value).replace(' ', 'T')}Z`)
   .toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' }) : '—';
@@ -321,9 +336,24 @@ function dashDetailDialog(key, metrics, data, context) {
       · ${escapeHtml(placeShort(trip.from_point || trip.from_name))} → ${escapeHtml(placeShort(trip.to_point || trip.to_name))} · ${escapeHtml(trip.customer_name || '')}
       <small class="muted" style="display:block">выход ${fmtDt(trip.starts_at)} · выгрузка ${fmtDt(trip.ends_at)}${trip.on_line_at ? ` · на линии с ${fmtDt(trip.on_line_at)}` : ''}${trip.unloaded_at ? ` · выгружен ${fmtDt(trip.unloaded_at)}` : ''} · ${money(trip.revenue_vat)}</small></div>`).join('');
   } else {
-    rows = items.map(vehicle => `<div class="dash-detail-row"><b class="mono">${escapeHtml(vehicle.plate)}</b>
+    // Зона машины — расчётная (по последнему рейсу/перегону, как в Ганте),
+    // а не справочная из карточки: справочная почти всегда «Дом» и врёт.
+    rows = items.map(vehicle => {
+      const zone = vehicleZoneAt(data, vehicle.id) || vehicle.zone_name || '';
+      const myTrips = (data.trips || []).filter(trip => trip.vehicle_id === vehicle.id &&
+        trip.status !== 'rejected');
+      const last = myTrips.filter(trip => trip.unloaded_at || Date.parse(trip.ends_at) < Date.now())
+        .sort((a, b) => String(b.ends_at).localeCompare(String(a.ends_at)))[0];
+      const next = myTrips.filter(trip => trip.status === 'plan')
+        .sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)))[0];
+      const context2 = key === 'fleetIdle' || key === 'fleetPending'
+        ? `${last ? ` · выгрузка ${fmtDt(last.unloaded_at || last.ends_at)} (${escapeHtml(placeShort(last.to_point || last.to_name))})` : ''}${
+          next ? ` · <b>следующая погрузка ${fmtDt(next.starts_at)}</b> (${escapeHtml(placeShort(next.from_point || next.from_name))})` : ''}`
+        : '';
+      return `<div class="dash-detail-row"><b class="mono">${escapeHtml(vehicle.plate)}</b>
       · ${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
-      <small class="muted" style="display:block">${escapeHtml(vehicle.zone_name || '')}</small></div>`).join('');
+      <small class="muted" style="display:block">сейчас: ${escapeHtml(zone)}${context2}</small></div>`;
+    }).join('');
   }
   context.showModal(`<h2>${DETAIL_TITLES[key] || key} <span class="badge">${items.length}</span></h2>
     ${key === 'logistNoNext' ? '<p class="muted">Правило: у машины на линии должен быть назначен следующий рейс — логист назначает из очереди, продажи ищут груз под освобождение.</p>' : ''}
@@ -539,6 +569,8 @@ export async function renderDashboard(container, context) {
         { label: 'На линии без следующего рейса', value: `${metrics.logist.noNext} из ${metrics.dispatcher.online}`,
           cls: metrics.logist.noNext ? 'bad' : 'ok', detail: 'logistNoNext' },
         { label: 'Парк в рейсе сегодня', value: `${metrics.fleet.inTrip} из ${metrics.fleet.total}`, detail: 'fleetInTrip' },
+        { label: '⏭ Ждут следующей погрузки', value: metrics.fleet.pending,
+          cls: metrics.fleet.pending ? 'warn' : 'ok', detail: 'fleetPending' },
         { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
       ])}
       ${roleCard('🎧 Диспетчер', [

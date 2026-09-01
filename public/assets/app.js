@@ -1139,9 +1139,18 @@ function openTrip(trip) {
   const form = byId('editTripForm');
   form.onsubmit = async event => {
     event.preventDefault();
+    const payload = formValues(form);
+    // Выгрузка сильно раньше плана — почти всегда перепутана машина:
+    // сервер вернёт 422 без подтверждения, спрашиваем заранее.
+    if (payload.status === 'unloaded' && trip.status !== 'unloaded' &&
+        Date.parse(trip.ends_at) - Date.now() > 24 * 3_600_000) {
+      const earlyH = Math.round((Date.parse(trip.ends_at) - Date.now()) / 3_600_000);
+      if (!confirm(`До плановой выгрузки ещё ${earlyH} ч. Точно выгружен именно этот рейс (${trip.vehicle_plate})?`)) return;
+      payload.confirmEarly = true;
+    }
     try {
       await api(`/api/trips/${trip.id}`, {
-        method: 'PATCH', body: JSON.stringify(formValues(form))
+        method: 'PATCH', body: JSON.stringify(payload)
       });
       closeModal(); toast('Рейс обновлен'); await reload();
     } catch (error) { toast(error.message, 'error'); }
@@ -1647,7 +1656,8 @@ function openAddressBook(query = '', region = '') {
       <button type="button" class="button ghost small" id="geoLookup"
         title="Найти адрес и координаты в OpenStreetMap">🌍 Найти</button>
       <input name="region" placeholder="Субъект (обл/респ)" style="width:150px">
-      <select name="zoneId" title="Геозона">${zoneOptions()}</select>
+      <select name="zoneId" title="Геозона: пусто — определится по имени пункта (алиасы городов)">
+        <option value="">— зона: авто —</option>${zoneOptions()}</select>
       <input name="latitude" placeholder="широта" style="width:90px">
       <input name="longitude" placeholder="долгота" style="width:90px">
       <button class="button small">+ Адрес</button>

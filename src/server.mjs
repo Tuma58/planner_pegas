@@ -2125,6 +2125,17 @@ async function api(request, response, url) {
     if (merged.status === 'rejected' && !String(merged.rejectionReason || '').trim()) {
       return errorJson(response, 422, 'Укажите причину отклонения рейса');
     }
+    // Рубеж ошибочной отметки: выгрузка более чем за сутки до плановой —
+    // почти всегда перепутана машина (кейс т553ве58: рейс в Кемерово закрыли
+    // через 31 час после вывода на линию, машина «простаивала», хотя ехала).
+    // Клиент передаёт confirmEarly после явного подтверждения диспетчером.
+    if (merged.status === 'unloaded' && current.status !== 'unloaded' && !body.confirmEarly) {
+      const planEnd = Date.parse(current.ends_at);
+      const earlyH = Math.round((planEnd - Date.now()) / 3_600_000);
+      if (Number.isFinite(planEnd) && earlyH > 24) {
+        return errorJson(response, 422, `До плановой выгрузки ещё ${earlyH} ч — похоже на ошибочную отметку (не та машина?). Проверьте рейс и подтвердите выгрузку ещё раз.`);
+      }
+    }
     // Возврат статуса из «Выгружен» — рейс продолжается: отметка о выгрузке
     // очищается, иначе машина числится свободной в точке выгрузки (место
     // сцепки, стыковка плеч и занятость считают по unloaded_at), а рейс
@@ -2345,6 +2356,19 @@ async function api(request, response, url) {
       ? Number(body.latitude) : null;
     const longitude = Number.isFinite(Number(body.longitude)) && body.longitude !== ''
       ? Number(body.longitude) : null;
+    // Зона не выбрана — определяем по ГОРОДСКОЙ части имени (до запятой):
+    // алиас/имя зоны как подстрока, длиннейшее совпадение. Так «Омская обл.,
+    // р.п. Москаленки» находит Восток по алиасу «Омск», а «Энгельс, ул
+    // Томская» не цепляет Томск — улицы не в первой части. Кривые зоны
+    // справочника ломали геозоны заявок и место машин (кейс Москаленки→Дом).
+    if (!body.zoneId) {
+      const head = name.split(',')[0].toLowerCase();
+      const hit = db.prepare(`SELECT z.id, z.name AS alias FROM zones z
+          UNION ALL SELECT a.zone_id AS id, a.alias FROM zone_aliases a`).all()
+        .filter(row => head.includes(row.alias.toLowerCase()))
+        .sort((a, b) => b.alias.length - a.alias.length)[0];
+      if (hit) body.zoneId = hit.id;
+    }
     const id = randomUUID();
     const { BASE_POINT } = await import('./db.mjs');
     db.prepare(`INSERT INTO addresses(id,external_code,name,address,region,zone_id,latitude,longitude,base_distance_km)

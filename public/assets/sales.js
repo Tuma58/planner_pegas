@@ -1533,8 +1533,20 @@ export async function renderSales(container, context) {
           toast('Подтверждено — задача передана логисту');
         } else if (kind === 'trip-status') {
           if (!order.trip_id) throw new Error('У заявки нет рейса');
+          const statusBody = { status: button.dataset.status };
+          // Выгрузка сильно раньше плана — вероятна перепутанная машина.
+          const trip = (data.trips || []).find(item => item.id === order.trip_id);
+          if (statusBody.status === 'unloaded' && trip &&
+              Date.parse(trip.ends_at) - Date.now() > 24 * 3_600_000) {
+            const earlyH = Math.round((Date.parse(trip.ends_at) - Date.now()) / 3_600_000);
+            if (!confirm(`До плановой выгрузки ещё ${earlyH} ч. Точно выгружен именно этот рейс (${trip.vehicle_plate || ''})?`)) {
+              button.disabled = false;
+              return;
+            }
+            statusBody.confirmEarly = true;
+          }
           await api(`/api/trips/${order.trip_id}`, {
-            method: 'PATCH', body: JSON.stringify({ status: button.dataset.status })
+            method: 'PATCH', body: JSON.stringify(statusBody)
           });
           const next = { run: 'Рейс в пути', unloaded: 'Выгрузка отмечена', paid: 'Оплата отмечена' };
           toast(next[button.dataset.status] || 'Статус обновлён');
