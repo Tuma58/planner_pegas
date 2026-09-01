@@ -100,6 +100,29 @@ async function buildReport(context, files) {
       depMs, doneMs, sum: Number(String(row[om.map.sum] || '0').replace(/\s/g, '').replace(',', '.')) || 0 });
   }
   if (!orders.length) throw new Error('В «Заказах» не распознано ни одной строки');
+  // Excel из 1С несёт ПЛАНОВЫЕ времена. Для честного транзита сматчиваем
+  // заказы с рейсами планера (машина + дата ±1) и берём ФАКТ: прибытие на
+  // выгрузку и фактическую выгрузку — сверхнормативный простой у клиента
+  // перестаёт прятаться в «плановой доставке».
+  const tsOf = value => value ? Date.parse(String(value).replace(' ', 'T') +
+    (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : null;
+  const plannerTrips = (data.trips || []).filter(trip => trip.status !== 'rejected')
+    .map(trip => ({ plate: normPlate(trip.vehicle_plate), startMs: Date.parse(trip.starts_at),
+      arrivedMs: tsOf(trip.arrived_at), unloadedMs: tsOf(trip.unloaded_at) }));
+  let enriched = 0;
+  for (const order of orders) {
+    const match = plannerTrips.find(trip => trip.plate === order.plate &&
+      Math.abs(trip.startMs - order.depMs) < 36 * H);
+    if (!match) continue;
+    if (match.unloadedMs && match.unloadedMs > order.depMs) {
+      order.doneMs = match.unloadedMs;
+      order.factUnload = true;
+      enriched += 1;
+    }
+    if (match.arrivedMs && match.unloadedMs && match.unloadedMs > match.arrivedMs) {
+      order.custWaitH = (match.unloadedMs - match.arrivedMs) / H;
+    }
+  }
   const fromMs = Math.min(...orders.map(o => o.depMs));
   const toMs = Math.max(...orders.map(o => o.doneMs));
   const periodDays = Math.max(1, Math.round((toMs - fromMs) / DAY));
@@ -206,17 +229,35 @@ async function buildReport(context, files) {
     .sort((a, b) => (a.loadH / a.calH) - (b.loadH / b.calH)).slice(0, 10);
   const customers = {};
   for (const o of orders) {
-    const c = customers[o.customer || '—'] = customers[o.customer || '—'] || { rev: 0, n: 0 };
+    const c = customers[o.customer || '—'] = customers[o.customer || '—']
+      || { rev: 0, n: 0, waitH: 0, overH: 0, waited: 0, loadH: 0 };
     c.rev += o.sum; c.n += 1;
+    c.loadH += (o.doneMs - o.depMs) / H;
+    if (o.custWaitH != null) {
+      c.waitH += o.custWaitH;
+      c.overH += Math.max(0, o.custWaitH - 8); // 8 бесплатных часов норматива
+      c.waited += 1;
+    }
   }
   const topCustomers = Object.entries(customers).sort((a, b) => b[1].rev - a[1].rev).slice(0, 10);
+  // Пожиратели времени: сверхнормативные часы у клиента × ₽/час под грузом =
+  // упущенная выручка. Высокая ставка не оправдание: машина, стоящая сутки
+  // на выгрузке, съедает свою же доходность.
+  const timeEaters = Object.entries(customers)
+    .filter(([, c]) => c.waited >= 3 && c.overH > 0)
+    .map(([name, c]) => ({ name, ...c,
+      avgWaitH: c.waitH / c.waited,
+      lostRub: c.overH * perLoadHour,
+      effHour: c.rev / Math.max(1, c.loadH) }))
+    .sort((a, b) => b.lostRub - a.lostRub).slice(0, 10);
   const kindRows = [...repairKinds.entries()].sort((a, b) => b[1].days - a[1].days).slice(0, 10);
 
   const pct = v => `${Math.round(v * 100)}%`;
   const hrs = v => `${Math.round(v).toLocaleString('ru-RU')} ч`;
   return `<div class="summary-grid" style="grid-template-columns:repeat(5,1fr)">
       <div class="metric"><span>Период · машин · заказов</span><strong>${label} · ${plates.length} · ${orders.length}</strong></div>
-      <div class="metric"><span>Выручка (сумма документов)</span><strong>${money(Math.round(rev))}</strong></div>
+      <div class="metric"><span>Выручка (сумма документов)</span><strong>${money(Math.round(rev))}
+        <small class="muted" style="display:block">факт выгрузки из планера: ${enriched} из ${orders.length}</small></strong></div>
       <div class="metric"><span>КТГ (ремонты)</span><strong>${repairs ? pct(ktg) : '— загрузите «Ремонты»'}</strong></div>
       <div class="metric"><span>КВЛ (на линии)</span><strong>${pct(kvl)}${sheetHours ? '' : ' *'}</strong></div>
       <div class="metric"><span>КИП по часам под грузом</span><strong>${pct(kip)}</strong></div>
@@ -243,6 +284,18 @@ async function buildReport(context, files) {
         <span style="flex:1"><b class="mono">${escapeHtml(v.plate)}</b>
           <small class="muted"> · ${escapeHtml(v.type)} · рейсов ${v.trips}</small></span>
         <b>${pct(v.loadH / v.calH)} · ${money(Math.round(v.rev))}</b></div>`).join('')}</div>
+      ${timeEaters.length ? `<div class="scolh" style="margin-top:10px">⏱ Где теряем время у клиентов
+        <small class="muted" style="font-weight:400"> · сверх 8 бесплатных часов на выгрузке, по ФАКТУ планера</small></div>
+      <div class="list">${timeEaters.map(c => `<div class="list-item ${c.effHour < perLoadHour ? 'q-late-row' : ''}">
+        <span style="flex:1;min-width:0">${escapeHtml(c.name.slice(0, 34))}
+          <small class="muted" style="display:block">выгрузка в среднем ${c.avgWaitH.toFixed(1)} ч
+            · сверхнорматив ${Math.round(c.overH)} ч на ${c.waited} рейсах
+            · эффективная ставка ${money(Math.round(c.effHour))}/ч ${c.effHour < perLoadHour ? '⚠ ниже средней' : ''}</small></span>
+        <b title="Сверхнормативные часы × средняя выручка часа под грузом">−${money(Math.round(c.lostRub))}</b>
+      </div>`).join('')}</div>
+      <p class="muted">Даже при высокой ставке перевозки клиент с суточной выгрузкой
+        съедает доходность машины: сравнивайте эффективную ₽/час, а не ставку рейса.
+        Сверхнорматив — основание для претензии (⏳ Простои П/В).</p>` : ''}
       <div class="scolh" style="margin-top:10px">Клиенты периода</div>
       <div class="list">${topCustomers.map(([name, c]) => `<div class="list-item">
         <span style="flex:1">${escapeHtml(name.slice(0, 40))}<small class="muted"> · ${c.n}</small></span>
