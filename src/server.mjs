@@ -916,6 +916,48 @@ function runGapReviewWatch() {
 }
 setInterval(runGapReviewWatch, 10 * 60_000);
 
+// ── Ночной сторож «рейс не вышел в окно» ──
+// Кейс 01.09: рейс Черкизово с окном 23:00 ночью не вышел, ночью на это
+// никто не среагировал, и замену провели только в 09:00 — окно сгорело на
+// 10 часов ещё до начала смены. Круглосуточно: плановый выход прошёл 2+
+// часа, задания водителю нет и фактов движения нет — эскалация логистам
+// и диспетчерам, один раз на рейс (night_alert в app_meta по id).
+function runMissedDepartureWatch() {
+  try {
+    const rows = db.prepare(`SELECT t.id, t.order_no, t.starts_at, v.plate,
+        t.driver_notified_at, t.on_line_at,
+        (SELECT name FROM zones WHERE id=t.from_zone_id) fz,
+        (SELECT name FROM zones WHERE id=t.to_zone_id) tz,
+        (SELECT o.window_to FROM orders o WHERE o.id=t.order_id) window_to
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      WHERE t.status='plan'
+        AND datetime(t.starts_at) < datetime('now','-2 hours')
+        AND t.driver_notified_at IS NULL`).all();
+    if (!rows.length) return;
+    const seenRaw = db.prepare(`SELECT value FROM app_meta WHERE key='missed_departure_ids'`).get()?.value;
+    const seen = new Set(seenRaw ? JSON.parse(seenRaw) : []);
+    const fresh = rows.filter(row => !seen.has(row.id));
+    if (!fresh.length) return;
+    const msk = iso => new Date(Date.parse(iso) + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
+    const lines = fresh.slice(0, 8).map(row =>
+      `${row.plate} №${row.order_no || '—'} ${row.fz}→${row.tz} (выход был ${msk(row.starts_at)} МСК` +
+      `${row.window_to ? `, окно клиента до ${msk(row.window_to)}` : ''})`);
+    const text = `🌙 Рейс не вышел в окно: задание водителю не отправлено, плановый выход прошёл ` +
+      `больше 2 часов назад — ${lines.join('; ')}${fresh.length > 8 ? ` и ещё ${fresh.length - 8}` : ''}. ` +
+      `Замените ТС или передоговорите окно СЕЙЧАС — утром оно будет сгоревшим`;
+    notify('logist', text);
+    notify('dispatcher', text);
+    for (const row of fresh) seen.add(row.id);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('missed_departure_ids',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(JSON.stringify([...seen].slice(-300)));
+  } catch (error) {
+    console.error('Сторож невыхода в окно:', error.message);
+  }
+}
+setInterval(runMissedDepartureWatch, 20 * 60_000);
+setTimeout(runMissedDepartureWatch, 80_000);
+
 function runStaleTransfersWatch() {
   try {
     const stale = db.prepare(`SELECT d.id, d.ends_at, d.purpose, d.note, v.plate,
