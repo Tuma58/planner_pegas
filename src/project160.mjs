@@ -158,7 +158,8 @@ export const METRICS = {
   question_sla_pct: { label: 'Ответы водителям в 10 минут', unit: '%', dir: 'more' },
   shipper_notified_pct: { label: 'Данные грузоотправителю до выхода', unit: '%', dir: 'more' },
   leg_gap_h: { label: 'Зазор стыковки между рейсами', unit: 'ч', dir: 'less' },
-  planned_3d_pct: { label: 'Заявки, внесённые за 3+ дня', unit: '%', dir: 'more' }
+  planned_3d_pct: { label: 'Заявки, внесённые за 3+ дня', unit: '%', dir: 'more' },
+  entered_1c_lag_min: { label: 'Подтверждение → внесение в 1С', unit: 'мин', dir: 'less' }
 };
 
 // Текущее значение метрики за период. Одна функция на все инициативы —
@@ -208,6 +209,19 @@ export function metricValue(db, key, fromIso, toIso) {
         FROM trips WHERE status<>'rejected' AND on_line_at IS NOT NULL
           AND on_line_at>=? AND on_line_at<?`, fromIso, toIso);
       return row.total ? Math.round(row.sent / row.total * 100) : null;
+    }
+    case 'entered_1c_lag_min': {
+      // Главная просадка диспетчерской по разбору 01.09: медиана 144 мин,
+      // п90 — 18,8 часа. Норма — 30 минут: заказ вносится в момент
+      // подтверждения, а не «когда дойдут руки».
+      const rows = db.prepare(`SELECT logist_confirmed_at lc, entered_1c_at e1 FROM trips
+        WHERE status<>'rejected' AND logist_confirmed_at IS NOT NULL AND entered_1c_at IS NOT NULL
+          AND logist_confirmed_at>=? AND logist_confirmed_at<?`).all(fromIso, toIso);
+      const parse = v => Date.parse(String(v).replace(' ', 'T') +
+        (String(v).includes('Z') || String(v).includes('+') ? '' : 'Z'));
+      const lags = rows.map(row => (parse(row.e1) - parse(row.lc)) / 60_000)
+        .filter(x => Number.isFinite(x) && x >= 0 && x < 7 * 24 * 60).sort((a, b) => a - b);
+      return lags.length ? Math.round(lags[Math.floor(lags.length / 2)]) : null;
     }
     case 'planned_3d_pct': {
       // Горизонт планирования: доля заявок, внесённых за 72+ часа до окна

@@ -922,6 +922,38 @@ setInterval(runGapReviewWatch, 10 * 60_000);
 // 10 часов ещё до начала смены. Круглосуточно: плановый выход прошёл 2+
 // часа, задания водителю нет и фактов движения нет — эскалация логистам
 // и диспетчерам, один раз на рейс (night_alert в app_meta по id).
+// ── Сторож стыка «подтверждено → внесено в 1С» ──
+// Норма 30 минут; разбор 01.09 показал медиану 144 мин и хвост 18,8 часа —
+// главная просадка диспетчерской. Каждые 30 минут: рейсы, подтверждённые
+// больше 45 минут назад без внесения (и без «внесу позже»), — списком
+// диспетчерам, не чаще раза в 2 часа.
+function runEntered1cWatch() {
+  try {
+    const last = Number(db.prepare(`SELECT value FROM app_meta WHERE key='entered_1c_watch_at'`).get()?.value || 0);
+    if (Date.now() - last < 2 * 3_600_000) return;
+    const rows = db.prepare(`SELECT t.order_no, v.plate, t.logist_confirmed_at,
+        (SELECT name FROM zones WHERE id=t.from_zone_id) fz,
+        (SELECT name FROM zones WHERE id=t.to_zone_id) tz
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      WHERE t.status='plan' AND t.entered_1c_at IS NULL AND t.deferred_1c_at IS NULL
+        AND t.logist_confirmed_at IS NOT NULL
+        AND datetime(t.logist_confirmed_at) < datetime('now','-45 minutes')`).all();
+    if (!rows.length) return;
+    const minutes = iso => Math.round((Date.now() - Date.parse(String(iso).replace(' ', 'T') +
+      (String(iso).includes('Z') || String(iso).includes('+') ? '' : 'Z'))) / 60_000);
+    const lines = rows.slice(0, 10).map(row =>
+      `${row.plate} №${row.order_no || '—'} ${row.fz}→${row.tz} (ждёт ${minutes(row.logist_confirmed_at)} мин)`);
+    notify('dispatcher', `🧾 Заказы не внесены в 1С дольше 45 минут после подтверждения ` +
+      `(норма — 30): ${lines.join('; ')}${rows.length > 10 ? ` и ещё ${rows.length - 10}` : ''}. ` +
+      `Внесите или отметьте «⏭ Внесу позже» — стык «подтверждено → 1С» главная просадка смены`);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('entered_1c_watch_at',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(Date.now()));
+  } catch (error) {
+    console.error('Сторож стыка 1С:', error.message);
+  }
+}
+setInterval(runEntered1cWatch, 30 * 60_000);
+
 function runMissedDepartureWatch() {
   try {
     const rows = db.prepare(`SELECT t.id, t.order_no, t.starts_at, v.plate,
