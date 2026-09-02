@@ -169,6 +169,47 @@ function route(pattern, pathname) {
   return match ? match.slice(1).map(decodeURIComponent) : null;
 }
 
+// Подсказка геозоны по тексту адреса: сначала субъект РФ (по географии
+// зон компании — «Омская обл» надёжнее города, который бывает не в
+// справочнике), затем алиас/имя зоны в городской части (до запятой).
+// Разбор 01–02.09: адреса с ручной зоной «Дом» ломали геозоны заявок.
+const SUBJECT_ZONES = [
+  ['Дом', /(пензенск|мордови|саратовск|тамбовск)\w*\s*(обл|край|респ)/i],
+  ['Москва', /(московск|тульск|калужск|рязанск)\w*\s*обл/i],
+  ['Москва', /\sМО\s*$/],
+  ['Питер', /(ленинградск|новгородск|вологодск|тверск)\w*\s*обл/i],
+  ['Питер', /санкт-петербург/i],
+  ['Золотое кольцо', /(нижегородск|владимирск|ивановск|костромск|ярославск)\w*\s*обл/i],
+  ['Самара', /(самарск|ульяновск|оренбургск)\w*\s*обл/i],
+  ['Самара', /(татарстан|марий эл|чуваш)/i],
+  ['Урал', /(свердловск|челябинск|кировск)\w*\s*обл|пермск\w*\s*край|удмурт|башкорт|башкири/i],
+  ['Восток', /(новосибирск|омск|кемеровск|томск|тюменск|иркутск)\w*\s*обл|(алтайск|красноярск)\w*\s*край|ханты|\sНвСиб\s*$/i],
+  ['Черноземье', /(воронежск|липецк|курск|белгородск|брянск|орловск)\w*\s*обл/i],
+  ['Юг', /(ростовск|волгоградск|астраханск)\w*\s*обл|(краснодарск|ставропольск)\w*\s*край|карачаево/i],
+  ['Запад', /(смоленск|псковск)\w*\s*обл/i]
+];
+function zoneHintForAddress(text) {
+  const full = String(text || '').trim();
+  if (!full) return null;
+  for (const [zoneName, pattern] of SUBJECT_ZONES) {
+    if (pattern.test(full)) {
+      const zone = db.prepare('SELECT id, name FROM zones WHERE name=?').get(zoneName);
+      if (zone) return { ...zone, via: 'субъект РФ' };
+    }
+  }
+  const head = full.split(',')[0].toLowerCase();
+  const hit = db.prepare(`SELECT z.id, z.name, z.name AS alias FROM zones z
+      UNION ALL SELECT a.zone_id AS id, z2.name, a.alias FROM zone_aliases a
+      JOIN zones z2 ON z2.id = a.zone_id`).all()
+    .filter(row => {
+      const alias = row.alias.toLowerCase();
+      if (alias.length >= 5) return head.includes(alias);
+      return new RegExp(`(^|[^а-яёa-z])${alias}([^а-яёa-z]|$)`, 'i').test(head);
+    })
+    .sort((a, b) => b.alias.length - a.alias.length)[0];
+  return hit ? { id: hit.id, name: hit.name, via: `город «${hit.alias}»` } : null;
+}
+
 function allReferenceData() {
   const zoneRows = db.prepare('SELECT * FROM zones ORDER BY sort_order').all();
   const aliases = db.prepare('SELECT zone_id,alias FROM zone_aliases ORDER BY alias').all();
@@ -2343,6 +2384,54 @@ async function api(request, response, url) {
         LEFT JOIN zones z ON z.id=a.zone_id ORDER BY a.name`).all()
     });
   }
+  // Ревизия зон справочника: адреса, у которых подсказка по субъекту/городу
+  // расходится с проставленной зоной. Только список — правит человек.
+  if (request.method === 'GET' && pathname === '/api/addresses/audit') {
+    if (!requirePermission(request, response, 'orders:write')) return;
+    const items = [];
+    for (const address of db.prepare(`SELECT a.id, a.name, a.region, a.zone_id, z.name AS zone,
+        (SELECT COUNT(*) FROM orders o WHERE o.from_address_id=a.id OR o.to_address_id=a.id) AS used
+        FROM addresses a LEFT JOIN zones z ON z.id=a.zone_id`).all()) {
+      const hint = zoneHintForAddress(`${address.name} ${address.region || ''}`);
+      if (hint && hint.id !== address.zone_id) {
+        items.push({ id: address.id, name: address.name, zone: address.zone || null,
+          shouldBe: hint.name, shouldBeId: hint.id, via: hint.via, used: address.used });
+      }
+    }
+    items.sort((a, b) => b.used - a.used);
+    return json(response, 200, { items });
+  }
+  // Правка зоны пункта + пересчёт зон АКТИВНЫХ заявок по нему (окно не в
+  // прошлом) и их незакрытых рейсов: зоны копируются в заявку при создании
+  // и сами не обновляются — без пересчёта фильтры продолжали бы врать.
+  if (request.method === 'PATCH' && (match = route(/^\/api\/addresses\/([\w-]+)$/, pathname))) {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const address = db.prepare('SELECT * FROM addresses WHERE id=?').get(match[0]);
+    if (!address) return errorJson(response, 404, 'Пункт не найден');
+    if (!body.zoneId || !db.prepare('SELECT 1 FROM zones WHERE id=?').get(body.zoneId)) {
+      return errorJson(response, 422, 'Укажите геозону');
+    }
+    db.prepare('UPDATE addresses SET zone_id=? WHERE id=?').run(body.zoneId, match[0]);
+    let touched = 0;
+    for (const [addrCol, zoneCol] of [['from_address_id', 'from_zone_id'], ['to_address_id', 'to_zone_id']]) {
+      const orders = db.prepare(`SELECT id, trip_id FROM orders
+        WHERE ${addrCol}=? AND ${zoneCol}!=? AND deleted_at IS NULL
+          AND window_to >= date('now', '-1 day')`).all(match[0], body.zoneId);
+      for (const order of orders) {
+        db.prepare(`UPDATE orders SET ${zoneCol}=? WHERE id=?`).run(body.zoneId, order.id);
+        if (order.trip_id) {
+          db.prepare(`UPDATE trips SET ${zoneCol}=? WHERE id=? AND status IN ('plan','run')`)
+            .run(body.zoneId, order.trip_id);
+        }
+        touched += 1;
+      }
+    }
+    audit(db, user, 'update', 'address', match[0],
+      { zoneId: body.zoneId, was: address.zone_id, ordersTouched: touched }, requestIp(request));
+    return json(response, 200, { ok: true, ordersTouched: touched });
+  }
   if (request.method === 'POST' && pathname === '/api/addresses') {
     const user = requirePermission(request, response, 'orders:write');
     if (!user) return;
@@ -2356,18 +2445,9 @@ async function api(request, response, url) {
       ? Number(body.latitude) : null;
     const longitude = Number.isFinite(Number(body.longitude)) && body.longitude !== ''
       ? Number(body.longitude) : null;
-    // Зона не выбрана — определяем по ГОРОДСКОЙ части имени (до запятой):
-    // алиас/имя зоны как подстрока, длиннейшее совпадение. Так «Омская обл.,
-    // р.п. Москаленки» находит Восток по алиасу «Омск», а «Энгельс, ул
-    // Томская» не цепляет Томск — улицы не в первой части. Кривые зоны
-    // справочника ломали геозоны заявок и место машин (кейс Москаленки→Дом).
+    // Зона не выбрана — единая подсказка: субъект РФ, затем город в имени.
     if (!body.zoneId) {
-      const head = name.split(',')[0].toLowerCase();
-      const hit = db.prepare(`SELECT z.id, z.name AS alias FROM zones z
-          UNION ALL SELECT a.zone_id AS id, a.alias FROM zone_aliases a`).all()
-        .filter(row => head.includes(row.alias.toLowerCase()))
-        .sort((a, b) => b.alias.length - a.alias.length)[0];
-      if (hit) body.zoneId = hit.id;
+      body.zoneId = zoneHintForAddress(`${name} ${body.region || ''}`)?.id || null;
     }
     const id = randomUUID();
     const { BASE_POINT } = await import('./db.mjs');
@@ -2396,7 +2476,8 @@ async function api(request, response, url) {
       const byCity = db.prepare(`SELECT zone_id FROM addresses
         WHERE name LIKE ? AND zone_id IS NOT NULL LIMIT 1`)
         .get(`${String(text || '').split(',')[0].trim()}%`)?.zone_id;
-      return byCity || resolveZone(db, String(text || '').split(',')[0])?.id || null;
+      return byCity || resolveZone(db, String(text || '').split(',')[0])?.id
+        || zoneHintForAddress(text)?.id || null;
     };
     if (!body.fromZoneId) body.fromZoneId = zoneOfPlace(body.fromAddressId, body.fromPoint);
     if (!body.toZoneId) body.toZoneId = zoneOfPlace(body.toAddressId, body.toPoint);

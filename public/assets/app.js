@@ -1649,7 +1649,10 @@ function openAddressBook(query = '', region = '') {
         ${regions.map(item =>
           `<option value="${escapeHtml(item)}" ${region === item ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}
       </select>
+      ${canAdd ? `<button type="button" class="button ghost small" id="addrZoneAudit"
+        title="Найти пункты, где зона противоречит субъекту/городу в имени">⚠ Ревизия зон</button>` : ''}
     </div>
+    <div id="addrAuditBox"></div>
     ${canAdd ? `<form id="newAddressForm" class="salesfilter" style="margin-bottom:6px;flex-wrap:wrap">
       <input name="name" placeholder="Наименование пункта" required style="flex:1;min-width:170px">
       <input name="address" placeholder="Полный адрес" style="flex:2;min-width:220px">
@@ -1719,6 +1722,55 @@ function openAddressBook(query = '', region = '') {
       openAddressBook(query, region);
     } catch (error) { toast(error.message, 'error'); }
   };
+  // Ревизия зон: пункты, где зона противоречит субъекту/городу в имени.
+  // «Исправить» меняет зону пункта и пересчитывает активные заявки по нему.
+  byId('addrZoneAudit')?.addEventListener('click', async () => {
+    const box = byId('addrAuditBox');
+    box.innerHTML = '<p class="muted">⏳ Проверяю справочник…</p>';
+    try {
+      const { items } = await api('/api/addresses/audit');
+      if (!items.length) { box.innerHTML = '<p class="muted">✓ Противоречий зон не найдено.</p>'; return; }
+      const fixOne = async item => {
+        const result = await api(`/api/addresses/${item.id}`, {
+          method: 'PATCH', body: JSON.stringify({ zoneId: item.shouldBeId }) });
+        return result.ordersTouched || 0;
+      };
+      box.innerHTML = `<div class="scolh">Зона противоречит имени пункта <span>${items.length}</span>
+          <button type="button" class="button small" id="addrFixAll">Исправить все</button>
+          <small class="muted" style="font-weight:400">· «исправить» также пересчитает активные заявки по пункту</small></div>
+        <div class="list" style="max-height:30vh;overflow:auto">${items.map((item, index) => `
+          <div class="list-item" data-audit-row="${index}">
+            <span style="flex:1;min-width:0">${escapeHtml(item.name.slice(0, 60))}
+              <small class="muted" style="display:block">сейчас «${escapeHtml(item.zone || '—')}» → должна быть
+                <b>«${escapeHtml(item.shouldBe)}»</b> (${escapeHtml(item.via)}) · заявок: ${item.used}</small></span>
+            <button type="button" class="button ghost small" data-audit-fix="${index}">Исправить</button>
+          </div>`).join('')}</div>`;
+      box.querySelectorAll('[data-audit-fix]').forEach(button =>
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            const touched = await fixOne(items[Number(button.dataset.auditFix)]);
+            button.closest('[data-audit-row]').style.opacity = 0.45;
+            button.textContent = `✓${touched ? ` +${touched} заяв.` : ''}`;
+            await reload();
+          } catch (error) { button.disabled = false; toast(error.message, 'error'); }
+        }));
+      byId('addrFixAll').onclick = async event => {
+        event.target.disabled = true;
+        let done = 0;
+        let touched = 0;
+        for (const item of items) {
+          try { touched += await fixOne(item); done += 1; }
+          catch (error) { toast(`${item.name.slice(0, 30)}: ${error.message}`, 'error'); }
+        }
+        toast(`Исправлено пунктов: ${done}, пересчитано заявок: ${touched}`);
+        await reload();
+        openAddressBook(query, region);
+      };
+    } catch (error) {
+      box.innerHTML = `<p class="danger">${escapeHtml(error.message)}</p>`;
+    }
+  });
 }
 
 // Аналитика выбранного дня: рейсы (выходят / в работе / прибывают),
