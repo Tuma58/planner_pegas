@@ -73,7 +73,9 @@ function plannerSettings() {
   const { networkAccess: _networkAccess, telephony, ...settings } = settingsObject(db);
   // Токен вебхука — секрет интеграции: наружу уходит только признак, что он
   // задан, сам токен виден в настройках отдельным запросом администратору.
-  return { ...settings, telephony: telephony
+  // bodyCompat — совместимость кузовов автоподбора: клиент («Потоки»,
+  // подсказки назначения) обязан фильтровать теми же правилами, что сервер.
+  return { ...settings, bodyCompat: BODY_COMPAT, telephony: telephony
     ? { enabled: Boolean(telephony.enabled), provider: telephony.provider || '',
       hasToken: Boolean(telephony.token), popup: telephony.popup !== false }
     : { enabled: false, provider: '', hasToken: false, popup: true } };

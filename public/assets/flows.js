@@ -3,10 +3,18 @@
 // в каждую зону, чтобы закрыть потребности клиентов. Источники: заявки
 // (потребность логиста), сетка плана вывоза (потребность продаж — заявки,
 // которых ещё нет), рейсы и текущее состояние сцепок (ресурс).
-import { api, escapeHtml, money, rangePickerHtml, wireRangePicker, toast } from './api.js';
+import { api, driverRatingBadge, driverRatingOf, escapeHtml, money, rangePickerHtml, wireRangePicker, toast } from './api.js';
 import { vehicleZoneAt, vehicleFreeAt } from './transfer.js';
 import { customerCardDialog } from './customer-card.js';
 import { orderStage } from './pipeline.js';
+import { matchVehicles } from './sales.js';
+
+// Совместимость кузовов — правила сервера из bootstrap (единая логика
+// автоподбора): тушевозный груз — только тушевозу, 41 паллета не в 33-й.
+const bodyMatches = (data, orderBodyType, vehicleTypeName) => {
+  const allowed = (data.settings?.bodyCompat || {})[String(orderBodyType || '').trim()];
+  return !allowed || allowed.includes(String(vehicleTypeName || '').trim());
+};
 
 const DAY = 86_400_000;
 const dayIso = ms => new Date(ms).toISOString().slice(0, 10);
@@ -17,10 +25,11 @@ const fmtDt = value => new Date(value).toLocaleString('ru-RU',
 
 // Незакрытая сетка зоны за период: план слотов по дням недели минус уже
 // внесённые заявки (facts) — потребность, под которую заявок ещё нет.
+// Возвращает и разбивку по клиентам — «потенциальные заказы из сетки».
 function gridGapForZone(plan, zoneId, fromMs, toMs) {
-  if (!plan?.slots?.length) return 0;
+  const result = { total: 0, byCustomer: new Map() };
+  if (!plan?.slots?.length) return result;
   const monthStart = Date.parse(`${plan.month}-01T00:00:00Z`);
-  let gap = 0;
   const byLeg = new Map();
   for (const slot of plan.slots) {
     if (slot.from_zone_id !== zoneId) continue;
@@ -35,11 +44,15 @@ function gridGapForZone(plan, zoneId, fromMs, toMs) {
     for (const [key, week] of byLeg) {
       const planned = week[weekday] || 0;
       if (!planned) continue;
-      const fact = plan.facts[`${key}|${day}`]?.n || 0;
-      gap += Math.max(0, planned - fact);
+      const gap = Math.max(0, planned - (plan.facts[`${key}|${day}`]?.n || 0));
+      if (!gap) continue;
+      result.total += gap;
+      const customer = key.split('|')[0];
+      result.byCustomer.set(customer, (result.byCustomer.get(customer) || 0) + gap);
     }
   }
-  return Math.round(gap);
+  result.total = Math.round(result.total);
+  return result;
 }
 
 // Расчёт плашек: по каждой зоне потребности, ресурс и баланс за период.
@@ -65,8 +78,15 @@ export function zoneFlows(data, plans, fromIso, toIso, nowMs = Date.now()) {
       Date.parse(order.window_from) < toMs && Date.parse(order.window_to) > fromMs &&
       orderStage(order, data).stage >= 1);
     const noVehicle = zoneOrders.filter(order => orderStage(order, data).stage === 1);
-    const gridGap = (plans || []).reduce((sum, plan) =>
-      sum + gridGapForZone(plan, zone.id, fromMs, toMs), 0);
+    const gridByCustomer = new Map();
+    let gridGap = 0;
+    for (const plan of plans || []) {
+      const gaps = gridGapForZone(plan, zone.id, fromMs, toMs);
+      gridGap += gaps.total;
+      for (const [customer, gap] of gaps.byCustomer) {
+        gridByCustomer.set(customer, (gridByCustomer.get(customer) || 0) + gap);
+      }
+    }
 
     // Ресурс: свободные в зоне без будущего плана + приезжающие в периоде.
     // Свободна — уже СЕЙЧАС (vehicleFreeAt ≤ now): машина в пути считается
@@ -111,9 +131,9 @@ export function zoneFlows(data, plans, fromIso, toIso, nowMs = Date.now()) {
 
     const need = noVehicle.length + gridGap;
     const supply = freeNow.length + arrivingFree.length;
-    return { zone, noVehicle, ordersTotal: zoneOrders.length,
+    return { zone, zoneOrders, noVehicle, ordersTotal: zoneOrders.length,
       sumVat: zoneOrders.reduce((sum, order) => sum + (order.rate_vat || 0), 0),
-      gridGap, freeNow, arriving, arrivingFree, inbound, outbound,
+      gridGap, gridByCustomer, freeNow, arriving, arrivingFree, inbound, outbound,
       customers: Object.entries(customers).sort((a, b) => b[1].n - a[1].n),
       need, supply, balance: supply - need };
   }).filter(tile => tile.need || tile.supply || tile.arriving.length || tile.ordersTotal)
@@ -157,57 +177,141 @@ const arrivingRow = item => `<div class="list-item" data-ft="${item.trip.id}" st
   ${item.hasNext ? '<span class="badge" title="Следующий рейс уже назначен">⏭ занята</span>'
     : '<span class="badge warn" title="Следующий рейс не назначен — доступный ресурс">свободна</span>'}</div>`;
 
-// Плашка — только счётчики, чтобы не замыливался глаз: зона · рейсы ·
-// клиенты / ТС · будут в зоне · направить. Все детали — кликом (окно зоны).
+// Плашка — только счётчики, чтобы не замыливался глаз. Каждая строка —
+// своя вкладка окна зоны: зона → субъекты, рейсы → список заявок,
+// клиенты → клиенты + потенциал сетки, ТС → в зоне и направленные,
+// направить → подбор по логике автоназначения.
 function tileHtml(tile) {
   const toSend = Math.max(0, -tile.balance);
-  return `<div class="scol flow-tile" data-fz="${tile.zone.id}" style="cursor:pointer"
-      title="Открыть зону: заявки, ТС и заказчики списками">
-    <div class="scolh">${escapeHtml(tile.zone.name)} ${balanceBadge(tile)}</div>
-    <div class="flow-kv">📦 Рейсов: <b>${tile.ordersTotal}</b>${tile.noVehicle.length
+  return `<div class="scol flow-tile" data-fz="${tile.zone.id}">
+    <div class="scolh" data-fz-tab="subjects" style="cursor:pointer"
+      title="Субъекты РФ и города зоны">${escapeHtml(tile.zone.name)} ${balanceBadge(tile)}</div>
+    <div class="flow-kv" data-fz-tab="orders" style="cursor:pointer" title="Все подтверждённые заявки периода">
+      📦 Рейсов: <b>${tile.ordersTotal}</b>${tile.noVehicle.length
       ? ` <span class="danger">(без ТС ${tile.noVehicle.length})</span>` : ''}
       ${tile.gridGap ? `<span class="muted" title="План вывоза: слоты сетки без внесённых заявок"> + сетка ~${tile.gridGap}</span>` : ''}</div>
-    <div class="flow-kv">👤 Клиентов: <b>${tile.customers.length}</b>
+    <div class="flow-kv" data-fz-tab="customers" style="cursor:pointer" title="Клиенты зоны и потенциал сетки">
+      👤 Клиентов: <b>${tile.customers.length}</b>
       <span class="muted">${escapeHtml(tile.customers.slice(0, 2).map(([name]) => name.slice(0, 14)).join(', '))}${tile.customers.length > 2 ? '…' : ''}</span></div>
-    <div class="flow-kv">🚛 ТС в зоне: <b>${tile.freeNow.length}</b>
+    <div class="flow-kv" data-fz-tab="vehicles" style="cursor:pointer" title="ТС в зоне и направленные в зону">
+      🚛 ТС в зоне: <b>${tile.freeNow.length}</b>
       · будут: <b>${tile.arriving.length}</b>${tile.arriving.length !== tile.arrivingFree.length
         ? `<span class="muted" title="Свободных среди приезжающих — без следующего рейса"> (своб. ${tile.arrivingFree.length})</span>` : ''}</div>
-    <div class="flow-kv">${toSend ? `➕ Направить: <b class="danger">${toSend}</b>`
+    <div class="flow-kv" data-fz-tab="send" style="cursor:pointer"
+      title="Подбор ТС на незакрытые заявки — по логике автоназначения, с учётом кузова">
+      ${toSend ? `➕ Направить: <b class="danger">${toSend}</b>`
       : tile.balance > 0 ? `Свободный ресурс: <b>+${tile.balance}</b> — нужны грузы`
       : '✓ Зона закрыта'}</div>
   </div>`;
 }
 
-function zoneDialog(tile, context, data) {
+// Вкладка «Направить»: заявки без ТС + кандидаты по логике автоназначения —
+// ночной черновик подбора первым, затем matchVehicles с фильтром кузова.
+function sendTabHtml(tile, data) {
+  if (!tile.noVehicle.length) {
+    return `<p class="muted">Незакрытых заявок нет.${tile.balance > 0
+      ? ` Свободный ресурс +${tile.balance} — сюда нужны грузы (задача продаж).` : ''}</p>`;
+  }
+  const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
+  return tile.noVehicle.map(order => {
+    const draft = (data.assignDrafts || []).find(item => item.order_id === order.id);
+    const candidates = matchVehicles(data, order.from_name, order.window_from,
+      addressById(order.from_address_id))
+      .filter(item => bodyMatches(data, order.body_type, item.vehicle.type_name))
+      .filter(item => !draft || item.vehicle.id !== draft.vehicle_id)
+      .slice(0, 3);
+    const candidateRow = (plate, typeName, note, extra) => `
+      <div class="list-item"><b class="mono">${escapeHtml(plate)}</b>
+        <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escapeHtml(typeName || '')}${note ? ` · ${note}` : ''}</span>${extra || ''}</div>`;
+    return `<div class="flow-send" style="margin-bottom:10px">
+      <div class="list-item" data-fo="${order.id}" style="cursor:pointer" title="Открыть назначение ТС">
+        <span style="flex:1;min-width:0"><b>${escapeHtml(order.customer_name)}</b>
+          <small class="muted" style="display:block">${escapeHtml((order.from_point || order.from_name || '').slice(0, 30))} →
+            ${escapeHtml((order.to_point || order.to_name || '').slice(0, 30))}
+            · окно ${fmtD(order.window_from)} · ${escapeHtml(order.body_type || 'Реф')}</small></span>
+        <b>${money(order.rate_vat)}</b></div>
+      <div class="list" style="margin:2px 0 0 14px">
+        ${draft ? candidateRow(draft.vehicle_plate, '', `порожняк ${Math.round(draft.empty_km || 0)} км`,
+          '<span class="badge ok" title="Рекомендация ночного подбора/стыковки">⚡ подбор</span>') : ''}
+        ${candidates.map(item => candidateRow(item.vehicle.plate, item.vehicle.type_name,
+          `${escapeHtml(item.zoneName || '')}${item.emptyKm != null ? ` · подгон ~${Math.round(item.emptyKm)} км` : ''}${item.stillRunning ? ' · ещё едет' : ''}`,
+          driverRatingBadge(driverRatingOf(data, item.vehicle.id), { small: true }))).join('')
+          || (draft ? '' : '<p class="muted" style="margin:2px 8px">свободных ТС с подходящим кузовом нет — смотреть соседние зоны</p>')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+const ZONE_TABS = [
+  ['subjects', '🗺 Субъекты'], ['orders', '📦 Рейсы'], ['customers', '👤 Клиенты'],
+  ['vehicles', '🚛 ТС'], ['send', '➕ Направить']
+];
+
+function zoneDialog(tile, context, data, tab = 'subjects') {
+  const zoneRef = (data.reference?.zones || []).find(zone => zone.id === tile.zone.id);
+  const body = {
+    subjects: () => `<p class="muted">Города и субъекты, по которым адреса попадают в зону
+        «${escapeHtml(tile.zone.name)}» (справочник алиасов; правится в «Настройки → Геозоны»).</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${(zoneRef?.aliases || [])
+        .map(alias => `<span class="badge">${escapeHtml(alias)}</span>`).join('')
+        || '<p class="muted">У зоны нет алиасов.</p>'}</div>`,
+    orders: () => `<div class="list">${tile.zoneOrders.map(order => {
+        const stage = orderStage(order, data);
+        return `<div class="list-item" data-fo="${order.id}" style="cursor:pointer"
+            title="${stage.stage === 1 ? 'Назначить ТС' : 'Карточка рейса'}">
+          <span style="flex:1;min-width:0">${escapeHtml(order.customer_name)}
+            <small class="muted" style="display:block">${escapeHtml((order.from_point || order.from_name || '').slice(0, 28))} →
+              ${escapeHtml((order.to_point || order.to_name || '').slice(0, 28))}
+              · окно ${fmtD(order.window_from)} · ${escapeHtml(order.body_type || 'Реф')}</small></span>
+          ${stage.stage === 1 ? '<span class="badge bad">⚠ без ТС</span>'
+            : `<span class="badge"><b class="mono">${escapeHtml(stage.plate || '')}</b></span>`}
+          <b>${money(order.rate_vat)}</b></div>`;
+      }).join('') || '<p class="muted">Подтверждённых заявок в периоде нет.</p>'}</div>`,
+    customers: () => {
+      const names = new Set([...tile.customers.map(([name]) => name), ...tile.gridByCustomer.keys()]);
+      return `<div class="list">${[...names].map(name => {
+        const c = tile.customers.find(([n]) => n === name)?.[1];
+        const potential = Math.round(tile.gridByCustomer.get(name) || 0);
+        return `<div class="list-item" data-fc="${escapeHtml(name)}" style="cursor:pointer" title="Карточка клиента">
+          <span style="flex:1;min-width:0">${escapeHtml(name)}</span>
+          <span class="muted">${c ? `${c.n} заяв.${c.noVeh ? ` (без ТС ${c.noVeh})` : ''} · ${money(c.sumVat)}` : 'заявок нет'}</span>
+          ${potential ? `<span class="badge warn" title="Слоты сетки плана вывоза за период, под которые заявки ещё не внесены">потенциал +${potential}</span>` : ''}</div>`;
+      }).join('') || '<p class="muted">Клиентов в периоде нет.</p>'}</div>`;
+    },
+    vehicles: () => `<div class="scolh">🚛 В зоне сейчас <span>${tile.freeNow.length}</span></div>
+      <div class="list">${tile.freeNow.map(vehicle => vehicleRow(vehicle)).join('') || '<p class="muted">нет</p>'}</div>
+      <div class="scolh" style="margin-top:8px">📥 Направлены в зону (приедут в периоде) <span>${tile.arriving.length}</span></div>
+      <div class="list">${tile.arriving.map(arrivingRow).join('') || '<p class="muted">нет</p>'}</div>`,
+    send: () => sendTabHtml(tile, data)
+  };
   context.showModal(`<h2>${escapeHtml(tile.zone.name)} ${balanceBadge(tile)}</h2>
-    <p class="muted">Потребности: без ТС ${tile.noVehicle.length}${tile.gridGap ? ` + сетка ~${tile.gridGap}` : ''}
-      · ресурс: свободны ${tile.freeNow.length} + освободятся ${tile.arrivingFree.length}
-      (приедут всего ${tile.arriving.length})</p>
-    <div class="salesboard">
-      <div class="scol"><div class="scolh">⚠ Заявки без ТС <span>${tile.noVehicle.length}</span></div>
-        <div class="list">${tile.noVehicle.map(orderRow).join('') || '<p class="muted">нет</p>'}</div>
-        <div class="scolh" style="margin-top:8px">👤 Заказчики периода</div>
-        <div class="list">${tile.customers.map(([name, c]) => `
-          <div class="list-item" data-fc="${escapeHtml(name)}" style="cursor:pointer">
-            <span style="flex:1">${escapeHtml(name)}</span>
-            <span class="muted">${c.n} заяв. · ${money(c.sumVat)}</span></div>`).join('') || '<p class="muted">нет</p>'}</div></div>
-      <div class="scol"><div class="scolh">🚛 Свободны в зоне <span>${tile.freeNow.length}</span></div>
-        <div class="list">${tile.freeNow.map(vehicle => vehicleRow(vehicle)).join('') || '<p class="muted">нет</p>'}</div>
-        <div class="scolh" style="margin-top:8px">📥 Приедут в периоде <span>${tile.arriving.length}</span></div>
-        <div class="list">${tile.arriving.map(arrivingRow).join('') || '<p class="muted">нет</p>'}</div></div>
+    <div class="salesfilter" style="margin:6px 0 10px;flex-wrap:wrap">
+      ${ZONE_TABS.map(([key, label]) => `<button type="button"
+        class="button small ${key === tab ? '' : 'ghost'}" data-fz-dialog-tab="${key}">${label}</button>`).join('')}
     </div>
+    <div style="max-height:62vh;overflow:auto">${body[tab] ? body[tab]() : ''}</div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
   'wide');
   // Модалка живёт вне контейнера вкладки — клики по заявкам/ТС/клиентам
   // обрабатываются здесь же (заявка → назначение, рейс → карточка).
   document.getElementById('modalRoot').querySelector('.modal').onclick = event => {
+    const tabEl = event.target.closest('[data-fz-dialog-tab]');
     const orderEl = event.target.closest('[data-fo]');
     const tripEl = event.target.closest('[data-ft]');
     const vehEl = event.target.closest('[data-fv]');
     const custEl = event.target.closest('[data-fc]');
-    if (orderEl) {
+    if (tabEl) {
+      zoneDialog(tile, context, data, tabEl.dataset.fzDialogTab);
+    } else if (orderEl) {
       const order = data.orders.find(item => item.id === orderEl.dataset.fo);
-      if (order) { context.closeModal(); context.openAssign(order); }
+      if (!order) return;
+      context.closeModal();
+      // Из вкладок: заявка без ТС — в назначение, с рейсом — в карточку.
+      if (order.trip_id && orderStage(order, data).stage >= 2) {
+        const trip = data.trips.find(item => item.id === order.trip_id);
+        if (trip) { context.openTrip(trip); return; }
+      }
+      context.openAssign(order);
     } else if (tripEl) {
       const trip = data.trips.find(item => item.id === tripEl.dataset.ft);
       if (trip) { context.closeModal(); context.openTrip(trip); }
@@ -290,7 +394,8 @@ export async function renderFlows(container, context) {
     if (custEl) { customerCardDialog(custEl.dataset.fc, context); return; }
     if (zoneEl) {
       const tile = tiles.find(item => item.zone.id === zoneEl.dataset.fz);
-      if (tile) zoneDialog(tile, context, data);
+      const tab = event.target.closest('[data-fz-tab]')?.dataset.fzTab || 'subjects';
+      if (tile) zoneDialog(tile, context, data, tab);
     }
   };
 }
