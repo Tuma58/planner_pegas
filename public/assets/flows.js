@@ -8,6 +8,24 @@ import { vehicleZoneAt, vehicleFreeAt } from './transfer.js';
 import { customerCardDialog } from './customer-card.js';
 import { orderStage } from './pipeline.js';
 import { matchVehicles } from './sales.js';
+import { roundByKey } from './rounds.js';
+
+// Круг машины из «Плана парка»: бейдж «🎡 К1» — предупреждение, что машина
+// закреплена за маятником и её плечи расписаны (с866ко58 на К1 предлагалась
+// черноземским заявкам без пометки).
+const ROUND_LABEL = { k1: 'К1', k2: 'К2', k2p: 'К2п', k3: 'К3', k4a: 'К4а',
+  k4b: 'К4б', k5: 'К5', k6: 'К6', k7: 'К7', k8: 'К8' };
+const roundOfVehicle = (data, vehicleId) =>
+  (data.roundPlans || []).find(item => item.vehicle_id === vehicleId)?.round_key || null;
+const roundBadge = roundKey => roundKey
+  ? `<span class="badge" title="Закреплена за кругом ${ROUND_LABEL[roundKey] || roundKey} в Плане парка — направлять в другое плечо только осознанно">🎡 ${ROUND_LABEL[roundKey] || roundKey}</span>`
+  : '';
+// Плечо заявки входит в круг машины? Сверяем зоны плеча с legs шаблона.
+const legFitsRound = (roundKey, fromName, toName) => {
+  const round = roundByKey(roundKey);
+  if (!round) return true;
+  return round.legs.some(leg => leg.from === fromName && leg.to === toName);
+};
 
 // Совместимость кузовов — правила сервера из bootstrap (единая логика
 // автоподбора): тушевозный груз — только тушевозу, 41 паллета не в 33-й.
@@ -65,9 +83,12 @@ export function zoneFlows(data, plans, fromIso, toIso, nowMs = Date.now()) {
     !['cancelled', 'rejected'].includes(order.status));
   const workVehicles = (data.vehicles || []).filter(vehicle => vehicle.status === 'work');
 
-  // Машина «направлена» — у неё есть будущий план-рейс: ресурсом не считаем.
+  // Машина «направлена» — у неё есть будущее задание: план-рейс ИЛИ уже
+  // проведённый run-рейс со стартом в будущем (диспетчер выводит заранее —
+  // р892ху58 висела «свободна в Урале» при двух назначенных рейсах).
   const plannedVehicle = new Set(trips
-    .filter(trip => trip.status === 'plan' && Date.parse(trip.starts_at) >= nowMs)
+    .filter(trip => ['plan', 'run'].includes(trip.status) &&
+      Date.parse(trip.starts_at) >= nowMs)
     .map(trip => trip.vehicle_id));
 
   return zones.map(zone => {
@@ -99,7 +120,7 @@ export function zoneFlows(data, plans, fromIso, toIso, nowMs = Date.now()) {
       .filter(trip => ['plan', 'run'].includes(trip.status) && trip.to_zone_id === zone.id &&
         Date.parse(trip.ends_at) >= Math.max(fromMs, nowMs) && Date.parse(trip.ends_at) < toMs)
       .map(trip => ({ trip, hasNext: trips.some(next => next.vehicle_id === trip.vehicle_id &&
-        next.status === 'plan' && next.id !== trip.id &&
+        ['plan', 'run'].includes(next.status) && next.id !== trip.id &&
         Date.parse(next.starts_at) >= Date.parse(trip.ends_at)) }))
       .sort((a, b) => a.trip.ends_at.localeCompare(b.trip.ends_at));
     const arrivingFree = arriving.filter(item => !item.hasNext);
@@ -170,12 +191,13 @@ const orderRow = order => `<div class="list-item" data-fo="${order.id}" style="c
       · окно ${fmtD(order.window_from)}</small></span>
   <b>${money(order.rate_vat)}</b></div>`;
 
-const arrivingRow = item => `<div class="list-item" data-ft="${item.trip.id}" style="cursor:pointer"
+const arrivingRow = (item, data) => `<div class="list-item" data-ft="${item.trip.id}" style="cursor:pointer"
     title="Карточка рейса">
   <b class="mono">${escapeHtml(item.trip.vehicle_plate || '')}</b>
   <span class="muted" style="flex:1">приедет ${fmtDt(item.trip.ends_at)}</span>
-  ${item.hasNext ? '<span class="badge" title="Следующий рейс уже назначен">⏭ занята</span>'
-    : '<span class="badge warn" title="Следующий рейс не назначен — доступный ресурс">свободна</span>'}</div>`;
+  ${data ? roundBadge(roundOfVehicle(data, item.trip.vehicle_id)) : ''}
+  ${item.hasNext ? '<span class="badge" title="Следующее задание уже назначено (план или проведённый рейс)">⏭ есть задание</span>'
+    : '<span class="badge warn" title="Следующего задания нет — доступный ресурс, назначить до прибытия">⚠ без задания</span>'}</div>`;
 
 // Плашка — только счётчики, чтобы не замыливался глаз. Каждая строка —
 // своя вкладка окна зоны: зона → субъекты, рейсы → список заявок,
@@ -196,7 +218,7 @@ function tileHtml(tile) {
     <div class="flow-kv" data-fz-tab="vehicles" style="cursor:pointer" title="ТС в зоне и направленные в зону">
       🚛 ТС в зоне: <b>${tile.freeNow.length}</b>
       · будут: <b>${tile.arriving.length}</b>${tile.arriving.length !== tile.arrivingFree.length
-        ? `<span class="muted" title="Свободных среди приезжающих — без следующего рейса"> (своб. ${tile.arrivingFree.length})</span>` : ''}</div>
+        ? `<span class="muted" title="Приезжают без следующего задания — доступный ресурс"> (без задания ${tile.arrivingFree.length})</span>` : ''}</div>
     <div class="flow-kv" data-fz-tab="send" style="cursor:pointer"
       title="Подбор ТС на незакрытые заявки — по логике автоназначения, с учётом кузова">
       ${toSend ? `➕ Направить: <b class="danger">${toSend}</b>`
@@ -219,6 +241,11 @@ function sendTabHtml(tile, data) {
       addressById(order.from_address_id))
       .filter(item => bodyMatches(data, order.body_type, item.vehicle.type_name))
       .filter(item => !draft || item.vehicle.id !== draft.vehicle_id)
+      .map(item => ({ ...item, round: roundOfVehicle(data, item.vehicle.id) }))
+      // Машины, закреплённые за ЧУЖИМ кругом, — в конец: их плечи расписаны.
+      .sort((a, b) =>
+        Number(Boolean(a.round) && !legFitsRound(a.round, order.from_name, order.to_name))
+        - Number(Boolean(b.round) && !legFitsRound(b.round, order.from_name, order.to_name)))
       .slice(0, 3);
     const candidateRow = (plate, typeName, note, extra) => `
       <div class="list-item"><b class="mono">${escapeHtml(plate)}</b>
@@ -235,7 +262,7 @@ function sendTabHtml(tile, data) {
           '<span class="badge ok" title="Рекомендация ночного подбора/стыковки">⚡ подбор</span>') : ''}
         ${candidates.map(item => candidateRow(item.vehicle.plate, item.vehicle.type_name,
           `${escapeHtml(item.zoneName || '')}${item.emptyKm != null ? ` · подгон ~${Math.round(item.emptyKm)} км` : ''}${item.stillRunning ? ' · ещё едет' : ''}`,
-          driverRatingBadge(driverRatingOf(data, item.vehicle.id), { small: true }))).join('')
+          roundBadge(item.round) + driverRatingBadge(driverRatingOf(data, item.vehicle.id), { small: true }))).join('')
           || (draft ? '' : '<p class="muted" style="margin:2px 8px">свободных ТС с подходящим кузовом нет — смотреть соседние зоны</p>')}
       </div>
     </div>`;
@@ -279,9 +306,10 @@ function zoneDialog(tile, context, data, tab = 'subjects') {
       }).join('') || '<p class="muted">Клиентов в периоде нет.</p>'}</div>`;
     },
     vehicles: () => `<div class="scolh">🚛 В зоне сейчас <span>${tile.freeNow.length}</span></div>
-      <div class="list">${tile.freeNow.map(vehicle => vehicleRow(vehicle)).join('') || '<p class="muted">нет</p>'}</div>
+      <div class="list">${tile.freeNow.map(vehicle =>
+        vehicleRow(vehicle, roundBadge(roundOfVehicle(data, vehicle.id)))).join('') || '<p class="muted">нет</p>'}</div>
       <div class="scolh" style="margin-top:8px">📥 Направлены в зону (приедут в периоде) <span>${tile.arriving.length}</span></div>
-      <div class="list">${tile.arriving.map(arrivingRow).join('') || '<p class="muted">нет</p>'}</div>`,
+      <div class="list">${tile.arriving.map(item => arrivingRow(item, data)).join('') || '<p class="muted">нет</p>'}</div>`,
     send: () => sendTabHtml(tile, data)
   };
   context.showModal(`<h2>${escapeHtml(tile.zone.name)} ${balanceBadge(tile)}</h2>

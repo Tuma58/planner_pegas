@@ -1556,7 +1556,10 @@ async function api(request, response, url) {
           d.computed_at, v.plate vehicle_plate
         FROM assign_drafts d JOIN vehicles v ON v.id=d.vehicle_id
         JOIN orders o ON o.id=d.order_id
-        WHERE d.outcome IS NULL AND o.trip_id IS NULL`).all()
+        WHERE d.outcome IS NULL AND o.trip_id IS NULL`).all(),
+      // Закрепление машин по кругам («План парка»): «Потоки» помечают
+      // кандидатов чужого направления бейджем круга.
+      roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
     });
   }
 

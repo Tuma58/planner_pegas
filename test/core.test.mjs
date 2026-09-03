@@ -2859,4 +2859,14 @@ test('потоки: баланс зоны считает потребности 
   assert.equal(moscow.balance, 0);
   // Приток в Москву — из Дома 2 машины.
   assert.equal(moscow.inbound['Дом'], 2);
+
+  // Проведённый run-рейс с БУДУЩИМ стартом — это уже задание: машина
+  // не «свободна в зоне» (кейс р892ху58: висела свободной в Урале).
+  const withFutureRun = { ...data, trips: [...data.trips,
+    { id: 't5', vehicle_id: 'v1', vehicle_plate: 'а001', status: 'run',
+      from_zone_id: 'zM', to_zone_id: 'zD', to_name: 'Дом',
+      starts_at: iso(6), ends_at: iso(30) }] };
+  const tiles2 = zoneFlows(withFutureRun, [], day(0), day(24), now);
+  const moscow2 = tiles2.find(tile => tile.zone.name === 'Москва');
+  assert.equal(moscow2.freeNow.length, 0, 'будущий run-рейс = задание');
 });
