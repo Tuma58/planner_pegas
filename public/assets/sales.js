@@ -1941,10 +1941,22 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
   document.querySelectorAll('[data-usual]').forEach(button =>
     button.addEventListener('click', () => { select.value = button.dataset.usual; showNext(); }));
   document.getElementById('assignOk').onclick = async () => {
+    // Замена рекомендации подбора — только с причиной: она уходит в отчёт
+    // руководителя «доверие автоподбору» и в правила улучшения подбора.
+    const draft = (data.assignDrafts || []).find(item => item.order_id === order.id);
+    let overrideReason;
+    if (draft && select.value && draft.vehicle_id !== select.value) {
+      overrideReason = prompt(`Подбор рекомендует ${draft.vehicle_plate || 'другое ТС'}${
+        draft.empty_km != null ? ` (порожняк ${Math.round(draft.empty_km)} км)` : ''
+      }.\nПочему назначаете другое ТС? (обязательно)`);
+      if (overrideReason === null) return;
+      if (!overrideReason.trim()) { toast('Без причины замены назначение не принимается', 'error'); return; }
+    }
     try {
       await api(`/api/orders/${order.id}/assign`, {
         method: 'POST',
-        body: JSON.stringify({ vehicleId: select.value, autoConfirm: Boolean(options.autoConfirm) })
+        body: JSON.stringify({ vehicleId: select.value, autoConfirm: Boolean(options.autoConfirm),
+          ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}) })
       });
       closeModal();
       toast(options.autoConfirm

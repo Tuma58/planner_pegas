@@ -442,6 +442,9 @@ function migrateColumns(db) {
   };
   ensure('zones', 'latitude', 'REAL');
   ensure('zones', 'longitude', 'REAL');
+  // Причина замены рекомендованного подбором ТС: заполняется логистом при
+  // назначении другого ТС — без неё сервер назначение не принимает.
+  ensure('assign_drafts', 'override_reason', 'TEXT');
   ensure('customers', 'trips_per_month', 'REAL NOT NULL DEFAULT 0');
   ensure('orders', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'body_type', "TEXT NOT NULL DEFAULT ''");

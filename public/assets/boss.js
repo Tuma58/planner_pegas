@@ -474,6 +474,18 @@ export async function renderBoss(container, context) {
           Пробег дня: гружёный <b>${Math.round(snap.loadedKm || 0)}</b> км · порожний
           <b>${Math.round(snap.emptyKm || 0)}</b> км (${pctOf(snap.emptyRatio)})
           · КТГ ${pctOf(u.ktg)} · КВЛ ${pctOf(u.kvl)} · КИП ${pctOf(u.kip)}</div>
+        ${(snap.assignTrust?.accepted || snap.assignTrust?.overridden) ? (() => {
+          const trust = snap.assignTrust;
+          const total = trust.accepted + trust.overridden;
+          return `<div class="task-balance-line ${trust.overridden > trust.accepted ? 'bad' : 'ok'}">
+            Доверие автоподбору: принято <b>${trust.accepted}</b> из ${total}
+            (${Math.round(trust.accepted / total * 100)}%) · заменено <b>${trust.overridden}</b></div>
+          ${trust.overrides.length ? `<div class="task-sec"><b>Замены рекомендаций (причины логиста)</b>
+            ${trust.overrides.slice(0, 10).map(item => `<div class="muted" style="margin:2px 0">
+              ${escapeHtml(item.recommended)} → <b>${escapeHtml(item.assigned || '?')}</b>
+              · ${escapeHtml(item.reason || 'без причины (до ввода правила)')}
+              · <small>${escapeHtml((item.customer || '').slice(0, 26))}</small></div>`).join('')}</div>` : ''}`;
+        })() : ''}
         <div class="task-sec"><b>В рейсе (${buckets.trip.length})</b>${chipList(buckets.trip)}</div>
         <div class="task-sec"><b>⚠ Простой без причины (${buckets.idle.length})</b>${chipList(buckets.idle, idleSince)}</div>
         <div class="task-sec"><b>Ремонт (${buckets.repair.length})</b>${chipList(buckets.repair)}</div>

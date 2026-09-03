@@ -151,10 +151,20 @@ function pickOrderDialog(request, queue, data, context) {
     </div>`);
   document.querySelectorAll('[data-pick-order]').forEach(button =>
     button.addEventListener('click', async () => {
+      // У заявки может быть рекомендация подбора на ДРУГУЮ машину —
+      // замена только с причиной (уходит в отчёт «доверие автоподбору»).
+      const draft = (data.assignDrafts || []).find(item => item.order_id === button.dataset.pickOrder);
+      let overrideReason;
+      if (draft && draft.vehicle_id !== request.vehicle.id) {
+        overrideReason = prompt(`Подбор рекомендует на эту заявку ${draft.vehicle_plate || 'другое ТС'}.\nПочему назначаете ${request.vehicle.plate}? (обязательно)`);
+        if (overrideReason === null) return;
+        if (!overrideReason.trim()) { toast('Без причины замены назначение не принимается', 'error'); return; }
+      }
       try {
         await api(`/api/orders/${button.dataset.pickOrder}/assign`, {
           method: 'POST',
-          body: JSON.stringify({ vehicleId: request.vehicle.id, autoConfirm: true })
+          body: JSON.stringify({ vehicleId: request.vehicle.id, autoConfirm: true,
+            ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}) })
         });
         context.closeModal();
         toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);

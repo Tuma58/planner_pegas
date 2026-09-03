@@ -671,6 +671,26 @@ export function reportSnapshot(db, fromValue, toValue) {
     lostProfit: Math.round(lostProfit)
   };
 
+  // Доверие автоподбору за период: сколько рекомендаций принято, сколько
+  // заменено и почему — причины замен обязательны и копятся здесь.
+  const trustRow = db.prepare(`SELECT
+      SUM(CASE WHEN outcome='accepted' THEN 1 ELSE 0 END) accepted,
+      SUM(CASE WHEN outcome='overridden' THEN 1 ELSE 0 END) overridden
+    FROM assign_drafts WHERE resolved_at>=? AND resolved_at<?`).get(from, to);
+  const assignTrust = {
+    accepted: trustRow.accepted || 0,
+    overridden: trustRow.overridden || 0,
+    overrides: db.prepare(`SELECT v.plate recommended, d.override_reason reason,
+        d.resolved_at, va.plate assigned, o.customer_name customer
+      FROM assign_drafts d
+      JOIN vehicles v ON v.id=d.vehicle_id
+      JOIN orders o ON o.id=d.order_id
+      LEFT JOIN trips t ON t.id=o.trip_id
+      LEFT JOIN vehicles va ON va.id=t.vehicle_id
+      WHERE d.outcome='overridden' AND d.resolved_at>=? AND d.resolved_at<?
+      ORDER BY d.resolved_at DESC LIMIT 40`).all(from, to)
+  };
+
   const repairKmTotal = db.prepare(`SELECT COALESCE(SUM(repair_km),0) total
     FROM vehicle_dispositions WHERE kind='repair' AND starts_at>=? AND starts_at<?`)
     .get(from, to).total;
@@ -679,6 +699,7 @@ export function reportSnapshot(db, fromValue, toValue) {
 
   return {
     utilization,
+    assignTrust,
     emptyKm: Math.round(emptyKmTotal),
     repairKm: Math.round(repairKmTotal),
     loadedKm: Math.round(loadedKmTotal),

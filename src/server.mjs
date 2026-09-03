@@ -2825,13 +2825,36 @@ async function api(request, response, url) {
     const vehicle = db.prepare('SELECT * FROM vehicles WHERE id=?').get(body.vehicleId);
     if (!order) return errorJson(response, 404, 'Заявка не найдена');
     if (!vehicle || vehicle.status !== 'work') return errorJson(response, 422, 'Выберите доступное ТС');
+    // Замена рекомендации подбора — только с причиной: иначе «доверие
+    // подбору» не разобрать (обоснованная замена или привычка), а причины —
+    // сырьё для улучшения правил автоназначения.
+    const draft = db.prepare(`SELECT d.vehicle_id, d.empty_km, v.plate FROM assign_drafts d
+      JOIN vehicles v ON v.id=d.vehicle_id
+      WHERE d.order_id=? AND d.outcome IS NULL`).get(order.id);
+    const overrideReason = String(body.overrideReason || '').trim();
+    if (draft && draft.vehicle_id !== vehicle.id && !overrideReason) {
+      return errorJson(response, 422, `Подбор рекомендует ${draft.plate}${
+        draft.empty_km != null ? ` (порожняк ${Math.round(draft.empty_km)} км)` : ''
+      } — назначая другое ТС, укажите причину замены`);
+    }
     const tripId = assignOrderCore(order, vehicle, user, { distanceKm: body.distanceKm });
+    // Итог черновика фиксируем сразу (не дожидаясь сторожа): принял или
+    // заменил с причиной.
+    if (draft) {
+      db.prepare(`UPDATE assign_drafts SET outcome=?, override_reason=?,
+        resolved_at=CURRENT_TIMESTAMP WHERE order_id=?`)
+        .run(draft.vehicle_id === vehicle.id ? 'accepted' : 'overridden',
+          draft.vehicle_id === vehicle.id ? null : overrideReason, order.id);
+    }
     // Назначение из вкладки «Логист» подтверждается автоматически (логист
     // назначил сам — подтверждать себя не нужно) и сразу уходит диспетчеру.
     // Назначение из продаж логист обязан подтвердить вручную.
     if (body.autoConfirm) confirmAssigned(tripId, order, vehicle, user);
     audit(db, user, 'assign', 'order', order.id,
-      { vehicleId: vehicle.id, tripId, autoConfirm: Boolean(body.autoConfirm) }, requestIp(request));
+      { vehicleId: vehicle.id, tripId, autoConfirm: Boolean(body.autoConfirm),
+        ...(draft && draft.vehicle_id !== vehicle.id
+          ? { recommendedVehicleId: draft.vehicle_id, overrideReason } : {}) },
+      requestIp(request));
     return json(response, 201, { tripId });
   }
 
