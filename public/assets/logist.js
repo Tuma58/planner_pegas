@@ -11,7 +11,7 @@ import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
 import { assignDeadlines, deadlineBadge as deadlineBadgeHtml } from './assign-deadline.js';
-import { autoRequests, editOrderDialog, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress, salesTaskFor } from './sales.js';
+import { autoRequests, bodyTypeCompatible, editOrderDialog, matchVehicles, nextEventHint, nextVehicleEvent, plannedKmBetween, rejectOrderDialog, resolveAddress, salesTaskFor } from './sales.js';
 
 const overlaps = (a, b) =>
   Date.parse(a.starts_at) < Date.parse(b.ends_at) && Date.parse(b.starts_at) < Date.parse(a.ends_at);
@@ -32,21 +32,38 @@ function vehicleBusy(vehicleId, trip, data) {
 // Используется логистом и диспетчером (внештатные ситуации).
 export function replaceVehicleDialog(trip, data, context) {
   const loadMs = Date.parse(trip.starts_at);
+  // Порядок замены — по логике автоназначения, а не по алфавиту госномера
+  // (кейс «569 → 669»: первым предлагался первый свободный по алфавиту).
+  // Свободные — с подгоном к месту погрузки рейса и рубежом кузова, затем
+  // занятые; несовместимый кузов — вниз с пометкой «⚠ кузов».
+  const order = trip.order_id ? (data.orders || []).find(item => item.id === trip.order_id) : null;
+  const fromAddress = order?.from_address_id
+    ? (data.reference.addresses || []).find(item => item.id === order.from_address_id) : null;
+  const matchOrder = new Map(matchVehicles(data, trip.from_name, trip.starts_at,
+    fromAddress, trip.from_point).map((item, index) => [item.vehicle.id, { index, emptyKm: item.emptyKm }]));
   const candidates = data.vehicles
-    .map(vehicle => ({ vehicle, busy: vehicle.id === trip.vehicle_id ? 'текущая' : vehicleBusy(vehicle.id, trip, data) }))
-    .sort((a, b) => Number(Boolean(a.busy)) - Number(Boolean(b.busy)) || a.vehicle.plate.localeCompare(b.vehicle.plate));
+    .map(vehicle => ({ vehicle,
+      busy: vehicle.id === trip.vehicle_id ? 'текущая' : vehicleBusy(vehicle.id, trip, data),
+      match: matchOrder.get(vehicle.id),
+      bodyOk: bodyTypeCompatible(data, trip.body_type, vehicle.type_name) }))
+    .sort((a, b) => Number(Boolean(a.busy)) - Number(Boolean(b.busy)) ||
+      Number(b.bodyOk) - Number(a.bodyOk) ||
+      (a.match?.index ?? Infinity) - (b.match?.index ?? Infinity) ||
+      a.vehicle.plate.localeCompare(b.vehicle.plate));
   context.showModal(`<h2>Замена ТС на маршруте</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || 'без заказчика')}
       · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}
-      · сейчас: <span class="mono">${escapeHtml(trip.vehicle_plate)}</span></p>
+      · сейчас: <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>${trip.body_type ? ` · кузов: ${escapeHtml(trip.body_type)}` : ''}</p>
     <input id="replaceVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off"
       style="width:100%;margin-bottom:8px">
     <div class="list" style="max-height:320px;overflow:auto;margin-bottom:10px">
-      ${candidates.map(({ vehicle, busy }) => `<button type="button" class="list-item sugtruck"
+      ${candidates.map(({ vehicle, busy, match, bodyOk }) => `<button type="button" class="list-item sugtruck"
         data-replace-vehicle="${vehicle.id}" ${vehicle.id === trip.vehicle_id ? 'disabled' : ''}>
         <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(vehicle.plate)}</strong>
-        <small class="muted"> · ${escapeHtml(vehicle.type_name || '')} · ${escapeHtml(vehicle.driver_name || 'без водителя')}</small>
+        <small class="muted"> · ${escapeHtml(vehicle.type_name || '')} · ${escapeHtml(vehicle.driver_name || 'без водителя')}${
+          match?.emptyKm != null && !busy ? ` · подгон ~${Math.round(match.emptyKm)} км` : ''}</small>
         ${busy ? '' : nextEventHint(nextVehicleEvent(data, vehicle.id, loadMs), loadMs)}</span>
+        ${bodyOk ? '' : `<span class="badge bad" title="Кузов не подходит под груз (${escapeHtml(trip.body_type || '')})">⚠ кузов</span>`}
         <span class="badge ${busy ? 'warn' : 'ok'}" style="margin-left:auto">${busy ? escapeHtml(busy) : 'свободна'}</span>
       </button>`).join('')}
     </div>

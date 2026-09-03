@@ -7,7 +7,7 @@ import { api, driverRatingBadge, driverRatingOf, escapeHtml, money, rangePickerH
 import { vehicleZoneAt, vehicleFreeAt } from './transfer.js';
 import { customerCardDialog } from './customer-card.js';
 import { orderStage } from './pipeline.js';
-import { matchVehicles } from './sales.js';
+import { bodyTypeCompatible, matchVehicles } from './sales.js';
 import { roundByKey } from './rounds.js';
 
 // Круг машины из «Плана парка»: бейдж «🎡 К1» — предупреждение, что машина
@@ -25,13 +25,6 @@ const legFitsRound = (roundKey, fromName, toName) => {
   const round = roundByKey(roundKey);
   if (!round) return true;
   return round.legs.some(leg => leg.from === fromName && leg.to === toName);
-};
-
-// Совместимость кузовов — правила сервера из bootstrap (единая логика
-// автоподбора): тушевозный груз — только тушевозу, 41 паллета не в 33-й.
-const bodyMatches = (data, orderBodyType, vehicleTypeName) => {
-  const allowed = (data.settings?.bodyCompat || {})[String(orderBodyType || '').trim()];
-  return !allowed || allowed.includes(String(vehicleTypeName || '').trim());
 };
 
 const DAY = 86_400_000;
@@ -239,7 +232,7 @@ function sendTabHtml(tile, data) {
     const draft = (data.assignDrafts || []).find(item => item.order_id === order.id);
     const candidates = matchVehicles(data, order.from_name, order.window_from,
       addressById(order.from_address_id), order.from_point)
-      .filter(item => bodyMatches(data, order.body_type, item.vehicle.type_name))
+      .filter(item => bodyTypeCompatible(data, order.body_type, item.vehicle.type_name))
       .filter(item => !draft || item.vehicle.id !== draft.vehicle_id)
       .map(item => ({ ...item, round: roundOfVehicle(data, item.vehicle.id) }))
       // Машины, закреплённые за ЧУЖИМ кругом, — в конец: их плечи расписаны.

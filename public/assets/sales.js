@@ -621,6 +621,13 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
 // Кандидаты на назначение: свободные в зоне отправления к началу окна, затем ближайшие.
 // Занятость определяется точным пересечением по времени — две заявки в один день
 // с разным временем погрузки не конфликтуют.
+// Совместимость кузовов — правила сервера из bootstrap (единая логика
+// автоподбора): тушевозный груз — только тушевозу, 41 паллета не в 33-й.
+export function bodyTypeCompatible(data, orderBodyType, vehicleTypeName) {
+  const allowed = (data.settings?.bodyCompat || {})[String(orderBodyType || '').trim()];
+  return !allowed || allowed.includes(String(vehicleTypeName || '').trim());
+}
+
 export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null, fromPoint = '') {
   const moment = Date.parse(windowFrom);
   // Позиция кандидата — место выгрузки последнего рейса: адрес справочника,
