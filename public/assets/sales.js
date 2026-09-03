@@ -621,13 +621,28 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
 // Кандидаты на назначение: свободные в зоне отправления к началу окна, затем ближайшие.
 // Занятость определяется точным пересечением по времени — две заявки в один день
 // с разным временем погрузки не конфликтуют.
-export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null) {
+export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null, fromPoint = '') {
   const moment = Date.parse(windowFrom);
   // Позиция кандидата — место выгрузки последнего рейса: адрес справочника,
   // иначе город из текста пункта, иначе центр геозоны (placeOf). Регион
   // заявки — по адресу погрузки; геозоне рейса одной не верим: заявка
   // бывает вбита с чужой зоной (р550ту58: выгрузка в Пензе при зоне «Москва»).
   const orderRegion = fromAddress?.region || regionOfPlace(data, '', fromZoneName);
+  // Точка для подгона: адрес/город с координатами, иначе ЦЕНТР ГЕОЗОНЫ —
+  // без этого фолбэка заявка без координат (Раевский: адрес в справочнике
+  // без широты-долготы) теряла географию, и кандидаты из Москвы предлагались
+  // раньше самарских, хотя Самара к Башкирии вдвое ближе. Центр зоны —
+  // последний рубеж и для позиции кандидата.
+  const zoneCenterFallback = place => {
+    if (!place || Number.isFinite(place.latitude)) return place;
+    const zone = (data.reference.zones || []).find(item => item.name === place.zoneName);
+    return zone && Number.isFinite(zone.latitude)
+      ? { ...place, latitude: zone.latitude, longitude: zone.longitude, approx: true }
+      : place;
+  };
+  const loadPlace = zoneCenterFallback(fromAddress && Number.isFinite(fromAddress.latitude)
+    ? { ...fromAddress, zoneName: fromZoneName }
+    : { ...placeOf(data, fromPoint, fromZoneName), zoneName: fromZoneName });
   const busy = new Set(data.trips
     .filter(trip => trip.status !== 'rejected' &&
       Date.parse(trip.starts_at) <= moment && tripBusyUntilMs(trip) > moment)
@@ -653,8 +668,9 @@ export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null
       // погрузки (когда оба известны) — регион точнее зоны.
       const inZone = zoneName === fromZoneName &&
         !(orderRegion && place.region && orderRegion !== place.region);
-      // Порожний подгон: от позиции сцепки до адреса погрузки заявки.
-      const emptyKm = fromAddress ? plannedKmBetween(place, fromAddress) : null;
+      // Порожний подгон: от позиции сцепки до точки погрузки (адрес, город
+      // из текста или центр зоны — насколько хватает точности данных).
+      const emptyKm = plannedKmBetween(zoneCenterFallback({ ...place, zoneName }), loadPlace);
       // Готовность к подаче: 2 ч + время подгона (порожние км ÷ 50 км/ч).
       const feedMs = DISPATCH_LAG_MS + (emptyKm ? emptyKm / 50 * 3_600_000 : 0);
       const readyAt = lastTrip ? tripBusyUntilMs(lastTrip) + feedMs : null;
@@ -1872,7 +1888,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
   const orderFromAddress = order.from_address_id
     ? (data.reference.addresses || []).find(item => item.id === order.from_address_id)
     : resolveAddress(data, order.from_point || order.from_name);
-  const candidates = matchVehicles(data, order.from_name, order.window_from, orderFromAddress);
+  const candidates = matchVehicles(data, order.from_name, order.window_from, orderFromAddress, order.from_point);
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
   const loadMs = Date.parse(order.window_from);
   showModal(`<h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>

@@ -2870,3 +2870,42 @@ test('потоки: баланс зоны считает потребности 
   const moscow2 = tiles2.find(tile => tile.zone.name === 'Москва');
   assert.equal(moscow2.freeNow.length, 0, 'будущий run-рейс = задание');
 });
+
+test('подбор: без адреса погрузки расстояние считается по центрам зон', async () => {
+  const { matchVehicles } = await import('../public/assets/sales.js');
+  const now = Date.parse('2026-09-04T06:00:00Z');
+  const iso = h => new Date(now + h * 3_600_000).toISOString();
+  const data = {
+    reference: {
+      zones: [
+        { id: 'zU', name: 'Урал', latitude: 56.2, longitude: 56 },
+        { id: 'zS', name: 'Самара', latitude: 53.5, longitude: 50.1 },
+        { id: 'zM', name: 'Москва', latitude: 55.75, longitude: 37.62 }
+      ],
+      addresses: []
+    },
+    vehicles: [
+      { id: 'vM', plate: 'м001', status: 'work', zone_name: 'Москва' },
+      { id: 'vS', plate: 'с001', status: 'work', zone_name: 'Самара' }
+    ],
+    dispositions: [],
+    trips: [
+      // Обе выгрузились вчера: одна в Москве, другая в Самаре.
+      { id: 't1', vehicle_id: 'vM', status: 'unloaded', to_point: '', to_name: 'Москва',
+        starts_at: iso(-30), ends_at: iso(-10), unloaded_at: iso(-10) },
+      { id: 't2', vehicle_id: 'vS', status: 'unloaded', to_point: '', to_name: 'Самара',
+        starts_at: iso(-30), ends_at: iso(-8), unloaded_at: iso(-8) }
+    ]
+  };
+  // Заявка из Урала БЕЗ адреса справочника («Раевский» текстом); в
+  // справочнике при этом лежит адрес Раевского БЕЗ координат — он не
+  // должен глушить фолбэк на центр зоны (реальный кейс).
+  data.reference.addresses.push({ id: 'aR',
+    name: 'Республика Башкортостан, Альшеевский район, с.Раевский',
+    zone_name: 'Дом', latitude: null, longitude: null });
+  const candidates = matchVehicles(data, 'Урал', iso(24), null, 'Раевский');
+  assert.equal(candidates[0].vehicle.plate, 'с001',
+    'самарская машина ближе к Уралу, чем московская');
+  assert.ok(candidates[0].emptyKm < candidates[1].emptyKm,
+    'подгон посчитан по центрам зон у обеих');
+});
