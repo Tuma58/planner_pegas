@@ -6,6 +6,7 @@
 import { api, escapeHtml, money, rangePickerHtml, wireRangePicker, toast } from './api.js';
 import { vehicleZoneAt, vehicleFreeAt } from './transfer.js';
 import { customerCardDialog } from './customer-card.js';
+import { orderStage } from './pipeline.js';
 
 const DAY = 86_400_000;
 const dayIso = ms => new Date(ms).toISOString().slice(0, 10);
@@ -57,9 +58,13 @@ export function zoneFlows(data, plans, fromIso, toIso, nowMs = Date.now()) {
     .map(trip => trip.vehicle_id));
 
   return zones.map(zone => {
+    // Потребность — только ПОДТВЕРЖДЁННЫЕ заявки (stage ≥ 1): черновик
+    // продаж без подтверждения — ещё не обязательство перед клиентом.
+    // stage 1 = подтверждена без ТС, включая заявки с отклонённым рейсом.
     const zoneOrders = orders.filter(order => order.from_zone_id === zone.id &&
-      Date.parse(order.window_from) < toMs && Date.parse(order.window_to) > fromMs);
-    const noVehicle = zoneOrders.filter(order => !order.trip_id);
+      Date.parse(order.window_from) < toMs && Date.parse(order.window_to) > fromMs &&
+      orderStage(order, data).stage >= 1);
+    const noVehicle = zoneOrders.filter(order => orderStage(order, data).stage === 1);
     const gridGap = (plans || []).reduce((sum, plan) =>
       sum + gridGapForZone(plan, zone.id, fromMs, toMs), 0);
 
@@ -152,37 +157,28 @@ const arrivingRow = item => `<div class="list-item" data-ft="${item.trip.id}" st
   ${item.hasNext ? '<span class="badge" title="Следующий рейс уже назначен">⏭ занята</span>'
     : '<span class="badge warn" title="Следующий рейс не назначен — доступный ресурс">свободна</span>'}</div>`;
 
-function tileHtml(tile, limit = 3) {
-  const flowLine = Object.entries(tile.inbound).map(([name, n]) => `из ${name} ${n}`).join(', ');
-  const outLine = Object.entries(tile.outbound).map(([name, n]) => `в ${name} ${n}`).join(', ');
-  return `<div class="scol flow-tile">
-    <div class="scolh" data-fz="${tile.zone.id}" style="cursor:pointer"
-        title="Открыть зону целиком: все ТС, заявки и заказчики">
-      ${escapeHtml(tile.zone.name)} ${balanceBadge(tile)}
-      <small class="muted" style="font-weight:400">· заявок ${tile.ordersTotal} на ${money(tile.sumVat)}</small>
-    </div>
-    ${tile.noVehicle.length ? `<div class="flow-sec"><b>⚠ Без ТС: ${tile.noVehicle.length}</b>
-      <div class="list">${tile.noVehicle.slice(0, limit).map(orderRow).join('')}</div>
-      ${tile.noVehicle.length > limit ? `<small class="muted">… ещё ${tile.noVehicle.length - limit} — клик по заголовку зоны</small>` : ''}</div>` : ''}
-    ${tile.gridGap ? `<div class="flow-sec muted" title="План вывоза: слоты сетки, под которые заявки ещё не внесены">
-      🕳 Сетка не закрыта: ~${tile.gridGap} рейс.</div>` : ''}
-    ${tile.freeNow.length ? `<div class="flow-sec"><b>🚛 Свободны в зоне: ${tile.freeNow.length}</b>
-      <div class="list">${tile.freeNow.slice(0, limit).map(vehicle => vehicleRow(vehicle)).join('')}</div>
-      ${tile.freeNow.length > limit ? `<small class="muted">… ещё ${tile.freeNow.length - limit}</small>` : ''}</div>` : ''}
-    ${tile.arriving.length ? `<div class="flow-sec"><b>📥 Приедут: ${tile.arriving.length}</b>
-      ${flowLine ? `<small class="muted"> (${escapeHtml(flowLine)})</small>` : ''}
-      <div class="list">${tile.arriving.slice(0, limit).map(arrivingRow).join('')}</div>
-      ${tile.arriving.length > limit ? `<small class="muted">… ещё ${tile.arriving.length - limit}</small>` : ''}</div>` : ''}
-    ${outLine ? `<div class="flow-sec muted">📤 Уезжают: ${escapeHtml(outLine)}</div>` : ''}
-    ${tile.customers.length ? `<div class="flow-sec"><b>👤 Заказчики</b>
-      <div class="list">${tile.customers.slice(0, limit).map(([name, c]) => `
-        <div class="list-item" data-fc="${escapeHtml(name)}" style="cursor:pointer" title="Карточка клиента">
-          <span style="flex:1;min-width:0">${escapeHtml(name.slice(0, 30))}</span>
-          <span class="muted">${c.n}${c.noVeh ? ` · без ТС ${c.noVeh}` : ''}</span></div>`).join('')}</div>` : ''}
+// Плашка — только счётчики, чтобы не замыливался глаз: зона · рейсы ·
+// клиенты / ТС · будут в зоне · направить. Все детали — кликом (окно зоны).
+function tileHtml(tile) {
+  const toSend = Math.max(0, -tile.balance);
+  return `<div class="scol flow-tile" data-fz="${tile.zone.id}" style="cursor:pointer"
+      title="Открыть зону: заявки, ТС и заказчики списками">
+    <div class="scolh">${escapeHtml(tile.zone.name)} ${balanceBadge(tile)}</div>
+    <div class="flow-kv">📦 Рейсов: <b>${tile.ordersTotal}</b>${tile.noVehicle.length
+      ? ` <span class="danger">(без ТС ${tile.noVehicle.length})</span>` : ''}
+      ${tile.gridGap ? `<span class="muted" title="План вывоза: слоты сетки без внесённых заявок"> + сетка ~${tile.gridGap}</span>` : ''}</div>
+    <div class="flow-kv">👤 Клиентов: <b>${tile.customers.length}</b>
+      <span class="muted">${escapeHtml(tile.customers.slice(0, 2).map(([name]) => name.slice(0, 14)).join(', '))}${tile.customers.length > 2 ? '…' : ''}</span></div>
+    <div class="flow-kv">🚛 ТС в зоне: <b>${tile.freeNow.length}</b>
+      · будут: <b>${tile.arriving.length}</b>${tile.arriving.length !== tile.arrivingFree.length
+        ? `<span class="muted" title="Свободных среди приезжающих — без следующего рейса"> (своб. ${tile.arrivingFree.length})</span>` : ''}</div>
+    <div class="flow-kv">${toSend ? `➕ Направить: <b class="danger">${toSend}</b>`
+      : tile.balance > 0 ? `Свободный ресурс: <b>+${tile.balance}</b> — нужны грузы`
+      : '✓ Зона закрыта'}</div>
   </div>`;
 }
 
-function zoneDialog(tile, context) {
+function zoneDialog(tile, context, data) {
   context.showModal(`<h2>${escapeHtml(tile.zone.name)} ${balanceBadge(tile)}</h2>
     <p class="muted">Потребности: без ТС ${tile.noVehicle.length}${tile.gridGap ? ` + сетка ~${tile.gridGap}` : ''}
       · ресурс: свободны ${tile.freeNow.length} + освободятся ${tile.arrivingFree.length}
@@ -202,6 +198,28 @@ function zoneDialog(tile, context) {
     </div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
   'wide');
+  // Модалка живёт вне контейнера вкладки — клики по заявкам/ТС/клиентам
+  // обрабатываются здесь же (заявка → назначение, рейс → карточка).
+  document.getElementById('modalRoot').querySelector('.modal').onclick = event => {
+    const orderEl = event.target.closest('[data-fo]');
+    const tripEl = event.target.closest('[data-ft]');
+    const vehEl = event.target.closest('[data-fv]');
+    const custEl = event.target.closest('[data-fc]');
+    if (orderEl) {
+      const order = data.orders.find(item => item.id === orderEl.dataset.fo);
+      if (order) { context.closeModal(); context.openAssign(order); }
+    } else if (tripEl) {
+      const trip = data.trips.find(item => item.id === tripEl.dataset.ft);
+      if (trip) { context.closeModal(); context.openTrip(trip); }
+    } else if (vehEl) {
+      const last = (data.trips || []).filter(trip => trip.vehicle_id === vehEl.dataset.fv &&
+        trip.status !== 'rejected').sort((a, b) => b.ends_at.localeCompare(a.ends_at))[0];
+      if (last) { context.closeModal(); context.openTrip(last); }
+    } else if (custEl) {
+      context.closeModal();
+      customerCardDialog(custEl.dataset.fc, context);
+    }
+  };
 }
 
 export async function renderFlows(container, context) {
@@ -228,7 +246,8 @@ export async function renderFlows(container, context) {
         ${surplus.length ? ` · профицит: ${surplus.map(tile => `${tile.zone.name} +${tile.balance}`).join(' · ')}` : ''}
       </span>
     </div>
-    <div class="flow-grid">${tiles.map(tile => tileHtml(tile)).join('')
+    <div class="flow-grid" style="--flow-cols:${Math.max(2, Math.ceil(tiles.length / 2))}">${
+      tiles.map(tile => tileHtml(tile)).join('')
       || '<p class="muted">В выбранном периоде нет ни потребностей, ни движения парка.</p>'}</div>`;
 
   wireRangePicker(container, 'flowsFrom', 'flowsTo', (from, to) => {
@@ -271,7 +290,7 @@ export async function renderFlows(container, context) {
     if (custEl) { customerCardDialog(custEl.dataset.fc, context); return; }
     if (zoneEl) {
       const tile = tiles.find(item => item.zone.id === zoneEl.dataset.fz);
-      if (tile) zoneDialog(tile, context);
+      if (tile) zoneDialog(tile, context, data);
     }
   };
 }

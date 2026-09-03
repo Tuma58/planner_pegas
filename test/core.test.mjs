@@ -2819,10 +2819,13 @@ test('потоки: баланс зоны считает потребности 
     dispositions: [],
     orders: [
       // Две заявки из Москвы без ТС в периоде — потребность.
-      { id: 'o1', from_zone_id: 'zM', customer_name: 'К1', rate_vat: 100,
-        window_from: iso(4), window_to: iso(10), status: 'new', trip_id: null },
-      { id: 'o2', from_zone_id: 'zM', customer_name: 'К2', rate_vat: 200,
-        window_from: iso(6), window_to: iso(12), status: 'new', trip_id: null },
+      { id: 'o1', from_zone_id: 'zM', customer_name: 'К1', rate_vat: 100, stage: 1,
+        window_from: iso(4), window_to: iso(10), status: 'confirmed', trip_id: null },
+      { id: 'o2', from_zone_id: 'zM', customer_name: 'К2', rate_vat: 200, stage: 1,
+        window_from: iso(6), window_to: iso(12), status: 'confirmed', trip_id: null },
+      // Черновик без подтверждения — потребностью не считается.
+      { id: 'o4', from_zone_id: 'zM', customer_name: 'К3', rate_vat: 400, stage: 0,
+        window_from: iso(5), window_to: iso(9), status: 'new', trip_id: null },
       // Заявка с ТС — в счёт потребности не идёт.
       { id: 'o3', from_zone_id: 'zM', customer_name: 'К1', rate_vat: 300,
         window_from: iso(5), window_to: iso(11), status: 'planned', trip_id: 't2' }
@@ -2847,7 +2850,8 @@ test('потоки: баланс зоны считает потребности 
   };
   const tiles = zoneFlows(data, [], day(0), day(24), now);
   const moscow = tiles.find(tile => tile.zone.name === 'Москва');
-  assert.equal(moscow.noVehicle.length, 2);
+  assert.equal(moscow.noVehicle.length, 2, 'черновик o4 без подтверждения не в счёт');
+  assert.equal(moscow.ordersTotal, 3, 'учтены только подтверждённые заявки');
   assert.equal(moscow.freeNow.length, 1, 'v1 свободна в Москве');
   assert.equal(moscow.arriving.length, 2, 'v2 и v3 приедут в периоде');
   assert.equal(moscow.arrivingFree.length, 1, 'v3 занята следующим планом');
