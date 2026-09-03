@@ -2803,3 +2803,56 @@ test('место сцепки: перегон переставляет маши�
   const laterTrip = { ...data, trips: [{ ...data.trips[0], ends_at: iso(-1) }] };
   assert.equal(vehiclePlace(laterTrip, 'v1', now).source, 'trip');
 });
+
+test('потоки: баланс зоны считает потребности против ресурса', async () => {
+  const { zoneFlows } = await import('../public/assets/flows.js');
+  const now = Date.parse('2026-09-03T08:00:00Z');
+  const iso = h => new Date(now + h * 3_600_000).toISOString();
+  const day = h => iso(h).slice(0, 10);
+  const data = {
+    reference: { zones: [{ id: 'zM', name: 'Москва' }, { id: 'zD', name: 'Дом' }] },
+    vehicles: [
+      { id: 'v1', plate: 'а001', status: 'work' },
+      { id: 'v2', plate: 'а002', status: 'work' },
+      { id: 'v3', plate: 'а003', status: 'work' }
+    ],
+    dispositions: [],
+    orders: [
+      // Две заявки из Москвы без ТС в периоде — потребность.
+      { id: 'o1', from_zone_id: 'zM', customer_name: 'К1', rate_vat: 100,
+        window_from: iso(4), window_to: iso(10), status: 'new', trip_id: null },
+      { id: 'o2', from_zone_id: 'zM', customer_name: 'К2', rate_vat: 200,
+        window_from: iso(6), window_to: iso(12), status: 'new', trip_id: null },
+      // Заявка с ТС — в счёт потребности не идёт.
+      { id: 'o3', from_zone_id: 'zM', customer_name: 'К1', rate_vat: 300,
+        window_from: iso(5), window_to: iso(11), status: 'planned', trip_id: 't2' }
+    ],
+    trips: [
+      // v1 выгрузилась в Москве вчера и свободна — ресурс зоны.
+      { id: 't1', vehicle_id: 'v1', vehicle_plate: 'а001', status: 'unloaded',
+        from_zone_id: 'zD', to_zone_id: 'zM', to_name: 'Москва',
+        starts_at: iso(-30), ends_at: iso(-10), unloaded_at: iso(-10) },
+      // v2 едет в Москву, приедет в периоде, следующего плана нет — ресурс.
+      { id: 't2', vehicle_id: 'v2', vehicle_plate: 'а002', status: 'run',
+        from_zone_id: 'zD', to_zone_id: 'zM', to_name: 'Москва',
+        starts_at: iso(-5), ends_at: iso(8) },
+      // v3 тоже приедет, но у неё уже назначен следующий рейс — занята.
+      { id: 't3', vehicle_id: 'v3', vehicle_plate: 'а003', status: 'run',
+        from_zone_id: 'zD', to_zone_id: 'zM', to_name: 'Москва',
+        starts_at: iso(-4), ends_at: iso(9) },
+      { id: 't4', vehicle_id: 'v3', vehicle_plate: 'а003', status: 'plan',
+        from_zone_id: 'zM', to_zone_id: 'zD', to_name: 'Дом',
+        starts_at: iso(20), ends_at: iso(40) }
+    ]
+  };
+  const tiles = zoneFlows(data, [], day(0), day(24), now);
+  const moscow = tiles.find(tile => tile.zone.name === 'Москва');
+  assert.equal(moscow.noVehicle.length, 2);
+  assert.equal(moscow.freeNow.length, 1, 'v1 свободна в Москве');
+  assert.equal(moscow.arriving.length, 2, 'v2 и v3 приедут в периоде');
+  assert.equal(moscow.arrivingFree.length, 1, 'v3 занята следующим планом');
+  // Потребность 2, ресурс 2 (v1 + v2) — зона закрыта.
+  assert.equal(moscow.balance, 0);
+  // Приток в Москву — из Дома 2 машины.
+  assert.equal(moscow.inbound['Дом'], 2);
+});

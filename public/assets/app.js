@@ -5,6 +5,7 @@ import { periodAssignDialog, shiftStateAt } from './resource.js';
 import { renderBoss } from './boss.js';
 import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
+import { renderFlows } from './flows.js';
 import { buildReport, wireReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sales.js';
 import { renderLogist } from './logist.js';
@@ -747,6 +748,7 @@ const MAIN_VIEWS = [
   { id: 'routes', title: 'Конструктор', show: () => can('orders:write') || can('trips:write') },
   { id: 'dispatcher', title: 'Диспетчер', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
+  { id: 'flows', title: 'Потоки', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') },
   { id: 'dashboard', title: 'Дашборд', show: () => true }
 ];
@@ -805,6 +807,11 @@ function renderMain() {
     });
   } else if (state.view === 'dashboard') {
     renderDashboard(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
+  } else if (state.view === 'flows') {
+    renderFlows(byId('timeline'), {
+      state, can, onReload: reload, showModal, closeModal, openTrip,
+      openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload, { autoConfirm: can('trips:write') })
+    });
   } else if (state.view === 'routes') {
     renderRoutes(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'dispatcher') {

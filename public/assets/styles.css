@@ -1062,6 +1062,13 @@ input.warn-border { border-color: #c99a2e; }
 .skv small { font-size: var(--fs-xs); font-weight: 600; }
 @media (max-width: 900px) { .salesfilter { margin-left: 0; } }
 .salesboard { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; flex: 1; min-height: 0; }
+/* «🔀 Потоки»: плашечное поле зон — сколько ТС направить в каждую */
+.flow-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; align-items: start; }
+.flow-tile { overflow: visible; }
+.flow-tile .scolh { position: static; padding: 0 0 6px; margin: 0 0 4px; flex-wrap: wrap; row-gap: 4px; }
+.flow-tile .scolh .badge { white-space: nowrap; }
+.flow-sec { margin: 8px 0 0; font-size: var(--fs-sm); }
+.flow-sec .list-item { padding: 4px 8px; }
 .scol { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; overflow: auto; min-height: 0; min-width: 0; }
 .scolh { font-size: var(--fs-base); font-weight: 800; color: var(--ink); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; display: flex; gap: 8px; align-items: center;
   position: sticky; top: -12px; z-index: 2; background: var(--card); padding: 12px 0 7px; }
