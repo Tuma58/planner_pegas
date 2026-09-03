@@ -190,6 +190,40 @@ const SUBJECT_ZONES = [
   ['Юг', /(ростовск|волгоградск|астраханск)\w*\s*обл|(краснодарск|ставропольск)\w*\s*край|карачаево/i],
   ['Запад', /(смоленск|псковск)\w*\s*обл/i]
 ];
+// Геокодинг через ОБЩИЙ КЛАССИФИКАТОР OpenStreetMap (Nominatim): адрес →
+// координаты + субъект РФ. Одна функция на ручной поиск («🌍 Найти»),
+// автозаполнение при создании пункта и ночной сторож недогеокоженных.
+// ФИАС/ГАР целиком не тянем (гигабайты выгрузок на LXC за NAT), платные
+// подсказчики (DaData) — опция за API-ключ, если понадобится ввод с
+// подсказками; для зоны/подгона хватает OSM.
+async function geocodeQuery(query) {
+  const osm = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
+    format: 'jsonv2', addressdetails: '1', countrycodes: 'ru', limit: '5', q: query
+  }), {
+    headers: { 'User-Agent': 'PegasLogistic/1.0 (dispatch planner; tkpegasnigovorin@gmail.com)' },
+    signal: AbortSignal.timeout(7000)
+  });
+  if (!osm.ok) throw new Error(`Источник геокодинга недоступен (${osm.status})`);
+  const rows = await osm.json();
+  const normalizeRegion = value => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^москва$/iu.test(raw)) return 'Москва г';
+    if (/^санкт-петербург$/iu.test(raw)) return 'Санкт-Петербург г';
+    const oblast = raw.match(/^(.+?)\s+область$/iu);
+    if (oblast) return `${oblast[1]} обл`;
+    const republic = raw.match(/^республика\s+(.+)$/iu);
+    if (republic) return `${republic[1]} респ`;
+    return raw;
+  };
+  return rows.map(row => ({
+    name: row.display_name,
+    latitude: Number(row.lat),
+    longitude: Number(row.lon),
+    region: normalizeRegion(row.address?.state || row.address?.city || '')
+  }));
+}
+
 function zoneHintForAddress(text) {
   const full = String(text || '').trim();
   if (!full) return null;
@@ -365,6 +399,35 @@ function runUnloadWatch() {
 }
 setInterval(runUnloadWatch, 10 * 60_000);
 setTimeout(runUnloadWatch, 15_000);
+
+// Сторож-геокодер: адреса справочника без координат по одному подтягиваются
+// из общего классификатора (OSM) — щадящий темп (1 адрес / 90 с) в рамках
+// правил Nominatim. Координаты дают подгон и плановый километраж; субъект —
+// если пуст; зона — только если не была проставлена вовсе. Неудача
+// помечается geocode_try_at и повторяется не раньше чем через неделю.
+async function runGeocodeWatch() {
+  try {
+    const address = db.prepare(`SELECT id, name, address, region, zone_id FROM addresses
+      WHERE latitude IS NULL
+        AND (geocode_try_at IS NULL OR datetime(geocode_try_at) < datetime('now', '-7 days'))
+      ORDER BY name LIMIT 1`).get();
+    if (!address) return;
+    db.prepare(`UPDATE addresses SET geocode_try_at=CURRENT_TIMESTAMP WHERE id=?`).run(address.id);
+    const [hit] = await geocodeQuery(String(address.address || '').trim() || address.name);
+    if (!hit || !Number.isFinite(hit.latitude)) return;
+    const { BASE_POINT } = await import('./db.mjs');
+    const region = String(address.region || '').trim() || hit.region;
+    const zoneId = address.zone_id || zoneHintForAddress(`${address.name} ${region}`)?.id || null;
+    db.prepare(`UPDATE addresses SET latitude=?, longitude=?, region=?, zone_id=?,
+      base_distance_km=? WHERE id=?`).run(
+      hit.latitude, hit.longitude, region, zoneId,
+      roadKm(hit.latitude, hit.longitude, BASE_POINT.lat, BASE_POINT.lon), address.id);
+    audit(db, null, 'geocode', 'address', address.id,
+      { name: address.name, latitude: hit.latitude, longitude: hit.longitude, region }, 'watch');
+  } catch { /* классификатор недоступен — попробуем следующим тиком */ }
+}
+setInterval(runGeocodeWatch, 90_000);
+setTimeout(runGeocodeWatch, 70_000);
 
 // Сторож ресурса: сцепка «без водителя» (по интервалу в календаре) или
 // «без заказа» три и более дней → авто-сообщение роли «Ресурс»,
@@ -1485,33 +1548,7 @@ async function api(request, response, url) {
     const query = String(url.searchParams.get('q') || '').trim();
     if (query.length < 3) return errorJson(response, 422, 'Уточните запрос (от 3 символов)');
     try {
-      const osm = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
-        format: 'jsonv2', addressdetails: '1', countrycodes: 'ru', limit: '5', q: query
-      }), {
-        headers: { 'User-Agent': 'PegasLogistic/1.0 (dispatch planner; tkpegasnigovorin@gmail.com)' },
-        signal: AbortSignal.timeout(7000)
-      });
-      if (!osm.ok) return errorJson(response, 502, `Источник геокодинга недоступен (${osm.status})`);
-      const rows = await osm.json();
-      const normalizeRegion = value => {
-        const raw = String(value || '').trim();
-        if (!raw) return '';
-        if (/^москва$/iu.test(raw)) return 'Москва г';
-        if (/^санкт-петербург$/iu.test(raw)) return 'Санкт-Петербург г';
-        const oblast = raw.match(/^(.+?)\s+область$/iu);
-        if (oblast) return `${oblast[1]} обл`;
-        const republic = raw.match(/^республика\s+(.+)$/iu);
-        if (republic) return `${republic[1]} респ`;
-        return raw;
-      };
-      return json(response, 200, {
-        items: rows.map(row => ({
-          name: row.display_name,
-          latitude: Number(row.lat),
-          longitude: Number(row.lon),
-          region: normalizeRegion(row.address?.state || row.address?.city || '')
-        }))
-      });
+      return json(response, 200, { items: await geocodeQuery(query) });
     } catch (error) {
       return errorJson(response, 502,
         error.name === 'TimeoutError' ? 'Геокодинг не ответил — попробуйте ещё раз' : 'Ошибка геокодинга');
@@ -2446,10 +2483,24 @@ async function api(request, response, url) {
     if (db.prepare('SELECT 1 FROM addresses WHERE name=? COLLATE NOCASE').get(name)) {
       return errorJson(response, 422, 'Такой пункт уже есть в справочнике');
     }
-    const latitude = Number.isFinite(Number(body.latitude)) && body.latitude !== ''
+    let latitude = Number.isFinite(Number(body.latitude)) && body.latitude !== ''
       ? Number(body.latitude) : null;
-    const longitude = Number.isFinite(Number(body.longitude)) && body.longitude !== ''
+    let longitude = Number.isFinite(Number(body.longitude)) && body.longitude !== ''
       ? Number(body.longitude) : null;
+    // Координат нет — подтягиваем из общего классификатора (OSM) сами:
+    // без них не считается ни подгон, ни плановый километраж, а кнопку
+    // «🌍 Найти» нажимали не всегда (кейс Раевского). Неудача геокода
+    // создание не блокирует — досчитает ночной сторож.
+    if (latitude == null || longitude == null) {
+      try {
+        const [hit] = await geocodeQuery(String(body.address || '').trim() || name);
+        if (hit) {
+          latitude = hit.latitude;
+          longitude = hit.longitude;
+          if (!String(body.region || '').trim()) body.region = hit.region;
+        }
+      } catch { /* классификатор недоступен — сторож дотянет позже */ }
+    }
     // Зона не выбрана — единая подсказка: субъект РФ, затем город в имени.
     if (!body.zoneId) {
       body.zoneId = zoneHintForAddress(`${name} ${body.region || ''}`)?.id || null;

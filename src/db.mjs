@@ -445,6 +445,9 @@ function migrateColumns(db) {
   // Причина замены рекомендованного подбором ТС: заполняется логистом при
   // назначении другого ТС — без неё сервер назначение не принимает.
   ensure('assign_drafts', 'override_reason', 'TEXT');
+  // Отметка попытки автогеокодинга адреса: неудачные не долбятся каждый
+  // тик сторожа — повтор не раньше чем через неделю.
+  ensure('addresses', 'geocode_try_at', 'TEXT');
   ensure('customers', 'trips_per_month', 'REAL NOT NULL DEFAULT 0');
   ensure('orders', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'body_type', "TEXT NOT NULL DEFAULT ''");
