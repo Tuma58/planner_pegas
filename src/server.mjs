@@ -1224,6 +1224,32 @@ function nextDriverStep(tripId) {
   return null;
 }
 
+// Плашки этапности для водителя — как чек-лист у диспетчера: что уже
+// отмечено (с фактическим временем МСК), какой этап сейчас, что впереди.
+function driverProgressText(tripId) {
+  const stops = db.prepare(`SELECT id, kind, seq, actual_arrival, actual_departure,
+    planned_arrival FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(tripId);
+  if (!stops.length) return '';
+  const msk = iso => iso ? new Date(Date.parse(iso) + 3 * 3_600_000)
+    .toISOString().replace('T', ' ').slice(5, 16) + ' МСК' : '';
+  const current = nextDriverStep(tripId);
+  const lines = ['Этапы рейса:'];
+  for (const stop of stops) {
+    const isFirst = stop.seq === stops[0].seq;
+    const isLast = stop.seq === stops[stops.length - 1].seq;
+    const steps = [
+      ['arr', isFirst ? '📦 Прибыл на погрузку' : isLast ? '📥 Прибыл на выгрузку' : '📍 Прибыл на точку', stop.actual_arrival],
+      ['dep', isFirst ? '✅ Погрузился, выехал' : isLast ? '🏁 Выгрузился' : '➡ Убыл с точки', stop.actual_departure]];
+    for (const [phase, label, fact] of steps) {
+      const isCurrent = current && current.stopId === stop.id && current.phase === phase;
+      lines.push(fact ? `✅ ${label} — ${msk(fact)}`
+        : isCurrent ? `▶️ ${label} — жмите кнопку по факту${phase === 'arr' && stop.planned_arrival ? ` (план ${msk(stop.planned_arrival)})` : ''}`
+        : `⬜ ${label}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 // Текст задания водителю: маршрут и точки с плановыми временами — без
 // ставок и сумм (деньги водителю в задании не показываем).
 function driverAssignmentText(trip) {
@@ -1240,7 +1266,9 @@ function driverAssignmentText(trip) {
   }
   if (trip.temperature_mode) lines.push(`🌡 Режим: ${trip.temperature_mode}`);
   if (trip.body_type) lines.push(`🚛 Кузов: ${trip.body_type}`);
-  lines.push('Отмечайте этапы кнопкой под сообщением — диспетчер видит их сразу.');
+  const progress = driverProgressText(trip.id);
+  if (progress) lines.push('', progress);
+  lines.push('', 'Отмечайте этапы кнопкой под сообщением — диспетчер видит их сразу. Кнопка «📋 Моё задание» внизу пришлёт задание с актуальной кнопкой заново.');
   return lines.join('\n');
 }
 
@@ -1314,10 +1342,11 @@ function applyDriverStep(chatId, stopId, phase) {
   // водитель знает дорогу лучше расчёта.
   const askEta = phase === 'dep' && next && next.phase === 'arr'
     ? { stopId: next.stopId } : null;
+  const progress = driverProgressText(stop.trip_id);
   return {
-    text: finishedUnload
+    text: (finishedUnload
       ? 'Не забудь проверить печати в документах и сдать их во-время. Благодарю за труд! Доброго пути!'
-      : '✅ Отмечено, диспетчер видит.',
+      : '✅ Отмечено, диспетчер видит.') + (progress ? `\n\n${progress}` : ''),
     next, askEta, tripId: stop.trip_id
   };
 }
@@ -1341,11 +1370,15 @@ async function runDriverBotPoll() {
         if (tag === 'st') {
           const result = applyDriverStep(query.message?.chat?.id, stopId, phase);
           tgApi('answerCallbackQuery', { callback_query_id: query.id, text: '✓' }, token);
-          if (result.text) tgApi('sendMessage', { chat_id: query.message.chat.id, text: result.text,
+          // Сначала ДОСТАВИТЬ новое сообщение с кнопкой и только при успехе
+          // гасить кнопку под старым: если сеть моргнула на отправке, у
+          // водителя останется хотя бы старая кнопка (случай Ниговорина
+          // 05.09 — «все кнопки исчезли» после «Прибыл на выгрузку»).
+          const sent = result.text ? await tgApi('sendMessage', { chat_id: query.message.chat.id,
+            text: result.text,
             reply_markup: result.next ? { inline_keyboard: [[{ text: result.next.label,
-              callback_data: `st|${result.next.stopId}|${result.next.phase}` }]] } : undefined }, token);
-          // Кнопку под старым сообщением убираем — актуальная в новом.
-          tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
+              callback_data: `st|${result.next.stopId}|${result.next.phase}` }]] } : undefined }, token) : null;
+          if (sent?.ok) tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
             message_id: query.message.message_id }, token);
           if (result.askEta) {
             tgApi('sendMessage', { chat_id: query.message.chat.id,
@@ -1369,9 +1402,9 @@ async function runDriverBotPoll() {
             const eta = new Date(Date.now() + hours * 3_600_000).toISOString();
             db.prepare(`UPDATE trip_stops SET driver_eta=? WHERE id=?`).run(eta, stopId);
             const mskEta = new Date(Date.parse(eta) + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
-            tgApi('sendMessage', { chat_id: query.message.chat.id,
+            const confirmed = await tgApi('sendMessage', { chat_id: query.message.chat.id,
               text: `Принял: примерно к ${mskEta} (МСК). Диспетчер видит прогноз.` }, token);
-            tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
+            if (confirmed?.ok) tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
               message_id: query.message.message_id }, token);
             // Прогноз сильно позже плана — диспетчеру знать заранее.
             if (stop.planned_arrival && Date.parse(eta) - Date.parse(stop.planned_arrival) > 2 * 3_600_000) {
