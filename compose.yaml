@@ -21,6 +21,9 @@ services:
       APP_SECRET_FILE: "/run/secrets/app_secret"
       ADMIN_PASSWORD_FILE: "/run/secrets/admin_password"
       SYNC_WORKER_EMBEDDED: "false"
+      # IPv6-маршрута у LXC нет, а резолвер отдаёт AAAA первым — Node
+      # должен предпочитать IPv4 (телеграм и любые будущие интеграции).
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
       COOKIE_SECURE: "${COOKIE_SECURE:-true}"
       TRUST_PROXY: "${TRUST_PROXY:-true}"
       INITIAL_ALLOWED_SUBNETS: "${INITIAL_ALLOWED_SUBNETS:-0.0.0.0/0,::/0}"
