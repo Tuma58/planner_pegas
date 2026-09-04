@@ -180,14 +180,30 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
     (flt.round === '' || (flt.round === 'none' ? !row.template : row.template?.key === flt.round)) &&
     (!flt.freeOnly || (row.freeDays >= 10 && !row.template)));
 
-  // Итог по дням: занято рейсами / прогноз / свободно.
-  const totals = Array.from({ length: days }, (_, i) => ({ busy: 0, free: 0 }));
+  // Итог по дням: рейсы и недоступность — РАЗДЕЛЬНО (раньше «Занято
+  // рейсами» смешивало рейсы с ремонтами и пересменками — 124 «занятых»
+  // при 96 реально возящих не с чем было сравнивать).
+  const totals = Array.from({ length: days }, () => ({ trips: 0, unavail: 0, free: 0 }));
   for (const row of rowsData) {
     row.cells.forEach((cell, i) => {
       if (cell.cls === 'fp-free') totals[i].free += 1;
-      else if (cell.cls && cell.cls !== 'fp-fore') totals[i].busy += 1;
+      else if (cell.cls === 'fp-disp') totals[i].unavail += 1;
+      else if (cell.cls && cell.cls !== 'fp-fore') totals[i].trips += 1;
     });
   }
+  // Потребность сетки плана вывоза на каждый день: рейсы слотов × цикл
+  // плеча (транзит + 8 ч операций) / 24 — та же формула, что строка
+  // «Машин занято (оценка)» в Плане вывоза: теперь оба поля говорят на
+  // одном языке и сравниваются строка к строке.
+  let needByDay = null;
+  try {
+    const dp = await api(`/api/delivery-plan?month=${plan.month}`);
+    needByDay = Array.from({ length: days }, (_, i) => {
+      const weekday = (dp.firstWeekday + i) % 7;
+      return dp.slots.reduce((sum, slot) => sum + (slot.weekday === weekday
+        ? slot.per_day * ((slot.transit_hours || 24) + 8) / 24 : 0), 0);
+    });
+  } catch { /* сетка недоступна — строка потребности не показывается */ }
 
   const [year, monthNum] = plan.month.split('-').map(Number);
   const firstWd = new Date(monthStartMs).getUTCDay();
@@ -237,10 +253,22 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
       Машины отсортированы по свободным дням — резерв сверху.</p>
     <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:90px">ТС</th><th class="plan-fix2" style="left:90px;min-width:120px">Круг</th><th title="Свободных дней до конца месяца">🟢</th>${dayHead}</tr>
-      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:34px">Занято рейсами</td>${totals.map(t =>
-    `<td style="text-align:center;top:34px">${t.busy || ''}</td>`).join('')}</tr>
-      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:58px">🟢 Свободно</td>${totals.map(t =>
-    `<td style="text-align:center;top:58px;${t.free ? 'color:#c99a2e' : ''}">${t.free || ''}</td>`).join('')}</tr>
+      ${needByDay ? `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
+        title="Сколько машин требует сетка Плана вывоза в этот день: рейсы слотов × цикл плеча (транзит + 8 ч) / 24 — та же строка, что «Машин занято (оценка)» в Плане вывоза">Нужно по сетке</td>${needByDay.map(need =>
+    `<td style="text-align:center">${Math.round(need) || ''}</td>`).join('')}</tr>` : ''}
+      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
+        title="Машины, у которых в этот день есть рейс (без ремонтов и пересменок)">Занято рейсами</td>${totals.map(t =>
+    `<td style="text-align:center">${t.trips || ''}</td>`).join('')}</tr>
+      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
+        title="Машины в диспозициях: ремонт, без водителя, пересменка, резерв, перегон">Недоступны</td>${totals.map(t =>
+    `<td style="text-align:center;${t.unavail ? 'color:var(--muted)' : ''}">${t.unavail || ''}</td>`).join('')}</tr>
+      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
+        title="Свободные будущие дни — ресурс под новых клиентов">🟢 Свободно</td>${totals.map(t =>
+    `<td style="text-align:center;${t.free ? 'color:#c99a2e' : ''}">${t.free || ''}</td>`).join('')}</tr>
+      ${needByDay ? `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
+        title="(Занято рейсами + Свободно) − Нужно по сетке: плюс — парка хватает и остаётся резерв, минус — день сеткой не вывозится имеющимся парком. При включённых фильтрах считается по отфильтрованным машинам">Баланс к сетке</td>${needByDay.map((need, i) =>
+    { const balance = totals[i].trips + totals[i].free - need;
+      return `<td style="text-align:center;${balance < -0.5 ? 'color:var(--bad,#c0392b)' : 'color:var(--ok,#20624f)'}">${Math.round(balance) > 0 ? '+' : ''}${Math.round(balance) || ''}</td>`; }).join('')}</tr>` : ''}
       ${rowsData.map(row => `<tr>
         <td class="mono plan-fix" style="white-space:nowrap"><span class="vlink" data-fp-veh="${row.vehicle.id}">${escapeHtml(row.vehicle.plate)}</span></td>
         <td class="plan-fix2" style="white-space:nowrap;left:90px">${canEdit ? `<select data-fp-round="${row.vehicle.id}" style="max-width:118px;font-size:10px">
