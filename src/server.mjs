@@ -878,6 +878,15 @@ setInterval(runAssignWatch, 5 * 60_000);
 setTimeout(runAssignWatch, 55_000);
 
 // ── Вечерняя передача смены по заявкам ──
+// «ДД.ММ ЧЧ:ММ» из ISO-строки как она лежит в данных (без смены пояса).
+const ddmm = iso => { const str = String(iso || ''); return str.length >= 16
+  ? `${str.slice(8, 10)}.${str.slice(5, 7)} ${str.slice(11, 16)}` : '—'; };
+// То же со сдвигом UTC→МСК — для сообщений людям (бот, уведомления).
+const mskStamp = value => {
+  const ms = typeof value === 'number' ? value : Date.parse(value || '');
+  return Number.isFinite(ms) ? ddmm(new Date(ms + 3 * 3_600_000).toISOString()) : '—';
+};
+
 // Разбор августа: заявки, подтверждённые после 16:00 МСК, ждали назначения
 // 19–22 часа — до утра. Логист уходит, заявка ложится «в стол», а окно
 // погрузки часто уже завтра. В 17:30 МСК собираем такие заявки в одно
@@ -905,7 +914,7 @@ function runEveningHandoff() {
     if (!rows.length) return;
     const sum = rows.reduce((acc, order) => acc + Number(order.rate_vat || 0), 0);
     const list = rows.slice(0, 8).map(order => `${order.order_no ? `№${order.order_no} ` : ''}` +
-      `${order.customer_name} (погрузка ${String(order.window_from).slice(5, 16).replace('T', ' ')})`).join('; ');
+      `${order.customer_name} (погрузка ${ddmm(order.window_from)})`).join('; ');
     notify('logist', `🌙 Передача смены: ${rows.length} заявок без ТС с погрузкой в ближайшие ` +
       `36 часов на ${Math.round(sum / 1000)} тыс ₽. ${list}. ` +
       `Назначьте сегодня — утром до части из них будет поздно`, 'order', rows[0].id, { category: 'shift_handover' });
@@ -1120,7 +1129,7 @@ function runGapReviewWatch() {
       if (!byVehicle.has(row.vehicle_id)) byVehicle.set(row.vehicle_id, []);
       byVehicle.get(row.vehicle_id).push(row);
     }
-    const mskLabel = ms => new Date(ms + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
+    const mskLabel = mskStamp;
     const gaps = [];
     for (const list of byVehicle.values()) {
       for (let i = 1; i < list.length; i += 1) {
@@ -1230,8 +1239,7 @@ function driverProgressText(tripId) {
   const stops = db.prepare(`SELECT id, kind, seq, actual_arrival, actual_departure,
     planned_arrival FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(tripId);
   if (!stops.length) return '';
-  const msk = iso => iso ? new Date(Date.parse(iso) + 3 * 3_600_000)
-    .toISOString().replace('T', ' ').slice(5, 16) + ' МСК' : '';
+  const msk = iso => iso ? `${mskStamp(iso)} МСК` : '';
   const current = nextDriverStep(tripId);
   const lines = ['Этапы рейса:'];
   for (const stop of stops) {
@@ -1255,8 +1263,7 @@ function driverProgressText(tripId) {
 function driverAssignmentText(trip) {
   const stops = db.prepare(`SELECT kind, point, planned_arrival FROM trip_stops
     WHERE trip_id=? ORDER BY seq`).all(trip.id);
-  const mskTime = iso => iso ? new Date(Date.parse(iso) + 3 * 3_600_000)
-    .toISOString().replace('T', ' ').slice(5, 16) : '—';
+  const mskTime = iso => iso ? mskStamp(iso) : '—';
   const lines = [`🚚 Задание на рейс${trip.order_no ? ` (заказ № ${trip.order_no})` : ''}`,
     `${trip.from_point || ''} → ${trip.to_point || ''}`.trim(),
     `Выход: ${mskTime(trip.starts_at)} (МСК)`];
@@ -1401,7 +1408,7 @@ async function runDriverBotPoll() {
               (driver && stop && driverForTrip({ vehicle_id: stop.vehicle_id, id: stop.trip_id })?.id === driver.id)) {
             const eta = new Date(Date.now() + hours * 3_600_000).toISOString();
             db.prepare(`UPDATE trip_stops SET driver_eta=? WHERE id=?`).run(eta, stopId);
-            const mskEta = new Date(Date.parse(eta) + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
+            const mskEta = mskStamp(eta);
             const confirmed = await tgApi('sendMessage', { chat_id: query.message.chat.id,
               text: `Принял: примерно к ${mskEta} (МСК). Диспетчер видит прогноз.` }, token);
             if (confirmed?.ok) tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
@@ -1708,7 +1715,7 @@ function runMissedDepartureWatch() {
     const seen = new Set(seenRaw ? JSON.parse(seenRaw) : []);
     const fresh = rows.filter(row => !seen.has(row.id));
     if (!fresh.length) return;
-    const msk = iso => new Date(Date.parse(iso) + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
+    const msk = mskStamp;
     const lines = fresh.slice(0, 8).map(row =>
       `${row.plate} №${row.order_no || '—'} ${row.fz}→${row.tz} (выход был ${msk(row.starts_at)} МСК` +
       `${row.window_to ? `, окно клиента до ${msk(row.window_to)}` : ''})`);
@@ -1751,7 +1758,7 @@ function runStaleTransfersWatch() {
       const done = db.prepare(`SELECT value FROM app_meta WHERE key='stale_transfer_day'`).get()?.value;
       if (done !== key) {
         notify('dispatcher', `🚚 Перегоны без отметок дольше 6 часов после планового прибытия: ` +
-          remind.map(item => `${item.plate} → ${(item.to_name || '').slice(0, 30)} (план ${item.ends_at.slice(5, 16)})`).join('; ') +
+          remind.map(item => `${item.plate} → ${(item.to_name || '').slice(0, 30)} (план ${ddmm(item.ends_at)})`).join('; ') +
           `. Отметьте этапы — или через сутки перегон закроется сам плановым временем`, null, null, { category: 'stale_transfers' });
         db.prepare(`INSERT INTO app_meta(key,value) VALUES('stale_transfer_day',?)
           ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key);
