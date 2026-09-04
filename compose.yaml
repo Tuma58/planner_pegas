@@ -11,6 +11,11 @@ services:
           pids: 256
     ports:
       - "127.0.0.1:3000:3000"
+    # Telegram: DNS хостера отдаёт AAAA (IPv6-маршрута нет) и A из подсети
+    # 149.154.166.x, до которой нет маршрута; рабочая — 149.154.167.220.
+    # Фиксируем хостом, иначе уведомления в мессенджер не уходят.
+    extra_hosts:
+      - "api.telegram.org:149.154.167.220"
     environment:
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       APP_SECRET_FILE: "/run/secrets/app_secret"
