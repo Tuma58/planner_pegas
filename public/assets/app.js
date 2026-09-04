@@ -1674,13 +1674,16 @@ function openAddressBook(query = '', region = '') {
     </form>
     <div id="geoResults" class="list" style="margin-bottom:8px"></div>` : ''}
     <div class="table-wrap" style="max-height:50vh;overflow:auto"><table>
-      <thead><tr><th>Пункт</th><th>Субъект</th><th>Геозона</th><th class="num">От базы, км</th><th>Адрес</th></tr></thead>
+      <thead><tr><th>Пункт</th><th>Субъект</th><th>Геозона</th><th class="num">От базы, км</th><th>Адрес</th><th></th></tr></thead>
       <tbody>${shown.map(item => `<tr>
         <td><b>${escapeHtml(item.name)}</b>${item.external_code ? `<br><small class="muted mono">${escapeHtml(item.external_code)}</small>` : ''}</td>
         <td>${escapeHtml(item.region || '—')}</td>
         <td>${escapeHtml(item.zone_name || '—')}</td>
         <td class="num">${item.base_distance_km ? Math.round(item.base_distance_km) : '—'}</td>
-        <td><small class="muted">${escapeHtml(item.address || '')}</small></td></tr>`).join('')}</tbody>
+        <td><small class="muted">${escapeHtml(item.address || '')}</small></td>
+        <td style="white-space:nowrap">${canAdd ? `
+          <button type="button" class="button ghost small" data-addr-edit="${item.id}" title="Редактировать пункт">✏</button>
+          <button type="button" class="button ghost small" data-addr-del="${item.id}" title="Удалить пункт (только не используемый заявками)">🗑</button>` : ''}</td></tr>`).join('')}</tbody>
     </table></div>
     ${filtered.length > shown.length
       ? `<p class="muted">Показано ${shown.length} из ${filtered.length} — уточните поиск.</p>` : ''}
@@ -1729,6 +1732,23 @@ function openAddressBook(query = '', region = '') {
       openAddressBook(query, region);
     } catch (error) { toast(error.message, 'error'); }
   };
+  // Ручное редактирование и удаление пункта.
+  document.querySelectorAll('[data-addr-edit]').forEach(button =>
+    button.addEventListener('click', () => {
+      const item = items.find(address => address.id === button.dataset.addrEdit);
+      if (item) editAddressDialog(item, query, region);
+    }));
+  document.querySelectorAll('[data-addr-del]').forEach(button =>
+    button.addEventListener('click', async () => {
+      const item = items.find(address => address.id === button.dataset.addrDel);
+      if (!item || !confirm(`Удалить пункт «${item.name}» из справочника?`)) return;
+      try {
+        await api(`/api/addresses/${item.id}`, { method: 'DELETE' });
+        toast('Пункт удалён');
+        await reload();
+        openAddressBook(query, region);
+      } catch (error) { toast(error.message, 'error'); }
+    }));
   // Ревизия зон: пункты, где зона противоречит субъекту/городу в имени.
   // «Исправить» меняет зону пункта и пересчитывает активные заявки по нему.
   byId('addrZoneAudit')?.addEventListener('click', async () => {
@@ -1779,6 +1799,68 @@ function openAddressBook(query = '', region = '') {
       box.innerHTML = `<p class="danger">${escapeHtml(error.message)}</p>`;
     }
   });
+}
+
+// Редактирование пункта справочника: имя, адрес, субъект, зона, координаты
+// (с поиском в OSM). Смена зоны пересчитает активные заявки по пункту.
+function editAddressDialog(item, query, region) {
+  showModal(`<form id="editAddressForm">
+    <h2>✏ ${escapeHtml(item.name.slice(0, 50))}</h2>
+    <label class="field">Наименование пункта
+      <input name="name" value="${escapeHtml(item.name)}" required></label>
+    <label class="field">Полный адрес
+      <input name="address" value="${escapeHtml(item.address || '')}"></label>
+    <div class="form-grid">
+      <label class="field">Субъект (обл/респ)
+        <input name="region" value="${escapeHtml(item.region || '')}"></label>
+      <label class="field">Геозона<select name="zoneId">${zoneOptions(item.zone_id)}</select></label>
+    </div>
+    <div class="form-grid">
+      <label class="field">Широта<input name="latitude" value="${item.latitude ?? ''}" inputmode="decimal"></label>
+      <label class="field">Долгота<input name="longitude" value="${item.longitude ?? ''}" inputmode="decimal"></label>
+    </div>
+    <div id="editGeoResults" class="list"></div>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" id="editGeoLookup" title="Найти координаты в OpenStreetMap">🌍 Найти</button>
+      <button type="button" class="button ghost" id="editAddrBack">← К справочнику</button>
+      <button class="button">Сохранить</button>
+    </div>
+  </form>`);
+  const form = byId('editAddressForm');
+  byId('editAddrBack').onclick = () => openAddressBook(query, region);
+  byId('editGeoLookup').onclick = async () => {
+    const text = (form.elements.address.value || form.elements.name.value).trim();
+    if (text.length < 3) { toast('Введите наименование или адрес', 'error'); return; }
+    byId('editGeoResults').innerHTML = '<p class="muted">Ищем в OpenStreetMap…</p>';
+    try {
+      const { items: hits } = await api(`/api/geocode?q=${encodeURIComponent(text)}`);
+      byId('editGeoResults').innerHTML = hits.length ? hits.map((hit, index) =>
+        `<button type="button" class="list-item sugtruck" data-edit-geo="${index}">
+          <small>${escapeHtml(hit.name)}</small></button>`).join('')
+        : '<p class="muted">Не найдено — уточните запрос.</p>';
+      byId('editGeoResults').querySelectorAll('[data-edit-geo]').forEach(button =>
+        button.addEventListener('click', () => {
+          const hit = hits[Number(button.dataset.editGeo)];
+          form.elements.latitude.value = hit.latitude;
+          form.elements.longitude.value = hit.longitude;
+          if (hit.region && !form.elements.region.value) form.elements.region.value = hit.region;
+          byId('editGeoResults').innerHTML = '<p class="muted">✓ Координаты подставлены.</p>';
+        }));
+    } catch (error) {
+      byId('editGeoResults').innerHTML = `<p class="danger">${escapeHtml(error.message)}</p>`;
+    }
+  };
+  form.onsubmit = async event => {
+    event.preventDefault();
+    try {
+      const result = await api(`/api/addresses/${item.id}`, {
+        method: 'PATCH', body: JSON.stringify(formValues(form))
+      });
+      toast(`Пункт обновлён${result.ordersTouched ? ` · пересчитано заявок: ${result.ordersTouched}` : ''}`);
+      await reload();
+      openAddressBook(query, region);
+    } catch (error) { toast(error.message, 'error'); }
+  };
 }
 
 // Аналитика выбранного дня: рейсы (выходят / в работе / прибывают),

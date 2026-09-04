@@ -2456,36 +2456,77 @@ async function api(request, response, url) {
     items.sort((a, b) => b.used - a.used);
     return json(response, 200, { items });
   }
-  // Правка зоны пункта + пересчёт зон АКТИВНЫХ заявок по нему (окно не в
-  // прошлом) и их незакрытых рейсов: зоны копируются в заявку при создании
-  // и сами не обновляются — без пересчёта фильтры продолжали бы врать.
+  // Правка пункта (имя, адрес, субъект, зона, координаты). Смена зоны
+  // пересчитывает АКТИВНЫЕ заявки по пункту (окно не в прошлом) и их
+  // незакрытые рейсы: зоны копируются в заявку при создании и сами не
+  // обновляются — без пересчёта фильтры продолжали бы врать.
   if (request.method === 'PATCH' && (match = route(/^\/api\/addresses\/([\w-]+)$/, pathname))) {
     const user = requirePermission(request, response, 'orders:write');
     if (!user) return;
     const body = await readJson(request);
     const address = db.prepare('SELECT * FROM addresses WHERE id=?').get(match[0]);
     if (!address) return errorJson(response, 404, 'Пункт не найден');
-    if (!body.zoneId || !db.prepare('SELECT 1 FROM zones WHERE id=?').get(body.zoneId)) {
+    const name = body.name !== undefined ? String(body.name || '').trim() : address.name;
+    if (!name) return errorJson(response, 422, 'Укажите наименование пункта');
+    if (name !== address.name &&
+        db.prepare('SELECT 1 FROM addresses WHERE name=? COLLATE NOCASE AND id<>?').get(name, match[0])) {
+      return errorJson(response, 422, 'Такой пункт уже есть в справочнике');
+    }
+    const zoneId = body.zoneId !== undefined ? body.zoneId : address.zone_id;
+    if (!zoneId || !db.prepare('SELECT 1 FROM zones WHERE id=?').get(zoneId)) {
       return errorJson(response, 422, 'Укажите геозону');
     }
-    db.prepare('UPDATE addresses SET zone_id=? WHERE id=?').run(body.zoneId, match[0]);
+    const numOf = (value, current) => value === undefined ? current
+      : (value === '' || value === null ? null : Number(value));
+    const latitude = numOf(body.latitude, address.latitude);
+    const longitude = numOf(body.longitude, address.longitude);
+    const { BASE_POINT } = await import('./db.mjs');
+    db.prepare(`UPDATE addresses SET name=?, address=?, region=?, zone_id=?,
+        latitude=?, longitude=?, base_distance_km=? WHERE id=?`).run(
+      name,
+      body.address !== undefined ? String(body.address || '').trim() : address.address,
+      body.region !== undefined ? String(body.region || '').trim() : address.region,
+      zoneId, latitude, longitude,
+      Number.isFinite(latitude) && Number.isFinite(longitude)
+        ? roadKm(latitude, longitude, BASE_POINT.lat, BASE_POINT.lon) : null,
+      match[0]);
     let touched = 0;
-    for (const [addrCol, zoneCol] of [['from_address_id', 'from_zone_id'], ['to_address_id', 'to_zone_id']]) {
-      const orders = db.prepare(`SELECT id, trip_id FROM orders
-        WHERE ${addrCol}=? AND ${zoneCol}!=? AND deleted_at IS NULL
-          AND window_to >= date('now', '-1 day')`).all(match[0], body.zoneId);
-      for (const order of orders) {
-        db.prepare(`UPDATE orders SET ${zoneCol}=? WHERE id=?`).run(body.zoneId, order.id);
-        if (order.trip_id) {
-          db.prepare(`UPDATE trips SET ${zoneCol}=? WHERE id=? AND status IN ('plan','run')`)
-            .run(body.zoneId, order.trip_id);
+    if (zoneId !== address.zone_id) {
+      for (const [addrCol, zoneCol] of [['from_address_id', 'from_zone_id'], ['to_address_id', 'to_zone_id']]) {
+        const orders = db.prepare(`SELECT id, trip_id FROM orders
+          WHERE ${addrCol}=? AND ${zoneCol}!=? AND deleted_at IS NULL
+            AND window_to >= date('now', '-1 day')`).all(match[0], zoneId);
+        for (const order of orders) {
+          db.prepare(`UPDATE orders SET ${zoneCol}=? WHERE id=?`).run(zoneId, order.id);
+          if (order.trip_id) {
+            db.prepare(`UPDATE trips SET ${zoneCol}=? WHERE id=? AND status IN ('plan','run')`)
+              .run(zoneId, order.trip_id);
+          }
+          touched += 1;
         }
-        touched += 1;
       }
     }
     audit(db, user, 'update', 'address', match[0],
-      { zoneId: body.zoneId, was: address.zone_id, ordersTouched: touched }, requestIp(request));
+      { ...body, was: { name: address.name, zone_id: address.zone_id }, ordersTouched: touched },
+      requestIp(request));
     return json(response, 200, { ok: true, ordersTouched: touched });
+  }
+  // Удаление пункта: только не используемого заявками — история заявок
+  // важнее чистоты справочника, ссылки не рвём.
+  if (request.method === 'DELETE' && (match = route(/^\/api\/addresses\/([\w-]+)$/, pathname))) {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const address = db.prepare('SELECT * FROM addresses WHERE id=?').get(match[0]);
+    if (!address) return errorJson(response, 404, 'Пункт не найден');
+    const used = db.prepare(`SELECT COUNT(*) n FROM orders
+      WHERE from_address_id=? OR to_address_id=?`).get(match[0], match[0]).n;
+    if (used) {
+      return errorJson(response, 422,
+        `Пункт используется в ${used} заявках — удалить нельзя. Поправьте его через «✏», если данные неверны`);
+    }
+    db.prepare('DELETE FROM addresses WHERE id=?').run(match[0]);
+    audit(db, user, 'delete', 'address', match[0], { name: address.name }, requestIp(request));
+    return json(response, 200, { ok: true });
   }
   if (request.method === 'POST' && pathname === '/api/addresses') {
     const user = requirePermission(request, response, 'orders:write');
