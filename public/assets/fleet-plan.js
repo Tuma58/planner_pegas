@@ -184,11 +184,15 @@ const KIND_SHORT = { repair: '🔧', no_driver: '👤', shift: '🔁', reserve: 
 const zoneShort = name => ({ 'Москва': 'М', 'Дом': 'Д', 'Самара': 'С', 'Питер': 'П',
   'Черноземье': 'Ч', 'Восток': 'В', 'Юг': 'Ю', 'Запад': 'З', 'Золотое кольцо': 'К', 'Урал': 'У' }[name] || (name || '')[0] || '·');
 
-export async function fleetPlanDialog(context, month = '', filters = {}) {
-  let plan;
-  try {
-    plan = await api(`/api/fleet-plan${month ? `?month=${month}` : ''}`);
-  } catch (error) { toast(error.message, 'error'); return; }
+export async function fleetPlanDialog(context, month = '', filters = {}, cachedPlan = null) {
+  // Кеш плана: поиск и фильтры перерисовывают полотно из загруженных данных
+  // — сеть только при смене месяца (раньше каждый символ = два запроса).
+  let plan = cachedPlan;
+  if (!plan) {
+    try {
+      plan = await api(`/api/fleet-plan${month ? `?month=${month}` : ''}`);
+    } catch (error) { toast(error.message, 'error'); return; }
+  }
   // Рабочее поле: поиск, фильтр по кругу, «только резерв под новых клиентов».
   const flt = { query: '', round: '', freeOnly: false, ...filters };
   const { days, vehicles, trips, dispositions } = plan;
@@ -269,15 +273,18 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
   // плеча (транзит + 8 ч операций) / 24 — та же формула, что строка
   // «Машин занято (оценка)» в Плане вывоза: теперь оба поля говорят на
   // одном языке и сравниваются строка к строке.
-  let needByDay = null;
-  try {
-    const dp = await api(`/api/delivery-plan?month=${plan.month}`);
-    needByDay = Array.from({ length: days }, (_, i) => {
-      const weekday = (dp.firstWeekday + i) % 7;
-      return dp.slots.reduce((sum, slot) => sum + (slot.weekday === weekday
-        ? slot.per_day * ((slot.transit_hours || 24) + 8) / 24 : 0), 0);
-    });
-  } catch { /* сетка недоступна — строка потребности не показывается */ }
+  let needByDay = plan._needByDay ?? null;
+  if (needByDay === null) {
+    try {
+      const dp = await api(`/api/delivery-plan?month=${plan.month}`);
+      needByDay = Array.from({ length: days }, (_, i) => {
+        const weekday = (dp.firstWeekday + i) % 7;
+        return dp.slots.reduce((sum, slot) => sum + (slot.weekday === weekday
+          ? slot.per_day * ((slot.transit_hours || 24) + 8) / 24 : 0), 0);
+      });
+      plan._needByDay = needByDay;
+    } catch { plan._needByDay = false; /* сетка недоступна */ }
+  } else if (needByDay === false) needByDay = null;
 
   const [year, monthNum] = plan.month.split('-').map(Number);
   const firstWd = new Date(monthStartMs).getUTCDay();
@@ -363,13 +370,25 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
     query: document.getElementById('fpQuery')?.value ?? flt.query,
     round: document.getElementById('fpRound')?.value ?? flt.round,
     freeOnly: document.getElementById('fpFreeOnly')?.checked ?? flt.freeOnly
-  });
+  }, newMonth === plan.month ? plan : null);
   document.getElementById('fpPrev').onclick = () => rerender(shiftMonth(-1));
   document.getElementById('fpNext').onclick = () => rerender(shiftMonth(1));
   document.getElementById('fpToday').onclick = () => rerender(new Date().toISOString().slice(0, 7));
   let fpTimer = null;
   document.getElementById('fpQuery').addEventListener('input', () => {
-    clearTimeout(fpTimer); fpTimer = setTimeout(() => rerender(), 400);
+    clearTimeout(fpTimer);
+    fpTimer = setTimeout(async () => {
+      // Возврат фокуса и каретки после перерисовки поля поиска.
+      const el = document.getElementById('fpQuery');
+      const caret = el?.selectionStart ?? 0;
+      await rerender();
+      const again = document.getElementById('fpQuery');
+      if (again) {
+        again.focus();
+        const position = Math.min(caret, again.value.length);
+        again.setSelectionRange(position, position);
+      }
+    }, 350);
   });
   document.getElementById('fpRound').addEventListener('change', () => rerender());
   document.getElementById('fpFreeOnly').addEventListener('change', () => rerender());

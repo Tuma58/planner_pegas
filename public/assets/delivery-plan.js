@@ -193,11 +193,16 @@ function newLegDialog(context, plan, customer, flt) {
 const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
 
-export async function deliveryPlanDialog(context, month = '', filters = {}) {
-  let plan;
-  try {
-    plan = await api(`/api/delivery-plan${month ? `?month=${month}` : ''}`);
-  } catch (error) { toast(error.message, 'error'); return; }
+export async function deliveryPlanDialog(context, month = '', filters = {}, cachedPlan = null) {
+  // Кеш плана: правка фильтров и поиска перерисовывает полотно из уже
+  // загруженных данных — сеть только при смене месяца. Раньше каждый символ
+  // поиска ходил в API и пересоздавал поле: «лагает и слетает ввод».
+  let plan = cachedPlan;
+  if (!plan) {
+    try {
+      plan = await api(`/api/delivery-plan${month ? `?month=${month}` : ''}`);
+    } catch (error) { toast(error.message, 'error'); return; }
+  }
   const { daysInMonth, firstWeekday, slots, facts } = plan;
   const canEdit = context.can('orders:write') || context.can('shifts:write');
   // Рабочее поле: поиск по клиенту, фильтр зоны плеча, «только с дырами».
@@ -389,13 +394,25 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
     query: document.getElementById('dplQuery')?.value ?? flt.query,
     zone: document.getElementById('dplZone')?.value ?? flt.zone,
     gapsOnly: document.getElementById('dplGapsOnly')?.checked ?? flt.gapsOnly
-  });
+  }, newMonth === plan.month ? plan : null);
   document.getElementById('dplPrev').onclick = () => rerender(shiftMonth(-1));
   document.getElementById('dplNext').onclick = () => rerender(shiftMonth(1));
   document.getElementById('dplToday').onclick = () => rerender(new Date().toISOString().slice(0, 7));
   let dplTimer = null;
   document.getElementById('dplQuery').addEventListener('input', () => {
-    clearTimeout(dplTimer); dplTimer = setTimeout(() => rerender(), 400);
+    clearTimeout(dplTimer);
+    dplTimer = setTimeout(async () => {
+      // Возврат фокуса и каретки: перерисовка пересоздаёт поле поиска.
+      const el = document.getElementById('dplQuery');
+      const caret = el?.selectionStart ?? 0;
+      await rerender();
+      const again = document.getElementById('dplQuery');
+      if (again) {
+        again.focus();
+        const position = Math.min(caret, again.value.length);
+        again.setSelectionRange(position, position);
+      }
+    }, 350);
   });
   document.getElementById('dplZone').addEventListener('change', () => rerender());
   document.getElementById('dplGapsOnly').addEventListener('change', () => rerender());
