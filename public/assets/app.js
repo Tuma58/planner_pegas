@@ -822,7 +822,8 @@ function renderMain() {
       state.deliveryMonth || '', state.deliveryFlt || {});
   } else if (state.view === 'fleetplan') {
     byId('timeline').innerHTML = '<div class="empty-state">Загружаю план парка…</div>';
-    fleetPlanDialog({ state, can, showModal, closeModal, planTarget: byId('timeline') });
+    fleetPlanDialog({ state, can, showModal, closeModal, onReload: reload, openTrip,
+      planTarget: byId('timeline') }, state.fleetMonth || '', state.fleetFlt || {});
   } else if (state.view === 'routes') {
     renderRoutes(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'dispatcher') {

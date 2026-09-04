@@ -19,6 +19,29 @@ function ordersOfCell(data, row, monthIso, day) {
     new Date(Date.parse(order.window_from) + 3 * 3_600_000).toISOString().slice(0, 10) === dayIso);
 }
 
+// Подпись плеча «от субъекта к субъекту»: субъект РФ — из адресов последней
+// заявки плеча (lastPoints), геозоны уходят на второй план мелкой строкой.
+function legRegions(context, plan, row) {
+  const addresses = context.state?.data?.reference?.addresses || [];
+  const last = (plan.lastPoints || {})[`${row.customer}|${row.fromZoneId}|${row.toZoneId}`] || {};
+  const regionOf = (addressId, point) => {
+    const byId = addressId ? addresses.find(item => item.id === addressId)?.region : '';
+    if (byId) return byId;
+    const tail = String(point || '').match(/([А-ЯЁ][а-яё]+(?:ая|ий))\s+(обл|область|край|респ)\.?\s*$/);
+    return tail ? `${tail[1]} ${tail[2]}` : '';
+  };
+  const from = regionOf(last.fromAddressId, last.fromPoint);
+  const to = regionOf(last.toAddressId, last.toPoint);
+  return (from || to) ? `${from || row.leg.split('→')[0]} → ${to || row.leg.split('→')[1]}` : '';
+}
+
+const legLabelHtml = (context, plan, row) => {
+  const regions = legRegions(context, plan, row);
+  return regions
+    ? `${escapeHtml(regions)}<small class="muted" style="display:block;font-weight:400;opacity:.75">зоны: ${escapeHtml(row.leg)}</small>`
+    : escapeHtml(row.leg);
+};
+
 const ORDER_STATE = (order, data) => {
   if (!order.trip_id) return ['⚠ без ТС', 'badge bad'];
   const trip = (data.trips || []).find(item => item.id === order.trip_id);
@@ -59,7 +82,7 @@ function dayCellDialog(context, plan, row, day, flt) {
       <button type="button" class="button ghost" data-close>Закрыть</button>
     </div>`);
   document.getElementById('dplCellNew')?.addEventListener('click', () =>
-    orderFromSlotDialog(context, plan, row, day));
+    orderFromSlotDialog(context, plan, row, day, flt));
   document.querySelectorAll('[data-dpl-open-order]').forEach(item =>
     item.addEventListener('click', async () => {
       const order = (data.orders || []).find(entry => entry.id === item.dataset.dplOpenOrder);
@@ -73,16 +96,17 @@ function dayCellDialog(context, plan, row, day, flt) {
 // Карточка клиента в сетке: все его плечи с планом, фактом и суммами;
 // «✎» редактирует слоты плеча, «📇» открывает CRM-карточку.
 function customerLegsDialog(context, plan, customer, rowList, helpers, flt) {
-  const { planOf, factOf, daysInMonth } = helpers;
+  const { planOf, factOf, gapOf, daysInMonth } = helpers;
   const legs = rowList.filter(row => row.customer === customer);
   const monthOf = row => {
-    let planN = 0; let factN = 0; let factRv = 0;
+    let planN = 0; let factN = 0; let factRv = 0; let gapN = 0;
     for (let day = 1; day <= daysInMonth; day += 1) {
       planN += planOf(row, day);
+      gapN += gapOf(row, day);
       const fact = factOf(row, day);
       if (fact) { factN += fact.n; factRv += fact.rv; }
     }
-    return { planN, factN, factRv, planRv: planN * row.rate };
+    return { planN, factN, factRv, gapN, gapRv: gapN * row.rate, planRv: planN * row.rate };
   };
   const totals = legs.map(monthOf);
   const sum = key => totals.reduce((acc, item) => acc + item[key], 0);
@@ -91,14 +115,19 @@ function customerLegsDialog(context, plan, customer, rowList, helpers, flt) {
     <p class="muted">Плечи клиента в сетке за ${MONTHS[Number(plan.month.slice(5, 7)) - 1]}:
       план <b>${Math.round(sum('planN'))}</b> рейсов на <b>${money(Math.round(sum('planRv')))}</b>
       · взято <b>${sum('factN')}</b> на <b>${money(Math.round(sum('factRv')))}</b></p>
+    ${sum('gapN') ? `<p class="task-balance-line bad" style="margin:0 0 8px">💰 Не взято до конца
+      месяца: <b>${sum('gapN')}</b> рейс. на <b>${money(Math.round(sum('gapRv')))}</b> —
+      задача продаж: договориться и внести заявки (клик по жёлтым ячейкам строки клиента).</p>` : ''}
     <div class="table-wrap"><table>
       <thead><tr><th>Плечо</th><th class="num">Ставка</th><th class="num">План, рейс.</th>
-        <th class="num">Взято</th><th class="num">План, ₽</th><th class="num">Факт, ₽</th><th></th></tr></thead>
+        <th class="num">Взято</th><th class="num" title="Незакрытые будущие слоты">Не взято</th>
+        <th class="num">План, ₽</th><th class="num">Факт, ₽</th><th></th></tr></thead>
       <tbody>${legs.map((row, index) => `<tr>
-        <td>${escapeHtml(row.leg)}</td>
+        <td>${legLabelHtml(context, plan, row)}</td>
         <td class="num">${money(row.rate)}</td>
         <td class="num">${Math.round(totals[index].planN)}</td>
         <td class="num">${totals[index].factN}</td>
+        <td class="num" style="${totals[index].gapN ? 'color:var(--bad);font-weight:700' : ''}">${totals[index].gapN || ''}</td>
         <td class="num">${money(Math.round(totals[index].planRv))}</td>
         <td class="num">${money(Math.round(totals[index].factRv))}</td>
         <td>${canEdit ? `<button type="button" class="button ghost small" data-dpl-cust-slot="${rowList.indexOf(row)}"
@@ -106,16 +135,60 @@ function customerLegsDialog(context, plan, customer, rowList, helpers, flt) {
       </tr>`).join('')}</tbody>
     </table></div>
     <div class="modal-actions">
+      ${canEdit ? '<button type="button" class="button" id="dplNewLeg" title="Новое плечо клиента в сетке: зоны, ставка, слоты недели">+ Плечо</button>' : ''}
       <button type="button" class="button ghost" id="dplCustCard" title="CRM: контакты, касания, заказы">📇 Карточка клиента</button>
       <button type="button" class="button ghost" data-close>Закрыть</button>
     </div>`, 'wide');
+  document.getElementById('dplNewLeg')?.addEventListener('click', () =>
+    newLegDialog(context, plan, customer, flt));
   document.getElementById('dplCustCard').onclick = async () => {
     const { customerCardDialog } = await import('./customer-card.js');
     customerCardDialog(customer, context);
   };
   document.querySelectorAll('[data-dpl-cust-slot]').forEach(button =>
     button.addEventListener('click', () =>
-      slotEditor(context, plan, rowList[Number(button.dataset.dplCustSlot)])));
+      slotEditor(context, plan, rowList[Number(button.dataset.dplCustSlot)], flt)));
+}
+
+// Новое плечо клиента: зоны, ставка и слоты недели — тем же API, что
+// редактор слотов. Появится строкой сетки после сохранения.
+function newLegDialog(context, plan, customer, flt) {
+  const zones = context.state?.data?.reference?.zones || [];
+  const zoneOptions = zones.map(zone =>
+    `<option value="${zone.id}">${escapeHtml(zone.name)}</option>`).join('');
+  context.showModal(`<h2>+ Плечо · ${escapeHtml(customer.slice(0, 34))}</h2>
+    <form id="dplNewLegForm">
+      <div class="form-grid">
+        <label class="field">Откуда (зона)<select name="fromZoneId" required>${zoneOptions}</select></label>
+        <label class="field">Куда (зона)<select name="toZoneId" required>${zoneOptions}</select></label>
+      </div>
+      <div class="form-grid" style="grid-template-columns:repeat(4,1fr)">
+        ${[1, 2, 3, 4, 5, 6, 0].map(weekday => `<label class="field">${WD[weekday]}
+          <input name="d${weekday}" type="number" min="0" step="any" value="0"></label>`).join('')}
+        <label class="field">Ставка, ₽<input name="rate" type="number" min="0" required></label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="button ghost" data-close>Отмена</button>
+        <button class="button">Создать плечо</button>
+      </div>
+    </form>`);
+  document.getElementById('dplNewLegForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    if (form.get('fromZoneId') === form.get('toZoneId') &&
+        !confirm('Зоны погрузки и выгрузки совпадают (локалка). Создать?')) return;
+    try {
+      for (let weekday = 0; weekday < 7; weekday += 1) {
+        await api('/api/delivery-plan/slot', { method: 'POST', body: JSON.stringify({
+          customer, fromZoneId: form.get('fromZoneId'), toZoneId: form.get('toZoneId'),
+          weekday, perDay: Number(form.get(`d${weekday}`)) || 0,
+          rate: Number(form.get('rate')) || 0, transitHours: 24
+        }) });
+      }
+      toast('Плечо создано — строка появилась в сетке');
+      deliveryPlanDialog(context, plan.month, flt);
+    } catch (error) { toast(error.message, 'error'); }
+  };
 }
 const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
@@ -241,7 +314,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
     <td class="plan-fix" style="white-space:nowrap;max-width:150px;min-width:150px;overflow:hidden;text-overflow:ellipsis">
       <b data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer"
         title="Плечи клиента: план, взято, суммы — с правкой слотов">${escapeHtml(row.customer)}</b></td>
-    <td class="plan-fix2" style="white-space:nowrap;left:150px">${escapeHtml(row.leg)}</td>
+    <td class="plan-fix2" style="white-space:nowrap;left:150px">${legLabelHtml(context, plan, row)}</td>
     <td style="white-space:nowrap">${money(row.rate)}${canEdit ? ` <button class="button ghost small" data-slot-edit="${index}" title="Слоты недели и ставка">✎</button>` : ''}</td>
     ${Array.from({ length: daysInMonth }, (_, i) => cellHtml(row, index, i + 1)).join('')}
   </tr>`; }).join('');
@@ -328,7 +401,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
   document.querySelectorAll('[data-dpl-cust]').forEach(cell =>
     cell.addEventListener('click', () =>
       customerLegsDialog(context, plan, cell.dataset.dplCust, rowList,
-        { planOf, factOf, daysInMonth }, flt)));
+        { planOf, factOf, gapOf, daysInMonth }, flt)));
   if (canEdit) {
     const seed = document.getElementById('dplSeed');
     if (seed) {
@@ -341,12 +414,12 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
       };
     }
     document.querySelectorAll('[data-slot-edit]').forEach(button =>
-      button.addEventListener('click', () => slotEditor(context, plan, rowList[Number(button.dataset.slotEdit)])));
+      button.addEventListener('click', () => slotEditor(context, plan, rowList[Number(button.dataset.slotEdit)], flt)));
   }
 }
 
 // Мини-форма плеча: рейсов в каждый день недели + ставка.
-function slotEditor(context, plan, row) {
+function slotEditor(context, plan, row, flt = {}) {
   context.showModal(`<h2>Слоты недели</h2>
     <p class="muted">${escapeHtml(row.customer)} · ${escapeHtml(row.leg)} — рейсов в день
       (0 — слота нет); ставка применяется ко всем слотам плеча.</p>
@@ -381,7 +454,7 @@ function slotEditor(context, plan, row) {
 // «+ Заявка из плана»: слот знает клиента, плечо, день и ставку — менеджеру
 // остаётся проверить окно и пункты (подставлены из последней заявки плеча)
 // и нажать «Забронировать». Дальше заявка живёт обычным конвейером.
-function orderFromSlotDialog(context, plan, row, day) {
+function orderFromSlotDialog(context, plan, row, day, flt = {}) {
   const dayIso = `${plan.month}-${String(day).padStart(2, '0')}`;
   const last = (plan.lastPoints || {})[`${row.customer}|${row.fromZoneId}|${row.toZoneId}`] || {};
   context.showModal(`<form id="dplOrderForm">

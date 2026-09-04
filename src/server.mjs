@@ -3696,7 +3696,7 @@ async function api(request, response, url) {
         FROM vehicles v LEFT JOIN vehicle_types vt ON vt.id=v.type_id
         WHERE v.status='work' ORDER BY v.plate`).all(),
       trips: db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.ends_at, t.unloaded_at, t.status,
-          zf.name from_name, zt.name to_name, t.revenue_vat
+          zf.name from_name, zt.name to_name, t.revenue_vat, t.customer_name
         FROM trips t JOIN zones zf ON zf.id=t.from_zone_id JOIN zones zt ON zt.id=t.to_zone_id
         WHERE t.status<>'rejected' AND t.starts_at<? AND t.ends_at>?`).all(monthEnd, monthStart),
       dispositions: db.prepare(`SELECT vehicle_id, kind, starts_at, ends_at
