@@ -359,9 +359,12 @@ export async function renderDispatcher(container, context, options = {}) {
     return ` · местное ${formatDateTime(local.toISOString())} (МСК+${offset - 3})`;
   };
   const normOpMs = Number(data.settings.calculation.handlingHoursPerOperation || 2) * 3_600_000;
+  // Аварийные события ранжируются ДЛИТЕЛЬНОСТЬЮ простоя: at отрицательный,
+  // самые долгие — самые верхние (обычные события сортируются временем).
+  const STUCK_POINT_MS = 6 * 3_600_000;
   const nextControlEvent = trip => {
     if (isStuck(trip)) {
-      return { at: 0, label: '🚨 не выгружают — вмешаться',
+      return { at: -stuckMsOf(trip), label: '🚨 не выгружают — вмешаться',
         point: trip.to_point || trip.to_name, zone: trip.to_name };
     }
     const stops = controlByTrip.get(trip.id)?.stops || [];
@@ -384,6 +387,17 @@ export async function renderDispatcher(container, context, options = {}) {
           point, zone: trip.to_name, stopId: stop.id,
           stepFields: 'actualArrival,workStartedAt',
           stepLabel: isFirst ? 'Погрузка' : isLast ? 'Выгрузка' : 'Прибыл' };
+      }
+      // Стоянка на ЛЮБОЙ точке сверх болевого порога — авария, как «не
+      // выгружают»: простои под ПОГРУЗКОЙ (50+ ч у т509ве58) тонули за
+      // выгрузочными 🚨 на #20+ — «карточки не поднимаются для контроля».
+      const onPointMs = Date.now() - Date.parse(stop.actual_arrival);
+      if (onPointMs > STUCK_POINT_MS) {
+        return { at: -onPointMs,
+          label: `🚨 стоит под ${isFirst ? 'погрузкой' : isLast ? 'выгрузкой' : 'стоянкой'} ${Math.round(onPointMs / 3_600_000)} ч — вмешаться`,
+          point, zone: trip.to_name, stopId: stop.id,
+          stepFields: 'workFinishedAt,actualDeparture',
+          stepLabel: isFirst ? 'В пути на выгрузку' : isLast ? 'Освободился' : 'Убыл' };
       }
       return { at: Date.parse(stop.actual_arrival) + normOpMs,
         label: `${isFirst ? '📦 погрузка' : isLast ? '📥 выгрузка' : '⏸ стоянка'}: ${point}`,
@@ -419,7 +433,10 @@ export async function renderDispatcher(container, context, options = {}) {
   // карточка после «✓ Отработано» тут же поднималась обратно наверх.
   const eventKeyOf = trip => {
     const event = nextControlEvent(trip);
-    return `${trip.id}|${event.label}|${Number.isFinite(event.at) ? Math.round(event.at / 60_000) : 0}`
+    // Аварийные события (at < 0 растёт каждую минуту) в ключе — нулём:
+    // иначе отметка «отработано» слетала бы через минуту. Подпись при этом
+    // содержит часы простоя — обнуляем и её хвост для стабильности.
+    return `${trip.id}|${event.label.replace(/\d+ ч/, '')}|${Number.isFinite(event.at) && event.at > 0 ? Math.round(event.at / 60_000) : 0}`
       .slice(0, 200);
   };
   // Ежечасный контроль сбоя — по свежести отметки: у просроченного события
@@ -915,15 +932,15 @@ export async function renderDispatcher(container, context, options = {}) {
     const worked = workedOf(trip);
     // «Горит»: событие ближе двух часов (или просрочено, или особый контроль)
     // и диспетчер его ещё не отработал.
-    const hot = !worked && (nextEvent.at === 0 || (hasTime && nextEvent.at - Date.now() <= 2 * 3_600_000));
+    const hot = !worked && (nextEvent.at <= 0 || (hasTime && nextEvent.at - Date.now() <= 2 * 3_600_000));
     const overdueHours = overdue ? Math.floor((Date.now() - nextEvent.at) / 3_600_000) : 0;
     const claim = claimOf(trip);
     const claimMine = claim && claim.done_by === myName;
-    const eventLine = `<small class="next-ctrl ${overdue || nextEvent.at === 0 ? 'overdue' : ''}">⏱ далее —
+    const eventLine = `<small class="next-ctrl ${overdue || nextEvent.at <= 0 ? 'overdue' : ''}">⏱ далее —
       ${escapeHtml(nextEvent.label)}${hasTime ? ` · ${formatDateTime(new Date(nextEvent.at).toISOString())}
       ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue
         ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждые 1,5 ч` : ''}
-      ${hot && !overdue && nextEvent.at !== 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
+      ${hot && !overdue && nextEvent.at > 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
       ${claimBadge(claim, claimMine)}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
         · ${escapeHtml(worked.done_by || '')} · ${markTime(worked)}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
