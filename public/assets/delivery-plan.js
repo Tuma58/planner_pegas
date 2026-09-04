@@ -140,7 +140,13 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
     return date.toISOString().slice(0, 7);
   };
 
-  context.showModal(`<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>
+  // Полотно рендерится либо во вкладку (context.planTarget — полноценное
+  // рабочее поле), либо в fullscreen-модалку (кнопки в ролях, как раньше).
+  // Вложенные редакторы (слоты, заявка из слота) всегда модалки.
+  const renderCanvas = html => context.planTarget
+    ? (context.planTarget.innerHTML = html)
+    : context.showModal(html, 'fullscreen');
+  renderCanvas(`<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>
     <div class="console" style="margin:8px 0">
       <button type="button" class="button ghost small" id="dplPrev">←</button>
       <button type="button" class="button ghost small" id="dplToday" title="Вернуться к текущему месяцу">Сегодня</button>
@@ -179,8 +185,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
       ${totalRow('🕳 Дыра (не закрыто)', d => d.gapN, v => v || '')}
       ${bodyRows || `<tr><td colspan="${daysInMonth + 3}" class="muted">Сетка пуста — нажмите «⚙ Заполнить из истории».</td></tr>`}
     </table></div>
-    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
-  'fullscreen');
+    ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
 
   const rerender = (newMonth = plan.month) => deliveryPlanDialog(context, newMonth, {
     query: document.getElementById('dplQuery')?.value ?? flt.query,

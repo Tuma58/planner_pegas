@@ -6,6 +6,8 @@ import { renderBoss } from './boss.js';
 import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
 import { renderFlows } from './flows.js';
+import { deliveryPlanDialog } from './delivery-plan.js';
+import { fleetPlanDialog } from './fleet-plan.js';
 import { buildReport, wireReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sales.js';
 import { renderLogist } from './logist.js';
@@ -749,6 +751,8 @@ const MAIN_VIEWS = [
   { id: 'dispatcher', title: 'Диспетчер', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
   { id: 'flows', title: 'Потоки', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
+  { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
+  { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') },
   { id: 'dashboard', title: 'Дашборд', show: () => true }
 ];
@@ -812,6 +816,12 @@ function renderMain() {
       state, can, onReload: reload, showModal, closeModal, openTrip,
       openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload, { autoConfirm: can('trips:write') })
     });
+  } else if (state.view === 'delivery') {
+    byId('timeline').innerHTML = '<div class="empty-state">Загружаю план вывоза…</div>';
+    deliveryPlanDialog({ state, can, showModal, closeModal, planTarget: byId('timeline') });
+  } else if (state.view === 'fleetplan') {
+    byId('timeline').innerHTML = '<div class="empty-state">Загружаю план парка…</div>';
+    fleetPlanDialog({ state, can, showModal, closeModal, planTarget: byId('timeline') });
   } else if (state.view === 'routes') {
     renderRoutes(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'dispatcher') {

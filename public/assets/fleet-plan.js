@@ -110,7 +110,12 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
   const shiftMonth = delta =>
     new Date(Date.UTC(year, monthNum - 1 + delta, 1)).toISOString().slice(0, 7);
 
-  context.showModal(`<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>
+  // Полотно — во вкладку (context.planTarget) или в fullscreen-модалку
+  // (кнопка у логиста, как раньше); вложенные диалоги всегда модалки.
+  const renderCanvas = html => context.planTarget
+    ? (context.planTarget.innerHTML = html)
+    : context.showModal(html, 'fullscreen');
+  renderCanvas(`<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>
     <div class="console" style="margin:8px 0">
       <button type="button" class="button ghost small" id="fpPrev">←</button>
       <button type="button" class="button ghost small" id="fpToday" title="Вернуться к текущему месяцу">Сегодня</button>
@@ -149,8 +154,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
           style="text-align:center">${cell.text}</td>`).join('')}
       </tr>`).join('')}
     </table></div>
-    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
-  'fullscreen');
+    ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
 
   const rerender = (newMonth = plan.month) => fleetPlanDialog(context, newMonth, {
     query: document.getElementById('fpQuery')?.value ?? flt.query,
