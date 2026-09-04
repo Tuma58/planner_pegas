@@ -15,6 +15,7 @@ export const DISP_KINDS = [
   { kind: 'no_driver', label: 'Без водителя', short: 'без вод.', color: '#b06a55' },
   { kind: 'shift', label: 'Пересменка', short: 'пересм.', color: '#5e87ad' },
   { kind: 'transfer', label: 'Перегон порожним', short: 'перегон', color: '#7a8ea8' },
+  { kind: 'pending', label: 'Ждёт назначенного рейса', short: '⏭ ждёт рейса', color: '#5b8bd0' },
   { kind: 'idle', label: 'Без заказа', short: 'без заказа', color: '#8a7fb3' },
   { kind: 'out', label: 'Выведен', short: 'выведен', color: '#8f9aa6' }
 ];
@@ -600,6 +601,14 @@ export function vehicleStateAt(vehicle, data, dayIso) {
   if (vehicle.status === 'out') return kindMeta('out');
   if (vehicle.status === 'repair') return kindMeta('repair');
   if (vehicle.status === 'no_driver' || !vehicle.driver_name) return kindMeta('no_driver');
+  // Назначенный БУДУЩИЙ рейс (план или проведённый заранее) — машина не
+  // «без заказа», она ждёт свой рейс (кейс т553ве58: выгрузилась 03.09,
+  // следующий рейс 05.09 — а ресурс вешал «без заказа»).
+  const nextTrip = data.trips
+    .filter(trip => trip.vehicle_id === vehicle.id && ['plan', 'run'].includes(trip.status) &&
+      Date.parse(trip.starts_at) >= dayCeil)
+    .sort((a, b) => a.starts_at.localeCompare(b.starts_at))[0];
+  if (nextTrip) return { ...kindMeta('pending'), nextTripAt: nextTrip.starts_at };
   return kindMeta('idle');
 }
 

@@ -167,7 +167,8 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // назначенным будущим рейсом (сегодня-послезавтра) едет к погрузке или
   // ждёт её — это «⏭ ждёт следующей погрузки», а не простой (кейс т947ук58:
   // выгрузилась в Новосибирске, погрузка через день из Омской области).
-  const pendingIds = new Set(activeTrips.filter(trip => trip.status === 'plan' &&
+  const pendingIds = new Set(activeTrips.filter(trip =>
+    ['plan', 'run'].includes(trip.status) &&
     Date.parse(trip.starts_at) >= dayEnd && Date.parse(trip.starts_at) < dayEnd + 2 * DAY_MS)
     .map(trip => trip.vehicle_id));
   let unavailable = 0;
