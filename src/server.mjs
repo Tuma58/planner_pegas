@@ -1187,10 +1187,18 @@ async function runTelegramPoll() {
           db.prepare(`UPDATE users SET telegram_chat_id=?,
             telegram_mode=COALESCE(telegram_mode,'critical') WHERE id=?`).run(chatId, parsed.userId);
           db.prepare(`DELETE FROM app_meta WHERE key=?`).run(key);
-          const user = db.prepare(`SELECT full_name, username FROM users WHERE id=?`).get(parsed.userId);
+          const user = db.prepare(`SELECT full_name, username, role, roles FROM users WHERE id=?`).get(parsed.userId);
           sendTelegramTo([chatId], `✅ Привязано: ${user?.full_name || user?.username || ''}. `
             + 'Сюда будут приходить аварийные уведомления планера. Режим меняется в планере '
             + '(кнопка «🔔»), отвязка — командой /stop.');
+          // Руководителю и админу сразу шлём последний «Отчёт дня» — живая
+          // проверка канала и сразу польза.
+          if (['boss', 'admin'].includes(user?.role) || /"(boss|admin)"/.test(user?.roles || '')) {
+            const report = db.prepare(`SELECT text FROM messages
+              WHERE kind='auto' AND text LIKE '%Отчёт дня%'
+              ORDER BY created_at DESC LIMIT 1`).get();
+            if (report) sendTelegramTo([chatId], report.text);
+          }
         } else {
           sendTelegramTo([chatId], 'Код не найден или устарел — возьмите новый в планере (кнопка «🔔»).');
         }
