@@ -1833,6 +1833,70 @@ function openAddressBook(query = '', region = '') {
   });
 }
 
+// «🔔» — Telegram-уведомления на телефон: привязка чата по коду и режим
+// (только аварии / все уведомления). Кнопка видна, если админ настроил бота.
+function setupTelegramButton() {
+  if (!state.data.settings.telegram?.enabled || byId('tgToggle')) return;
+  const toolbarEnd = document.querySelector('.toolbar-end');
+  if (!toolbarEnd) return;
+  const toggle = document.createElement('button');
+  toggle.id = 'tgToggle';
+  toggle.className = 'button ghost small';
+  toggle.title = 'Уведомления планера в Telegram на телефон';
+  toggle.textContent = '🔔';
+  toolbarEnd.prepend(toggle);
+  toggle.onclick = async () => {
+    const user = state.data.user;
+    if (user.telegramLinked) {
+      showModal(`<h2>🔔 Telegram привязан</h2>
+        <p class="muted">Уведомления приходят на ваш телефон. Режим:</p>
+        <label class="check"><input type="radio" name="tgMode" value="critical"
+          ${user.telegramMode !== 'all' ? 'checked' : ''}> Только аварии
+          (🚨 простои, ⚖ узкие дни, невыход в окно)</label>
+        <label class="check"><input type="radio" name="tgMode" value="all"
+          ${user.telegramMode === 'all' ? 'checked' : ''}> Все уведомления моей роли и общие рассылки</label>
+        <div class="modal-actions">
+          <button type="button" class="button danger ghost" id="tgUnlink">Отвязать</button>
+          <button type="button" class="button ghost" data-close>Закрыть</button>
+          <button type="button" class="button" id="tgSaveMode">Сохранить</button>
+        </div>`);
+      byId('tgSaveMode').onclick = async () => {
+        const mode = document.querySelector('[name="tgMode"]:checked')?.value || 'critical';
+        try {
+          await api('/api/telegram/mode', { method: 'POST', body: JSON.stringify({ mode }) });
+          user.telegramMode = mode;
+          toast('Режим сохранён');
+          closeModal();
+        } catch (error) { toast(error.message, 'error'); }
+      };
+      byId('tgUnlink').onclick = async () => {
+        try {
+          await api('/api/telegram/mode', { method: 'POST', body: JSON.stringify({ mode: 'off' }) });
+          user.telegramLinked = false;
+          toast('Telegram отвязан');
+          closeModal();
+        } catch (error) { toast(error.message, 'error'); }
+      };
+      return;
+    }
+    try {
+      const { code, botName } = await api('/api/telegram/link', { method: 'POST' });
+      showModal(`<h2>🔔 Привязать Telegram</h2>
+        <p class="muted">Уведомления планера будут приходить в мессенджер на телефон.</p>
+        <ol style="line-height:1.9;margin:0 0 8px 18px">
+          <li>Откройте бота: ${botName
+            ? `<a href="https://t.me/${escapeHtml(botName)}?start=${code}" target="_blank" rel="noopener"><b>@${escapeHtml(botName)}</b></a>
+              (по ссылке код подставится сам — просто нажмите «Start»)`
+            : 'найдите бота планера в Telegram (имя — у администратора)'}</li>
+          <li>Или отправьте боту вручную: <code style="user-select:all">/start ${code}</code></li>
+          <li>Бот ответит «Привязано» — готово. Код действует 15 минут.</li>
+        </ol>
+        <p class="muted">По умолчанию приходят только аварии; режим меняется здесь же после привязки.</p>
+        <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
 // Редактирование пункта справочника: имя, адрес, субъект, зона, координаты
 // (с поиском в OSM). Смена зоны пересчитает активные заявки по пункту.
 function editAddressDialog(item, query, region) {
@@ -2216,6 +2280,7 @@ try {
   renderMain();
   refreshExceptions();
   setupChat(state);
+  setupTelegramButton();
   setupGuide({
     views: () => MAIN_VIEWS.filter(view => view.show()).map(view => view.id),
     activeView: () => state.view,

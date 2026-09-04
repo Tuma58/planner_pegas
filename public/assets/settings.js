@@ -593,7 +593,19 @@ async function renderTelephony() {
     api('/api/telephony/config'), api('/api/service-points')
   ]);
   byId('settingsContent').innerHTML = `
-    <h2>Телефония</h2>
+    <h2>🔔 Telegram-уведомления</h2>
+    <p class="muted">Бот шлёт уведомления планера в мессенджер на телефон. Создайте бота у
+      @BotFather (/newbot, 2 минуты), вставьте токен и имя бота — сотрудники привяжут свои
+      чаты кнопкой «🔔» в шапке планера. Режимы у каждого свои: только аварии или все
+      уведомления роли.</p>
+    <form id="telegramForm" class="fields">
+      <label class="field">Токен бота<input name="botToken" value="${escapeHtml(state.admin.settings?.telegram?.botToken || '')}"
+        placeholder="123456789:AA…" autocomplete="off"></label>
+      <label class="field">Имя бота (для ссылки привязки)<input name="botName" value="${escapeHtml(state.admin.settings?.telegram?.botName || '')}"
+        placeholder="pegas_planner_bot (без @)"></label>
+      <button class="button">Сохранить</button>
+    </form>
+    <h2 style="margin-top:18px">Телефония</h2>
     <p class="muted">Когда АТС подключена, входящий звонок сам поднимает карточку водителя
       у сотрудника. До подключения та же карточка открывается кнопкой «📞 Звонок» в шапке —
       процесс работы не меняется.</p>
@@ -642,6 +654,19 @@ async function renderTelephony() {
         <td><button class="button ghost small danger" data-point-del="${point.id}">✕</button></td>
       </tr>`).join('') : '<tr><td colspan="6" class="muted">Точек пока нет — водителю нечего подсказать.</td></tr>'}
       </tbody></table>`;
+  byId('telegramForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
+        telegram: { botToken: form.elements.botToken.value.trim(),
+          botName: form.elements.botName.value.trim().replace(/^@/, '') }
+      }) });
+      state.admin.settings.telegram = { botToken: form.elements.botToken.value.trim(),
+        botName: form.elements.botName.value.trim().replace(/^@/, '') };
+      toast('Telegram сохранён — сотрудники могут привязываться (кнопка «🔔»)');
+    } catch (error) { toast(error.message, 'error'); }
+  };
   byId('telephonyForm').onsubmit = async event => {
     event.preventDefault();
     const form = event.currentTarget;

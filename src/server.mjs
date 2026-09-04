@@ -75,7 +75,10 @@ function plannerSettings() {
   // задан, сам токен виден в настройках отдельным запросом администратору.
   // bodyCompat — совместимость кузовов автоподбора: клиент («Потоки»,
   // подсказки назначения) обязан фильтровать теми же правилами, что сервер.
-  return { ...settings, bodyCompat: BODY_COMPAT, telephony: telephony
+  const { telegram, ...rest } = settings;
+  return { ...rest, bodyCompat: BODY_COMPAT,
+    telegram: { enabled: Boolean(telegram?.botToken), botName: telegram?.botName || '' },
+    telephony: telephony
     ? { enabled: Boolean(telephony.enabled), provider: telephony.provider || '',
       hasToken: Boolean(telephony.token), popup: telephony.popup !== false }
     : { enabled: false, provider: '', hasToken: false, popup: true } };
@@ -119,7 +122,7 @@ async function readRaw(request, limit) {
 
 function publicUser(user) {
   const roles = rolesOf(user);
-  return {
+  return { telegramLinked: Boolean(user.telegram_chat_id), telegramMode: user.telegram_mode || 'critical',
     id: user.id, username: user.username, fullName: user.full_name, email: user.email || '',
     role: user.role, roles, roleLabel: roleLabelsFor(roles), active: Boolean(user.active),
     guest: Boolean(Number(user.guest)),
@@ -353,9 +356,38 @@ function integrationPublic() {
 // ── Внутренний чат и уведомления конвейера ──
 // Авто-сообщение адресуется роли следующего участника процесса: клиент
 // показывает его тостом со звуком тем, у кого эта роль, и пишет в общий чат.
-function notify(targetRole, text, entity = null, entityId = null) {
+// ── Telegram-уведомления в мессенджер на телефон ──
+// Бот настраивается админом (Настройки → Telegram): токен от @BotFather.
+// Сотрудник привязывает свой чат командой /start КОД. Режимы: critical —
+// только аварии (🚨, ⚖ узкие дни, невыход в окно), all — плюс все
+// уведомления своей роли и общие рассылки.
+const telegramConfig = () => settingsObject(db).telegram || {};
+function sendTelegramTo(chatIds, text) {
+  const token = telegramConfig().botToken;
+  if (!token || !chatIds.length) return;
+  const body = String(text).slice(0, 3900);
+  for (const chatId of chatIds) {
+    fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: body }),
+      signal: AbortSignal.timeout(8000)
+    }).catch(() => { /* мессенджер недоступен — лента планера всё равно есть */ });
+  }
+}
+function telegramChatsForRole(targetRole, critical) {
+  if (!telegramConfig().botToken) return [];
+  return db.prepare(`SELECT telegram_chat_id FROM users
+      WHERE active=1 AND deleted_at IS NULL AND telegram_chat_id IS NOT NULL
+        AND (roles LIKE ? OR role = ?)
+        AND (telegram_mode = 'all' OR (telegram_mode = 'critical' AND ?))`)
+    .all(`%"${targetRole}"%`, targetRole, critical ? 1 : 0)
+    .map(row => row.telegram_chat_id);
+}
+
+function notify(targetRole, text, entity = null, entityId = null, { critical = false } = {}) {
   db.prepare(`INSERT INTO messages(author_name,kind,text,target_role,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`).run(text, targetRole, entity, entityId);
+  try { sendTelegramTo(telegramChatsForRole(targetRole, critical), text); } catch { /* не критично */ }
 }
 
 // Персональная рассылка всем действующим сотрудникам: каждому — своё
@@ -366,6 +398,13 @@ function notifyEveryone(text, entity = null, entityId = null) {
   const insert = db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`);
   for (const user of users) insert.run(text, user.id, entity, entityId);
+  // Дубль в Telegram — тем, кто выбрал режим «все уведомления».
+  try {
+    const chats = db.prepare(`SELECT telegram_chat_id FROM users
+      WHERE active=1 AND deleted_at IS NULL AND telegram_chat_id IS NOT NULL
+        AND telegram_mode='all'`).all().map(row => row.telegram_chat_id);
+    sendTelegramTo(chats, text);
+  } catch { /* не критично */ }
   return users.length;
 }
 
@@ -1103,6 +1142,51 @@ function runEntered1cWatch() {
 }
 setInterval(runEntered1cWatch, 30 * 60_000);
 
+// ── Поллер Telegram: привязка чатов командой /start КОД ──
+// Long polling раз в 20 сек (вебхук не поставить: самоподписанный
+// сертификат). Код выдаёт планер (кнопка «🔔 Уведомления»), живёт 15 минут.
+async function runTelegramPoll() {
+  const token = telegramConfig().botToken;
+  if (!token) return;
+  try {
+    const offset = Number(db.prepare(`SELECT value FROM app_meta WHERE key='tg_offset'`).get()?.value || 0);
+    const response = await fetch(`https://api.telegram.org/bot${token}/getUpdates?` +
+      new URLSearchParams({ offset: String(offset + 1), timeout: '0', allowed_updates: '["message"]' }),
+      { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) return;
+    const { result } = await response.json();
+    for (const update of result || []) {
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('tg_offset',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(update.update_id));
+      const chatId = String(update.message?.chat?.id || '');
+      const messageText = String(update.message?.text || '').trim();
+      if (!chatId || !messageText) continue;
+      const codeMatch = messageText.match(/^\/start\s+([A-Za-z0-9]{4,12})$/);
+      if (codeMatch) {
+        const key = `tg_link_${codeMatch[1].toUpperCase()}`;
+        const link = db.prepare(`SELECT value FROM app_meta WHERE key=?`).get(key);
+        const parsed = link ? JSON.parse(link.value) : null;
+        if (parsed && Date.now() < parsed.exp) {
+          db.prepare(`UPDATE users SET telegram_chat_id=?,
+            telegram_mode=COALESCE(telegram_mode,'critical') WHERE id=?`).run(chatId, parsed.userId);
+          db.prepare(`DELETE FROM app_meta WHERE key=?`).run(key);
+          const user = db.prepare(`SELECT full_name, username FROM users WHERE id=?`).get(parsed.userId);
+          sendTelegramTo([chatId], `✅ Привязано: ${user?.full_name || user?.username || ''}. `
+            + 'Сюда будут приходить аварийные уведомления планера. Режим меняется в планере '
+            + '(кнопка «🔔»), отвязка — командой /stop.');
+        } else {
+          sendTelegramTo([chatId], 'Код не найден или устарел — возьмите новый в планере (кнопка «🔔»).');
+        }
+      } else if (/^\/stop$/.test(messageText)) {
+        db.prepare(`UPDATE users SET telegram_chat_id=NULL WHERE telegram_chat_id=?`).run(chatId);
+        sendTelegramTo([chatId], 'Отвязано. Вернуться: кнопка «🔔» в планере.');
+      }
+    }
+  } catch { /* сеть/телеграм недоступны — следующий тик */ }
+}
+setInterval(runTelegramPoll, 20_000);
+setTimeout(runTelegramPoll, 30_000);
+
 // ── Регулятор баланса парк↔сетка ──
 // Баланс дня: потребность сетки (рейсы слотов × цикл плеча) против парка
 // (занято рейсами + свободно; недоступные исключены). Общий расчёт для
@@ -1165,9 +1249,9 @@ function runBalanceWatch() {
     if (alerts.length) {
       const text = `⚖ Узкие дни впереди — парк может не вывезти сетку:\n${alerts.join('\n')}\n`
         + 'Разбор и действия: План парка → клик по строке «Баланс к сетке» нужного дня.';
-      notify('logist', text);
-      notify('boss', text);
-      notify('resource', text);
+      notify('logist', text, null, null, { critical: true });
+      notify('boss', text, null, null, { critical: true });
+      notify('resource', text, null, null, { critical: true });
     }
   } catch (error) {
     console.error('runBalanceWatch:', error.message);
@@ -1199,8 +1283,8 @@ function runMissedDepartureWatch() {
     const text = `🌙 Рейс не вышел в окно: задание водителю не отправлено, плановый выход прошёл ` +
       `больше 2 часов назад — ${lines.join('; ')}${fresh.length > 8 ? ` и ещё ${fresh.length - 8}` : ''}. ` +
       `Замените ТС или передоговорите окно СЕЙЧАС — утром оно будет сгоревшим`;
-    notify('logist', text);
-    notify('dispatcher', text);
+    notify('logist', text, null, null, { critical: true });
+    notify('dispatcher', text, null, null, { critical: true });
     for (const row of fresh) seen.add(row.id);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('missed_departure_ids',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
@@ -2535,6 +2619,29 @@ async function api(request, response, url) {
     return total;
   }
 
+  // Telegram: одноразовый код привязки чата и смена режима уведомлений.
+  if (request.method === 'POST' && pathname === '/api/telegram/link') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!telegramConfig().botToken) return errorJson(response, 422, 'Бот не настроен (Настройки → Telegram)');
+    const code = randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES(?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(`tg_link_${code}`, JSON.stringify({ userId: user.id, exp: Date.now() + 15 * 60_000 }));
+    return json(response, 200, { code, botName: telegramConfig().botName || '' });
+  }
+  if (request.method === 'POST' && pathname === '/api/telegram/mode') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    if (body.mode === 'off') {
+      db.prepare(`UPDATE users SET telegram_chat_id=NULL WHERE id=?`).run(user.id);
+      return json(response, 200, { ok: true });
+    }
+    if (!['critical', 'all'].includes(body.mode)) return errorJson(response, 422, 'Режим: critical | all | off');
+    db.prepare(`UPDATE users SET telegram_mode=? WHERE id=?`).run(body.mode, user.id);
+    return json(response, 200, { ok: true });
+  }
   if (request.method === 'GET' && pathname === '/api/addresses') {
     if (!requireUser(request, response)) return;
     return json(response, 200, {
@@ -5065,7 +5172,7 @@ async function api(request, response, url) {
       VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
-      'orderOptions', 'networkAccess', 'telephony']) {
+      'orderOptions', 'networkAccess', 'telephony', 'telegram']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));
