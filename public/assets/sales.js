@@ -1155,7 +1155,7 @@ export async function renderSales(container, context) {
   const rerender = () => renderSales(container, context);
   attachSearch(container.querySelector('#salesSearch'), value => {
     filter.q = value;
-    rerender();
+    return rerender();
   });
   const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
   wireDemurrageChip(container, context);

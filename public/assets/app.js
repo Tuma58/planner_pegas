@@ -74,7 +74,7 @@ function setupFilters() {
   };
   attachSearch(byId('ganttSearch'), value => {
     state.ganttQuery = value;
-    renderTimeline();
+    return renderTimeline();
   });
 }
 
@@ -1323,7 +1323,7 @@ function openDriversDirectory() {
 
   attachSearch(byId('driversSearch'), value => {
     state.driversQuery = value;
-    openDriversDirectory();
+    return openDriversDirectory();
   });
   byId('driverAdd').onclick = () => driverEditDialog(null, back);
   const byDriver = id => drivers.find(driver => driver.id === id);
@@ -1520,7 +1520,7 @@ function openFleetDirectory() {
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
   attachSearch(byId('fleetSearch'), value => {
     state.fleetQuery = value;
-    openFleetDirectory();
+    return openFleetDirectory();
   });
   byId('fleetAdd').onclick = () => openVehicle(null, back);
   const byVehicle = id => vehicles.find(vehicle => vehicle.id === id);

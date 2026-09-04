@@ -317,24 +317,32 @@ export function attachSearch(input, apply, delay = 250) {
     timer = setTimeout(async () => {
       const value = input.value;
       const caret = input.selectionStart ?? value.length;
-      await apply(value);
       // Перерисовка блока пересоздаёт поле поиска, и символы, набранные во
-      // время рендера (в диспетчере он ещё и ходит в сеть), пропадали, а
-      // каретка прыгала — «буквы скачут, приходится вводить заново».
-      // Лечение: возвращаем в новую разметку ЖИВОЙ старый узел — у него
-      // непрерывны значение, обработчик и набранный во время рендера текст.
-      const again = document.getElementById(input.id);
-      if (again && again !== input) again.replaceWith(input);
-      if (document.activeElement !== input &&
-          (document.activeElement === document.body || document.activeElement === null ||
-           document.activeElement === again)) {
-        input.focus();
-        const position = Math.min(caret, input.value.length);
-        input.setSelectionRange(position, position);
-      }
-      // Пользователь дописал текст, пока блок перерисовывался, —
-      // догоняем состояние ещё одним циклом.
-      if (input.value !== value) input.oninput();
+      // время рендера, пропадали, а каретка прыгала. Лечение: возвращаем в
+      // новую разметку ЖИВОЙ старый узел — у него непрерывны значение,
+      // обработчик и набранный во время рендера текст.
+      const restore = () => {
+        const again = document.getElementById(input.id);
+        if (again && again !== input) again.replaceWith(input);
+        if (document.activeElement !== input &&
+            (document.activeElement === document.body || document.activeElement === null ||
+             document.activeElement === again)) {
+          input.focus();
+          const position = Math.min(caret, input.value.length);
+          input.setSelectionRange(position, position);
+        }
+      };
+      await apply(value);
+      restore();
+      // Асинхронные рендеры (fetch внутри) довершаются ПОСЛЕ apply и снова
+      // пересоздают поле — добиваем восстановление парой отложенных попыток.
+      setTimeout(restore, 150);
+      setTimeout(() => {
+        restore();
+        // Пользователь дописал текст, пока блок перерисовывался, —
+        // догоняем состояние ещё одним циклом.
+        if (input.value !== value) input.oninput();
+      }, 450);
     }, delay);
   };
 }

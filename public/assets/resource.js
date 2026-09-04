@@ -1100,7 +1100,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   });
   attachSearch(container.querySelector('#resourceSearch'), value => {
     state.resourceQuery = value;
-    renderResource(container, context);
+    return renderResource(container, context);
   });
   if (context.openStats) container.querySelector('#resourceStats').onclick = () => context.openStats();
   if (context.openDrivers) container.querySelector('#resourceDrivers').onclick = () => context.openDrivers();

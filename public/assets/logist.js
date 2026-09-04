@@ -802,7 +802,7 @@ export async function renderLogist(container, context) {
 
   attachSearch(container.querySelector('#logistSearch'), value => {
     state.logistQuery = value;
-    renderLogist(container, context);
+    return renderLogist(container, context);
   });
   const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
   container.querySelector('#logistFilterFrom').onchange = event => {
