@@ -1401,6 +1401,57 @@ async function runDriverBotPoll() {
 setInterval(runDriverBotPoll, 20_000);
 setTimeout(runDriverBotPoll, 40_000);
 
+// Пинги по ходу рейса: расчётное прибытие прошло, а отметки нет — «вы у
+// точки?»; стоит на точке дольше норматива — «как дела?». Пинг несёт
+// кнопку актуального этапа: водителю остаётся нажать. Повтор — не чаще
+// раза в 3 часа на фазу (память в app_meta, старые записи чистятся).
+function runDriverPingWatch() {
+  try {
+    if (!driverBotToken()) return;
+    const marks = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='driver_ping_marks'`).get()?.value || '{}');
+    const nowMs = Date.now();
+    const REPEAT_MS = 3 * 3_600_000;
+    const trips = db.prepare(`SELECT t.* FROM trips t
+      WHERE t.status='run'`).all();
+    for (const trip of trips) {
+      const driver = driverForTrip(trip);
+      if (!driver) continue;
+      const step = nextDriverStep(trip.id);
+      if (!step) continue;
+      const stop = db.prepare(`SELECT * FROM trip_stops WHERE id=?`).get(step.stopId);
+      if (!stop) continue;
+      let text = null;
+      let markKey = null;
+      if (step.phase === 'arr' && stop.planned_arrival &&
+          nowMs - Date.parse(stop.planned_arrival) > 45 * 60_000) {
+        markKey = `${stop.id}|arr`;
+        text = `📍 По расчёту вы уже у точки «${(stop.point || '').slice(0, 60)}» — прибыли? `
+          + 'Если да — нажмите кнопку; если задерживаетесь, напишите, что случилось.';
+      } else if (step.phase === 'dep' && stop.actual_arrival &&
+          nowMs - Date.parse(stop.actual_arrival) > 3 * 3_600_000) {
+        const hours = Math.floor((nowMs - Date.parse(stop.actual_arrival)) / 3_600_000);
+        markKey = `${stop.id}|dep`;
+        text = `⏳ Вы на точке «${(stop.point || '').slice(0, 60)}» уже ${hours} ч — как дела? `
+          + 'Если закончили — нажмите кнопку; если держат, напишите причину — передадим диспетчеру.';
+      }
+      if (!text || (marks[markKey] && nowMs - marks[markKey] < REPEAT_MS)) continue;
+      tgApi('sendMessage', { chat_id: driver.telegram_chat_id, text,
+        reply_markup: { inline_keyboard: [[{ text: step.label,
+          callback_data: `st|${step.stopId}|${step.phase}` }]] } }, driverBotToken());
+      marks[markKey] = nowMs;
+    }
+    // Чистка меток старше 3 суток.
+    for (const key of Object.keys(marks)) {
+      if (nowMs - marks[key] > 3 * 86_400_000) delete marks[key];
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('driver_ping_marks',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(marks));
+  } catch (error) { console.error('runDriverPingWatch:', error.message); }
+}
+setInterval(runDriverPingWatch, 15 * 60_000);
+setTimeout(runDriverPingWatch, 60_000);
+
 // Напоминание о выходе: за 2–3 часа до планового старта, раз на рейс.
 function runDriverRemindWatch() {
   try {
