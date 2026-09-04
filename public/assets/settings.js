@@ -624,6 +624,9 @@ async function renderTelephony() {
         placeholder="123456789:AA…" autocomplete="off"></label>
       <label class="field">Имя бота (для ссылки привязки)<input name="botName" value="${escapeHtml(state.admin.settings?.telegram?.botName || '')}"
         placeholder="pegas_planner_bot (без @)"></label>
+      <label class="field">Токен бота ВОДИТЕЛЕЙ («Пегас Водитель», отдельный бот)
+        <input name="driverBotToken" value="${escapeHtml(state.admin.settings?.telegram?.driverBotToken || '')}"
+        placeholder="создайте второго бота у @BotFather" autocomplete="off"></label>
       <button class="button">Сохранить</button>
     </form>
     <h3 style="margin-top:14px">Что отправлять в Telegram</h3>
@@ -710,10 +713,12 @@ async function renderTelephony() {
     try {
       await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
         telegram: { botToken: form.elements.botToken.value.trim(),
-          botName: form.elements.botName.value.trim().replace(/^@/, '') }
+          botName: form.elements.botName.value.trim().replace(/^@/, ''),
+          driverBotToken: form.elements.driverBotToken.value.trim() }
       }) });
       state.admin.settings.telegram = { botToken: form.elements.botToken.value.trim(),
-        botName: form.elements.botName.value.trim().replace(/^@/, '') };
+        botName: form.elements.botName.value.trim().replace(/^@/, ''),
+        driverBotToken: form.elements.driverBotToken.value.trim() };
       toast('Telegram сохранён — сотрудники могут привязываться (кнопка «🔔»)');
     } catch (error) { toast(error.message, 'error'); }
   };

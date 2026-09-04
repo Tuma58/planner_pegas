@@ -394,9 +394,9 @@ const notifyLevelOf = category => {
 // Запрос к Bot API через node:https с family:4: у LXC нет IPv6-маршрута,
 // а undici-fetch упорно коннектится по v6 (при том что dns.lookup отдаёт
 // v4 из /etc/hosts) — таймаут. Прямой https с family:4 стабилен (~200 мс).
-function tgApi(method, payload) {
+function tgApi(method, payload, tokenOverride = null) {
   return new Promise(resolve => {
-    const token = telegramConfig().botToken;
+    const token = tokenOverride || telegramConfig().botToken;
     if (!token) return resolve(null);
     const body = JSON.stringify(payload || {});
     const request = httpsRequest({
@@ -1197,6 +1197,227 @@ function runEntered1cWatch() {
   }
 }
 setInterval(runEntered1cWatch, 30 * 60_000);
+
+// ── Бот водителей «Пегас Водитель» ──
+// Отдельный бот (settings.telegram.driverBotToken): водитель привязывается
+// кнопкой «поделиться контактом» (матч по телефону справочника), получает
+// задание на рейс БЕЗ сумм и отмечает этапы кнопками — факты ложатся в
+// trip_stops теми же полями, что отметки диспетчера.
+const driverBotToken = () => telegramConfig().driverBotToken || null;
+const digitsPhone = value => String(value || '').replace(/\D/g, '').slice(-10);
+
+// Следующая кнопка этапа: одна актуальная, по состоянию точек рейса.
+function nextDriverStep(tripId) {
+  const stops = db.prepare(`SELECT id, kind, seq, point, actual_arrival, actual_departure
+    FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(tripId);
+  for (const stop of stops) {
+    if (stop.actual_departure) continue;
+    const isFirst = stop.seq === stops[0].seq;
+    const isLast = stop.seq === stops[stops.length - 1].seq;
+    if (!stop.actual_arrival) {
+      return { stopId: stop.id, phase: 'arr', isLast,
+        label: isFirst ? '📦 Прибыл на погрузку' : isLast ? '📥 Прибыл на выгрузку' : '📍 Прибыл на точку' };
+    }
+    return { stopId: stop.id, phase: 'dep', isLast,
+      label: isFirst ? '✅ Погрузился, выехал' : isLast ? '🏁 Выгрузился' : '➡ Убыл с точки' };
+  }
+  return null;
+}
+
+// Текст задания водителю: маршрут и точки с плановыми временами — без
+// ставок и сумм (деньги водителю в задании не показываем).
+function driverAssignmentText(trip) {
+  const stops = db.prepare(`SELECT kind, point, planned_arrival FROM trip_stops
+    WHERE trip_id=? ORDER BY seq`).all(trip.id);
+  const mskTime = iso => iso ? new Date(Date.parse(iso) + 3 * 3_600_000)
+    .toISOString().replace('T', ' ').slice(5, 16) : '—';
+  const lines = [`🚚 Задание на рейс${trip.order_no ? ` (заказ № ${trip.order_no})` : ''}`,
+    `${trip.from_point || ''} → ${trip.to_point || ''}`.trim(),
+    `Выход: ${mskTime(trip.starts_at)} (МСК)`];
+  for (const stop of stops) {
+    lines.push(`${stop.kind === 'P' ? '📦 Погрузка' : stop.kind === 'D' ? '📥 Выгрузка' : '📍 Точка'}: `
+      + `${stop.point || '—'}${stop.planned_arrival ? ` · план ${mskTime(stop.planned_arrival)}` : ''}`);
+  }
+  if (trip.temperature_mode) lines.push(`🌡 Режим: ${trip.temperature_mode}`);
+  if (trip.body_type) lines.push(`🚛 Кузов: ${trip.body_type}`);
+  lines.push('Отмечайте этапы кнопкой под сообщением — диспетчер видит их сразу.');
+  return lines.join('\n');
+}
+
+function driverForTrip(trip) {
+  return db.prepare(`SELECT d.* FROM drivers d
+    WHERE d.vehicle_id=? AND d.telegram_chat_id IS NOT NULL AND d.status<>'fired'
+    LIMIT 1`).get(trip.vehicle_id) || null;
+}
+
+// Отправить/обновить задание водителю с кнопкой текущего этапа.
+function sendDriverAssignment(tripId) {
+  try {
+    if (!driverBotToken()) return;
+    const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(tripId);
+    if (!trip || trip.status === 'rejected') return;
+    const driver = driverForTrip(trip);
+    if (!driver) return;
+    ensureTripStops(db, tripId);
+    const step = nextDriverStep(tripId);
+    tgApi('sendMessage', {
+      chat_id: driver.telegram_chat_id,
+      text: driverAssignmentText(trip),
+      reply_markup: step ? { inline_keyboard: [[{ text: step.label,
+        callback_data: `st|${step.stopId}|${step.phase}` }]] } : undefined
+    }, driverBotToken());
+  } catch (error) { console.error('sendDriverAssignment:', error.message); }
+}
+
+// Обработка нажатия этапа: проверка принадлежности, хронологии — и факт.
+function applyDriverStep(chatId, stopId, phase) {
+  const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`).get(String(chatId));
+  if (!driver) return { text: 'Чат не привязан — отправьте свой контакт кнопкой ниже.' };
+  const stop = db.prepare(`SELECT s.*, t.vehicle_id, t.status trip_status FROM trip_stops s
+    JOIN trips t ON t.id = s.trip_id WHERE s.id=?`).get(stopId);
+  if (!stop || stop.vehicle_id !== driver.vehicle_id || stop.trip_status === 'rejected') {
+    return { text: 'Эта кнопка от другого рейса — актуальное задание пришлём отдельно.' };
+  }
+  const nowIso = new Date().toISOString();
+  if (phase === 'arr' && !stop.actual_arrival) {
+    // Хронология: прибытие не раньше события предыдущей точки.
+    const previous = db.prepare(`SELECT actual_departure, actual_arrival FROM trip_stops
+      WHERE trip_id=? AND seq<? ORDER BY seq DESC LIMIT 1`).get(stop.trip_id, stop.seq);
+    const prevMoment = previous && (previous.actual_departure || previous.actual_arrival);
+    if (prevMoment && Date.parse(nowIso) < Date.parse(prevMoment)) {
+      return { text: 'Сначала отметьте предыдущую точку.' };
+    }
+    db.prepare(`UPDATE trip_stops SET actual_arrival=?, work_started_at=COALESCE(work_started_at,?)
+      WHERE id=?`).run(nowIso, nowIso, stopId);
+  } else if (phase === 'dep' && stop.actual_arrival && !stop.actual_departure) {
+    db.prepare(`UPDATE trip_stops SET work_finished_at=COALESCE(work_finished_at,?),
+      actual_departure=? WHERE id=?`).run(nowIso, nowIso, stopId);
+  } else {
+    return { text: 'Этот этап уже отмечен.' };
+  }
+  audit(db, null, 'driver-step', 'stop', stopId,
+    { phase, driver: driver.full_name, via: 'telegram' }, 'driver-bot');
+  const next = nextDriverStep(stop.trip_id);
+  const finishedUnload = phase === 'dep' && !next;
+  return {
+    text: finishedUnload
+      ? 'Не забудь проверить печати в документах и сдать их во-время. Благодарю за труд! Доброго пути!'
+      : '✅ Отмечено, диспетчер видит.',
+    next, tripId: stop.trip_id
+  };
+}
+
+// Поллер бота водителей: контакт → привязка, кнопки → этапы, текст → вопрос.
+async function runDriverBotPoll() {
+  const token = driverBotToken();
+  if (!token) return;
+  try {
+    const offset = Number(db.prepare(`SELECT value FROM app_meta WHERE key='tgd_offset'`).get()?.value || 0);
+    const answer = await tgApi('getUpdates', { offset: offset + 1, timeout: 0,
+      allowed_updates: ['message', 'callback_query'] }, token);
+    if (!answer?.ok) return;
+    for (const update of answer.result || []) {
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('tgd_offset',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(update.update_id));
+      // Кнопка этапа
+      if (update.callback_query) {
+        const query = update.callback_query;
+        const [tag, stopId, phase] = String(query.data || '').split('|');
+        if (tag === 'st') {
+          const result = applyDriverStep(query.message?.chat?.id, stopId, phase);
+          tgApi('answerCallbackQuery', { callback_query_id: query.id, text: '✓' }, token);
+          if (result.text) tgApi('sendMessage', { chat_id: query.message.chat.id, text: result.text,
+            reply_markup: result.next ? { inline_keyboard: [[{ text: result.next.label,
+              callback_data: `st|${result.next.stopId}|${result.next.phase}` }]] } : undefined }, token);
+          // Кнопку под старым сообщением убираем — актуальная в новом.
+          tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
+            message_id: query.message.message_id }, token);
+        }
+        continue;
+      }
+      const message = update.message;
+      const chatId = String(message?.chat?.id || '');
+      if (!chatId) continue;
+      // Привязка по контакту
+      if (message.contact?.phone_number) {
+        const phone = digitsPhone(message.contact.phone_number);
+        const driver = phone.length === 10 ? db.prepare(`SELECT * FROM drivers
+          WHERE status<>'fired' AND replace(replace(replace(replace(replace(COALESCE(phone,''),'+',''),' ',''),'-',''),'(',''),')','') LIKE ?
+          LIMIT 1`).get(`%${phone}`) : null;
+        if (driver) {
+          db.prepare(`UPDATE drivers SET telegram_chat_id=? WHERE id=?`).run(chatId, driver.id);
+          audit(db, null, 'driver-tg-link', 'driver', driver.id, { via: 'contact' }, 'driver-bot');
+          tgApi('sendMessage', { chat_id: chatId,
+            text: `✅ Привязано: ${driver.full_name}. Сюда будут приходить задания на рейсы — этапы отмечайте кнопками. Вопрос диспетчеру можно написать прямо здесь.`,
+            reply_markup: { remove_keyboard: true } }, token);
+          // Активный рейс уже есть — сразу шлём задание.
+          const active = db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
+            ORDER BY starts_at LIMIT 1`).get(driver.vehicle_id);
+          if (active) sendDriverAssignment(active.id);
+        } else {
+          tgApi('sendMessage', { chat_id: chatId,
+            text: 'Номер не найден в справочнике водителей — обратитесь к диспетчеру, пусть проверит ваш телефон в планере.' }, token);
+        }
+        continue;
+      }
+      const text = String(message.text || '').trim();
+      if (!text) continue;
+      const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`).get(chatId);
+      if (/^\/start/.test(text) || !driver) {
+        tgApi('sendMessage', { chat_id: chatId,
+          text: driver ? 'Вы привязаны. Вопрос диспетчеру — просто напишите его здесь.'
+            : 'Здравствуйте! Это бот водителей ПегасЛогистик. Нажмите кнопку ниже, чтобы привязаться.',
+          reply_markup: driver ? undefined : { keyboard: [[{ text: '📱 Поделиться контактом',
+            request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } }, token);
+        continue;
+      }
+      // Свободный текст — вопрос диспетчеру (та же механика SLA 10 минут).
+      const activeTrip = db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
+        ORDER BY starts_at LIMIT 1`).get(driver.vehicle_id);
+      const questionId = randomUUID();
+      db.prepare(`INSERT INTO driver_questions(id,vehicle_id,trip_id,driver_name,phone,topic,note,opened_by)
+        VALUES(?,?,?,?,?,?,?,NULL)`).run(questionId, driver.vehicle_id, activeTrip?.id || null,
+        driver.full_name, driver.phone || '', 'other', `TG: ${text.slice(0, 480)}`);
+      const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(driver.vehicle_id)?.plate || '';
+      notify('dispatcher', `📱 Вопрос водителя из Telegram (${driver.full_name}${plate ? ` · ${plate}` : ''}): `
+        + `«${text.slice(0, 200)}» — ответьте звонком или через карточку вопроса`,
+      'question', questionId, { category: 'driver_questions' });
+      tgApi('sendMessage', { chat_id: chatId,
+        text: 'Передал диспетчеру — ответят в ближайшие минуты.' }, token);
+    }
+  } catch (error) { console.error('runDriverBotPoll:', error.message); }
+}
+setInterval(runDriverBotPoll, 20_000);
+setTimeout(runDriverBotPoll, 40_000);
+
+// Напоминание о выходе: за 2–3 часа до планового старта, раз на рейс.
+function runDriverRemindWatch() {
+  try {
+    if (!driverBotToken()) return;
+    const memory = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='driver_remind_ids'`).get()?.value || '[]');
+    const seen = new Set(memory);
+    const rows = db.prepare(`SELECT id, vehicle_id, starts_at, from_point, to_point FROM trips
+      WHERE status='plan' AND starts_at > datetime('now', '+1 hour')
+        AND starts_at <= datetime('now', '+3 hours')`).all();
+    for (const trip of rows) {
+      if (seen.has(trip.id)) continue;
+      const driver = driverForTrip(trip);
+      if (!driver) continue;
+      const mskTime = new Date(Date.parse(trip.starts_at) + 3 * 3_600_000)
+        .toISOString().replace('T', ' ').slice(11, 16);
+      tgApi('sendMessage', { chat_id: driver.telegram_chat_id,
+        text: `⏰ Напоминание: выход в ${mskTime} (МСК) — ${trip.from_point || ''} → ${trip.to_point || ''}` },
+      driverBotToken());
+      seen.add(trip.id);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('driver_remind_ids',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(JSON.stringify([...seen].slice(-500)));
+  } catch (error) { console.error('runDriverRemindWatch:', error.message); }
+}
+setInterval(runDriverRemindWatch, 10 * 60_000);
+setTimeout(runDriverRemindWatch, 50_000);
 
 // ── Поллер Telegram: привязка чатов командой /start КОД ──
 // Long polling раз в 20 сек (вебхук не поставить: самоподписанный
@@ -2628,6 +2849,8 @@ async function api(request, response, url) {
         notify('dispatcher', `🔁 Замена ТС на рейсе ${routeText(current)}: ${oldPlate} → ${newPlate}. ` +
           `${tasks.map((text, index) => `${index + 1}) ${text}`).join('; ')}`, 'trip', match[0]);
       }
+      // Новому водителю — задание в Telegram (если привязан).
+      sendDriverAssignment(match[0]);
     }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
@@ -4618,6 +4841,9 @@ async function api(request, response, url) {
         queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
           integrationPublic().writePolicy === 'automatic');
       }
+      // Задание водителю уходит в Telegram (если водитель привязан) —
+      // в момент отметки шага «Задание водителю».
+      if (body.step === 'driver_notified') sendDriverAssignment(match[0]);
       // Передача задания следующему участнику конвейера.
       if (body.step === 'logist_confirm') {
         notify('dispatcher', `Логист подтвердил рейс ${routeText(trip)} — подготовьте выход (1С, задание водителю, линия)`, 'trip', match[0]);

@@ -231,7 +231,10 @@ function incidentDialog(trip, data, context) {
   document.getElementById('incOther').onclick = () => rejectTripDialog(trip, data, context);
 }
 
-function checklistBlock(trip, canAct) {
+function checklistBlock(trip, canAct, data = null) {
+  // Водитель привязан к боту — задание уйдёт в Telegram при отметке шага.
+  const driverTg = data && (data.drivers || []).some(driver =>
+    driver.vehicle_id === trip.vehicle_id && driver.telegram_chat_id);
   const rows = CHECKLIST.map((item, index) => {
     const done = trip[item.column];
     // Отложенная 1С (живой заявки ещё нет) открывает следующие шаги:
@@ -242,7 +245,7 @@ function checklistBlock(trip, canAct) {
       (previous.step === 'entered_1c' && trip.deferred_1c_at);
     return `<div class="list-item" style="padding:6px 10px">
       <span style="flex:1;min-width:0">
-        <strong style="${done ? 'color:var(--ok)' : deferredHere ? 'color:var(--warn)' : ''}">${done ? '✓' : deferredHere ? '⏳' : `${index + 1}.`} ${item.label}</strong>
+        <strong style="${done ? 'color:var(--ok)' : deferredHere ? 'color:var(--warn)' : ''}">${done ? '✓' : deferredHere ? '⏳' : `${index + 1}.`} ${item.label}${item.step === 'driver_notified' && driverTg ? ' <span class="badge ok" title="Водитель привязан к боту — при отметке шага задание уйдёт ему в Telegram с кнопками этапов">📱 уйдёт в Telegram</span>' : ''}</strong>
         <small class="muted" style="display:block">${done ? `выполнено ${formatDateTime(done)}`
           : deferredHere ? `⚠ отложено ${formatDateTime(trip.deferred_1c_at)} — заявка появится, внесите и отметьте`
           : item.hint}</small>
@@ -701,7 +704,7 @@ export async function renderDispatcher(container, context, options = {}) {
       ${shipperLine(trip)}
       ${event.html}
       ${salesCommentNote(trip)}
-      ${checklistBlock(trip, canAct)}
+      ${checklistBlock(trip, canAct, data)}
     </div>`;
   };
   // Выход просрочен больше суток — это уже не рабочая очередь, а разборник:
