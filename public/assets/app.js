@@ -1748,8 +1748,9 @@ function openAddressBook(query = '', region = '') {
         <div class="list" style="max-height:30vh;overflow:auto">${items.map((item, index) => `
           <div class="list-item" data-audit-row="${index}">
             <span style="flex:1;min-width:0">${escapeHtml(item.name.slice(0, 60))}
-              <small class="muted" style="display:block">сейчас «${escapeHtml(item.zone || '—')}» → должна быть
-                <b>«${escapeHtml(item.shouldBe)}»</b> (${escapeHtml(item.via)}) · заявок: ${item.used}</small></span>
+              <small class="muted" style="display:block">в справочнике: «${escapeHtml(item.zone || '—')}» ·
+                ревизия предлагает: <b>«${escapeHtml(item.shouldBe)}»</b>
+                (по: ${escapeHtml(item.via)}) · заявок: ${item.used}</small></span>
             <button type="button" class="button ghost small" data-audit-fix="${index}">Исправить</button>
           </div>`).join('')}</div>`;
       box.querySelectorAll('[data-audit-fix]').forEach(button =>

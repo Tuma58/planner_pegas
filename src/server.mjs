@@ -224,7 +224,7 @@ async function geocodeQuery(query) {
   }));
 }
 
-function zoneHintForAddress(text) {
+function zoneHintForAddress(text, latitude = null, longitude = null) {
   const full = String(text || '').trim();
   if (!full) return null;
   for (const [zoneName, pattern] of SUBJECT_ZONES) {
@@ -232,6 +232,16 @@ function zoneHintForAddress(text) {
       const zone = db.prepare('SELECT id, name FROM zones WHERE name=?').get(zoneName);
       if (zone) return { ...zone, via: 'субъект РФ' };
     }
+  }
+  // Координаты надёжнее имени города: топонимы дублируются по стране
+  // (Преображенка есть и в Самарской области, и в алиасах Москвы) —
+  // при известных координатах берём ближайший центр зоны.
+  if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+    const nearest = db.prepare(`SELECT id, name, latitude, longitude FROM zones
+        WHERE latitude IS NOT NULL`).all()
+      .map(zone => ({ ...zone, km: roadKm(latitude, longitude, zone.latitude, zone.longitude) }))
+      .sort((a, b) => a.km - b.km)[0];
+    if (nearest) return { id: nearest.id, name: nearest.name, via: 'координаты' };
   }
   const head = full.split(',')[0].toLowerCase();
   const hit = db.prepare(`SELECT z.id, z.name, z.name AS alias FROM zones z
@@ -417,7 +427,8 @@ async function runGeocodeWatch() {
     if (!hit || !Number.isFinite(hit.latitude)) return;
     const { BASE_POINT } = await import('./db.mjs');
     const region = String(address.region || '').trim() || hit.region;
-    const zoneId = address.zone_id || zoneHintForAddress(`${address.name} ${region}`)?.id || null;
+    const zoneId = address.zone_id
+      || zoneHintForAddress(`${address.name} ${region}`, hit.latitude, hit.longitude)?.id || null;
     db.prepare(`UPDATE addresses SET latitude=?, longitude=?, region=?, zone_id=?,
       base_distance_km=? WHERE id=?`).run(
       hit.latitude, hit.longitude, region, zoneId,
@@ -2431,10 +2442,12 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/addresses/audit') {
     if (!requirePermission(request, response, 'orders:write')) return;
     const items = [];
-    for (const address of db.prepare(`SELECT a.id, a.name, a.region, a.zone_id, z.name AS zone,
+    for (const address of db.prepare(`SELECT a.id, a.name, a.region, a.zone_id, a.latitude,
+        a.longitude, z.name AS zone,
         (SELECT COUNT(*) FROM orders o WHERE o.from_address_id=a.id OR o.to_address_id=a.id) AS used
         FROM addresses a LEFT JOIN zones z ON z.id=a.zone_id`).all()) {
-      const hint = zoneHintForAddress(`${address.name} ${address.region || ''}`);
+      const hint = zoneHintForAddress(`${address.name} ${address.region || ''}`,
+        address.latitude, address.longitude);
       if (hint && hint.id !== address.zone_id) {
         items.push({ id: address.id, name: address.name, zone: address.zone || null,
           shouldBe: hint.name, shouldBeId: hint.id, via: hint.via, used: address.used });
@@ -2501,9 +2514,10 @@ async function api(request, response, url) {
         }
       } catch { /* классификатор недоступен — сторож дотянет позже */ }
     }
-    // Зона не выбрана — единая подсказка: субъект РФ, затем город в имени.
+    // Зона не выбрана — единая подсказка: субъект РФ, затем координаты
+    // (после геокода), затем город в имени.
     if (!body.zoneId) {
-      body.zoneId = zoneHintForAddress(`${name} ${body.region || ''}`)?.id || null;
+      body.zoneId = zoneHintForAddress(`${name} ${body.region || ''}`, latitude, longitude)?.id || null;
     }
     const id = randomUUID();
     const { BASE_POINT } = await import('./db.mjs');
