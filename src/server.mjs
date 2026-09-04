@@ -2645,7 +2645,21 @@ async function api(request, response, url) {
     db.prepare(`INSERT INTO app_meta(key,value) VALUES(?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
       .run(`tg_link_${code}`, JSON.stringify({ userId: user.id, exp: Date.now() + 15 * 60_000 }));
-    return json(response, 200, { code, botName: telegramConfig().botName || '' });
+    // Имя бота для ссылки t.me — строго username: если админ записал
+    // человекочитаемое имя («Pegas Planer»), ссылка вела в никуда. Берём
+    // настоящий username у самого Telegram (getMe) и чиним настройку.
+    let botName = String(telegramConfig().botName || '');
+    if (!/^[A-Za-z0-9_]{5,}$/.test(botName)) {
+      const me = await tgApi('getMe', {});
+      if (me?.ok && me.result?.username) {
+        botName = me.result.username;
+        db.prepare(`INSERT INTO settings(key,value_json,updated_by,updated_at)
+          VALUES('telegram',?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET
+          value_json=excluded.value_json,updated_at=CURRENT_TIMESTAMP`)
+          .run(JSON.stringify({ ...telegramConfig(), botName }), user.id);
+      } else botName = '';
+    }
+    return json(response, 200, { code, botName });
   }
   if (request.method === 'POST' && pathname === '/api/telegram/mode') {
     const user = requireUser(request, response);
