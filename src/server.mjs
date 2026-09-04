@@ -917,33 +917,61 @@ function bodyTypeMatches(orderBodyType, vehicleTypeName) {
 
 function pickVehicleFor(order) {
   const windowFrom = order.window_from;
-  // Свободна на момент погрузки: нет рейса, который перекрывает окно,
-  // и нет блокирующей диспозиции (ремонт, без водителя, пересменка, перегон
-  // без прибытия учтён её ends_at).
+  const windowTo = order.window_to || windowFrom;
+  // Свободна на ВСЁМ окне погрузки: нет рейса, пересекающего окно (в том
+  // числе стартующего внутри него — машина обещана другому рейсу), и нет
+  // блокирующей диспозиции. Разбор замен 03–04.09: «не успеет по времени»,
+  // «у предложенного пересменка» — точечная проверка windowFrom пропускала
+  // занятость, начинающуюся часом позже.
   const candidates = db.prepare(`SELECT v.id, v.plate,
       (SELECT name FROM vehicle_types WHERE id=v.type_id) type_name
     FROM vehicles v
     WHERE v.status='work'
       AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status<>'rejected'
-        AND datetime(t.starts_at) <= datetime(?) AND datetime(t.ends_at) > datetime(?))
+        AND datetime(t.starts_at) < datetime(?) AND datetime(t.ends_at) > datetime(?))
       AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d WHERE d.vehicle_id=v.id
         AND d.kind<>'reserve'
         AND datetime(d.starts_at) < datetime(?) AND datetime(d.ends_at) > datetime(?))
       AND NOT EXISTS (SELECT 1 FROM vehicle_holds h WHERE h.vehicle_id=v.id
         AND datetime(h.until) > datetime('now'))`)
-    .all(windowFrom, windowFrom, order.window_to || windowFrom, windowFrom);
+    .all(windowTo, windowFrom, windowTo, windowFrom);
+  // Кузовные привычки клиента по истории 90 дней: тип, который клиент
+  // никогда не грузил (при 10+ рейсах истории), не рекомендуем — «Хлебпром
+  // грузит только паллетники»; доминирующий тип (≥70%) получает приоритет —
+  // ЧМПЗ на «Рефрижератор»-заявке всё равно ждёт тушевоз.
+  const history = db.prepare(`SELECT vt.name type_name, COUNT(*) n
+    FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+    JOIN vehicle_types vt ON vt.id=v.type_id
+    WHERE t.customer_name=? AND t.status<>'rejected'
+      AND t.starts_at >= datetime('now', '-90 days')
+    GROUP BY vt.name`).all(order.customer_name);
+  const histTotal = history.reduce((sum, row) => sum + row.n, 0);
+  const histOf = type => history.find(row => row.type_name === type)?.n || 0;
+  const dominant = histTotal >= 10
+    ? history.find(row => row.n / histTotal >= 0.7)?.type_name || null : null;
   // Точка погрузки резолвится один раз на заявку: подгон каждой машины —
   // только позиция сцепки против этой точки, иначе сотня LIKE-поисков
   // адреса на каждую заявку.
   const target = addressPointById(order.from_address_id) || addressPointByText(order.from_point);
   if (!target) return null;
   let best = null;
+  let bestDominant = null;
   for (const vehicle of candidates) {
     if (!bodyTypeMatches(order.body_type, vehicle.type_name)) continue;
+    // Тип, которого нет в истории клиента (10+ рейсов), — не предлагаем.
+    if (histTotal >= 10 && histOf(vehicle.type_name) === 0) continue;
     const origin = vehiclePositionBefore(vehicle.id, windowFrom);
     if (!origin || !Number.isFinite(origin.latitude)) continue;
     const km = roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
     if (!best || km < best.km) best = { vehicle, km };
+    if (dominant && vehicle.type_name === dominant && (!bestDominant || km < bestDominant.km)) {
+      bestDominant = { vehicle, km };
+    }
+  }
+  // Доминирующий тип клиента побеждает, если он не сильно дальше (до +150 км).
+  if (bestDominant && best && bestDominant.vehicle.id !== best.vehicle.id &&
+      bestDominant.km - best.km <= 150) {
+    best = bestDominant;
   }
   return best;
 }
@@ -970,9 +998,13 @@ function pickVehicleFor(order) {
 // «свободна, подгон 6 км» остался висеть на машину в ремонте. Любое
 // изменение диспозиций или брони машины сбрасывает её активные черновики —
 // следующий круг сторожа пересчитает по свежим данным.
-function invalidateDraftsForVehicle(vehicleId) {
+function invalidateDraftsForVehicle(vehicleId, exceptOrderId = null) {
   if (!vehicleId) return;
-  db.prepare(`DELETE FROM assign_drafts WHERE vehicle_id=? AND outcome IS NULL`).run(vehicleId);
+  // exceptOrderId: при назначении рейса черновик САМОЙ назначаемой заявки
+  // не трогаем — его итог (accepted/overridden + причина) фиксируется
+  // сразу после, иначе статистика доверия подбору теряла бы запись.
+  db.prepare(`DELETE FROM assign_drafts WHERE vehicle_id=? AND outcome IS NULL
+    AND (? IS NULL OR order_id<>?)`).run(vehicleId, exceptOrderId, exceptOrderId);
 }
 
 const GAP_REVIEW_HOURS_MSK = [10, 14, 16];
@@ -2991,6 +3023,10 @@ async function api(request, response, url) {
     // Новый рейс встал в цепочку: у рейсов этой сцепки, назначенных на более
     // поздние даты, подгон теперь считается от другой точки.
     refreshEmptyKm(vehicle.id);
+    // Машина получила рейс — её рекомендации по ДРУГИМ заявкам устарели:
+    // сбрасываем, сторож пересчитает. Разбор причин замен 03–04.09: 10 из
+    // 25 — «предложенное ТС уже назначено на другой рейс».
+    invalidateDraftsForVehicle(vehicle.id, order.id);
     queueOutbox(db, 'trips', tripId, order.trip_id ? 'update' : 'create', tripOutboxPayload(tripId),
       integrationPublic().writePolicy === 'automatic');
     return tripId;
