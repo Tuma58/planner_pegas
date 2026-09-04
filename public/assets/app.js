@@ -818,7 +818,8 @@ function renderMain() {
     });
   } else if (state.view === 'delivery') {
     byId('timeline').innerHTML = '<div class="empty-state">Загружаю план вывоза…</div>';
-    deliveryPlanDialog({ state, can, showModal, closeModal, planTarget: byId('timeline') });
+    deliveryPlanDialog({ state, can, showModal, closeModal, onReload: reload, planTarget: byId('timeline') },
+      state.deliveryMonth || '', state.deliveryFlt || {});
   } else if (state.view === 'fleetplan') {
     byId('timeline').innerHTML = '<div class="empty-state">Загружаю план парка…</div>';
     fleetPlanDialog({ state, can, showModal, closeModal, planTarget: byId('timeline') });
