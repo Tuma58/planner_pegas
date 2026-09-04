@@ -103,6 +103,80 @@ function fpVehicleDialog(context, plan, row, flt) {
 const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+
+// «Регулятор баланса»: клик по ячейке строки «Баланс к сетке» — рычаги дня
+// с эффектом в машинах и кнопками-действиями (задание Ресурсу/Продажам,
+// сдвиг пересменки на профицитный день).
+function balanceDialog(context, plan, day, ctx) {
+  const { needByDay, totals, plateOf } = ctx;
+  const monthStartMs = Date.parse(`${plan.month}-01T00:00:00.000Z`);
+  const from = monthStartMs + (day - 1) * 86_400_000;
+  const to = from + 86_400_000;
+  const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+    'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+  const dayLabel = `${day} ${MONTHS_GEN[Number(plan.month.slice(5, 7)) - 1]}`;
+  const t = totals[day - 1];
+  const balance = Math.round(t.trips + t.free - (needByDay?.[day - 1] || 0));
+  const overlaps = kind => plan.dispositions.filter(item => item.kind === kind &&
+    Date.parse(item.starts_at) < to && Date.parse(item.ends_at) > from);
+  const noDriver = overlaps('no_driver');
+  const shifts = overlaps('shift');
+  // Поджимаемые ремонты: машина в ремонте В ЭТОТ день, но конец близко
+  // (до 2 суток после) — есть шанс успеть к загрузке дня.
+  const repairsEnding = plan.dispositions.filter(item => item.kind === 'repair' &&
+    Date.parse(item.starts_at) < to && Date.parse(item.ends_at) > from &&
+    Date.parse(item.ends_at) - to < 2 * 86_400_000);
+  // Профицитные дни рядом (для сдвига пересменок): топ-3 по балансу ±7 дней.
+  const nearDays = [];
+  for (let d = Math.max(1, day - 3); d <= Math.min(totals.length, day + 7); d += 1) {
+    if (d === day) continue;
+    nearDays.push({ d, balance: Math.round(totals[d - 1].trips + totals[d - 1].free - (needByDay?.[d - 1] || 0)) });
+  }
+  nearDays.sort((a, b) => b.balance - a.balance);
+  const bestDays = nearDays.slice(0, 3);
+
+  const sendTask = async (lever, text) => {
+    try {
+      const { role } = await api('/api/fleet-plan/balance-task', {
+        method: 'POST', body: JSON.stringify({ lever, text }) });
+      toast(`Задание отправлено: ${role === 'sales' ? 'Продажам' : 'Ресурсу'}`);
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  const dispRow = item => `<div class="list-item">
+    <b class="mono">${escapeHtml(plateOf(item.vehicle_id))}</b>
+    <span class="muted" style="flex:1">${formatDateTime(item.starts_at)} → ${formatDateTime(item.ends_at)}${item.note ? ` · ${escapeHtml(String(item.note).slice(0, 26))}` : ''}</span></div>`;
+
+  context.showModal(`<h2>⚖ Баланс дня · ${dayLabel}</h2>
+    <p class="muted">Нужно по сетке <b>${Math.round(needByDay?.[day - 1] || 0)}</b>
+      · занято рейсами <b>${t.trips}</b> · недоступны <b>${t.unavail}</b>
+      · свободно <b>${t.free}</b> → баланс <b style="color:${balance < 0 ? 'var(--bad)' : 'var(--ok)'}">${balance > 0 ? '+' : ''}${balance}</b>
+      <small class="muted" style="display:block">Разовые заявки сверх сетки съедают ещё ~30–35 машин в день — запас меньше 35 уже риск.</small></p>
+    ${noDriver.length ? `<div class="scolh">👤 Без водителя: ${noDriver.length}
+        <button type="button" class="button small" id="balNd">→ задание Ресурсу</button></div>
+      <div class="list" style="max-height:22vh;overflow:auto">${noDriver.map(dispRow).join('')}</div>` : ''}
+    ${shifts.length ? `<div class="scolh" style="margin-top:8px">🔁 Пересменки в этот день: ${shifts.length}
+        <button type="button" class="button small" id="balShift">→ задание Ресурсу: сдвинуть</button></div>
+      <div class="list">${shifts.map(dispRow).join('')}</div>
+      <p class="muted" style="margin:4px 0 0">Свободнее рядом: ${bestDays.map(item =>
+        `${item.d} ${MONTHS[Number(plan.month.slice(5, 7)) - 1].slice(0, 3)} (+${item.balance})`).join(' · ')}</p>` : ''}
+    ${repairsEnding.length ? `<div class="scolh" style="margin-top:8px">🔧 Ремонты, завершающиеся к этому дню: ${repairsEnding.length}
+        <button type="button" class="button small" id="balRep">→ задание: поджать</button></div>
+      <div class="list">${repairsEnding.map(dispRow).join('')}</div>` : ''}
+    <div class="scolh" style="margin-top:8px">📅 Сетка дня
+      <button type="button" class="button small ghost" id="balGrid">→ Продажам: разгрузить день</button></div>
+    <p class="muted">Если день перегружен — предложить клиентам пиковых плеч соседний день
+      (свободнее: ${bestDays.map(item => `${item.d}-е`).join(', ')}). Грузы и машины по зонам — вкладка «Потоки».</p>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+
+  document.getElementById('balNd')?.addEventListener('click', () => sendTask('no_driver',
+    `вернуть машины «без водителя» к ${dayLabel} (баланс дня ${balance}): ${noDriver.map(item => plateOf(item.vehicle_id)).join(', ')}`));
+  document.getElementById('balShift')?.addEventListener('click', () => sendTask('shift',
+    `сдвинуть пересменки с ${dayLabel} (пик сетки, баланс ${balance}) на свободные дни (${bestDays.map(item => `${item.d}-е`).join(', ')}): ${shifts.map(item => plateOf(item.vehicle_id)).join(', ')}`));
+  document.getElementById('balRep')?.addEventListener('click', () => sendTask('repair',
+    `поджать ремонты к ${dayLabel} (баланс дня ${balance}): ${repairsEnding.map(item => plateOf(item.vehicle_id)).join(', ')}`));
+  document.getElementById('balGrid')?.addEventListener('click', () => sendTask('grid',
+    `разгрузить ${dayLabel} по сетке (баланс ${balance}): предложить клиентам пиковых плеч соседние дни — свободнее ${bestDays.map(item => `${item.d}-е (+${item.balance})`).join(', ')}`));
+}
 const DAY_MS = 86_400_000;
 const KIND_SHORT = { repair: '🔧', no_driver: '👤', shift: '🔁', reserve: '🅿', out: '⛔', transfer: '🚚' };
 
@@ -266,9 +340,10 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
         title="Свободные будущие дни — ресурс под новых клиентов">🟢 Свободно</td>${totals.map(t =>
     `<td style="text-align:center;${t.free ? 'color:#c99a2e' : ''}">${t.free || ''}</td>`).join('')}</tr>
       ${needByDay ? `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
-        title="(Занято рейсами + Свободно) − Нужно по сетке: плюс — парка хватает и остаётся резерв, минус — день сеткой не вывозится имеющимся парком. При включённых фильтрах считается по отфильтрованным машинам">Баланс к сетке</td>${needByDay.map((need, i) =>
+        title="(Занято рейсами + Свободно) − Нужно по сетке: плюс — парка хватает и остаётся резерв, минус — день сеткой не вывозится имеющимся парком. Клик по ячейке дня — регулятор баланса: рычаги и задания. При включённых фильтрах считается по отфильтрованным машинам">⚖ Баланс к сетке</td>${needByDay.map((need, i) =>
     { const balance = totals[i].trips + totals[i].free - need;
-      return `<td style="text-align:center;${balance < -0.5 ? 'color:var(--bad,#c0392b)' : 'color:var(--ok,#20624f)'}">${Math.round(balance) > 0 ? '+' : ''}${Math.round(balance) || ''}</td>`; }).join('')}</tr>` : ''}
+      return `<td data-fp-bal="${i + 1}" style="text-align:center;cursor:pointer;${balance < -0.5 ? 'color:var(--bad,#c0392b)' : 'color:var(--ok,#20624f)'}"
+        title="Регулятор баланса ${i + 1}-го: рычаги дня и задания ролям">${Math.round(balance) > 0 ? '+' : ''}${Math.round(balance) || ''}</td>`; }).join('')}</tr>` : ''}
       ${rowsData.map(row => `<tr>
         <td class="mono plan-fix" style="white-space:nowrap"><span class="vlink" data-fp-veh="${row.vehicle.id}">${escapeHtml(row.vehicle.plate)}</span></td>
         <td class="plan-fix2" style="white-space:nowrap;left:90px">${canEdit ? `<select data-fp-round="${row.vehicle.id}" style="max-width:118px;font-size:10px">
@@ -309,6 +384,10 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
     }));
   // Клик по ячейке — день машины (рейсы, диспозиции, свободный день);
   // по госномеру — карточка машины с кругом и рейсами месяца.
+  const plateOf = id => (vehicles.find(vehicle => vehicle.id === id)?.plate) || '?';
+  document.querySelectorAll('[data-fp-bal]').forEach(cell =>
+    cell.addEventListener('click', () =>
+      balanceDialog(context, plan, Number(cell.dataset.fpBal), { needByDay, totals, plateOf })));
   document.querySelectorAll('[data-fp-cell]').forEach(cell =>
     cell.addEventListener('click', () => {
       const [vehicleId, day] = cell.dataset.fpCell.split('|');

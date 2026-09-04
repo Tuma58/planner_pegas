@@ -1569,6 +1569,7 @@ function openDisposition(item = null, prefill = null) {
         .map(a => `<option value="${escapeHtml(a.name)}"></option>`).join('')}</datalist>
     </label>
     <label class="field">Комментарий<input name="note" value="${escapeHtml(item?.note || '')}"></label>
+    <p class="muted" id="dispShiftHint" style="display:none;margin:4px 0 0"></p>
     <div class="modal-actions">
       ${item ? '<button type="button" class="button danger" id="deleteDisposition">Удалить</button>' : ''}
       <button type="button" class="button ghost" data-close>Отмена</button>
@@ -1582,6 +1583,25 @@ function openDisposition(item = null, prefill = null) {
   };
   dispositionForm.elements.kind.addEventListener('change', toggleRepairPlace);
   toggleRepairPlace();
+  // Мягкий рубеж пересменки: подсказка пиковых и свободных дней сетки —
+  // чтобы пересменки не ставились на дни, где парк нужен сетке целиком.
+  const toggleShiftHint = async () => {
+    const hint = byId('dispShiftHint');
+    if (dispositionForm.elements.kind.value !== 'shift') { hint.style.display = 'none'; return; }
+    try {
+      const dp = await api(`/api/delivery-plan?month=${new Date().toISOString().slice(0, 7)}`);
+      const byWd = Array.from({ length: 7 }, () => 0);
+      for (const slot of dp.slots) byWd[slot.weekday] += slot.per_day * ((slot.transit_hours || 24) + 8) / 24;
+      const WDL = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+      const order = byWd.map((need, wd) => ({ wd, need: Math.round(need) })).sort((a, b) => b.need - a.need);
+      hint.innerHTML = `⚖ Пики сетки: <b>${order.slice(0, 2).map(item => `${WDL[item.wd]} (${item.need})`).join(', ')}</b>
+        · свободнее: ${order.slice(-2).reverse().map(item => `${WDL[item.wd]} (${item.need})`).join(', ')}
+        — пересменку лучше ставить на свободные дни.`;
+      hint.style.display = '';
+    } catch { hint.style.display = 'none'; }
+  };
+  dispositionForm.elements.kind.addEventListener('change', toggleShiftHint);
+  toggleShiftHint();
   byId('dispositionForm').onsubmit = async event => {
     event.preventDefault();
     const values = formValues(event.currentTarget);

@@ -1071,6 +1071,79 @@ function runEntered1cWatch() {
 }
 setInterval(runEntered1cWatch, 30 * 60_000);
 
+// ── Регулятор баланса парк↔сетка ──
+// Баланс дня: потребность сетки (рейсы слотов × цикл плеча) против парка
+// (занято рейсами + свободно; недоступные исключены). Общий расчёт для
+// сторожа и, через /api/fleet-plan, для Плана парка.
+function balanceOfDay(dayMs) {
+  const from = new Date(dayMs).toISOString();
+  const to = new Date(dayMs + 86_400_000).toISOString();
+  const weekday = new Date(dayMs).getUTCDay();
+  const need = db.prepare(`SELECT COALESCE(SUM(per_day * ((COALESCE(transit_hours,24)) + 8) / 24.0),0) v
+    FROM delivery_slots WHERE weekday=?`).get(weekday).v;
+  const work = db.prepare(`SELECT COUNT(*) n FROM vehicles WHERE status='work'`).get().n;
+  const busy = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
+    WHERE status!='rejected' AND starts_at < ? AND COALESCE(unloaded_at, ends_at) > ?`)
+    .get(to, from).n;
+  const unavail = db.prepare(`SELECT COUNT(DISTINCT d.vehicle_id) n FROM vehicle_dispositions d
+    WHERE d.starts_at < ? AND d.ends_at > ? AND d.vehicle_id NOT IN (
+      SELECT vehicle_id FROM trips WHERE status!='rejected' AND starts_at < ? AND COALESCE(unloaded_at, ends_at) > ?)`)
+    .get(to, from, to, from).n;
+  const free = Math.max(0, work - busy - unavail);
+  return { need, busy, unavail, free, balance: busy + free - need };
+}
+
+// Сторож «красная среда»: раз в сутки смотрит баланс на 5 дней вперёд с
+// поправкой на разовые заявки сверх сетки (факт последних 14 дней). Узкий
+// день сигналится логисту и руководителю ЗАРАНЕЕ, с рычагами дня.
+function runBalanceWatch() {
+  try {
+    const mskHour = (new Date().getUTCHours() + 3) % 24;
+    if (mskHour < 8) return;
+    const todayIso = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+    const slot = db.prepare(`SELECT value FROM app_meta WHERE key='balance_watch_day'`).get()?.value;
+    if (slot === todayIso) return;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('balance_watch_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
+    const dayStart = Date.parse(`${todayIso}T00:00:00Z`);
+    // Разовые сверх сетки: занято − потребность по прошедшим дням.
+    let extra = 0;
+    let extraDays = 0;
+    for (let back = 1; back <= 14; back += 1) {
+      const past = balanceOfDay(dayStart - back * 86_400_000);
+      if (past.busy > 0) { extra += Math.max(0, past.busy - past.need); extraDays += 1; }
+    }
+    const extraAvg = extraDays ? extra / extraDays : 0;
+    const alerts = [];
+    for (let ahead = 1; ahead <= 5; ahead += 1) {
+      const dayMs = dayStart + ahead * 86_400_000;
+      const day = balanceOfDay(dayMs);
+      const adjusted = day.balance - extraAvg;
+      if (adjusted < 10) {
+        const label = new Date(dayMs).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', weekday: 'short' });
+        const kinds = db.prepare(`SELECT kind, COUNT(DISTINCT vehicle_id) n FROM vehicle_dispositions
+          WHERE starts_at < ? AND ends_at > ? GROUP BY kind`)
+          .all(new Date(dayMs + 86_400_000).toISOString(), new Date(dayMs).toISOString());
+        const kindMap = Object.fromEntries(kinds.map(row => [row.kind, row.n]));
+        alerts.push(`${label}: запас ${Math.round(adjusted)} маш. (сетка ${Math.round(day.need)}, `
+          + `занято ${day.busy}, свободно ${day.free}, разовые ~${Math.round(extraAvg)}/день). Рычаги: `
+          + `без водителя ${kindMap.no_driver || 0}, пересменок ${kindMap.shift || 0}, ремонтов ${kindMap.repair || 0}`);
+      }
+    }
+    if (alerts.length) {
+      const text = `⚖ Узкие дни впереди — парк может не вывезти сетку:\n${alerts.join('\n')}\n`
+        + 'Разбор и действия: План парка → клик по строке «Баланс к сетке» нужного дня.';
+      notify('logist', text);
+      notify('boss', text);
+      notify('resource', text);
+    }
+  } catch (error) {
+    console.error('runBalanceWatch:', error.message);
+  }
+}
+setInterval(runBalanceWatch, 30 * 60_000);
+setTimeout(runBalanceWatch, 90_000);
+
 function runMissedDepartureWatch() {
   try {
     const rows = db.prepare(`SELECT t.id, t.order_no, t.starts_at, v.plate,
@@ -3705,6 +3778,25 @@ async function api(request, response, url) {
     });
   }
 
+  // Задание из «Регулятора баланса»: логист/руководитель отправляет рычаг
+  // дня нужной роли (без водителя/ремонт/пересменка → Ресурсу, сетка →
+  // Продажам) готовым текстом с конкретикой.
+  if (request.method === 'POST' && pathname === '/api/fleet-plan/balance-task') {
+    const actor = currentUser(request);
+    const permission = ['trips:write', 'fleet:write', 'reports:read']
+      .find(item => hasPermission(actor, item));
+    const user = permission ? requirePermission(request, response, permission)
+      : requirePermission(request, response, 'trips:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const lever = String(body.lever || '');
+    const text = String(body.text || '').trim().slice(0, 900);
+    if (!text) return errorJson(response, 422, 'Пустое задание');
+    const role = lever === 'grid' ? 'sales' : 'resource';
+    notify(role, `⚖ Регулятор баланса (от ${user.full_name || user.username}): ${text}`);
+    audit(db, user, 'balance-task', 'fleet', null, { lever, text }, requestIp(request));
+    return json(response, 200, { ok: true, role });
+  }
   if (request.method === 'POST' && pathname === '/api/fleet-plan/round') {
     const user = requirePermission(request, response, 'trips:write');
     if (!user) return;
