@@ -1310,11 +1310,15 @@ function applyDriverStep(chatId, stopId, phase) {
     { phase, driver: driver.full_name, via: 'telegram' }, 'driver-bot');
   const next = nextDriverStep(stop.trip_id);
   const finishedUnload = phase === 'dep' && !next;
+  // После убытия с точки спрашиваем прогноз прибытия на следующую —
+  // водитель знает дорогу лучше расчёта.
+  const askEta = phase === 'dep' && next && next.phase === 'arr'
+    ? { stopId: next.stopId } : null;
   return {
     text: finishedUnload
       ? 'Не забудь проверить печати в документах и сдать их во-время. Благодарю за труд! Доброго пути!'
       : '✅ Отмечено, диспетчер видит.',
-    next, tripId: stop.trip_id
+    next, askEta, tripId: stop.trip_id
   };
 }
 
@@ -1343,6 +1347,42 @@ async function runDriverBotPoll() {
           // Кнопку под старым сообщением убираем — актуальная в новом.
           tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
             message_id: query.message.message_id }, token);
+          if (result.askEta) {
+            tgApi('sendMessage', { chat_id: query.message.chat.id,
+              text: '🕐 Когда планируете прибыть на следующую точку? Прогноз увидит диспетчер.',
+              reply_markup: { inline_keyboard: [
+                [{ text: 'через 2 ч', callback_data: `eta|${result.askEta.stopId}|2` },
+                 { text: 'через 4 ч', callback_data: `eta|${result.askEta.stopId}|4` }],
+                [{ text: 'через 6 ч', callback_data: `eta|${result.askEta.stopId}|6` },
+                 { text: 'завтра', callback_data: `eta|${result.askEta.stopId}|14` }]
+              ] } }, token);
+          }
+        } else if (tag === 'eta') {
+          const hours = Number(phase);
+          const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`)
+            .get(String(query.message?.chat?.id || ''));
+          const stop = driver ? db.prepare(`SELECT s.*, t.vehicle_id FROM trip_stops s
+            JOIN trips t ON t.id = s.trip_id WHERE s.id=?`).get(stopId) : null;
+          tgApi('answerCallbackQuery', { callback_query_id: query.id, text: '✓' }, token);
+          if (driver && stop && stop.vehicle_id === driver.vehicle_id ||
+              (driver && stop && driverForTrip({ vehicle_id: stop.vehicle_id, id: stop.trip_id })?.id === driver.id)) {
+            const eta = new Date(Date.now() + hours * 3_600_000).toISOString();
+            db.prepare(`UPDATE trip_stops SET driver_eta=? WHERE id=?`).run(eta, stopId);
+            const mskEta = new Date(Date.parse(eta) + 3 * 3_600_000).toISOString().replace('T', ' ').slice(5, 16);
+            tgApi('sendMessage', { chat_id: query.message.chat.id,
+              text: `Принял: примерно к ${mskEta} (МСК). Диспетчер видит прогноз.` }, token);
+            tgApi('editMessageReplyMarkup', { chat_id: query.message.chat.id,
+              message_id: query.message.message_id }, token);
+            // Прогноз сильно позже плана — диспетчеру знать заранее.
+            if (stop.planned_arrival && Date.parse(eta) - Date.parse(stop.planned_arrival) > 2 * 3_600_000) {
+              const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(stop.vehicle_id)?.plate || '';
+              notify('dispatcher', `📱 Водитель ${driver.full_name}${plate ? ` (${plate})` : ''} прогнозирует прибытие `
+                + `«${(stop.point || '').slice(0, 40)}» к ${mskEta} МСК — позже плана. Учтите в контроле и предупредите клиента`,
+              'trip', stop.trip_id, { category: 'order_deadlines' });
+            }
+            audit(db, null, 'driver-eta', 'stop', stopId,
+              { hours, driver: driver.full_name }, 'driver-bot');
+          }
         }
         continue;
       }
@@ -1360,7 +1400,8 @@ async function runDriverBotPoll() {
           audit(db, null, 'driver-tg-link', 'driver', driver.id, { via: 'contact' }, 'driver-bot');
           tgApi('sendMessage', { chat_id: chatId,
             text: `✅ Привязано: ${driver.full_name}. Сюда будут приходить задания на рейсы — этапы отмечайте кнопками. Вопрос диспетчеру можно написать прямо здесь.`,
-            reply_markup: { remove_keyboard: true } }, token);
+            reply_markup: { keyboard: [[{ text: '📋 Моё задание' }]],
+              resize_keyboard: true, is_persistent: true } }, token);
           // Активный рейс уже есть — сразу шлём задание.
           const active = db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
             ORDER BY starts_at LIMIT 1`).get(driver.vehicle_id);
@@ -1374,6 +1415,17 @@ async function runDriverBotPoll() {
       const text = String(message.text || '').trim();
       if (!text) continue;
       const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`).get(chatId);
+      // «📋 Моё задание» — прислать актуальное задание с кнопкой этапа в
+      // любой момент (погрузка/выгрузка раньше слота — отметки не ждут план).
+      if (driver && /Моё задание/i.test(text)) {
+        const active = db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
+          ORDER BY starts_at LIMIT 1`).get(driver.vehicle_id)
+          || (() => { const v = db.prepare(`SELECT id FROM vehicles WHERE driver_name IS NOT NULL AND ? LIKE driver_name || '%'`).get(driver.full_name);
+            return v ? db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run') ORDER BY starts_at LIMIT 1`).get(v.id) : null; })();
+        if (active) sendDriverAssignment(active.id);
+        else tgApi('sendMessage', { chat_id: chatId, text: 'Активного рейса сейчас нет — задание придёт при назначении.' }, token);
+        continue;
+      }
       if (/^\/start/.test(text) || !driver) {
         tgApi('sendMessage', { chat_id: chatId,
           text: driver ? 'Вы привязаны. Вопрос диспетчеру — просто напишите его здесь.'
@@ -1423,8 +1475,11 @@ function runDriverPingWatch() {
       if (!stop) continue;
       let text = null;
       let markKey = null;
-      if (step.phase === 'arr' && stop.planned_arrival &&
-          nowMs - Date.parse(stop.planned_arrival) > 45 * 60_000) {
+      const arrBase = Math.max(
+        stop.planned_arrival ? Date.parse(stop.planned_arrival) : 0,
+        stop.driver_eta ? Date.parse(stop.driver_eta) : 0);
+      if (step.phase === 'arr' && arrBase &&
+          nowMs - arrBase > 45 * 60_000) {
         markKey = `${stop.id}|arr`;
         text = `📍 По расчёту вы уже у точки «${(stop.point || '').slice(0, 60)}» — прибыли? `
           + 'Если да — нажмите кнопку; если задерживаетесь, напишите, что случилось.';

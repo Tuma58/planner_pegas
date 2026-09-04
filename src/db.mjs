@@ -455,6 +455,9 @@ function migrateColumns(db) {
   // Бот водителей: чат водителя (привязка по номеру телефона через
   // «поделиться контактом»).
   ensure('drivers', 'telegram_chat_id', 'TEXT');
+  // Прогноз водителя: «буду на выгрузке к…» из бота — показывается в
+  // контроле и двигает расчёт следующего события.
+  ensure('trip_stops', 'driver_eta', 'TEXT');
   ensure('customers', 'trips_per_month', 'REAL NOT NULL DEFAULT 0');
   ensure('orders', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'body_type', "TEXT NOT NULL DEFAULT ''");

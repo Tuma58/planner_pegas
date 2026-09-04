@@ -382,7 +382,8 @@ export async function renderDispatcher(container, context, options = {}) {
       const isFirst = stop === stops[0];
       const isLast = stop === stops[stops.length - 1];
       if (!stop.actual_arrival) {
-        const candidates = [stop.estimated_arrival,
+        // Прогноз самого водителя из бота — точнее любого расчёта.
+        const candidates = [Date.parse(stop.driver_eta || ''), stop.estimated_arrival,
           Date.parse(stop.planned_arrival || ''), Date.parse(trip.ends_at)];
         const at = candidates.find(Number.isFinite) ?? Date.now();
         return { at,
@@ -776,7 +777,8 @@ export async function renderDispatcher(container, context, options = {}) {
           <strong>${stopKindLabel(stop)} · ${escapeHtml(stop.point || '—')}</strong>
           ${lateMs > 30 * 60_000 ? `<span class="badge bad" style="margin-left:6px">+${Math.round(lateMs / HOUR * 10) / 10} ч</span>` : ''}
           <small class="muted" style="display:block">план ${fmtShort(stop.planned_arrival)}
-            ${!stop.actual_arrival && stop.estimated_arrival ? ` · расчёт ${fmtShort(new Date(stop.estimated_arrival).toISOString())}` : ''}
+            ${!stop.actual_arrival && stop.driver_eta ? ` · 📱 водитель: к ${fmtShort(stop.driver_eta)}` : ''}
+            ${!stop.actual_arrival && !stop.driver_eta && stop.estimated_arrival ? ` · расчёт ${fmtShort(new Date(stop.estimated_arrival).toISOString())}` : ''}
             · факт ${fmtShort(stop.actual_arrival)} → ${fmtShort(stop.actual_departure)}</small>
           <small class="${dwellClass}" style="display:block">${stop.work_started_at
             ? `работы ${fmtShort(stop.work_started_at)} → ${fmtShort(stop.work_finished_at)}` : 'работы не начаты'}${dwellText}</small>
