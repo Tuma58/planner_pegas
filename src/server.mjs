@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, settingsObject } from './db.mjs';
+import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
@@ -362,16 +363,35 @@ function integrationPublic() {
 // только аварии (🚨, ⚖ узкие дни, невыход в окно), all — плюс все
 // уведомления своей роли и общие рассылки.
 const telegramConfig = () => settingsObject(db).telegram || {};
+// Запрос к Bot API через node:https с family:4: у LXC нет IPv6-маршрута,
+// а undici-fetch упорно коннектится по v6 (при том что dns.lookup отдаёт
+// v4 из /etc/hosts) — таймаут. Прямой https с family:4 стабилен (~200 мс).
+function tgApi(method, payload) {
+  return new Promise(resolve => {
+    const token = telegramConfig().botToken;
+    if (!token) return resolve(null);
+    const body = JSON.stringify(payload || {});
+    const request = httpsRequest({
+      host: 'api.telegram.org', family: 4, method: 'POST',
+      path: `/bot${token}/${method}`, timeout: 10_000,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, response => {
+      let raw = '';
+      response.on('data', chunk => { raw += chunk; });
+      response.on('end', () => {
+        try { resolve(JSON.parse(raw)); } catch { resolve(null); }
+      });
+    });
+    request.on('error', () => resolve(null));
+    request.on('timeout', () => { request.destroy(); resolve(null); });
+    request.end(body);
+  });
+}
 function sendTelegramTo(chatIds, text) {
-  const token = telegramConfig().botToken;
-  if (!token || !chatIds.length) return;
+  if (!telegramConfig().botToken || !chatIds.length) return;
   const body = String(text).slice(0, 3900);
   for (const chatId of chatIds) {
-    fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: body }),
-      signal: AbortSignal.timeout(8000)
-    }).catch(() => { /* мессенджер недоступен — лента планера всё равно есть */ });
+    tgApi('sendMessage', { chat_id: chatId, text: body });
   }
 }
 function telegramChatsForRole(targetRole, critical) {
@@ -1146,15 +1166,12 @@ setInterval(runEntered1cWatch, 30 * 60_000);
 // Long polling раз в 20 сек (вебхук не поставить: самоподписанный
 // сертификат). Код выдаёт планер (кнопка «🔔 Уведомления»), живёт 15 минут.
 async function runTelegramPoll() {
-  const token = telegramConfig().botToken;
-  if (!token) return;
+  if (!telegramConfig().botToken) return;
   try {
     const offset = Number(db.prepare(`SELECT value FROM app_meta WHERE key='tg_offset'`).get()?.value || 0);
-    const response = await fetch(`https://api.telegram.org/bot${token}/getUpdates?` +
-      new URLSearchParams({ offset: String(offset + 1), timeout: '0', allowed_updates: '["message"]' }),
-      { signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) return;
-    const { result } = await response.json();
+    const answer = await tgApi('getUpdates', { offset: offset + 1, timeout: 0, allowed_updates: ['message'] });
+    if (!answer?.ok) return;
+    const result = answer.result;
     for (const update of result || []) {
       db.prepare(`INSERT INTO app_meta(key,value) VALUES('tg_offset',?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(update.update_id));
