@@ -1245,9 +1245,20 @@ function driverAssignmentText(trip) {
 }
 
 function driverForTrip(trip) {
-  return db.prepare(`SELECT d.* FROM drivers d
+  const byLink = db.prepare(`SELECT d.* FROM drivers d
     WHERE d.vehicle_id=? AND d.telegram_chat_id IS NOT NULL AND d.status<>'fired'
-    LIMIT 1`).get(trip.vehicle_id) || null;
+    LIMIT 1`).get(trip.vehicle_id);
+  if (byLink) return byLink;
+  // Фолбэк: закрепление исторически живёт текстом в vehicles.driver_name
+  // («Ниговорин»), а drivers.vehicle_id бывает пуст — матчим по началу
+  // ФИО, только если кандидат ровно один (однофамильцы не угадываются).
+  const name = String(db.prepare('SELECT driver_name FROM vehicles WHERE id=?')
+    .get(trip.vehicle_id)?.driver_name || '').trim();
+  if (name.length < 3) return null;
+  const candidates = db.prepare(`SELECT d.* FROM drivers d
+    WHERE d.full_name LIKE ? AND d.telegram_chat_id IS NOT NULL AND d.status<>'fired'`)
+    .all(`${name}%`);
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 // Отправить/обновить задание водителю с кнопкой текущего этапа.
