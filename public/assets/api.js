@@ -399,3 +399,18 @@ export function setupTheme() {
     if (theme && theme !== 'system' && theme !== document.documentElement.dataset.theme) applyTheme(theme);
   }).catch(() => {});
 }
+
+// Липкие строки планов (вывоза/парка): top каждой закреплённой строки
+// проставляется по ФАКТИЧЕСКИМ высотам предыдущих — константы (34/24…)
+// расходились с реальной высотой шапки, и строки-итоги наезжали друг на
+// друга при прокрутке («шапка закрепляется не вся»).
+export function syncPlanStickyTops(root = document) {
+  for (const table of root.querySelectorAll('.plan-grid')) {
+    let offset = 0;
+    const stickyRows = table.querySelectorAll('tr.plan-sticky-head, tr.plan-totals');
+    for (const row of stickyRows) {
+      for (const cell of row.children) cell.style.top = `${offset}px`;
+      offset += row.getBoundingClientRect().height;
+    }
+  }
+}

@@ -783,6 +783,11 @@ input.warn-border { border-color: #c99a2e; }
   background: var(--card, #fff); }
 .plan-grid tr.plan-sticky-head th.plan-fix, .plan-grid tr.plan-sticky-head td.plan-fix,
 .plan-grid tr.plan-sticky-head th.plan-fix2 { z-index: 4; }
+/* Угловые ячейки строк-итогов (липнут и по top, и по left): выше обычных
+   левых колонок, иначе при вертикальной прокрутке строки клиентов проезжали
+   ПОВЕРХ левого края закреплённой шапки («левый край сползает»). Фон — как
+   у всей строки итога, чтобы строка читалась целой. */
+.plan-grid tr.plan-totals td.plan-fix { z-index: 3; background: var(--panel2, #f2f7f7); }
 
 
 /* Инструкции сотрудников: памятка по блокам из кнопки «?» */

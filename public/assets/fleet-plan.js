@@ -4,7 +4,7 @@
 // по дням: занято/свободно. Цель — покрыть сетку минимальным числом машин
 // и УВИДЕТЬ высвобождаемый ресурс под новых клиентов, а не искать его по
 // Ганту глазами.
-import { api, escapeHtml, formatDateTime, money, toast } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops } from './api.js';
 import { ROUND_TEMPLATES, roundByKey } from './rounds.js';
 
 const KIND_LABEL = { repair: '🔧 Ремонт', no_driver: '👤 Без водителя', shift: '🔁 Пересменка',
@@ -253,6 +253,8 @@ export async function fleetPlanDialog(context, month = '', filters = {}) {
       </tr>`).join('')}
     </table></div>
     ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
+
+  syncPlanStickyTops();
 
   const rerender = (newMonth = plan.month) => fleetPlanDialog(context, newMonth, {
     query: document.getElementById('fpQuery')?.value ?? flt.query,

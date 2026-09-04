@@ -4,7 +4,7 @@
 // выгружено). Итоги по дням: рейсы план/факт, машин занято (оценка по
 // циклам плеч), выручка. «Заполнить из истории» строит сетку из регулярных
 // плеч за 60 суток; дальше её правят продажи под договорённости.
-import { api, escapeHtml, formatDateTime, money, toast } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops } from './api.js';
 
 const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
@@ -274,10 +274,11 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
   }).join('');
 
   let totalRowIndex = 0;
-  const totalRow = (label, pick, fmt = v => v ? Math.round(v) : '') => {
+  const totalRow = (label, pick, fmt = v => v ? Math.round(v) : '', hint = '') => {
     const top = 34 + totalRowIndex * 24;
     totalRowIndex += 1;
-    return `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:${top}px">${label}</td>${dayTotals.map(d =>
+    return `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:${top}px"
+      ${hint ? `title="${escapeHtml(hint)}"` : ''}>${label}</td>${dayTotals.map(d =>
       `<td style="text-align:center;top:${top}px">${fmt(pick(d))}</td>`).join('')}</tr>`;
   };
 
@@ -368,14 +369,21 @@ export async function deliveryPlanDialog(context, month = '', filters = {}) {
       заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.</p>
     <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px" class="plan-grid">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:150px">Клиент</th><th class="plan-fix2" style="left:150px">Плечо</th><th>Ставка</th>${dayHead}</tr>
-      ${totalRow('Рейсов план', d => d.planN)}
-      ${totalRow('Заявок факт', d => d.factN, v => v || '')}
-      ${totalRow('Машин занято (оценка)', d => d.busy)}
-      ${totalRow('Выручка план, т₽', d => d.planRv / 1000)}
-      ${totalRow('🕳 Дыра (не закрыто)', d => d.gapN, v => v || '')}
+      ${totalRow('Рейсов план', d => d.planN, undefined,
+        'Сколько рейсов в этот день обещает сетка слотов (сумма по всем плечам)')}
+      ${totalRow('Заявок факт', d => d.factN, v => v || '',
+        'Сколько заявок на этот день уже внесено в планер')}
+      ${totalRow('Машин занято (оценка)', d => d.busy, undefined,
+        'Оценка занятого парка: рейсы дня × длительность цикла плеча (транзит + 8 ч на операции) — сколько машин «съест» этот день')}
+      ${totalRow('Выручка план, т₽', d => d.planRv / 1000, undefined,
+        'План выручки дня по ставкам сетки, тысяч рублей с НДС')}
+      ${totalRow('🕳 Дыра (не закрыто)', d => d.gapN, v => v || '',
+        'План минус внесённые заявки по БУДУЩИМ дням: сколько рейсов ещё не законтрактовано — задача продаж «кому звонить». Прошедшие дни не считаются — их уже не закрыть')}
       ${bodyRows || `<tr><td colspan="${daysInMonth + 3}" class="muted">Сетка пуста — нажмите «⚙ Заполнить из истории».</td></tr>`}
     </table></div>
     ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
+
+  syncPlanStickyTops();
 
   const rerender = (newMonth = plan.month) => deliveryPlanDialog(context, newMonth, {
     query: document.getElementById('dplQuery')?.value ?? flt.query,
