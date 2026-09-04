@@ -363,6 +363,34 @@ function integrationPublic() {
 // только аварии (🚨, ⚖ узкие дни, невыход в окно), all — плюс все
 // уведомления своей роли и общие рассылки.
 const telegramConfig = () => settingsObject(db).telegram || {};
+// Категории уведомлений: руководитель настраивает уровень каждой в
+// «Настройки → Telegram»: off — в мессенджер не шлём (лента планера
+// остаётся), critical — получают все привязанные (и режим «аварии», и
+// «все»), normal — только выбравшие режим «все уведомления».
+const NOTIFY_CATEGORIES = {
+  stuck: { label: '🚨 Простои на точках (не выгружают/не грузят)', def: 'critical' },
+  balance: { label: '⚖ Узкие дни баланса парк↔сетка', def: 'critical' },
+  missed_departure: { label: '⏰ Невыход машины в окно погрузки', def: 'critical' },
+  daily_report: { label: '📆 Утренний отчёт дня (всем)', def: 'normal' },
+  gap_review: { label: '📬 Ревизия зазоров 10/14/16', def: 'normal' },
+  debt_1c: { label: '📒 Долги перед 1С', def: 'normal' },
+  driver_questions: { label: '⏱ Просроченные вопросы водителей', def: 'normal' },
+  claims: { label: '📑 Претензии (срывы, простои П/В)', def: 'normal' },
+  order_deadlines: { label: '⏳ Дедлайны заявок (подтвердить/назначить)', def: 'normal' },
+  shift_handover: { label: '🌙 Ночная передача смены', def: 'normal' },
+  stale_transfers: { label: '🚚 Зависшие перегоны', def: 'normal' },
+  sales_directions: { label: '🧭 Утренние направления продажам', def: 'normal' },
+  no_next: { label: '⏭ Выгрузка близко, следующий рейс не назначен', def: 'normal' },
+  resource_watch: { label: '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', def: 'normal' },
+  crm: { label: '🎂 CRM-поводы (дни рождения, контакты)', def: 'off' },
+  other: { label: 'Прочее (операционный конвейер)', def: 'normal' }
+};
+const notifyLevelOf = category => {
+  const rules = settingsObject(db).notifyRules || {};
+  const level = rules[category];
+  return ['off', 'critical', 'normal'].includes(level)
+    ? level : (NOTIFY_CATEGORIES[category]?.def || 'normal');
+};
 // Запрос к Bot API через node:https с family:4: у LXC нет IPv6-маршрута,
 // а undici-fetch упорно коннектится по v6 (при том что dns.lookup отдаёт
 // v4 из /etc/hosts) — таймаут. Прямой https с family:4 стабилен (~200 мс).
@@ -394,20 +422,22 @@ function sendTelegramTo(chatIds, text) {
     tgApi('sendMessage', { chat_id: chatId, text: body });
   }
 }
-function telegramChatsForRole(targetRole, critical) {
-  if (!telegramConfig().botToken) return [];
+function telegramChatsForRole(targetRole, level) {
+  if (!telegramConfig().botToken || level === 'off') return [];
   return db.prepare(`SELECT telegram_chat_id FROM users
       WHERE active=1 AND deleted_at IS NULL AND telegram_chat_id IS NOT NULL
         AND (roles LIKE ? OR role = ?)
         AND (telegram_mode = 'all' OR (telegram_mode = 'critical' AND ?))`)
-    .all(`%"${targetRole}"%`, targetRole, critical ? 1 : 0)
+    .all(`%"${targetRole}"%`, targetRole, level === 'critical' ? 1 : 0)
     .map(row => row.telegram_chat_id);
 }
 
-function notify(targetRole, text, entity = null, entityId = null, { critical = false } = {}) {
+function notify(targetRole, text, entity = null, entityId = null, { category = 'other' } = {}) {
   db.prepare(`INSERT INTO messages(author_name,kind,text,target_role,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`).run(text, targetRole, entity, entityId);
-  try { sendTelegramTo(telegramChatsForRole(targetRole, critical), text); } catch { /* не критично */ }
+  try {
+    sendTelegramTo(telegramChatsForRole(targetRole, notifyLevelOf(category)), text);
+  } catch { /* не критично */ }
 }
 
 // Персональная рассылка всем действующим сотрудникам: каждому — своё
@@ -418,12 +448,18 @@ function notifyEveryone(text, entity = null, entityId = null) {
   const insert = db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`);
   for (const user of users) insert.run(text, user.id, entity, entityId);
-  // Дубль в Telegram — тем, кто выбрал режим «все уведомления».
+  // Дубль в Telegram по уровню категории (руководитель управляет в
+  // Настройках): off — не шлём, critical — всем привязанным, normal —
+  // выбравшим режим «все уведомления».
   try {
-    const chats = db.prepare(`SELECT telegram_chat_id FROM users
-      WHERE active=1 AND deleted_at IS NULL AND telegram_chat_id IS NOT NULL
-        AND telegram_mode='all'`).all().map(row => row.telegram_chat_id);
-    sendTelegramTo(chats, text);
+    const level = notifyLevelOf(arguments[3]?.category || 'daily_report');
+    if (level !== 'off') {
+      const chats = db.prepare(`SELECT telegram_chat_id FROM users
+        WHERE active=1 AND deleted_at IS NULL AND telegram_chat_id IS NOT NULL
+          AND (telegram_mode='all' OR ?)`).all(level === 'critical' ? 1 : 0)
+        .map(row => row.telegram_chat_id);
+      sendTelegramTo(chats, text);
+    }
   } catch { /* не критично */ }
   return users.length;
 }
@@ -456,10 +492,10 @@ function runUnloadWatch() {
       const hours = Math.floor(event.waitedMs / 3_600_000);
       const label = `ТС ${event.trip.vehicle_plate} (${routeText(event.trip)}, ${event.trip.customer_name || 'без заказчика'})`;
       if (event.kind === 'first') {
-        notify('sales', `${label} не выгружают более 6 ч — уведомите клиента; простой можно выставить в «Диспетчере»`, 'trip', event.trip.id);
-        notify('logist', `${label} стоит на выгрузке ${hours} ч — учтите при планировании следующих рейсов сцепки`, 'trip', event.trip.id);
+        notify('sales', `${label} не выгружают более 6 ч — уведомите клиента; простой можно выставить в «Диспетчере»`, 'trip', event.trip.id, { category: 'stuck' });
+        notify('logist', `${label} стоит на выгрузке ${hours} ч — учтите при планировании следующих рейсов сцепки`, 'trip', event.trip.id, { category: 'stuck' });
       } else {
-        notify('dispatcher', `Особый контроль: ${label} стоит на выгрузке уже ${hours} ч — проверьте статус и зафиксируйте простой`, 'trip', event.trip.id);
+        notify('dispatcher', `Особый контроль: ${label} стоит на выгрузке уже ${hours} ч — проверьте статус и зафиксируйте простой`, 'trip', event.trip.id, { category: 'stuck' });
       }
     }
   } catch (error) {
@@ -531,7 +567,7 @@ function runResourceWatch() {
         text = `Сцепка ${vehicle.plate} без заказа ${idleDays} дн — запросите загрузку у продаж или оформите причину простоя`;
       }
       if (text) {
-        notify('resource', text, 'vehicle', vehicle.id);
+        notify('resource', text, 'vehicle', vehicle.id, { category: 'resource_watch' });
         db.prepare(`UPDATE vehicles SET resource_alert_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
           .run(nowIso, vehicle.id);
       }
@@ -681,7 +717,7 @@ function falseCallClaim(trip, reason) {
   if (inserted.changes) {
     const rub = `${Math.round(amount).toLocaleString('ru-RU')} ₽`;
     notify('sales', `📑 Срыв заявки (${reason}): претензия клиенту «${trip.customer_name || '—'}»` +
-      ` на ${rub} (${paidHours} ч × тариф простоя) — реестр «⏳ Простои П/В», проверьте и выставьте`);
+      ` на ${rub} (${paidHours} ч × тариф простоя) — реестр «⏳ Простои П/В», проверьте и выставьте`, null, null, { category: 'claims' });
   }
 }
 
@@ -716,7 +752,7 @@ function runDailyDemurrage() {
       const rub = value => `${Math.round(value).toLocaleString('ru-RU')} ₽`;
       notify('sales', `📑 Простой под погрузкой/выгрузкой: сформировано ${created} претензий` +
         ` на ${rub(createdSum)} (сверх норматива от планового времени по заявке)` +
-        ` — плашка «⏳ Простои П/В», документ на печать в карточке случая`);
+        ` — плашка «⏳ Простои П/В», документ на печать в карточке случая`, null, null, { category: 'claims' });
     }
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('demurrage_claims_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
@@ -756,7 +792,7 @@ function runUnconfirmedOrdersWatch() {
         : `время погрузки прошло ${hours} ч ${minutes} мин назад`;
       notify('sales', `⏳ Заявка ${order.order_no ? `№ ${order.order_no} ` : ''}${order.customer_name}: ` +
         `${routeText(order)} не подтверждена — ${when}. Подтвердите или отклоните ` +
-        `(«Продажи → Клиенты»); сигнал повторится через 30 минут`, 'order', order.id);
+        `(«Продажи → Клиенты»); сигнал повторится через 30 минут`, 'order', order.id, { category: 'order_deadlines' });
       stamp.run(new Date(nowMs).toISOString(), order.id);
     }
   } catch (error) {
@@ -799,7 +835,7 @@ function runAssignWatch() {
       notify('logist', `⏰ Заявка ${order.order_no ? `№ ${order.order_no} ` : ''}${order.customer_name}: ` +
         `${routeText(order)} без ТС — ${when}. Дедлайн назначения виден в очереди: ` +
         `окно минус подгон машины минус подготовка выхода. ` +
-        `Сигнал повторится через час`, 'order', order.id);
+        `Сигнал повторится через час`, 'order', order.id, { category: 'order_deadlines' });
       stamp.run(new Date(nowMs).toISOString(), order.id);
     }
   } catch (error) {
@@ -828,7 +864,7 @@ function runDebt1cWatch() {
       if (trip.needs_1c_update_at) debts.push(trip.needs_1c_note || 'обновить данные');
       notify('dispatcher', `📒 Долг перед 1С по рейсу ${routeText(trip)} (${trip.plate}): ` +
         `${debts.join('; ')}. Закройте в карточке рейса — напоминание повторится через 3 часа`,
-      'trip', trip.id);
+      'trip', trip.id, { category: 'debt_1c' });
       stamp.run(nowIso, trip.id);
     }
   } catch (error) {
@@ -872,9 +908,9 @@ function runEveningHandoff() {
       `${order.customer_name} (погрузка ${String(order.window_from).slice(5, 16).replace('T', ' ')})`).join('; ');
     notify('logist', `🌙 Передача смены: ${rows.length} заявок без ТС с погрузкой в ближайшие ` +
       `36 часов на ${Math.round(sum / 1000)} тыс ₽. ${list}. ` +
-      `Назначьте сегодня — утром до части из них будет поздно`, 'order', rows[0].id);
+      `Назначьте сегодня — утром до части из них будет поздно`, 'order', rows[0].id, { category: 'shift_handover' });
     notify('dispatcher', `🌙 На ночь остаётся ${rows.length} заявок без ТС с погрузкой ` +
-      `в ближайшие 36 часов — если логист не назначил, эскалируйте руководителю`, 'order', rows[0].id);
+      `в ближайшие 36 часов — если логист не назначил, эскалируйте руководителю`, 'order', rows[0].id, { category: 'shift_handover' });
   } catch (error) {
     console.error('Вечерняя передача смены:', error.message);
   }
@@ -891,12 +927,12 @@ function runQuestionSlaWatch() {
       notify('dispatcher', `⏱ Вопрос водителя без ответа больше 10 минут: ` +
         `${topic?.label || item.topic}${item.vehicle_plate ? ` · ${item.vehicle_plate}` : ''}` +
         `${item.driver_name ? ` · ${item.driver_name}` : ''}. Возьмите в работу — водитель ждёт`,
-      'question', item.id);
-      if (topic?.owner === 'Логист') notify('logist', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id);
-      if (topic?.owner === 'Продажи') notify('sales', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id);
-      if (topic?.owner === 'Ресурс') notify('resource', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id);
+      'question', item.id, { category: 'driver_questions' });
+      if (topic?.owner === 'Логист') notify('logist', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
+      if (topic?.owner === 'Продажи') notify('sales', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
+      if (topic?.owner === 'Ресурс') notify('resource', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
       notify('manager', `⏱ Просрочен вопрос водителя (>10 мин): ${topic?.label || item.topic}` +
-        `${item.vehicle_plate ? ` · ${item.vehicle_plate}` : ''}`, 'question', item.id);
+        `${item.vehicle_plate ? ` · ${item.vehicle_plate}` : ''}`, 'question', item.id, { category: 'driver_questions' });
     }
   } catch (error) {
     console.error('Сторож вопросов водителей:', error.message);
@@ -921,19 +957,19 @@ function runCustomerRemindersWatch() {
     for (const item of dates) {
       if (item.kind === 'birthday' && [0, 1, 3].includes(item.daysLeft)) {
         notify('sales', `🎂 ${when(item.daysLeft)} день рождения у ${item.contact}` +
-          `${item.position ? ` (${item.position})` : ''} — клиент «${item.customer}». Поздравьте и отметьте в карточке клиента (Журнал → Поздравление)`);
+          `${item.position ? ` (${item.position})` : ''} — клиент «${item.customer}». Поздравьте и отметьте в карточке клиента (Журнал → Поздравление)`, { category: 'crm' });
       }
       if (item.kind === 'holiday' && (item.daysLeft === 0 || item.daysLeft === item.before)) {
         const active = db.prepare(`SELECT COUNT(DISTINCT customer_name) c FROM trips
           WHERE status<>'rejected' AND ends_at > datetime('now','-90 days')`).get().c;
         notify('sales', `🎉 ${item.name} ${when(item.daysLeft)} — поздравьте клиентов ` +
-          `(активных за 90 дней: ${active}); карточки клиентов — «Продажи → Клиенты → 📇»`);
+          `(активных за 90 дней: ${active}); карточки клиентов — «Продажи → Клиенты → 📇»`, null, null, { category: 'crm' });
       }
     }
     for (const row of db.prepare(`SELECT customer_name, next_contact_at FROM customer_profiles
       WHERE next_contact_at IS NOT NULL AND next_contact_at <= ?`).all(todayIso)) {
       notify('sales', `📞 Пора связаться с клиентом «${row.customer_name}» — плановый контакт ` +
-        `${String(row.next_contact_at).slice(0, 10).split('-').reverse().join('.')}; откройте карточку клиента (📇), запишите итог и назначьте следующий контакт`);
+        `${String(row.next_contact_at).slice(0, 10).split('-').reverse().join('.')}; откройте карточку клиента (📇), запишите итог и назначьте следующий контакт`, null, null, { category: 'crm' });
     }
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_reminders_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
@@ -1117,7 +1153,7 @@ function runGapReviewWatch() {
       `≈ ${Math.round(totalH * 770 / 1000)} т₽ маржи. ${lines.join('; ')}${gaps.length > 12
         ? ` и ещё ${gaps.length - 12}` : ''}. Сдвиньте следующий рейс раньше, вставьте локалку ` +
       `или спот — «Логист → Сцепки», «⏭ стыковка плеча»`;
-    notifyEveryone(text);
+    notifyEveryone(text, null, null, { category: 'gap_review' });
   } catch (error) {
     console.error('Ревизия зазоров:', error.message);
   }
@@ -1153,7 +1189,7 @@ function runEntered1cWatch() {
       `${row.plate} №${row.order_no || '—'} ${row.fz}→${row.tz} (ждёт ${minutes(row.logist_confirmed_at)} мин)`);
     notify('dispatcher', `🧾 Заказы не внесены в 1С дольше 45 минут после подтверждения ` +
       `(норма — 30): ${lines.join('; ')}${rows.length > 10 ? ` и ещё ${rows.length - 10}` : ''}. ` +
-      `Внесите или отметьте «⏭ Внесу позже» — стык «подтверждено → 1С» главная просадка смены`);
+      `Внесите или отметьте «⏭ Внесу позже» — стык «подтверждено → 1С» главная просадка смены`, null, null, { category: 'debt_1c' });
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('entered_1c_watch_at',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(Date.now()));
   } catch (error) {
@@ -1274,9 +1310,9 @@ function runBalanceWatch() {
     if (alerts.length) {
       const text = `⚖ Узкие дни впереди — парк может не вывезти сетку:\n${alerts.join('\n')}\n`
         + 'Разбор и действия: План парка → клик по строке «Баланс к сетке» нужного дня.';
-      notify('logist', text, null, null, { critical: true });
-      notify('boss', text, null, null, { critical: true });
-      notify('resource', text, null, null, { critical: true });
+      notify('logist', text, null, null, { category: 'balance' });
+      notify('boss', text, null, null, { category: 'balance' });
+      notify('resource', text, null, null, { category: 'balance' });
     }
   } catch (error) {
     console.error('runBalanceWatch:', error.message);
@@ -1308,8 +1344,8 @@ function runMissedDepartureWatch() {
     const text = `🌙 Рейс не вышел в окно: задание водителю не отправлено, плановый выход прошёл ` +
       `больше 2 часов назад — ${lines.join('; ')}${fresh.length > 8 ? ` и ещё ${fresh.length - 8}` : ''}. ` +
       `Замените ТС или передоговорите окно СЕЙЧАС — утром оно будет сгоревшим`;
-    notify('logist', text, null, null, { critical: true });
-    notify('dispatcher', text, null, null, { critical: true });
+    notify('logist', text, null, null, { category: 'missed_departure' });
+    notify('dispatcher', text, null, null, { category: 'missed_departure' });
     for (const row of fresh) seen.add(row.id);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('missed_departure_ids',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
@@ -1345,7 +1381,7 @@ function runStaleTransfersWatch() {
       if (done !== key) {
         notify('dispatcher', `🚚 Перегоны без отметок дольше 6 часов после планового прибытия: ` +
           remind.map(item => `${item.plate} → ${(item.to_name || '').slice(0, 30)} (план ${item.ends_at.slice(5, 16)})`).join('; ') +
-          `. Отметьте этапы — или через сутки перегон закроется сам плановым временем`);
+          `. Отметьте этапы — или через сутки перегон закроется сам плановым временем`, null, null, { category: 'stale_transfers' });
         db.prepare(`INSERT INTO app_meta(key,value) VALUES('stale_transfer_day',?)
           ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key);
       }
@@ -1384,7 +1420,7 @@ function runMorningDirections() {
       `${row.zone}: приедут ${row.arrive}, обратных заявок ${row.out} — нужно ещё ${row.gap}`);
     notify('sales', `🧭 Направления дня (72 ч): машины освобождаются там, где нет обратных грузов — ` +
       lines.join('; ') + `. Продаём маршрут целиком, а не одно плечо: заявка из зоны прибытия ` +
-      `дороже простоя и порожняка (пороги ставок — в «Конструктор → 📚 Шаблоны кругов»)`);
+      `дороже простоя и порожняка (пороги ставок — в «Конструктор → 📚 Шаблоны кругов»)`, null, null, { category: 'sales_directions' });
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('morning_directions_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
   } catch (error) {
@@ -1569,7 +1605,7 @@ function runNextTripWatch() {
         `${draft ? `; ⚡ подобрана заявка №${draft.order_no}, подгон ~${Math.round(draft.empty_km || 0)} км` : ''})`;
     });
     notify('logist', `⏭ Следующий рейс не назначен — выгрузка в ближайшие 6 часов: ${lines.join('; ')}` +
-      `${rows.length > 12 ? ` и ещё ${rows.length - 12}` : ''}. Заявки с «⚡» назначаются одним нажатием в очереди («Логист»)`);
+      `${rows.length > 12 ? ` и ещё ${rows.length - 12}` : ''}. Заявки с «⚡» назначаются одним нажатием в очереди («Логист»)`, null, null, { category: 'no_next' });
     const stamp = db.prepare('UPDATE trips SET next_alert_at=CURRENT_TIMESTAMP WHERE id=?');
     for (const trip of rows) stamp.run(trip.id);
   } catch (error) {
@@ -2473,7 +2509,7 @@ async function api(request, response, url) {
       db.prepare(`UPDATE trips SET needs_1c_update_at=?, needs_1c_note=? WHERE id=?`)
         .run(new Date().toISOString(), `рейс отклонён — аннулируйте заказ в 1С (был на ${plate})`, match[0]);
       notify('dispatcher', `🧾 Рейс ${routeText(current)} (${plate}) отклонён, а заказ в 1С уже внесён — ` +
-        `аннулируйте или переоформите его, иначе при новом назначении получится дубль`, 'trip', match[0]);
+        `аннулируйте или переоформите его, иначе при новом назначении получится дубль`, 'trip', match[0], { category: 'debt_1c' });
     }
     if (merged.status === 'rejected' && current.status !== 'rejected' &&
         FALSE_CALL_REASONS.includes(String(merged.rejectionReason || '').trim())) {
@@ -2552,7 +2588,7 @@ async function api(request, response, url) {
           `${String(merged.endsAt).slice(0, 16).replace('T', ' ')} (UTC) при окне ` +
           `${String(order.window_from).slice(0, 16).replace('T', ' ')} — ` +
           `${String(order.window_to).slice(0, 16).replace('T', ' ')} — передоговорите сроки или верните рейс в окно`,
-          'trip', match[0]);
+          'trip', match[0], { category: 'order_deadlines' });
       }
     }
     // Переназначение ТС: задание прежнему водителю отозвано — шаг
@@ -5211,7 +5247,7 @@ async function api(request, response, url) {
       VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
-      'orderOptions', 'networkAccess', 'telephony', 'telegram']) {
+      'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));

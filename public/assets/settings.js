@@ -588,6 +588,27 @@ const SERVICE_KINDS = [
   { kind: 'fuel', label: '⛽ Заправка' }, { kind: 'rest', label: '🛏 Отдых' }
 ];
 
+// Зеркало серверного NOTIFY_CATEGORIES (src/server.mjs): ключ, подпись,
+// уровень по умолчанию. Меняешь там — поменяй здесь.
+const NOTIFY_CATEGORIES = [
+  ['stuck', '🚨 Простои на точках (не выгружают/не грузят)', 'critical'],
+  ['balance', '⚖ Узкие дни баланса парк↔сетка', 'critical'],
+  ['missed_departure', '⏰ Невыход машины в окно погрузки', 'critical'],
+  ['daily_report', '📆 Утренний отчёт дня (всем)', 'normal'],
+  ['gap_review', '📬 Ревизия зазоров 10/14/16', 'normal'],
+  ['debt_1c', '📒 Долги перед 1С', 'normal'],
+  ['driver_questions', '⏱ Просроченные вопросы водителей', 'normal'],
+  ['claims', '📑 Претензии (срывы, простои П/В)', 'normal'],
+  ['order_deadlines', '⏳ Дедлайны заявок (подтвердить/назначить)', 'normal'],
+  ['shift_handover', '🌙 Ночная передача смены', 'normal'],
+  ['stale_transfers', '🚚 Зависшие перегоны', 'normal'],
+  ['sales_directions', '🧭 Утренние направления продажам', 'normal'],
+  ['no_next', '⏭ Выгрузка близко, следующий рейс не назначен', 'normal'],
+  ['resource_watch', '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', 'normal'],
+  ['crm', '🎂 CRM-поводы (дни рождения, контакты)', 'off'],
+  ['other', 'Прочее (операционный конвейер)', 'normal']
+];
+
 async function renderTelephony() {
   const [config, points] = await Promise.all([
     api('/api/telephony/config'), api('/api/service-points')
@@ -605,6 +626,24 @@ async function renderTelephony() {
         placeholder="pegas_planner_bot (без @)"></label>
       <button class="button">Сохранить</button>
     </form>
+    <h3 style="margin-top:14px">Что отправлять в Telegram</h3>
+    <p class="muted">Уровень каждой категории: <b>Выкл</b> — в мессенджер не идёт (лента планера
+      остаётся); <b>Аварийное</b> — получают все привязанные сотрудники (и режим «только аварии»,
+      и «все»); <b>Обычное</b> — только выбравшие режим «все уведомления». Кому именно —
+      определяется ролью уведомления и ролью сотрудника.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Категория</th><th style="width:150px">Уровень</th></tr></thead>
+      <tbody>${NOTIFY_CATEGORIES.map(([key, label, def]) => {
+        const current = state.admin.settings?.notifyRules?.[key] || def;
+        return `<tr><td>${escapeHtml(label)}${current === def ? '' : ' <small class="muted">(изменено)</small>'}</td>
+          <td><select data-notify-rule="${key}">
+            <option value="off" ${current === 'off' ? 'selected' : ''}>Выкл</option>
+            <option value="critical" ${current === 'critical' ? 'selected' : ''}>Аварийное</option>
+            <option value="normal" ${current === 'normal' ? 'selected' : ''}>Обычное</option>
+          </select></td></tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    <button class="button" id="saveNotifyRules" style="margin-top:8px">Сохранить правила рассылки</button>
     <h2 style="margin-top:18px">Телефония</h2>
     <p class="muted">Когда АТС подключена, входящий звонок сам поднимает карточку водителя
       у сотрудника. До подключения та же карточка открывается кнопкой «📞 Звонок» в шапке —
@@ -654,6 +693,17 @@ async function renderTelephony() {
         <td><button class="button ghost small danger" data-point-del="${point.id}">✕</button></td>
       </tr>`).join('') : '<tr><td colspan="6" class="muted">Точек пока нет — водителю нечего подсказать.</td></tr>'}
       </tbody></table>`;
+  byId('saveNotifyRules').onclick = async () => {
+    const rules = {};
+    document.querySelectorAll('[data-notify-rule]').forEach(select => {
+      rules[select.dataset.notifyRule] = select.value;
+    });
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ notifyRules: rules }) });
+      state.admin.settings.notifyRules = rules;
+      toast('Правила рассылки сохранены — действуют со следующего уведомления');
+    } catch (error) { toast(error.message, 'error'); }
+  };
   byId('telegramForm').onsubmit = async event => {
     event.preventDefault();
     const form = event.currentTarget;
