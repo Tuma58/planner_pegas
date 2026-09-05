@@ -4145,6 +4145,10 @@ async function api(request, response, url) {
           db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note,created_by)
             VALUES(?,?,?,?,?,?,?)`).run(randomUUID(), vehicleId, 'no_driver', absentFrom, absentTo,
             `${status === 'vacation' ? 'Отпуск' : 'Больничный'}: ${current.full_name}`, user.id);
+          // Машина стала недоступной — рекомендации автоподбора с ней устарели
+          // (кейс р894ху58: пересменку внесли после расчёта черновика, логист
+          // менял рекомендацию руками с причиной «пересменка»).
+          invalidateDraftsForVehicle(vehicleId);
         }
       }
       db.exec('COMMIT');
