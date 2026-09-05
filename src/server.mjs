@@ -26,7 +26,7 @@ import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
-  stopsWithEstimates, syncTripFromStops, tripDelayMs
+  stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
 } from './trip-control.mjs';
 
 const db = openDatabase(config.databasePath, config.admin, {
@@ -3496,6 +3496,20 @@ async function api(request, response, url) {
               `${newStart.slice(0, 16).replace('T', ' ')}, выгрузка ${newEnd.slice(0, 16).replace('T', ' ')} (UTC)`,
               'trip', trip.id);
           }
+        }
+        // Промежуточные точки рейса следуют за маршрутом заявки: сверка на
+        // каждом сохранении (идемпотентно), а не только при «изменении» —
+        // так лечатся и рейсы, разъехавшиеся с заявкой раньше.
+        ensureTripStops(db, trip.id);
+        const viaSync = syncTripStopsWithVia(db, trip.id, nextVia, user.id);
+        if (viaSync.added || viaSync.removed) {
+          notify('dispatcher', `🧭 Продажи изменили маршрут заявки ${keptOrderNo ? `№ ${keptOrderNo} ` : ''}` +
+            `(${current.customer_name}): точки рейса обновлены (добавлено ${viaSync.added}, убрано ${viaSync.removed}). ` +
+            `Проверьте карточку контроля`, 'trip', trip.id, { category: 'other' });
+          // Водитель уже получил задание — досылаем обновлённое с новым маршрутом.
+          if (trip.driver_notified_at) sendDriverAssignment(trip.id);
+          queueOutbox(db, 'trips', trip.id, 'update', tripOutboxPayload(trip.id),
+            integrationPublic().writePolicy === 'automatic');
         }
       }
     }

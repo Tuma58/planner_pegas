@@ -73,6 +73,57 @@ export function rescheduleTripStops(db, tripId) {
   return changed;
 }
 
+// Синхронизация промежуточных стоянок рейса с маршрутом заявки: продажи
+// добавили или убрали точку — набор стопов следует за заявкой (вызов
+// идемпотентен: при совпадении ничего не меняет). Крайние стопы (первая
+// погрузка, конечная выгрузка) не трогаются; промежуточные С ФАКТАМИ не
+// удаляются — машина там уже была, история дороже правки маршрута.
+export function syncTripStopsWithVia(db, tripId, via, userId) {
+  const stops = db.prepare('SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq').all(tripId);
+  if (stops.length < 2) return { added: 0, removed: 0 };
+  const middle = stops.slice(1, -1);
+  const wanted = (Array.isArray(via) ? via : []).map(item => ({
+    kind: item.kind === 'P' ? 'P' : 'D', point: String(item.point || '').trim() })).filter(item => item.point);
+  const usedIdx = new Set();
+  const orderOf = new Map();
+  for (const stop of middle) {
+    const idx = wanted.findIndex((item, i) => !usedIdx.has(i) &&
+      item.kind === stop.kind && item.point === String(stop.point || '').trim());
+    if (idx >= 0) { usedIdx.add(idx); orderOf.set(stop.id, idx); }
+  }
+  let removed = 0;
+  for (const stop of middle) {
+    if (orderOf.has(stop.id)) continue;
+    if (stop.actual_arrival || stop.work_started_at || stop.work_finished_at || stop.actual_departure) {
+      orderOf.set(stop.id, 500 + stop.seq); // пройденная точка вне маршрута — остаётся на месте
+      continue;
+    }
+    db.prepare('DELETE FROM trip_stops WHERE id=?').run(stop.id);
+    removed += 1;
+  }
+  let added = 0;
+  wanted.forEach((item, index) => {
+    if (usedIdx.has(index)) return;
+    const id = randomUUID();
+    db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,updated_by)
+      VALUES(?,?,0,?,?,?)`).run(id, tripId, item.kind, item.point, userId || null);
+    orderOf.set(id, index);
+    added += 1;
+  });
+  if (removed || added) {
+    const rest = db.prepare('SELECT id FROM trip_stops WHERE trip_id=? ORDER BY seq').all(tripId)
+      .map(row => row.id);
+    const firstId = stops[0].id;
+    const lastId = stops[stops.length - 1].id;
+    const middleIds = rest.filter(id => id !== firstId && id !== lastId)
+      .sort((a, b) => (orderOf.get(a) ?? 900) - (orderOf.get(b) ?? 900));
+    const reseq = db.prepare('UPDATE trip_stops SET seq=?,updated_at=CURRENT_TIMESTAMP WHERE id=?');
+    [firstId, ...middleIds, lastId].forEach((id, index) => reseq.run(index + 1, id));
+    rescheduleTripStops(db, tripId);
+  }
+  return { added, removed };
+}
+
 export function listTripStops(db, tripId) {
   return db.prepare('SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq,planned_arrival').all(tripId);
 }
