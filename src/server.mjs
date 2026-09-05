@@ -519,8 +519,21 @@ async function runGeocodeWatch() {
       ORDER BY name LIMIT 1`).get();
     if (!address) return;
     db.prepare(`UPDATE addresses SET geocode_try_at=CURRENT_TIMESTAMP WHERE id=?`).run(address.id);
-    const [hit] = await geocodeQuery(String(address.address || '').trim() || address.name);
-    if (!hit || !Number.isFinite(hit.latitude)) return;
+    // Каскад упрощений: полный адрес часто не находится из-за «д. 8, стр. 4»
+    // и сокращений — пробуем без дома, затем первые два сегмента (щадя
+    // Nominatim паузой между попытками).
+    const raw = String(address.address || '').trim() || String(address.name || '').trim();
+    const noHouse = raw.replace(/(?:,\s*)?(?:д\.?|дом|стр\.?|строение|влд\.?|владение|корп\.?|тер\.?)\s*№?\s*[\dА-Яа-я/\-]+\s*/gi, ' ')
+      .replace(/\s{2,}/g, ' ').replace(/\s,/g, ',').trim();
+    const short = raw.split(',').map(part => part.trim()).filter(Boolean).slice(0, 2).join(', ');
+    let hit = null;
+    for (const variant of [...new Set([raw, noHouse, short])].filter(Boolean)) {
+      [hit] = await geocodeQuery(variant);
+      if (hit && Number.isFinite(hit.latitude)) break;
+      hit = null;
+      await new Promise(resolve => setTimeout(resolve, 1_300));
+    }
+    if (!hit) return;
     const { BASE_POINT } = await import('./db.mjs');
     const region = String(address.region || '').trim() || hit.region;
     const zoneId = address.zone_id
@@ -5390,6 +5403,46 @@ async function api(request, response, url) {
   // ── Инвентаризация: сквозная проверка ресурса и процессов на «мусор» —
   // дубли, забытые машины, висящие рейсы, дыры в данных водителей, заявки
   // с ошибочными датами. Секции с объектами, фронт делает их кликабельными.
+  // Автопочинка безопасной части находок инвентаризации: то, что не
+  // требует человеческого решения — пробелы, мёртвые ссылки, пустые зоны.
+  if (request.method === 'POST' && pathname === '/api/inventory/fix') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const fixed = {};
+    // Хвостовые пробелы в закреплениях: «Чернов … » не матчился со
+    // справочником и ботом водителей из-за пробела в конце.
+    fixed.trimmedNames = db.prepare(`UPDATE vehicles SET driver_name=TRIM(driver_name)
+      WHERE driver_name IS NOT NULL AND driver_name<>TRIM(driver_name)`).run().changes;
+    // Уволенные не могут оставаться закреплёнными: ссылку на ТС снимаем,
+    // ФИО в карточке работающего ТС чистим (только при точном совпадении и
+    // если нет активного полного тёзки — его закрепление не трогаем).
+    fixed.firedUnlinked = db.prepare(`UPDATE drivers SET vehicle_id=NULL
+      WHERE status='fired' AND vehicle_id IS NOT NULL`).run().changes;
+    fixed.firedNamesCleared = 0;
+    for (const driver of db.prepare(`SELECT full_name FROM drivers WHERE status='fired'`).all()) {
+      const twin = db.prepare(`SELECT 1 FROM drivers WHERE status<>'fired' AND TRIM(full_name)=TRIM(?)`)
+        .get(driver.full_name);
+      if (twin) continue;
+      fixed.firedNamesCleared += db.prepare(`UPDATE vehicles SET driver_name=''
+        WHERE status='work' AND TRIM(COALESCE(driver_name,''))=TRIM(?)`).run(driver.full_name).changes;
+    }
+    // Зоны адресов: субъект РФ из текста или ближайший центр по координатам.
+    fixed.zonesFilled = 0;
+    for (const address of db.prepare(`SELECT id, name, region, latitude, longitude FROM addresses
+      WHERE zone_id IS NULL`).all()) {
+      const hint = zoneHintForAddress(`${address.name || ''} ${address.region || ''}`,
+        address.latitude, address.longitude);
+      if (!hint) continue;
+      db.prepare('UPDATE addresses SET zone_id=? WHERE id=?').run(hint.id, address.id);
+      fixed.zonesFilled += 1;
+    }
+    // Негеокоженные адреса — на новый круг: сторож теперь пробует каскад
+    // упрощений (без дома → первые два сегмента), часть добьётся.
+    fixed.geocodeRetries = db.prepare(`UPDATE addresses SET geocode_try_at=NULL
+      WHERE latitude IS NULL AND geocode_try_at IS NOT NULL`).run().changes;
+    audit(db, user, 'inventory-fix', 'system', null, fixed, requestIp(request));
+    return json(response, 200, { ok: true, fixed });
+  }
   if (request.method === 'GET' && pathname === '/api/inventory') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;

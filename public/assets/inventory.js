@@ -36,9 +36,30 @@ export async function inventoryDialog(context, scope = 'resource') {
     <h2 style="margin-bottom:2px">${scope === 'all' ? '🧾 Инвентаризация процессов' : '🔍 Ревизия ресурса'}</h2>
     <p class="muted" style="margin:0 0 10px">Снимок на ${new Date(snapshot.generatedAt).toLocaleString('ru-RU')}.
       Всего находок: <strong>${snapshot.total}</strong>. Клик по госномеру — карточка ТС.</p>
+    <p style="margin:0 0 10px"><button class="button small" id="invAutoFix"
+      title="Чинит то, что не требует решения человека: хвостовые пробелы в закреплениях, уволенных в карточках ТС, пустые геозоны адресов; негеокоженные адреса отправляет геокодеру на новый круг с упрощением запроса">⚙ Исправить автоматически</button></p>
     ${problem.map(sectionHtml).join('')}
     ${clean.length ? `<details class="inv-section"><summary style="cursor:pointer;padding:6px 0" class="muted">
       ✅ Без замечаний: ${clean.length} провер${clean.length === 1 ? 'ка' : 'ок'}</summary>
       ${clean.map(section => `<div class="muted" style="margin-left:16px;padding:2px 0">✓ ${section.title}</div>`).join('')}
     </details>` : ''}`);
+  document.getElementById('invAutoFix').onclick = async event => {
+    event.currentTarget.disabled = true;
+    try {
+      const result = await api('/api/inventory/fix', { method: 'POST', body: '{}' });
+      const f = result.fixed || {};
+      const parts = [
+        f.trimmedNames && `пробелы в закреплениях: ${f.trimmedNames}`,
+        f.firedUnlinked && `отвязано уволенных: ${f.firedUnlinked}`,
+        f.firedNamesCleared && `очищено карточек ТС от уволенных: ${f.firedNamesCleared}`,
+        f.zonesFilled && `зоны адресов: ${f.zonesFilled}`,
+        f.geocodeRetries && `адресов на повторный геокодинг: ${f.geocodeRetries} (по 1 в 90 с)`
+      ].filter(Boolean);
+      alert(parts.length ? `Исправлено:\n— ${parts.join('\n— ')}` : 'Автоматически исправимого не нашлось — остальное требует решения человека.');
+      inventoryDialog(context, scope);
+    } catch (error) {
+      alert(error.message);
+      event.target.disabled = false;
+    }
+  };
 }
