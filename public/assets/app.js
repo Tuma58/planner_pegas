@@ -1319,7 +1319,34 @@ function openDriversDirectory() {
     <div style="overflow:auto;max-height:60vh"><table class="rtable"><thead><tr>
       <th>Водитель</th><th>Телефон</th><th>Сцепка</th><th>Статус</th><th></th>
     </tr></thead><tbody>${filtered.map(row).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>
+    <details id="firedBlock" style="margin-top:8px"><summary class="muted" style="cursor:pointer">🚪 Уволенные — показать (восстановление случайно удалённых)</summary>
+      <div id="firedList" class="muted" style="padding:6px 0">Загрузка…</div></details>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+
+  byId('firedBlock').addEventListener('toggle', async event => {
+    if (!event.currentTarget.open) return;
+    const box = byId('firedList');
+    try {
+      const fired = await api('/api/drivers/fired');
+      box.innerHTML = (fired.items || []).map(driver => `<div class="list-item" style="padding:5px 10px">
+        <span style="flex:1">${escapeHtml(driver.full_name)}
+          <small class="muted" style="display:block">${escapeHtml(driver.phone || 'телефона нет')}</small></span>
+        <button class="button ghost small" data-drv-restore="${driver.id}"
+          title="Вернуть в штат: снова появится в справочнике, явке и подборе">↩ Вернуть в штат</button>
+      </div>`).join('') || 'Уволенных нет.';
+      box.querySelectorAll('[data-drv-restore]').forEach(button => {
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            await api(`/api/drivers/${button.dataset.drvRestore}/restore`, { method: 'POST', body: '{}' });
+            toast('Водитель возвращён в штат');
+            await reload();
+            back();
+          } catch (error) { toast(error.message, 'error'); button.disabled = false; }
+        };
+      });
+    } catch (error) { box.textContent = error.message; }
+  }, { once: true });
 
   attachSearch(byId('driversSearch'), value => {
     state.driversQuery = value;

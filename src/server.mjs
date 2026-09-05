@@ -4046,6 +4046,30 @@ async function api(request, response, url) {
     audit(db, user, 'create', 'driver', id, body, requestIp(request));
     return json(response, 201, { id });
   }
+  // Уволенные видны только в справочнике (раздел «Уволенные») — для
+  // восстановления случайно удалённых (кейс Иванов/Евсеев 19.08).
+  if (request.method === 'GET' && pathname === '/api/drivers/fired') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, { items: db.prepare(`SELECT id, full_name, phone, updated_at
+      FROM drivers WHERE status='fired' ORDER BY full_name`).all() });
+  }
+  match = route(/^\/api\/drivers\/([^/]+)\/restore$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const driver = db.prepare(`SELECT * FROM drivers WHERE id=? AND status='fired'`).get(match[0]);
+    if (!driver) return errorJson(response, 404, 'Уволенный водитель не найден');
+    // Полный тёзка уже в строю — восстановление создаст задвоение (кейс
+    // Бажко: удалили и завели заново): работать надо с активной записью.
+    const twin = db.prepare(`SELECT 1 FROM drivers WHERE status<>'fired' AND TRIM(full_name)=TRIM(?)`)
+      .get(driver.full_name);
+    if (twin) return errorJson(response, 409,
+      `«${driver.full_name}» уже есть среди работающих — это дубль, восстановление создаст задвоение. Работайте с активной записью`);
+    db.prepare(`UPDATE drivers SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(driver.id);
+    audit(db, user, 'restore', 'driver', driver.id, { fullName: driver.full_name }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   match = route(/^\/api\/drivers\/([^/]+)\/card$/, pathname);
   if (match && request.method === 'GET') {
     const user = requirePermission(request, response, 'planner:read');
@@ -5520,7 +5544,9 @@ async function api(request, response, url) {
         LEFT JOIN vehicles v ON v.id=d.vehicle_id
         WHERE d.status='fired' AND (d.vehicle_id IS NOT NULL OR EXISTS (
           SELECT 1 FROM vehicles v2 WHERE v2.status='work' AND v2.driver_name IS NOT NULL
-            AND d.full_name LIKE v2.driver_name || '%'))`).all()
+            AND d.full_name LIKE v2.driver_name || '%'))
+          AND NOT EXISTS (SELECT 1 FROM drivers a WHERE a.status<>'fired'
+            AND TRIM(a.full_name)=TRIM(d.full_name))`).all()
         .map(row => ({ label: row.full_name, sub: row.plate || 'ФИО в карточке ТС' })));
     add('drv_orphan_names', '❓ ФИО в карточке ТС без водителя в справочнике', 'Текст закрепления не матчится ни с одним активным водителем — бот не свяжет',
       db.prepare(`SELECT id, plate, driver_name FROM vehicles WHERE status='work'
