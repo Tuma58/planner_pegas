@@ -4,6 +4,7 @@
 // владельцам, баланс машино-дней, экономика по типам ТС и топ клиентов.
 // Тема «панель приборов» (спидометры, лобовое стекло) выведена из продукта.
 // Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
+import { inventoryDialog } from './inventory.js';
 import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, tripBusyFromMs, tripBusyUntilMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { reconcileDialog } from './reconcile.js';
@@ -346,6 +347,8 @@ export async function renderBoss(container, context) {
           title="Отчёт за 12-часовую смену (08–20 / 20–08): операции сотрудников по именам, время обработки заданий, очереди каскада">🕐 Смена</button>
         <button class="button ghost small" id="bossDeliveryPlan"
           title="Визуальный график вывоза грузов от клиентов на месяц: слоты, заявки, ресурс и выручка план-факт">📅 План вывоза</button>
+        <button class="button ghost small" id="bossInventory"
+          title="Инвентаризация всех процессов: ресурс (дубли прицепов, забытые машины, висящие рейсы, дыры по водителям) + заявки с ошибочными датами, застрявшие стадии, дыры адресов">🧾 Инвентаризация</button>
         <button class="button ghost small" id="bossParkReport"
           title="Отчёт эксплуатации автопарка из выгрузок 1С (Заказы/Путевые листы/Ремонты): каскад по ЧАСАМ под грузом, разбор причин, честные сценарии">🏭 Эксплуатация (1С)</button>
       </div>
@@ -536,6 +539,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossProject160').onclick = () => project160Dialog(context);
   container.querySelector('#bossShift').onclick = () => shiftDialog(context);
   container.querySelector('#bossDeliveryPlan').onclick = () => deliveryPlanDialog(context);
+  container.querySelector('#bossInventory').onclick = () => inventoryDialog(context, 'all');
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;

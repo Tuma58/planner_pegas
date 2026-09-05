@@ -1,6 +1,7 @@
 // Диспетчерская доска ресурса — гант по аналогии с главным планером:
 // строки ТС с рейсами (тонкие полосы) и интервалами недоступности (цветные бары),
 // плашки-счётчики состояний, справа — панель заданий сотрудника.
+import { inventoryDialog } from './inventory.js';
 import { api, attachSearch, dayPickerHtml, escapeHtml, formatDateTime, formValues, fromLocalInput, rangePickerHtml, toast, wireDayPicker, wireRangePicker, wireSelectSearch, tripBusyUntilMs, captureScrolls, restoreScrolls, tripBusyFromMs, renderInto } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { regionOfPlace } from './sales.js';
@@ -1038,6 +1039,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
             title="Табель явки за период: Я/РВ/В/ОТ/Б/ПР по каждому водителю, печать">📋 Табель</button>
           <button class="button ghost small" id="resourceDemurrage"
             title="Простой под погрузкой/выгрузкой: случаи сверх норматива и история претензий клиентам">⏳ Простои</button>
+          <button class="button ghost small" id="resourceInventory"
+            title="Сквозная проверка ресурса: дубли прицепов, забытые машины, висящие рейсы, дыры справочника водителей">🔍 Ревизия</button>
         </span>
         <span class="resctl-group">
           <button class="button ghost small" id="resourceTransfer"
@@ -1107,6 +1110,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resourceAttendance').onclick = () => attendanceDialog(context);
   container.querySelector('#resourceTimesheet').onclick = () => timesheetDialog(context);
   container.querySelector('#resourceDemurrage').onclick = () => demurrageDialog(context);
+  container.querySelector('#resourceInventory').onclick = () => inventoryDialog(context, 'resource');
   // Перегон из шапки: сначала выбираем сцепку, дальше обычная форма перегона.
   container.querySelector('#resourceTransfer').onclick = () => transferPickVehicleDialog(context);
   container.querySelector('#resourceTrailerMove').onclick = () => trailerMoveDialog(context);

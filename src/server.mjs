@@ -5387,6 +5387,121 @@ async function api(request, response, url) {
   }
 
   // Аналитика ресурса: машино-дни, КТГ и выручка по каждой сцепке.
+  // ── Инвентаризация: сквозная проверка ресурса и процессов на «мусор» —
+  // дубли, забытые машины, висящие рейсы, дыры в данных водителей, заявки
+  // с ошибочными датами. Секции с объектами, фронт делает их кликабельными.
+  if (request.method === 'GET' && pathname === '/api/inventory') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const scope = url.searchParams.get('scope') === 'all' && hasPermission(user, 'reports:read')
+      ? 'all' : 'resource';
+    const sections = [];
+    const add = (key, title, hint, items) => sections.push({ key, title, hint, count: items.length, items: items.slice(0, 25) });
+    const nowIso = new Date().toISOString();
+    // Транспорт
+    add('trailer_dupes', '🚛 Дубли прицепов', 'Один прицеп закреплён за несколькими работающими ТС — в карточках ошибка',
+      db.prepare(`SELECT trailer_plate, GROUP_CONCAT(plate, ', ') plates FROM vehicles
+        WHERE COALESCE(trailer_plate,'')<>'' AND status='work'
+        GROUP BY trailer_plate HAVING COUNT(*)>1`).all()
+        .map(row => ({ label: `прицеп ${row.trailer_plate}`, sub: row.plates })));
+    add('no_driver', '👤 Работающие ТС без водителя в карточке', 'driver_name пуст — подбор и бот водителей эту машину не свяжут',
+      db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' AND TRIM(COALESCE(driver_name,''))=''`).all()
+        .map(row => ({ label: row.plate, vehicleId: row.id })));
+    add('no_zone_type', '📍 ТС без геозоны или типа кузова', 'Не попадают в подбор и потоки',
+      db.prepare(`SELECT id, plate, zone_id, type_id FROM vehicles WHERE status='work'
+        AND (zone_id IS NULL OR type_id IS NULL)`).all()
+        .map(row => ({ label: row.plate, sub: [!row.zone_id && 'нет зоны', !row.type_id && 'нет типа'].filter(Boolean).join(', '), vehicleId: row.id })));
+    add('forgotten', '💤 Забытые машины (3+ дня без рейса и диспозиции)', 'В работе, но никем не заняты и не объяснены — упущены из внимания',
+      db.prepare(`SELECT v.id, v.plate, v.driver_name,
+        (SELECT MAX(t.ends_at) FROM trips t WHERE t.vehicle_id=v.id AND t.status<>'rejected') last_end
+        FROM vehicles v WHERE v.status='work'
+        AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status IN ('plan','run') AND t.ends_at > ?)
+        AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d WHERE d.vehicle_id=v.id
+          AND d.starts_at < ? AND (d.ends_at IS NULL OR d.ends_at > ?))`)
+        .all(nowIso, new Date(Date.now() + 86_400_000).toISOString(), nowIso)
+        .filter(row => !row.last_end || Date.parse(row.last_end) < Date.now() - 72 * 3_600_000)
+        .map(row => ({ label: row.plate, sub: row.last_end
+          ? `последний рейс закончился ${row.last_end.slice(0, 10)}` : 'рейсов не было', vehicleId: row.id })));
+    add('hanging_trips', '⏳ Висящие рейсы (план окончания прошёл, не закрыты)', 'Загрязняют контроль и статистику — закрыть фактом или разобраться',
+      db.prepare(`SELECT t.id, t.ends_at, t.order_no, v.plate, o.customer_name FROM trips t
+        LEFT JOIN vehicles v ON v.id=t.vehicle_id LEFT JOIN orders o ON o.trip_id=t.id
+        WHERE t.status='run' AND t.ends_at < datetime('now','-2 hours')
+        AND EXISTS (SELECT 1 FROM trip_stops s WHERE s.trip_id=t.id AND s.actual_departure IS NULL)
+        ORDER BY t.ends_at`).all()
+        .map(row => ({ label: `${row.plate || '—'} №${row.order_no || '—'}`,
+          sub: `${(row.customer_name || '').slice(0, 24)} · план оконч. ${row.ends_at.slice(0, 10)}` })));
+    add('future_online', '🚦 «В пути», а выход через 2+ суток', 'Выведены на линию слишком заранее — вероятно, забыты или дата ошибочна',
+      db.prepare(`SELECT t.starts_at, t.order_no, v.plate FROM trips t
+        LEFT JOIN vehicles v ON v.id=t.vehicle_id
+        WHERE t.status='run' AND t.starts_at > datetime('now','+48 hours')`).all()
+        .map(row => ({ label: `${row.plate || '—'} №${row.order_no || '—'}`, sub: `выход ${row.starts_at.slice(0, 16).replace('T', ' ')} UTC` })));
+    add('after_repair', '🔧 Вышли из ремонта/пересменки — работы нет', 'Простой после недоступности: диспозиция закончилась, рейса не появилось',
+      db.prepare(`SELECT DISTINCT v.id, v.plate, d.kind, d.ends_at FROM vehicle_dispositions d
+        JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE v.status='work' AND d.ends_at IS NOT NULL
+          AND d.ends_at < ? AND d.ends_at > datetime('now','-72 hours')
+          AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status IN ('plan','run') AND t.ends_at > ?)
+          AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d2 WHERE d2.vehicle_id=v.id AND d2.starts_at<=? AND (d2.ends_at IS NULL OR d2.ends_at>?))`)
+        .all(nowIso, nowIso, nowIso, nowIso)
+        .map(row => ({ label: row.plate, sub: `${row.kind} до ${row.ends_at.slice(0, 10)}`, vehicleId: row.id })));
+    // Водители
+    add('drv_no_phone', '📵 Водители без телефона', 'Не привяжутся к боту и приложению — задание Ларину',
+      db.prepare(`SELECT full_name FROM drivers WHERE status<>'fired'
+        AND TRIM(COALESCE(phone,''))='' ORDER BY full_name`).all()
+        .map(row => ({ label: row.full_name })));
+    add('drv_dupes', '👥 Два водителя на одном ТС', 'Задвоенное закрепление в справочнике водителей',
+      db.prepare(`SELECT v.plate, GROUP_CONCAT(d.full_name, ' + ') names FROM drivers d
+        JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status<>'fired' AND d.vehicle_id IS NOT NULL
+        GROUP BY d.vehicle_id HAVING COUNT(*)>1`).all()
+        .map(row => ({ label: row.plate, sub: row.names })));
+    add('drv_fired_linked', '🚪 Уволенные, оставшиеся в закреплениях', 'vehicle_id у уволенного или ФИО в карточке работающего ТС',
+      db.prepare(`SELECT d.full_name, v.plate FROM drivers d
+        LEFT JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE d.status='fired' AND (d.vehicle_id IS NOT NULL OR EXISTS (
+          SELECT 1 FROM vehicles v2 WHERE v2.status='work' AND v2.driver_name IS NOT NULL
+            AND d.full_name LIKE v2.driver_name || '%'))`).all()
+        .map(row => ({ label: row.full_name, sub: row.plate || 'ФИО в карточке ТС' })));
+    add('drv_orphan_names', '❓ ФИО в карточке ТС без водителя в справочнике', 'Текст закрепления не матчится ни с одним активным водителем — бот не свяжет',
+      db.prepare(`SELECT id, plate, driver_name FROM vehicles WHERE status='work'
+        AND TRIM(COALESCE(driver_name,''))<>''
+        AND NOT EXISTS (SELECT 1 FROM drivers d WHERE d.status<>'fired' AND d.full_name LIKE vehicles.driver_name || '%')`).all()
+        .map(row => ({ label: row.plate, sub: row.driver_name, vehicleId: row.id })));
+    if (scope === 'all') {
+      // Заявки и процессы
+      add('past_orders', '⏰ Заявки с погрузкой в прошлом без движения', 'Похоже на ошибку даты/месяца — исправить окно или отклонить',
+        db.prepare(`SELECT o.order_no, o.customer_name, o.window_from, o.trip_id FROM orders o
+          WHERE o.deleted_at IS NULL AND o.status NOT IN ('cancelled') AND o.stage < 4
+            AND o.window_from < datetime('now','-24 hours')`).all()
+          .filter(row => {
+            if (!row.trip_id) return true;
+            const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(row.trip_id);
+            return trip && ['plan', 'run'].includes(trip.status) && !tripHasMovementFacts(db, trip);
+          })
+          .map(row => ({ label: `№${row.order_no || '—'} ${(row.customer_name || '').slice(0, 24)}`,
+            sub: `погрузка ${row.window_from.slice(0, 10)}` })));
+      add('stuck_orders', '🐌 Застряли в конвейере (стадия не движется 3+ дня)', 'Живые заявки, стоящие на месте между ролями',
+        db.prepare(`SELECT order_no, customer_name, stage, stage_changed_at FROM orders
+          WHERE deleted_at IS NULL AND status NOT IN ('cancelled') AND stage < 3
+            AND window_from > datetime('now','-24 hours')
+            AND stage_changed_at < datetime('now','-72 hours')`).all()
+          .map(row => ({ label: `№${row.order_no || '—'} ${(row.customer_name || '').slice(0, 24)}`,
+            sub: `стадия ${row.stage} с ${String(row.stage_changed_at).slice(0, 10)}` })));
+      add('no_vehicle_soon', '🚨 Подтверждены без ТС, погрузка в сутки', 'Горящие назначения',
+        db.prepare(`SELECT order_no, customer_name, window_from FROM orders
+          WHERE status='new' AND stage>=1 AND trip_id IS NULL AND deleted_at IS NULL
+            AND window_from BETWEEN datetime('now') AND datetime('now','+24 hours')
+          ORDER BY window_from`).all()
+          .map(row => ({ label: `№${row.order_no || '—'} ${(row.customer_name || '').slice(0, 24)}`,
+            sub: `погрузка ${String(row.window_from).slice(5, 16).replace('T', ' ')} UTC` })));
+      const noCoords = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE latitude IS NULL OR longitude IS NULL`).get().n;
+      const noZone = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE zone_id IS NULL`).get().n;
+      add('addr_gaps', '🗺 Дыры справочника адресов', 'Без координат подбор меряет по центрам зон; без зоны — не фильтруется',
+        [noCoords && { label: `${noCoords} адресов без координат`, sub: 'геокодер добирает по 1 в 90 с — проверьте ревизию зон' },
+         noZone && { label: `${noZone} адресов без геозоны` }].filter(Boolean));
+    }
+    const total = sections.reduce((acc, section) => acc + section.count, 0);
+    return json(response, 200, { scope, total, generatedAt: nowIso, sections });
+  }
   if (request.method === 'GET' && pathname === '/api/resource-stats') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
