@@ -242,7 +242,19 @@ export async function buildReport(kind, from, to, data) {
       <div class="staff-roles-grid">${staff.items.map(row =>
         `<label class="staff-role-row"><span>${escapeHtml(row.name)}</span>${roleSelect(row)}</label>`).join('')}</div>
     </details>` : '';
-    body = `${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
+    const freshRows = staff.items.filter(row => row.factMarks);
+    const freshPanel = freshRows.length ? `<h4>🕐 Свежесть отметок контроля</h4>
+      <p class="geohint">Разница между временем факта и моментом его внесения в планер.
+        «В моменте» — до 30 минут: живой контроль. Большая медиана — факты
+        оформляются задним числом, аварии и опоздания система видит с опозданием.</p>
+      <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Отметок</th>
+        <th class="num">В моменте</th><th class="num">Медиана запаздывания</th></tr></thead>
+      <tbody>${freshRows.sort((a, b) => (b.factRealtime / b.factMarks) - (a.factRealtime / a.factMarks))
+        .map(row => { const pctRt = Math.round(row.factRealtime / row.factMarks * 100);
+          return `<tr><td>${escapeHtml(row.name)}</td><td class="num">${row.factMarks}</td>
+          <td class="num"><b class="${pctRt >= 50 ? 'ok' : pctRt >= 20 ? '' : 'bad'}">${pctRt}%</b></td>
+          <td class="num">${row.factLagMedianH} ч</td></tr>`; }).join('')}</tbody></table>` : '';
+    body = `${freshPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
         × активные дни в периоде (нормативы по должностям — базовые, скажите руководителю
         планера, если нужно их подстроить). Должность назначается администратором прямо здесь
         и не влияет на права доступа. «Дней» — активные дни в системе.</div>

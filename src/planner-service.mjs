@@ -234,6 +234,26 @@ export function staffReport(db, fromDay, toDay) {
     WHERE o.created_at >= ? AND o.created_at < ? GROUP BY o.created_by`).all(fromTs, toEx)) {
     rowOf(null, r.name).ordersSum += Number(r.s || 0);
   }
+  // Свежесть отметок контроля: разница между временем факта (какое
+  // проставили) и моментом внесения. Отслеживание в реальном времени
+  // против «оформления истории» в конце смены.
+  const lagsByName = new Map();
+  for (const r of db.prepare(`SELECT u.full_name name, s.actual_arrival fact, s.updated_at entered
+    FROM trip_stops s JOIN users u ON u.id=s.updated_by
+    WHERE s.actual_arrival IS NOT NULL AND s.updated_at >= ? AND s.updated_at < ?`)
+    .all(fromTs, toEx)) {
+    const lag = (Date.parse(String(r.entered).replace(' ', 'T') + 'Z') - Date.parse(r.fact)) / 3_600_000;
+    if (!Number.isFinite(lag) || lag < -0.2) continue;
+    if (!lagsByName.has(r.name)) lagsByName.set(r.name, []);
+    lagsByName.get(r.name).push(lag);
+  }
+  for (const [name, lags] of lagsByName) {
+    lags.sort((a, b) => a - b);
+    const row = rowOf(null, name);
+    row.factMarks = lags.length;
+    row.factRealtime = lags.filter(h => h <= 0.5).length;
+    row.factLagMedianH = Math.round(lags[Math.floor(lags.length / 2)] * 10) / 10;
+  }
   return { plans: STAFF_PLANS, items: [...byId.values()]
     .map(item => ({ ...item,
       jobRole: jobRoles.get(item.name)?.jobRole || '',
@@ -677,6 +697,21 @@ export function reportSnapshot(db, fromValue, toValue) {
       SUM(CASE WHEN outcome='accepted' THEN 1 ELSE 0 END) accepted,
       SUM(CASE WHEN outcome='overridden' THEN 1 ELSE 0 END) overridden
     FROM assign_drafts WHERE resolved_at>=? AND resolved_at<?`).get(from, to);
+  // Свежесть отметок контроля за период — сводно для «Отчёта дня».
+  const freshLags = db.prepare(`SELECT actual_arrival fact, updated_at entered FROM trip_stops
+    WHERE actual_arrival IS NOT NULL AND updated_at >= ? AND updated_at < ?`)
+    .all(String(from).slice(0, 19).replace('T', ' '), String(to).slice(0, 19).replace('T', ' '))
+    .map(r => (Date.parse(String(r.entered).replace(' ', 'T') + 'Z') - Date.parse(r.fact)) / 3_600_000)
+    .filter(h => Number.isFinite(h) && h > -0.2).sort((a, b) => a - b);
+  const controlFreshness = freshLags.length ? {
+    marks: freshLags.length,
+    realtimePct: Math.round(freshLags.filter(h => h <= 0.5).length / freshLags.length * 100),
+    medianH: Math.round(freshLags[Math.floor(freshLags.length / 2)] * 10) / 10,
+    driverMarks: db.prepare(`SELECT COUNT(*) n FROM audit_log WHERE action='driver-step'
+      AND created_at >= ? AND created_at < ?`)
+      .get(String(from).slice(0, 19).replace('T', ' '), String(to).slice(0, 19).replace('T', ' ')).n
+  } : null;
+
   const assignTrust = {
     accepted: trustRow.accepted || 0,
     overridden: trustRow.overridden || 0,
@@ -700,6 +735,7 @@ export function reportSnapshot(db, fromValue, toValue) {
   return {
     utilization,
     assignTrust,
+    controlFreshness,
     emptyKm: Math.round(emptyKmTotal),
     repairKm: Math.round(repairKmTotal),
     loadedKm: Math.round(loadedKmTotal),

@@ -500,6 +500,20 @@ export async function renderDispatcher(container, context, options = {}) {
     if (recheck) return markDoneMs(recheck.mark) + RECHECK_MS; // в прошлом — поднимает карточку
     return Number.isFinite(nextControlEvent(trip).at) ? nextControlEvent(trip).at : Infinity;
   };
+  // Давность касания: когда точки рейса в последний раз трогали (диспетчер
+  // или бот водителя). Начавшийся рейс без касания 8+ часов — слепая зона:
+  // 69% отметок вносились задним числом (медиана 9,5 ч), делаем это видимым.
+  const TOUCH_STALE_MS = 8 * 3_600_000;
+  const lastTouchMs = trip => {
+    const stops = controlByTrip.get(trip.id)?.stops || [];
+    const touches = stops.map(stop => Date.parse(String(stop.updated_at || '').replace(' ', 'T') + 'Z'))
+      .filter(Number.isFinite);
+    return touches.length ? Math.max(...touches)
+      : Date.parse(trip.on_line_at || trip.starts_at || '') || 0;
+  };
+  const touchStale = trip => Date.parse(trip.starts_at) < Date.now() &&
+    Date.now() - lastTouchMs(trip) > TOUCH_STALE_MS;
+  const staleCount = online.filter(touchStale).length;
   online.sort((a, b) => Number(!!workedOf(a)) - Number(!!workedOf(b)) || eventAt(a) - eventAt(b));
 
   // Заявка рейса — источник комментария продаж и «без НДС».
@@ -946,6 +960,7 @@ export async function renderDispatcher(container, context, options = {}) {
       ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue
         ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждые 1,5 ч` : ''}
       ${hot && !overdue && nextEvent.at > 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
+      ${touchStale(trip) ? `<span class="badge bad" title="Точки рейса никто не трогал (ни диспетчер, ни бот водителя) — позвоните и проставьте факты по горячим следам, а не в конце смены">🕐 не касались ${Math.floor((Date.now() - lastTouchMs(trip)) / 3_600_000)} ч</span>` : ''}
       ${claimBadge(claim, claimMine)}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
         · ${escapeHtml(worked.done_by || '')} · ${markTime(worked)}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
@@ -989,7 +1004,7 @@ export async function renderDispatcher(container, context, options = {}) {
       ${opened ? `<div class="stops-inline">${stopsBlock(trip)}</div>` : ''}
     </div>`;
   };
-  const inWork = online;
+  const inWork = state.dispatcherStaleOnly ? online.filter(touchStale) : online;
   const onlineCards = inWork.map(ctrlCard).join('')
     || '<p class="muted">На линии никого нет.</p>';
   // Перегоны порожним: машина едет пустой туда, где нужна. Этапы короче
@@ -1097,8 +1112,8 @@ export async function renderDispatcher(container, context, options = {}) {
             Этапы: задание водителю → выехал → прибыл. После «Прибыл» сцепка числится
             в точке назначения и доступна логисту для следующего задания.</div>
           <div class="list">${transferCards}</div>
-          <div class="scolh" style="margin-top:12px">Контроль на линии <span>${inWork.length}</span></div>`
-    : `<div class="scolh">Контроль на линии <span>${inWork.length}</span></div>`}
+          <div class="scolh" style="margin-top:12px">Контроль на линии <span>${inWork.length}</span>${staleCount ? `<button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" style="margin-left:8px" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button>` : ''}</div>`
+    : `<div class="scolh">Контроль на линии <span>${inWork.length}</span>${staleCount ? `<button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" style="margin-left:8px" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button>` : ''}</div>`}
         <div class="list">${onlineCards}</div>
         <div class="geohint">Внештатная ситуация: поломка (ремонт + пересадка или снятие),
           отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в продажи.</div>
@@ -1357,6 +1372,11 @@ export async function renderDispatcher(container, context, options = {}) {
     toast(`Закрыто рейсов: ${done}`);
     await renderDispatcher(container, context);
   });
+  const staleButton = container.querySelector('#ctrlStale');
+  if (staleButton) staleButton.onclick = async () => {
+    state.dispatcherStaleOnly = !state.dispatcherStaleOnly;
+    await renderDispatcher(container, context);
+  };
   attachSearch(container.querySelector('#dispatcherSearch'), async value => {
     state.dispatcherQuery = value;
     await renderDispatcher(container, context, { reuseNetwork: true });

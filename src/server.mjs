@@ -383,6 +383,7 @@ const NOTIFY_CATEGORIES = {
   no_next: { label: '⏭ Выгрузка близко, следующий рейс не назначен', def: 'normal' },
   resource_watch: { label: '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', def: 'normal' },
   shift_digest: { label: '📋 Сводка смены (18:00 на ночь / 06:00 на день)', def: 'normal' },
+  control_silence: { label: '🕐 Рейсы без контроля (эскалация руководителю)', def: 'normal' },
   crm: { label: '🎂 CRM-поводы (дни рождения, контакты)', def: 'off' },
   other: { label: 'Прочее (операционный конвейер)', def: 'normal' }
 };
@@ -1000,6 +1001,48 @@ function runPastLoadWatch() {
 }
 setInterval(runPastLoadWatch, 3 * 3_600_000);
 setTimeout(runPastLoadWatch, 150_000);
+
+// ── Эскалация молчания контроля: рейс идёт, событие просрочено, а точек
+// никто не касался 8+ часов (ни диспетчер, ни бот водителя) — сигнал
+// руководителю и логисту. Диспетчеру не шлём: он и так молчит. Повтор по
+// рейсу — не чаще раза в 6 часов (память в app_meta, мёртвые ключи чистятся).
+function runControlSilenceWatch() {
+  try {
+    if (notifyLevelOf('control_silence') === 'off') return;
+    const marks = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='control_silence_marks'`).get()?.value || '{}');
+    const rows = db.prepare(`SELECT t.id, t.order_no, v.plate, o.customer_name,
+        MAX(COALESCE(s.updated_at, '')) last_touch,
+        MIN(CASE WHEN s.actual_arrival IS NULL AND s.planned_arrival < datetime('now','-2 hours')
+          THEN s.planned_arrival END) overdue_from
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      LEFT JOIN orders o ON o.trip_id=t.id
+      LEFT JOIN trip_stops s ON s.trip_id=t.id
+      WHERE t.status='run' AND t.starts_at < datetime('now')
+      GROUP BY t.id`).all()
+      .filter(row => row.overdue_from)
+      .filter(row => !row.last_touch ||
+        Date.now() - Date.parse(String(row.last_touch).replace(' ', 'T') + 'Z') > 8 * 3_600_000)
+      .filter(row => !marks[row.id] || Date.now() - marks[row.id] > 6 * 3_600_000);
+    if (!rows.length) return;
+    const fresh = {};
+    for (const row of rows) fresh[row.id] = Date.now();
+    for (const [key, ts] of Object.entries(marks)) {
+      if (Date.now() - ts < 24 * 3_600_000) fresh[key] = fresh[key] || ts;
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('control_silence_marks',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(fresh));
+    const text = `🕐 Контроль молчит (событие просрочено, точек не касались 8+ ч): ` +
+      rows.slice(0, 6).map(row => `${row.plate} №${row.order_no || '—'} ${(row.customer_name || '').slice(0, 18)}` +
+        ` (ждёт факта с ${mskStamp(row.overdue_from)} МСК)`).join('; ') +
+      (rows.length > 6 ? ` и ещё ${rows.length - 6}` : '') +
+      `. Диспетчерам — прозвонить и проставить факты`;
+    notify('boss', text, null, null, { category: 'control_silence' });
+    notify('logist', text, null, null, { category: 'control_silence' });
+  } catch (error) { console.error('runControlSilenceWatch:', error.message); }
+}
+setInterval(runControlSilenceWatch, 3_600_000);
+setTimeout(runControlSilenceWatch, 240_000);
 
 setInterval(runShiftDigestWatch, 10 * 60_000);
 setTimeout(runShiftDigestWatch, 90_000);

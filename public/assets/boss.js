@@ -489,6 +489,11 @@ export async function renderBoss(container, context) {
               · ${escapeHtml(item.reason || 'без причины (до ввода правила)')}
               · <small>${escapeHtml((item.customer || '').slice(0, 26))}</small></div>`).join('')}</div>` : ''}`;
         })() : ''}
+        ${snap.controlFreshness ? `<div class="task-balance-line ${snap.controlFreshness.realtimePct < 20 ? 'bad' : snap.controlFreshness.realtimePct < 50 ? '' : 'ok'}">
+          Свежесть контроля: отметок <b>${snap.controlFreshness.marks}</b> ·
+          в моменте (до 30 мин) <b>${snap.controlFreshness.realtimePct}%</b> ·
+          медиана запаздывания <b>${snap.controlFreshness.medianH} ч</b>
+          · от водителей через бот <b>${snap.controlFreshness.driverMarks}</b></div>` : ''}
         <div class="task-sec"><b>В рейсе (${buckets.trip.length})</b>${chipList(buckets.trip)}</div>
         <div class="task-sec"><b>⚠ Простой без причины (${buckets.idle.length})</b>${chipList(buckets.idle, idleSince)}</div>
         <div class="task-sec"><b>Ремонт (${buckets.repair.length})</b>${chipList(buckets.repair)}</div>
