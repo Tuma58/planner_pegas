@@ -28,6 +28,8 @@ export async function inventoryDialog(context, scope = 'resource') {
             : `<strong>${escapeHtml(item.label)}</strong>`}
           ${item.sub ? `<small class="muted" style="display:block">${escapeHtml(item.sub)}</small>` : ''}
         </span>
+        ${item.action === 'back-to-plan' ? `<button class="button ghost small" data-inv-plan="${item.tripId}"
+          title="Рейс без единой отметки вернётся в «План», шаги «задание водителю» и «на линию» снимутся — диспетчер отметит их в реальный момент выхода">↩ Вернуть в план</button>` : ''}
       </div>`).join('')}
       ${section.count > section.items.length
         ? `<div class="muted" style="margin-left:22px;padding:4px 0">… и ещё ${section.count - section.items.length}</div>` : ''}
@@ -43,6 +45,16 @@ export async function inventoryDialog(context, scope = 'resource') {
       ✅ Без замечаний: ${clean.length} провер${clean.length === 1 ? 'ка' : 'ок'}</summary>
       ${clean.map(section => `<div class="muted" style="margin-left:16px;padding:2px 0">✓ ${section.title}</div>`).join('')}
     </details>` : ''}`);
+  document.querySelectorAll('[data-inv-plan]').forEach(button => {
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/trips/${button.dataset.invPlan}`, {
+          method: 'PATCH', body: JSON.stringify({ status: 'plan' }) });
+        inventoryDialog(context, scope);
+      } catch (error) { alert(error.message); button.disabled = false; }
+    };
+  });
   document.getElementById('invAutoFix').onclick = async event => {
     event.currentTarget.disabled = true;
     try {

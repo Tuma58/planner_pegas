@@ -320,7 +320,7 @@ export async function renderDispatcher(container, context, options = {}) {
   }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
-    `${routeLabel(trip)} ${trip.vehicle_plate} ${trip.driver_name || ''} ${trip.customer_name || ''}`
+    `${routeLabel(trip)} ${trip.vehicle_plate} ${trip.driver_name || ''} ${trip.customer_name || ''} ${trip.order_no || ''}`
       .toLowerCase().includes(query);
 
   const planned = data.trips.filter(trip => trip.status === 'plan' && matches(trip))
@@ -1070,7 +1070,7 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:220px">
-        <input id="dispatcherSearch" class="block-search" placeholder="Поиск: маршрут, ТС, водитель, заказчик"
+        <input id="dispatcherSearch" class="block-search" placeholder="Поиск: маршрут, ТС, водитель, заказчик, № заявки"
           value="${escapeHtml(state.dispatcherQuery || '')}" style="flex:1">
       </div>
     </div>

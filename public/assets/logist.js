@@ -408,7 +408,7 @@ export async function renderLogist(container, context) {
   const queue = queueAll
     .filter(order => zoneMatches(order) && regionMatches(order) &&
       rangeMatches(order.window_from, order.window_to) &&
-      matches(`${order.customer_name} ${routeLabel(order)}`));
+      matches(`${order.customer_name} ${routeLabel(order)} ${order.order_no || ''}`));
 
   // Действующие маршруты: план и в пути; завершённые логисту не нужны.
   // Рейсы на подтверждении логиста — всегда приоритетом наверху списка.
@@ -417,7 +417,7 @@ export async function renderLogist(container, context) {
     .filter(trip => ['plan', 'run'].includes(trip.status))
     .filter(trip => zoneMatches(trip) && regionMatches(trip) &&
       rangeMatches(trip.starts_at, trip.ends_at) &&
-      matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate}`))
+      matches(`${trip.customer_name} ${routeLabel(trip)} ${trip.vehicle_plate} ${trip.order_no || ''}`))
     .sort((a, b) => Number(needsConfirm(b)) - Number(needsConfirm(a)) ||
       a.starts_at.localeCompare(b.starts_at));
 
@@ -738,7 +738,7 @@ export async function renderLogist(container, context) {
         <button class="button ghost small" id="logistPresetToday" title="Только сегодняшний день">Сегодня</button>
         <button class="button ghost small" id="logistPresetWeek" title="Ближайшие 7 дней">7 дн</button>
         ${zone || region || dateFrom || dateTo || query ? '<button class="button ghost small" id="logistFilterReset" title="Сбросить все фильтры">✕ Сброс</button>' : ''}
-        <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
+        <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС, № заявки" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
         <button class="button small" id="logistTask"
           title="Срез на дату: весь парк учтён — кто обеспечен рейсом, кто требует работы, баланс с очередью">📋 Задание</button>
         <button class="button ghost small" id="logistFleetPlan"

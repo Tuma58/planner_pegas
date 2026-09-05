@@ -2979,6 +2979,12 @@ async function api(request, response, url) {
     // очищается, иначе машина числится свободной в точке выгрузки (место
     // сцепки, стыковка плеч и занятость считают по unloaded_at), а рейс
     // «В пути» с фактом выгрузки — противоречие, ломавшее все расчёты.
+    // Возврат «В пути» → «План» у рейса без единой отметки: шаги «задание
+    // водителю» и «на линию» снимаются — диспетчер отметит их заново в
+    // реальный момент выхода (кейс инвентаризации: на линию за 3 дня).
+    if (merged.status === 'plan' && current.status === 'run' && !tripHasMovementFacts(db, current)) {
+      db.prepare(`UPDATE trips SET on_line_at=NULL, driver_notified_at=NULL WHERE id=?`).run(match[0]);
+    }
     if (['plan', 'run'].includes(merged.status) &&
         ['unloaded', 'done', 'paid'].includes(current.status)) {
       db.prepare(`UPDATE trips SET unloaded_at=NULL, docs_checked_at=NULL WHERE id=?`).run(match[0]);
@@ -5476,18 +5482,20 @@ async function api(request, response, url) {
         .map(row => ({ label: row.plate, sub: row.last_end
           ? `последний рейс закончился ${row.last_end.slice(0, 10)}` : 'рейсов не было', vehicleId: row.id })));
     add('hanging_trips', '⏳ Висящие рейсы (план окончания прошёл, не закрыты)', 'Загрязняют контроль и статистику — закрыть фактом или разобраться',
-      db.prepare(`SELECT t.id, t.ends_at, t.order_no, v.plate, o.customer_name FROM trips t
+      db.prepare(`SELECT t.id, t.ends_at, t.order_no, t.vehicle_id, v.plate, o.customer_name FROM trips t
         LEFT JOIN vehicles v ON v.id=t.vehicle_id LEFT JOIN orders o ON o.trip_id=t.id
         WHERE t.status='run' AND t.ends_at < datetime('now','-2 hours')
         AND EXISTS (SELECT 1 FROM trip_stops s WHERE s.trip_id=t.id AND s.actual_departure IS NULL)
         ORDER BY t.ends_at`).all()
-        .map(row => ({ label: `${row.plate || '—'} №${row.order_no || '—'}`,
+        .map(row => ({ label: `${row.plate || '—'} №${row.order_no || '—'}`, vehicleId: row.vehicle_id,
           sub: `${(row.customer_name || '').slice(0, 24)} · план оконч. ${row.ends_at.slice(0, 10)}` })));
     add('future_online', '🚦 «В пути», а выход через 2+ суток', 'Выведены на линию слишком заранее — вероятно, забыты или дата ошибочна',
-      db.prepare(`SELECT t.starts_at, t.order_no, v.plate FROM trips t
+      db.prepare(`SELECT t.id, t.starts_at, t.order_no, t.vehicle_id, t.customer_name, v.plate FROM trips t
         LEFT JOIN vehicles v ON v.id=t.vehicle_id
         WHERE t.status='run' AND t.starts_at > datetime('now','+48 hours')`).all()
-        .map(row => ({ label: `${row.plate || '—'} №${row.order_no || '—'}`, sub: `выход ${row.starts_at.slice(0, 16).replace('T', ' ')} UTC` })));
+        .map(row => ({ label: `${row.plate || '—'} №${row.order_no || '—'}`, vehicleId: row.vehicle_id,
+          tripId: row.id, action: 'back-to-plan',
+          sub: `${(row.customer_name || '').slice(0, 22)} · выход ${mskStamp(row.starts_at)} МСК` })));
     add('after_repair', '🔧 Вышли из ремонта/пересменки — работы нет', 'Простой после недоступности: диспозиция закончилась, рейса не появилось',
       db.prepare(`SELECT DISTINCT v.id, v.plate, d.kind, d.ends_at FROM vehicle_dispositions d
         JOIN vehicles v ON v.id=d.vehicle_id
