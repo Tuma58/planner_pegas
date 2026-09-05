@@ -1,3 +1,15 @@
+// Запрос с серверным рубежом «подтвердите ещё раз» (например, погрузка
+// задним числом): при таком 422 показываем confirm и повторяем запрос с
+// флагом confirmPast — осознанное действие проходит, опечатка месяца нет.
+export async function apiConfirmable(path, method, payload) {
+  try {
+    return await api(path, { method, body: JSON.stringify(payload) });
+  } catch (error) {
+    if (!/подтвердите ещё раз/i.test(error.message || '') || !confirm(error.message)) throw error;
+    return api(path, { method, body: JSON.stringify({ ...payload, confirmPast: true }) });
+  }
+}
+
 export async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: 'same-origin',

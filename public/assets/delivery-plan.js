@@ -4,7 +4,7 @@
 // выгружено). Итоги по дням: рейсы план/факт, машин занято (оценка по
 // циклам плеч), выручка. «Заполнить из истории» строит сетку из регулярных
 // плеч за 60 суток; дальше её правят продажи под договорённости.
-import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops, apiConfirmable } from './api.js';
 
 const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
@@ -505,7 +505,7 @@ function orderFromSlotDialog(context, plan, row, day, flt = {}) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     try {
-      const created = await api('/api/orders', { method: 'POST', body: JSON.stringify({
+      const created = await apiConfirmable('/api/orders', 'POST', {
         customerName: row.customer,
         fromZoneId: row.fromZoneId, toZoneId: row.toZoneId,
         fromPoint: String(form.get('fromPoint') || '').trim(),
@@ -516,7 +516,7 @@ function orderFromSlotDialog(context, plan, row, day, flt = {}) {
         rateVat: Number(form.get('rateVat')) || 0,
         temperatureMode: last.temperatureMode || '', bodyType: last.bodyType || '',
         comment: String(form.get('comment') || '').trim()
-      }) });
+      });
       toast(`Забронировано — заявка № ${created.orderNo} в портфеле`);
       deliveryPlanDialog(context, plan.month, flt);
     } catch (error) { toast(error.message, 'error'); }

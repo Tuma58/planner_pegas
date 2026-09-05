@@ -957,6 +957,37 @@ function runShiftDigestWatch() {
     notifyEveryone(buildShiftDigest(kind, nowMs), null, null, { category: 'shift_digest' });
   } catch (error) { console.error('runShiftDigestWatch:', error.message); }
 }
+// ── Сторож дат: заявка с погрузкой глубоко в прошлом, а движения нет —
+// похоже на ошибку даты/месяца при внесении. Сигналим продажам и логисту
+// один раз на заявку (память в app_meta), пока не исправят или не отклонят.
+function runPastLoadWatch() {
+  try {
+    const seenRaw = db.prepare(`SELECT value FROM app_meta WHERE key='past_load_ids'`).get()?.value;
+    const seen = new Set(seenRaw ? JSON.parse(seenRaw) : []);
+    const rows = db.prepare(`SELECT o.id, o.order_no, o.customer_name, o.window_from, o.trip_id
+      FROM orders o WHERE o.deleted_at IS NULL AND o.status NOT IN ('cancelled')
+        AND o.stage < 4 AND o.window_from < datetime('now', '-24 hours')`).all()
+      .filter(row => !seen.has(row.id))
+      .filter(row => {
+        if (!row.trip_id) return true;
+        const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(row.trip_id);
+        return trip && ['plan', 'run'].includes(trip.status) && !tripHasMovementFacts(db, trip);
+      });
+    if (!rows.length) return;
+    for (const row of rows) seen.add(row.id);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('past_load_ids',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(JSON.stringify([...seen].slice(-400)));
+    const text = `⏰ Погрузка в прошлом, движения нет — проверьте дату и МЕСЯЦ: ` +
+      rows.slice(0, 6).map(row => `№${row.order_no || '—'} ${(row.customer_name || '').slice(0, 22)} (погрузка ${mskStamp(row.window_from)})`).join('; ') +
+      (rows.length > 6 ? ` и ещё ${rows.length - 6}` : '') + `. Исправьте окно заявки или отклоните её`;
+    notify('sales', text, null, null, { category: 'order_deadlines' });
+    notify('logist', text, null, null, { category: 'order_deadlines' });
+  } catch (error) { console.error('runPastLoadWatch:', error.message); }
+}
+setInterval(runPastLoadWatch, 3 * 3_600_000);
+setTimeout(runPastLoadWatch, 150_000);
+
 setInterval(runShiftDigestWatch, 10 * 60_000);
 setTimeout(runShiftDigestWatch, 90_000);
 
@@ -3344,6 +3375,12 @@ async function api(request, response, url) {
     if (!Number.isFinite(windowFrom) || !Number.isFinite(windowTo) || windowTo <= windowFrom) {
       return errorJson(response, 422, 'Некорректное окно заявки');
     }
+    // Рубеж заднего числа: погрузка в прошлом — почти всегда ошибка даты
+    // (случай №2710: продажи указали август вместо сентября, и рейс висел
+    // «в работе» месяц). Осознанное внесение по факту — с подтверждением.
+    if (windowFrom < Date.now() - 12 * 3_600_000 && !body.confirmPast) {
+      return errorJson(response, 422, `Погрузка в прошлом (${mskStamp(windowFrom)} МСК) — проверьте дату и МЕСЯЦ. Если заявка сознательно вносится задним числом, подтвердите ещё раз`);
+    }
     // Новый клиент из свободного ввода автоматически попадает в справочник
     // и прикрепляется к геозонам первой заявки (основное направление).
     const customerName = body.customerName.trim();
@@ -3390,6 +3427,12 @@ async function api(request, response, url) {
     const ends = Date.parse(body.windowTo ?? current.window_to);
     if (!Number.isFinite(starts) || !Number.isFinite(ends) || ends <= starts) {
       return errorJson(response, 422, 'Некорректное окно заявки');
+    }
+    // Тот же рубеж на правке: НОВОЕ окно в прошлом блокируется (старую
+    // заявку с прошедшей погрузкой пересохранять без смены окна можно).
+    if (body.windowFrom && Date.parse(body.windowFrom) !== Date.parse(current.window_from)
+        && starts < Date.now() - 12 * 3_600_000 && !body.confirmPast) {
+      return errorJson(response, 422, `Погрузка в прошлом (${mskStamp(starts)} МСК) — проверьте дату и МЕСЯЦ. Если перенос задним числом сознателен, подтвердите ещё раз`);
     }
     const nextStatus = body.status ?? current.status;
     // Стадия конвейера: фиксируем момент перехода (по нему видно, сколько заявка ждёт)
@@ -3510,6 +3553,17 @@ async function api(request, response, url) {
           if (trip.driver_notified_at) sendDriverAssignment(trip.id);
           queueOutbox(db, 'trips', trip.id, 'update', tripOutboxPayload(trip.id),
             integrationPublic().writePolicy === 'automatic');
+        }
+        // Подгон следует за датами заявки: перенос окна (в т.ч. исправление
+        // ошибочного месяца, №2710: 1647 км от августовской цепочки) меняет
+        // позицию сцепки перед стартом. refreshEmptyKm не трогает начавшиеся
+        // рейсы, поэтому здесь пересчёт точечный и идемпотентный.
+        const freshEmpty = emptyKmFor(trip.vehicle_id, newStart, nextFromAddress,
+          String(body.fromPoint ?? current.from_point ?? '').trim(), trip.id);
+        if (freshEmpty != null && Math.abs(Number(trip.empty_km || 0) - freshEmpty) > 1) {
+          db.prepare('UPDATE trips SET empty_km=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+            .run(freshEmpty, trip.id);
+          refreshEmptyKm(trip.vehicle_id);
         }
       }
     }

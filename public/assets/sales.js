@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, apiConfirmable } from './api.js';
 import { driverRatingOf, driverRatingBadge } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
@@ -1491,7 +1491,7 @@ export async function renderSales(container, context) {
       return;
     }
     try {
-      const created = await api('/api/orders', { method: 'POST', body: JSON.stringify(values) });
+      const created = await apiConfirmable('/api/orders', 'POST', values);
       if (state.salesSpotToClose) {
         try {
           await api(`/api/routes/${state.salesSpotToClose.routeId}/spots/${state.salesSpotToClose.spotId}/close`,
@@ -1604,7 +1604,7 @@ export async function renderSales(container, context) {
       if (!order) return;
       button.disabled = true;
       try {
-        const created = await api('/api/orders', { method: 'POST', body: JSON.stringify({
+        const created = await apiConfirmable('/api/orders', 'POST', {
           customerName: order.customer_name,
           fromZoneId: order.from_zone_id, toZoneId: order.to_zone_id,
           fromPoint: order.from_point || '', toPoint: order.to_point || '',
@@ -1613,7 +1613,7 @@ export async function renderSales(container, context) {
           comment: order.comment || '', cash: Number(order.cash) ? 1 : 0,
           fromAddressId: order.from_address_id || null, toAddressId: order.to_address_id || null,
           via: (() => { try { return JSON.parse(order.via_json || '[]'); } catch { return []; } })()
-        }) });
+        });
         toast(`Копия создана — заявка № ${created.orderNo}, новый ID. Проверьте окно погрузки.`);
         // Копия наследует поля исходной заявки, но № и статус — свои:
         // при поиске по номеру исходной копия иначе «пропадёт» из списка.
@@ -1831,9 +1831,7 @@ export function editOrderDialog(order, data, context) {
     values.toAddressId = addressByName(data, values.toPoint)?.id || null;
     values.via = editVia;
     try {
-      await api(`/api/orders/${order.id}`, {
-        method: 'PATCH', body: JSON.stringify(values)
-      });
+      await apiConfirmable(`/api/orders/${order.id}`, 'PATCH', values);
       context.closeModal();
       toast('Потребность обновлена');
       // Правка могла вывести заявку из активного фильтра (сменили зону,

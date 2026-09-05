@@ -175,6 +175,7 @@ export function orderImportDialog(context) {
         for (let i = 0; i < count; i += 1) {
           try {
             await api('/api/orders', { method: 'POST', body: JSON.stringify({
+              confirmPast: true, // файл — осознанный источник, прошлые даты в нём законны
               customerName: customer,
               fromPoint: fromAddress?.name || value('from'),
               toPoint: toAddress?.name || value('to'),
