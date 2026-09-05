@@ -938,7 +938,7 @@ function buildShiftDigest(kind, nowMs) {
       AND NOT EXISTS (SELECT 1 FROM trip_stops p WHERE p.trip_id=t.id AND p.seq<s.seq AND p.actual_departure IS NULL)
     ORDER BY s.planned_arrival LIMIT 8`).all();
   if (late.length) lines.push(`\n🚨 Опоздания сейчас: ` + late.map(l =>
-    `${l.plate || '—'} ${(l.customer_name || '').slice(0, 16)} (${l.kind === 'P' ? 'погрузка' : 'выгрузка'}, +${Math.round((nowMs - Date.parse(l.planned_arrival)) / 3_600_000)} ч${l.driver_eta ? `, 📱 к ${mskStamp(l.driver_eta)}` : ''})`).join('; '));
+    `${l.plate || '—'} ${(l.customer_name || '').slice(0, 16)} (${l.kind === 'P' ? 'погрузка' : 'выгрузка'} ${(l.point || '').slice(0, 24)}, +${Math.round((nowMs - Date.parse(l.planned_arrival)) / 3_600_000)} ч${l.driver_eta ? `, 📱 к ${mskStamp(l.driver_eta)}` : ''})`).join('; '));
   return lines.join('\n');
 }
 
