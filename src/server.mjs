@@ -4051,8 +4051,14 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/drivers/fired') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
+    // Дубли не показываем: если полный тёзка работает под другой записью
+    // (массовая загрузка 05.08 создала двойников), «восстановление» дубля
+    // лишь задвоит человека — кейс Евсеев/Иванов/Бажко.
     return json(response, 200, { items: db.prepare(`SELECT id, full_name, phone, updated_at
-      FROM drivers WHERE status='fired' ORDER BY full_name`).all() });
+      FROM drivers d WHERE status='fired'
+        AND NOT EXISTS (SELECT 1 FROM drivers a WHERE a.status<>'fired'
+          AND TRIM(a.full_name)=TRIM(d.full_name))
+      ORDER BY full_name`).all() });
   }
   match = route(/^\/api\/drivers\/([^/]+)\/restore$/, pathname);
   if (match && request.method === 'POST') {
