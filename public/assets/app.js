@@ -1338,8 +1338,10 @@ function openDriversDirectory() {
         button.onclick = async () => {
           button.disabled = true;
           try {
-            await api(`/api/drivers/${button.dataset.drvRestore}/restore`, { method: 'POST', body: '{}' });
-            toast('Водитель возвращён в штат');
+            const result = await api(`/api/drivers/${button.dataset.drvRestore}/restore`, { method: 'POST', body: '{}' });
+            toast(result.vehiclePlate
+              ? `Водитель возвращён в штат и закреплён за ${result.vehiclePlate} (по карточке ТС)`
+              : 'Водитель возвращён в штат');
             await reload();
             back();
           } catch (error) { toast(error.message, 'error'); button.disabled = false; }

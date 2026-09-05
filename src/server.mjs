@@ -4067,8 +4067,17 @@ async function api(request, response, url) {
     if (twin) return errorJson(response, 409,
       `«${driver.full_name}» уже есть среди работающих — это дубль, восстановление создаст задвоение. Работайте с активной записью`);
     db.prepare(`UPDATE drivers SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(driver.id);
-    audit(db, user, 'restore', 'driver', driver.id, { fullName: driver.full_name }, requestIp(request));
-    return json(response, 200, { ok: true });
+    // Если ФИО уже стоит в карточке работающего ТС (кейс Евсеева: числился
+    // уволенным, а машина в рейсе) — сразу возвращаем и закрепление,
+    // не занимая сцепку другого активного водителя.
+    const vehicle = db.prepare(`SELECT v.id, v.plate FROM vehicles v
+      WHERE v.status='work' AND TRIM(COALESCE(v.driver_name,''))=TRIM(?)
+        AND NOT EXISTS (SELECT 1 FROM drivers d2 WHERE d2.status<>'fired' AND d2.vehicle_id=v.id)
+      LIMIT 1`).get(driver.full_name);
+    if (vehicle) db.prepare(`UPDATE drivers SET vehicle_id=? WHERE id=?`).run(vehicle.id, driver.id);
+    audit(db, user, 'restore', 'driver', driver.id,
+      { fullName: driver.full_name, vehicle: vehicle?.plate || null }, requestIp(request));
+    return json(response, 200, { ok: true, vehiclePlate: vehicle?.plate || null });
   }
   match = route(/^\/api\/drivers\/([^/]+)\/card$/, pathname);
   if (match && request.method === 'GET') {
