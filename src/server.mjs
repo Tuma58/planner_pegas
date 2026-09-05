@@ -382,6 +382,7 @@ const NOTIFY_CATEGORIES = {
   sales_directions: { label: '🧭 Утренние направления продажам', def: 'normal' },
   no_next: { label: '⏭ Выгрузка близко, следующий рейс не назначен', def: 'normal' },
   resource_watch: { label: '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', def: 'normal' },
+  shift_digest: { label: '📋 Сводка смены (18:00 на ночь / 06:00 на день)', def: 'normal' },
   crm: { label: '🎂 CRM-поводы (дни рождения, контакты)', def: 'off' },
   other: { label: 'Прочее (операционный конвейер)', def: 'normal' }
 };
@@ -886,6 +887,78 @@ const mskStamp = value => {
   const ms = typeof value === 'number' ? value : Date.parse(value || '');
   return Number.isFinite(ms) ? ddmm(new Date(ms + 3 * 3_600_000).toISOString()) : '—';
 };
+
+// ── Сводка смены: в 18:00 МСК «на ночь» (погрузки 18:00→06:00), в 06:00
+// «на день» (06:00→18:00) — всем сотрудникам в ленту и Telegram: погрузки
+// по клиентам, заявки без ТС, незакрытые рейсы, текущие опоздания.
+// Окно отправки широкое (5 часов): при перезапуске сервера или простое
+// сводка всё равно уйдёт, пусть и позже — смене она полезна всю смену.
+function buildShiftDigest(kind, nowMs) {
+  const mskMidnight = Math.floor((nowMs + 3 * 3_600_000) / 86_400_000) * 86_400_000 - 3 * 3_600_000;
+  const [fromMs, toMs] = kind === 'night'
+    ? [mskMidnight + 18 * 3_600_000, mskMidnight + 30 * 3_600_000]
+    : [mskMidnight + 6 * 3_600_000, mskMidnight + 18 * 3_600_000];
+  const from = new Date(fromMs).toISOString(), to = new Date(toMs).toISOString();
+  const hhmm = iso => mskStamp(iso).slice(6);
+  const lines = [kind === 'night'
+    ? `🌙 Сводка на ночь (18:00–06:00 МСК)` : `☀️ Сводка на день (06:00–18:00 МСК)`];
+  const loads = db.prepare(`SELECT s.planned_arrival, s.actual_arrival, v.plate, o.customer_name, o.order_no
+    FROM trip_stops s JOIN trips t ON t.id=s.trip_id
+    LEFT JOIN vehicles v ON v.id=t.vehicle_id LEFT JOIN orders o ON o.trip_id=t.id
+    WHERE s.kind='P' AND t.status IN ('plan','run') AND s.planned_arrival>=? AND s.planned_arrival<?
+    ORDER BY s.planned_arrival`).all(from, to);
+  const started = loads.filter(l => l.actual_arrival).length;
+  lines.push(`\n📦 Погрузок: ${loads.length}${started ? ` (на погрузке уже ${started})` : ''}`);
+  const byCustomer = new Map();
+  for (const l of loads) byCustomer.set(l.customer_name || '—', (byCustomer.get(l.customer_name || '—') || 0) + 1);
+  for (const [name, n] of [...byCustomer.entries()].sort((a, b) => b[1] - a[1])) {
+    lines.push(`  ${name.slice(0, 34)} — ${n}`);
+  }
+  if (loads.length <= 22) for (const l of loads) {
+    lines.push(`  ${hhmm(l.planned_arrival)} №${l.order_no || '—'} ${(l.customer_name || '').slice(0, 22)} · ${l.plate || '—'}${l.actual_arrival ? ' ✅' : ''}`);
+  }
+  const noveh = db.prepare(`SELECT customer_name, order_no, window_from FROM orders
+    WHERE status='new' AND stage>=1 AND trip_id IS NULL AND deleted_at IS NULL
+      AND window_from>=? AND window_from<? ORDER BY window_from`).all(from, to);
+  lines.push(noveh.length
+    ? `\n⚠ БЕЗ ТС: ${noveh.length} — ` + noveh.slice(0, 8).map(o =>
+      `№${o.order_no || '—'} ${(o.customer_name || '').slice(0, 20)} (${hhmm(o.window_from)})`).join('; ')
+    : '\n✅ Все погрузки окна обеспечены ТС');
+  const stale = db.prepare(`SELECT t.ends_at, v.plate, o.customer_name, o.order_no,
+    (SELECT COUNT(*) FROM trip_stops s WHERE s.trip_id=t.id AND s.actual_departure IS NULL) open_stops
+    FROM trips t LEFT JOIN vehicles v ON v.id=t.vehicle_id LEFT JOIN orders o ON o.trip_id=t.id
+    WHERE t.status='run' AND t.ends_at < datetime('now','-2 hours') ORDER BY t.ends_at LIMIT 200`).all()
+    .filter(t => t.open_stops > 0);
+  if (stale.length) lines.push(`\n⏳ Незакрытые рейсы (план окончания прошёл): ${stale.length} — ` +
+    stale.slice(0, 5).map(t => `${t.plate || '—'} ${(t.customer_name || '').slice(0, 16)} №${t.order_no || '—'} (${ddmm(String(t.ends_at))})`).join('; '));
+  const late = db.prepare(`SELECT s.point, s.kind, s.planned_arrival, s.driver_eta, v.plate, o.customer_name
+    FROM trip_stops s JOIN trips t ON t.id=s.trip_id
+    LEFT JOIN vehicles v ON v.id=t.vehicle_id LEFT JOIN orders o ON o.trip_id=t.id
+    WHERE t.status='run' AND s.actual_arrival IS NULL AND s.planned_arrival < datetime('now','-1 hour')
+      AND NOT EXISTS (SELECT 1 FROM trip_stops p WHERE p.trip_id=t.id AND p.seq<s.seq AND p.actual_departure IS NULL)
+    ORDER BY s.planned_arrival LIMIT 8`).all();
+  if (late.length) lines.push(`\n🚨 Опоздания сейчас: ` + late.map(l =>
+    `${l.plate || '—'} ${(l.customer_name || '').slice(0, 16)} (${l.kind === 'P' ? 'погрузка' : 'выгрузка'}, +${Math.round((nowMs - Date.parse(l.planned_arrival)) / 3_600_000)} ч${l.driver_eta ? `, 📱 к ${mskStamp(l.driver_eta)}` : ''})`).join('; '));
+  return lines.join('\n');
+}
+
+function runShiftDigestWatch() {
+  try {
+    const nowMs = Date.now();
+    const mskHour = new Date(nowMs + 3 * 3_600_000).getUTCHours();
+    const kind = mskHour >= 18 && mskHour < 23 ? 'night' : mskHour >= 6 && mskHour < 11 ? 'day' : null;
+    if (!kind) return;
+    if (notifyLevelOf('shift_digest') === 'off') return;
+    const day = new Date(nowMs + 3 * 3_600_000).toISOString().slice(0, 10);
+    const key = `${day}:${kind}`;
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='shift_digest_last'`).get()?.value === key) return;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('shift_digest_last',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key);
+    notifyEveryone(buildShiftDigest(kind, nowMs), null, null, { category: 'shift_digest' });
+  } catch (error) { console.error('runShiftDigestWatch:', error.message); }
+}
+setInterval(runShiftDigestWatch, 10 * 60_000);
+setTimeout(runShiftDigestWatch, 90_000);
 
 // Разбор августа: заявки, подтверждённые после 16:00 МСК, ждали назначения
 // 19–22 часа — до утра. Логист уходит, заявка ложится «в стол», а окно
