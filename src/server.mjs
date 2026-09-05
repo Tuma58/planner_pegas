@@ -3774,10 +3774,14 @@ async function api(request, response, url) {
       JOIN vehicles v ON v.id=d.vehicle_id
       WHERE d.order_id=? AND d.outcome IS NULL`).get(order.id);
     const overrideReason = String(body.overrideReason || '').trim();
-    if (draft && draft.vehicle_id !== vehicle.id && !overrideReason) {
+    // Причина замены — сырьё для улучшения подбора: заглушки («.», «123»)
+    // бесполезны, требуем осмысленный текст (минимум 10 символов и 5 букв).
+    const reasonLetters = (overrideReason.match(/[а-яёa-z]/gi) || []).length;
+    if (draft && draft.vehicle_id !== vehicle.id &&
+        (overrideReason.length < 10 || reasonLetters < 5)) {
       return errorJson(response, 422, `Подбор рекомендует ${draft.plate}${
         draft.empty_km != null ? ` (порожняк ${Math.round(draft.empty_km)} км)` : ''
-      } — назначая другое ТС, укажите причину замены`);
+      } — назначая другое ТС, опишите причину замены (что не так с рекомендацией: занятость, кузов, география, клиент). Причины разбираются и улучшают автоподбор — «точка» не считается`);
     }
     const tripId = assignOrderCore(order, vehicle, user, { distanceKm: body.distanceKm });
     // Итог черновика фиксируем сразу (не дожидаясь сторожа): принял или
