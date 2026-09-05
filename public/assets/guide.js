@@ -635,6 +635,29 @@ export const GUIDES = [
         плашки этапности — как чек-лист у вас: «✅ Прибыл на погрузку —
         01:59 МСК / ▶️ Прибыл на выгрузку — жмите по факту / ⬜ Выгрузился»,
         водитель всегда видит, где он в рейсе и какой этап следующий.</p>
+      <p><b>📨 Инструкция для водителя — перешлите ему как есть.</b> Телефоны
+        загружены в справочник (покрытие почти полное), водителю осталось
+        привязаться. Нажмите «📋 Скопировать» и отправьте текст водителю в
+        любой мессенджер:</p>
+      <div style="position:relative">
+        <button class="button small" data-guide-copy="driverBotIntro"
+          style="position:absolute;top:8px;right:8px">📋 Скопировать</button>
+        <pre id="driverBotIntro" style="white-space:pre-wrap;background:var(--panel-2,#f4f4f2);border:1px solid var(--border,#ddd);border-radius:8px;padding:12px 90px 12px 12px;font-family:inherit;font-size:13px">🚚 Водителям Пегас: подключите бот — задания будут приходить на телефон
+
+1. Откройте Telegram, в поиске наберите @pegas_voditel_bot
+2. Нажмите «Запустить» (Start)
+3. Нажмите кнопку «📱 Поделиться контактом» и подтвердите. Всё — вы подключены.
+
+Что это даёт:
+— Задание на рейс приходит сообщением: точки, адреса, время. Никуда звонить не надо.
+— Под заданием — одна кнопка текущего этапа: «Прибыл на погрузку» → «Погрузился, выехал» → «Прибыл на выгрузку» → «Выгрузился». Нажимайте по факту — диспетчер сразу видит, звонков станет меньше.
+— Приехали раньше или позже плана — не важно, жмите когда случилось на самом деле.
+— После погрузки бот спросит, когда планируете быть на выгрузке — ответ кнопкой.
+— Кнопка «📋 Моё задание» внизу экрана пришлёт задание заново в любой момент.
+— Любой вопрос диспетчеру можно просто написать в этот чат — ответят в течение 10 минут.
+
+Если бот пишет «номер не найден» — сообщите диспетчеру, он проверит ваш телефон в базе.</pre>
+      </div>
       <p><b>Простой на ЛЮБОЙ точке — авария наверху списка.</b> Машина,
         стоящая под погрузкой или выгрузкой дольше 6 часов (по факту
         прибытия без убытия), получает «🚨 стоит под погрузкой N ч —
@@ -1676,6 +1699,26 @@ export function setupGuide({ views, activeView, showModal }) {
     </div>`, 'wide');
     document.querySelectorAll('[data-guide]').forEach(button =>
       button.onclick = () => openGuide(button.dataset.guide));
+    // Кнопки «Скопировать» в текстах гайда: копируют содержимое блока по id
+    // (памятки для пересылки — например, инструкция водителю про бот).
+    document.querySelectorAll('[data-guide-copy]').forEach(button =>
+      button.onclick = async () => {
+        const source = document.getElementById(button.dataset.guideCopy);
+        if (!source) return;
+        try {
+          await navigator.clipboard.writeText(source.textContent.trim());
+          button.textContent = '✓ Скопировано';
+          setTimeout(() => { button.textContent = '📋 Скопировать'; }, 2000);
+        } catch {
+          // Буфер недоступен (http/приватный режим) — выделяем текст для ручного копирования.
+          const range = document.createRange();
+          range.selectNodeContents(source);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          button.textContent = 'Выделено — нажмите Ctrl+C';
+        }
+      });
     document.getElementById('guidePrintOne').onclick = () => printGuide(
       active === 'common' ? ['common'] : [active, 'common'],
       `Памятка сотрудника — ${body.title}`, active);
