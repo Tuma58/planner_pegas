@@ -1039,6 +1039,9 @@ function runControlSilenceWatch() {
       `. Диспетчерам — прозвонить и проставить факты`;
     notify('boss', text, null, null, { category: 'control_silence' });
     notify('logist', text, null, null, { category: 'control_silence' });
+    // По решению руководителя 06.09 — и диспетчерам: эскалация это ещё и
+    // рабочий список «кого прозвонить первыми».
+    notify('dispatcher', text, null, null, { category: 'control_silence' });
   } catch (error) { console.error('runControlSilenceWatch:', error.message); }
 }
 setInterval(runControlSilenceWatch, 3_600_000);
