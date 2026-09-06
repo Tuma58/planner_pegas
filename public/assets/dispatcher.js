@@ -1064,7 +1064,9 @@ export async function renderDispatcher(container, context, options = {}) {
     ? ` · «${escapeHtml(String(question.note).slice(0, 60))}»` : ''}</span>
       </span>
       <span class="badge ${late ? 'bad' : 'warn'}" title="Норматив ответа — 10 минут">⏱ ${minutes}${late ? '!' : ''}</span>
-      ${canAct ? `<button class="button small" data-question-close="${question.id}">✓</button>
+      ${canAct ? `<button class="button ghost small" data-question-reply="${question.id}"
+          title="Ответить водителю текстом в бот — без звонка">💬</button>
+        <button class="button small" data-question-close="${question.id}">✓</button>
         ${question.vehicle_id ? `<button class="button ghost small" data-question-card="${question.vehicle_id}"
           title="Карточка по звонку">📞</button>` : ''}` : ''}
     </div>`;
@@ -1085,6 +1087,8 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:220px">
+        <button class="button ghost small" id="driverBroadcast"
+          title="Объявление всем водителям, привязанным к боту: собрание, изменение порядка, срочная информация">📣 Всем водителям</button>
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: маршрут, ТС, водитель, заказчик, № заявки"
           value="${escapeHtml(state.dispatcherQuery || '')}" style="flex:1">
       </div>
@@ -1372,6 +1376,49 @@ export async function renderDispatcher(container, context, options = {}) {
     toast(`Закрыто рейсов: ${done}`);
     await renderDispatcher(container, context);
   });
+  // Ответ водителю в бот из строки вопроса; после доставки — предложение
+  // закрыть вопрос этим же текстом как решением.
+  container.querySelectorAll('[data-question-reply]').forEach(button =>
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      const text = prompt('Ответ водителю (уйдёт в Telegram-бот):');
+      if (!text || !text.trim()) return;
+      button.disabled = true;
+      try {
+        const result = await api(`/api/driver-questions/${button.dataset.questionReply}/reply`,
+          { method: 'POST', body: JSON.stringify({ text: text.trim() }) });
+        toast(`Доставлено водителю (${result.driver}) ✓`);
+        if (confirm('Закрыть вопрос с этим ответом как решением?')) {
+          await api(`/api/driver-questions/${button.dataset.questionReply}/close`,
+            { method: 'POST', body: JSON.stringify({ resolution: `Ответ в боте: ${text.trim().slice(0, 450)}` }) });
+          await renderDispatcher(container, context, { reuseNetwork: false });
+        }
+      } catch (error) { toast(error.message, 'error'); button.disabled = false; }
+    }));
+  const broadcastButton = container.querySelector('#driverBroadcast');
+  if (broadcastButton) broadcastButton.onclick = () => {
+    context.showModal(`<h2>📣 Объявление всем водителям</h2>
+      <p class="muted">Уйдёт в Telegram-бот каждому привязанному водителю (не привязанные не получат —
+        им по-прежнему звонить). Используйте для собраний, изменений порядка, срочной информации.</p>
+      <textarea id="broadcastText" rows="6" style="width:100%" placeholder="Текст объявления…"></textarea>
+      <div class="modal-actions">
+        <button type="button" class="button ghost" data-close>Отмена</button>
+        <button type="button" class="button" id="broadcastSend">Отправить</button>
+      </div>`);
+    document.getElementById('broadcastSend').onclick = async event => {
+      const text = document.getElementById('broadcastText').value.trim();
+      if (text.length < 5) { toast('Введите текст объявления', 'error'); return; }
+      if (!confirm('Отправить объявление ВСЕМ привязанным водителям?')) return;
+      event.target.disabled = true;
+      try {
+        const result = await api('/api/driver-bot/broadcast',
+          { method: 'POST', body: JSON.stringify({ text }) });
+        context.closeModal();
+        toast(`Доставлено ${result.delivered} из ${result.total} водителей${result.failed?.length
+          ? ` (не дошло: ${result.failed.slice(0, 3).join(', ')}${result.failed.length > 3 ? '…' : ''})` : ''}`);
+      } catch (error) { toast(error.message, 'error'); event.target.disabled = false; }
+    };
+  };
   const staleButton = container.querySelector('#ctrlStale');
   if (staleButton) staleButton.onclick = async () => {
     state.dispatcherStaleOnly = !state.dispatcherStaleOnly;

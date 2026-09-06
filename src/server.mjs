@@ -4799,6 +4799,72 @@ async function api(request, response, url) {
     audit(db, user, 'close', 'driver_question', match[0], { resolution }, requestIp(request));
     return json(response, 200, { ok: true });
   }
+  // Ответ водителю на вопрос — прямо с рабочего места диспетчера: текст
+  // уходит в бот водителей тем же каналом, что задания. Вопрос при этом
+  // НЕ закрывается — закрытие отдельной кнопкой (фронт предлагает сразу).
+  match = route(/^\/api\/driver-questions\/([^/]+)\/reply$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const text = String(body.text || '').trim().slice(0, 1500);
+    if (!text) return errorJson(response, 422, 'Введите текст ответа');
+    if (!driverBotToken()) return errorJson(response, 422, 'Бот водителей не настроен');
+    const question = db.prepare('SELECT * FROM driver_questions WHERE id=?').get(match[0]);
+    if (!question) return errorJson(response, 404, 'Вопрос не найден');
+    // Чат водителя: по ТС вопроса → по телефону вопроса → по ФИО (единственный).
+    let driver = question.vehicle_id ? db.prepare(`SELECT * FROM drivers
+      WHERE vehicle_id=? AND telegram_chat_id IS NOT NULL AND status<>'fired' LIMIT 1`)
+      .get(question.vehicle_id) : null;
+    if (!driver && question.phone) {
+      const tail = digitsPhone(question.phone);
+      if (tail.length === 10) driver = db.prepare(`SELECT * FROM drivers
+        WHERE status<>'fired' AND telegram_chat_id IS NOT NULL
+          AND replace(replace(replace(replace(replace(COALESCE(phone,''),'+',''),' ',''),'-',''),'(',''),')','') LIKE ?
+        LIMIT 1`).get(`%${tail}`);
+    }
+    if (!driver && question.driver_name) {
+      const candidates = db.prepare(`SELECT * FROM drivers WHERE status<>'fired'
+        AND telegram_chat_id IS NOT NULL AND TRIM(full_name)=TRIM(?)`).all(question.driver_name);
+      if (candidates.length === 1) driver = candidates[0];
+    }
+    if (!driver) return errorJson(response, 422,
+      'Водитель не привязан к боту — ответьте звонком (телефон в карточке вопроса)');
+    const sent = await tgApi('sendMessage', { chat_id: driver.telegram_chat_id,
+      text: `💬 Диспетчер отвечает:\n${text}` }, driverBotToken());
+    if (!sent?.ok) return errorJson(response, 502, 'Telegram не принял сообщение — попробуйте ещё раз или позвоните');
+    audit(db, user, 'reply', 'driver_question', match[0],
+      { driver: driver.full_name, text: text.slice(0, 200) }, requestIp(request));
+    return json(response, 200, { ok: true, driver: driver.full_name });
+  }
+  // Объявление всем привязанным водителям: рассылка через бот водителей.
+  if (request.method === 'POST' && pathname === '/api/driver-bot/broadcast') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'trip-status:write') && !hasPermission(user, 'reports:read')) {
+      return errorJson(response, 403, 'Рассылка доступна диспетчерам и руководителю');
+    }
+    const body = await readJson(request);
+    const text = String(body.text || '').trim().slice(0, 3500);
+    if (text.length < 5) return errorJson(response, 422, 'Введите текст объявления');
+    if (!driverBotToken()) return errorJson(response, 422, 'Бот водителей не настроен');
+    const drivers = db.prepare(`SELECT full_name, telegram_chat_id FROM drivers
+      WHERE telegram_chat_id IS NOT NULL AND status<>'fired'`).all();
+    if (!drivers.length) return errorJson(response, 422, 'Ни один водитель ещё не привязан к боту');
+    let delivered = 0;
+    const failed = [];
+    // Последовательно: щадим лимиты Telegram (~30 сообщений/с); при
+    // сотнях привязанных запрос займёт десятки секунд — приемлемо для
+    // редких объявлений.
+    for (const driver of drivers) {
+      const sent = await tgApi('sendMessage', { chat_id: driver.telegram_chat_id,
+        text: `📣 Объявление:\n${text}` }, driverBotToken());
+      if (sent?.ok) delivered += 1; else failed.push(driver.full_name);
+    }
+    audit(db, user, 'broadcast', 'driver-bot', null,
+      { delivered, total: drivers.length, text: text.slice(0, 200) }, requestIp(request));
+    return json(response, 200, { ok: true, delivered, total: drivers.length, failed });
+  }
   if (request.method === 'GET' && pathname === '/api/driver-questions') {
     const user = requireUser(request, response);
     if (!user) return;
