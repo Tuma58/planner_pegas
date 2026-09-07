@@ -1984,6 +1984,33 @@ setTimeout(runGpsControlWatch, 100_000);
 // автоматически временем стоянки из истории Пилота, с полным следом:
 // примечание на точке, аудит, уведомление диспетчеру на проверку.
 // Прогнозов и текущих событий это не касается — закрывается только прошлое.
+// Подтверждение выгрузки датчиками прицепа в окне стоянки (±15 мин):
+// двери открывались ИЛИ заметный ход температуры (двери настежь греют
+// реф на 4°+). Без подтверждения автофакт запрещён — только уведомление.
+async function unloadEvidence(vehicleId, visit) {
+  const trailerImei = db.prepare(`SELECT trailer_imei FROM vehicle_trackers
+    WHERE vehicle_id=?`).get(vehicleId)?.trailer_imei;
+  if (!trailerImei) return { confirmed: false, why: 'нет трекера прицепа' };
+  const answer = await pilotApi(`/api/v3/vehicles/sensors/discrete?imei=${trailerImei}&ts=${visit.ts - 900}&te=${visit.te + 900}`);
+  const sensors = answer?.data || [];
+  const doors = sensors.find(item => /двер/i.test(item.name || ''));
+  const doorOpened = (doors?.work || []).some(w =>
+    Number(w.value) === 1 || /откр/i.test(String(w.hum_value || '')));
+  let tempSwing = null;
+  for (const sensor of sensors) {
+    if (!/температур/i.test(sensor.name || '')) continue;
+    const values = (sensor.work || []).map(w => Number(w.value)).filter(Number.isFinite);
+    if (values.length >= 3) {
+      tempSwing = Math.max(tempSwing ?? 0, Math.max(...values) - Math.min(...values));
+    }
+  }
+  const proofs = [];
+  if (doorOpened) proofs.push('двери открывались');
+  if (tempSwing != null && tempSwing >= 4) proofs.push(`ход температуры ${Math.round(tempSwing)}°`);
+  return { confirmed: proofs.length > 0, proofs,
+    why: proofs.length ? '' : (sensors.length ? 'датчики без событий' : 'датчики не ответили') };
+}
+
 async function closeMissedUnloads() {
   try {
     const candidates = db.prepare(`SELECT t.id trip_id, t.order_no, t.vehicle_id, v.plate,
@@ -2016,6 +2043,25 @@ async function closeMissedUnloads() {
         Number(item.duration) >= 20 * 60 &&
         roadKm(Number(item.lat), Number(item.lon), point.latitude, point.longitude) <= 1.5 * ROAD_FACTOR + 1.5);
       if (!visit) continue;
+      // Координат стоянки мало: автофакт только с подтверждением датчиков
+      // прицепа; без него — уведомление диспетчеру, факт руками.
+      const evidence = await unloadEvidence(row.vehicle_id, visit);
+      if (!evidence.confirmed) {
+        const missedKey = `missedtold:${row.stop_id}`;
+        const told = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='gps_missed_told'`)
+          .get()?.value || '{}');
+        if (!told[missedKey] || Date.now() - told[missedKey] > 12 * 3_600_000) {
+          told[missedKey] = Date.now();
+          db.prepare(`INSERT INTO app_meta(key,value) VALUES('gps_missed_told',?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+            .run(JSON.stringify(told));
+          notify('dispatcher', `📡 Похоже, выгрузка №${row.order_no || '—'} (${row.plate}) состоялась: `
+            + `стоянка у точки ${mskStamp(new Date(visit.ts * 1000).toISOString())}–${mskStamp(new Date(visit.te * 1000).toISOString())} МСК, `
+            + `машина уехала. Датчики прицепа факт не подтверждают (${evidence.why}) — закройте выгрузку руками после проверки`,
+          'trip', row.trip_id, { category: 'gps_control' });
+        }
+        continue;
+      }
       const arrivedIso = new Date(visit.ts * 1000).toISOString();
       const leftIso = new Date(visit.te * 1000).toISOString();
       const label = iso => mskStamp(iso);
@@ -2026,10 +2072,10 @@ async function closeMissedUnloads() {
           work_started_at=CASE WHEN work_started_at IS NULL OR work_started_at > ? THEN ? ELSE work_started_at END,
           work_finished_at=COALESCE(work_finished_at, ?),
           actual_departure=?,
-          note=TRIM(COALESCE(note,'') || ' [выгрузка по GPS: стоянка ' || ? || '–' || ? || ' МСК у точки]'),
+          note=TRIM(COALESCE(note,'') || ' [выгрузка по GPS: стоянка ' || ? || '–' || ? || ' МСК у точки; ' || ? || ']'),
           updated_at=CURRENT_TIMESTAMP
         WHERE id=?`).run(leftIso, arrivedIso, leftIso, arrivedIso, leftIso, leftIso,
-        label(arrivedIso), label(leftIso), row.stop_id);
+        label(arrivedIso), label(leftIso), evidence.proofs.join(', '), row.stop_id);
       const became = syncTripFromStops(db, row.trip_id, null);
       audit(db, null, 'gps-autofact', 'trip', row.trip_id,
         { stopId: row.stop_id, plate: row.plate, orderNo: row.order_no,
