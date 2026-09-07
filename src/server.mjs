@@ -384,6 +384,7 @@ const NOTIFY_CATEGORIES = {
   resource_watch: { label: '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', def: 'normal' },
   shift_digest: { label: '📋 Сводка смены (18:00 на ночь / 06:00 на день)', def: 'normal' },
   control_silence: { label: '🕐 Рейсы без контроля (эскалация руководителю)', def: 'normal' },
+  gps_control: { label: '📡 GPS-контроль (подсказки фактов, температура рефа)', def: 'normal' },
   crm: { label: '🎂 CRM-поводы (дни рождения, контакты)', def: 'off' },
   other: { label: 'Прочее (операционный конвейер)', def: 'normal' }
 };
@@ -1798,6 +1799,172 @@ async function processMaxDriverUpdate(update) {
     maxSend(chatId, 'Передал диспетчеру — ответят в ближайшие минуты.');
   }
 }
+
+// ── GPS-контроль рейсов (этап 3 мониторинга) ──
+// Принципы (утверждены руководителем 07.09): GPS никогда не пишет факты
+// сам — только подсказки; отсутствие сигнала не трактуется как событие;
+// молчание борта — видимый статус, не тишина; расхождения источников
+// (водитель/диспетчер/GPS/датчики) — тоже сигнал; температура прицепа
+// сверяется с режимом заявки.
+const GPS_FRESH_MS = 15 * 60_000;   // подсказки только по свежему сигналу
+const GPS_NEAR_KM = 1.5;            // радиус «у точки» (точность геокода)
+const TEMP_TOLERANCE = 2;           // допуск к режиму заявки, °C
+
+// «−20…−18 °C (заморозка)» → {min:-20, max:-18}; «0…+4» → {0,4};
+// одиночное число → точка с допуском. Не распознали — null (не контролируем).
+function parseTempRange(text) {
+  const nums = String(text || '').replace(/−/g, '-')
+    .match(/-?\d+(?:[.,]\d+)?/g);
+  if (!nums || !nums.length) return null;
+  const values = nums.slice(0, 2).map(v => Number(v.replace(',', '.')));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  return { min, max };
+}
+
+// Координаты следующей контрольной точки рейса: первая точка — адрес
+// погрузки заявки, последняя — выгрузки, промежуточные — по addressId из
+// via_json (совпадение текста пункта). Нет координат — контроль пропускается.
+function nextStopPoint(trip, stops) {
+  const next = stops.find(stop => !stop.actual_arrival) ||
+    stops.find(stop => !stop.actual_departure);
+  if (!next) return null;
+  const order = trip.order_id ? db.prepare(
+    `SELECT from_address_id, to_address_id, via_json FROM orders WHERE id=?`).get(trip.order_id) : null;
+  let addressId = null;
+  if (next.seq === stops[0].seq) addressId = order?.from_address_id;
+  else if (next.seq === stops[stops.length - 1].seq) addressId = order?.to_address_id;
+  else {
+    try {
+      const via = JSON.parse(order?.via_json || '[]');
+      addressId = via.find(item => String(item.point || '').trim() === String(next.point || '').trim())?.addressId;
+    } catch { /* повреждённый via */ }
+  }
+  const point = addressId ? addressPointById(addressId) : null;
+  return point ? { stop: next, latitude: point.latitude, longitude: point.longitude } : { stop: next };
+}
+
+// Снимок GPS-контроля по активным рейсам: позиция, дистанция до точки,
+// стояние у точки, температура против режима, свежесть борта.
+function gpsControlSnapshot() {
+  const rows = [];
+  const trips = db.prepare(`SELECT t.*, v.plate FROM trips t
+    JOIN vehicles v ON v.id=t.vehicle_id
+    JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
+    WHERE t.status='run'`).all();
+  const nowMs = Date.now();
+  for (const trip of trips) {
+    const pos = db.prepare(`SELECT * FROM vehicle_positions WHERE vehicle_id=?`).get(trip.vehicle_id);
+    if (!pos) continue;
+    const fixMs = pos.fixed_at ? Date.parse(pos.fixed_at) : 0;
+    const silentMin = fixMs ? Math.round((nowMs - fixMs) / 60_000) : null;
+    const fresh = fixMs && nowMs - fixMs < GPS_FRESH_MS;
+    const stops = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(trip.id);
+    const target = nextStopPoint(trip, stops);
+    let distKmValue = null;
+    if (target?.latitude != null && Number.isFinite(pos.latitude)) {
+      distKmValue = roadKm(pos.latitude, pos.longitude, target.latitude, target.longitude) /
+        Number(settingsObject(db).calculation?.transitFactor || 1.5);
+    }
+    // Температура прицепа против режима заявки.
+    let temp = null;
+    const range = parseTempRange(trip.temperature_mode);
+    if (range && pos.trailer_sensors_json) {
+      try {
+        const sensors = JSON.parse(pos.trailer_sensors_json);
+        const avg = sensors.find(item => /средняя температура/i.test(item.name || ''))
+          || sensors.find(item => /температуры 1/i.test(item.name || ''));
+        if (avg && Number.isFinite(Number(avg.dig))) {
+          const value = Number(avg.dig);
+          temp = { value, min: range.min, max: range.max,
+            ok: value >= range.min - TEMP_TOLERANCE && value <= range.max + TEMP_TOLERANCE };
+        }
+      } catch { /* датчики не читаются */ }
+    }
+    rows.push({
+      trip_id: trip.id, vehicle_id: trip.vehicle_id, plate: trip.plate,
+      latitude: pos.latitude, longitude: pos.longitude, speed: pos.speed,
+      fixed_at: pos.fixed_at, silentMin, fresh,
+      nextStopId: target?.stop?.id || null,
+      nextStopPointText: target?.stop?.point || null,
+      distToNextKm: distKmValue != null ? Math.round(distKmValue) : null,
+      nearStop: fresh && distKmValue != null && distKmValue <= GPS_NEAR_KM,
+      moving: fresh && Number(pos.speed) >= 5,
+      temp
+    });
+  }
+  return rows;
+}
+
+// Сторож: подсказки прибытия (стоит у точки 10+ мин по свежему сигналу),
+// температурные алерты, расхождение свежей отметки с GPS. Антиспам —
+// app_meta, ключи чистятся вместе с уходом рейса из выборки.
+function runGpsControlWatch() {
+  try {
+    if (notifyLevelOf('gps_control') === 'off') return;
+    const nowMs = Date.now();
+    const memory = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='gps_control_marks'`).get()?.value || '{}');
+    const fresh = {};
+    for (const row of gpsControlSnapshot()) {
+      // 1) Стоит у точки: копим время стояния, после 10 мин — подсказка.
+      if (row.nearStop && !row.moving && row.nextStopId) {
+        const key = `dwell:${row.nextStopId}`;
+        const mark = memory[key] || { since: nowMs };
+        fresh[key] = mark;
+        if (nowMs - mark.since >= 10 * 60_000 && !mark.told) {
+          mark.told = nowMs;
+          notify('dispatcher', `📡 GPS: ${row.plate} стоит у точки «${String(row.nextStopPointText || '').slice(0, 40)}» `
+            + `уже ${Math.round((nowMs - mark.since) / 60_000)} мин — похоже, прибыл. Подтвердите факт в карточке рейса `
+            + `(факт ставит человек, GPS только подсказывает)`, 'trip', row.trip_id, { category: 'gps_control' });
+        }
+      }
+      // 2) Температура вне режима заявки (с допуском) — не чаще раза в 2 ч.
+      if (row.temp && !row.temp.ok) {
+        const key = `temp:${row.trip_id}`;
+        if (!memory[key] || nowMs - memory[key].told > 2 * 3_600_000) {
+          fresh[key] = { told: nowMs };
+          notify('dispatcher', `🌡 ${row.plate}: в прицепе ${row.temp.value}°C при режиме заявки `
+            + `${row.temp.min}…${row.temp.max}°C — проверьте рефустановку и свяжитесь с водителем`,
+          'trip', row.trip_id, { category: 'gps_control' });
+        } else fresh[key] = memory[key];
+      }
+    }
+    // 3) Свежая отметка прибытия против GPS: точка отмечена в последние
+    // 30 минут, а свежий сигнал дальше 30 км — источники расходятся.
+    for (const row of db.prepare(`SELECT s.id, s.point, s.trip_id, t.vehicle_id, v.plate,
+        p.latitude, p.longitude, p.fixed_at
+      FROM trip_stops s JOIN trips t ON t.id=s.trip_id
+      JOIN vehicles v ON v.id=t.vehicle_id
+      JOIN vehicle_positions p ON p.vehicle_id=t.vehicle_id
+      WHERE s.actual_arrival IS NOT NULL AND s.updated_at > datetime('now','-30 minutes')
+        AND t.status IN ('run','unloaded')`).all()) {
+      const fixMs = row.fixed_at ? Date.parse(row.fixed_at) : 0;
+      if (!fixMs || nowMs - fixMs > GPS_FRESH_MS) continue;
+      const order = db.prepare(`SELECT o.from_address_id, o.to_address_id FROM orders o
+        JOIN trips t ON t.id=o.trip_id WHERE t.id=?`).get(row.trip_id);
+      const stopMeta = db.prepare(`SELECT MIN(seq) mn, MAX(seq) mx FROM trip_stops WHERE trip_id=?`).get(row.trip_id);
+      const seq = db.prepare(`SELECT seq FROM trip_stops WHERE id=?`).get(row.id)?.seq;
+      const addressId = seq === stopMeta.mn ? order?.from_address_id
+        : seq === stopMeta.mx ? order?.to_address_id : null;
+      const point = addressId ? addressPointById(addressId) : null;
+      if (!point) continue;
+      const away = roadKm(row.latitude, row.longitude, point.latitude, point.longitude) /
+        Number(settingsObject(db).calculation?.transitFactor || 1.5);
+      if (away < 30) continue;
+      const key = `mismatch:${row.id}`;
+      if (memory[key]) { fresh[key] = memory[key]; continue; }
+      fresh[key] = { told: nowMs };
+      notify('dispatcher', `📡 Расхождение: у ${row.plate} отмечено прибытие «${String(row.point || '').slice(0, 36)}», `
+        + `а GPS показывает машину в ~${Math.round(away)} км от точки. Проверьте отметку — возможно, не та машина или ошибка`,
+      'trip', row.trip_id, { category: 'gps_control' });
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('gps_control_marks',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(fresh));
+  } catch (error) { console.error('runGpsControlWatch:', error.message); }
+}
+setInterval(runGpsControlWatch, 3 * 60_000);
+setTimeout(runGpsControlWatch, 100_000);
 
 // Обработка одного обновления бота водителей — общая для поллера и
 // вебхука (вебхук с валидным сертом доменa даёт мгновенные реакции).
@@ -3613,6 +3780,12 @@ async function api(request, response, url) {
       unmatchedOurs: unmatchedOurs.slice(0, 40) });
   }
   // Последние позиции парка (для вкладки и карточек).
+  // GPS-статус активных рейсов для карточек контроля диспетчера.
+  if (request.method === 'GET' && pathname === '/api/monitoring/control') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    return json(response, 200, { items: gpsControlSnapshot() });
+  }
   if (request.method === 'GET' && pathname === '/api/monitoring/positions') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;

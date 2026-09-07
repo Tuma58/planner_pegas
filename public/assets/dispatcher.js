@@ -318,6 +318,14 @@ export async function renderDispatcher(container, context, options = {}) {
     } catch { questions = []; }
     state.dispatcherQuestions = questions;
   }
+  // GPS-статус активных рейсов (позиция, дистанция, температура рефа):
+  // обновляется раз в минуту, GPS только помогает — фактов не пишет.
+  if (!state.gpsControlAt || Date.now() - state.gpsControlAt > 55_000) {
+    try {
+      state.gpsControl = (await api('/api/monitoring/control')).items || [];
+      state.gpsControlAt = Date.now();
+    } catch { state.gpsControl = state.gpsControl || []; }
+  }
   const query = (state.dispatcherQuery || '').toLowerCase();
   const matches = trip => !query ||
     `${routeLabel(trip)} ${trip.vehicle_plate} ${trip.driver_name || ''} ${trip.customer_name || ''} ${trip.order_no || ''}`
@@ -1001,6 +1009,24 @@ export async function renderDispatcher(container, context, options = {}) {
       </span>
       </div>
       ${eventLine}
+      ${(() => {
+        const gps = (state.gpsControl || []).find(row => row.trip_id === trip.id);
+        if (!gps) return '';
+        const bits = [];
+        if (gps.silentMin != null && gps.silentMin > 60) {
+          bits.push(`<span class="badge warn" title="Трекер не выходит на связь — контроль этого рейса только звонком и ботом">📡 борт молчит ${Math.floor(gps.silentMin / 60)} ч</span>`);
+        } else if (gps.nearStop && !gps.moving) {
+          bits.push(`<span class="badge ok" title="По свежему GPS машина в радиусе точки — подтвердите факт кнопкой этапа (факт ставит человек)">📡 стоит у точки «${escapeHtml(String(gps.nextStopPointText || '').slice(0, 24))}»</span>`);
+        } else if (gps.distToNextKm != null) {
+          bits.push(`<span class="muted">📡 ${gps.distToNextKm} км до точки${gps.moving ? ` · ${Math.round(gps.speed)} км/ч` : ' · стоит'}</span>`);
+        }
+        if (gps.temp) {
+          bits.push(gps.temp.ok
+            ? `<span class="muted" title="Температура прицепа в режиме заявки">🌡 ${gps.temp.value}° (${gps.temp.min}…${gps.temp.max} ✓)</span>`
+            : `<span class="badge bad" title="Температура прицепа вне режима заявки — проверьте рефустановку, свяжитесь с водителем">🌡 ${gps.temp.value}° при режиме ${gps.temp.min}…${gps.temp.max}°!</span>`);
+        }
+        return bits.length ? `<small style="display:block;margin-top:2px">${bits.join(' ')}</small>` : '';
+      })()}
       ${opened ? `<div class="stops-inline">${stopsBlock(trip)}</div>` : ''}
     </div>`;
   };
