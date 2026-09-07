@@ -2019,14 +2019,16 @@ async function closeMissedUnloads() {
       const arrivedIso = new Date(visit.ts * 1000).toISOString();
       const leftIso = new Date(visit.te * 1000).toISOString();
       const label = iso => mskStamp(iso);
+      // Существующая ручная отметка прибытия ПОЗЖЕ GPS-убытия — нелепица
+      // (вбито задним числом наугад): выравниваем по GPS, он согласован.
       db.prepare(`UPDATE trip_stops SET
-          actual_arrival=COALESCE(actual_arrival, ?),
-          work_started_at=COALESCE(work_started_at, ?),
+          actual_arrival=CASE WHEN actual_arrival IS NULL OR actual_arrival > ? THEN ? ELSE actual_arrival END,
+          work_started_at=CASE WHEN work_started_at IS NULL OR work_started_at > ? THEN ? ELSE work_started_at END,
           work_finished_at=COALESCE(work_finished_at, ?),
           actual_departure=?,
           note=TRIM(COALESCE(note,'') || ' [выгрузка по GPS: стоянка ' || ? || '–' || ? || ' МСК у точки]'),
           updated_at=CURRENT_TIMESTAMP
-        WHERE id=?`).run(arrivedIso, arrivedIso, leftIso, leftIso,
+        WHERE id=?`).run(leftIso, arrivedIso, leftIso, arrivedIso, leftIso, leftIso,
         label(arrivedIso), label(leftIso), row.stop_id);
       const became = syncTripFromStops(db, row.trip_id, null);
       audit(db, null, 'gps-autofact', 'trip', row.trip_id,
