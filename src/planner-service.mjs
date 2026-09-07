@@ -254,6 +254,57 @@ export function staffReport(db, fromDay, toDay) {
     row.factRealtime = lags.filter(h => h <= 0.5).length;
     row.factLagMedianH = Math.round(lags[Math.floor(lags.length / 2)] * 10) / 10;
   }
+  // Точность и плотность назначений логистов: по цепочкам назначений
+  // заявок — доля «с первого раза» и стыковочный зазор машины перед
+  // финально назначенным рейсом (сколько сцепка ждала между рейсами).
+  const nameById = new Map(db.prepare('SELECT id, full_name FROM users').all()
+    .map(row => [row.id, row.full_name]));
+  const assignChains = new Map();
+  for (const row of db.prepare(`SELECT user_id, entity_id order_id, created_at, details_json
+    FROM audit_log WHERE action='assign' AND entity='order' AND created_at >= ? AND created_at < ?
+    ORDER BY entity_id, created_at`).all(fromTs, toEx)) {
+    if (!assignChains.has(row.order_id)) assignChains.set(row.order_id, []);
+    assignChains.get(row.order_id).push(row);
+  }
+  const logistAgg = new Map();
+  for (const chain of assignChains.values()) {
+    for (const row of chain) {
+      const name = nameById.get(row.user_id) || '—';
+      const agg = logistAgg.get(name) || { touched: 0, firstTry: 0, gaps: [] };
+      logistAgg.set(name, agg);
+    }
+    const participants = new Set(chain.map(row => nameById.get(row.user_id) || '—'));
+    for (const name of participants) {
+      const agg = logistAgg.get(name);
+      agg.touched += 1;
+      if (chain.length === 1) agg.firstTry += 1;
+    }
+    const last = chain[chain.length - 1];
+    let tripId = null;
+    try { tripId = JSON.parse(last.details_json).tripId; } catch { /* старые записи */ }
+    if (!tripId) continue;
+    const trip = db.prepare(`SELECT vehicle_id, starts_at, status FROM trips WHERE id=?`).get(tripId);
+    if (!trip || trip.status === 'rejected') continue;
+    const prevEnd = db.prepare(`SELECT MAX(COALESCE(unloaded_at, ends_at)) e FROM trips
+      WHERE vehicle_id=? AND status<>'rejected' AND id<>? AND COALESCE(unloaded_at, ends_at) <= ?`)
+      .get(trip.vehicle_id, tripId, trip.starts_at).e;
+    if (!prevEnd) continue;
+    const gapH = (Date.parse(trip.starts_at) - Date.parse(String(prevEnd).replace(' ', 'T') +
+      (String(prevEnd).includes('Z') ? '' : 'Z'))) / 3_600_000;
+    if (Number.isFinite(gapH) && gapH >= 0 && gapH < 240) {
+      logistAgg.get(nameById.get(last.user_id) || '—').gaps.push(gapH);
+    }
+  }
+  for (const [name, agg] of logistAgg) {
+    if (!agg.touched) continue;
+    const row = rowOf(null, name);
+    row.assignOrders = agg.touched;
+    row.assignFirstTryPct = Math.round(agg.firstTry / agg.touched * 100);
+    agg.gaps.sort((a, b) => a - b);
+    row.assignGapMedianH = agg.gaps.length
+      ? Math.round(agg.gaps[Math.floor(agg.gaps.length / 2)] * 10) / 10 : null;
+    row.assignGapCount = agg.gaps.length;
+  }
   return { plans: STAFF_PLANS, items: [...byId.values()]
     .map(item => ({ ...item,
       jobRole: jobRoles.get(item.name)?.jobRole || '',

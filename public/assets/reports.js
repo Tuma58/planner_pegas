@@ -254,7 +254,18 @@ export async function buildReport(kind, from, to, data) {
           return `<tr><td>${escapeHtml(row.name)}</td><td class="num">${row.factMarks}</td>
           <td class="num"><b class="${pctRt >= 50 ? 'ok' : pctRt >= 20 ? '' : 'bad'}">${pctRt}%</b></td>
           <td class="num">${row.factLagMedianH} ч</td></tr>`; }).join('')}</tbody></table>` : '';
-    body = `${freshPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
+    const logistRows = staff.items.filter(row => row.assignOrders >= 5);
+    const logistPanel = logistRows.length ? `<h4>🧭 Логисты: точность и стыковка</h4>
+      <p class="geohint">«С первого раза» — заявка назначена одним действием, без переназначений
+        (переделка = двойная работа всей цепочки). «Зазор стыковки» — медиана ожидания машины
+        между предыдущим рейсом и назначенным: чем плотнее, тем больше маржи с машино-дня.</p>
+      <table class="rtable"><thead><tr><th>Логист</th><th class="num">Заявок</th>
+        <th class="num">С первого раза</th><th class="num">Зазор стыковки (медиана)</th></tr></thead>
+      <tbody>${logistRows.sort((a, b) => (b.assignFirstTryPct || 0) - (a.assignFirstTryPct || 0))
+        .map(row => `<tr><td>${escapeHtml(row.name)}</td><td class="num">${row.assignOrders}</td>
+          <td class="num"><b class="${row.assignFirstTryPct >= 70 ? 'ok' : row.assignFirstTryPct >= 55 ? '' : 'bad'}">${row.assignFirstTryPct}%</b></td>
+          <td class="num">${row.assignGapMedianH != null ? `${row.assignGapMedianH} ч <small class="muted">(${row.assignGapCount} стыков)</small>` : '—'}</td></tr>`).join('')}</tbody></table>` : '';
+    body = `${freshPanel}${logistPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
         × активные дни в периоде (нормативы по должностям — базовые, скажите руководителю
         планера, если нужно их подстроить). Должность назначается администратором прямо здесь
         и не влияет на права доступа. «Дней» — активные дни в системе.</div>
