@@ -6669,7 +6669,8 @@ export const server = http.createServer(async (request, response) => {
   response.setHeader('Referrer-Policy', 'same-origin');
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Content-Security-Policy',
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    // img-src: OSM-тайлы для карты «Мониторинга» (грузятся браузером напрямую).
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   try {
     if (!networkAccessAllowed(request, url.pathname)) {
       return errorJson(response, 403, 'Подключение из вашей сети запрещено администратором');
