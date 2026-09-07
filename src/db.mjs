@@ -471,6 +471,12 @@ function migrateColumns(db) {
     vehicle_id TEXT PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
     latitude REAL, longitude REAL, speed REAL, direction REAL,
     fixed_at TEXT, received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+  // Трекер прицепа сцепки (двери, температуры) и сырые датчики обоих.
+  ensure('vehicle_trackers', 'trailer_imei', 'TEXT');
+  ensure('vehicle_trackers', 'trailer_agent_id', 'INTEGER');
+  ensure('vehicle_trackers', 'trailer_number', 'TEXT');
+  ensure('vehicle_positions', 'sensors_json', 'TEXT');
+  ensure('vehicle_positions', 'trailer_sensors_json', 'TEXT');
   ensure('customers', 'trips_per_month', 'REAL NOT NULL DEFAULT 0');
   ensure('orders', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'body_type', "TEXT NOT NULL DEFAULT ''");

@@ -1607,22 +1607,44 @@ function normalizePlate(value) {
 // позиция каждой сцепки; свежесть — fixed_at из unixtimestamp трекера.
 async function runMonitoringPoll() {
   try {
-    const trackers = db.prepare(`SELECT vehicle_id, imei FROM vehicle_trackers`).all();
+    const trackers = db.prepare(`SELECT vehicle_id, imei, trailer_imei FROM vehicle_trackers`).all();
     if (!trackers.length) return;
-    const byImei = new Map(trackers.map(t => [String(t.imei), t.vehicle_id]));
-    for (let i = 0; i < trackers.length; i += 50) {
-      const chunk = trackers.slice(i, i + 50).map(t => t.imei).join(',');
+    // Каждый IMEI знает свою сцепку и роль: тягач несёт позицию и CAN,
+    // прицеп — двери и температуры (его координаты не пишем — позиция
+    // сцепки считается по тягачу).
+    const byImei = new Map();
+    const allImei = [];
+    for (const t of trackers) {
+      byImei.set(String(t.imei), { vehicleId: t.vehicle_id, role: 'truck' });
+      allImei.push(t.imei);
+      if (t.trailer_imei) {
+        byImei.set(String(t.trailer_imei), { vehicleId: t.vehicle_id, role: 'trailer' });
+        allImei.push(t.trailer_imei);
+      }
+    }
+    for (let i = 0; i < allImei.length; i += 50) {
+      const chunk = allImei.slice(i, i + 50).join(',');
       const answer = await pilotApi(`/api/v3/vehicles/status?imei=${chunk}`);
       for (const row of answer?.data || []) {
-        const vehicleId = byImei.get(String(row.imei || ''));
-        if (!vehicleId || !Number.isFinite(row.lat) || !row.lat) continue;
-        db.prepare(`INSERT INTO vehicle_positions(vehicle_id,latitude,longitude,speed,direction,fixed_at,received_at)
-          VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        const link = byImei.get(String(row.imei || ''));
+        if (!link) continue;
+        const sensors = JSON.stringify((row.sensors || []).map(s => ({
+          name: s.name, value: s.hum_value, dig: s.dig_value, at: s.change_ts })));
+        if (link.role === 'trailer') {
+          db.prepare(`INSERT INTO vehicle_positions(vehicle_id,trailer_sensors_json)
+            VALUES(?,?)
+            ON CONFLICT(vehicle_id) DO UPDATE SET trailer_sensors_json=excluded.trailer_sensors_json`)
+            .run(link.vehicleId, sensors);
+          continue;
+        }
+        if (!Number.isFinite(row.lat) || !row.lat) continue;
+        db.prepare(`INSERT INTO vehicle_positions(vehicle_id,latitude,longitude,speed,direction,fixed_at,sensors_json,received_at)
+          VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
           ON CONFLICT(vehicle_id) DO UPDATE SET latitude=excluded.latitude,
             longitude=excluded.longitude, speed=excluded.speed, direction=excluded.direction,
-            fixed_at=excluded.fixed_at, received_at=CURRENT_TIMESTAMP`)
-          .run(vehicleId, row.lat, row.lon, row.speed ?? null, row.dir ?? null,
-            row.unixtimestamp ? new Date(row.unixtimestamp * 1000).toISOString() : null);
+            fixed_at=excluded.fixed_at, sensors_json=excluded.sensors_json, received_at=CURRENT_TIMESTAMP`)
+          .run(link.vehicleId, row.lat, row.lon, row.speed ?? null, row.dir ?? null,
+            row.unixtimestamp ? new Date(row.unixtimestamp * 1000).toISOString() : null, sensors);
       }
     }
   } catch (error) { console.error('runMonitoringPoll:', error.message); }
@@ -3541,29 +3563,40 @@ async function api(request, response, url) {
     const byPlate = new Map();
     for (const item of answer.data) byPlate.set(normalizePlate(item.vehiclenumber), item);
     let matched = 0;
+    let trailers = 0;
     const unmatchedOurs = [];
-    for (const vehicle of db.prepare(`SELECT id, plate FROM vehicles WHERE status<>'out'`).all()) {
+    for (const vehicle of db.prepare(`SELECT id, plate, trailer_plate FROM vehicles WHERE status<>'out'`).all()) {
       const hit = byPlate.get(normalizePlate(vehicle.plate));
       if (!hit) { unmatchedOurs.push(vehicle.plate); continue; }
-      db.prepare(`INSERT INTO vehicle_trackers(vehicle_id,imei,agent_id,pilot_number,matched_at)
-        VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+      // Прицеп сцепки — его трекер несёт двери и температуры рефа.
+      const trailerHit = vehicle.trailer_plate ? byPlate.get(normalizePlate(vehicle.trailer_plate)) : null;
+      if (trailerHit) trailers += 1;
+      db.prepare(`INSERT INTO vehicle_trackers(vehicle_id,imei,agent_id,pilot_number,
+          trailer_imei,trailer_agent_id,trailer_number,matched_at)
+        VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
         ON CONFLICT(vehicle_id) DO UPDATE SET imei=excluded.imei, agent_id=excluded.agent_id,
-          pilot_number=excluded.pilot_number, matched_at=CURRENT_TIMESTAMP`)
-        .run(vehicle.id, String(hit.imei), hit.agentid || null, hit.vehiclenumber || '');
+          pilot_number=excluded.pilot_number, trailer_imei=excluded.trailer_imei,
+          trailer_agent_id=excluded.trailer_agent_id, trailer_number=excluded.trailer_number,
+          matched_at=CURRENT_TIMESTAMP`)
+        .run(vehicle.id, String(hit.imei), hit.agentid || null, hit.vehiclenumber || '',
+          trailerHit ? String(trailerHit.imei) : null, trailerHit?.agentid || null,
+          trailerHit?.vehiclenumber || null);
       matched += 1;
     }
     audit(db, user, 'monitoring-map', 'system', null,
-      { matched, unmatched: unmatchedOurs.length, pilotTotal: answer.data.length }, requestIp(request));
+      { matched, trailers, unmatched: unmatchedOurs.length, pilotTotal: answer.data.length }, requestIp(request));
     runMonitoringPoll();
-    return json(response, 200, { ok: true, matched, pilotTotal: answer.data.length,
+    return json(response, 200, { ok: true, matched, trailers, pilotTotal: answer.data.length,
       unmatchedOurs: unmatchedOurs.slice(0, 40) });
   }
   // Последние позиции парка (для вкладки и карточек).
   if (request.method === 'GET' && pathname === '/api/monitoring/positions') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
-    return json(response, 200, { items: db.prepare(`SELECT p.*, v.plate, v.driver_name
-      FROM vehicle_positions p JOIN vehicles v ON v.id=p.vehicle_id`).all() });
+    return json(response, 200, { items: db.prepare(`SELECT p.*, v.plate, v.driver_name,
+        t.trailer_number
+      FROM vehicle_positions p JOIN vehicles v ON v.id=p.vehicle_id
+      LEFT JOIN vehicle_trackers t ON t.vehicle_id=p.vehicle_id`).all() });
   }
   // Вебхук MAX: секрет в пути (не зависит от способа передачи secret у MAX).
   match = route(/^\/api\/max\/webhook\/([A-Za-z0-9]+)$/, pathname);

@@ -25,6 +25,30 @@ const STATE_META = {
   silent: ['🔴', 'нет связи', '#c0392b']
 };
 
+// Выжимка датчиков из сырого sensors_json: ищем по имени — состав у
+// разных трекеров разный, имена стабильны («Датчик температуры 1», «Двери»).
+function parseSensors(raw) {
+  try { return JSON.parse(raw || '[]'); } catch { return []; }
+}
+const sensorByName = (sensors, pattern) => sensors.find(s => pattern.test(String(s.name || '')));
+function truckSummary(item) {
+  const sensors = parseSensors(item.sensors_json);
+  const engine = sensorByName(sensors, /двигатель can|^двигатель$/i) || sensorByName(sensors, /ignition/i);
+  const fuel = sensorByName(sensors, /расход топлива/i);
+  const mileage = sensorByName(sensors, /пробег по can/i);
+  const rpm = sensorByName(sensors, /обороты/i);
+  return { engine, fuel, mileage, rpm };
+}
+function trailerSummary(item) {
+  const sensors = parseSensors(item.trailer_sensors_json);
+  const door = sensorByName(sensors, /двер/i);
+  const tAvg = sensorByName(sensors, /средняя температура/i);
+  const t1 = sensorByName(sensors, /температуры 1/i);
+  const t2 = sensorByName(sensors, /температуры 2/i);
+  const gen = sensorByName(sensors, /генератор/i);
+  return { door, tAvg, t1, t2, gen };
+}
+
 export async function renderMonitoring(container, context) {
   const { state } = context;
   let items = [];
@@ -69,6 +93,10 @@ export async function renderMonitoring(container, context) {
             <small class="muted" style="display:block">${item.state === 'moving'
               ? `${Math.round(item.speed)} км/ч` : label} · ${item.ageMin < 2 ? 'сейчас' : `${item.ageMin} мин назад`}${item.trip
               ? ` · рейс №${escapeHtml(item.trip.order_no || '—')}` : ''}</small>
+            ${(() => { const tr = trailerSummary(item);
+              return (tr.tAvg || tr.door) ? `<small style="display:block">${tr.tAvg
+                ? `🌡 ${escapeHtml(tr.tAvg.value)}` : ''}${tr.door
+                ? ` · 🚪 ${escapeHtml(String(tr.door.value).toLowerCase())}` : ''}</small>` : ''; })()}
           </span></div>`;
       }).join('') || '<p class="muted">Никого не найдено</p>'}</div>
     </div>
@@ -96,7 +124,10 @@ export async function renderMonitoring(container, context) {
     const marker = L.circleMarker([item.latitude, item.longitude], {
       radius: 7, color, weight: 2, fillColor: color, fillOpacity: 0.75
     }).addTo(map);
-    marker.bindTooltip(item.plate, { direction: 'top', offset: [0, -6] });
+    const trailerInfo = trailerSummary(item);
+    marker.bindTooltip(`${item.plate}${trailerInfo.tAvg ? ` · 🌡${trailerInfo.tAvg.value}` : ''}${trailerInfo.door
+      ? ` · 🚪${String(trailerInfo.door.value).toLowerCase()}` : ''}`,
+    { direction: 'top', offset: [0, -6] });
     marker.bindPopup(`<div style="min-width:190px">
       <b class="mono vlink" data-vinfo="${item.vehicle_id}" style="cursor:pointer">${escapeHtml(item.plate)}</b>
       · ${label}${item.state === 'moving' ? ` ${Math.round(item.speed)} км/ч` : ''}<br>
@@ -104,6 +135,21 @@ export async function renderMonitoring(container, context) {
       <small class="muted">GPS: ${item.fixed_at ? formatDateTime(item.fixed_at) : '—'}</small>
       ${item.trip ? `<br><small>🚚 №${escapeHtml(item.trip.order_no || '—')}:
         ${escapeHtml((item.trip.from_point || '').slice(0, 24))} → ${escapeHtml((item.trip.to_point || '').slice(0, 24))}</small>` : ''}
+      ${(() => { const t = truckSummary(item);
+        const parts = [t.engine && `двигатель ${escapeHtml(String(t.engine.value).toLowerCase())}`,
+          t.rpm && Number(t.rpm.dig) > 0 && `${escapeHtml(t.rpm.value)}`,
+          t.fuel && `⛽ ${escapeHtml(t.fuel.value)}`,
+          t.mileage && `одометр ${escapeHtml(t.mileage.value)}`].filter(Boolean);
+        return parts.length ? `<br><small class="muted">Тягач: ${parts.join(' · ')}</small>` : ''; })()}
+      ${(() => { const tr = trailerSummary(item);
+        if (!tr.door && !tr.tAvg && !tr.t1) return item.trailer_number
+          ? `<br><small class="muted">Прицеп ${escapeHtml(item.trailer_number)}: датчики не отвечают</small>` : '';
+        const temps = [tr.t1 && `t1 ${escapeHtml(tr.t1.value)}`, tr.t2 && `t2 ${escapeHtml(tr.t2.value)}`]
+          .filter(Boolean).join(', ');
+        return `<br><small><b>Прицеп ${escapeHtml(item.trailer_number || '')}</b>:
+          ${tr.tAvg ? `🌡 <b>${escapeHtml(tr.tAvg.value)}</b>${temps ? ` (${temps})` : ''}` : ''}
+          ${tr.door ? ` · 🚪 ${escapeHtml(String(tr.door.value).toLowerCase())}` : ''}
+          ${tr.gen ? ` · генератор ${escapeHtml(String(tr.gen.value).toLowerCase())}` : ''}</small>`; })()}
     </div>`);
     markerById.set(item.vehicle_id, marker);
   }
