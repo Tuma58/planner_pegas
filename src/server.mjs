@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
-import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, settingsObject } from './db.mjs';
+import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
@@ -1977,6 +1977,70 @@ function runGpsControlWatch() {
 }
 setInterval(runGpsControlWatch, 3 * 60_000);
 setTimeout(runGpsControlWatch, 100_000);
+
+// ── Автозакрытие упущенных выгрузок по GPS-истории ──
+// Решение руководителя 07.09: если выгрузка СВЕРШИЛАСЬ (машина стояла у
+// точки и уже уехала), а диспетчер её прозевал — факт проставляется
+// автоматически временем стоянки из истории Пилота, с полным следом:
+// примечание на точке, аудит, уведомление диспетчеру на проверку.
+// Прогнозов и текущих событий это не касается — закрывается только прошлое.
+async function closeMissedUnloads() {
+  try {
+    const candidates = db.prepare(`SELECT t.id trip_id, t.order_no, t.vehicle_id, v.plate,
+        s.id stop_id, s.point, s.actual_arrival, o.to_address_id,
+        p.latitude, p.longitude, p.fixed_at
+      FROM trips t
+      JOIN vehicles v ON v.id=t.vehicle_id
+      JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
+      JOIN vehicle_positions p ON p.vehicle_id=t.vehicle_id
+      JOIN orders o ON o.id=t.order_id
+      JOIN trip_stops s ON s.trip_id=t.id
+        AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
+      WHERE t.status='run' AND s.kind='D' AND s.actual_departure IS NULL
+        AND t.starts_at < datetime('now')`).all();
+    for (const row of candidates) {
+      const fixMs = row.fixed_at ? Date.parse(row.fixed_at) : 0;
+      if (!fixMs || Date.now() - fixMs > GPS_FRESH_MS) continue; // борт молчит — не решаем
+      const point = row.to_address_id ? addressPointById(row.to_address_id) : null;
+      if (!point) continue;
+      const awayKm = roadKm(row.latitude, row.longitude, point.latitude, point.longitude);
+      if (awayKm == null || awayKm < 3) continue; // ещё у точки или рядом — пусть решают люди
+      // История стоянок за последние 36 часов: ищем стоянку 20+ минут в
+      // радиусе 1,5 км от точки выгрузки — это и была выгрузка.
+      const imei = db.prepare(`SELECT imei FROM vehicle_trackers WHERE vehicle_id=?`).get(row.vehicle_id)?.imei;
+      const te = Math.floor(Date.now() / 1000);
+      const ts = te - 36 * 3600;
+      const answer = await pilotApi(`/api/v3/vehicles/track/stops?imei=${imei}&ts=${ts}&te=${te}`);
+      const stops = answer?.data?.stops || [];
+      const visit = [...stops].reverse().find(item =>
+        Number(item.duration) >= 20 * 60 &&
+        roadKm(Number(item.lat), Number(item.lon), point.latitude, point.longitude) <= 1.5 * ROAD_FACTOR + 1.5);
+      if (!visit) continue;
+      const arrivedIso = new Date(visit.ts * 1000).toISOString();
+      const leftIso = new Date(visit.te * 1000).toISOString();
+      const label = iso => mskStamp(iso);
+      db.prepare(`UPDATE trip_stops SET
+          actual_arrival=COALESCE(actual_arrival, ?),
+          work_started_at=COALESCE(work_started_at, ?),
+          work_finished_at=COALESCE(work_finished_at, ?),
+          actual_departure=?,
+          note=TRIM(COALESCE(note,'') || ' [выгрузка по GPS: стоянка ' || ? || '–' || ? || ' МСК у точки]'),
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(arrivedIso, arrivedIso, leftIso, leftIso,
+        label(arrivedIso), label(leftIso), row.stop_id);
+      const became = syncTripFromStops(db, row.trip_id, null);
+      audit(db, null, 'gps-autofact', 'trip', row.trip_id,
+        { stopId: row.stop_id, plate: row.plate, orderNo: row.order_no,
+          visit: `${arrivedIso}..${leftIso}`, awayKm: Math.round(awayKm), became }, 'gps-watch');
+      notify('dispatcher', `📡 Выгрузка №${row.order_no || '—'} (${row.plate}) закрыта автоматически по GPS: `
+        + `машина стояла у точки «${String(row.point || '').slice(0, 30)}» ${label(arrivedIso)}–${label(leftIso)} МСК `
+        + `и уехала (сейчас в ${Math.round(awayKm)} км). Проверьте карточку — время можно поправить руками`,
+      'trip', row.trip_id, { category: 'gps_control' });
+    }
+  } catch (error) { console.error('closeMissedUnloads:', error.message); }
+}
+setInterval(closeMissedUnloads, 30 * 60_000);
+setTimeout(closeMissedUnloads, 130_000);
 
 // Обработка одного обновления бота водителей — общая для поллера и
 // вебхука (вебхук с валидным сертом доменa даёт мгновенные реакции).
