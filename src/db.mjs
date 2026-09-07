@@ -477,6 +477,15 @@ function migrateColumns(db) {
   ensure('vehicle_trackers', 'trailer_number', 'TEXT');
   ensure('vehicle_positions', 'sensors_json', 'TEXT');
   ensure('vehicle_positions', 'trailer_sensors_json', 'TEXT');
+  // Прицепы — самостоятельные объекты мониторинга: свой трекер, своя
+  // позиция (видно отцепленные и свободные), датчики температур/дверей.
+  db.exec(`CREATE TABLE IF NOT EXISTS trailer_positions (
+    imei TEXT PRIMARY KEY,
+    number TEXT NOT NULL DEFAULT '',
+    vehicle_id TEXT REFERENCES vehicles(id) ON DELETE SET NULL,
+    latitude REAL, longitude REAL, speed REAL,
+    fixed_at TEXT, sensors_json TEXT,
+    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
   ensure('customers', 'trips_per_month', 'REAL NOT NULL DEFAULT 0');
   ensure('orders', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'body_type', "TEXT NOT NULL DEFAULT ''");

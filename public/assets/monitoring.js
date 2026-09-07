@@ -52,8 +52,11 @@ function trailerSummary(item) {
 export async function renderMonitoring(container, context) {
   const { state } = context;
   let items = [];
+  let trailers = [];
   try {
-    items = (await api('/api/monitoring/positions')).items || [];
+    const answer = await api('/api/monitoring/positions');
+    items = answer.items || [];
+    trailers = answer.trailers || [];
   } catch (error) {
     container.innerHTML = `<p class="muted" style="margin:20px">Мониторинг недоступен: ${escapeHtml(error.message)}.
       Проверьте логин/пароль Пилота в Настройках → Телефония и сервисы.</p>`;
@@ -82,6 +85,8 @@ export async function renderMonitoring(container, context) {
     <div class="mon-list">
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">
         ${filterButton('', 'Все')}${filterButton('moving', '🟢')}${filterButton('stopped', '🔵')}${filterButton('silent', '🔴')}
+        <button class="button small ${state.monTrailers ? '' : 'ghost'}" id="monTrailersToggle"
+          title="Показать прицепы отдельными маркерами: свободные, отцепленные, температуры и двери">▢ Прицепы ${trailers.filter(t => t.latitude).length}</button>
       </div>
       <input id="monSearch" class="block-search" placeholder="Поиск: госномер, водитель"
         value="${escapeHtml(state.monQuery || '')}" style="width:100%;margin-bottom:6px">
@@ -154,6 +159,45 @@ export async function renderMonitoring(container, context) {
     markerById.set(item.vehicle_id, marker);
   }
 
+  // Слой прицепов: квадратные маркеры. Прицеп в 1+ км от своего тягача —
+  // «отдельно от тягача» (отцеплен); без сцепки — «свободный».
+  if (state.monTrailers) {
+    const truckPos = new Map(items.map(item => [item.vehicle_id, item]));
+    const distKm = (a, b, c, d) => {
+      const rad = Math.PI / 180;
+      const x = (c - a) * rad, y = (d - b) * rad * Math.cos((a + c) / 2 * rad);
+      return Math.sqrt(x * x + y * y) * 6371;
+    };
+    for (const trailer of trailers) {
+      if (!Number.isFinite(trailer.latitude) || !trailer.latitude) continue;
+      const owner = trailer.vehicle_id ? truckPos.get(trailer.vehicle_id) : null;
+      const away = owner && Number.isFinite(owner.latitude)
+        ? distKm(trailer.latitude, trailer.longitude, owner.latitude, owner.longitude) : null;
+      const detached = away != null && away > 1;
+      const info = trailerSummary({ trailer_sensors_json: trailer.sensors_json });
+      const color = !trailer.vehicle_id ? '#8e44ad' : detached ? '#e67e22' : '#7f8c8d';
+      const marker = L.marker([trailer.latitude, trailer.longitude], {
+        icon: L.divIcon({ className: '', iconSize: [12, 12],
+          html: `<div style="width:11px;height:11px;background:${color};border:2px solid #fff;border-radius:2px;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>` })
+      }).addTo(map);
+      marker.bindTooltip(`▢ ${trailer.number}${info.tAvg ? ` · 🌡${info.tAvg.value}` : ''}${info.door
+        ? ` · 🚪${String(info.door.value).toLowerCase()}` : ''}`, { direction: 'top', offset: [0, -8] });
+      marker.bindPopup(`<div style="min-width:170px">
+        <b>▢ Прицеп ${escapeHtml(trailer.number)}</b><br>
+        <small>${!trailer.vehicle_id ? '🟣 свободный (нет в сцепках)'
+          : detached ? `🟠 отдельно от тягача ${escapeHtml(trailer.owner_plate || '')} (${Math.round(away)} км)`
+          : `в сцепке с ${escapeHtml(trailer.owner_plate || '')}`}</small><br>
+        ${info.tAvg ? `<small>🌡 <b>${escapeHtml(info.tAvg.value)}</b>${info.t1 ? ` (t1 ${escapeHtml(info.t1.value)}${info.t2 ? `, t2 ${escapeHtml(info.t2.value)}` : ''})` : ''}</small><br>` : ''}
+        ${info.door ? `<small>🚪 двери ${escapeHtml(String(info.door.value).toLowerCase())}</small><br>` : ''}
+        <small class="muted">GPS: ${trailer.fixed_at ? formatDateTime(trailer.fixed_at) : '—'}</small>
+      </div>`);
+    }
+  }
+  const trailersToggle = container.querySelector('#monTrailersToggle');
+  if (trailersToggle) trailersToggle.onclick = () => {
+    state.monTrailers = !state.monTrailers;
+    renderMonitoring(container, context);
+  };
   container.querySelectorAll('[data-mon-filter]').forEach(button =>
     button.onclick = () => {
       state.monFilter = button.dataset.monFilter;

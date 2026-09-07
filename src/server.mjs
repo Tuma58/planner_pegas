@@ -1617,10 +1617,11 @@ async function runMonitoringPoll() {
     for (const t of trackers) {
       byImei.set(String(t.imei), { vehicleId: t.vehicle_id, role: 'truck' });
       allImei.push(t.imei);
-      if (t.trailer_imei) {
-        byImei.set(String(t.trailer_imei), { vehicleId: t.vehicle_id, role: 'trailer' });
-        allImei.push(t.trailer_imei);
-      }
+    }
+    for (const trailer of db.prepare(`SELECT imei, vehicle_id FROM trailer_positions`).all()) {
+      if (byImei.has(String(trailer.imei))) continue;
+      byImei.set(String(trailer.imei), { vehicleId: trailer.vehicle_id, role: 'trailer' });
+      allImei.push(trailer.imei);
     }
     for (let i = 0; i < allImei.length; i += 50) {
       const chunk = allImei.slice(i, i + 50).join(',');
@@ -1631,7 +1632,14 @@ async function runMonitoringPoll() {
         const sensors = JSON.stringify((row.sensors || []).map(s => ({
           name: s.name, value: s.hum_value, dig: s.dig_value, at: s.change_ts })));
         if (link.role === 'trailer') {
-          db.prepare(`INSERT INTO vehicle_positions(vehicle_id,trailer_sensors_json)
+          db.prepare(`UPDATE trailer_positions SET latitude=?, longitude=?, speed=?,
+            fixed_at=?, sensors_json=?, received_at=CURRENT_TIMESTAMP WHERE imei=?`)
+            .run(Number.isFinite(row.lat) && row.lat ? row.lat : null,
+              Number.isFinite(row.lon) && row.lon ? row.lon : null, row.speed ?? null,
+              row.unixtimestamp ? new Date(row.unixtimestamp * 1000).toISOString() : null,
+              sensors, String(row.imei));
+          // Датчики прицепа сцепки дублируются к тягачу — для попапа сцепки.
+          if (link.vehicleId) db.prepare(`INSERT INTO vehicle_positions(vehicle_id,trailer_sensors_json)
             VALUES(?,?)
             ON CONFLICT(vehicle_id) DO UPDATE SET trailer_sensors_json=excluded.trailer_sensors_json`)
             .run(link.vehicleId, sensors);
@@ -3583,6 +3591,21 @@ async function api(request, response, url) {
           trailerHit?.vehiclenumber || null);
       matched += 1;
     }
+    // Прицепы — все объекты типа Trailer: свой маркер на карте; сцепка
+    // проставляется по совпадению с trailer_plate какой-либо машины.
+    const trailerOwner = new Map();
+    for (const vehicle of db.prepare(`SELECT id, trailer_plate FROM vehicles
+      WHERE TRIM(COALESCE(trailer_plate,''))<>''`).all()) {
+      trailerOwner.set(normalizePlate(vehicle.trailer_plate), vehicle.id);
+    }
+    for (const item of answer.data) {
+      if (item.type !== 'Trailer') continue;
+      db.prepare(`INSERT INTO trailer_positions(imei,number,vehicle_id)
+        VALUES(?,?,?)
+        ON CONFLICT(imei) DO UPDATE SET number=excluded.number, vehicle_id=excluded.vehicle_id`)
+        .run(String(item.imei), item.vehiclenumber || '',
+          trailerOwner.get(normalizePlate(item.vehiclenumber)) || null);
+    }
     audit(db, user, 'monitoring-map', 'system', null,
       { matched, trailers, unmatched: unmatchedOurs.length, pilotTotal: answer.data.length }, requestIp(request));
     runMonitoringPoll();
@@ -3593,10 +3616,13 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/monitoring/positions') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
-    return json(response, 200, { items: db.prepare(`SELECT p.*, v.plate, v.driver_name,
-        t.trailer_number
-      FROM vehicle_positions p JOIN vehicles v ON v.id=p.vehicle_id
-      LEFT JOIN vehicle_trackers t ON t.vehicle_id=p.vehicle_id`).all() });
+    return json(response, 200, {
+      items: db.prepare(`SELECT p.*, v.plate, v.driver_name, t.trailer_number
+        FROM vehicle_positions p JOIN vehicles v ON v.id=p.vehicle_id
+        LEFT JOIN vehicle_trackers t ON t.vehicle_id=p.vehicle_id`).all(),
+      trailers: db.prepare(`SELECT tp.*, v.plate owner_plate FROM trailer_positions tp
+        LEFT JOIN vehicles v ON v.id=tp.vehicle_id`).all()
+    });
   }
   // Вебхук MAX: секрет в пути (не зависит от способа передачи secret у MAX).
   match = route(/^\/api\/max\/webhook\/([A-Za-z0-9]+)$/, pathname);
