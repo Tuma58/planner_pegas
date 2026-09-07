@@ -75,7 +75,7 @@ export async function renderMonitoring(container, context) {
   const query = (state.monQuery || '').toLowerCase();
   const filter = state.monFilter || '';
   const visible = items.filter(item => (!filter || item.state === filter) &&
-    (!query || `${item.plate} ${item.driver_name || ''}`.toLowerCase().includes(query)));
+    (!query || `${item.plate} ${item.driver_name || ''} ${item.trailer_number || ''}`.toLowerCase().includes(query)));
   const counts = { moving: 0, stopped: 0, silent: 0 };
   for (const item of items) counts[item.state] += 1;
 
@@ -94,6 +94,7 @@ export async function renderMonitoring(container, context) {
         const [dot, label] = STATE_META[item.state];
         return `<div class="list-item mon-row" data-mon-focus="${item.vehicle_id}" style="cursor:pointer;padding:6px 9px">
           <span style="flex:1;min-width:0">${dot} <b class="mono">${escapeHtml(item.plate)}</b>
+            ${item.trailer_number ? `<small class="muted" style="display:block;margin-left:18px">▢ ${escapeHtml(item.trailer_number)}</small>` : ''}
             <small class="muted" style="display:block">${escapeHtml((item.driver_name || '').slice(0, 28))}</small>
             <small class="muted" style="display:block">${item.state === 'moving'
               ? `${Math.round(item.speed)} км/ч` : label} · ${item.ageMin < 2 ? 'сейчас' : `${item.ageMin} мин назад`}${item.trip
