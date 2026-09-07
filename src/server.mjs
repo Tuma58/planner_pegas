@@ -6466,7 +6466,8 @@ async function api(request, response, url) {
       VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
-      'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules']) {
+      'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules',
+      'monitoring', 'bodyCompat']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));
