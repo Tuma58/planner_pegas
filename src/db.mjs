@@ -461,6 +461,16 @@ function migrateColumns(db) {
   // Бот водителей в MAX: чат водителя в мессенджере MAX (второй канал
   // наряду с Telegram, привязка та же — по телефону из контакта).
   ensure('drivers', 'max_chat_id', 'TEXT');
+  // Мониторинг Pilot-GPS: сопоставление сцепки с трекером и последняя
+  // известная позиция (история — следующим этапом, чтобы БД не пухла).
+  db.exec(`CREATE TABLE IF NOT EXISTS vehicle_trackers (
+    vehicle_id TEXT PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
+    imei TEXT NOT NULL, agent_id INTEGER, pilot_number TEXT NOT NULL DEFAULT '',
+    matched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS vehicle_positions (
+    vehicle_id TEXT PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
+    latitude REAL, longitude REAL, speed REAL, direction REAL,
+    fixed_at TEXT, received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
   ensure('customers', 'trips_per_month', 'REAL NOT NULL DEFAULT 0');
   ensure('orders', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'body_type', "TEXT NOT NULL DEFAULT ''");

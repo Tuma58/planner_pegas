@@ -1553,6 +1553,83 @@ function applyDriverEtaFor(driver, stopId, hours, reply) {
     { hours, driver: driver.full_name }, 'driver-bot');
 }
 
+// ── Мониторинг Pilot-GPS (blade.pilot-gps.com, API v3) ──
+// Токен по логину/паролю из настроек (живёт 48 ч, кеш в app_meta вместе с
+// node_id — заголовок X-Node обязателен, без него телеметрия пустая).
+const monitoringConfig = () => settingsObject(db).monitoring || {};
+async function pilotAuth() {
+  const cached = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='pilot_token'`).get()?.value || 'null');
+  if (cached && Date.now() < cached.exp - 600_000) return cached;
+  const config = monitoringConfig();
+  if (!config.login || !config.password) return null;
+  const host = String(config.baseUrl || 'blade.pilot-gps.com').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  const answer = await new Promise(resolve => {
+    const body = JSON.stringify({ username: config.login, password: config.password });
+    const request = httpsRequest({ host, method: 'POST', path: '/api/v3/auth/token', timeout: 12_000,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+    response => { let raw = ''; response.on('data', c => { raw += c; });
+      response.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve(null); } }); });
+    request.on('error', () => resolve(null));
+    request.on('timeout', () => { request.destroy(); resolve(null); });
+    request.end(body);
+  });
+  if (!answer?.token) { console.error('pilotAuth:', answer?.msg || 'нет ответа'); return null; }
+  const fresh = { token: answer.token, node: answer.node_id, host,
+    exp: Date.now() + (Number(answer.expires_in) || 172_800) * 1000 };
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('pilot_token',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(fresh));
+  return fresh;
+}
+async function pilotApi(path) {
+  const auth = await pilotAuth();
+  if (!auth) return null;
+  return new Promise(resolve => {
+    const request = httpsRequest({ host: auth.host, method: 'GET', path, timeout: 15_000,
+      headers: { Authorization: `Bearer ${auth.token}`, 'X-Node': String(auth.node) } },
+    response => { let raw = ''; response.on('data', c => { raw += c; });
+      response.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve(null); } }); });
+    request.on('error', () => resolve(null));
+    request.on('timeout', () => { request.destroy(); resolve(null); });
+    request.end();
+  });
+}
+// Номер в Пилоте: кириллица/латиница вперемешку, с пробелами («Т 474 ВЕ 58»,
+// «В325АУ 797») — к нашему виду: без пробелов, нижний регистр, гомоглифы
+// в кириллицу.
+function normalizePlate(value) {
+  const latin = 'ABEKMHOPCTYXabekmhopctyx';
+  const cyr = 'АВЕКМНОРСТУХавекмнорстух';
+  return String(value || '').replace(/\s+/g, '').toLowerCase()
+    .replace(/[a-z]/gi, ch => { const i = latin.indexOf(ch); return i >= 0 ? cyr[i] : ch; })
+    .toLowerCase();
+}
+// Поллер позиций: раз в минуту батчами по 50 IMEI. Пишется только последняя
+// позиция каждой сцепки; свежесть — fixed_at из unixtimestamp трекера.
+async function runMonitoringPoll() {
+  try {
+    const trackers = db.prepare(`SELECT vehicle_id, imei FROM vehicle_trackers`).all();
+    if (!trackers.length) return;
+    const byImei = new Map(trackers.map(t => [String(t.imei), t.vehicle_id]));
+    for (let i = 0; i < trackers.length; i += 50) {
+      const chunk = trackers.slice(i, i + 50).map(t => t.imei).join(',');
+      const answer = await pilotApi(`/api/v3/vehicles/status?imei=${chunk}`);
+      for (const row of answer?.data || []) {
+        const vehicleId = byImei.get(String(row.imei || ''));
+        if (!vehicleId || !Number.isFinite(row.lat) || !row.lat) continue;
+        db.prepare(`INSERT INTO vehicle_positions(vehicle_id,latitude,longitude,speed,direction,fixed_at,received_at)
+          VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+          ON CONFLICT(vehicle_id) DO UPDATE SET latitude=excluded.latitude,
+            longitude=excluded.longitude, speed=excluded.speed, direction=excluded.direction,
+            fixed_at=excluded.fixed_at, received_at=CURRENT_TIMESTAMP`)
+          .run(vehicleId, row.lat, row.lon, row.speed ?? null, row.dir ?? null,
+            row.unixtimestamp ? new Date(row.unixtimestamp * 1000).toISOString() : null);
+      }
+    }
+  } catch (error) { console.error('runMonitoringPoll:', error.message); }
+}
+setInterval(runMonitoringPoll, 60_000);
+setTimeout(runMonitoringPoll, 45_000);
+
 // ── Бот водителей в MAX (мессенджер MAX, platform-api2.max.ru) ──
 // Второй канал наряду с Telegram: та же логика этапов, привязка по
 // телефону из контакта. Включается токеном в Настройках; форматы событий
@@ -3454,6 +3531,40 @@ async function api(request, response, url) {
   // Вебхуки Telegram: push-доставка обновлений обоих ботов. Аутентификация
   // по секретному заголовку (secret_token из setWebhook); ответ всегда 200,
   // чтобы Telegram не копил ретраи — ошибки обработки видны в логах.
+  // Мониторинг: сопоставить парк с трекерами Пилота по госномерам.
+  if (request.method === 'POST' && pathname === '/api/monitoring/map-fleet') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const answer = await pilotApi('/api/v3/vehicles');
+    if (!answer?.data) return errorJson(response, 502,
+      'Пилот не ответил — проверьте логин/пароль в настройках мониторинга');
+    const byPlate = new Map();
+    for (const item of answer.data) byPlate.set(normalizePlate(item.vehiclenumber), item);
+    let matched = 0;
+    const unmatchedOurs = [];
+    for (const vehicle of db.prepare(`SELECT id, plate FROM vehicles WHERE status<>'out'`).all()) {
+      const hit = byPlate.get(normalizePlate(vehicle.plate));
+      if (!hit) { unmatchedOurs.push(vehicle.plate); continue; }
+      db.prepare(`INSERT INTO vehicle_trackers(vehicle_id,imei,agent_id,pilot_number,matched_at)
+        VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(vehicle_id) DO UPDATE SET imei=excluded.imei, agent_id=excluded.agent_id,
+          pilot_number=excluded.pilot_number, matched_at=CURRENT_TIMESTAMP`)
+        .run(vehicle.id, String(hit.imei), hit.agentid || null, hit.vehiclenumber || '');
+      matched += 1;
+    }
+    audit(db, user, 'monitoring-map', 'system', null,
+      { matched, unmatched: unmatchedOurs.length, pilotTotal: answer.data.length }, requestIp(request));
+    runMonitoringPoll();
+    return json(response, 200, { ok: true, matched, pilotTotal: answer.data.length,
+      unmatchedOurs: unmatchedOurs.slice(0, 40) });
+  }
+  // Последние позиции парка (для вкладки и карточек).
+  if (request.method === 'GET' && pathname === '/api/monitoring/positions') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, { items: db.prepare(`SELECT p.*, v.plate, v.driver_name
+      FROM vehicle_positions p JOIN vehicles v ON v.id=p.vehicle_id`).all() });
+  }
   // Вебхук MAX: секрет в пути (не зависит от способа передачи secret у MAX).
   match = route(/^\/api\/max\/webhook\/([A-Za-z0-9]+)$/, pathname);
   if (match && request.method === 'POST') {

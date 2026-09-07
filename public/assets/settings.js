@@ -638,6 +638,18 @@ async function renderTelephony() {
         title="Требует валидный HTTPS-сертификат. Заполните — оба бота перейдут на мгновенную push-доставку; очистите — вернётся опрос."></label>
       <button class="button">Сохранить</button>
     </form>
+    <h2 style="margin-top:18px">🛰 Мониторинг Pilot-GPS</h2>
+    <p class="muted">Логин/пароль кабинета Пилота — планер сам получает токен (живёт 48 ч)
+      и раз в минуту подтягивает позиции сцепок. После сохранения нажмите «Сопоставить парк» —
+      трекеры привяжутся к сцепкам по госномерам (кириллица/латиница и пробелы выравниваются).</p>
+    <form id="monitoringForm" class="fields">
+      <label class="field">Сервер<input name="baseUrl" value="${escapeHtml(state.admin.settings?.monitoring?.baseUrl || 'blade.pilot-gps.com')}"></label>
+      <label class="field">Логин<input name="login" value="${escapeHtml(state.admin.settings?.monitoring?.login || '')}" autocomplete="off"></label>
+      <label class="field">Пароль<input name="password" type="password" value="${escapeHtml(state.admin.settings?.monitoring?.password || '')}" autocomplete="off"></label>
+      <button class="button">Сохранить</button>
+      <button class="button ghost" type="button" id="monitoringMap"
+        title="Скачать список объектов из Пилота и привязать трекеры к сцепкам по госномерам">🔗 Сопоставить парк</button>
+    </form>
     <h3 style="margin-top:14px">Что отправлять в Telegram</h3>
     <p class="muted">Уровень каждой категории: <b>Выкл</b> — в мессенджер не идёт (лента планера
       остаётся); <b>Аварийное</b> — получают все привязанные сотрудники (и режим «только аварии»,
@@ -734,6 +746,29 @@ async function renderTelephony() {
         webhookBase: form.elements.webhookBase.value.trim() };
       toast('Telegram сохранён — сотрудники могут привязываться (кнопка «🔔»)');
     } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('monitoringForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const monitoring = { baseUrl: form.elements.baseUrl.value.trim(),
+      login: form.elements.login.value.trim(), password: form.elements.password.value };
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ monitoring }) });
+      state.admin.settings.monitoring = monitoring;
+      toast('Мониторинг сохранён — теперь «Сопоставить парк»');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('monitoringMap').onclick = async event => {
+    event.target.disabled = true;
+    try {
+      const result = await api('/api/monitoring/map-fleet', { method: 'POST', body: '{}' });
+      showModal(`<h2>🔗 Сопоставление парка</h2>
+        <p>В Пилоте объектов: <b>${result.pilotTotal}</b> · привязано сцепок: <b>${result.matched}</b></p>
+        ${result.unmatchedOurs?.length ? `<p class="muted">Наши без трекера (${result.unmatchedOurs.length}):
+          ${result.unmatchedOurs.map(escapeHtml).join(', ')}</p>` : '<p>Все сцепки нашли свой трекер ✓</p>'}
+        <div class="modal-actions"><button class="button" data-close>Закрыть</button></div>`);
+    } catch (error) { toast(error.message, 'error'); }
+    event.target.disabled = false;
   };
   byId('telephonyForm').onsubmit = async event => {
     event.preventDefault();
