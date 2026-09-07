@@ -195,6 +195,9 @@ export async function renderMonitoring(container, context) {
     if (map) { try { map.remove(); } catch { /* прежний контейнер мёртв */ } }
     map = L.map(container.querySelector('#monMap'), { zoomControl: true })
       .setView(viewState.center, viewState.zoom);
+    // Убираем префикс «Leaflet» с флагом из атрибуции; «© OpenStreetMap»
+    // остаётся — обязательная подпись по лицензии данных карты.
+    map.attributionControl.setPrefix(false);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18, attribution: '© OpenStreetMap'
     }).addTo(map);
