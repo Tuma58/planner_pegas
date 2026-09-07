@@ -1,5 +1,6 @@
 import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs, captureViewScroll, restoreViewScroll } from './api.js';
 import { renderGeoMap } from './map.js';
+import { renderMonitoring } from './monitoring.js';
 import { vehicleInfoDialog } from './vehicle-info.js';
 import { periodAssignDialog, shiftStateAt } from './resource.js';
 import { renderBoss } from './boss.js';
@@ -749,6 +750,7 @@ const MAIN_VIEWS = [
   { id: 'logist', title: 'Логист', show: () => can('trips:write') },
   { id: 'routes', title: 'Конструктор', show: () => can('orders:write') || can('trips:write') },
   { id: 'dispatcher', title: 'Диспетчер', show: () => true },
+  { id: 'monitoring', title: 'Мониторинг', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
   { id: 'flows', title: 'Потоки', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
@@ -811,6 +813,8 @@ function renderMain() {
     });
   } else if (state.view === 'dashboard') {
     renderDashboard(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
+  } else if (state.view === 'monitoring') {
+    renderMonitoring(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'flows') {
     renderFlows(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip,

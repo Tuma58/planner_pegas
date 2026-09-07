@@ -1444,3 +1444,10 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .vhov-foot { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line);
   font-size: var(--fs-xs); color: var(--muted); }
 [data-vinfo] { cursor: pointer; }
+
+/* Мониторинг: список + карта Leaflet */
+.mon-wrap { display: flex; gap: 10px; height: calc(100vh - 132px); min-height: 420px; }
+.mon-list { width: 300px; min-width: 240px; overflow: auto; }
+#monMap { flex: 1; border-radius: 10px; min-height: 380px; z-index: 0; }
+.mon-row:hover { background: var(--panel-2, #f0f0ee); }
+.leaflet-popup-content { font: inherit; }
