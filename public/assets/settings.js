@@ -763,7 +763,8 @@ async function renderTelephony() {
     try {
       const result = await api('/api/monitoring/map-fleet', { method: 'POST', body: '{}' });
       showModal(`<h2>🔗 Сопоставление парка</h2>
-        <p>В Пилоте объектов: <b>${result.pilotTotal}</b> · привязано сцепок: <b>${result.matched}</b></p>
+        <p>В Пилоте объектов: <b>${result.pilotTotal}</b> · привязано тягачей: <b>${result.matched}</b>
+          · прицепов сцепок: <b>${result.trailers ?? 0}</b></p>
         ${result.unmatchedOurs?.length ? `<p class="muted">Наши без трекера (${result.unmatchedOurs.length}):
           ${result.unmatchedOurs.map(escapeHtml).join(', ')}</p>` : '<p>Все сцепки нашли свой трекер ✓</p>'}
         <div class="modal-actions"><button class="button" data-close>Закрыть</button></div>`);
