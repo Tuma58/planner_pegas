@@ -361,8 +361,8 @@ export async function buildReport(context, files, periodSel) {
   const enrichedIn = loaded.filter(o => o.factUnload).length;
   return `${periodBar}<div class="summary-grid" style="grid-template-columns:repeat(5,1fr)">
       <div class="metric"><span>Период · машин · погрузок</span><strong>${label} · ${plates.length} · ${loaded.length}</strong></div>
-      <div class="metric"><span>Выручка (погрузка в периоде)</span><strong>${money(Math.round(rev))}
-        <small class="muted" style="display:block">факт выгрузки из планера: ${enrichedIn} из ${loaded.length}</small></strong></div>
+      <div class="metric"><span>Выручка (погрузка в периоде) · с НДС, как в 1С</span><strong>${money(Math.round(rev))}
+        <small class="muted" style="display:block">≈ без НДС: ${money(Math.round(rev / 1.22))} · факт выгрузки из планера: ${enrichedIn} из ${loaded.length}</small></strong></div>
       <div class="metric"><span>КТГ (ремонты)</span><strong>${repairs ? pct(ktg) : '— загрузите «Ремонты»'}</strong></div>
       <div class="metric"><span>КВЛ (на линии)</span><strong>${pct(kvl)}${sheetHours ? '' : ' *'}</strong></div>
       <div class="metric"><span>КИП по часам под грузом</span><strong>${pct(kip)}</strong></div>
@@ -381,7 +381,11 @@ export async function buildReport(context, files, periodSel) {
         <span style="flex:1">${escapeHtml(kind)}</span><b>${Math.round(b.days)} дн · ${b.n}</b></div>`).join('')}</div>` : ''}
       <div class="scolh" style="margin-top:10px">Сценарии (честные: часы × ₽/час под грузом ${money(Math.round(perLoadHour))})</div>
       <div class="list">${scenarios.map(([name, value]) => `<div class="list-item">
-        <span style="flex:1">${escapeHtml(name)}</span><b>${money(Math.round(value))}</b></div>`).join('')}</div>
+        <span style="flex:1">${escapeHtml(name)}</span><b>${money(Math.round(value))}
+          <small class="muted" style="display:block;text-align:right">≈ ${money(Math.round(value / 1.22))} без НДС</small></b></div>`).join('')}</div>
+      <p class="muted" style="margin:4px 0 0">Суммы сценариев — в деньгах 1С (с НДС). Прогнозы планера
+        (дашборд, план 165 млн) считаются БЕЗ НДС — сравнивайте по строке «без НДС», иначе
+        одинаковый прогноз выглядит расхождением на ~18%.</p>
     </div>
     <div class="scol">
       <div class="scolh">Худшие по доле часов под грузом</div>

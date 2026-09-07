@@ -530,7 +530,7 @@ export async function renderDashboard(container, context) {
         <b title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">${money(Math.round(metrics.monthFact))}</b>
         <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%
           · <span class="dash-done" title="Фактически выгружено с начала месяца (статус «выгружен» и далее)">выгружено <b>${money(Math.round(metrics.monthDone))}</b></span></span>
-        <span class="dash-month-side">Прогноз: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
+        <span class="dash-month-side">Прогноз <small class="muted">(без НДС)</small>: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
           ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
           · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
       </div>
