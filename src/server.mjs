@@ -1860,6 +1860,10 @@ function gpsControlSnapshot() {
     const silentMin = fixMs ? Math.round((nowMs - fixMs) / 60_000) : null;
     const fresh = fixMs && nowMs - fixMs < GPS_FRESH_MS;
     const stops = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(trip.id);
+    // «Под грузом» — от факта убытия с погрузки до факта прибытия на
+    // выгрузку: только в этом окне температура рефа = температура груза.
+    const loaded = stops.length >= 2 && stops[0].actual_departure &&
+      !stops[stops.length - 1].actual_arrival;
     const target = nextStopPoint(trip, stops);
     let distKmValue = null;
     if (target?.latitude != null && Number.isFinite(pos.latitude)) {
@@ -1890,7 +1894,7 @@ function gpsControlSnapshot() {
       distToNextKm: distKmValue != null ? Math.round(distKmValue) : null,
       nearStop: fresh && distKmValue != null && distKmValue <= GPS_NEAR_KM,
       moving: fresh && Number(pos.speed) >= 5,
-      temp
+      loaded, temp
     });
   }
   return rows;
@@ -1919,15 +1923,22 @@ function runGpsControlWatch() {
             + `(факт ставит человек, GPS только подсказывает)`, 'trip', row.trip_id, { category: 'gps_control' });
         }
       }
-      // 2) Температура вне режима заявки (с допуском) — не чаще раза в 2 ч.
-      if (row.temp && !row.temp.ok) {
+      // 2) Температура вне режима заявки — только ПОД ГРУЗОМ (между фактами
+      // погрузки и выгрузки: порожний или невыехавший реф не считается) и
+      // только после 30 минут непрерывного нарушения (реф выходит на режим
+      // не мгновенно). Повтор — не чаще раза в 2 часа.
+      if (row.temp && !row.temp.ok && row.loaded) {
         const key = `temp:${row.trip_id}`;
-        if (!memory[key] || nowMs - memory[key].told > 2 * 3_600_000) {
-          fresh[key] = { told: nowMs };
+        const mark = memory[key] || { badSince: nowMs };
+        fresh[key] = mark;
+        if (nowMs - mark.badSince >= 30 * 60_000 &&
+            (!mark.told || nowMs - mark.told > 2 * 3_600_000)) {
+          mark.told = nowMs;
           notify('dispatcher', `🌡 ${row.plate}: в прицепе ${row.temp.value}°C при режиме заявки `
-            + `${row.temp.min}…${row.temp.max}°C — проверьте рефустановку и свяжитесь с водителем`,
+            + `${row.temp.min}…${row.temp.max}°C уже ${Math.round((nowMs - mark.badSince) / 60_000)} мин `
+            + `— проверьте рефустановку и свяжитесь с водителем`,
           'trip', row.trip_id, { category: 'gps_control' });
-        } else fresh[key] = memory[key];
+        }
       }
     }
     // 3) Свежая отметка прибытия против GPS: точка отмечена в последние
