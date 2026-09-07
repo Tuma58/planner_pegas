@@ -1451,3 +1451,13 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 #monMap { flex: 1; border-radius: 10px; min-height: 380px; z-index: 0; }
 .mon-row:hover { background: var(--panel-2, #f0f0ee); }
 .leaflet-popup-content { font: inherit; }
+
+/* Маркеры мониторинга: плавный ход, глифы, плашки номеров при зуме */
+.mon-marker-anim { transition: transform 1.1s linear; }
+.mon-veh { position: relative; display: flex; flex-direction: column; align-items: center; }
+.mon-glyph { transition: transform .6s ease; filter: drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+.mon-plate { display: none; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  background: rgba(255,255,255,.92); color: #222; border: 1px solid rgba(0,0,0,.25);
+  border-radius: 4px; padding: 0 4px; font: 700 10px/1.5 ui-monospace, monospace;
+  white-space: nowrap; pointer-events: none; }
+.mon-zoomed .mon-plate { display: block; }

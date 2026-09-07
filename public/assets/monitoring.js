@@ -101,24 +101,57 @@ function trailerPopupHtml(trailer, owner) {
   </div>`;
 }
 
-// Обновление/создание маркера без пересоздания: позиция, стиль, содержимое —
-// открытый попап и наведённый тултип не сбрасываются автообновлением.
+// Глиф маркера: едет — стрелка, повёрнутая по курсу GPS; стоит — кружок
+// с точкой; нет связи — тусклый с крестом. Плашка с госномером — под
+// глифом, показывается при приближении (класс mon-zoomed на карте).
+function truckGlyphHtml(item) {
+  const dir = Number(item.direction) || 0;
+  if (item.state === 'moving') {
+    return `<div class="mon-glyph" style="transform:rotate(${dir}deg)">
+      <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 2 L20 21 L12 16.5 L4 21 Z"
+        fill="#1f9d55" stroke="#fff" stroke-width="1.6"/></svg></div>`;
+  }
+  if (item.state === 'stopped') {
+    return `<div class="mon-glyph"><svg viewBox="0 0 24 24" width="20" height="20">
+      <circle cx="12" cy="12" r="9" fill="#3f7fc2" stroke="#fff" stroke-width="2"/>
+      <circle cx="12" cy="12" r="3" fill="#fff"/></svg></div>`;
+  }
+  return `<div class="mon-glyph" style="opacity:.75"><svg viewBox="0 0 24 24" width="20" height="20">
+    <circle cx="12" cy="12" r="9" fill="#9aa0a6" stroke="#fff" stroke-width="2"/>
+    <path d="M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5" stroke="#fff" stroke-width="2"/></svg></div>`;
+}
+function truckIcon(item) {
+  return L.divIcon({ className: 'mon-marker-anim', iconSize: [26, 26], iconAnchor: [13, 13],
+    html: `<div class="mon-veh">${truckGlyphHtml(item)}
+      <div class="mon-plate">${escapeHtml(item.plate)}</div></div>` });
+}
+// Обновление/создание маркера без пересоздания: позиция плавно едет по
+// CSS-transition, глиф/поворот обновляются точечно, попапы не сбрасываются.
 function upsertTruckMarker(item) {
-  const [, , color] = STATE_META[item.state];
   const tr = trailerSummary(item.trailer_sensors_json);
   const tooltip = `${item.plate}${tr.tAvg ? ` · 🌡${tr.tAvg.value}` : ''}${tr.door
     ? ` · 🚪${String(tr.door.value).toLowerCase()}` : ''}`;
   let marker = truckMarkers.get(item.vehicle_id);
   if (!marker) {
-    marker = L.circleMarker([item.latitude, item.longitude],
-      { radius: 7, color, weight: 2, fillColor: color, fillOpacity: 0.75 }).addTo(map);
-    marker.bindTooltip(tooltip, { direction: 'top', offset: [0, -6] });
+    marker = L.marker([item.latitude, item.longitude], { icon: truckIcon(item) }).addTo(map);
+    marker.bindTooltip(tooltip, { direction: 'top', offset: [0, -14] });
     marker.bindPopup(truckPopupHtml(item));
+    marker._monState = item.state;
+    marker._monDir = Number(item.direction) || 0;
     truckMarkers.set(item.vehicle_id, marker);
     return;
   }
   marker.setLatLng([item.latitude, item.longitude]);
-  marker.setStyle({ color, fillColor: color });
+  const dir = Number(item.direction) || 0;
+  if (marker._monState !== item.state) {
+    marker.setIcon(truckIcon(item));
+    marker._monState = item.state;
+    marker._monDir = dir;
+  } else if (Math.abs(dir - marker._monDir) > 5) {
+    const glyph = marker.getElement()?.querySelector('.mon-glyph');
+    if (glyph && item.state === 'moving') glyph.style.transform = `rotate(${dir}deg)`;
+    marker._monDir = dir;
+  }
   marker.setTooltipContent(tooltip);
   marker.setPopupContent(truckPopupHtml(item));
 }
@@ -131,8 +164,9 @@ function upsertTrailerMarker(trailer, owner) {
   const info = trailerSummary(trailer.sensors_json);
   const tooltip = `▢ ${trailer.number}${info.tAvg ? ` · 🌡${info.tAvg.value}` : ''}${info.door
     ? ` · 🚪${String(info.door.value).toLowerCase()}` : ''}`;
-  const icon = L.divIcon({ className: '', iconSize: [12, 12],
-    html: `<div style="width:11px;height:11px;background:${color};border:2px solid #fff;border-radius:2px;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>` });
+  const icon = L.divIcon({ className: 'mon-marker-anim', iconSize: [12, 12], iconAnchor: [6, 6],
+    html: `<div class="mon-veh"><div style="width:11px;height:11px;background:${color};border:2px solid #fff;border-radius:2px;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>
+      <div class="mon-plate">${escapeHtml(trailer.number)}</div></div>` });
   let marker = trailerMarkers.get(trailer.imei);
   if (!marker) {
     marker = L.marker([trailer.latitude, trailer.longitude], { icon }).addTo(map);
@@ -206,6 +240,9 @@ export async function renderMonitoring(container, context) {
       viewState.center = [c.lat, c.lng];
       viewState.zoom = map.getZoom();
     });
+    const syncZoomClass = () => map.getContainer().classList.toggle('mon-zoomed', map.getZoom() >= 9);
+    map.on('zoomend', syncZoomClass);
+    syncZoomClass();
   }
 
   // ── Список: перерисовывается каждый раз (лёгкий), карта не трогается. ──
