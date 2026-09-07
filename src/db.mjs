@@ -458,6 +458,9 @@ function migrateColumns(db) {
   // Прогноз водителя: «буду на выгрузке к…» из бота — показывается в
   // контроле и двигает расчёт следующего события.
   ensure('trip_stops', 'driver_eta', 'TEXT');
+  // Бот водителей в MAX: чат водителя в мессенджере MAX (второй канал
+  // наряду с Telegram, привязка та же — по телефону из контакта).
+  ensure('drivers', 'max_chat_id', 'TEXT');
   ensure('customers', 'trips_per_month', 'REAL NOT NULL DEFAULT 0');
   ensure('orders', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('orders', 'body_type', "TEXT NOT NULL DEFAULT ''");
