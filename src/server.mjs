@@ -1867,8 +1867,9 @@ function gpsControlSnapshot() {
     const target = nextStopPoint(trip, stops);
     let distKmValue = null;
     if (target?.latitude != null && Number.isFinite(pos.latitude)) {
-      distKmValue = roadKm(pos.latitude, pos.longitude, target.latitude, target.longitude) /
-        Number(settingsObject(db).calculation?.transitFactor || 1.5);
+      // roadKm — уже дорожная оценка (прямая × 1,2), ничем не делим:
+      // деление на transitFactor занижало (669: 618 км вместо ~930).
+      distKmValue = roadKm(pos.latitude, pos.longitude, target.latitude, target.longitude);
     }
     // Температура прицепа против режима заявки.
     let temp = null;
@@ -1929,7 +1930,8 @@ function runGpsControlWatch() {
       // не мгновенно). Повтор — не чаще раза в 2 часа.
       if (row.temp && !row.temp.ok && row.loaded) {
         const key = `temp:${row.trip_id}`;
-        const mark = memory[key] || { badSince: nowMs };
+        const mark = memory[key] || {};
+        mark.badSince ??= nowMs; // метки старого формата — счёт с этого тика
         fresh[key] = mark;
         if (nowMs - mark.badSince >= 30 * 60_000 &&
             (!mark.told || nowMs - mark.told > 2 * 3_600_000)) {
@@ -1960,8 +1962,7 @@ function runGpsControlWatch() {
         : seq === stopMeta.mx ? order?.to_address_id : null;
       const point = addressId ? addressPointById(addressId) : null;
       if (!point) continue;
-      const away = roadKm(row.latitude, row.longitude, point.latitude, point.longitude) /
-        Number(settingsObject(db).calculation?.transitFactor || 1.5);
+      const away = roadKm(row.latitude, row.longitude, point.latitude, point.longitude);
       if (away < 30) continue;
       const key = `mismatch:${row.id}`;
       if (memory[key]) { fresh[key] = memory[key]; continue; }
