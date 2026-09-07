@@ -629,6 +629,10 @@ async function renderTelephony() {
       <label class="field">Токен бота ВОДИТЕЛЕЙ («Пегас Водитель», отдельный бот)
         <input name="driverBotToken" value="${escapeHtml(state.admin.settings?.telegram?.driverBotToken || '')}"
         placeholder="создайте второго бота у @BotFather" autocomplete="off"></label>
+      <label class="field">Базовый URL вебхуков (пусто = опрос раз в 20 с)
+        <input name="webhookBase" value="${escapeHtml(state.admin.settings?.telegram?.webhookBase || '')}"
+        placeholder="https://planner.pegasavto.ru" autocomplete="off"
+        title="Требует валидный HTTPS-сертификат. Заполните — оба бота перейдут на мгновенную push-доставку; очистите — вернётся опрос."></label>
       <button class="button">Сохранить</button>
     </form>
     <h3 style="margin-top:14px">Что отправлять в Telegram</h3>
@@ -716,11 +720,13 @@ async function renderTelephony() {
       await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
         telegram: { botToken: form.elements.botToken.value.trim(),
           botName: form.elements.botName.value.trim().replace(/^@/, ''),
-          driverBotToken: form.elements.driverBotToken.value.trim() }
+          driverBotToken: form.elements.driverBotToken.value.trim(),
+          webhookBase: form.elements.webhookBase.value.trim() }
       }) });
       state.admin.settings.telegram = { botToken: form.elements.botToken.value.trim(),
         botName: form.elements.botName.value.trim().replace(/^@/, ''),
-        driverBotToken: form.elements.driverBotToken.value.trim() };
+        driverBotToken: form.elements.driverBotToken.value.trim(),
+        webhookBase: form.elements.webhookBase.value.trim() };
       toast('Telegram сохранён — сотрудники могут привязываться (кнопка «🔔»)');
     } catch (error) { toast(error.message, 'error'); }
   };

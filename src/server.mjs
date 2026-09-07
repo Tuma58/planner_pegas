@@ -1522,17 +1522,9 @@ function applyDriverStep(chatId, stopId, phase) {
 }
 
 // Поллер бота водителей: контакт → привязка, кнопки → этапы, текст → вопрос.
-async function runDriverBotPoll() {
-  const token = driverBotToken();
-  if (!token) return;
-  try {
-    const offset = Number(db.prepare(`SELECT value FROM app_meta WHERE key='tgd_offset'`).get()?.value || 0);
-    const answer = await tgApi('getUpdates', { offset: offset + 1, timeout: 0,
-      allowed_updates: ['message', 'callback_query'] }, token);
-    if (!answer?.ok) return;
-    for (const update of answer.result || []) {
-      db.prepare(`INSERT INTO app_meta(key,value) VALUES('tgd_offset',?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(update.update_id));
+// Обработка одного обновления бота водителей — общая для поллера и
+// вебхука (вебхук с валидным сертом доменa даёт мгновенные реакции).
+async function processDriverUpdate(update, token) {
       // Кнопка этапа
       if (update.callback_query) {
         const query = update.callback_query;
@@ -1587,11 +1579,11 @@ async function runDriverBotPoll() {
               { hours, driver: driver.full_name }, 'driver-bot');
           }
         }
-        continue;
+        return;
       }
       const message = update.message;
       const chatId = String(message?.chat?.id || '');
-      if (!chatId) continue;
+      if (!chatId) return;
       // Привязка по контакту
       if (message.contact?.phone_number) {
         const phone = digitsPhone(message.contact.phone_number);
@@ -1613,10 +1605,10 @@ async function runDriverBotPoll() {
           tgApi('sendMessage', { chat_id: chatId,
             text: 'Номер не найден в справочнике водителей — обратитесь к диспетчеру, пусть проверит ваш телефон в планере.' }, token);
         }
-        continue;
+        return;
       }
       const text = String(message.text || '').trim();
-      if (!text) continue;
+      if (!text) return;
       const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`).get(chatId);
       // «📋 Моё задание» — прислать актуальное задание с кнопкой этапа в
       // любой момент (погрузка/выгрузка раньше слота — отметки не ждут план).
@@ -1627,7 +1619,7 @@ async function runDriverBotPoll() {
             return v ? db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run') ORDER BY starts_at LIMIT 1`).get(v.id) : null; })();
         if (active) sendDriverAssignment(active.id);
         else tgApi('sendMessage', { chat_id: chatId, text: 'Активного рейса сейчас нет — задание придёт при назначении.' }, token);
-        continue;
+        return;
       }
       if (/^\/start/.test(text) || !driver) {
         tgApi('sendMessage', { chat_id: chatId,
@@ -1635,7 +1627,7 @@ async function runDriverBotPoll() {
             : 'Здравствуйте! Это бот водителей ПегасЛогистик. Нажмите кнопку ниже, чтобы привязаться.',
           reply_markup: driver ? undefined : { keyboard: [[{ text: '📱 Поделиться контактом',
             request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } }, token);
-        continue;
+        return;
       }
       // Свободный текст — вопрос диспетчеру (та же механика SLA 10 минут).
       const activeTrip = db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
@@ -1650,6 +1642,21 @@ async function runDriverBotPoll() {
       'question', questionId, { category: 'driver_questions' });
       tgApi('sendMessage', { chat_id: chatId,
         text: 'Передал диспетчеру — ответят в ближайшие минуты.' }, token);
+}
+
+async function runDriverBotPoll() {
+  const token = driverBotToken();
+  if (!token) return;
+  if (telegramConfig().webhookBase) return; // вебхуки активны — поллинг выключен
+  try {
+    const offset = Number(db.prepare(`SELECT value FROM app_meta WHERE key='tgd_offset'`).get()?.value || 0);
+    const answer = await tgApi('getUpdates', { offset: offset + 1, timeout: 0,
+      allowed_updates: ['message', 'callback_query'] }, token);
+    if (!answer?.ok) return;
+    for (const update of answer.result || []) {
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('tgd_offset',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(update.update_id));
+      await processDriverUpdate(update, token);
     }
   } catch (error) { console.error('runDriverBotPoll:', error.message); }
 }
@@ -1742,19 +1749,49 @@ setTimeout(runDriverRemindWatch, 50_000);
 // ── Поллер Telegram: привязка чатов командой /start КОД ──
 // Long polling раз в 20 сек (вебхук не поставить: самоподписанный
 // сертификат). Код выдаёт планер (кнопка «🔔 Уведомления»), живёт 15 минут.
-async function runTelegramPoll() {
-  if (!telegramConfig().botToken) return;
+// ── Вебхуки Telegram: при заданном settings.telegram.webhookBase оба бота
+// переводятся на push-доставку (мгновенные реакции вместо опроса раз в
+// 20 с). Секрет — заголовок X-Telegram-Bot-Api-Secret-Token. Пустая
+// настройка возвращает поллинг (deleteWebhook).
+function telegramWebhookSecret() {
+  let secret = db.prepare(`SELECT value FROM app_meta WHERE key='tg_webhook_secret'`).get()?.value;
+  if (!secret) {
+    secret = randomUUID().replace(/-/g, '');
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('tg_webhook_secret',?)`).run(secret);
+  }
+  return secret;
+}
+async function syncTelegramWebhooks() {
   try {
-    const offset = Number(db.prepare(`SELECT value FROM app_meta WHERE key='tg_offset'`).get()?.value || 0);
-    const answer = await tgApi('getUpdates', { offset: offset + 1, timeout: 0, allowed_updates: ['message'] });
-    if (!answer?.ok) return;
-    const result = answer.result;
-    for (const update of result || []) {
-      db.prepare(`INSERT INTO app_meta(key,value) VALUES('tg_offset',?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(update.update_id));
+    const config = telegramConfig();
+    const base = String(config.webhookBase || '').trim().replace(/\/+$/, '');
+    const bots = [
+      config.botToken && { token: config.botToken, path: 'staff', updates: ['message'] },
+      config.driverBotToken && { token: config.driverBotToken, path: 'driver',
+        updates: ['message', 'callback_query'] }
+    ].filter(Boolean);
+    for (const bot of bots) {
+      if (base) {
+        const answer = await tgApi('setWebhook', {
+          url: `${base}/api/telegram/webhook/${bot.path}`,
+          secret_token: telegramWebhookSecret(),
+          allowed_updates: bot.updates, drop_pending_updates: false
+        }, bot.token);
+        console.log(`telegram webhook ${bot.path}:`, answer?.ok ? 'включён' : JSON.stringify(answer?.description || answer));
+      } else {
+        await tgApi('deleteWebhook', { drop_pending_updates: false }, bot.token);
+        console.log(`telegram webhook ${bot.path}: выключен (поллинг)`);
+      }
+    }
+  } catch (error) { console.error('syncTelegramWebhooks:', error.message); }
+}
+setTimeout(syncTelegramWebhooks, 25_000);
+
+// Обработка одного обновления staff-бота — общая для поллера и вебхука.
+function processStaffUpdate(update) {
       const chatId = String(update.message?.chat?.id || '');
       const messageText = String(update.message?.text || '').trim();
-      if (!chatId || !messageText) continue;
+      if (!chatId || !messageText) return;
       const codeMatch = messageText.match(/^\/start\s+([A-Za-z0-9]{4,12})$/);
       if (codeMatch) {
         const key = `tg_link_${codeMatch[1].toUpperCase()}`;
@@ -1783,6 +1820,20 @@ async function runTelegramPoll() {
         db.prepare(`UPDATE users SET telegram_chat_id=NULL WHERE telegram_chat_id=?`).run(chatId);
         sendTelegramTo([chatId], 'Отвязано. Вернуться: кнопка «🔔» в планере.');
       }
+}
+
+async function runTelegramPoll() {
+  if (!telegramConfig().botToken) return;
+  if (telegramConfig().webhookBase) return; // вебхуки активны — поллинг выключен
+  try {
+    const offset = Number(db.prepare(`SELECT value FROM app_meta WHERE key='tg_offset'`).get()?.value || 0);
+    const answer = await tgApi('getUpdates', { offset: offset + 1, timeout: 0, allowed_updates: ['message'] });
+    if (!answer?.ok) return;
+    const result = answer.result;
+    for (const update of result || []) {
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('tg_offset',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(update.update_id));
+      processStaffUpdate(update);
     }
   } catch { /* сеть/телеграм недоступны — следующий тик */ }
 }
@@ -3230,6 +3281,22 @@ async function api(request, response, url) {
   }
 
   // Telegram: одноразовый код привязки чата и смена режима уведомлений.
+  // Вебхуки Telegram: push-доставка обновлений обоих ботов. Аутентификация
+  // по секретному заголовку (secret_token из setWebhook); ответ всегда 200,
+  // чтобы Telegram не копил ретраи — ошибки обработки видны в логах.
+  match = route(/^\/api\/telegram\/webhook\/(staff|driver)$/, pathname);
+  if (match && request.method === 'POST') {
+    if (request.headers['x-telegram-bot-api-secret-token'] !== telegramWebhookSecret()) {
+      return errorJson(response, 403, 'нет');
+    }
+    const update = await readJson(request);
+    json(response, 200, { ok: true });
+    try {
+      if (match[0] === 'staff') processStaffUpdate(update);
+      else await processDriverUpdate(update, driverBotToken());
+    } catch (error) { console.error(`webhook ${match[0]}:`, error.message); }
+    return;
+  }
   if (request.method === 'POST' && pathname === '/api/telegram/link') {
     const user = requireUser(request, response);
     if (!user) return;
@@ -6112,6 +6179,8 @@ async function api(request, response, url) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));
+    // Изменение настроек Telegram может включать/выключать вебхуки.
+    if (body.telegram !== undefined) syncTelegramWebhooks();
     return json(response, 200, { ok: true });
   }
   if (request.method === 'PUT' && pathname === '/api/admin/reference') {
