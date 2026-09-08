@@ -2084,7 +2084,7 @@ const straightKm = (a, b, c, d) => {
 const legKey = (a, b) => [a, b].sort().join('|');
 const calibratedRoadFactor = () => {
   const raw = Number(db.prepare(`SELECT value FROM app_meta WHERE key='road_factor_fact'`).get()?.value);
-  return Number.isFinite(raw) && raw >= 1.05 && raw <= 1.6 ? raw : ROAD_FACTOR;
+  return Number.isFinite(raw) && raw >= 1.05 && raw <= 1.45 ? raw : ROAD_FACTOR;
 };
 // Фактический пробег рейса: сумма дневных пробегов при ПОЛНОМ покрытии
 // дней рейса данными; иначе null (краевые дни делятся между рейсами —
@@ -2131,15 +2131,21 @@ function rebuildLegFacts() {
       facts.sort((a, b) => a - b);
       upsert.run(key, facts.length, Math.round(facts[Math.floor(facts.length / 2)]));
     }
-    // Калибровка дорожного коэффициента: медиана(факт/прямая).
+    // Калибровка дорожного коэффициента: по МЕДИАНАМ плеч справочника
+    // (2+ примера) против их прямых — одиночные рейсы загрязнены краевыми
+    // днями цепочки и завышали коэффициент (первая калибровка дала 1,55).
     const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
-    const ratios = clean.map(row => {
-      const a = point.get(row.from);
-      const b = point.get(row.to);
-      const straight = a && b ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
-      return straight > 100 ? row.fact / straight : null;
-    }).filter(v => Number.isFinite(v) && v > 1 && v < 2).sort((a, b) => a - b);
-    if (ratios.length >= 10) {
+    const pairOf = new Map(clean.map(row => [row.key, row]));
+    const ratios = db.prepare(`SELECT key, median_km FROM leg_fact_km WHERE samples >= 2`).all()
+      .map(leg => {
+        const pair = pairOf.get(leg.key);
+        if (!pair) return null;
+        const a = point.get(pair.from);
+        const b = point.get(pair.to);
+        const straight = a && b ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
+        return straight > 300 ? leg.median_km / straight : null;
+      }).filter(v => Number.isFinite(v) && v > 1 && v < 1.8).sort((a, b) => a - b);
+    if (ratios.length >= 8) {
       const factor = Math.round(ratios[Math.floor(ratios.length / 2)] * 100) / 100;
       db.prepare(`INSERT INTO app_meta(key,value) VALUES('road_factor_fact',?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(factor));
@@ -2153,7 +2159,7 @@ function rebuildLegFacts() {
 // правка при отличии > 10%. Помечается в app_meta.
 function recalcSeptemberKm() {
   try {
-    if (db.prepare(`SELECT value FROM app_meta WHERE key='km_recalc_2026_09'`).get()) return;
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='km_recalc_2026_09_v2'`).get()) return;
     const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
     let updated = 0;
     for (const trip of db.prepare(`SELECT t.id, t.order_id, t.distance_km,
@@ -2192,7 +2198,27 @@ function recalcSeptemberKm() {
         .run(next, trip.order_id);
       updated += 1;
     }
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('km_recalc_2026_09',?)`)
+    // Безадресные заявки (главные жертвы заглушки 500): грубая оценка по
+    // центрам геозон — для дальняка в разы честнее пятисот километров.
+    const zonePoint = db.prepare('SELECT latitude, longitude FROM zones WHERE id=?');
+    for (const trip of db.prepare(`SELECT t.id, t.order_id, t.distance_km,
+        t.from_zone_id, t.to_zone_id
+      FROM trips t LEFT JOIN orders o ON o.id=t.order_id
+      WHERE t.status<>'rejected' AND t.starts_at >= '2026-09-01'
+        AND (o.id IS NULL OR o.from_address_id IS NULL OR o.to_address_id IS NULL)`).all()) {
+      const a = zonePoint.get(trip.from_zone_id);
+      const b = zonePoint.get(trip.to_zone_id);
+      const straight = a && b ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
+      if (!straight || straight < 600) continue; // ближняк по центрам зон слишком груб
+      const next = Math.round(straight * calibratedRoadFactor());
+      if (!trip.distance_km || trip.distance_km >= next * 0.6) continue; // правим только явные заглушки
+      db.prepare(`UPDATE trips SET distance_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(next, trip.id);
+      if (trip.order_id) db.prepare(`UPDATE orders SET planned_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(next, trip.order_id);
+      updated += 1;
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('km_recalc_2026_09_v2',?)`)
       .run(String(updated));
     audit(db, null, 'km-recalc', 'system', null,
       { period: '2026-09', updated, note: 'пересчёт плановых км по фактическим плечам и калиброванному коэффициенту' }, 'migration');
@@ -4610,7 +4636,15 @@ async function api(request, response, url) {
       WHERE (from_zone_id=? AND to_zone_id=?) OR (from_zone_id=? AND to_zone_id=?)
       LIMIT 1`).get(order.from_zone_id, order.to_zone_id, order.to_zone_id, order.from_zone_id);
     // Плановый километраж по адресам заявки — приоритет; зонный тариф — фолбэк.
-    const distance = Number(distanceKm || order.planned_km || rate?.distance_km || 500);
+    // Последний фолбэк перед заглушкой 500: центры геозон × калиброванный
+    // коэффициент — дальняк без адресов больше не получает «500 км».
+    const zoneFallback = (() => {
+      const a = db.prepare('SELECT latitude, longitude FROM zones WHERE id=?').get(order.from_zone_id);
+      const b = db.prepare('SELECT latitude, longitude FROM zones WHERE id=?').get(order.to_zone_id);
+      const straight = a && b ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
+      return straight > 600 ? Math.round(straight * calibratedRoadFactor()) : null;
+    })();
+    const distance = Number(distanceKm || order.planned_km || rate?.distance_km || zoneFallback || 500);
     const startsAt = startsAtOverride || order.window_from;
     // Транзит: (км/50 + операции×3ч) × 1,5 — каждая промежуточная погрузка
     // и выгрузка добавляет операцию. Окно клиента шире расчёта — план по окну.
