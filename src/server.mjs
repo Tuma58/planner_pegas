@@ -2253,9 +2253,13 @@ setTimeout(mergeCustomerScraps, 30_000);
 // а не зашитая константа: руководитель правит настройку — сегменты, пороги
 // и подсказки пересчитываются сами при следующем пересчёте.
 function variableCostPerKm() {
+  // Ноль в настройке — осознанное значение (слагаемое сведено в costPerKm),
+  // а не «не заполнено»: дефолт подставляется только вместо пустоты.
   const c = settingsObject(db).calculation || {};
-  const perKm = Number(c.costPerKm || 55) + Number(c.insuranceAndRoadsPerKm || 6);
-  const driverKm = Number(c.driverPerTripDay || 4500) / Math.max(200, Number(c.dailyMileageKm || 600));
+  const num = (value, fallback) => (value === null || value === undefined || value === ''
+    || !Number.isFinite(Number(value))) ? fallback : Number(value);
+  const perKm = num(c.costPerKm, 55) + num(c.insuranceAndRoadsPerKm, 6);
+  const driverKm = num(c.driverPerTripDay, 4500) / Math.max(200, num(c.dailyMileageKm, 600) || 600);
   return Math.round((perKm + driverKm) * 10) / 10;
 }
 
