@@ -190,6 +190,15 @@ function newLegDialog(context, plan, customer, flt) {
     } catch (error) { toast(error.message, 'error'); }
   };
 }
+// Светофор потоков: сегмент клиента по марже машино-суток (A/B/C/D).
+// В сетке горит у C/D — их регулярку продлеваем только с новой ставкой.
+function segBadge(plan, customer) {
+  const info = (plan.segments || {})[customer];
+  if (!info || (info.seg !== 'C' && info.seg !== 'D')) return '';
+  const color = info.seg === 'D' ? 'var(--bad,#b1483e)' : '#c26f2e';
+  return ` <b style="color:${color}" title="Сегмент ${info.seg}: маржа ${Math.round(info.marginDay / 1000)} т₽/машино-сутки без НДС (${info.n} рейс. за 60 дн) — слоты продлевать только с повышенной ставкой">[${info.seg}]</b>`;
+}
+
 const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
 
@@ -336,7 +345,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     <td class="plan-fix" style="white-space:nowrap;max-width:150px;min-width:150px;overflow:hidden;text-overflow:ellipsis">
       ${firstOfGroup
     ? `<b data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer"
-        title="Плечи клиента: план, взято, суммы — с правкой слотов">${escapeHtml(row.customer)}</b>${legsOfCustomer > 1
+        title="Плечи клиента: план, взято, суммы — с правкой слотов">${escapeHtml(row.customer)}</b>${segBadge(plan, row.customer)}${legsOfCustomer > 1
       ? ` <small class="muted" title="Направлений клиента в сетке">×${legsOfCustomer}</small>` : ''}`
     : `<span class="muted" data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer;opacity:.6"
         title="Ещё одно плечо клиента ${escapeHtml(row.customer)}">↳ ещё плечо</span>`}</td>
@@ -547,7 +556,7 @@ function bookWeekDialog(context, plan, flt = {}) {
           <th class="num">Ставка</th><th class="num">Сумма</th></tr></thead>
         <tbody>${legs.map((leg, index) => `<tr>
           <td><input type="checkbox" id="bwLeg${index}"></td>
-          <td>${escapeHtml(leg.customer)}${leg.hasPoints ? ''
+          <td>${escapeHtml(leg.customer)}${segBadge(plan, leg.customer)}${leg.hasPoints ? ''
     : ' <span title="У плеча нет заявок с пунктами — адреса придётся заполнить в заявках руками">⚠</span>'}</td>
           <td>${escapeHtml(leg.leg)}</td>
           <td class="num">${leg.orders}</td>

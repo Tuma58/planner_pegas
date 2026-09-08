@@ -622,6 +622,20 @@ function cdSegmentLine(dayIso, todayIso) {
   return ` · 🚦 взяты C/D-клиенты: ${rows.length} заявок (${list}${rows.length > 6 ? '…' : ''})`;
 }
 
+// ⏳ Невыставленные претензии за простой: реестр молча копил 4,4 млн —
+// сводка каждое утро напоминает сумму, возраст и главных должников.
+function demurrageBacklogLine() {
+  const row = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(amount),0) s, MIN(created_day) oldest
+    FROM demurrage_claims WHERE status='new'`).get();
+  if (!row.n) return '';
+  const ageDays = Math.max(0, Math.round((Date.now() - Date.parse(row.oldest)) / 86_400_000));
+  const top = db.prepare(`SELECT customer_name, SUM(amount) s FROM demurrage_claims
+    WHERE status='new' GROUP BY customer_name ORDER BY s DESC LIMIT 3`).all()
+    .map(item => `${item.customer_name.slice(0, 20)} ${Math.round(item.s / 1000)} т₽`).join(', ');
+  return ` · ⏳ простои к выставлению: ${row.n} шт на ${Math.round(row.s / 1000)} т₽` +
+    ` (висят до ${ageDays} дн; топ: ${top})`;
+}
+
 // Качество автоподбора за день: доля принятых рекомендаций.
 function assignQualityLine(dayIso, todayIso) {
   const rows = db.prepare(`SELECT outcome, COUNT(*) c FROM assign_drafts
@@ -715,7 +729,7 @@ function runDailyFleetReport() {
             ` · укомплектованность ${att.staffing.toFixed(2)}/${att.staffingTarget}`
           : ' · явка за день не велась';
       })() +
-      cdSegmentLine(dayIso, todayIso) + assignQualityLine(dayIso, todayIso) +
+      cdSegmentLine(dayIso, todayIso) + assignQualityLine(dayIso, todayIso) + demurrageBacklogLine() +
       ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
@@ -3074,6 +3088,78 @@ function runStaleTransfersWatch() {
 setInterval(runStaleTransfersWatch, 30 * 60_000);
 setTimeout(runStaleTransfersWatch, 70_000);
 
+// ── Напоминание продажам о невыставленных претензиях за простой ──
+// Реестр «⏳ Простои П/В» формирует документы сам, но выставление — ручной
+// шаг продаж, и он молча пропускался (579 претензий на 4,4 млн к 08.09).
+// Раз в день после 09:00 МСК, пока сумма к выставлению больше 300 т₽.
+function runDemurrageNudge() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCHours() < 9) return;
+    const day = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='demurrage_nudge_day'`).get()?.value === day) return;
+    const row = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(amount),0) s
+      FROM demurrage_claims WHERE status='new'`).get();
+    if (!row.n || row.s < 300_000) return;
+    const top = db.prepare(`SELECT customer_name, COUNT(*) n, SUM(amount) s FROM demurrage_claims
+      WHERE status='new' GROUP BY customer_name ORDER BY s DESC LIMIT 3`).all()
+      .map(item => `${item.customer_name.slice(0, 22)} — ${item.n} шт на ${Math.round(item.s / 1000)} т₽`).join('; ');
+    notify('sales', `⏳ Претензии за простой ждут выставления: ${row.n} шт на ${
+      Math.round(row.s / 1000)} т₽. Топ: ${top}. Реестр «⏳ Простои П/В» — документ на счёт готов к печати; выставляйте или отменяйте с причиной, простой у ворот клиента — это его деньги, а не наши потери`, null, null, { category: 'claims' });
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('demurrage_nudge_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+  } catch (error) { console.error('Напоминание о простоях:', error.message); }
+}
+setInterval(runDemurrageNudge, 30 * 60_000);
+setTimeout(runDemurrageNudge, 80_000);
+
+// ── Сторож зависаний в пути: стоянка ≥18 ч вне точек рейса ──
+// Кейс Винторга: машина простояла в Новосибирске 123 часа, и никто не
+// заметил — «в рейсе» в планере выглядит как движение. Раз в 2 часа
+// проверяем рейсы в пути по стоянкам Пилота; сигнал по рейсу один раз.
+async function runHangWatch() {
+  try {
+    const trips = db.prepare(`SELECT t.id, t.order_id, t.customer_name, t.order_no, v.plate, tr.imei
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      JOIN vehicle_trackers tr ON tr.vehicle_id=t.vehicle_id
+      WHERE t.status='run' AND t.hang_alert_at IS NULL AND COALESCE(tr.imei,'')<>''`).all();
+    if (!trips.length) return;
+    const nowS = Math.floor(Date.now() / 1000);
+    let sent = 0;
+    for (const trip of trips) {
+      const answer = await pilotApi(`/api/v3/vehicles/track/stops?imei=${trip.imei}&ts=${nowS - 36 * 3600}&te=${nowS}`);
+      const stops = answer?.data?.stops || [];
+      const last = stops[stops.length - 1];
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (!last) continue;
+      const durH = Number(last.duration) / 3600;
+      const endMs = (Number(last.ts) + Number(last.duration)) * 1000;
+      // Ловим только продолжающуюся сейчас стоянку от 18 часов.
+      if (durH < 18 || Date.now() - endMs > 2 * 3_600_000) continue;
+      // Стоянка у адреса заявки — это простой П/В, его считает реестр
+      // претензий; зависание — только вне известных точек рейса.
+      const order = trip.order_id
+        ? db.prepare('SELECT from_address_id, to_address_id FROM orders WHERE id=?').get(trip.order_id)
+        : null;
+      const nearPoint = [order?.from_address_id, order?.to_address_id]
+        .map(id => id && db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?').get(id))
+        .filter(point => point && Number.isFinite(point.latitude))
+        .some(point => straightKm(Number(last.lat), Number(last.lon),
+          point.latitude, point.longitude) <= 5);
+      if (nearPoint) continue;
+      db.prepare(`UPDATE trips SET hang_alert_at=CURRENT_TIMESTAMP WHERE id=?`).run(trip.id);
+      notify('dispatcher', `🛑 ${trip.plate} завис в пути: стоит уже ${Math.round(durH)} ч ` +
+        `(рейс №${trip.order_no || '?'} · ${(trip.customer_name || '').slice(0, 28)}). ` +
+        `Свяжитесь с водителем: поломка, ожидание у клиента или брошенный рейс — и отметьте причину в карточке`,
+      null, null, { category: 'gps_control' });
+      sent += 1;
+    }
+    if (sent) console.log(`Сторож зависаний: сигналов ${sent}`);
+  } catch (error) { console.error('Сторож зависаний:', error.message); }
+}
+setInterval(runHangWatch, 2 * 3_600_000);
+setTimeout(runHangWatch, 120_000);
+
 function runMorningDirections() {
   try {
     const msk = new Date(Date.now() + 3 * 3_600_000);
@@ -3814,7 +3900,12 @@ async function api(request, response, url) {
     const month = /^\d{4}-\d{2}$/.test(String(url.searchParams.get('month')))
       ? url.searchParams.get('month')
       : new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 7);
-    return json(response, 200, deliveryPlan(db, month));
+    const plan = deliveryPlan(db, month);
+    // Светофор потоков: сегмент клиента (A/B/C/D по марже машино-суток)
+    // подсвечивает в сетке, чью регулярку продлевать только новой ставкой.
+    plan.segments = Object.fromEntries([...new Set(plan.slots.map(slot => slot.customer_name))]
+      .map(name => [name, customerSegment(name)]).filter(([, info]) => info));
+    return json(response, 200, plan);
   }
   // Заполнение сетки из истории (регулярные плечи за 60 суток).
   if (request.method === 'POST' && pathname === '/api/delivery-plan/seed') {
@@ -4216,6 +4307,7 @@ async function api(request, response, url) {
       items: db.prepare(`SELECT c.*,f.name from_name,t.name to_name FROM customers c
         LEFT JOIN zones f ON f.id=c.from_zone_id LEFT JOIN zones t ON t.id=c.to_zone_id
         WHERE c.name LIKE ? ORDER BY c.trip_count DESC LIMIT 500`).all(query)
+        .map(customer => ({ ...customer, segment: customerSegment(customer.name) }))
     });
   }
   if (request.method === 'POST' && pathname === '/api/customers') {

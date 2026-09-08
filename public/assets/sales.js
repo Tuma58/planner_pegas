@@ -1068,6 +1068,7 @@ export async function renderSales(container, context) {
             <input name="customerName" list="salesCustomers" placeholder="выберите из справочника или введите нового"
               autocomplete="off" required>
             <datalist id="salesCustomers"></datalist>
+            <small id="salesCustSeg" style="display:block;margin-top:2px"></small>
           </label>
           <div class="form-grid">
             <label class="field">Пункт погрузки<input name="fromPoint" id="salesFromPoint" list="salesPlaces"
@@ -1313,8 +1314,27 @@ export async function renderSales(container, context) {
   // Выбор известного клиента подставляет его основное направление и рыночную ставку.
   wireNetField(container.querySelector('#salesForm'),
     container.querySelector('#salesRateNet'), data);
+  // Светофор потоков: сегмент клиента по марже машино-суток без НДС —
+  // продажи видят цену клиента для парка ДО бронирования заявки.
+  const SEG_BADGE = {
+    A: ['🟢 A — локомотив парка', 'color:var(--ok,#2e7d6b)'],
+    B: ['🟡 B — рабочая база', 'color:#b58a2e'],
+    C: ['🟠 C — слабая маржа: поднимайте ставку', 'color:#c26f2e'],
+    D: ['🔴 D — возим дешевле переменных: только с повышенной ставкой', 'color:var(--bad,#b1483e)']
+  };
+  const custSegLine = name => {
+    const box = container.querySelector('#salesCustSeg');
+    if (!box) return;
+    const entry = (state.customersDirectory || []).find(item => item.name === name);
+    const info = entry?.segment;
+    if (!info) { box.textContent = ''; return; }
+    const [label, style] = SEG_BADGE[info.seg] || ['', ''];
+    box.innerHTML = `<span style="${style};font-weight:700">${label}</span>
+      <span class="muted"> · маржа ${Math.round(info.marginDay / 1000)} т₽/машино-сутки (${info.n} рейс.)</span>`;
+  };
   container.querySelector('[name="customerName"]').addEventListener('change', event => {
     const name = event.currentTarget.value.trim();
+    custSegLine(name);
     const entries = (state.customersDirectory || []).filter(item => item.name === name);
     if (!entries.length) return;
     const main = entries.sort((a, b) => b.trip_count - a.trip_count)[0];
