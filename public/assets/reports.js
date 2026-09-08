@@ -601,7 +601,8 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Рейсов: <b>${opSum.n}</b></span>
         <span class="rsum">GPS-пробег: <b>${Math.round(techSum.km).toLocaleString('ru-RU')} км</b></span>
         ${techAvg && opAvg ? `<span class="rsum">Машина движется <b>${Math.round(opAvg / techAvg * 100)}%</b> времени рейса</span>` : ''}</div>
-      <p class="geohint">Техническая — скорость в движении по GPS (потолок ~65–70). Эксплуатационная —
+      <p class="geohint">Техническая — пробег с одометра CAN-шины (у машин без CAN — фолбэк GPS)
+        на часы движения; потолок ~65–70. Эксплуатационная —
         километры рейса на всё его время: разрыв между ними = стоянки (погрузка, выгрузка, очереди,
         отдых). Рычаг — не газ, а сокращение стоянок: смотрите разрез «Клиенты».</p>
       ${chart}

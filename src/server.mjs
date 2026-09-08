@@ -1995,7 +1995,11 @@ async function collectDailyRuns() {
   try {
     if (!monitoringConfig().login) return;
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const doneUntil = db.prepare(`SELECT value FROM app_meta WHERE key='daily_runs_done'`).get()?.value;
+    let doneUntil = db.prepare(`SELECT value FROM app_meta WHERE key='daily_runs_done'`).get()?.value;
+    // Миграция на CAN-пробег: строки без can_km пересобираются заново.
+    const needCan = db.prepare(`SELECT COUNT(*) all_rows,
+      SUM(CASE WHEN can_km IS NOT NULL THEN 1 ELSE 0 END) with_can FROM vehicle_daily_runs`).get();
+    if (needCan.all_rows > 0 && !needCan.with_can) doneUntil = null;
     if (doneUntil >= yesterday) return;
     const have = db.prepare(`SELECT COUNT(*) n FROM vehicle_daily_runs`).get().n;
     const fromDay = doneUntil
@@ -2003,23 +2007,25 @@ async function collectDailyRuns() {
       : new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
     const ts = Math.floor(Date.parse(fromDay + 'T00:00:00Z') / 1000);
     const te = Math.floor(Date.parse(yesterday + 'T23:59:59Z') / 1000);
-    const upsert = db.prepare(`INSERT INTO vehicle_daily_runs(vehicle_id,day,km,move_hours,max_speed)
-      VALUES(?,?,?,?,?)
-      ON CONFLICT(vehicle_id,day) DO UPDATE SET km=excluded.km,
+    const upsert = db.prepare(`INSERT INTO vehicle_daily_runs(vehicle_id,day,km,can_km,move_hours,max_speed)
+      VALUES(?,?,?,?,?,?)
+      ON CONFLICT(vehicle_id,day) DO UPDATE SET km=excluded.km, can_km=excluded.can_km,
         move_hours=excluded.move_hours, max_speed=excluded.max_speed`);
     for (const tracker of db.prepare(`SELECT vehicle_id, imei FROM vehicle_trackers`).all()) {
       const answer = await pilotApi(`/api/v3/vehicles/trips?imei=${tracker.imei}&ts=${ts}&te=${te}`);
       const byDay = new Map();
       for (const segment of answer?.data || []) {
         const day = new Date(segment.ts * 1000).toISOString().slice(0, 10);
-        const agg = byDay.get(day) || { km: 0, h: 0, max: 0 };
+        const agg = byDay.get(day) || { km: 0, canKm: 0, h: 0, max: 0 };
         agg.km += Number(segment.gps) || 0;
+        agg.canKm += Number(segment.can) || 0;
         agg.h += (segment.te - segment.ts) / 3600;
         agg.max = Math.max(agg.max, Number(segment.maxspeed) || 0);
         byDay.set(day, agg);
       }
       for (const [day, agg] of byDay) {
         upsert.run(tracker.vehicle_id, day, Math.round(agg.km * 10) / 10,
+          Math.round(agg.canKm * 10) / 10,
           Math.round(agg.h * 100) / 100, agg.max);
       }
       await new Promise(resolve => setTimeout(resolve, 150)); // лимит Пилота 8 rps
@@ -6514,7 +6520,11 @@ async function api(request, response, url) {
     const to = String(url.searchParams.get('to') || '').slice(0, 10);
     if (!from || !to) return errorJson(response, 422, 'Задайте период');
     // Динамика по дням: техническая из дневных пробегов GPS.
-    const techDays = db.prepare(`SELECT day, SUM(km) km, SUM(move_hours) h, COUNT(*) vehicles
+    // Пробег: одометр CAN, у машин без CAN-подключения — фолбэк GPS.
+    const techDays = db.prepare(`SELECT day,
+        SUM(COALESCE(NULLIF(can_km, 0), km)) km,
+        SUM(move_hours) h, COUNT(*) vehicles,
+        SUM(CASE WHEN COALESCE(can_km, 0) > 0 THEN 1 ELSE 0 END) canVehicles
       FROM vehicle_daily_runs WHERE day >= ? AND day < ? AND move_hours > 0.5
       GROUP BY day ORDER BY day`).all(from, to);
     // Эксплуатационная по дню выгрузки завершённых рейсов.
@@ -6528,7 +6538,7 @@ async function api(request, response, url) {
       GROUP BY day ORDER BY day`).all(from, to);
     // Разрез ТС: техническая и эксплуатационная по каждой машине.
     const byVehicle = db.prepare(`SELECT v.id, v.plate, v.driver_name,
-        (SELECT SUM(km) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gkm,
+        (SELECT SUM(COALESCE(NULLIF(can_km, 0), km)) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gkm,
         (SELECT SUM(move_hours) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gh,
         (SELECT MAX(max_speed) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gmax,
         (SELECT SUM(t.distance_km) FROM trips t WHERE t.vehicle_id=v.id AND t.status IN ('unloaded','done','paid')

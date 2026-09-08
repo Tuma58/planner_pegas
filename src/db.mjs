@@ -488,6 +488,9 @@ function migrateColumns(db) {
     move_hours REAL NOT NULL DEFAULT 0,
     max_speed REAL,
     PRIMARY KEY (vehicle_id, day))`);
+  // Пробег с одометра CAN-шины (методика руководителя 08.09): точнее GPS;
+  // GPS-км остаются в km — пригодятся для отклонений от маршрута.
+  ensure('vehicle_daily_runs', 'can_km', 'REAL');
   db.exec(`CREATE TABLE IF NOT EXISTS trailer_positions (
     imei TEXT PRIMARY KEY,
     number TEXT NOT NULL DEFAULT '',
