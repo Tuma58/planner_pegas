@@ -1109,7 +1109,13 @@ export function customerCard(db, name, nowMs = Date.now()) {
       firstTripAt: trips.length ? trips.map(trip => trip.starts_at).sort()[0] : null,
       topLanes: Object.entries(lanes).sort((a, b) => b[1] - a[1]).slice(0, 4)
         .map(([lane, count]) => ({ lane, count })),
-      claimsCount: claims.c, claimsSum: claims.s
+      claimsCount: claims.c, claimsSum: claims.s,
+      // Фактические «ворота» клиента (медианы из gate_facts) — аргумент для
+      // договора: сколько бесплатного простоя закладывать и какой тариф.
+      gateLoad: db.prepare(`SELECT median_hours h, samples s FROM gate_facts WHERE key=?`)
+        .get(`cust-load:${String(name).trim().toLowerCase()}`) || null,
+      gateUnload: db.prepare(`SELECT median_hours h, samples s FROM gate_facts WHERE key=?`)
+        .get(`cust-unload:${String(name).trim().toLowerCase()}`) || null
     },
     dates: upcomingCustomerDates(db, nowMs, 30).filter(item => item.kind === 'holiday' || item.customer === name)
   };

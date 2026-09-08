@@ -1980,6 +1980,9 @@ function runGpsControlWatch() {
         fresh[key] = mark;
         if (nowMs - mark.since >= 10 * 60_000 && !mark.told) {
           mark.told = nowMs;
+          // Журнал подсказки: точность сторожа меряется в «📐 Нормативы недели».
+          db.prepare(`INSERT INTO gps_hint_log(id,trip_id,stop_id,kind) VALUES(?,?,?,'arrival')`)
+            .run(randomUUID(), row.trip_id, row.nextStopId);
           notify('dispatcher', `📡 GPS: ${row.plate} стоит у точки «${String(row.nextStopPointText || '').slice(0, 40)}» `
             + `уже ${Math.round((nowMs - mark.since) / 60_000)} мин — похоже, прибыл. Подтвердите факт в карточке рейса `
             + `(факт ставит человек, GPS только подсказывает)`, 'trip', row.trip_id, { category: 'gps_control' });
@@ -3343,9 +3346,17 @@ function runMorningDirections() {
     if (!deficit.length) return;
     const lines = deficit.map(row =>
       `${row.zone}: приедут ${row.arrive}, обратных заявок ${row.out} — нужно ещё ${row.gap}`);
+    // Живой порог решения: цена суток ожидания = текущая медиана маржи
+    // машино-суток парка, порожняк = переменные из настроек. Обновляются
+    // сами — продажи всегда видят актуальную цену вопроса.
+    const norms = customerSegmentsCache.norms || {};
+    const dayCost = Math.round((norms.parkMedian || 18_000) / 1000);
+    const kmCost = norms.varCost || 70;
     notify('sales', `🧭 Направления дня (72 ч): машины освобождаются там, где нет обратных грузов — ` +
-      lines.join('; ') + `. Продаём маршрут целиком, а не одно плечо: заявка из зоны прибытия ` +
-      `дороже простоя и порожняка (пороги ставок — в «Конструктор → 📚 Шаблоны кругов»)`, null, null, { category: 'sales_directions' });
+      lines.join('; ') + `. Продаём маршрут целиком, а не одно плечо. ` +
+      `Порог решения сегодня: сутки ожидания ≈ ${dayCost} т₽ маржи, порожняк ${kmCost} ₽/км — ` +
+      `спот выгоднее порожняка, если ставка выше км×${kmCost} + дни ожидания×${dayCost} т₽`,
+    null, null, { category: 'sales_directions' });
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('morning_directions_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
   } catch (error) {
@@ -3631,6 +3642,29 @@ function runNormsDigest() {
         const gateCust = db.prepare(`SELECT COUNT(*) n FROM gate_facts
           WHERE key LIKE 'cust-%' AND samples >= 3`).get().n;
         return roadLegs ? ` · умный транзит: дорога ${roadLegs} плеч, ворота ${gateAddr} адресов / ${gateCust} клиентов` : '';
+      })() +
+      (() => {
+        // Точность GPS-подсказок «похоже, прибыл»: подтверждена ли подсказка
+        // фактом прибытия. Падает — пороги сторожа пора пересматривать.
+        const hints = db.prepare(`SELECT h.stop_id FROM gps_hint_log h
+          WHERE h.kind='arrival' AND h.sent_at >= datetime('now','-7 day')`).all();
+        if (hints.length < 5) return '';
+        const confirmed = hints.filter(hint => hint.stop_id &&
+          db.prepare(`SELECT 1 FROM trip_stops WHERE id=? AND actual_arrival IS NOT NULL`)
+            .get(hint.stop_id)).length;
+        return ` · GPS-подсказки прибытия: подтверждено ${confirmed} из ${hints.length} (${Math.round(confirmed / hints.length * 100)}%)`;
+      })() +
+      (() => {
+        // Факт суточного пробега против настройки калькуляции: расходятся
+        // >10% — мягкая подсказка обновить (настройка 0 = не используется).
+        const fact = db.prepare(`SELECT AVG(dayKm) v FROM (SELECT SUM(COALESCE(can_km,km)) dayKm
+          FROM vehicle_daily_runs WHERE day >= date('now','-30 day')
+          GROUP BY day, vehicle_id HAVING dayKm > 50)`).get()?.v;
+        if (!fact) return '';
+        const conf = Number((settingsObject(db).calculation || {}).dailyMileageKm) || 0;
+        const line = ` · суточный пробег факт ${Math.round(fact)} км`;
+        return conf && Math.abs(fact - conf) / conf > 0.1
+          ? `${line} (в настройках ${conf} — 💡 обновите калькуляцию)` : line;
       })() +
       (hints.length ? ` · 💡 ${hints.join('; ')}` : ' · без тревог'));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_last',?)

@@ -503,6 +503,14 @@ function migrateColumns(db) {
   // Фактические «ворота» погрузки/выгрузки: медиана часов на точке по
   // адресу (точно) и по клиенту (фолбэк). Ключи: addr-load:<id>,
   // addr-unload:<id>, cust-load:<имя>, cust-unload:<имя>.
+  // Журнал GPS-подсказок «похоже, прибыл»: по нему меряется точность
+  // сторожа (доля подсказок, подтверждённых отметкой) — метрика доверия.
+  db.exec(`CREATE TABLE IF NOT EXISTS gps_hint_log (
+    id TEXT PRIMARY KEY,
+    trip_id TEXT NOT NULL,
+    stop_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'arrival',
+    sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
   db.exec(`CREATE TABLE IF NOT EXISTS gate_facts (
     key TEXT PRIMARY KEY,
     samples INTEGER NOT NULL,

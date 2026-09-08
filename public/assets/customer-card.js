@@ -42,6 +42,15 @@ export async function customerCardDialog(name, context) {
       <div class="cc-tile"><b>${money(stats.avgCheck)}</b><span>средний чек</span><small>всего ${money(stats.sumAll)}</small></div>
       <div class="cc-tile ${stats.daysSinceLast != null && stats.daysSinceLast > 30 ? 'warn' : ''}"><b>${stats.daysSinceLast != null ? `${stats.daysSinceLast} дн` : '—'}</b><span>с последнего рейса</span><small>${stats.lastTripAt ? fmtDay(stats.lastTripAt) : 'рейсов не было'}</small></div>
       <div class="cc-tile ${stats.claimsCount ? 'warn' : ''}"><b>${stats.claimsCount}</b><span>претензий по простою</span><small>${money(stats.claimsSum)}</small></div>
+      ${stats.gateLoad || stats.gateUnload ? (() => {
+    // Фактические ворота клиента — аргумент для договора: рекомендуемый
+    // бесплатный простой = наибольшая медиана, округлённая вверх, +1 ч.
+    const worst = Math.max(stats.gateLoad?.h || 0, stats.gateUnload?.h || 0);
+    const gate = value => value ? `${Math.round(value.h * 10) / 10} ч (${value.s} р.)` : '—';
+    return `<div class="cc-tile ${worst > 12 ? 'warn' : ''}"><b>${Math.ceil(worst) + 1} ч</b>
+      <span>рекоменд. бесплатный простой в договор</span>
+      <small>факт ворот: погрузка ${gate(stats.gateLoad)} · выгрузка ${gate(stats.gateUnload)}</small></div>`;
+  })() : ''}
     </div>
     <div class="cc-cols">
       <div>
