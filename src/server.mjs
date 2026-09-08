@@ -2143,9 +2143,9 @@ function rebuildLegFacts() {
         const a = point.get(pair.from);
         const b = point.get(pair.to);
         const straight = a && b ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
-        return straight > 300 ? leg.median_km / straight : null;
+        return straight > 200 ? leg.median_km / straight : null;
       }).filter(v => Number.isFinite(v) && v > 1 && v < 1.8).sort((a, b) => a - b);
-    if (ratios.length >= 8) {
+    if (ratios.length >= 5) {
       const factor = Math.round(ratios[Math.floor(ratios.length / 2)] * 100) / 100;
       db.prepare(`INSERT INTO app_meta(key,value) VALUES('road_factor_fact',?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(factor));
@@ -2159,7 +2159,7 @@ function rebuildLegFacts() {
 // правка при отличии > 10%. Помечается в app_meta.
 function recalcSeptemberKm() {
   try {
-    if (db.prepare(`SELECT value FROM app_meta WHERE key='km_recalc_2026_09_v2'`).get()) return;
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='km_recalc_2026_09_v3'`).get()) return;
     const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
     let updated = 0;
     for (const trip of db.prepare(`SELECT t.id, t.order_id, t.distance_km,
@@ -2218,7 +2218,27 @@ function recalcSeptemberKm() {
         .run(next, trip.order_id);
       updated += 1;
     }
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('km_recalc_2026_09_v2',?)`)
+    // Волна 3: закрытые рейсы, где план всё ещё врёт против чистого факта
+    // GPS/CAN больше чем на 40% (внутризонные дальняки без адресов — зоны
+    // не помогают): ретроспективно план := факт. Для закрытого рейса
+    // фактический пробег — самая честная дистанция.
+    for (const trip of db.prepare(`SELECT t.id, t.order_id, t.vehicle_id, t.distance_km,
+        t.starts_at, COALESCE(t.unloaded_at, t.ends_at) fin
+      FROM trips t JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
+      WHERE t.status IN ('unloaded','done','paid') AND t.starts_at >= '2026-09-01'
+        AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 24
+        AND t.distance_km > 0`).all()) {
+      const fact = tripFactKm(trip.vehicle_id, trip.starts_at, trip.fin);
+      if (!fact) continue;
+      const ratio = fact / trip.distance_km;
+      if (ratio <= 1.4 && ratio >= 0.6) continue;
+      db.prepare(`UPDATE trips SET distance_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(Math.round(fact), trip.id);
+      if (trip.order_id) db.prepare(`UPDATE orders SET planned_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(Math.round(fact), trip.order_id);
+      updated += 1;
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('km_recalc_2026_09_v3',?)`)
       .run(String(updated));
     audit(db, null, 'km-recalc', 'system', null,
       { period: '2026-09', updated, note: 'пересчёт плановых км по фактическим плечам и калиброванному коэффициенту' }, 'migration');
