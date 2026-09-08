@@ -3381,7 +3381,10 @@ function runDockingWatch() {
     // Пензенская кондитерская). Теперь собираются ВСЕ пары машина×заявка,
     // сортируются по подгону и назначаются от лучших — сумма подгонов
     // минимальна, а пары дальше порога не создаются вовсе.
-    const MAX_DOCK_KM = 350;
+    // Порог подгона — живой: автотюнинг по фактам принятия (см.
+    // runAssignQualityReport), константа 350 — стартовое значение.
+    const MAX_DOCK_KM = Number(db.prepare(`SELECT value FROM app_meta
+      WHERE key='dock_max_km'`).get()?.value) || 350;
     const pairs = [];
     for (const trip of soon) {
       const origin = vehiclePositionBefore(trip.vehicle_id,
@@ -3527,8 +3530,26 @@ function runAssignQualityReport() {
       .map(([cat, count]) => `${cat} ${count}`).join(', ');
     const clones = [...texts.entries()].filter(([, count]) => count >= 3)
       .sort((a, b) => b[1] - a[1]).slice(0, 3);
+    // Автотюнинг порога подгона: 90-й перцентиль ПРИНЯТЫХ подгонов × 1,2 —
+    // логисты сами показывают, какой подгон для них разумен. Кламп 150–500.
+    let dockLine = '';
+    const acceptedKm = db.prepare(`SELECT empty_km FROM assign_drafts
+      WHERE outcome='accepted' AND empty_km IS NOT NULL
+        AND resolved_at >= datetime('now','-28 day')`).all()
+      .map(row => Number(row.empty_km)).filter(Number.isFinite).sort((a, b) => a - b);
+    if (acceptedKm.length >= 10) {
+      const p90 = acceptedKm[Math.floor(acceptedKm.length * 0.9)];
+      const tuned = Math.round(Math.min(500, Math.max(150, p90 * 1.2)));
+      const prev = Number(db.prepare(`SELECT value FROM app_meta WHERE key='dock_max_km'`)
+        .get()?.value) || 350;
+      if (Math.abs(tuned - prev) >= 20) {
+        db.prepare(`INSERT INTO app_meta(key,value) VALUES('dock_max_km',?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(tuned));
+        dockLine = ` · порог подгона подстроен: ${prev}→${tuned} км (90% принятых — до ${Math.round(p90)} км)`;
+      }
+    }
     notifyEveryone(`🎯 Подбор ТС за неделю: рекомендаций ${rows.length}, принято ${accepted}` +
-      ` (${Math.round(accepted / rows.length * 100)}%)` +
+      ` (${Math.round(accepted / rows.length * 100)}%)` + dockLine +
       (catLine ? ` · причины замен: ${catLine}` : '') +
       (clones.length ? ` · ⚠ отписки под копирку: ${clones.map(([text, count]) =>
         `«${text.slice(0, 40)}» ×${count}`).join('; ')}` : '') +
