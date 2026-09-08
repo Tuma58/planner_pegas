@@ -479,6 +479,15 @@ function migrateColumns(db) {
   ensure('vehicle_positions', 'trailer_sensors_json', 'TEXT');
   // Прицепы — самостоятельные объекты мониторинга: свой трекер, своя
   // позиция (видно отцепленные и свободные), датчики температур/дверей.
+  // Дневные пробеги из GPS: сырьё отчёта «Скорости парка» (техническая
+  // скорость = км/часы движения). Наполняет ночной сборщик из Пилота.
+  db.exec(`CREATE TABLE IF NOT EXISTS vehicle_daily_runs (
+    vehicle_id TEXT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    km REAL NOT NULL DEFAULT 0,
+    move_hours REAL NOT NULL DEFAULT 0,
+    max_speed REAL,
+    PRIMARY KEY (vehicle_id, day))`);
   db.exec(`CREATE TABLE IF NOT EXISTS trailer_positions (
     imei TEXT PRIMARY KEY,
     number TEXT NOT NULL DEFAULT '',

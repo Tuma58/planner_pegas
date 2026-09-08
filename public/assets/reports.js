@@ -544,6 +544,82 @@ export async function buildReport(kind, from, to, data) {
       <h4>Вернулись из плана в продажи</h4>
       <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина возврата</th></tr></thead>
         <tbody>${rows(returned) || '<tr><td colspan=5>Возвратов нет</td></tr>'}</tbody></table>`;
+  } else if (kind === 'speed') {
+    const sp = await api(`/api/reports/speed?from=${from}&to=${to}`);
+    const techSum = sp.techDays.reduce((a, d) => ({ km: a.km + d.km, h: a.h + d.h }), { km: 0, h: 0 });
+    const opSum = sp.opDays.reduce((a, d) => ({ km: a.km + d.km, h: a.h + d.h, n: a.n + d.trips }), { km: 0, h: 0, n: 0 });
+    const techAvg = techSum.h > 0 ? techSum.km / techSum.h : null;
+    const opAvg = opSum.h > 0 ? opSum.km / opSum.h : null;
+    // График динамики: две линии по дням (тех. и экспл. скорость).
+    const days = [...new Set([...sp.techDays.map(d => d.day), ...sp.opDays.map(d => d.day)])].sort();
+    const techBy = new Map(sp.techDays.map(d => [d.day, d.h > 0 ? d.km / d.h : null]));
+    const opBy = new Map(sp.opDays.map(d => [d.day, d.h > 0 ? d.km / d.h : null]));
+    const W = 640, Hg = 160, maxY = 80;
+    const x = i => 30 + i * (W - 40) / Math.max(1, days.length - 1);
+    const y = v => 10 + (Hg - 30) * (1 - Math.min(v, maxY) / maxY);
+    const line = getter => days.map((d, i) => {
+      const v = getter(d);
+      return v == null ? null : `${x(i).toFixed(0)},${y(v).toFixed(0)}`;
+    }).filter(Boolean).join(' ');
+    const chart = days.length >= 2 ? `<svg viewBox="0 0 ${W} ${Hg}" style="width:100%;max-width:${W}px;background:var(--panel-2,#f6f6f4);border-radius:8px">
+      ${[20, 40, 60, 80].map(v => `<line x1="30" y1="${y(v)}" x2="${W - 10}" y2="${y(v)}" stroke="#ccc" stroke-dasharray="3"/>
+        <text x="2" y="${y(v) + 4}" font-size="10" fill="#888">${v}</text>`).join('')}
+      <polyline points="${line(d => techBy.get(d))}" fill="none" stroke="#1f9d55" stroke-width="2"/>
+      <polyline points="${line(d => opBy.get(d))}" fill="none" stroke="#c0742e" stroke-width="2"/>
+      ${days.map((d, i) => i % Math.ceil(days.length / 10) === 0
+        ? `<text x="${x(i)}" y="${Hg - 4}" font-size="9" fill="#888" text-anchor="middle">${d.slice(8, 10)}.${d.slice(5, 7)}</text>` : '').join('')}
+      <text x="${W - 150}" y="18" font-size="11" fill="#1f9d55">— техническая</text>
+      <text x="${W - 150}" y="32" font-size="11" fill="#c0742e">— эксплуатационная</text>
+    </svg>` : '<p class="muted">Мало дней с данными GPS — дневные пробеги копятся ночным сборщиком.</p>';
+    const vehRows = sp.byVehicle.filter(r => r.op != null);
+    const worstVeh = [...vehRows].sort((a, b) => a.op - b.op).slice(0, 5);
+    const bestVeh = [...vehRows].sort((a, b) => b.op - a.op).slice(0, 3);
+    const byDriver = new Map();
+    for (const r of vehRows) {
+      const name = (r.driver || '').trim();
+      if (!name) continue;
+      const agg = byDriver.get(name) || { ops: [], techs: [], plates: [] };
+      agg.ops.push(r.op); if (r.tech) agg.techs.push(r.tech); agg.plates.push(r.plate);
+      byDriver.set(name, agg);
+    }
+    const drivers = [...byDriver.entries()].map(([name, a]) => ({ name,
+      op: a.ops.reduce((x, y) => x + y, 0) / a.ops.length,
+      tech: a.techs.length ? a.techs.reduce((x, y) => x + y, 0) / a.techs.length : null,
+      plates: a.plates.join(', ') }));
+    const worstDrv = [...drivers].sort((a, b) => a.op - b.op).slice(0, 5);
+    const bestDrv = [...drivers].sort((a, b) => b.op - a.op).slice(0, 3);
+    const slowCust = [...sp.byCustomer].sort((a, b) => (b.dwellH ?? 0) - (a.dwellH ?? 0)).slice(0, 5);
+    const fastCust = [...sp.byCustomer].sort((a, b) => b.op - a.op).slice(0, 3);
+    const vtable = rows => `<table class="rtable"><thead><tr><th>ТС</th><th>Водитель</th>
+      <th class="num">Экспл.</th><th class="num">Техн.</th><th class="num">Макс</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td class="mono">${escapeHtml(r.plate)}</td><td>${escapeHtml((r.driver || '').slice(0, 24))}</td>
+        <td class="num"><b>${r.op ?? '—'}</b></td><td class="num">${r.tech ?? '—'}</td>
+        <td class="num ${r.maxSpeed > 110 ? 'bad' : ''}">${r.maxSpeed ? Math.round(r.maxSpeed) : '—'}</td></tr>`).join('')}</tbody></table>`;
+    body = `<div class="rsums">
+        <span class="rsum">Техническая (в движении): <b>${techAvg ? techAvg.toFixed(1) : '—'} км/ч</b></span>
+        <span class="rsum">Эксплуатационная (рейс целиком): <b>${opAvg ? opAvg.toFixed(1) : '—'} км/ч</b></span>
+        <span class="rsum">Рейсов: <b>${opSum.n}</b></span>
+        <span class="rsum">GPS-пробег: <b>${Math.round(techSum.km).toLocaleString('ru-RU')} км</b></span>
+        ${techAvg && opAvg ? `<span class="rsum">Машина движется <b>${Math.round(opAvg / techAvg * 100)}%</b> времени рейса</span>` : ''}</div>
+      <p class="geohint">Техническая — скорость в движении по GPS (потолок ~65–70). Эксплуатационная —
+        километры рейса на всё его время: разрыв между ними = стоянки (погрузка, выгрузка, очереди,
+        отдых). Рычаг — не газ, а сокращение стоянок: смотрите разрез «Клиенты».</p>
+      ${chart}
+      <h4>🚛 ТС: тянут скорость вниз</h4>${vtable(worstVeh)}
+      <h4 style="margin-top:8px">🚛 ТС: лучшие</h4>${vtable(bestVeh)}
+      <h4 style="margin-top:8px">👤 Водители: медленные рейсы</h4>
+      <table class="rtable"><thead><tr><th>Водитель</th><th>ТС</th><th class="num">Экспл.</th><th class="num">Техн.</th></tr></thead>
+      <tbody>${worstDrv.map(d => `<tr><td>${escapeHtml(d.name.slice(0, 28))}</td><td class="mono">${escapeHtml(d.plates)}</td>
+        <td class="num"><b>${d.op.toFixed(1)}</b></td><td class="num">${d.tech ? d.tech.toFixed(0) : '—'}</td></tr>`).join('')}</tbody></table>
+      <p class="muted" style="margin:2px 0 8px">Лучшие: ${bestDrv.map(d => `${escapeHtml(d.name.split(' ')[0])} ${d.op.toFixed(0)}`).join(' · ')} км/ч.
+        Низкая эксплуатационная при нормальной технической — водитель долго стоит (загрузка/отдых/дисциплина), а не медленно едет.</p>
+      <h4>🏭 Клиенты: где машины теряют время</h4>
+      <table class="rtable"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
+        <th class="num">Ср. время на точке</th><th class="num">Экспл. скорость рейсов</th></tr></thead>
+      <tbody>${slowCust.map(c => `<tr><td>${escapeHtml(c.name.slice(0, 30))}</td><td class="num">${c.trips}</td>
+        <td class="num ${c.dwellH > 8 ? 'bad' : ''}"><b>${c.dwellH ?? '—'} ч</b></td><td class="num">${c.op}</td></tr>`).join('')}</tbody></table>
+      <p class="muted" style="margin:2px 0">Быстрые клиенты: ${fastCust.map(c => `${escapeHtml(c.name.slice(0, 18))} ${c.op}`).join(' · ')} км/ч.
+        Долгие стоянки у клиента — кандидаты на претензии «⏳ Простои П/В».</p>`;
   } else if (kind === 'history') {
     const history = await api('/api/periods/history');
     const plans = Object.fromEntries((data.revenuePlans || []).map(plan => [plan.period_start, Number(plan.target_net)]));

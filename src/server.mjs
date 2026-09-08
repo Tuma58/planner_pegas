@@ -1987,6 +1987,51 @@ function runGpsControlWatch() {
 setInterval(runGpsControlWatch, 3 * 60_000);
 setTimeout(runGpsControlWatch, 100_000);
 
+// ── Сборщик дневных пробегов (сырьё отчёта «Скорости парка») ──
+// Раз в час проверяет, собран ли вчерашний день; при пустой таблице
+// разово наполняет 14 дней истории. Один запрос trips на машину за весь
+// недостающий диапазон, сегменты раскладываются по дням начала.
+async function collectDailyRuns() {
+  try {
+    if (!monitoringConfig().login) return;
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const doneUntil = db.prepare(`SELECT value FROM app_meta WHERE key='daily_runs_done'`).get()?.value;
+    if (doneUntil >= yesterday) return;
+    const have = db.prepare(`SELECT COUNT(*) n FROM vehicle_daily_runs`).get().n;
+    const fromDay = doneUntil
+      ? new Date(Date.parse(doneUntil) + 86_400_000).toISOString().slice(0, 10)
+      : new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
+    const ts = Math.floor(Date.parse(fromDay + 'T00:00:00Z') / 1000);
+    const te = Math.floor(Date.parse(yesterday + 'T23:59:59Z') / 1000);
+    const upsert = db.prepare(`INSERT INTO vehicle_daily_runs(vehicle_id,day,km,move_hours,max_speed)
+      VALUES(?,?,?,?,?)
+      ON CONFLICT(vehicle_id,day) DO UPDATE SET km=excluded.km,
+        move_hours=excluded.move_hours, max_speed=excluded.max_speed`);
+    for (const tracker of db.prepare(`SELECT vehicle_id, imei FROM vehicle_trackers`).all()) {
+      const answer = await pilotApi(`/api/v3/vehicles/trips?imei=${tracker.imei}&ts=${ts}&te=${te}`);
+      const byDay = new Map();
+      for (const segment of answer?.data || []) {
+        const day = new Date(segment.ts * 1000).toISOString().slice(0, 10);
+        const agg = byDay.get(day) || { km: 0, h: 0, max: 0 };
+        agg.km += Number(segment.gps) || 0;
+        agg.h += (segment.te - segment.ts) / 3600;
+        agg.max = Math.max(agg.max, Number(segment.maxspeed) || 0);
+        byDay.set(day, agg);
+      }
+      for (const [day, agg] of byDay) {
+        upsert.run(tracker.vehicle_id, day, Math.round(agg.km * 10) / 10,
+          Math.round(agg.h * 100) / 100, agg.max);
+      }
+      await new Promise(resolve => setTimeout(resolve, 150)); // лимит Пилота 8 rps
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_runs_done',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(yesterday);
+    console.log(`collectDailyRuns: собрано ${fromDay}..${yesterday}${have ? '' : ' (первичное наполнение)'}`);
+  } catch (error) { console.error('collectDailyRuns:', error.message); }
+}
+setInterval(collectDailyRuns, 3_600_000);
+setTimeout(collectDailyRuns, 160_000);
+
 // ── Автозакрытие упущенных выгрузок по GPS-истории ──
 // Решение руководителя 07.09: если выгрузка СВЕРШИЛАСЬ (машина стояла у
 // точки и уже уехала), а диспетчер её прозевал — факт проставляется
@@ -6459,6 +6504,65 @@ async function api(request, response, url) {
     }
   }
 
+  // Отчёт «Скорости парка»: техническая (GPS: км/часы движения) и
+  // эксплуатационная (км рейса / всё время рейса) в динамике по дням +
+  // три разреза-пояснения: ТС, водители, клиенты.
+  if (request.method === 'GET' && pathname === '/api/reports/speed') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!from || !to) return errorJson(response, 422, 'Задайте период');
+    // Динамика по дням: техническая из дневных пробегов GPS.
+    const techDays = db.prepare(`SELECT day, SUM(km) km, SUM(move_hours) h, COUNT(*) vehicles
+      FROM vehicle_daily_runs WHERE day >= ? AND day < ? AND move_hours > 0.5
+      GROUP BY day ORDER BY day`).all(from, to);
+    // Эксплуатационная по дню выгрузки завершённых рейсов.
+    const opDays = db.prepare(`SELECT substr(COALESCE(unloaded_at, ends_at), 1, 10) day,
+        SUM(distance_km) km,
+        SUM((julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24) h,
+        COUNT(*) trips
+      FROM trips WHERE status IN ('unloaded','done','paid')
+        AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?
+        AND (julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24 BETWEEN 1 AND 240
+      GROUP BY day ORDER BY day`).all(from, to);
+    // Разрез ТС: техническая и эксплуатационная по каждой машине.
+    const byVehicle = db.prepare(`SELECT v.id, v.plate, v.driver_name,
+        (SELECT SUM(km) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gkm,
+        (SELECT SUM(move_hours) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gh,
+        (SELECT MAX(max_speed) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gmax,
+        (SELECT SUM(t.distance_km) FROM trips t WHERE t.vehicle_id=v.id AND t.status IN ('unloaded','done','paid')
+          AND COALESCE(t.unloaded_at,t.ends_at)>=? AND COALESCE(t.unloaded_at,t.ends_at)<?) tkm,
+        (SELECT SUM((julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24) FROM trips t
+          WHERE t.vehicle_id=v.id AND t.status IN ('unloaded','done','paid')
+          AND COALESCE(t.unloaded_at,t.ends_at)>=? AND COALESCE(t.unloaded_at,t.ends_at)<?
+          AND (julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24 BETWEEN 1 AND 240) th
+      FROM vehicles v WHERE v.status='work'`).all(from, to, from, to, from, to, from, to, from, to)
+      .map(row => ({ plate: row.plate, driver: row.driver_name,
+        tech: row.gh > 3 ? Math.round(row.gkm / row.gh * 10) / 10 : null,
+        maxSpeed: row.gmax || null,
+        op: row.th > 6 ? Math.round(row.tkm / row.th * 10) / 10 : null,
+        km: Math.round(row.gkm || 0) }))
+      .filter(row => row.tech != null || row.op != null);
+    // Разрез клиентов: скорость рейсов клиента + среднее время на его точках.
+    const byCustomer = db.prepare(`SELECT o.customer_name name, COUNT(DISTINCT t.id) trips,
+        SUM(t.distance_km) km,
+        SUM((julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24) h,
+        AVG((julianday(COALESCE(s.actual_departure, s.work_finished_at))-julianday(s.actual_arrival))*24) dwellH
+      FROM trips t JOIN orders o ON o.id=t.order_id
+      LEFT JOIN trip_stops s ON s.trip_id=t.id AND s.actual_arrival IS NOT NULL
+        AND COALESCE(s.actual_departure, s.work_finished_at) IS NOT NULL
+        AND (julianday(COALESCE(s.actual_departure, s.work_finished_at))-julianday(s.actual_arrival))*24 BETWEEN 0 AND 96
+      WHERE t.status IN ('unloaded','done','paid')
+        AND COALESCE(t.unloaded_at,t.ends_at)>=? AND COALESCE(t.unloaded_at,t.ends_at)<?
+        AND (julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24 BETWEEN 1 AND 240
+      GROUP BY o.customer_name HAVING trips >= 3`).all(from, to)
+      .map(row => ({ name: row.name, trips: row.trips,
+        op: row.h > 0 ? Math.round(row.km / row.h * 10) / 10 : null,
+        dwellH: row.dwellH != null ? Math.round(row.dwellH * 10) / 10 : null }))
+      .filter(row => row.op != null);
+    return json(response, 200, { from, to, techDays, opDays, byVehicle, byCustomer });
+  }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;
