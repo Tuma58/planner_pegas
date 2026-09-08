@@ -3517,6 +3517,7 @@ function runAssignQualityReport() {
     const rows = db.prepare(`SELECT outcome, override_reason FROM assign_drafts
       WHERE resolved_at >= datetime('now','-7 day') AND outcome IS NOT NULL`).all();
     if (rows.length < 5) return;
+    const auto = rows.filter(row => row.outcome === 'accepted' && row.override_reason === 'auto').length;
     const accepted = rows.filter(row => row.outcome === 'accepted').length;
     const overridden = rows.filter(row => row.outcome === 'overridden');
     const CATS = [
@@ -3545,7 +3546,8 @@ function runAssignQualityReport() {
     // логисты сами показывают, какой подгон для них разумен. Кламп 150–500.
     let dockLine = '';
     const acceptedKm = db.prepare(`SELECT empty_km FROM assign_drafts
-      WHERE outcome='accepted' AND empty_km IS NOT NULL
+      WHERE outcome='accepted' AND COALESCE(override_reason,'')<>'auto'
+        AND empty_km IS NOT NULL
         AND resolved_at >= datetime('now','-28 day')`).all()
       .map(row => Number(row.empty_km)).filter(Number.isFinite).sort((a, b) => a - b);
     if (acceptedKm.length >= 10) {
@@ -3560,7 +3562,8 @@ function runAssignQualityReport() {
       }
     }
     notifyEveryone(`🎯 Подбор ТС за неделю: рекомендаций ${rows.length}, принято ${accepted}` +
-      ` (${Math.round(accepted / rows.length * 100)}%)` + dockLine +
+      ` (${Math.round(accepted / rows.length * 100)}%)` +
+      (auto ? `, из них зелёным коридором ${auto}` : '') + dockLine +
       (catLine ? ` · причины замен: ${catLine}` : '') +
       (clones.length ? ` · ⚠ отписки под копирку: ${clones.map(([text, count]) =>
         `«${text.slice(0, 40)}» ×${count}`).join('; ')}` : '') +
@@ -3570,6 +3573,89 @@ function runAssignQualityReport() {
   } catch (error) { console.error('Сводка качества подбора:', error.message); }
 }
 setInterval(runAssignQualityReport, 10 * 60_000);
+
+// ── Зелёный коридор автоназначения ──
+// Черновики подбора с очевидно хорошими условиями назначаются БЕЗ логиста:
+// подгон меньше выученного порога, кузов совпал, клиент A/B, водитель на
+// машине, до погрузки 6+ часов на вмешательство. Красные и спорные — как
+// прежде, руками. Требование руководителя 08.09: О ЛЮБОМ сбое — немедленно
+// ему (чат + Telegram напрямую, мимо настроек категорий).
+function reportAutoAssignIssue(text) {
+  notify('manager', `🚨 Автоназначение: ${text}`);
+  try {
+    sendTelegramTo(telegramChatsForRole('manager', 'critical'), `🚨 Автоназначение: ${text}`);
+  } catch { /* чат-сообщение уже есть */ }
+}
+function runGreenAssign() {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='auto_assign_enabled'`).get()?.value === '0') return;
+    // Зелёный порог подгона — выучен: медиана ПРИНЯТЫХ логистами подгонов
+    // за 28 дней (без авто-принятий), кламп 30–150 км, старт 80.
+    const accepted = db.prepare(`SELECT empty_km FROM assign_drafts
+      WHERE outcome='accepted' AND COALESCE(override_reason,'')<>'auto'
+        AND empty_km IS NOT NULL AND resolved_at >= datetime('now','-28 day')`).all()
+      .map(row => Number(row.empty_km)).filter(Number.isFinite).sort((a, b) => a - b);
+    const greenKm = accepted.length >= 10
+      ? Math.round(Math.min(150, Math.max(30, accepted[Math.floor(accepted.length / 2)])))
+      : 80;
+    const drafts = db.prepare(`SELECT d.order_id, d.vehicle_id, d.empty_km FROM assign_drafts d
+      WHERE d.outcome IS NULL AND d.empty_km IS NOT NULL AND d.empty_km <= ?`).all(greenKm);
+    let made = 0;
+    for (const draft of drafts.slice(0, 30)) {
+      if (made >= 15) break;
+      let order = null;
+      try {
+        order = db.prepare(`SELECT * FROM orders WHERE id=? AND trip_id IS NULL
+          AND status='new' AND confirmed_at IS NOT NULL AND deleted_at IS NULL`).get(draft.order_id);
+        if (!order) continue;
+        const startMs = Date.parse(order.window_from);
+        // 6+ часов на вмешательство, максимум двое суток вперёд.
+        if (!(startMs > Date.now() + 6 * 3_600_000 && startMs < Date.now() + 48 * 3_600_000)) continue;
+        const segment = customerSegment(order.customer_name);
+        if (!segment || (segment.seg !== 'A' && segment.seg !== 'B')) continue;
+        const vehicle = db.prepare(`SELECT v.*, vt.name type_name FROM vehicles v
+          JOIN vehicle_types vt ON vt.id=v.type_id
+          WHERE v.id=? AND v.status='work'`).get(draft.vehicle_id);
+        if (!vehicle) continue;
+        if (!bodyTypeMatches(order.body_type, vehicle.type_name)) continue;
+        // Недоступность сцепки в окне рейса (ремонт/пересменка) — не зелёный случай.
+        const blocked = db.prepare(`SELECT 1 FROM vehicle_dispositions WHERE vehicle_id=?
+          AND kind<>'reserve' AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+          .get(vehicle.id, order.window_to || order.window_from, order.window_from);
+        if (blocked) continue;
+        const tripId = assignOrderCore(order, vehicle, { id: null }, {});
+        db.prepare(`UPDATE trips SET auto_assigned=1 WHERE id=?`).run(tripId);
+        applyDispatchStep(db, tripId, 'logist_confirm', null);
+        db.prepare(`UPDATE assign_drafts SET outcome='accepted', override_reason='auto',
+          resolved_at=CURRENT_TIMESTAMP WHERE order_id=?`).run(order.id);
+        audit(db, null, 'auto-assign', 'order', order.id,
+          { vehicleId: vehicle.id, tripId, emptyKm: draft.empty_km, greenKm }, 'green-corridor');
+        // Хронологию конвейера не ломаем: задание водителю идёт после 1С.
+        // После отметки «внесено в 1С» задание уйдёт в бот само (см. шаг
+        // entered_1c); у водителей без бота — голосом, как раньше.
+        const driver = driverForTrip(db.prepare('SELECT * FROM trips WHERE id=?').get(tripId));
+        const botNote = driver && (driver.telegram_chat_id || driver.max_chat_id)
+          ? 'после 1С задание уйдёт водителю в бот само'
+          : '⚠ у водителя НЕТ бота — после 1С передайте задание голосом';
+        notify('dispatcher', `🤖 Автоназначение (зелёный коридор): ${vehicle.plate} → заявка `
+          + `№${order.order_no || '?'} (${(order.customer_name || '').slice(0, 24)}, подгон `
+          + `${Math.round(draft.empty_km)} км, клиент ${segment.seg}). Проведите 1С — ${botNote}. `
+          + `Не согласны с назначением — замените ТС в карточке с причиной`, 'trip', tripId);
+        made += 1;
+      } catch (error) {
+        reportAutoAssignIssue(`СБОЙ на заявке №${order?.order_no || draft.order_id.slice(0, 8)} `
+          + `(${(order?.customer_name || '?').slice(0, 24)}): ${error.message}. `
+          + `Заявка оставлена логисту в ручной поток`);
+      }
+    }
+    if (made) console.log(`Зелёный коридор: назначено ${made} (порог подгона ${greenKm} км)`);
+  } catch (error) {
+    console.error('Зелёный коридор:', error.message);
+    reportAutoAssignIssue(`сторож упал целиком: ${error.message}`);
+  }
+}
+setInterval(runGreenAssign, 15 * 60_000);
+setTimeout(runGreenAssign, 100_000);
 
 // ── Недельный анализ дрейфа нормативов: «📐 Нормативы недели» ──
 // Себестоимость, выручка и транзит со временем плывут — правила не должны
@@ -4714,6 +4800,12 @@ async function api(request, response, url) {
     if (merged.status === 'rejected' && !String(merged.rejectionReason || '').trim()) {
       return errorJson(response, 422, 'Укажите причину отклонения рейса');
     }
+    // Снятие рейса, назначенного зелёным коридором, — сигнал качества:
+    // руководитель узнаёт о каждом случае немедленно (его требование).
+    if (merged.status === 'rejected' && current.status !== 'rejected' && current.auto_assigned) {
+      reportAutoAssignIssue(`рейс №${current.order_no || current.id.slice(0, 8)} снят человеком `
+        + `(причина: ${String(merged.rejectionReason || '').slice(0, 80)}) — зелёный коридор ошибся`);
+    }
     // Рубеж ошибочной отметки: выгрузка более чем за сутки до плановой —
     // почти всегда перепутана машина (кейс т553ве58: рейс в Кемерово закрыли
     // через 31 час после вывода на линию, машина «простаивала», хотя ехала).
@@ -5662,7 +5754,14 @@ async function api(request, response, url) {
         return errorJson(response, 422, `Причина «${overrideReason.slice(0, 60)}» уже использована ${repeats} раза за 2 недели — похоже на шаблонную отписку. Опишите конкретную ситуацию этой заявки: причины замен читает система и руководитель, из них улучшаются правила подбора`);
       }
     }
+    const previousTrip = order.trip_id
+      ? db.prepare('SELECT auto_assigned, vehicle_id, order_no FROM trips WHERE id=?').get(order.trip_id)
+      : null;
     const tripId = assignOrderCore(order, vehicle, user, { distanceKm: body.distanceKm });
+    if (previousTrip?.auto_assigned && previousTrip.vehicle_id !== vehicle.id) {
+      reportAutoAssignIssue(`на рейсе №${previousTrip.order_no || '?'} человек заменил ТС `
+        + `(${String(overrideReason || body.overrideReason || 'без причины').slice(0, 80)}) — зелёный коридор ошибся`);
+    }
     // Итог черновика фиксируем сразу (не дожидаясь сторожа): принял или
     // заменил с причиной.
     if (draft) {
@@ -7145,6 +7244,19 @@ async function api(request, response, url) {
       // Фактическое внесение в 1С гасит отложенный долг.
       if (body.step === 'entered_1c') {
         db.prepare(`UPDATE trips SET deferred_1c_at=NULL, debt_1c_alert_at=NULL WHERE id=?`).run(match[0]);
+        // Ботоавтоматизация: после 1С задание водителю уходит в бот само —
+        // ручной шаг остаётся только водителям без Telegram/MAX.
+        try {
+          const fresh = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
+          if (fresh && !fresh.driver_notified_at) {
+            const driver = driverForTrip(fresh);
+            if (driver && (driver.telegram_chat_id || driver.max_chat_id)) {
+              applyDispatchStep(db, match[0], 'driver_notified', user.id);
+              sendDriverAssignment(match[0]);
+              notify('dispatcher', `🤖 Задание водителю по рейсу ${routeText(fresh)} отправлено в бот автоматически (после 1С)`, 'trip', match[0]);
+            }
+          }
+        } catch (error) { console.error('Автозадание водителю:', error.message); }
       }
       if (statusChanged) {
         queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
