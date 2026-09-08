@@ -6521,6 +6521,36 @@ async function api(request, response, url) {
           ORDER BY window_from`).all()
           .map(row => ({ label: `№${row.order_no || '—'} ${(row.customer_name || '').slice(0, 24)}`,
             sub: `погрузка ${String(row.window_from).slice(5, 16).replace('T', ' ')} UTC` })));
+      // Плановые километры против факта GPS/CAN: расхождение >40% ломает
+      // экономику (₽/км, себестоимость) и скорости (кейс №2496: заглушка
+      // 500 км на плече Пенза→Красноярск ~3800 км).
+      const kmMismatch = [];
+      for (const trip of db.prepare(`SELECT t.id, t.order_no, t.vehicle_id, t.distance_km,
+          t.starts_at, COALESCE(t.unloaded_at, t.ends_at) fin, t.from_point, t.to_point, v.plate
+        FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+        JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
+        WHERE t.status IN ('unloaded','done','paid')
+          AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-14 days')
+          AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 24
+          AND t.distance_km > 0`).all()) {
+        const fromDay = String(trip.starts_at).slice(0, 10);
+        const toDay = String(trip.fin).slice(0, 10);
+        const fact = db.prepare(`SELECT SUM(CASE WHEN COALESCE(can_km,0) > 0 AND move_hours > 0.5
+            AND can_km / move_hours <= 85 THEN can_km ELSE km END) km, COUNT(*) days
+          FROM vehicle_daily_runs WHERE vehicle_id=? AND day >= ? AND day <= ?`)
+          .get(trip.vehicle_id, fromDay, toDay);
+        if (!fact?.km || fact.days < 2) continue;
+        const ratio = fact.km / trip.distance_km;
+        if (ratio > 1.4 || ratio < 0.6) {
+          kmMismatch.push({ label: `${trip.plate} №${trip.order_no || '—'}`, vehicleId: trip.vehicle_id,
+            sub: `план ${Math.round(trip.distance_km)} км · факт ~${Math.round(fact.km)} км `
+              + `(${ratio > 1 ? '+' : '−'}${Math.round(Math.abs(ratio - 1) * 100)}%) · `
+              + `${(trip.from_point || '').slice(0, 18)} → ${(trip.to_point || '').slice(0, 18)}` });
+        }
+      }
+      add('km_mismatch', '📏 Плановые км расходятся с фактом GPS (>40%)',
+        'Кривая дистанция ломает ₽/км, себестоимость и скорости — чините километраж в заявке (обычно заглушка 500 км на дальнем плече)',
+        kmMismatch.sort((a, b) => b.sub.localeCompare(a.sub)));
       const noCoords = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE latitude IS NULL OR longitude IS NULL`).get().n;
       const noZone = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE zone_id IS NULL`).get().n;
       add('addr_gaps', '🗺 Дыры справочника адресов', 'Без координат подбор меряет по центрам зон; без зоны — не фильтруется',
