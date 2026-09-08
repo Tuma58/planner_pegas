@@ -2070,6 +2070,43 @@ async function collectCanKm() {
 setInterval(collectDailyRuns, 3_600_000);
 setTimeout(collectDailyRuns, 160_000);
 
+// ── Дедупликация справочника клиентов ──
+// Гонка «проверил-вставил» без уникального индекса наплодила по 2-16
+// байт-в-байт одинаковых записей (Черкизово ×16) — дубли в Плане вывоза
+// и CRM. Разово: канон = запись с максимальной историей, перепривязка
+// заявок, удаление дублей, уникальный индекс как страховка навсегда.
+function dedupeCustomers() {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='customers_dedup_done'`).get()) return;
+    const groups = new Map();
+    for (const customer of db.prepare(`SELECT * FROM customers`).all()) {
+      const key = String(customer.name || '').trim().toLowerCase();
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(customer);
+    }
+    let removed = 0;
+    for (const [, list] of groups) {
+      if (list.length < 2) continue;
+      list.sort((a, b) => (b.trip_count || 0) - (a.trip_count || 0));
+      const canon = list[0];
+      const dupIds = list.slice(1).map(c => c.id);
+      const marks = dupIds.map(() => '?').join(',');
+      db.prepare(`UPDATE orders SET customer_id=? WHERE customer_id IN (${marks})`)
+        .run(canon.id, ...dupIds);
+      db.prepare(`DELETE FROM customers WHERE id IN (${marks})`).run(...dupIds);
+      removed += dupIds.length;
+    }
+    // Страховка от новых гонок: уникальность по нормализованному имени.
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_customers_name
+      ON customers(lower(trim(name)))`);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('customers_dedup_done',?)`)
+      .run(String(removed));
+    audit(db, null, 'customers-dedup', 'system', null, { removed }, 'migration');
+    console.log(`dedupeCustomers: удалено дублей ${removed}`);
+  } catch (error) { console.error('dedupeCustomers:', error.message); }
+}
+setTimeout(dedupeCustomers, 20_000);
+
 // ── Самообучающиеся плановые километры ──
 // Плановый км выставляется автоматически, без людей — поэтому и точность
 // его дело системы: справочник фактических плеч (медиана чистых рейсов по
@@ -4443,7 +4480,7 @@ async function api(request, response, url) {
     const customerName = body.customerName.trim();
     if (!db.prepare('SELECT 1 FROM customers WHERE name=? COLLATE NOCASE').get(customerName)) {
       const customerId = randomUUID();
-      db.prepare(`INSERT INTO customers(id,name,from_zone_id,to_zone_id,trip_count,
+      db.prepare(`INSERT OR IGNORE INTO customers(id,name,from_zone_id,to_zone_id,trip_count,
         average_rate_vat,trips_per_month) VALUES(?,?,?,?,0,?,0)`).run(
         customerId, customerName, body.fromZoneId, body.toZoneId, Number(body.rateVat || 0));
       audit(db, user, 'create', 'customer', customerId,
