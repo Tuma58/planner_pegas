@@ -6552,13 +6552,26 @@ async function api(request, response, url) {
     const to = String(url.searchParams.get('to') || '').slice(0, 10);
     if (!from || !to) return errorJson(response, 422, 'Задайте период');
     // Динамика по дням: техническая из дневных пробегов GPS.
-    // Пробег: одометр CAN, у машин без CAN-подключения — фолбэк GPS.
-    const techDays = db.prepare(`SELECT day,
-        SUM(COALESCE(NULLIF(can_km, 0), km)) km,
-        SUM(move_hours) h, COUNT(*) vehicles,
-        SUM(CASE WHEN COALESCE(can_km, 0) > 0 THEN 1 ELSE 0 END) canVehicles
-      FROM vehicle_daily_runs WHERE day >= ? AND day < ? AND move_hours > 0.5
-      GROUP BY day ORDER BY day`).all(from, to);
+    // Пробег: одометр CAN, фолбэк GPS. Защита согласованности: CAN-км с
+    // GPS-часами при потере сигнала дают фантомные 78+ км/ч — такая
+    // строка откатывается на согласованную пару GPS-км/GPS-часы.
+    const runRows = db.prepare(`SELECT vehicle_id, day, km, can_km, move_hours
+      FROM vehicle_daily_runs WHERE day >= ? AND day < ? AND move_hours > 0.5`).all(from, to);
+    const factKmOf = row => {
+      const can = Number(row.can_km) || 0;
+      if (can > 0 && can / row.move_hours <= 85) return can;
+      return Number(row.km) || 0;
+    };
+    const techByDay = new Map();
+    for (const row of runRows) {
+      const agg = techByDay.get(row.day) || { day: row.day, km: 0, h: 0, vehicles: 0, canVehicles: 0 };
+      agg.km += factKmOf(row);
+      agg.h += row.move_hours;
+      agg.vehicles += 1;
+      if (Number(row.can_km) > 0) agg.canVehicles += 1;
+      techByDay.set(row.day, agg);
+    }
+    const techDays = [...techByDay.values()].sort((a, b) => a.day.localeCompare(b.day));
     // Эксплуатационная по дню выгрузки завершённых рейсов.
     const opDays = db.prepare(`SELECT substr(COALESCE(unloaded_at, ends_at), 1, 10) day,
         SUM(distance_km) km,
@@ -6570,7 +6583,8 @@ async function api(request, response, url) {
       GROUP BY day ORDER BY day`).all(from, to);
     // Разрез ТС: техническая и эксплуатационная по каждой машине.
     const byVehicle = db.prepare(`SELECT v.id, v.plate, v.driver_name,
-        (SELECT SUM(COALESCE(NULLIF(can_km, 0), km)) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gkm,
+        (SELECT SUM(CASE WHEN COALESCE(can_km,0) > 0 AND can_km / move_hours <= 85 THEN can_km ELSE km END)
+          FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<? AND r.move_hours > 0.5) gkm,
         (SELECT SUM(move_hours) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gh,
         (SELECT MAX(max_speed) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gmax,
         (SELECT SUM(t.distance_km) FROM trips t WHERE t.vehicle_id=v.id AND t.status IN ('unloaded','done','paid')
