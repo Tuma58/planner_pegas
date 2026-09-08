@@ -626,6 +626,19 @@ export async function renderDispatcher(container, context, options = {}) {
         после выгрузки забрать ${money(trip.revenue_vat)} у клиента</small>` : ''}
     </span>`;
 
+  // Заявка уже вносилась в 1С на ДРУГОЕ ТС (прежний рейс отклонили и
+  // назначили заново): без правки в учётной системе заказ уедет со старым
+  // госномером (кейс с203рв58 07.09 — перезакрепление вернуло рейс в
+  // повторное назначение, а 1С осталась на первом ТС).
+  const prev1cNote = trip => {
+    if (!trip.order_id) return '';
+    const prev = (data.trips || [])
+      .filter(t => t.order_id === trip.order_id && t.id !== trip.id &&
+        t.status === 'rejected' && t.entered_1c_at && t.vehicle_plate &&
+        t.vehicle_plate !== trip.vehicle_plate)
+      .sort((a, b) => String(b.entered_1c_at).localeCompare(String(a.entered_1c_at)))[0];
+    return prev ? `<small class="prep-note" style="color:var(--bad,#b3261e);font-weight:600">📒 Ранее заказ внесён в 1С на ТС ${escapeHtml(prev.vehicle_plate)} — измените данные в учётной системе</small>` : '';
+  };
   const prepStepOf = trip => !trip.entered_1c_at && !trip.deferred_1c_at ? ['1c', 'внести заказ в 1С']
     : !trip.driver_notified_at ? ['driver', 'отправить задание водителю']
     : ['online', 'вывести на линию'];
@@ -650,7 +663,8 @@ export async function renderDispatcher(container, context, options = {}) {
             : 'Взять карточку в работу: коллеги увидят, что подготовкой уже занимаются'}">${claimMine ? '🖐 Отпустить' : '🖐 Беру'}</button>` : ''}
         ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-prepnote="${trip.id}"
           title="Заметка по подготовке в произвольной форме — видна всей смене">💬${note ? ' ✎' : ' Заметка'}</button>` : ''}</small>
-        ${note ? `<small class="prep-note">💬 ${escapeHtml(note.done_by || '')}: ${escapeHtml(note.note || '')}</small>` : ''}` };
+        ${note ? `<small class="prep-note">💬 ${escapeHtml(note.done_by || '')}: ${escapeHtml(note.note || '')}</small>` : ''}
+        ${prev1cNote(trip)}` };
   };
   const salesCommentNote = trip => {
     const comment = orderOf(trip)?.comment;
