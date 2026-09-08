@@ -6547,7 +6547,7 @@ async function api(request, response, url) {
         if (fact.days < calendarDays) continue;
         const ratio = fact.km / trip.distance_km;
         if (ratio > 1.4) {
-          kmMismatch.push({ label: `${trip.plate} №${trip.order_no || '—'}`, vehicleId: trip.vehicle_id,
+          kmMismatch.push({ ratio, label: `${trip.plate} №${trip.order_no || '—'}`, vehicleId: trip.vehicle_id,
             sub: `план ${Math.round(trip.distance_km)} км · факт ~${Math.round(fact.km)} км `
               + `(${ratio > 1 ? '+' : '−'}${Math.round(Math.abs(ratio - 1) * 100)}%) · `
               + `${(trip.from_point || '').slice(0, 18)} → ${(trip.to_point || '').slice(0, 18)}` });
@@ -6555,7 +6555,7 @@ async function api(request, response, url) {
       }
       add('km_mismatch', '📏 Плановые км расходятся с фактом GPS (>40%)',
         'Кривая дистанция ломает ₽/км, себестоимость и скорости — чините километраж в заявке (обычно заглушка 500 км на дальнем плече)',
-        kmMismatch.sort((a, b) => b.sub.localeCompare(a.sub)));
+        kmMismatch.sort((a, b) => b.ratio - a.ratio).map(({ ratio, ...rest }) => rest));
       const noCoords = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE latitude IS NULL OR longitude IS NULL`).get().n;
       const noZone = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE zone_id IS NULL`).get().n;
       add('addr_gaps', '🗺 Дыры справочника адресов', 'Без координат подбор меряет по центрам зон; без зоны — не фильтруется',
