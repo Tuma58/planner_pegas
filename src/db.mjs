@@ -488,6 +488,13 @@ function migrateColumns(db) {
     move_hours REAL NOT NULL DEFAULT 0,
     max_speed REAL,
     PRIMARY KEY (vehicle_id, day))`);
+  // Фактические плечи: медианный пробег чистых рейсов по паре адресов —
+  // самообучающийся справочник для плановых километров (точнее формулы).
+  db.exec(`CREATE TABLE IF NOT EXISTS leg_fact_km (
+    key TEXT PRIMARY KEY,
+    samples INTEGER NOT NULL,
+    median_km REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
   // Пробег с одометра CAN-шины (методика руководителя 08.09): точнее GPS;
   // GPS-км остаются в km — пригодятся для отклонений от маршрута.
   ensure('vehicle_daily_runs', 'can_km', 'REAL');

@@ -2070,6 +2070,138 @@ async function collectCanKm() {
 setInterval(collectDailyRuns, 3_600_000);
 setTimeout(collectDailyRuns, 160_000);
 
+// ── Самообучающиеся плановые километры ──
+// Плановый км выставляется автоматически, без людей — поэтому и точность
+// его дело системы: справочник фактических плеч (медиана чистых рейсов по
+// паре адресов) + дорожный коэффициент, калиброванный фактом, вместо
+// жёсткой «прямой × 1,2». Решение руководителя 08.09.
+const straightKm = (a, b, c, d) => {
+  if (![a, b, c, d].every(Number.isFinite)) return null;
+  const rad = v => v * Math.PI / 180;
+  const h = Math.sin(rad(c - a) / 2) ** 2 + Math.cos(rad(a)) * Math.cos(rad(c)) * Math.sin(rad(d - b) / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+};
+const legKey = (a, b) => [a, b].sort().join('|');
+const calibratedRoadFactor = () => {
+  const raw = Number(db.prepare(`SELECT value FROM app_meta WHERE key='road_factor_fact'`).get()?.value);
+  return Number.isFinite(raw) && raw >= 1.05 && raw <= 1.6 ? raw : ROAD_FACTOR;
+};
+// Фактический пробег рейса: сумма дневных пробегов при ПОЛНОМ покрытии
+// дней рейса данными; иначе null (краевые дни делятся между рейсами —
+// на длинных рейсах перекос мал и гасится медианой по выборке).
+function tripFactKm(vehicleId, startsIso, finIso) {
+  const fromDay = String(startsIso).slice(0, 10);
+  const toDay = String(finIso).slice(0, 10);
+  const calendarDays = Math.floor((Date.parse(finIso) - Date.parse(startsIso)) / 86_400_000) + 1;
+  const fact = db.prepare(`SELECT SUM(CASE WHEN COALESCE(can_km,0) > 0 AND move_hours > 0.5
+      AND can_km / move_hours <= 85 THEN can_km ELSE km END) km, COUNT(*) days
+    FROM vehicle_daily_runs WHERE vehicle_id=? AND day >= ? AND day <= ?`)
+    .get(vehicleId, fromDay, toDay);
+  return fact?.km && fact.days >= calendarDays ? fact.km : null;
+}
+// Ночью: пересборка справочника плеч и калибровка коэффициента по чистым
+// рейсам за 60 дней; затем разовая миграция сентябрьских плановых км.
+function rebuildLegFacts() {
+  try {
+    const clean = [];
+    for (const trip of db.prepare(`SELECT t.vehicle_id, t.starts_at,
+        COALESCE(t.unloaded_at, t.ends_at) fin, o.from_address_id, o.to_address_id, o.via_json
+      FROM trips t JOIN orders o ON o.id=t.order_id
+      JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
+      WHERE t.status IN ('unloaded','done','paid')
+        AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-60 days')
+        AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 36
+        AND o.from_address_id IS NOT NULL AND o.to_address_id IS NOT NULL
+        AND COALESCE(o.via_json, '[]') = '[]'`).all()) {
+      const fact = tripFactKm(trip.vehicle_id, trip.starts_at, trip.fin);
+      if (!fact || fact < 100) continue;
+      clean.push({ key: legKey(trip.from_address_id, trip.to_address_id),
+        from: trip.from_address_id, to: trip.to_address_id, fact });
+    }
+    const byKey = new Map();
+    for (const row of clean) {
+      if (!byKey.has(row.key)) byKey.set(row.key, []);
+      byKey.get(row.key).push(row.fact);
+    }
+    const upsert = db.prepare(`INSERT INTO leg_fact_km(key,samples,median_km,updated_at)
+      VALUES(?,?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET samples=excluded.samples,
+        median_km=excluded.median_km, updated_at=CURRENT_TIMESTAMP`);
+    for (const [key, facts] of byKey) {
+      facts.sort((a, b) => a - b);
+      upsert.run(key, facts.length, Math.round(facts[Math.floor(facts.length / 2)]));
+    }
+    // Калибровка дорожного коэффициента: медиана(факт/прямая).
+    const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+    const ratios = clean.map(row => {
+      const a = point.get(row.from);
+      const b = point.get(row.to);
+      const straight = a && b ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
+      return straight > 100 ? row.fact / straight : null;
+    }).filter(v => Number.isFinite(v) && v > 1 && v < 2).sort((a, b) => a - b);
+    if (ratios.length >= 10) {
+      const factor = Math.round(ratios[Math.floor(ratios.length / 2)] * 100) / 100;
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('road_factor_fact',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(factor));
+      console.log(`rebuildLegFacts: плеч ${byKey.size}, чистых рейсов ${clean.length}, коэффициент ${factor}`);
+    } else console.log(`rebuildLegFacts: плеч ${byKey.size}, мало данных для калибровки (${ratios.length})`);
+    recalcSeptemberKm();
+  } catch (error) { console.error('rebuildLegFacts:', error.message); }
+}
+// Разовая миграция: пересчёт плановых км сентябрьских рейсов и заявок
+// новой логикой (плечо из факта → прямая × калиброванный коэффициент);
+// правка при отличии > 10%. Помечается в app_meta.
+function recalcSeptemberKm() {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='km_recalc_2026_09'`).get()) return;
+    const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+    let updated = 0;
+    for (const trip of db.prepare(`SELECT t.id, t.order_id, t.distance_km,
+        o.from_address_id, o.to_address_id, o.via_json
+      FROM trips t JOIN orders o ON o.id=t.order_id
+      WHERE t.status<>'rejected' AND t.starts_at >= '2026-09-01'
+        AND o.from_address_id IS NOT NULL AND o.to_address_id IS NOT NULL`).all()) {
+      let via = [];
+      try { via = JSON.parse(trip.via_json || '[]'); } catch { /* мусор */ }
+      let next = null;
+      if (!via.length) {
+        const leg = db.prepare(`SELECT median_km FROM leg_fact_km WHERE key=? AND samples>=2`)
+          .get(legKey(trip.from_address_id, trip.to_address_id));
+        if (leg) next = leg.median_km;
+      }
+      if (next == null) {
+        const chain = [point.get(trip.from_address_id),
+          ...via.map(item => item.addressId ? point.get(item.addressId) : null).filter(Boolean),
+          point.get(trip.to_address_id)].filter(Boolean);
+        if (chain.length >= 2) {
+          let total = 0;
+          for (let i = 1; i < chain.length; i += 1) {
+            const leg = straightKm(chain[i - 1].latitude, chain[i - 1].longitude,
+              chain[i].latitude, chain[i].longitude);
+            if (leg == null) { total = null; break; }
+            total += leg;
+          }
+          if (total != null) next = Math.round(total * calibratedRoadFactor());
+        }
+      }
+      if (next == null || !trip.distance_km) continue;
+      if (Math.abs(next - trip.distance_km) / trip.distance_km <= 0.1) continue;
+      db.prepare(`UPDATE trips SET distance_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(next, trip.id);
+      db.prepare(`UPDATE orders SET planned_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(next, trip.order_id);
+      updated += 1;
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('km_recalc_2026_09',?)`)
+      .run(String(updated));
+    audit(db, null, 'km-recalc', 'system', null,
+      { period: '2026-09', updated, note: 'пересчёт плановых км по фактическим плечам и калиброванному коэффициенту' }, 'migration');
+    console.log(`recalcSeptemberKm: обновлено рейсов ${updated}`);
+  } catch (error) { console.error('recalcSeptemberKm:', error.message); }
+}
+setInterval(rebuildLegFacts, 24 * 3_600_000);
+setTimeout(rebuildLegFacts, 200_000);
+
 // ── Автозакрытие упущенных выгрузок по GPS-истории ──
 // Решение руководителя 07.09: если выгрузка СВЕРШИЛАСЬ (машина стояла у
 // точки и уже уехала), а диспетчер её прозевал — факт проставляется
@@ -3925,6 +4057,13 @@ async function api(request, response, url) {
   // но считаются грузовой операцией в транзитном времени).
   function plannedKmFor(fromAddressId, toAddressId, via = []) {
     if (!fromAddressId || !toAddressId) return null;
+    // Прямое плечо, по которому уже есть чистые факты — берём медиану
+    // реальных пробегов: точнее любой формулы.
+    if (!via.length) {
+      const leg = db.prepare(`SELECT median_km FROM leg_fact_km WHERE key=? AND samples>=2`)
+        .get(legKey(fromAddressId, toAddressId));
+      if (leg) return leg.median_km;
+    }
     const point = db.prepare('SELECT latitude,longitude FROM addresses WHERE id=?');
     const chain = [point.get(fromAddressId),
       ...via.map(item => item.addressId ? point.get(item.addressId) : null).filter(Boolean),
@@ -3932,12 +4071,13 @@ async function api(request, response, url) {
     if (chain.length < 2) return null;
     let total = 0;
     for (let i = 1; i < chain.length; i += 1) {
-      const leg = roadKm(chain[i - 1].latitude, chain[i - 1].longitude,
+      const leg = straightKm(chain[i - 1].latitude, chain[i - 1].longitude,
         chain[i].latitude, chain[i].longitude);
       if (leg == null) return null;
       total += leg;
     }
-    return total;
+    // Дорожный коэффициент калибруется фактом парка (медиана факт/прямая).
+    return Math.round(total * calibratedRoadFactor());
   }
 
   // Telegram: одноразовый код привязки чата и смена режима уведомлений.
