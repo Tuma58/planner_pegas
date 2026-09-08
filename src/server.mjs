@@ -6531,7 +6531,7 @@ async function api(request, response, url) {
         JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
         WHERE t.status IN ('unloaded','done','paid')
           AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-14 days')
-          AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 24
+          AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 36
           AND t.distance_km > 0`).all()) {
         const fromDay = String(trip.starts_at).slice(0, 10);
         const toDay = String(trip.fin).slice(0, 10);
@@ -6539,9 +6539,14 @@ async function api(request, response, url) {
             AND can_km / move_hours <= 85 THEN can_km ELSE km END) km, COUNT(*) days
           FROM vehicle_daily_runs WHERE vehicle_id=? AND day >= ? AND day <= ?`)
           .get(trip.vehicle_id, fromDay, toDay);
-        if (!fact?.km || fact.days < 2) continue;
+        // Полное покрытие днями пробегов (история с 25.08) и только сторона
+        // «факт заметно БОЛЬШЕ плана»: занижение плана (заглушка 500 км) —
+        // главная боль; обратная сторона шумит краевыми днями цепочки.
+        const calendarDays = Math.floor((Date.parse(trip.fin) - Date.parse(trip.starts_at)) / 86_400_000) + 1;
+        if (!fact?.km || fact.days < Math.min(calendarDays, 2)) continue;
+        if (fact.days < calendarDays) continue;
         const ratio = fact.km / trip.distance_km;
-        if (ratio > 1.4 || ratio < 0.6) {
+        if (ratio > 1.4) {
           kmMismatch.push({ label: `${trip.plate} №${trip.order_no || '—'}`, vehicleId: trip.vehicle_id,
             sub: `план ${Math.round(trip.distance_km)} км · факт ~${Math.round(fact.km)} км `
               + `(${ratio > 1 ? '+' : '−'}${Math.round(Math.abs(ratio - 1) * 100)}%) · `
