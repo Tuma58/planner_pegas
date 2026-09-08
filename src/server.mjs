@@ -2248,11 +2248,23 @@ setTimeout(mergeCustomerScraps, 30_000);
 // простои раздувают сутки рейса и топят сегмент. Пересчёт раз в сутки по
 // закрытым рейсам за 60 дней; используется отчётом дня и приоритетом
 // автоподбора. Минимум 3 рейса — иначе клиент «новичок» без сегмента.
-let customerSegmentsCache = { day: '', map: new Map() };
+// Переменные затраты на км — ЖИВОЙ норматив из «Настройки → Калькуляция»
+// (себестоимость/км + страховка-дороги/км + водитель на суточный пробег),
+// а не зашитая константа: руководитель правит настройку — сегменты, пороги
+// и подсказки пересчитываются сами при следующем пересчёте.
+function variableCostPerKm() {
+  const c = settingsObject(db).calculation || {};
+  const perKm = Number(c.costPerKm || 55) + Number(c.insuranceAndRoadsPerKm || 6);
+  const driverKm = Number(c.driverPerTripDay || 4500) / Math.max(200, Number(c.dailyMileageKm || 600));
+  return Math.round((perKm + driverKm) * 10) / 10;
+}
+
+let customerSegmentsCache = { day: '', map: new Map(), norms: null };
 function rebuildCustomerSegments() {
   try {
     const day = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
     if (customerSegmentsCache.day === day && customerSegmentsCache.map.size) return;
+    const varCost = variableCostPerKm();
     const rows = db.prepare(`SELECT customer_name, revenue_vat,
         COALESCE(actual_distance_km, distance_km) km, starts_at, unloaded_at
       FROM trips WHERE status IN ('unloaded','done','paid') AND unloaded_at IS NOT NULL
@@ -2264,20 +2276,59 @@ function rebuildCustomerSegments() {
         t.km / 800 + 0.25);
       const key = String(t.customer_name || '').trim().toLowerCase();
       if (!byCust.has(key)) byCust.set(key, []);
-      byCust.get(key).push((t.revenue_vat / 1.22 - t.km * 70) / durD);
+      byCust.get(key).push((t.revenue_vat / 1.22 - t.km * varCost) / durD);
     }
-    const map = new Map();
-    const counts = { A: 0, B: 0, C: 0, D: 0 };
+    const margins = [];
+    const perCust = new Map();
     for (const [key, list] of byCust) {
       if (list.length < 3) continue;
       list.sort((a, b) => a - b);
       const marginDay = list[Math.floor(list.length / 2)];
-      const seg = marginDay >= 20_000 ? 'A' : marginDay >= 10_000 ? 'B' : marginDay >= 0 ? 'C' : 'D';
-      counts[seg] += 1;
-      map.set(key, { seg, marginDay: Math.round(marginDay), n: list.length });
+      perCust.set(key, { marginDay, n: list.length });
+      margins.push(marginDay);
     }
-    customerSegmentsCache = { day, map };
-    console.log(`Сегменты клиентов: A ${counts.A} · B ${counts.B} · C ${counts.C} · D ${counts.D}`);
+    // Пороги дышат вместе с парком: A — заметно выше текущей медианы маржи
+    // парка, B — вполсилы от неё. Клампы держат шкалу в здравом диапазоне,
+    // чтобы общий провал парка не «амнистировал» слабых клиентов.
+    margins.sort((a, b) => a - b);
+    const parkMedian = margins.length ? margins[Math.floor(margins.length / 2)] : 18_000;
+    const thA = Math.min(40_000, Math.max(12_000, parkMedian * 1.1));
+    const thB = Math.min(20_000, Math.max(6_000, parkMedian * 0.55));
+    const map = new Map();
+    const counts = { A: 0, B: 0, C: 0, D: 0 };
+    for (const [key, item] of perCust) {
+      const seg = item.marginDay >= thA ? 'A' : item.marginDay >= thB ? 'B'
+        : item.marginDay >= 0 ? 'C' : 'D';
+      counts[seg] += 1;
+      map.set(key, { seg, marginDay: Math.round(item.marginDay), n: item.n });
+    }
+    // Миграции сегментов: сравнение со вчерашним снапшотом копится в
+    // app_meta и раз в неделю уходит в сводку «📐 Нормативы» — видно,
+    // кто из клиентов дорожает или дешевеет для парка.
+    try {
+      const prev = JSON.parse(db.prepare(`SELECT value FROM app_meta
+        WHERE key='customer_segments_prev'`).get()?.value || '{}');
+      const moves = JSON.parse(db.prepare(`SELECT value FROM app_meta
+        WHERE key='customer_segment_moves'`).get()?.value || '[]');
+      const RANK = { A: 4, B: 3, C: 2, D: 1 };
+      for (const [key, item] of map) {
+        if (prev[key] && prev[key] !== item.seg) {
+          moves.push({ day, name: key, from: prev[key], to: item.seg,
+            dir: RANK[item.seg] > RANK[prev[key]] ? 'up' : 'down' });
+        }
+      }
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_segment_moves',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+        .run(JSON.stringify(moves.slice(-200)));
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_segments_prev',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+        .run(JSON.stringify(Object.fromEntries([...map].map(([key, item]) => [key, item.seg]))));
+    } catch (error) { console.error('Миграции сегментов:', error.message); }
+    customerSegmentsCache = { day, map,
+      norms: { varCost, parkMedian: Math.round(parkMedian), thA: Math.round(thA), thB: Math.round(thB) } };
+    console.log(`Сегменты клиентов: A ${counts.A} · B ${counts.B} · C ${counts.C} · D ${counts.D}` +
+      ` | переменные ${varCost} ₽/км · медиана парка ${Math.round(parkMedian / 100) / 10} т₽/сут` +
+      ` · пороги A ≥${Math.round(thA / 1000)} B ≥${Math.round(thB / 1000)}`);
   } catch (error) { console.error('Сегменты клиентов:', error.message); }
 }
 setInterval(rebuildCustomerSegments, 3_600_000);
@@ -3379,6 +3430,81 @@ function runAssignQualityReport() {
   } catch (error) { console.error('Сводка качества подбора:', error.message); }
 }
 setInterval(runAssignQualityReport, 10 * 60_000);
+
+// ── Недельный анализ дрейфа нормативов: «📐 Нормативы недели» ──
+// Себестоимость, выручка и транзит со временем плывут — правила не должны
+// отставать. Понедельник 08:10 МСК: живые нормативы против прошлой недели
+// (переменные ₽/км, медиана маржи парка и пороги сегментов, факт ₽/км,
+// техскорость по GPS, ворота), миграции клиентов между сегментами и
+// подсказки, когда пора править настройки калькуляции.
+function runNormsDigest() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCDay() !== 1 || msk.getUTCHours() < 8) return;
+    const day = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='norms_digest_week'`).get()?.value === day) return;
+    rebuildCustomerSegments();
+    const norms = customerSegmentsCache.norms;
+    if (!norms) return;
+    // Факт недели: ₽/км без НДС по закрытым рейсам, техскорость по GPS,
+    // ворота (прибыл→выгружен) — три опоры «выручка/себестоимость/транзит».
+    const week = db.prepare(`SELECT COALESCE(SUM(revenue_vat),0) rv,
+        COALESCE(SUM(COALESCE(actual_distance_km,distance_km)),0) km
+      FROM trips WHERE status IN ('unloaded','done','paid')
+        AND unloaded_at >= datetime('now','-7 day')`).get();
+    const rubKm = week.km ? Math.round(week.rv / 1.22 / week.km) : 0;
+    const runs = db.prepare(`SELECT COALESCE(SUM(COALESCE(can_km,km)),0) km,
+        COALESCE(SUM(move_hours),0) h FROM vehicle_daily_runs
+      WHERE day >= date('now','-7 day')`).get();
+    const techSpeed = runs.h ? Math.round(runs.km / runs.h * 10) / 10 : 0;
+    const gates = db.prepare(`SELECT arrived_at, unloaded_at FROM trips
+      WHERE arrived_at IS NOT NULL AND unloaded_at >= datetime('now','-7 day')`).all()
+      .map(t => (Date.parse(t.unloaded_at) - Date.parse(t.arrived_at)) / 3_600_000)
+      .filter(h => h > 0 && h < 200).sort((a, b) => a - b);
+    const gateH = gates.length ? Math.round(gates[Math.floor(gates.length / 2)] * 10) / 10 : null;
+    const last = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='norms_last'`)
+      .get()?.value || 'null');
+    const delta = (now, was, unit) => was == null ? '' :
+      ` (${now > was ? '+' : ''}${Math.round((now - was) * 10) / 10}${unit} к прошлой)`;
+    // Миграции сегментов за неделю — и очистка накопителя.
+    const moves = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='customer_segment_moves'`).get()?.value || '[]');
+    const ups = moves.filter(move => move.dir === 'up').slice(-5);
+    const downs = moves.filter(move => move.dir === 'down').slice(-5);
+    const moveLine = (label, list) => list.length
+      ? ` · ${label}: ${list.map(move => `${move.name.slice(0, 18)} ${move.from}→${move.to}`).join(', ')}` : '';
+    // Подсказки на действие — «анализ с внесением изменений»: пороги
+    // сегментов обновились сами, настройки себестоимости — за человеком.
+    const hints = [];
+    if (rubKm && rubKm < norms.varCost * 1.3) {
+      hints.push(`выручка ${rubKm} ₽/км меньше ×1,3 переменных (${norms.varCost}) — маржа сжимается: пересмотр ставок C/D`);
+    }
+    if (last?.techSpeed && techSpeed && techSpeed < last.techSpeed * 0.93) {
+      hints.push('техскорость упала >7% — проверьте стоянки и ворота в отчёте скоростей');
+    }
+    if (last?.gateH != null && gateH != null && gateH > last.gateH * 1.25) {
+      hints.push('ворота растут — реестр «⏳ Простои П/В» и слоты выгрузки');
+    }
+    notifyEveryone(`📐 Нормативы недели: переменные ${norms.varCost} ₽/км (Настройки → Калькуляция)` +
+      ` · медиана маржи парка ${Math.round(norms.parkMedian / 100) / 10} т₽/сут${
+        delta(norms.parkMedian / 1000, last ? last.parkMedian / 1000 : null, ' т₽')}` +
+      ` · пороги сегментов: A ≥${Math.round(norms.thA / 1000)} · B ≥${Math.round(norms.thB / 1000)} т₽/сут (пересчитаны от факта парка)` +
+      ` · факт недели: ${rubKm} ₽/км б/НДС${delta(rubKm, last?.rubKm, ' ₽')}` +
+      `, техскорость ${techSpeed} км/ч${delta(techSpeed, last?.techSpeed, '')}` +
+      (gateH != null ? `, ворота ${gateH} ч${delta(gateH, last?.gateH, ' ч')}` : '') +
+      moveLine('⬆ выросли', ups) + moveLine('⬇ просели', downs) +
+      (hints.length ? ` · 💡 ${hints.join('; ')}` : ' · без тревог'));
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_last',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(JSON.stringify({ parkMedian: norms.parkMedian, varCost: norms.varCost,
+        rubKm, techSpeed, gateH }));
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_segment_moves','[]')
+      ON CONFLICT(key) DO UPDATE SET value='[]'`).run();
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_digest_week',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+  } catch (error) { console.error('Нормативы недели:', error.message); }
+}
+setInterval(runNormsDigest, 10 * 60_000);
 
 // Автопересев плана вывоза: сетку заполнили из истории один раз и забыли —
 // через месяц она врёт. Раз в неделю (в ночь на понедельник) пересеваем из
