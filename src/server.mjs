@@ -6573,13 +6573,22 @@ async function api(request, response, url) {
     }
     const techDays = [...techByDay.values()].sort((a, b) => a.day.localeCompare(b.day));
     // Эксплуатационная по дню выгрузки завершённых рейсов.
+    // Рейсы со скоростью вне 5..80 км/ч — кривые плановые километры
+    // (заглушка 500 км на дальнем плече и т.п.), из расчёта исключаются.
+    const validTrip = `status IN ('unloaded','done','paid')
+        AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?
+        AND (julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24 BETWEEN 1 AND 240
+        AND distance_km / ((julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24) BETWEEN 5 AND 80`;
+    const skipped = db.prepare(`SELECT COUNT(*) n FROM trips WHERE status IN ('unloaded','done','paid')
+        AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?
+        AND (julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24 BETWEEN 1 AND 240
+        AND distance_km / ((julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24) NOT BETWEEN 5 AND 80`)
+      .get(from, to).n;
     const opDays = db.prepare(`SELECT substr(COALESCE(unloaded_at, ends_at), 1, 10) day,
         SUM(distance_km) km,
         SUM((julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24) h,
         COUNT(*) trips
-      FROM trips WHERE status IN ('unloaded','done','paid')
-        AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?
-        AND (julianday(COALESCE(unloaded_at, ends_at)) - julianday(starts_at)) * 24 BETWEEN 1 AND 240
+      FROM trips WHERE ${validTrip}
       GROUP BY day ORDER BY day`).all(from, to);
     // Разрез ТС: техническая и эксплуатационная по каждой машине.
     const byVehicle = db.prepare(`SELECT v.id, v.plate, v.driver_name,
@@ -6587,12 +6596,16 @@ async function api(request, response, url) {
           FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<? AND r.move_hours > 0.5) gkm,
         (SELECT SUM(move_hours) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gh,
         (SELECT MAX(max_speed) FROM vehicle_daily_runs r WHERE r.vehicle_id=v.id AND r.day>=? AND r.day<?) gmax,
-        (SELECT SUM(t.distance_km) FROM trips t WHERE t.vehicle_id=v.id AND t.status IN ('unloaded','done','paid')
-          AND COALESCE(t.unloaded_at,t.ends_at)>=? AND COALESCE(t.unloaded_at,t.ends_at)<?) tkm,
+        (SELECT SUM(t.distance_km) FROM trips t WHERE t.vehicle_id=v.id
+          AND t.status IN ('unloaded','done','paid')
+          AND COALESCE(t.unloaded_at,t.ends_at)>=? AND COALESCE(t.unloaded_at,t.ends_at)<?
+          AND (julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24 BETWEEN 1 AND 240
+          AND t.distance_km / ((julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24) BETWEEN 5 AND 80) tkm,
         (SELECT SUM((julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24) FROM trips t
           WHERE t.vehicle_id=v.id AND t.status IN ('unloaded','done','paid')
           AND COALESCE(t.unloaded_at,t.ends_at)>=? AND COALESCE(t.unloaded_at,t.ends_at)<?
-          AND (julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24 BETWEEN 1 AND 240) th
+          AND (julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24 BETWEEN 1 AND 240
+          AND t.distance_km / ((julianday(COALESCE(t.unloaded_at,t.ends_at))-julianday(t.starts_at))*24) BETWEEN 5 AND 80) th
       FROM vehicles v WHERE v.status='work'`).all(from, to, from, to, from, to, from, to, from, to)
       .map(row => ({ plate: row.plate, driver: row.driver_name,
         tech: row.gh > 3 ? Math.round(row.gkm / row.gh * 10) / 10 : null,
@@ -6617,7 +6630,7 @@ async function api(request, response, url) {
         op: row.h > 0 ? Math.round(row.km / row.h * 10) / 10 : null,
         dwellH: row.dwellH != null ? Math.round(row.dwellH * 10) / 10 : null }))
       .filter(row => row.op != null);
-    return json(response, 200, { from, to, techDays, opDays, byVehicle, byCustomer });
+    return json(response, 200, { from, to, techDays, opDays, byVehicle, byCustomer, skipped });
   }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const user = requirePermission(request, response, 'reports:read');

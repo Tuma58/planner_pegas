@@ -600,7 +600,8 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Эксплуатационная (рейс целиком): <b>${opAvg ? opAvg.toFixed(1) : '—'} км/ч</b></span>
         <span class="rsum">Рейсов: <b>${opSum.n}</b></span>
         <span class="rsum">GPS-пробег: <b>${Math.round(techSum.km).toLocaleString('ru-RU')} км</b></span>
-        ${techAvg && opAvg ? `<span class="rsum">Машина движется <b>${Math.round(opAvg / techAvg * 100)}%</b> времени рейса</span>` : ''}</div>
+        ${techAvg && opAvg ? `<span class="rsum">Машина движется <b>${Math.round(opAvg / techAvg * 100)}%</b> времени рейса</span>` : ''}
+        ${sp.skipped ? `<span class="rsum" title="Рейсы со скоростью вне 5–80 км/ч: почти всегда кривые плановые километры (заглушка 500 км на дальнем плече) — исключены из расчёта, чтобы не топить показатели машин и водителей. Чините дистанции в заявках">⚠ отброшено рейсов с кривыми км: <b>${sp.skipped}</b></span>` : ''}</div>
       <p class="geohint">Техническая — пробег с одометра CAN-шины (у машин без CAN — фолбэк GPS)
         на часы движения; потолок ~65–70. Эксплуатационная —
         километры рейса на всё его время: разрыв между ними = стоянки (погрузка, выгрузка, очереди,
