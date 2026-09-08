@@ -2159,7 +2159,7 @@ function rebuildLegFacts() {
 // правка при отличии > 10%. Помечается в app_meta.
 function recalcSeptemberKm() {
   try {
-    if (db.prepare(`SELECT value FROM app_meta WHERE key='km_recalc_2026_09_v3'`).get()) return;
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='km_recalc_2026_09_v4'`).get()) return;
     const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
     let updated = 0;
     for (const trip of db.prepare(`SELECT t.id, t.order_id, t.distance_km,
@@ -2225,7 +2225,7 @@ function recalcSeptemberKm() {
     for (const trip of db.prepare(`SELECT t.id, t.order_id, t.vehicle_id, t.distance_km,
         t.starts_at, COALESCE(t.unloaded_at, t.ends_at) fin
       FROM trips t JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
-      WHERE t.status IN ('unloaded','done','paid') AND t.starts_at >= '2026-09-01'
+      WHERE t.status IN ('unloaded','done','paid') AND t.starts_at >= '2026-08-25'
         AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 24
         AND t.distance_km > 0`).all()) {
       const fact = tripFactKm(trip.vehicle_id, trip.starts_at, trip.fin);
@@ -2238,7 +2238,7 @@ function recalcSeptemberKm() {
         .run(Math.round(fact), trip.order_id);
       updated += 1;
     }
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('km_recalc_2026_09_v3',?)`)
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('km_recalc_2026_09_v4',?)`)
       .run(String(updated));
     audit(db, null, 'km-recalc', 'system', null,
       { period: '2026-09', updated, note: 'пересчёт плановых км по фактическим плечам и калиброванному коэффициенту' }, 'migration');
