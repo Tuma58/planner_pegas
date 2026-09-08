@@ -189,7 +189,14 @@ const SUBJECT_ZONES = [
   ['Самара', /(самарск|ульяновск|оренбургск)\w*\s*обл/i],
   ['Самара', /(татарстан|марий эл|чуваш)/i],
   ['Урал', /(свердловск|челябинск|кировск)\w*\s*обл|пермск\w*\s*край|удмурт|башкорт|башкири/i],
-  ['Восток', /(новосибирск|омск|кемеровск|томск|тюменск|иркутск)\w*\s*обл|(алтайск|красноярск)\w*\s*край|ханты|\sНвСиб\s*$/i],
+  ['Новосибирск', /новосибирск\w*\s*обл|\sНвСиб\s*$/i],
+  ['Омск', /омск\w*\s*обл/i],
+  ['Кузбасс', /кемеровск\w*\s*обл|кузбасс/i],
+  ['Томск', /томск\w*\s*обл/i],
+  ['Тюмень', /тюменск\w*\s*обл|ханты|югра|ямал/i],
+  ['Алтай', /алтайск\w*\s*край|респ\w{0,6}\s*алтай/i],
+  ['Красноярск', /красноярск\w*\s*край|хакас/i],
+  ['Восток', /иркутск\w*\s*обл|бурят|забайкал/i],
   ['Черноземье', /(воронежск|липецк|курск|белгородск|брянск|орловск)\w*\s*обл/i],
   ['Юг', /(ростовск|волгоградск|астраханск)\w*\s*обл|(краснодарск|ставропольск)\w*\s*край|карачаево/i],
   ['Запад', /(смоленск|псковск)\w*\s*обл/i]
@@ -2122,6 +2129,55 @@ function linkCustomerIds() {
   } catch (error) { console.error('linkCustomerIds:', error.message); }
 }
 setTimeout(linkCustomerIds, 25_000);
+
+// ── Дробление зоны «Восток» на подзоны (Новосибирск, Кузбасс, Алтай…) ──
+// Зона покрывала города за 1000+ км друг от друга: порожний подгон
+// Новосибирск→Голышманово (1100 км) выглядел «внутри одной зоны» и был
+// невидим планированию. Разово: алиасы городов переезжают со старой зоны
+// на подзоны (посев их не вставил — alias UNIQUE), адреса Востока
+// перепривязываются по субъекту/городу/координатам (порог 250 км до
+// центра). История рейсов и заявок не переписывается.
+function splitEastZone() {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='east_zone_split_done'`).get()) return;
+    const eastZone = db.prepare(`SELECT id FROM zones WHERE name='Восток'`).get();
+    const subZones = db.prepare(`SELECT id, name, latitude, longitude FROM zones
+      WHERE name IN ('Новосибирск','Кузбасс','Алтай','Красноярск','Омск','Томск','Тюмень')`).all();
+    if (!eastZone || subZones.length < 7) return; // посев ещё не доехал
+    const subIds = new Set(subZones.map(zone => zone.id));
+    // Алиасы: «Новосибирск» и прочие города числились за Востоком.
+    const moved = { 'Новосибирск': ['Новосибирск', 'Криводановка'],
+      'Кузбасс': ['Кемерово', 'Чистогорский'], 'Алтай': ['Барнаул', 'Новоалтайск'],
+      'Красноярск': ['Красноярск'], 'Омск': ['Омск'], 'Томск': ['Томск'], 'Тюмень': ['Тюмень', 'Сургут'] };
+    for (const [zoneName, aliases] of Object.entries(moved)) {
+      const zone = subZones.find(item => item.name === zoneName);
+      for (const alias of aliases) {
+        db.prepare(`UPDATE zone_aliases SET zone_id=? WHERE alias=? COLLATE NOCASE AND zone_id=?`)
+          .run(zone.id, alias, eastZone.id);
+      }
+    }
+    // Адреса: пере-резолв каждого адреса Востока; координатный фолбэк
+    // принимается только вблизи центра подзоны — Иркутск не должен
+    // «прилипнуть» к Красноярску за 1000 км.
+    let rebound = 0;
+    for (const address of db.prepare(`SELECT id, name, region, latitude, longitude
+        FROM addresses WHERE zone_id=?`).all(eastZone.id)) {
+      const hint = zoneHintForAddress(`${address.name} ${address.region || ''}`,
+        address.latitude, address.longitude);
+      if (!hint || !subIds.has(hint.id)) continue;
+      if (hint.via === 'координаты') {
+        const zone = subZones.find(item => item.id === hint.id);
+        if (roadKm(address.latitude, address.longitude, zone.latitude, zone.longitude) > 250) continue;
+      }
+      db.prepare('UPDATE addresses SET zone_id=? WHERE id=?').run(hint.id, address.id);
+      rebound += 1;
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('east_zone_split_done',?)`).run(String(rebound));
+    audit(db, null, 'east-zone-split', 'system', null, { rebound }, 'migration');
+    console.log(`splitEastZone: адресов перепривязано ${rebound}`);
+  } catch (error) { console.error('splitEastZone:', error.message); }
+}
+setTimeout(splitEastZone, 30_000);
 
 // ── Самообучающиеся плановые километры ──
 // Плановый км выставляется автоматически, без людей — поэтому и точность
