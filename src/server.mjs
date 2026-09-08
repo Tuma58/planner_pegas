@@ -604,6 +604,34 @@ function runResourceWatch() {
 setInterval(runResourceWatch, 60 * 60_000);
 setTimeout(runResourceWatch, 25_000);
 
+// 🚦 Взятые за день заявки клиентов сегментов C/D — с фамилиями продаж:
+// сегменты считает rebuildCustomerSegments по марже машино-суток без НДС.
+function cdSegmentLine(dayIso, todayIso) {
+  const rows = db.prepare(`SELECT o.order_no, o.customer_name,
+      COALESCE(u.full_name,'?') manager
+    FROM orders o LEFT JOIN users u ON u.id=o.created_by
+    WHERE o.status<>'cancelled' AND o.deleted_at IS NULL
+      AND o.created_at>=? AND o.created_at<?`)
+    .all(`${dayIso} 00:00:00`, `${todayIso} 00:00:00`)
+    .map(order => ({ ...order, info: customerSegment(order.customer_name) }))
+    .filter(order => order.info && (order.info.seg === 'C' || order.info.seg === 'D'));
+  if (!rows.length) return '';
+  const list = rows.slice(0, 6).map(order =>
+    `${order.customer_name.slice(0, 18)} [${order.info.seg}] №${order.order_no || '?'} — ${
+      order.manager.split(' ')[0]}`).join('; ');
+  return ` · 🚦 взяты C/D-клиенты: ${rows.length} заявок (${list}${rows.length > 6 ? '…' : ''})`;
+}
+
+// Качество автоподбора за день: доля принятых рекомендаций.
+function assignQualityLine(dayIso, todayIso) {
+  const rows = db.prepare(`SELECT outcome, COUNT(*) c FROM assign_drafts
+    WHERE resolved_at>=? AND resolved_at<? GROUP BY outcome`)
+    .all(`${dayIso} 00:00:00`, `${todayIso} 00:00:00`);
+  const accepted = rows.find(row => row.outcome === 'accepted')?.c || 0;
+  const total = rows.reduce((sum, row) => sum + row.c, 0);
+  return total ? ` · подбор ТС: принято ${accepted} из ${total} (${Math.round(accepted / total * 100)}%)` : '';
+}
+
 // ── Ежедневный отчёт по автопарку: каждое утро после 07:00 МСК сводка
 // за вчера уходит в чат руководителю (роль manager; чат видят все).
 // Флаг в app_meta защищает от дублей при перезапусках контейнера.
@@ -687,6 +715,7 @@ function runDailyFleetReport() {
             ` · укомплектованность ${att.staffing.toFixed(2)}/${att.staffingTarget}`
           : ' · явка за день не велась';
       })() +
+      cdSegmentLine(dayIso, todayIso) + assignQualityLine(dayIso, todayIso) +
       ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
@@ -2132,6 +2161,116 @@ function linkCustomerIds() {
 }
 setTimeout(linkCustomerIds, 25_000);
 
+// ── Слияние огрызков имён клиентов ──
+// Продажи вводили клиентов вручную и плодили обрубки («атя», «крос»,
+// «черкизоо») — рейсы и заявки висят на строках-огрызках, портя рейтинг,
+// CRM и сегментацию. Разово перевешиваем на канонические карточки.
+function mergeCustomerScraps() {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='customers_scraps_merged_v1'`).get()) return;
+    const SCRAP_MAP = {
+      'атя': 'Атяшевский МПК ООО',
+      'атяшевский мпк': 'Атяшевский МПК ООО',
+      'вим': 'Вимм-Билль-Данн АО',
+      'корса': 'Корса АО',
+      'кро': 'М Лоджистик (кросс-док)',
+      'крос': 'М Лоджистик (кросс-док)',
+      'кросдо': 'М Лоджистик (кросс-док)',
+      'кросдок': 'М Лоджистик (кросс-док)',
+      'кросдодок': 'М Лоджистик (кросс-док)',
+      'выполнял рейс кросс-док на самару в пензу перецепился': 'М Лоджистик (кросс-док)',
+      'пензенская кондитерская фабрика': 'Пензенская Кондитерская Фабрика  ОАО',
+      'тд ч': 'ТД Черкизово ООО',
+      'ч': 'ТД Черкизово ООО',
+      'черки': 'ТД Черкизово ООО',
+      'черкизоо': 'ТД Черкизово ООО',
+      'чмпз': 'ЧМПЗ АО Пенза',
+      'эталон': 'ЭТАЛОН ООО 3238',
+      'микоян': 'Микоян ОАО',
+      'иней': 'Иней ООО',
+      'зоринский': 'Зоринское МП ООО',
+      'данилкин': 'ДАНИЛКИН АНДРЕЙ ВИКТОРОВИЧ ИП',
+      'коора': 'Коралл ООО',
+      'кораб': 'Коралл ООО',
+      'корабли': 'Коралл ООО',
+      'стандартло': 'ООО СтандартЛогистик',
+      'филь': 'ФИЛЬЕ ПРОПЕРТИ ООО',
+      'отсанкин': 'Останкино - новый стандарт ООО',
+      'отсанкино': 'Останкино - новый стандарт ООО',
+      'дик': 'дикомп'
+    };
+    let moved = 0;
+    for (const [scrap, canonName] of Object.entries(SCRAP_MAP)) {
+      const canon = db.prepare(`SELECT id, name FROM customers
+        WHERE lower(trim(name))=lower(trim(?))`).get(canonName);
+      if (!canon) { console.error(`mergeCustomerScraps: канона нет: ${canonName}`); continue; }
+      if (canon.name.trim().toLowerCase() === scrap) continue;
+      moved += db.prepare(`UPDATE trips SET customer_name=?
+        WHERE lower(trim(customer_name))=?`).run(canon.name, scrap).changes;
+      moved += db.prepare(`UPDATE orders SET customer_name=?, customer_id=?
+        WHERE lower(trim(customer_name))=?`).run(canon.name, canon.id, scrap).changes;
+      db.prepare(`UPDATE OR IGNORE customer_contacts SET customer_name=?
+        WHERE lower(trim(customer_name))=?`).run(canon.name, scrap);
+      db.prepare(`UPDATE OR IGNORE customer_profiles SET customer_name=?
+        WHERE lower(trim(customer_name))=?`).run(canon.name, scrap);
+      db.prepare(`UPDATE OR IGNORE delivery_slots SET customer_name=?, customer_id=?
+        WHERE lower(trim(customer_name))=?`).run(canon.name, canon.id, scrap);
+      for (const table of ['customer_contacts', 'customer_profiles', 'delivery_slots']) {
+        db.prepare(`DELETE FROM ${table} WHERE lower(trim(customer_name))=?`).run(scrap);
+      }
+      db.prepare(`DELETE FROM customers WHERE lower(trim(name))=? AND id<>?`).run(scrap, canon.id);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('customers_scraps_merged_v1',?)`)
+      .run(String(moved));
+    audit(db, null, 'customers-scraps-merge', 'system', null, { moved }, 'migration');
+    console.log(`mergeCustomerScraps: перевешено рейсов и заявок ${moved}`);
+  } catch (error) { console.error('mergeCustomerScraps:', error.message); }
+}
+setTimeout(mergeCustomerScraps, 30_000);
+
+// ── Сегменты клиентов по марже машино-суток (без НДС) ──
+// A ≥20 т₽/сут · B 10–20 · C 0–10 · D <0 (возим дешевле переменных).
+// Критерий объединяет объём, деньги и транзитное время: длинные ворота и
+// простои раздувают сутки рейса и топят сегмент. Пересчёт раз в сутки по
+// закрытым рейсам за 60 дней; используется отчётом дня и приоритетом
+// автоподбора. Минимум 3 рейса — иначе клиент «новичок» без сегмента.
+let customerSegmentsCache = { day: '', map: new Map() };
+function rebuildCustomerSegments() {
+  try {
+    const day = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+    if (customerSegmentsCache.day === day && customerSegmentsCache.map.size) return;
+    const rows = db.prepare(`SELECT customer_name, revenue_vat,
+        COALESCE(actual_distance_km, distance_km) km, starts_at, unloaded_at
+      FROM trips WHERE status IN ('unloaded','done','paid') AND unloaded_at IS NOT NULL
+        AND starts_at >= datetime('now','-60 day')`).all();
+    const byCust = new Map();
+    for (const t of rows) {
+      if (!t.km || t.km < 20) continue;
+      const durD = Math.max((Date.parse(t.unloaded_at) - Date.parse(t.starts_at)) / 86_400_000,
+        t.km / 800 + 0.25);
+      const key = String(t.customer_name || '').trim().toLowerCase();
+      if (!byCust.has(key)) byCust.set(key, []);
+      byCust.get(key).push((t.revenue_vat / 1.22 - t.km * 70) / durD);
+    }
+    const map = new Map();
+    const counts = { A: 0, B: 0, C: 0, D: 0 };
+    for (const [key, list] of byCust) {
+      if (list.length < 3) continue;
+      list.sort((a, b) => a - b);
+      const marginDay = list[Math.floor(list.length / 2)];
+      const seg = marginDay >= 20_000 ? 'A' : marginDay >= 10_000 ? 'B' : marginDay >= 0 ? 'C' : 'D';
+      counts[seg] += 1;
+      map.set(key, { seg, marginDay: Math.round(marginDay), n: list.length });
+    }
+    customerSegmentsCache = { day, map };
+    console.log(`Сегменты клиентов: A ${counts.A} · B ${counts.B} · C ${counts.C} · D ${counts.D}`);
+  } catch (error) { console.error('Сегменты клиентов:', error.message); }
+}
+setInterval(rebuildCustomerSegments, 3_600_000);
+setTimeout(rebuildCustomerSegments, 35_000);
+const customerSegment = name =>
+  customerSegmentsCache.map.get(String(name || '').trim().toLowerCase()) || null;
+
 // ── Дробление зоны «Восток» на подзоны (Новосибирск, Кузбасс, Алтай…) ──
 // Зона покрывала города за 1000+ км друг от друга: порожний подгон
 // Новосибирск→Голышманово (1100 км) выглядел «внутри одной зоны» и был
@@ -3020,7 +3159,12 @@ function runDockingWatch() {
         pairs.push({ trip, order, km });
       }
     }
-    pairs.sort((a, b) => a.km - b.km);
+    // Приоритет потоков: заявка A-клиента при сопоставимом подгоне выигрывает
+    // у C/D — штраф в «виртуальных км» сдвигает машино-сутки к выгодным
+    // клиентам, но не абсурдно (D в 20 км всё же лучше A в 300 км).
+    const segDockPenalty = order =>
+      ({ A: 0, B: 30, C: 90, D: 180 })[customerSegment(order.customer_name)?.seg] ?? 60;
+    pairs.sort((a, b) => (a.km + segDockPenalty(a.order)) - (b.km + segDockPenalty(b.order)));
     const usedVehicles = new Set();
     const usedOrders = new Set();
     let made = 0;
@@ -3074,6 +3218,12 @@ function runAssignDrafts() {
       WHERE trip_id IS NULL AND status='new' AND confirmed_at IS NOT NULL
         AND datetime(window_from) > datetime('now')
         AND datetime(window_from) < datetime('now','+2 days')`).all();
+    // Приоритет потоков: заявки A/B-клиентов первыми выбирают свободные
+    // машины; C/D и новички довольствуются остатком парка.
+    const segRank = { A: 0, B: 1, C: 3, D: 4 };
+    orders.sort((a, b) =>
+      (segRank[customerSegment(a.customer_name)?.seg] ?? 2) -
+      (segRank[customerSegment(b.customer_name)?.seg] ?? 2));
     let made = 0;
     for (const order of orders) {
       const pick = pickVehicleFor(order);
@@ -3094,6 +3244,55 @@ function runAssignDrafts() {
 }
 setInterval(runAssignDrafts, 60 * 60_000);
 setTimeout(runAssignDrafts, 50_000);
+
+// ── Недельная сводка качества автоподбора: причины замен как сырьё ──
+// Понедельник 08:00 МСК: доля принятых рекомендаций за неделю, причины
+// замен по категориям, шаблонные отписки. Цель — максимум попаданий:
+// категории показывают, какое правило подбора чинить следующим.
+function runAssignQualityReport() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCDay() !== 1 || msk.getUTCHours() < 8) return;
+    const day = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='assign_quality_week'`).get()?.value === day) return;
+    const rows = db.prepare(`SELECT outcome, override_reason FROM assign_drafts
+      WHERE resolved_at >= datetime('now','-7 day') AND outcome IS NOT NULL`).all();
+    if (rows.length < 5) return;
+    const accepted = rows.filter(row => row.outcome === 'accepted').length;
+    const overridden = rows.filter(row => row.outcome === 'overridden');
+    const CATS = [
+      ['занятость машины', /зан|друго[йм]\s+рейс|кру[гз]|стыков/i],
+      ['кузов/температура', /кузов|реф|тент|изотерм|температур|режим/i],
+      ['география/подгон', /далеко|подгон|км\b|географ|регион|город/i],
+      ['требования клиента', /клиент|запрет|требован|пропуск|допуск/i],
+      ['водитель', /водител|смен|отдых|устал|рто/i],
+      ['ремонт/техника', /ремонт|полом|то\b|шин/i]
+    ];
+    const catCount = new Map();
+    const texts = new Map();
+    for (const row of overridden) {
+      const reason = String(row.override_reason || '').trim();
+      if (!reason) continue;
+      const cat = CATS.find(([, rx]) => rx.test(reason))?.[0] || 'прочее';
+      catCount.set(cat, (catCount.get(cat) || 0) + 1);
+      const stamp = reason.toLowerCase().replace(/\s+/g, ' ');
+      texts.set(stamp, (texts.get(stamp) || 0) + 1);
+    }
+    const catLine = [...catCount.entries()].sort((a, b) => b[1] - a[1])
+      .map(([cat, count]) => `${cat} ${count}`).join(', ');
+    const clones = [...texts.entries()].filter(([, count]) => count >= 3)
+      .sort((a, b) => b[1] - a[1]).slice(0, 3);
+    notifyEveryone(`🎯 Подбор ТС за неделю: рекомендаций ${rows.length}, принято ${accepted}` +
+      ` (${Math.round(accepted / rows.length * 100)}%)` +
+      (catLine ? ` · причины замен: ${catLine}` : '') +
+      (clones.length ? ` · ⚠ отписки под копирку: ${clones.map(([text, count]) =>
+        `«${text.slice(0, 40)}» ×${count}`).join('; ')}` : '') +
+      ` — каждая категория замен = правило подбора, которое можно улучшить`);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('assign_quality_week',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+  } catch (error) { console.error('Сводка качества подбора:', error.message); }
+}
+setInterval(runAssignQualityReport, 10 * 60_000);
 
 // Автопересев плана вывоза: сетку заполнили из истории один раз и забыли —
 // через месяц она врёт. Раз в неделю (в ночь на понедельник) пересеваем из
@@ -5056,6 +5255,17 @@ async function api(request, response, url) {
       return errorJson(response, 422, `Подбор рекомендует ${draft.plate}${
         draft.empty_km != null ? ` (порожняк ${Math.round(draft.empty_km)} км)` : ''
       } — назначая другое ТС, опишите причину замены (что не так с рекомендацией: занятость, кузов, география, клиент). Причины разбираются и улучшают автоподбор — «точка» не считается`);
+    }
+    // Шаблонные отписки («машина занята» под копирку) не дают сырья для
+    // улучшения правил: один и тот же текст чаще 3 раз за 2 недели — стоп.
+    if (draft && draft.vehicle_id !== vehicle.id) {
+      const stamp = overrideReason.toLowerCase().replace(/\s+/g, ' ').trim();
+      const repeats = db.prepare(`SELECT COUNT(*) c FROM assign_drafts
+        WHERE outcome='overridden' AND lower(trim(override_reason))=?
+          AND resolved_at >= datetime('now','-14 day')`).get(stamp).c;
+      if (repeats >= 3) {
+        return errorJson(response, 422, `Причина «${overrideReason.slice(0, 60)}» уже использована ${repeats} раза за 2 недели — похоже на шаблонную отписку. Опишите конкретную ситуацию этой заявки: причины замен читает система и руководитель, из них улучшаются правила подбора`);
+      }
     }
     const tripId = assignOrderCore(order, vehicle, user, { distanceKm: body.distanceKm });
     // Итог черновика фиксируем сразу (не дожидаясь сторожа): принял или
