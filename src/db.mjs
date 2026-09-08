@@ -495,6 +495,19 @@ function migrateColumns(db) {
     samples INTEGER NOT NULL,
     median_km REAL NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+  // Самообучающийся транзит: у плеча, кроме км, копится медиана ЧИСТОЙ
+  // дороги (вывод на линию → прибытие на выгрузку) — план-даты рейса
+  // считаются из факта, формула остаётся фолбэком для новых плеч.
+  ensure('leg_fact_km', 'median_hours', 'REAL');
+  ensure('leg_fact_km', 'hour_samples', 'INTEGER NOT NULL DEFAULT 0');
+  // Фактические «ворота» погрузки/выгрузки: медиана часов на точке по
+  // адресу (точно) и по клиенту (фолбэк). Ключи: addr-load:<id>,
+  // addr-unload:<id>, cust-load:<имя>, cust-unload:<имя>.
+  db.exec(`CREATE TABLE IF NOT EXISTS gate_facts (
+    key TEXT PRIMARY KEY,
+    samples INTEGER NOT NULL,
+    median_hours REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
   // Пробег с одометра CAN-шины (методика руководителя 08.09): точнее GPS;
   // GPS-км остаются в km — пригодятся для отклонений от маршрута.
   ensure('vehicle_daily_runs', 'can_km', 'REAL');

@@ -2470,8 +2470,112 @@ function rebuildLegFacts() {
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(factor));
       console.log(`rebuildLegFacts: плеч ${byKey.size}, чистых рейсов ${clean.length}, коэффициент ${factor}`);
     } else console.log(`rebuildLegFacts: плеч ${byKey.size}, мало данных для калибровки (${ratios.length})`);
+    rebuildTransitFacts();
     recalcSeptemberKm();
   } catch (error) { console.error('rebuildLegFacts:', error.message); }
+}
+
+// ── Самообучающийся транзит: дорога и ворота из фактов 60 дней ──
+// Формула (км/50 × 1,5 + операции) одинакова для всех, а факт разный:
+// ворота Новых ферм — 1,6 ч, Пензенской кондитерской — 22 ч. Дорога плеча
+// = медиана (вывод на линию → прибытие на выгрузку) чистых рейсов; ворота
+// = медиана по адресу (точно) и клиенту (фолбэк). Читает smartTransitHoursFor.
+function rebuildTransitFacts() {
+  try {
+    const median = list => { list.sort((a, b) => a - b); return list[Math.floor(list.length / 2)]; };
+    // Дорожные часы плеча — чистые рейсы парой адресов без промежуточных.
+    const roads = new Map();
+    for (const trip of db.prepare(`SELECT t.on_line_at, t.arrived_at,
+        o.from_address_id fa, o.to_address_id ta
+      FROM trips t JOIN orders o ON o.id=t.order_id
+      WHERE t.status IN ('unloaded','done','paid')
+        AND t.on_line_at IS NOT NULL AND t.arrived_at IS NOT NULL
+        AND t.arrived_at > datetime('now','-60 days')
+        AND o.from_address_id IS NOT NULL AND o.to_address_id IS NOT NULL
+        AND COALESCE(o.via_json,'[]')='[]'`).all()) {
+      const hours = (Date.parse(trip.arrived_at) - Date.parse(trip.on_line_at)) / 3_600_000;
+      if (hours < 2 || hours > 240) continue;
+      const key = legKey(trip.fa, trip.ta);
+      if (!roads.has(key)) roads.set(key, []);
+      roads.get(key).push(hours);
+    }
+    const upsertRoad = db.prepare(`INSERT INTO leg_fact_km(key,samples,median_km,median_hours,hour_samples)
+      VALUES(?,0,0,?,?)
+      ON CONFLICT(key) DO UPDATE SET median_hours=excluded.median_hours,
+        hour_samples=excluded.hour_samples, updated_at=CURRENT_TIMESTAMP`);
+    for (const [key, list] of roads) {
+      upsertRoad.run(key, Math.round(median(list) * 10) / 10, list.length);
+    }
+    // Ворота: погрузка (первая P-стоянка: прибыл → убыл/закончил/на линии)
+    // и выгрузка (прибыл на выгрузку → выгружен).
+    const gates = new Map();
+    const push = (key, hours) => {
+      if (hours < 0.2 || hours > 72) return;
+      if (!gates.has(key)) gates.set(key, []);
+      gates.get(key).push(hours);
+    };
+    for (const trip of db.prepare(`SELECT t.id, t.customer_name, t.arrived_at, t.unloaded_at,
+        t.on_line_at, o.from_address_id fa, o.to_address_id ta
+      FROM trips t LEFT JOIN orders o ON o.id=t.order_id
+      WHERE t.status IN ('unloaded','done','paid')
+        AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-60 days')`).all()) {
+      const cust = String(trip.customer_name || '').trim().toLowerCase();
+      const load = db.prepare(`SELECT actual_arrival, actual_departure, work_finished_at
+        FROM trip_stops WHERE trip_id=? AND kind='P' AND actual_arrival IS NOT NULL
+        ORDER BY seq LIMIT 1`).get(trip.id);
+      const loadEnd = load && (load.actual_departure || load.work_finished_at || trip.on_line_at);
+      if (load && loadEnd) {
+        const hours = (Date.parse(loadEnd) - Date.parse(load.actual_arrival)) / 3_600_000;
+        if (trip.fa) push(`addr-load:${trip.fa}`, hours);
+        if (cust) push(`cust-load:${cust}`, hours);
+      }
+      if (trip.arrived_at && trip.unloaded_at) {
+        const hours = (Date.parse(trip.unloaded_at) - Date.parse(trip.arrived_at)) / 3_600_000;
+        if (trip.ta) push(`addr-unload:${trip.ta}`, hours);
+        if (cust) push(`cust-unload:${cust}`, hours);
+      }
+    }
+    const upsertGate = db.prepare(`INSERT INTO gate_facts(key,samples,median_hours)
+      VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET samples=excluded.samples,
+        median_hours=excluded.median_hours, updated_at=CURRENT_TIMESTAMP`);
+    for (const [key, list] of gates) {
+      upsertGate.run(key, list.length, Math.round(median(list) * 10) / 10);
+    }
+    const addrGates = [...gates.keys()].filter(key => key.startsWith('addr')).length;
+    console.log(`rebuildTransitFacts: плеч с дорогой ${roads.size}, ворот адресных ${addrGates}, клиентских ${gates.size - addrGates}`);
+  } catch (error) { console.error('rebuildTransitFacts:', error.message); }
+}
+
+// Умный транзит заявки: дорога из факта плеча + ворота из факта адреса или
+// клиента; чего факт не знает — добирает формула. Возвращает часы.
+function gateFactHours(kind, addressId, customerName) {
+  if (addressId) {
+    const byAddr = db.prepare('SELECT median_hours h, samples FROM gate_facts WHERE key=?')
+      .get(`addr-${kind}:${addressId}`);
+    if (byAddr && byAddr.samples >= 2) return byAddr.h;
+  }
+  const cust = String(customerName || '').trim().toLowerCase();
+  if (cust) {
+    const byCust = db.prepare('SELECT median_hours h, samples FROM gate_facts WHERE key=?')
+      .get(`cust-${kind}:${cust}`);
+    if (byCust && byCust.samples >= 3) return byCust.h;
+  }
+  return null;
+}
+function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
+  const calc = settingsObject(db).calculation || {};
+  const legRow = order.from_address_id && order.to_address_id
+    ? db.prepare('SELECT median_hours h, hour_samples s FROM leg_fact_km WHERE key=?')
+      .get(legKey(order.from_address_id, order.to_address_id))
+    : null;
+  if (!legRow || legRow.s < 2 || !legRow.h) {
+    return transitHours(distanceKm, calc, 2 + viaOps);
+  }
+  const perOp = Number(calc.handlingHoursPerOperation || 2) * Number(calc.transitFactor || 1.5);
+  const loadH = gateFactHours('load', order.from_address_id, order.customer_name) ?? perOp;
+  const unloadH = gateFactHours('unload', order.to_address_id, order.customer_name) ?? perOp;
+  return loadH + legRow.h + unloadH + viaOps * perOp;
 }
 // Разовая миграция: пересчёт плановых км сентябрьских рейсов и заявок
 // новой логикой (плечо из факта → прямая × калиброванный коэффициент);
@@ -3497,6 +3601,16 @@ function runNormsDigest() {
       `, техскорость ${techSpeed} км/ч${delta(techSpeed, last?.techSpeed, '')}` +
       (gateH != null ? `, ворота ${gateH} ч${delta(gateH, last?.gateH, ' ч')}` : '') +
       moveLine('⬆ выросли', ups) + moveLine('⬇ просели', downs) +
+      (() => {
+        // Покрытие умного транзита: сколько план-дат уже считается из факта.
+        const roadLegs = db.prepare(`SELECT COUNT(*) n FROM leg_fact_km
+          WHERE hour_samples >= 2 AND median_hours > 0`).get().n;
+        const gateAddr = db.prepare(`SELECT COUNT(*) n FROM gate_facts
+          WHERE key LIKE 'addr-%' AND samples >= 2`).get().n;
+        const gateCust = db.prepare(`SELECT COUNT(*) n FROM gate_facts
+          WHERE key LIKE 'cust-%' AND samples >= 3`).get().n;
+        return roadLegs ? ` · умный транзит: дорога ${roadLegs} плеч, ворота ${gateAddr} адресов / ${gateCust} клиентов` : '';
+      })() +
       (hints.length ? ` · 💡 ${hints.join('; ')}` : ' · без тревог'));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_last',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
@@ -5224,8 +5338,11 @@ async function api(request, response, url) {
         const nextToZone = body.toZoneId ?? current.to_zone_id;
         const calc = settingsObject(db).calculation;
         const newStart = trip.status === 'plan' ? new Date(starts).toISOString() : trip.starts_at;
-        const transitMs = transitHours(Number(trip.distance_km || nextPlannedKm || 500), calc,
-          2 + nextVia.length) * 3_600_000;
+        const transitMs = smartTransitHoursFor({
+          from_address_id: body.fromAddressId ?? current.from_address_id,
+          to_address_id: body.toAddressId ?? current.to_address_id,
+          customer_name: current.customer_name
+        }, Number(trip.distance_km || nextPlannedKm || 500), nextVia.length) * 3_600_000;
         const newEnd = new Date(Math.max(Date.parse(newStart) + transitMs, ends)).toISOString();
         const datesChanged = newStart !== trip.starts_at || newEnd !== trip.ends_at;
         const placesChanged = nextFromPoint !== (trip.from_point || '') || nextToPoint !== (trip.to_point || '')
@@ -5318,8 +5435,9 @@ async function api(request, response, url) {
     // Транзит: (км/50 + операции×3ч) × 1,5 — каждая промежуточная погрузка
     // и выгрузка добавляет операцию. Окно клиента шире расчёта — план по окну.
     const orderVia = (() => { try { return JSON.parse(order.via_json || '[]'); } catch { return []; } })();
+    // Самообучающийся транзит: факт плеча и ворот вместо голой формулы.
     const transitEnd = Date.parse(startsAt) +
-      transitHours(distance, settings, 2 + orderVia.length) * 3_600_000;
+      smartTransitHoursFor(order, distance, orderVia.length) * 3_600_000;
     const endsAt = new Date(Math.max(transitEnd, Date.parse(order.window_to || 0))).toISOString();
     const tripId = order.trip_id || randomUUID();
     // Двойное назначение: сцепка уже занята рейсом в этот период (допуск 6 ч —
