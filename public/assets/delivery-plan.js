@@ -222,8 +222,19 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     row.rate = slot.rate || row.rate;
     row.transit = slot.transit_hours || row.transit;
   }
+  // Сортировка: клиенты по суммарному недельному обороту, плечи — внутри
+  // своего клиента. Раньше плечи сортировались вперемешку по обороту, и
+  // «Черкизово» с восемью направлениями мелькал по всей таблице — выглядело
+  // дублями клиентов. Теперь имя пишется один раз, плечи строками под ним.
+  const turnoverOf = row => row.week.reduce((sum, value) => sum + value, 0) * row.rate;
+  const customerTurnover = new Map();
+  for (const row of rows.values()) {
+    customerTurnover.set(row.customer, (customerTurnover.get(row.customer) || 0) + turnoverOf(row));
+  }
   const allRows = [...rows.values()].sort((a, b) =>
-    (b.week.reduce((s, v) => s + v, 0) * b.rate) - (a.week.reduce((s, v) => s + v, 0) * a.rate));
+    (customerTurnover.get(b.customer) - customerTurnover.get(a.customer)) ||
+    a.customer.localeCompare(b.customer, 'ru') ||
+    (turnoverOf(b) - turnoverOf(a)));
   const query = flt.query.trim().toLowerCase();
   const rowList = allRows.filter(row =>
     (!query || row.customer.toLowerCase().includes(query)) &&
@@ -316,10 +327,19 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     return false;
   };
   const shownRows = flt.gapsOnly ? rowList.filter(rowHasGap) : rowList;
-  const bodyRows = shownRows.map(row => { const index = rowList.indexOf(row); return `<tr>
+  const bodyRows = shownRows.map((row, shownIndex) => { const index = rowList.indexOf(row);
+    // Имя клиента — только в первой строке его группы плеч: остальные
+    // строки помечаются «↳ ещё плечо», чтобы повторы не читались дублями.
+    const firstOfGroup = shownIndex === 0 || shownRows[shownIndex - 1].customer !== row.customer;
+    const legsOfCustomer = shownRows.filter(item => item.customer === row.customer).length;
+    return `<tr${firstOfGroup && shownIndex > 0 ? ' style="border-top:2px solid var(--border,#b9c2cc)"' : ''}>
     <td class="plan-fix" style="white-space:nowrap;max-width:150px;min-width:150px;overflow:hidden;text-overflow:ellipsis">
-      <b data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer"
-        title="Плечи клиента: план, взято, суммы — с правкой слотов">${escapeHtml(row.customer)}</b></td>
+      ${firstOfGroup
+    ? `<b data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer"
+        title="Плечи клиента: план, взято, суммы — с правкой слотов">${escapeHtml(row.customer)}</b>${legsOfCustomer > 1
+      ? ` <small class="muted" title="Направлений клиента в сетке">×${legsOfCustomer}</small>` : ''}`
+    : `<span class="muted" data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer;opacity:.6"
+        title="Ещё одно плечо клиента ${escapeHtml(row.customer)}">↳ ещё плечо</span>`}</td>
     <td class="plan-fix2" style="white-space:nowrap;left:150px">${legLabelHtml(context, plan, row)}</td>
     <td style="white-space:nowrap">${money(row.rate)}${canEdit ? ` <button class="button ghost small" data-slot-edit="${index}" title="Слоты недели и ставка">✎</button>` : ''}</td>
     ${Array.from({ length: daysInMonth }, (_, i) => cellHtml(row, index, i + 1)).join('')}
@@ -356,7 +376,9 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
       </select>
       <label class="checkline" style="margin:0"><input type="checkbox" id="dplGapsOnly"
         ${flt.gapsOnly ? 'checked' : ''}> только с дырами</label>
-      ${canEdit ? `<button type="button" class="button small" id="dplSeed"
+      ${canEdit ? `<button type="button" class="button small" id="dplBookWeek"
+        title="Пакетно создать заявки по незакрытым слотам будущих дней — для регулярной сетки, подтверждённой клиентом">📋 Забронировать неделю</button>
+      <button type="button" class="button small" id="dplSeed"
         title="Построить/обновить сетку слотов из регулярных плеч за 60 суток (клиент+направление ≥1 рейса в неделю)">⚙ Заполнить из истории</button>` : ''}
       <span class="filter-sum" style="margin-left:auto">плеч ${shownRows.length}${shownRows.length !== allRows.length ? ` / ${allRows.length}` : ''}
         · план ${Math.round(monthPlanN)} рейсов · ${money(Math.round(monthPlanRv))}
@@ -428,6 +450,8 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
       customerLegsDialog(context, plan, cell.dataset.dplCust, rowList,
         { planOf, factOf, gapOf, daysInMonth }, flt)));
   if (canEdit) {
+    document.getElementById('dplBookWeek')?.addEventListener('click', () =>
+      bookWeekDialog(context, plan, flt));
     const seed = document.getElementById('dplSeed');
     if (seed) {
       seed.onclick = async () => {
@@ -474,6 +498,94 @@ function slotEditor(context, plan, row, flt = {}) {
       deliveryPlanDialog(context, plan.month, flt);
     } catch (error) { toast(error.message, 'error'); }
   };
+}
+
+// «📋 Забронировать неделю»: пакетное создание заявок по незакрытым слотам.
+// Сервер (dryRun) считает недоборы диапазона и раскладку по плечам; менеджер
+// галками выбирает плечи с подтверждённой клиентом сеткой — и одним нажатием
+// создаёт все заявки. Галки по умолчанию сняты: заявки создаются настоящими
+// и сразу уходят логистам в конвейер.
+function bookWeekDialog(context, plan, flt = {}) {
+  const dayIso = offset => new Date(Date.now() + 3 * 3_600_000 + offset * 86_400_000)
+    .toISOString().slice(0, 10);
+  context.showModal(`<h2>📋 Забронировать неделю</h2>
+    <p class="muted">Планер создаст заявки по незакрытым слотам сетки за выбранные дни:
+      окно погрузки 08:00–20:00, ставка сетки, пункты — из последней заявки плеча.
+      Отмечайте только плечи, где сетка подтверждена клиентом: заявки настоящие,
+      логисты сразу увидят их в конвейере.</p>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <label class="field">С<input type="date" id="bwFrom" value="${dayIso(1)}" min="${dayIso(0)}"></label>
+      <label class="field">По<input type="date" id="bwTo" value="${dayIso(7)}" min="${dayIso(0)}"></label>
+    </div>
+    <div id="bwLegs"><p class="muted">Считаю недоборы…</p></div>
+    <div class="modal-actions">
+      <button type="button" class="button ghost small" id="bwAll">Выбрать все</button>
+      <span id="bwSum" class="muted" style="margin-right:auto"></span>
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button type="button" class="button" id="bwGo" disabled>Создать заявки</button>
+    </div>`, 'wide');
+  let legs = [];
+  const refreshSum = () => {
+    const picked = legs.filter((leg, index) =>
+      document.getElementById(`bwLeg${index}`)?.checked);
+    const orders = picked.reduce((sum, leg) => sum + leg.orders, 0);
+    const revenue = picked.reduce((sum, leg) => sum + leg.revenue, 0);
+    document.getElementById('bwSum').textContent = orders
+      ? `выбрано: ${orders} заявок на ${money(Math.round(revenue))}` : 'ничего не выбрано';
+    const go = document.getElementById('bwGo');
+    go.disabled = !orders;
+    go.textContent = orders ? `Создать ${orders} заявок` : 'Создать заявки';
+  };
+  const load = async () => {
+    const box = document.getElementById('bwLegs');
+    try {
+      ({ legs } = await api('/api/delivery-plan/book-week', { method: 'POST', body: JSON.stringify({
+        fromDay: document.getElementById('bwFrom').value,
+        toDay: document.getElementById('bwTo').value, dryRun: true }) }));
+      box.innerHTML = legs.length ? `<div class="table-wrap" style="max-height:44vh;overflow:auto"><table>
+        <thead><tr><th></th><th>Клиент</th><th>Плечо</th><th class="num">Заявок</th>
+          <th class="num">Ставка</th><th class="num">Сумма</th></tr></thead>
+        <tbody>${legs.map((leg, index) => `<tr>
+          <td><input type="checkbox" id="bwLeg${index}"></td>
+          <td>${escapeHtml(leg.customer)}${leg.hasPoints ? ''
+    : ' <span title="У плеча нет заявок с пунктами — адреса придётся заполнить в заявках руками">⚠</span>'}</td>
+          <td>${escapeHtml(leg.leg)}</td>
+          <td class="num">${leg.orders}</td>
+          <td class="num">${money(leg.rate)}</td>
+          <td class="num"><b>${money(Math.round(leg.revenue))}</b></td>
+        </tr>`).join('')}</tbody></table></div>`
+        : '<p class="muted">Незакрытых слотов в диапазоне нет — сетка выбранных дней уже забронирована.</p>';
+      legs.forEach((leg, index) => document.getElementById(`bwLeg${index}`)
+        ?.addEventListener('change', refreshSum));
+      refreshSum();
+    } catch (error) { box.innerHTML = `<p class="muted">⚠ ${escapeHtml(error.message)}</p>`; }
+  };
+  document.getElementById('bwFrom').addEventListener('change', load);
+  document.getElementById('bwTo').addEventListener('change', load);
+  document.getElementById('bwAll').addEventListener('click', () => {
+    legs.forEach((leg, index) => {
+      const box = document.getElementById(`bwLeg${index}`);
+      if (box) box.checked = true;
+    });
+    refreshSum();
+  });
+  document.getElementById('bwGo').addEventListener('click', async () => {
+    const picked = legs.filter((leg, index) => document.getElementById(`bwLeg${index}`)?.checked);
+    if (!picked.length) return;
+    const orders = picked.reduce((sum, leg) => sum + leg.orders, 0);
+    if (!confirm(`Создать ${orders} заявок по ${picked.length} плечам? Они сразу попадут в конвейер логистов.`)) return;
+    try {
+      const result = await api('/api/delivery-plan/book-week', { method: 'POST', body: JSON.stringify({
+        fromDay: document.getElementById('bwFrom').value,
+        toDay: document.getElementById('bwTo').value,
+        legs: picked.map(leg => ({ customer: leg.customer,
+          fromZoneId: leg.fromZoneId, toZoneId: leg.toZoneId })) }) });
+      toast(`Забронировано: ${result.created} заявок на ${money(Math.round(result.revenue))}`);
+      context.closeModal?.();
+      deliveryPlanDialog(context, plan.month, flt);
+    } catch (error) { toast(error.message, 'error'); }
+  });
+  load();
 }
 
 // «+ Заявка из плана»: слот знает клиента, плечо, день и ставку — менеджеру

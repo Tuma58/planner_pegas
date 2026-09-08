@@ -2107,6 +2107,22 @@ function dedupeCustomers() {
 }
 setTimeout(dedupeCustomers, 20_000);
 
+// Досветка стойких связей: слоты сетки и заявки держат customer_id, чтобы
+// история клиента не висела на строке-имени. Идемпотентно — при каждом
+// старте добираются только строки без id (старые и созданные интеграцией).
+function linkCustomerIds() {
+  try {
+    const fill = table => db.prepare(`UPDATE ${table} SET customer_id=(
+        SELECT c.id FROM customers c
+        WHERE lower(trim(c.name))=lower(trim(${table}.customer_name)))
+      WHERE customer_id IS NULL`).run().changes;
+    const slots = fill('delivery_slots');
+    const orders = fill('orders');
+    if (slots || orders) console.log(`linkCustomerIds: слотов ${slots}, заявок ${orders}`);
+  } catch (error) { console.error('linkCustomerIds:', error.message); }
+}
+setTimeout(linkCustomerIds, 25_000);
+
 // ── Самообучающиеся плановые километры ──
 // Плановый км выставляется автоматически, без людей — поэтому и точность
 // его дело системы: справочник фактических плеч (медиана чистых рейсов по
@@ -3572,18 +3588,132 @@ async function api(request, response, url) {
       db.prepare(`DELETE FROM delivery_slots WHERE customer_name=? AND from_zone_id=? AND to_zone_id=? AND weekday=?`)
         .run(customer, fromZone.id, toZone.id, weekday);
     } else {
+      // Слот держит id карточки клиента; новое плечо нового клиента сразу
+      // заводит его в справочнике — сетку можно строить до первой заявки.
+      let customerId = db.prepare('SELECT id FROM customers WHERE name=? COLLATE NOCASE')
+        .get(customer)?.id;
+      if (!customerId) {
+        customerId = randomUUID();
+        db.prepare(`INSERT OR IGNORE INTO customers(id,name,from_zone_id,to_zone_id,trip_count,
+          average_rate_vat,trips_per_month) VALUES(?,?,?,?,0,0,0)`)
+          .run(customerId, customer, fromZone.id, toZone.id);
+        customerId = db.prepare('SELECT id FROM customers WHERE name=? COLLATE NOCASE')
+          .get(customer)?.id || null;
+      }
       // manual=1: правка руками — автопересев это плечо больше не трогает.
-      db.prepare(`INSERT INTO delivery_slots(id,customer_name,from_zone_id,to_zone_id,weekday,per_day,rate,transit_hours,updated_by,manual)
-        VALUES(?,?,?,?,?,?,?,?,?,1)
+      db.prepare(`INSERT INTO delivery_slots(id,customer_id,customer_name,from_zone_id,to_zone_id,weekday,per_day,rate,transit_hours,updated_by,manual)
+        VALUES(?,?,?,?,?,?,?,?,?,?,1)
         ON CONFLICT(customer_name,from_zone_id,to_zone_id,weekday) DO UPDATE SET manual=1,
+          customer_id=excluded.customer_id,
           per_day=excluded.per_day, rate=excluded.rate,
           updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
-        .run(randomUUID(), customer, fromZone.id, toZone.id, weekday, perDay,
+        .run(randomUUID(), customerId, customer, fromZone.id, toZone.id, weekday, perDay,
           Math.max(0, Number(body.rate) || 0), Math.max(1, Number(body.transitHours) || 24), user.id);
     }
     audit(db, user, 'slot', 'delivery-plan', null,
       { customer, weekday, perDay }, requestIp(request));
     return json(response, 200, { ok: true });
+  }
+
+  // ── «📋 Забронировать неделю»: пакетное создание заявок из сетки ──
+  // Регулярную сетку (Черкизово каждый день) продажи раньше вносили руками
+  // заявка за заявкой. Здесь: диапазон дат → недоборы слотов → dryRun
+  // возвращает раскладку по плечам, второй вызов с выбранными legs создаёт
+  // настоящие заявки (окно 08–20 МСК, ставка сетки, пункты последней заявки
+  // плеча). Человек в контуре: бронируются только отмеченные плечи.
+  if (request.method === 'POST' && pathname === '/api/delivery-plan/book-week') {
+    const user = requirePermission(request, response, 'orders:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const fromDay = String(body.fromDay || '');
+    const toDay = String(body.toDay || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDay) || !/^\d{4}-\d{2}-\d{2}$/.test(toDay) || toDay < fromDay) {
+      return errorJson(response, 422, 'Нужны fromDay и toDay в формате ГГГГ-ММ-ДД');
+    }
+    const todayIso = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+    if (fromDay < todayIso) return errorJson(response, 422, 'Бронировать можно только будущие дни');
+    const spanDays = Math.round((Date.parse(toDay) - Date.parse(fromDay)) / 86_400_000) + 1;
+    if (spanDays > 14) return errorJson(response, 422, 'Диапазон бронирования — не более 14 дней');
+    const slots = db.prepare(`SELECT s.*, f.name from_name, t.name to_name FROM delivery_slots s
+      JOIN zones f ON f.id=s.from_zone_id JOIN zones t ON t.id=s.to_zone_id`).all();
+    // Уже внесённые живые заявки диапазона — их слоты закрыты (МСК-день окна).
+    const existing = new Map();
+    for (const row of db.prepare(`SELECT customer_name, from_zone_id, to_zone_id, window_from
+        FROM orders WHERE deleted_at IS NULL AND status<>'cancelled' AND window_from>=? AND window_from<?`)
+      .all(new Date(Date.parse(fromDay) - 3 * 3_600_000).toISOString(),
+        new Date(Date.parse(toDay) + 86_400_000 - 3 * 3_600_000).toISOString())) {
+      const day = new Date(Date.parse(row.window_from) + 3 * 3_600_000).toISOString().slice(0, 10);
+      const key = `${row.customer_name}|${row.from_zone_id}|${row.to_zone_id}|${day}`;
+      existing.set(key, (existing.get(key) || 0) + 1);
+    }
+    const wanted = Array.isArray(body.legs)
+      ? new Set(body.legs.map(leg => `${leg.customer}|${leg.fromZoneId}|${leg.toZoneId}`)) : null;
+    const legPlan = new Map();
+    for (let i = 0; i < spanDays; i += 1) {
+      const dayMs = Date.parse(fromDay) + i * 86_400_000;
+      const dayIso = new Date(dayMs).toISOString().slice(0, 10);
+      const weekday = new Date(dayMs).getUTCDay();
+      for (const slot of slots) {
+        if (slot.weekday !== weekday) continue;
+        // Редкие слоты (<0,5 рейса в день) пакетом не бронируем — там
+        // договорённость с клиентом нужна на каждый конкретный рейс.
+        const planned = Math.round(slot.per_day);
+        if (planned <= 0) continue;
+        const legKey = `${slot.customer_name}|${slot.from_zone_id}|${slot.to_zone_id}`;
+        if (wanted && !wanted.has(legKey)) continue;
+        const gap = planned - (existing.get(`${legKey}|${dayIso}`) || 0);
+        if (gap <= 0) continue;
+        if (!legPlan.has(legKey)) {
+          legPlan.set(legKey, { customer: slot.customer_name, customerId: slot.customer_id,
+            fromZoneId: slot.from_zone_id, toZoneId: slot.to_zone_id,
+            leg: `${slot.from_name}→${slot.to_name}`, rate: slot.rate || 0,
+            orders: 0, revenue: 0, days: [] });
+        }
+        const item = legPlan.get(legKey);
+        item.orders += gap; item.revenue += gap * (slot.rate || 0);
+        item.days.push({ day: dayIso, n: gap });
+      }
+    }
+    const lastOf = db.prepare(`SELECT from_point, to_point, from_address_id, to_address_id,
+        temperature_mode, body_type, MAX(created_at) m
+      FROM orders WHERE deleted_at IS NULL AND customer_name=? AND from_zone_id=? AND to_zone_id=?`);
+    const legs = [...legPlan.values()].map(item => {
+      const last = lastOf.get(item.customer, item.fromZoneId, item.toZoneId) || {};
+      return { ...item, last, hasPoints: Boolean(last.from_point && last.to_point) };
+    }).sort((a, b) => b.revenue - a.revenue);
+    if (body.dryRun) {
+      return json(response, 200, { legs: legs.map(({ last, ...rest }) => rest) });
+    }
+    if (!legs.length) return errorJson(response, 422, 'Нечего бронировать: слоты выбранных плеч уже закрыты заявками');
+    const totalOrders = legs.reduce((sum, item) => sum + item.orders, 0);
+    if (totalOrders > 200) return errorJson(response, 422, `Слишком много заявок за раз (${totalOrders}) — сузьте диапазон или выбор плеч`);
+    let created = 0; let revenue = 0;
+    for (const item of legs) {
+      for (const dayEntry of item.days) {
+        for (let n = 0; n < dayEntry.n; n += 1) {
+          const id = randomUUID();
+          const orderNo = nextOrderNo(db);
+          const plannedKm = plannedKmFor(item.last.from_address_id, item.last.to_address_id, []);
+          db.prepare(`INSERT INTO orders(id,customer_id,customer_name,from_zone_id,to_zone_id,
+            from_point,to_point,rate_vat,window_from,window_to,temperature_mode,body_type,
+            stage,comment,order_no,cash,from_address_id,to_address_id,planned_km,via_json,created_by)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,0,?,?,?,'[]',?)`).run(
+            id, item.customerId || null, item.customer, item.fromZoneId, item.toZoneId,
+            item.last.from_point || '', item.last.to_point || '', item.rate,
+            new Date(Date.parse(dayEntry.day) + 5 * 3_600_000).toISOString(),
+            new Date(Date.parse(dayEntry.day) + 17 * 3_600_000).toISOString(),
+            item.last.temperature_mode || '', item.last.body_type || '',
+            'Забронировано пакетом из плана вывоза', orderNo,
+            item.last.from_address_id || null, item.last.to_address_id || null, plannedKm, user.id);
+          queueOutbox(db, 'orders', id, 'create', orderOutboxPayload(id),
+            integrationPublic().writePolicy === 'automatic');
+          created += 1; revenue += item.rate;
+        }
+      }
+    }
+    audit(db, user, 'book-week', 'delivery-plan', null,
+      { fromDay, toDay, created, legs: legs.length }, requestIp(request));
+    return json(response, 200, { created, revenue });
   }
 
   // ── График смен сотрудников: план-факт по людям в отчёте смены ──
@@ -4490,11 +4620,14 @@ async function api(request, response, url) {
     const orderNo = nextOrderNo(db);
     const via = parseVia(body.via) || [];
     const plannedKm = plannedKmFor(body.fromAddressId, body.toAddressId, via);
-    db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
+    // Стойкая связь с карточкой клиента: заявка держит и имя, и id.
+    const customerId = db.prepare('SELECT id FROM customers WHERE name=? COLLATE NOCASE')
+      .get(customerName)?.id || null;
+    db.prepare(`INSERT INTO orders(id,customer_id,customer_name,from_zone_id,to_zone_id,from_point,to_point,
       rate_vat,window_from,window_to,temperature_mode,body_type,stage,comment,order_no,cash,
       from_address_id,to_address_id,planned_km,via_json,created_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      id, customerName, body.fromZoneId, body.toZoneId,
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, customerId, customerName, body.fromZoneId, body.toZoneId,
       String(body.fromPoint || '').trim(), String(body.toPoint || '').trim(), Number(body.rateVat || 0),
       new Date(windowFrom).toISOString(), new Date(windowTo).toISOString(),
       String(body.temperatureMode || ''), String(body.bodyType || ''), Number(body.stage || 0),

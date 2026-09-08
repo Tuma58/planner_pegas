@@ -1580,12 +1580,16 @@ export function seedDeliverySlots(db, userId = null, nowMs = Date.now()) {
     leg.transit += (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 3_600_000;
     leg.days[new Date(Date.parse(trip.starts_at) + 3 * 3_600_000).getUTCDay()] += 1;
   }
-  const upsert = db.prepare(`INSERT INTO delivery_slots(id,customer_name,from_zone_id,to_zone_id,
+  const upsert = db.prepare(`INSERT INTO delivery_slots(id,customer_id,customer_name,from_zone_id,to_zone_id,
       weekday,per_day,rate,transit_hours,updated_by)
-    VALUES(?,?,?,?,?,?,?,?,?)
+    VALUES(?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(customer_name,from_zone_id,to_zone_id,weekday) DO UPDATE SET
+      customer_id=excluded.customer_id,
       per_day=excluded.per_day, rate=excluded.rate, transit_hours=excluded.transit_hours,
       updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`);
+  // Стойкая связь слота с карточкой клиента — по id, а не строке-имени.
+  const customerIds = new Map(db.prepare('SELECT id, name FROM customers').all()
+    .map(row => [String(row.name).trim().toLowerCase(), row.id]));
   // Плечи с ручными слотами автопересев обходит стороной: продажи
   // договорились с клиентом о конкретной сетке — статистика её не главнее.
   const manualLegs = new Set(db.prepare(`SELECT DISTINCT customer_name||'|'||from_zone_id||'|'||to_zone_id key
@@ -1599,7 +1603,8 @@ export function seedDeliverySlots(db, userId = null, nowMs = Date.now()) {
     for (let weekday = 0; weekday < 7; weekday += 1) {
       const perDay = Math.round(leg.days[weekday] / leg.n * perWeek * 100) / 100;
       if (perDay < 0.3) continue;
-      upsert.run(randomUUID(), customer, fromZone, toZone, weekday,
+      upsert.run(randomUUID(), customerIds.get(customer.trim().toLowerCase()) || null,
+        customer, fromZone, toZone, weekday,
         perDay, Math.round(leg.rv / leg.n), Math.round(leg.transit / leg.n), userId);
       created += 1;
     }
