@@ -1995,12 +1995,8 @@ async function collectDailyRuns() {
   try {
     if (!monitoringConfig().login) return;
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    let doneUntil = db.prepare(`SELECT value FROM app_meta WHERE key='daily_runs_done'`).get()?.value;
-    // Миграция на CAN-пробег: строки без can_km пересобираются заново.
-    const needCan = db.prepare(`SELECT COUNT(*) all_rows,
-      SUM(CASE WHEN can_km IS NOT NULL THEN 1 ELSE 0 END) with_can FROM vehicle_daily_runs`).get();
-    if (needCan.all_rows > 0 && !needCan.with_can) doneUntil = null;
-    if (doneUntil >= yesterday) return;
+    const doneUntil = db.prepare(`SELECT value FROM app_meta WHERE key='daily_runs_done'`).get()?.value;
+    if (doneUntil >= yesterday) { await collectCanKm(); return; }
     const have = db.prepare(`SELECT COUNT(*) n FROM vehicle_daily_runs`).get().n;
     const fromDay = doneUntil
       ? new Date(Date.parse(doneUntil) + 86_400_000).toISOString().slice(0, 10)
@@ -2033,7 +2029,43 @@ async function collectDailyRuns() {
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_runs_done',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(yesterday);
     console.log(`collectDailyRuns: собрано ${fromDay}..${yesterday}${have ? '' : ' (первичное наполнение)'}`);
+    await collectCanKm();
   } catch (error) { console.error('collectDailyRuns:', error.message); }
+}
+// CAN-пробег дня — из /odo-fuel (одометр на границах суток): в сводке
+// поездок Пилота поле can пусто по всему парку, а одометр CAN живой.
+// Один запрос на машину на день; валидация дельты 0..2000 км.
+async function collectCanKm() {
+  try {
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const done = db.prepare(`SELECT value FROM app_meta WHERE key='can_runs_done'`).get()?.value;
+    if (done >= yesterday) return;
+    const fromDay = done
+      ? new Date(Date.parse(done) + 86_400_000).toISOString().slice(0, 10)
+      : new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
+    const update = db.prepare(`UPDATE vehicle_daily_runs SET can_km=? WHERE vehicle_id=? AND day=?`);
+    const trackers = db.prepare(`SELECT vehicle_id, imei FROM vehicle_trackers`).all();
+    for (let dayMs = Date.parse(fromDay); dayMs <= Date.parse(yesterday); dayMs += 86_400_000) {
+      const day = new Date(dayMs).toISOString().slice(0, 10);
+      const ts = Math.floor(dayMs / 1000);
+      const te = ts + 86_399;
+      for (const tracker of trackers) {
+        // Дёргаем только машины, у которых в этот день было движение.
+        const hasRun = db.prepare(`SELECT 1 FROM vehicle_daily_runs WHERE vehicle_id=? AND day=?`)
+          .get(tracker.vehicle_id, day);
+        if (!hasRun) continue;
+        const answer = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${tracker.imei}&ts=${ts}&te=${te}`);
+        const delta = Number(answer?.points?.stop_odo) - Number(answer?.points?.start_odo);
+        if (Number.isFinite(delta) && delta >= 0 && delta < 2000) {
+          update.run(Math.round(delta * 10) / 10, tracker.vehicle_id, day);
+        }
+        await new Promise(resolve => setTimeout(resolve, 140));
+      }
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('can_runs_done',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(yesterday);
+    console.log(`collectCanKm: CAN-пробеги собраны ${fromDay}..${yesterday}`);
+  } catch (error) { console.error('collectCanKm:', error.message); }
 }
 setInterval(collectDailyRuns, 3_600_000);
 setTimeout(collectDailyRuns, 160_000);
