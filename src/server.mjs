@@ -1558,9 +1558,9 @@ function applyDriverEtaFor(driver, stopId, hours, reply) {
 // Токен по логину/паролю из настроек (живёт 48 ч, кеш в app_meta вместе с
 // node_id — заголовок X-Node обязателен, без него телеметрия пустая).
 const monitoringConfig = () => settingsObject(db).monitoring || {};
-async function pilotAuth() {
+async function pilotAuth(force = false) {
   const cached = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='pilot_token'`).get()?.value || 'null');
-  if (cached && Date.now() < cached.exp - 600_000) return cached;
+  if (!force && cached && Date.now() < cached.exp - 600_000) return cached;
   const config = monitoringConfig();
   if (!config.login || !config.password) return null;
   const host = String(config.baseUrl || 'blade.pilot-gps.com').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
@@ -1581,18 +1581,27 @@ async function pilotAuth() {
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(fresh));
   return fresh;
 }
-async function pilotApi(path) {
-  const auth = await pilotAuth();
+async function pilotApi(path, isRetry = false) {
+  const auth = await pilotAuth(isRetry);
   if (!auth) return null;
-  return new Promise(resolve => {
+  const answer = await new Promise(resolve => {
     const request = httpsRequest({ host: auth.host, method: 'GET', path, timeout: 15_000,
       headers: { Authorization: `Bearer ${auth.token}`, 'X-Node': String(auth.node) } },
     response => { let raw = ''; response.on('data', c => { raw += c; });
-      response.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve(null); } }); });
+      response.on('end', () => { try { resolve({ status: response.statusCode, body: JSON.parse(raw) }); }
+        catch { resolve(null); } }); });
     request.on('error', () => resolve(null));
     request.on('timeout', () => { request.destroy(); resolve(null); });
     request.end();
   });
+  if (!answer) return null;
+  // Пилот инвалидирует токен раньше заявленного срока (например, при входе
+  // человека в кабинет той же учёткой) — на 401 переавторизуемся один раз.
+  if (answer.status === 401 && !isRetry) {
+    console.error('pilotApi: 401 — токен отвергнут, переавторизация');
+    return pilotApi(path, true);
+  }
+  return answer.body;
 }
 // Номер в Пилоте: кириллица/латиница вперемешку, с пробелами («Т 474 ВЕ 58»,
 // «В325АУ 797») — к нашему виду: без пробелов, нижний регистр, гомоглифы
