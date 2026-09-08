@@ -3563,7 +3563,15 @@ function runAssignQualityReport() {
     }
     notifyEveryone(`🎯 Подбор ТС за неделю: рекомендаций ${rows.length}, принято ${accepted}` +
       ` (${Math.round(accepted / rows.length * 100)}%)` +
-      (auto ? `, из них зелёным коридором ${auto}` : '') + dockLine +
+      (auto ? `, из них зелёным коридором ${auto}` : '') +
+      (() => {
+        const flag = db.prepare(`SELECT value FROM app_meta WHERE key='auto_assign_enabled'`).get()?.value || '';
+        const state = db.prepare(`SELECT value FROM app_meta WHERE key='auto_assign_state'`).get()?.value || 'off';
+        const target = Number(db.prepare(`SELECT value FROM app_meta WHERE key='auto_assign_target'`).get()?.value) || 80;
+        const label = flag === '0' ? 'выключен вручную' : flag === '1' ? 'включён вручную'
+          : state === 'on' ? 'активен' : `спит до доверия ${target}%`;
+        return ` · зелёный коридор: ${label}`;
+      })() + dockLine +
       (catLine ? ` · причины замен: ${catLine}` : '') +
       (clones.length ? ` · ⚠ отписки под копирку: ${clones.map(([text, count]) =>
         `«${text.slice(0, 40)}» ×${count}`).join('; ')}` : '') +
@@ -3588,7 +3596,37 @@ function reportAutoAssignIssue(text) {
 }
 function runGreenAssign() {
   try {
-    if (db.prepare(`SELECT value FROM app_meta WHERE key='auto_assign_enabled'`).get()?.value === '0') return;
+    // Ворота доверия (решение руководителя 08.09): коридор работает, только
+    // когда логисты подтверждают ≥80% рекомендаций подбора (окно 14 дней,
+    // минимум 20 ручных решений). Ниже порога — спит и ждёт роста доверия;
+    // каждый переход (возобновлён/приостановлен) сообщается руководителю в
+    // чат и Telegram. Форс-режимы: app_meta auto_assign_enabled '1' —
+    // включить всегда, '0' — выключить всегда, пусто — по доверию.
+    const flag = db.prepare(`SELECT value FROM app_meta WHERE key='auto_assign_enabled'`).get()?.value || '';
+    if (flag === '0') return;
+    if (flag !== '1') {
+      const target = Number(db.prepare(`SELECT value FROM app_meta
+        WHERE key='auto_assign_target'`).get()?.value) || 80;
+      const decisions = db.prepare(`SELECT outcome, COUNT(*) c FROM assign_drafts
+        WHERE outcome IS NOT NULL AND COALESCE(override_reason,'')<>'auto'
+          AND resolved_at >= datetime('now','-14 day') GROUP BY outcome`).all();
+      const acceptedN = decisions.find(row => row.outcome === 'accepted')?.c || 0;
+      const totalN = decisions.reduce((sum, row) => sum + row.c, 0);
+      const trust = totalN >= 20 ? acceptedN / totalN * 100 : 0;
+      const prev = db.prepare(`SELECT value FROM app_meta WHERE key='auto_assign_state'`)
+        .get()?.value || 'on';
+      // Гистерезис 5 пунктов: включение от target, выключение ниже target−5.
+      const active = prev === 'on' ? trust >= target - 5 : trust >= target;
+      const state = active ? 'on' : 'off';
+      if (state !== prev) {
+        db.prepare(`INSERT INTO app_meta(key,value) VALUES('auto_assign_state',?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(state);
+        reportAutoAssignIssue(active
+          ? `зелёный коридор ВОЗОБНОВЛЁН — доверие подбору ${Math.round(trust)}% достигло цели ${target}%`
+          : `зелёный коридор приостановлен — доверие подбору ${Math.round(trust)}% ниже цели ${target}% (${acceptedN} из ${totalN} за 14 дн). Возобновится сам при ${target}%`);
+      }
+      if (!active) return;
+    }
     // Зелёный порог подгона — выучен: медиана ПРИНЯТЫХ логистами подгонов
     // за 28 дней (без авто-принятий), кламп 30–150 км, старт 80.
     const accepted = db.prepare(`SELECT empty_km FROM assign_drafts
