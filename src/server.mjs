@@ -3275,6 +3275,85 @@ function runDemurrageNudge() {
 setInterval(runDemurrageNudge, 30 * 60_000);
 setTimeout(runDemurrageNudge, 80_000);
 
+// ── «⚖ Баланс выходов»: водители, грузы и ремзона на 5 дней вперёд ──
+// Кейс 09.09: в Пензе 10 машин без водителей, 6 выходят за два дня — а
+// нераспределённых грузов из Дома всего 3: кадровый простой превращается
+// в грузовой. Сторож ежеутренне сверяет график возвращений (окончания
+// «без водителя»/пересменок) с грузовой базой зоны (заявки + незакрытая
+// сетка) и подсказывает продажам, сколько грузов добрать и на какой день.
+// Требование руководителя: пересменка почти всегда тянет ремонт — нагрузка
+// на ремзону должна быть РАВНОМЕРНОЙ. Пропускная способность ремзоны —
+// живой норматив: средняя одновременная нагрузка (ремонт+пересменка) за
+// 60 дней; день с нагрузкой выше ×1,5 нормы помечается пиком.
+function runCrewBalanceWatch() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCHours() < 7 || (msk.getUTCHours() === 7 && msk.getUTCMinutes() < 40)) return;
+    const today = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='crew_balance_day'`).get()?.value === today) return;
+    const home = db.prepare(`SELECT id FROM zones WHERE name='Дом'`).get();
+    if (!home) return;
+    // Живой норматив ремзоны: средняя дневная нагрузка ремонтов и
+    // пересменок за 60 суток (сумма машино-дней недоступности / 60).
+    const loadDays = db.prepare(`SELECT COALESCE(SUM(
+        (julianday(MIN(datetime('now'), ends_at)) - julianday(MAX(datetime('now','-60 day'), starts_at)))
+      ),0) v FROM vehicle_dispositions
+      WHERE kind IN ('repair','shift') AND datetime(ends_at) > datetime('now','-60 day')
+        AND datetime(starts_at) < datetime('now')`).get().v;
+    const repairNorm = Math.max(1, Math.round(loadDays / 60 * 10) / 10);
+    const dayIso = offset => new Date(Date.parse(today) + offset * 86_400_000).toISOString().slice(0, 10);
+    const lines = [];
+    const salesAsk = [];
+    const peaks = [];
+    for (let offset = 0; offset < 5; offset += 1) {
+      const day = dayIso(offset);
+      // Выходы: недоступности, заканчивающиеся в этот день.
+      const outs = db.prepare(`SELECT v.plate, d.kind FROM vehicle_dispositions d
+        JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE date(d.ends_at)=? AND d.kind IN ('no_driver','shift','repair')
+          AND v.status='work'`).all(day);
+      // Нагрузка ремзоны дня: ремонты и пересменки, пересекающие день.
+      const shopLoad = db.prepare(`SELECT COUNT(*) n FROM vehicle_dispositions
+        WHERE kind IN ('repair','shift') AND date(starts_at) <= ? AND date(ends_at) >= ?`)
+        .get(day, day).n;
+      // Грузовая база дня из Дома: план сетки и внесённые заявки.
+      const weekday = new Date(Date.parse(day)).getUTCDay();
+      const gridPlan = db.prepare(`SELECT COALESCE(SUM(per_day),0) v FROM delivery_slots
+        WHERE from_zone_id=? AND weekday=?`).get(home.id, weekday).v;
+      const orders = db.prepare(`SELECT COUNT(*) n,
+          SUM(CASE WHEN trip_id IS NULL THEN 1 ELSE 0 END) freeN
+        FROM orders WHERE deleted_at IS NULL AND status<>'cancelled' AND from_zone_id=?
+          AND date(window_from, '+3 hours')=?`).get(home.id, day);
+      const gap = Math.round(gridPlan) - (orders.n || 0);
+      const deficit = outs.length - ((orders.freeN || 0) + Math.max(0, gap));
+      if (deficit > 0 && offset >= 1) {
+        salesAsk.push(`${day.slice(8)}${'.'}${day.slice(5, 7)}: выходят ${outs.length}, свободных грузов ${orders.freeN || 0} и дыр сетки ${Math.max(0, gap)} — добрать ${deficit}`);
+      }
+      if (shopLoad > repairNorm * 1.5) {
+        peaks.push(`${day.slice(8)}.${day.slice(5, 7)} — ${shopLoad} машин при норме ${repairNorm}/день`);
+      }
+      lines.push(`${day.slice(8)}.${day.slice(5, 7)}: выходят ${outs.length}${outs.length
+        ? ` (${outs.slice(0, 4).map(o => o.plate).join(', ')}${outs.length > 4 ? '…' : ''})` : ''}` +
+        ` · грузы Дом: сетка ${Math.round(gridPlan)}, внесено ${orders.n || 0}` +
+        `${orders.freeN ? ` (своб. ${orders.freeN})` : ''} · ремзона ${shopLoad}`);
+    }
+    notify('logist', `⚖ Баланс выходов (Дом, 5 дней; норма ремзоны ${repairNorm}/день): ` +
+      lines.join(' | ') +
+      (peaks.length ? ` · ⚠ ПИК РЕМЗОНЫ: ${peaks.join('; ')} — раздвиньте пересменки/ремонты на свободные дни, нагрузка должна быть равномерной` : '') +
+      ` — выходящий водитель без груза назавтра = машино-сутки в минус`,
+    null, null, { category: 'balance' });
+    if (salesAsk.length) {
+      notify('sales', `⚖ Под выходящих водителей не хватает грузов из Дома: ${salesAsk.join('; ')}. ` +
+        `Дозвоните клиентов сетки (жёлтые ячейки Плана вывоза) — машины выйдут с межвахты и встанут без работы`,
+      null, null, { category: 'balance' });
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('crew_balance_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(today);
+  } catch (error) { console.error('Баланс выходов:', error.message); }
+}
+setInterval(runCrewBalanceWatch, 20 * 60_000);
+setTimeout(runCrewBalanceWatch, 60_000);
+
 // ── Сторож зависаний в пути: стоянка ≥18 ч вне точек рейса ──
 // Кейс Винторга: машина простояла в Новосибирске 123 часа, и никто не
 // заметил — «в рейсе» в планере выглядит как движение. Раз в 2 часа
