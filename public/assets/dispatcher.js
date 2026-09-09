@@ -1043,9 +1043,23 @@ export async function renderDispatcher(container, context, options = {}) {
           bits.push(`<span class="muted">📡 ${gps.distToNextKm} км до точки${gps.moving ? ` · ${Math.round(gps.speed)} км/ч` : ' · стоит'}</span>`);
         }
         if (gps.temp) {
-          bits.push(gps.temp.ok
-            ? `<span class="muted" title="Температура прицепа в режиме заявки">🌡 ${gps.temp.value}° (${gps.temp.min}…${gps.temp.max} ✓)</span>`
-            : `<span class="badge bad" title="Температура прицепа вне режима заявки — проверьте рефустановку, свяжитесь с водителем">🌡 ${gps.temp.value}° при режиме ${gps.temp.min}…${gps.temp.max}°!</span>`);
+          // Красная тревога — только ПОД ГРУЗОМ (между убытием с погрузки и
+          // прибытием на выгрузку): порожний реф до погрузки не в режиме —
+          // это норма, а не отклонение (кейс Саглаева 09.09: погрузка после
+          // 18:00, карточка алела с утра). До погрузки: серо-нейтрально, а
+          // за 3 часа до неё при неготовом режиме — жёлтое напоминание.
+          const startMs = Date.parse(trip.starts_at);
+          const soonLoad = !gps.loaded && !gps.temp.ok && Number.isFinite(startMs) &&
+            startMs > Date.now() - 3_600_000 && startMs - Date.now() < 3 * 3_600_000;
+          if (gps.loaded) {
+            bits.push(gps.temp.ok
+              ? `<span class="muted" title="Температура прицепа в режиме заявки">🌡 ${gps.temp.value}° (${gps.temp.min}…${gps.temp.max} ✓)</span>`
+              : `<span class="badge bad" title="Груз в прицепе, температура вне режима заявки — проверьте рефустановку, свяжитесь с водителем">🌡 ${gps.temp.value}° при режиме ${gps.temp.min}…${gps.temp.max}°!</span>`);
+          } else if (soonLoad) {
+            bits.push(`<span class="badge warn" title="Погрузка скоро, а реф ещё не на режиме заявки — напомните водителю включить установку заранее">🌡 ${gps.temp.value}° — к погрузке нужен режим ${gps.temp.min}…${gps.temp.max}°</span>`);
+          } else {
+            bits.push(`<span class="muted" title="Груза в прицепе ещё/уже нет — контроль режима ведётся от убытия с погрузки до прибытия на выгрузку">🌡 ${gps.temp.value}° (режим ${gps.temp.min}…${gps.temp.max}° — с погрузки)</span>`);
+          }
         }
         return bits.length ? `<small style="display:block;margin-top:2px">${bits.join(' ')}</small>` : '';
       })()}
