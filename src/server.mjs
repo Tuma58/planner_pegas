@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
@@ -4053,7 +4053,10 @@ function normalizeTrip(body) {
   };
 }
 
+let bootstrapCache = { at: 0, shared: '', rev: '' };
 async function api(request, response, url) {
+  // Любая мутация делает кэш снимка устаревшим: следующий GET соберёт свежий.
+  if (request.method !== 'GET') bootstrapCache.at = 0;
   if (!mutationOriginAllowed(request)) return errorJson(response, 403, 'Недопустимый Origin');
   const pathname = url.pathname;
 
@@ -4117,11 +4120,69 @@ async function api(request, response, url) {
     }
   }
 
-  if (request.method === 'GET' && pathname === '/api/bootstrap') {
+  // ── /api/bootstrap: общий снимок для всех вкладок ──
+  // Диета 09.09: снимок весит ~10 МБ и собирался НА КАЖДЫЙ поллинг каждого
+  // клиента (~250 мс CPU, 2 ГБ трафика за полчаса) — event loop захлёбывался,
+  // вкладки тормозили. Теперь общая часть собирается и сериализуется раз в
+  // 10 секунд на всех (любая мутация сбрасывает кэш мгновенно — свои действия
+  // видны сразу), а лёгкий /api/bootstrap/rev позволяет тихому автообновлению
+  // вообще не качать снимок, пока данные не изменились.
+  if (request.method === 'GET' && (pathname === '/api/bootstrap' || pathname === '/api/bootstrap/rev')) {
     const user = requireUser(request, response);
     if (!user) return;
-    return json(response, 200, {
-      user: publicUser(user), settings: plannerSettings(), reference: allReferenceData(),
+    const dateFilter = url.searchParams.get('date') || '';
+    if (!dateFilter && (!bootstrapCache.shared || Date.now() - bootstrapCache.at > 10_000)) {
+      const shared = JSON.stringify({
+      settings: plannerSettings(), reference: allReferenceData(),
+      vehicles: listVehicles(), trips: listTrips(''),
+      orders: listOrders(), dispositions: listDispositions(),
+      drivers: db.prepare(`SELECT d.*,v.plate vehicle_plate FROM drivers d
+        LEFT JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
+      revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
+      driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
+        FROM driver_assignments a
+        JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
+        WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
+      orderFiles: db.prepare(`SELECT f.id,f.order_id,f.file_name,f.mime,f.size,f.uploaded_at,
+          u.full_name uploaded_by
+        FROM order_files f LEFT JOIN users u ON u.id=f.uploaded_by
+        JOIN orders o ON o.id=f.order_id AND o.deleted_at IS NULL
+        ORDER BY f.uploaded_at`).all(),
+      routeSpots: db.prepare(`SELECT s.* FROM route_spots s JOIN routes r ON r.id=s.route_id
+        WHERE r.status IN ('draft','handed','assigned') ORDER BY s.seq`).all(),
+      routes: db.prepare(`SELECT r.*,v.plate vehicle_plate FROM routes r
+        LEFT JOIN vehicles v ON v.id=r.vehicle_id
+        WHERE r.status IN ('draft','handed','assigned')
+        ORDER BY r.created_at DESC`).all(),
+      demurrage: demurrageSummary(db),
+      customerDates: upcomingCustomerDates(db, Date.now(), 7),
+      vehicleHolds: db.prepare(`SELECT h.vehicle_id, h.until, h.note, h.held_by_name
+        FROM vehicle_holds h WHERE datetime(h.until) > datetime('now')`).all(),
+      boardNotes: activeBoardNotes(),
+      driverRatings: driverRatings(db),
+      attendanceLastDay: db.prepare('SELECT MAX(day) d FROM driver_attendance').get().d,
+      // Черновики ночного подбора: утром логист подтверждает одним кликом.
+      assignDrafts: db.prepare(`SELECT d.order_id, d.vehicle_id, d.empty_km, d.reason,
+          d.computed_at, v.plate vehicle_plate
+        FROM assign_drafts d JOIN vehicles v ON v.id=d.vehicle_id
+        JOIN orders o ON o.id=d.order_id
+        WHERE d.outcome IS NULL AND o.trip_id IS NULL`).all(),
+      // Закрепление машин по кругам («План парка»): «Потоки» помечают
+      // кандидатов чужого направления бейджем круга.
+      roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
+      });
+      bootstrapCache = { at: Date.now(), shared,
+        rev: createHash('sha1').update(shared).digest('hex').slice(0, 16) };
+    }
+    if (pathname === '/api/bootstrap/rev') {
+      return json(response, 200, { rev: dateFilter ? '' : bootstrapCache.rev });
+    }
+    if (dateFilter) {
+      // Редкий путь с фильтром даты — без кэша, как раньше.
+      return json(response, 200, {
+        user: publicUser(user), rev: '',
+      settings: plannerSettings(), reference: allReferenceData(),
       vehicles: listVehicles(), trips: listTrips(url.searchParams.get('date') || ''),
       orders: listOrders(), dispositions: listDispositions(),
       drivers: db.prepare(`SELECT d.*,v.plate vehicle_plate FROM drivers d
@@ -4159,7 +4220,13 @@ async function api(request, response, url) {
       // Закрепление машин по кругам («План парка»): «Потоки» помечают
       // кандидатов чужого направления бейджем круга.
       roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
-    });
+      });
+    }
+    const body = `{"user":${JSON.stringify(publicUser(user))},"rev":"${bootstrapCache.rev}",` +
+      bootstrapCache.shared.slice(1);
+    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
+    return response.end(body);
   }
 
   // ── CRM-карточка клиента: сводка, контакты, журнал, реквизиты ──

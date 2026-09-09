@@ -2091,7 +2091,11 @@ function showDayAnalytics(dayIso) {
 async function reload(prefetched = null) {
   if (!prefetched) byId('syncState').textContent = '● обновление…';
   state.data = prefetched || await api('/api/bootstrap');
-  state.dataSnapshot = JSON.stringify(state.data);
+  // Версия снимка с сервера: тихое автообновление сравнивает её лёгким
+  // запросом и не качает 10 МБ, пока данные не менялись. Фолбэк для
+  // сервера без rev — прежнее сравнение полного JSON.
+  state.dataRev = state.data.rev || '';
+  state.dataSnapshot = state.dataRev ? '' : JSON.stringify(state.data);
   byId('syncState').textContent = '● синхронно';
   setupUser();
   setupFilters();
@@ -2134,18 +2138,48 @@ async function autoRefreshTick(force = false) {
   // Не дёргаем экран, пока сотрудник читает: если он только что прокручивал
   // или водил мышью по списку, обновление ждёт следующего тика.
   if (!force && Date.now() - lastUserActivity < 8_000) return;
+  // Лёгкая проверка версии: подавляющее большинство тиков заканчивается
+  // здесь — ни 10 МБ снимка, ни перерисовки, экран не шелохнётся.
+  if (state.dataRev) {
+    try {
+      const { rev } = await api('/api/bootstrap/rev');
+      if (rev && rev === state.dataRev) { lastAutoRefresh = Date.now(); return; }
+    } catch {
+      byId('syncState').textContent = '● нет связи — повторю через минуту';
+      return;
+    }
+  }
   // Полный снимок прокрутки: страница и все прокручиваемые области.
   const viewScroll = captureViewScroll();
-  // Без перемаргивания: если данные не изменились с прошлого раза —
-  // DOM не трогаем вообще (это подавляющее большинство тиков).
   let fresh;
   try { fresh = await api('/api/bootstrap'); } catch {
     byId('syncState').textContent = '● нет связи — повторю через минуту';
     return;
   }
   lastAutoRefresh = Date.now();
-  if (JSON.stringify(fresh) === state.dataSnapshot) return;
+  if (!state.dataRev && JSON.stringify(fresh) === state.dataSnapshot) return;
+  // Поисковые поля и фильтры переживают перерисовку: значения и фокус
+  // снимаются до reload и возвращаются после («в поисковом режиме всё
+  // слетало» — жалоба 09.09). Восстановленное значение получает событие
+  // input, чтобы фильтр списка применился заново.
+  const keptInputs = [...document.querySelectorAll('input[id], select[id]')]
+    .filter(el => el.value && el.type !== 'checkbox' && el.type !== 'radio')
+    .map(el => ({ id: el.id, value: el.value,
+      focused: document.activeElement === el, caret: el.selectionStart }));
   await reload(fresh);
+  for (const kept of keptInputs) {
+    const el = document.getElementById(kept.id);
+    if (!el || el.value === kept.value) continue;
+    if (el.value) continue; // поле уже заполнено новой разметкой — не трогаем
+    el.value = kept.value;
+    el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+    if (kept.focused && typeof el.focus === 'function') {
+      el.focus();
+      if (Number.isFinite(kept.caret) && typeof el.setSelectionRange === 'function') {
+        try { el.setSelectionRange(kept.caret, kept.caret); } catch { /* select */ }
+      }
+    }
+  }
   // Восстанавливаем сразу: блоки, чья разметка не изменилась, вообще не
   // перерисовывались, остальным возвращаем позицию до кадра отрисовки.
   restoreViewScroll(viewScroll);
