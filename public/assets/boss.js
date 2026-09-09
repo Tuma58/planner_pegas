@@ -348,6 +348,8 @@ export async function renderBoss(container, context) {
           title="Отчёт за 12-часовую смену (08–20 / 20–08): операции сотрудников по именам, время обработки заданий, очереди каскада">🕐 Смена</button>
         <button class="button ghost small" id="bossDeliveryPlan"
           title="Визуальный график вывоза грузов от клиентов на месяц: слоты, заявки, ресурс и выручка план-факт">📅 План вывоза</button>
+        <button class="button ghost small" id="bossShiftPlanner"
+          title="Загрузка ремзоны на 14 дней: кто в ремонте/пересменке, кто заезжает и выходит, пики против живой нормы и рекомендации переносов">🔧 Ремзона</button>
         <button class="button ghost small" id="bossInventory"
           title="Инвентаризация всех процессов: ресурс (дубли прицепов, забытые машины, висящие рейсы, дыры по водителям) + заявки с ошибочными датами, застрявшие стадии, дыры адресов">🧾 Инвентаризация</button>
         <button class="button ghost small" id="bossParkReport"
@@ -545,6 +547,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossProject160').onclick = () => project160Dialog(context);
   container.querySelector('#bossShift').onclick = () => shiftDialog(context);
   container.querySelector('#bossDeliveryPlan').onclick = () => deliveryPlanDialog(context);
+  container.querySelector('#bossShiftPlanner').onclick = () => shiftPlannerDialog(context);
   container.querySelector('#bossInventory').onclick = () => inventoryDialog(context, 'all');
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
@@ -592,4 +595,53 @@ export async function renderBoss(container, context) {
     });
   }, { rootMargin: '-10% 0px -70% 0px' });
   sections.forEach(section => section && observer.observe(section));
+}
+
+
+// ── 🔧 Планировщик ремзоны (фундамент 09.09) ──
+// Загрузка ремзоны по дням против живой нормы, заезды/выходы, грузовая
+// база — и рекомендации перенести заезд из пикового дня в свободный.
+// Заезды планируются как недоступности в карточке ТС; здесь — картина
+// и подсказки, решение за человеком.
+async function shiftPlannerDialog(context) {
+  let plan;
+  try { plan = await api('/api/shift-planner'); } catch (error) { toast(error.message, 'error'); return; }
+  const WDS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  const maxLoad = Math.max(plan.norm * 1.6, ...plan.days.map(day => day.load), 1);
+  const rows = plan.days.map(day => {
+    const wd = new Date(Date.parse(day.day)).getUTCDay();
+    const ratio = day.load / plan.norm;
+    const color = ratio > 1.5 ? 'var(--bad,#b1483e)' : ratio > 1 ? '#c99a2e' : 'var(--ok,#2e7d6b)';
+    const width = Math.round(day.load / maxLoad * 100);
+    const shopList = day.inShop.map(item =>
+      `${item.plate} (${item.kind === 'repair' ? 'ремонт' : 'пересменка'} до ${item.till.slice(8)}.${item.till.slice(5, 7)})`).join(', ');
+    return `<tr${day.day === plan.todayIso ? ' style="background:color-mix(in srgb, #c99a2e 12%, transparent)"' : ''}>
+      <td style="white-space:nowrap"><b>${day.day.slice(8)}.${day.day.slice(5, 7)}</b> <small class="muted">${WDS[wd]}</small></td>
+      <td style="min-width:180px"><div title="${escapeHtml(shopList)}" style="background:${color};height:14px;border-radius:4px;width:${width}%;min-width:${day.load ? 22 : 0}px;color:#fff;font-size:10px;text-align:center;line-height:14px">${day.load || ''}</div></td>
+      <td class="num">${day.starts.length ? `+${day.starts.length}` : ''}</td>
+      <td class="num">${day.outs.length || ''}</td>
+      <td class="num">${day.gridPlan || ''}</td>
+      <td><small class="muted">${day.starts.map(item => item.plate).slice(0, 4).join(', ')}${day.starts.length > 4 ? '…' : ''}</small></td>
+    </tr>`;
+  }).join('');
+  context.showModal(`<h2>🔧 Ремзона — 14 дней</h2>
+    <p class="muted">Живая норма: <b>${plan.norm}</b> машин в день (средняя загрузка ремонтами и
+      пересменками за 60 суток). Зелёный — в норме, жёлтый — выше нормы, красный — пик (>×1,5).
+      Наведите на бар — список машин в ремзоне. Заезды планируются недоступностями в карточке ТС —
+      планировщик подсказывает дни, решение за человеком.</p>
+    <div class="table-wrap" style="max-height:52vh;overflow:auto"><table>
+      <thead><tr><th>День</th><th>Загрузка ремзоны</th>
+        <th class="num" title="Заездов в этот день">Заезд</th>
+        <th class="num" title="Выходов в строй (окончания «без водителя», пересменок, ремонтов)">Выход</th>
+        <th class="num" title="План сетки: рейсов из Дома в этот день недели">Грузы</th>
+        <th>Кто заезжает</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    ${plan.suggestions.length ? `<div class="scolh" style="margin-top:8px">Рекомендации переносов <span>${plan.suggestions.length}</span></div>
+      <div class="list">${plan.suggestions.map(item => `<div class="list-item">
+        <span style="flex:1">🔧 <b>${escapeHtml(item.plate)}</b> (${item.kind === 'repair' ? 'ремонт' : 'пересменка'}):
+          перенести заезд ${item.from.slice(8)}.${item.from.slice(5, 7)} → <b>${item.to.slice(8)}.${item.to.slice(5, 7)}</b>
+          <small class="muted" style="display:block">${escapeHtml(item.reason)}</small></span>
+      </div>`).join('')}</div>`
+    : '<p class="muted" style="margin-top:8px">Пиков нет — нагрузка ремзоны ровная, переносы не нужны.</p>'}
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
 }

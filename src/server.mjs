@@ -4397,6 +4397,65 @@ async function api(request, response, url) {
     return json(response, 200, { notes: activeBoardNotes() });
   }
 
+  // ── 🔧 Планировщик ремзоны: загрузка по дням и рекомендации заездов ──
+  // Фундамент (заложен 09.09): пересменка почти всегда тянет ремонт, и
+  // нагрузка на ремзону должна быть равномерной. Планировщик показывает
+  // 14 дней: кто в ремзоне, кто заезжает, кто выходит (окончания «без
+  // водителя» = возвращения с межвахты), грузовую базу дня — и предлагает
+  // перенести заезды из пиковых дней в свободные. Норма — живая (средняя
+  // загрузка за 60 дней). Сами заезды планируются как недоступности в
+  // карточке ТС — планировщик подсказывает дни, решение за человеком.
+  if (request.method === 'GET' && pathname === '/api/shift-planner') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const home = db.prepare(`SELECT id FROM zones WHERE name='Дом'`).get();
+    const loadDays = db.prepare(`SELECT COALESCE(SUM(
+        (julianday(MIN(datetime('now'), ends_at)) - julianday(MAX(datetime('now','-60 day'), starts_at)))
+      ),0) v FROM vehicle_dispositions
+      WHERE kind IN ('repair','shift') AND datetime(ends_at) > datetime('now','-60 day')
+        AND datetime(starts_at) < datetime('now')`).get().v;
+    const norm = Math.max(1, Math.round(loadDays / 60 * 10) / 10);
+    const todayIso = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+    const dayIso = offset => new Date(Date.parse(todayIso) + offset * 86_400_000).toISOString().slice(0, 10);
+    const days = [];
+    for (let offset = 0; offset < 14; offset += 1) {
+      const day = dayIso(offset);
+      const inShop = db.prepare(`SELECT v.plate, d.kind, date(d.ends_at) till FROM vehicle_dispositions d
+        JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE d.kind IN ('repair','shift') AND date(d.starts_at) <= ? AND date(d.ends_at) >= ?
+        GROUP BY v.plate ORDER BY d.ends_at`).all(day, day);
+      const starts = db.prepare(`SELECT v.plate, d.kind, date(d.ends_at) till, d.id FROM vehicle_dispositions d
+        JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE d.kind IN ('repair','shift') AND date(d.starts_at) = ?`).all(day);
+      const outs = db.prepare(`SELECT v.plate, MIN(d.kind) kind FROM vehicle_dispositions d
+        JOIN vehicles v ON v.id=d.vehicle_id
+        WHERE date(d.ends_at)=? AND d.kind IN ('no_driver','shift','repair') AND v.status='work'
+        GROUP BY v.plate`).all(day);
+      const weekday = new Date(Date.parse(day)).getUTCDay();
+      const gridPlan = home ? db.prepare(`SELECT COALESCE(SUM(per_day),0) v FROM delivery_slots
+        WHERE from_zone_id=? AND weekday=?`).get(home.id, weekday).v : 0;
+      days.push({ day, load: inShop.length, inShop, starts, outs,
+        gridPlan: Math.round(gridPlan) });
+    }
+    // Рекомендации: заезды пиковых дней (load > норма) — в ближайший день
+    // окна ±3 с наименьшей загрузкой ниже нормы.
+    const suggestions = [];
+    for (let i = 0; i < days.length && suggestions.length < 6; i += 1) {
+      if (days[i].load <= norm * 1.2) continue;
+      for (const start of days[i].starts) {
+        const window = days.map((d, j) => ({ ...d, j }))
+          .filter(d => Math.abs(d.j - i) <= 3 && d.j !== i && d.load < norm);
+        if (!window.length) continue;
+        const best = window.sort((a, b) => a.load - b.load || Math.abs(a.j - i) - Math.abs(b.j - i))[0];
+        suggestions.push({ plate: start.plate, kind: start.kind,
+          from: days[i].day, to: best.day,
+          reason: `в ${days[i].day.slice(8)}.${days[i].day.slice(5, 7)} ремзона занята (${days[i].load} при норме ${norm}), ${best.day.slice(8)}.${best.day.slice(5, 7)} свободнее (${best.load})` });
+        if (suggestions.length >= 6) break;
+      }
+    }
+    return json(response, 200, { norm, todayIso, days, suggestions });
+  }
+
   // ── План вывоза грузов от клиентов: сетка слотов, план-факт месяца ──
   if (request.method === 'GET' && pathname === '/api/delivery-plan') {
     const user = requirePermission(request, response, 'planner:read');
