@@ -3481,6 +3481,52 @@ async function runHangWatch() {
 setInterval(runHangWatch, 2 * 3_600_000);
 setTimeout(runHangWatch, 120_000);
 
+// ── Сторож доверия трекерам: GPS хронически противоречит фактам ──
+// Кейс р271ск58 (09.09): машина по отметкам и контролю на выгрузке в
+// Ногинске, а «её» трекер в Пилоте стоит в Орле, «прицеп» едет под Омском —
+// привязки imei↔борт рассыпаны, и весь GPS-контроль рейса смотрит не туда.
+// Разовое расхождение ловит проверка «отметка против GPS» (30 мин / 30 км);
+// здесь — ХРОНИКА: прибытие отмечено 3+ часа назад, свежий сигнал стабильно
+// дальше 150 км от точки → это не ошибка отметки, а чужой трекер или
+// переставленное оборудование. Сигнал руководителю и диспетчеру, раз в
+// 7 дней на машину.
+function runTrackerTrustWatch() {
+  try {
+    const rows = db.prepare(`SELECT t.id trip_id, t.vehicle_id, t.order_no, v.plate,
+        s.point, s.actual_arrival, p.latitude, p.longitude, p.fixed_at,
+        (SELECT o.to_address_id FROM orders o WHERE o.id=t.order_id) ta
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      JOIN trip_stops s ON s.trip_id=t.id
+        AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
+      JOIN vehicle_positions p ON p.vehicle_id=t.vehicle_id
+      WHERE t.status IN ('run','unloaded') AND s.actual_arrival IS NOT NULL
+        AND s.actual_arrival < datetime('now','-3 hours')`).all();
+    for (const row of rows) {
+      const fixMs = row.fixed_at ? Date.parse(row.fixed_at) : 0;
+      if (!fixMs || Date.now() - fixMs > GPS_FRESH_MS) continue;
+      const point = row.ta ? addressPointById(row.ta) : null;
+      if (!point) continue;
+      const away = straightKm(row.latitude, row.longitude, point.latitude, point.longitude);
+      if (away < 150) continue;
+      const key = `tracker_trust:${row.vehicle_id}`;
+      const last = Number(db.prepare(`SELECT value FROM app_meta WHERE key=?`).get(key)?.value) || 0;
+      if (Date.now() - last < 7 * 86_400_000) continue;
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES(?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key, String(Date.now()));
+      const hours = Math.round((Date.now() - Date.parse(row.actual_arrival)) / 3_600_000);
+      const text = `⚠ ТРЕКЕР ПОД ПОДОЗРЕНИЕМ: ${row.plate} (рейс №${row.order_no || '?'}) `
+        + `по отметкам ${hours} ч как на выгрузке «${String(row.point || '').slice(0, 30)}», а GPS стабильно `
+        + `в ${Math.round(away)} км. Либо оборудование стоит на другой машине, либо в Пилоте перепутана `
+        + `привязка номера — сверьте трекер физически; GPS-контролю этой машины пока не доверять`;
+      notify('manager', text, 'trip', row.trip_id, { category: 'gps_control' });
+      notify('dispatcher', text, 'trip', row.trip_id, { category: 'gps_control' });
+      try { sendTelegramTo(telegramChatsForRole('manager', 'critical'), text); } catch { /* чат есть */ }
+    }
+  } catch (error) { console.error('Сторож доверия трекерам:', error.message); }
+}
+setInterval(runTrackerTrustWatch, 2 * 3_600_000);
+setTimeout(runTrackerTrustWatch, 140_000);
+
 function runMorningDirections() {
   try {
     const msk = new Date(Date.now() + 3 * 3_600_000);

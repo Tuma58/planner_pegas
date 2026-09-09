@@ -516,6 +516,14 @@ export async function renderDispatcher(container, context, options = {}) {
     const stops = controlByTrip.get(trip.id)?.stops || [];
     const touches = stops.map(stop => Date.parse(String(stop.updated_at || '').replace(' ', 'T') + 'Z'))
       .filter(Number.isFinite);
+    // Контрольные отметки диспетчера («✓ Отработано», заметки) — тоже
+    // внимание к рейсу: кейс с669мх58 — Диденко вела контроль ежедневно,
+    // а бейдж пугал «не касались 114 ч», потому что смотрел только точки.
+    for (const [key, mark] of workedMap) {
+      if (!key.startsWith(`${trip.id}|`)) continue;
+      const at = Date.parse(String(mark.done_at || '').replace(' ', 'T') + 'Z');
+      if (Number.isFinite(at)) touches.push(at);
+    }
     return touches.length ? Math.max(...touches)
       : Date.parse(trip.on_line_at || trip.starts_at || '') || 0;
   };
@@ -982,7 +990,7 @@ export async function renderDispatcher(container, context, options = {}) {
       ${localNote(nextEvent.at, nextEvent.point, nextEvent.zone)}` : ''}${overdue
         ? ` · ⏳ сбой ${overdueHours >= 1 ? `${overdueHours} ч` : '< 1 ч'} — контроль каждые 1,5 ч` : ''}
       ${hot && !overdue && nextEvent.at > 0 ? '<span class="ctrl-soon">🔥 менее 2 ч</span>' : ''}
-      ${touchStale(trip) ? `<span class="badge bad" title="Точки рейса никто не трогал (ни диспетчер, ни бот водителя) — позвоните и проставьте факты по горячим следам, а не в конце смены">🕐 не касались ${Math.floor((Date.now() - lastTouchMs(trip)) / 3_600_000)} ч</span>` : ''}
+      ${touchStale(trip) ? `<span class="badge bad" title="Ни отметок точек, ни контроля, ни заметок — рейс без внимания: позвоните и проставьте факты по горячим следам">🕐 не касались ${Math.floor((Date.now() - lastTouchMs(trip)) / 3_600_000)} ч</span>` : ''}
       ${claimBadge(claim, claimMine)}
       ${worked ? `<span class="ctrl-worked-note" ${worked.note ? `title="${escapeHtml(worked.note)}"` : ''}>✓ отработано
         · ${escapeHtml(worked.done_by || '')} · ${markTime(worked)}${worked.note ? ` — «${escapeHtml(String(worked.note).slice(0, 60))}»` : ''}</span>` : ''}
