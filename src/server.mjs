@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHmac, randomUUID } from 'node:crypto';
+import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
@@ -1796,9 +1797,12 @@ const maxDriverToken = () => telegramConfig().maxDriverToken || null;
 // системном хранилище контейнера, без ca-опции каждый вызов падал с
 // «unable to get local issuer certificate». Сертификаты (root+sub с
 // gu-st.ru) лежат в репозитории и подключаются только к запросам MAX.
+// ca-опция ЗАМЕНЯЕТ системное хранилище, поэтому объединяем: мировые
+// корни + Минцифры — если MAX сменит сертификат на глобальный, не упадём.
 let russianTrustedCa = null;
 try {
-  russianTrustedCa = fs.readFileSync(new URL('./certs/russian-trusted-ca.pem', import.meta.url), 'utf8');
+  russianTrustedCa = [...tls.rootCertificates,
+    fs.readFileSync(new URL('./certs/russian-trusted-ca.pem', import.meta.url), 'utf8')];
 } catch { console.error('MAX: файл russian-trusted-ca.pem не найден — вызовы API не пройдут'); }
 function maxApi(path, payload = null, method = 'POST') {
   return new Promise(resolve => {
