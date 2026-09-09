@@ -3308,10 +3308,12 @@ function runCrewBalanceWatch() {
     for (let offset = 0; offset < 5; offset += 1) {
       const day = dayIso(offset);
       // Выходы: недоступности, заканчивающиеся в этот день.
-      const outs = db.prepare(`SELECT v.plate, d.kind FROM vehicle_dispositions d
+      // DISTINCT по машине: несколько недоступностей одной сцепки,
+      // заканчивающихся в один день, — один выход, а не три.
+      const outs = db.prepare(`SELECT v.plate, MIN(d.kind) kind FROM vehicle_dispositions d
         JOIN vehicles v ON v.id=d.vehicle_id
         WHERE date(d.ends_at)=? AND d.kind IN ('no_driver','shift','repair')
-          AND v.status='work'`).all(day);
+          AND v.status='work' GROUP BY v.plate`).all(day);
       // Нагрузка ремзоны дня: ремонты и пересменки, пересекающие день.
       const shopLoad = db.prepare(`SELECT COUNT(*) n FROM vehicle_dispositions
         WHERE kind IN ('repair','shift') AND date(starts_at) <= ? AND date(ends_at) >= ?`)
