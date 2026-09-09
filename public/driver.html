@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Мой рейс — ПегасЛогистик</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Мини-приложение водителя: крупно, контрастно, одной рукой.
+     Цвета подстраиваются под тему Telegram через var(--tg-*). */
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px 12px 28px;
+    font: 16px/1.45 -apple-system, Roboto, 'Segoe UI', sans-serif;
+    background: var(--tg-theme-bg-color, #f4f5f7);
+    color: var(--tg-theme-text-color, #1a1d21);
+  }
+  .card {
+    background: var(--tg-theme-secondary-bg-color, #fff);
+    border-radius: 14px; padding: 14px; margin-bottom: 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .muted { color: var(--tg-theme-hint-color, #6b7480); font-size: 14px; }
+  .route { font-size: 16px; font-weight: 600; margin: 6px 0; }
+  .stop { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid rgba(128,128,128,.15); }
+  .stop:last-child { border-bottom: none; }
+  .stop .mark { font-size: 20px; width: 28px; text-align: center; flex: none; }
+  .stop .body { flex: 1; min-width: 0; }
+  .stop .pt { font-weight: 600; }
+  .stop small { display: block; color: var(--tg-theme-hint-color, #6b7480); }
+  .bigbtn {
+    display: block; width: 100%; border: 0; border-radius: 14px;
+    padding: 16px; margin-top: 6px; font-size: 18px; font-weight: 700;
+    background: var(--tg-theme-button-color, #2e7d6b);
+    color: var(--tg-theme-button-text-color, #fff);
+  }
+  .bigbtn:disabled { opacity: .55; }
+  .etarow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .etarow button {
+    flex: 1; min-width: 64px; border: 1px solid rgba(128,128,128,.35);
+    background: transparent; color: inherit; border-radius: 10px;
+    padding: 10px 6px; font-size: 15px; font-weight: 600;
+  }
+  .note { border-radius: 10px; padding: 10px 12px; margin-top: 10px;
+    background: rgba(46,125,107,.12); font-size: 15px; white-space: pre-line; }
+  .err { background: rgba(177,72,62,.14); }
+  .refresh { text-align: center; margin-top: 8px; }
+  .refresh button { border: 0; background: transparent; color: var(--tg-theme-link-color, #3b6ea5); font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="app"><div class="card">Загрузка рейса…</div></div>
+<script src="/assets/driver-app.js"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
@@ -1432,6 +1432,63 @@ const driverBotToken = () => telegramConfig().driverBotToken || null;
 const digitsPhone = value => String(value || '').replace(/\D/g, '').slice(-10);
 
 // Следующая кнопка этапа: одна актуальная, по состоянию точек рейса.
+// ── Мини-приложение водителя «Мой рейс» ──
+// Открывается кнопкой из бота (Telegram Mini App; MAX подключится той же
+// страницей после появления токена — добавить проверку подписи MAX здесь).
+// Авторизация: подпись initData Telegram (HMAC от токена бота), водитель
+// находится по user.id — в личном чате он равен chat_id привязки.
+function verifyTgWebAppInitData(initData) {
+  try {
+    const token = driverBotToken();
+    if (!token || !initData) return null;
+    const params = new URLSearchParams(String(initData));
+    const hash = params.get('hash');
+    if (!hash) return null;
+    params.delete('hash');
+    const dataCheck = [...params.entries()].map(([key, value]) => `${key}=${value}`)
+      .sort().join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(token).digest();
+    const check = createHmac('sha256', secret).update(dataCheck).digest('hex');
+    if (check !== hash) return null;
+    const authDate = Number(params.get('auth_date')) * 1000;
+    if (!Number.isFinite(authDate) || Date.now() - authDate > 24 * 3_600_000) return null;
+    return JSON.parse(params.get('user') || 'null');
+  } catch { return null; }
+}
+function driverAppAuth(body, response) {
+  const tgUser = verifyTgWebAppInitData(body.initData);
+  if (!tgUser?.id) {
+    errorJson(response, 401, 'Откройте приложение кнопкой из бота ПегасЛогистик');
+    return null;
+  }
+  const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`)
+    .get(String(tgUser.id));
+  if (!driver) {
+    errorJson(response, 403, 'Номер не привязан — нажмите «📱 Поделиться контактом» в чате бота');
+    return null;
+  }
+  return driver;
+}
+function driverAppState(driver) {
+  const trip = db.prepare(`SELECT t.*, v.plate, v.trailer_plate FROM trips t
+    JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE t.vehicle_id=? AND t.status IN ('plan','run')
+    ORDER BY t.starts_at LIMIT 1`).get(driver.vehicle_id);
+  if (!trip) return { driver: { name: driver.full_name }, trip: null };
+  ensureTripStops(db, trip.id);
+  const stops = db.prepare(`SELECT id, kind, seq, point, planned_arrival,
+      actual_arrival, actual_departure, driver_eta
+    FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(trip.id);
+  return {
+    driver: { name: driver.full_name },
+    trip: { id: trip.id, orderNo: String(trip.order_no || ''), plate: trip.plate,
+      trailer: trip.trailer_plate || '', from: trip.from_point, to: trip.to_point,
+      startsAt: trip.starts_at, endsAt: trip.ends_at, status: trip.status,
+      temperature: trip.temperature_mode || '' },
+    stops, next: nextDriverStep(trip.id)
+  };
+}
+
 function nextDriverStep(tripId) {
   const stops = db.prepare(`SELECT id, kind, seq, point, actual_arrival, actual_departure
     FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(tripId);
@@ -1522,11 +1579,19 @@ function sendDriverAssignment(tripId) {
     if (!driver) return;
     ensureTripStops(db, tripId);
     const step = nextDriverStep(tripId);
+    // Кнопка «📱 Мой рейс» открывает мини-приложение: этапность, прогнозы
+    // и вся карточка рейса на одном экране (web_app работает по https).
+    const appBase = String(telegramConfig().webhookBase || '').trim().replace(/\/+$/, '');
+    const appRow = appBase.startsWith('https')
+      ? [[{ text: '📱 Мой рейс — открыть приложение', web_app: { url: `${appBase}/driver.html` } }]]
+      : [];
     if (driver.telegram_chat_id) tgApi('sendMessage', {
       chat_id: driver.telegram_chat_id,
       text: driverAssignmentText(trip),
-      reply_markup: step ? { inline_keyboard: [[{ text: step.label,
-        callback_data: `st|${step.stopId}|${step.phase}` }]] } : undefined
+      reply_markup: { inline_keyboard: [
+        ...(step ? [[{ text: step.label, callback_data: `st|${step.stopId}|${step.phase}` }]] : []),
+        ...appRow
+      ] }
     }, driverBotToken());
     // Второй канал: тот же текст и кнопка этапа в MAX (если привязан).
     if (driver.max_chat_id) maxSend(driver.max_chat_id, driverAssignmentText(trip),
@@ -4395,6 +4460,33 @@ async function api(request, response, url) {
       .run(user.full_name || user.username || '', id);
     audit(db, user, 'board-note-remove', 'board', id, {}, requestIp(request));
     return json(response, 200, { notes: activeBoardNotes() });
+  }
+
+  // ── Мини-приложение водителя «Мой рейс»: состояние, шаги, прогноз ──
+  // Публичные роуты со своей авторизацией (подпись initData Telegram);
+  // ядро шагов и ETA общее с ботами Telegram/MAX.
+  if (request.method === 'POST' && pathname === '/api/driver-app/state') {
+    const body = await readJson(request);
+    const driver = driverAppAuth(body, response);
+    if (!driver) return;
+    return json(response, 200, driverAppState(driver));
+  }
+  if (request.method === 'POST' && pathname === '/api/driver-app/step') {
+    const body = await readJson(request);
+    const driver = driverAppAuth(body, response);
+    if (!driver) return;
+    const result = applyDriverStepFor(driver, String(body.stopId || ''), String(body.phase || ''));
+    return json(response, 200, { message: result.text, askEta: result.askEta || null,
+      state: driverAppState(driver) });
+  }
+  if (request.method === 'POST' && pathname === '/api/driver-app/eta') {
+    const body = await readJson(request);
+    const driver = driverAppAuth(body, response);
+    if (!driver) return;
+    let replyText = 'Принял.';
+    applyDriverEtaFor(driver, String(body.stopId || ''), Number(body.hours),
+      (chat, text) => { replyText = text; });
+    return json(response, 200, { message: replyText, state: driverAppState(driver) });
   }
 
   // ── 🔧 Планировщик ремзоны: загрузка по дням и рекомендации заездов ──
@@ -8560,7 +8652,7 @@ export const server = http.createServer(async (request, response) => {
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Content-Security-Policy',
     // img-src: OSM-тайлы для карты «Мониторинга» (грузятся браузером напрямую).
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' https://telegram.org; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   try {
     if (!networkAccessAllowed(request, url.pathname)) {
       return errorJson(response, 403, 'Подключение из вашей сети запрещено администратором');
