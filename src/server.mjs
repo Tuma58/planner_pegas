@@ -1792,6 +1792,14 @@ setTimeout(runMonitoringPoll, 45_000);
 // телефону из контакта. Включается токеном в Настройках; форматы событий
 // сверяем по первым живым обновлениям (сырые update пишутся в лог).
 const maxDriverToken = () => telegramConfig().maxDriverToken || null;
+// *.max.ru подписан УЦ Минцифры («Russian Trusted Sub CA») — его нет в
+// системном хранилище контейнера, без ca-опции каждый вызов падал с
+// «unable to get local issuer certificate». Сертификаты (root+sub с
+// gu-st.ru) лежат в репозитории и подключаются только к запросам MAX.
+let russianTrustedCa = null;
+try {
+  russianTrustedCa = fs.readFileSync(new URL('./certs/russian-trusted-ca.pem', import.meta.url), 'utf8');
+} catch { console.error('MAX: файл russian-trusted-ca.pem не найден — вызовы API не пройдут'); }
 function maxApi(path, payload = null, method = 'POST') {
   return new Promise(resolve => {
     const token = maxDriverToken();
@@ -1799,7 +1807,8 @@ function maxApi(path, payload = null, method = 'POST') {
     const body = payload ? JSON.stringify(payload) : '';
     const request = httpsRequest({
       host: 'platform-api2.max.ru', method,
-      path, timeout: 10_000,
+      path, timeout: 10_000, family: 4,
+      ...(russianTrustedCa ? { ca: russianTrustedCa } : {}),
       headers: { 'Content-Type': 'application/json', Authorization: token,
         ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}) }
     }, response => {
