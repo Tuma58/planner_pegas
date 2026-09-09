@@ -2,7 +2,6 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHmac, randomUUID } from 'node:crypto';
-import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
@@ -1434,8 +1433,7 @@ const digitsPhone = value => String(value || '').replace(/\D/g, '').slice(-10);
 
 // Следующая кнопка этапа: одна актуальная, по состоянию точек рейса.
 // ── Мини-приложение водителя «Мой рейс» ──
-// Открывается кнопкой из бота (Telegram Mini App; MAX подключится той же
-// страницей после появления токена — добавить проверку подписи MAX здесь).
+// Открывается кнопкой из бота (Telegram Mini App).
 // Авторизация: подпись initData Telegram (HMAC от токена бота), водитель
 // находится по user.id — в личном чате он равен chat_id привязки.
 function verifyTgWebAppInitData(initData) {
@@ -1555,7 +1553,7 @@ function driverAssignmentText(trip) {
 
 function driverForTrip(trip) {
   const byLink = db.prepare(`SELECT d.* FROM drivers d
-    WHERE d.vehicle_id=? AND (d.telegram_chat_id IS NOT NULL OR d.max_chat_id IS NOT NULL)
+    WHERE d.vehicle_id=? AND d.telegram_chat_id IS NOT NULL
       AND d.status<>'fired' LIMIT 1`).get(trip.vehicle_id);
   if (byLink) return byLink;
   // Фолбэк: закрепление исторически живёт текстом в vehicles.driver_name
@@ -1565,7 +1563,7 @@ function driverForTrip(trip) {
     .get(trip.vehicle_id)?.driver_name || '').trim();
   if (name.length < 3) return null;
   const candidates = db.prepare(`SELECT d.* FROM drivers d
-    WHERE d.full_name LIKE ? AND (d.telegram_chat_id IS NOT NULL OR d.max_chat_id IS NOT NULL)
+    WHERE d.full_name LIKE ? AND d.telegram_chat_id IS NOT NULL
       AND d.status<>'fired'`).all(`${name}%`);
   return candidates.length === 1 ? candidates[0] : null;
 }
@@ -1594,14 +1592,11 @@ function sendDriverAssignment(tripId) {
         ...appRow
       ] }
     }, driverBotToken());
-    // Второй канал: тот же текст и кнопка этапа в MAX (если привязан).
-    if (driver.max_chat_id) maxSend(driver.max_chat_id, driverAssignmentText(trip),
-      step ? [[{ text: step.label, payload: `st|${step.stopId}|${step.phase}` }]] : null);
   } catch (error) { console.error('sendDriverAssignment:', error.message); }
 }
 
 // Обработка нажатия этапа: проверка принадлежности, хронологии — и факт.
-// Обёртка для Telegram (поиск по telegram_chat_id); ядро общее с MAX.
+// Обёртка для Telegram (поиск по telegram_chat_id).
 function applyDriverStep(chatId, stopId, phase) {
   const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`).get(String(chatId));
   if (!driver) return { text: 'Чат не привязан — отправьте свой контакт кнопкой ниже.' };
@@ -1787,157 +1782,6 @@ async function runMonitoringPoll() {
 }
 setInterval(runMonitoringPoll, 60_000);
 setTimeout(runMonitoringPoll, 45_000);
-
-// ── Бот водителей в MAX (мессенджер MAX, platform-api2.max.ru) ──
-// Второй канал наряду с Telegram: та же логика этапов, привязка по
-// телефону из контакта. Включается токеном в Настройках; форматы событий
-// сверяем по первым живым обновлениям (сырые update пишутся в лог).
-const maxDriverToken = () => telegramConfig().maxDriverToken || null;
-// *.max.ru подписан УЦ Минцифры («Russian Trusted Sub CA») — его нет в
-// системном хранилище контейнера, без ca-опции каждый вызов падал с
-// «unable to get local issuer certificate». Сертификаты (root+sub с
-// gu-st.ru) лежат в репозитории и подключаются только к запросам MAX.
-// ca-опция ЗАМЕНЯЕТ системное хранилище, поэтому объединяем: мировые
-// корни + Минцифры — если MAX сменит сертификат на глобальный, не упадём.
-let russianTrustedCa = null;
-try {
-  russianTrustedCa = [...tls.rootCertificates,
-    fs.readFileSync(new URL('./certs/russian-trusted-ca.pem', import.meta.url), 'utf8')];
-} catch { console.error('MAX: файл russian-trusted-ca.pem не найден — вызовы API не пройдут'); }
-function maxApi(path, payload = null, method = 'POST') {
-  return new Promise(resolve => {
-    const token = maxDriverToken();
-    if (!token) return resolve(null);
-    const body = payload ? JSON.stringify(payload) : '';
-    const request = httpsRequest({
-      host: 'platform-api2.max.ru', method,
-      path, timeout: 10_000, family: 4,
-      ...(russianTrustedCa ? { ca: russianTrustedCa } : {}),
-      headers: { 'Content-Type': 'application/json', Authorization: token,
-        ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}) }
-    }, response => {
-      let raw = '';
-      response.on('data', chunk => { raw += chunk; });
-      response.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve(raw || null); } });
-    });
-    request.on('error', () => resolve(null));
-    request.on('timeout', () => { request.destroy(); resolve(null); });
-    request.end(body || undefined);
-  });
-}
-// Кнопки MAX: массив рядов [{text, payload}] → attachment inline_keyboard.
-const maxKeyboard = rows => [{ type: 'inline_keyboard', payload: {
-  buttons: rows.map(row => row.map(button => ({ type: 'callback',
-    text: button.text, payload: button.payload }))) } }];
-function maxSend(chatId, text, keyboardRows = null) {
-  return maxApi(`/messages?chat_id=${encodeURIComponent(chatId)}`, {
-    text, ...(keyboardRows ? { attachments: maxKeyboard(keyboardRows) } : {}) });
-}
-// Секрет вебхука MAX — в пути URL (не зависим от способа передачи secret).
-function maxWebhookSecret() {
-  let secret = db.prepare(`SELECT value FROM app_meta WHERE key='max_webhook_secret'`).get()?.value;
-  if (!secret) {
-    secret = randomUUID().replace(/-/g, '');
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('max_webhook_secret',?)`).run(secret);
-  }
-  return secret;
-}
-async function syncMaxWebhook() {
-  try {
-    const base = String(telegramConfig().webhookBase || '').trim().replace(/\/+$/, '');
-    if (!maxDriverToken() || !base) return;
-    const answer = await maxApi('/subscriptions', {
-      url: `${base}/api/max/webhook/${maxWebhookSecret()}`,
-      update_types: ['message_created', 'message_callback', 'bot_started']
-    });
-    console.log('max webhook:', JSON.stringify(answer)?.slice(0, 200));
-  } catch (error) { console.error('syncMaxWebhook:', error.message); }
-}
-setTimeout(syncMaxWebhook, 35_000);
-// Обработка обновления MAX. Поля сверяем по живым событиям: сырой update
-// пишется в лог до полной обкатки канала.
-async function processMaxDriverUpdate(update) {
-  console.log('max update:', JSON.stringify(update).slice(0, 600));
-  const type = update?.update_type;
-  const message = update?.message;
-  const chatId = String(message?.recipient?.chat_id || message?.chat_id
-    || update?.chat_id || message?.sender?.user_id || '');
-  if (type === 'bot_started') {
-    const startChat = String(update?.chat_id || update?.user_id || chatId || '');
-    if (!startChat) return;
-    await maxApi(`/messages?chat_id=${encodeURIComponent(startChat)}`, {
-      text: 'Здравствуйте! Это бот водителей ПегасЛогистик в MAX. Нажмите кнопку, чтобы привязаться по номеру телефона.',
-      attachments: [{ type: 'inline_keyboard', payload: { buttons: [[
-        { type: 'request_contact', text: '📱 Поделиться контактом' }]] } }] });
-    return;
-  }
-  if (type === 'message_callback') {
-    const payload = String(update?.callback?.payload || '');
-    const callbackChat = String(update?.callback?.user?.user_id || chatId || '');
-    const [tag, stopId, phase] = payload.split('|');
-    const driver = db.prepare(`SELECT * FROM drivers WHERE max_chat_id=?`).get(callbackChat);
-    if (update?.callback?.callback_id) maxApi('/answers', { callback_id: update.callback.callback_id, notification: '✓' });
-    if (!driver) { maxSend(callbackChat, 'Чат не привязан — нажмите «Поделиться контактом».'); return; }
-    if (tag === 'st') {
-      // Переиспользуем логику Telegram: applyDriverStep смотрит на
-      // drivers.telegram_chat_id — для MAX ищем по max_chat_id сами.
-      const result = applyDriverStepFor(driver, stopId, phase);
-      if (result.text) maxSend(callbackChat, result.text, result.next
-        ? [[{ text: result.next.label, payload: `st|${result.next.stopId}|${result.next.phase}` }]] : null);
-      if (result.askEta) maxSend(callbackChat,
-        '🕐 Когда планируете прибыть на следующую точку? Прогноз увидит диспетчер.', [
-          [{ text: 'через 2 ч', payload: `eta|${result.askEta.stopId}|2` },
-           { text: 'через 4 ч', payload: `eta|${result.askEta.stopId}|4` }],
-          [{ text: 'через 6 ч', payload: `eta|${result.askEta.stopId}|6` },
-           { text: 'завтра', payload: `eta|${result.askEta.stopId}|14` }]]);
-    } else if (tag === 'eta') {
-      applyDriverEtaFor(driver, stopId, Number(phase),
-        (chat, text) => maxSend(callbackChat, text));
-    }
-    return;
-  }
-  if (type === 'message_created') {
-    // Контакт для привязки: вложение с телефоном (формат сверить по логу).
-    const attachments = message?.body?.attachments || message?.attachments || [];
-    const contact = attachments.find(a => a?.type === 'contact');
-    const phoneRaw = contact?.payload?.vcf_info || contact?.payload?.contact_phone
-      || contact?.phone || '';
-    const phoneDigits = digitsPhone(String(phoneRaw).replace(/TEL[^:]*:/i, ''));
-    if (contact && phoneDigits.length === 10) {
-      const driver = db.prepare(`SELECT * FROM drivers
-        WHERE status<>'fired' AND replace(replace(replace(replace(replace(COALESCE(phone,''),'+',''),' ',''),'-',''),'(',''),')','') LIKE ?
-        LIMIT 1`).get(`%${phoneDigits}`);
-      if (driver) {
-        db.prepare(`UPDATE drivers SET max_chat_id=? WHERE id=?`).run(chatId, driver.id);
-        audit(db, null, 'driver-max-link', 'driver', driver.id, { via: 'contact' }, 'driver-bot');
-        maxSend(chatId, `✅ Привязано: ${driver.full_name}. Сюда будут приходить задания на рейсы — этапы отмечайте кнопками.`);
-      } else {
-        maxSend(chatId, 'Номер не найден в справочнике водителей — обратитесь к диспетчеру.');
-      }
-      return;
-    }
-    const text = String(message?.body?.text || '').trim();
-    if (!text) return;
-    const driver = db.prepare(`SELECT * FROM drivers WHERE max_chat_id=?`).get(chatId);
-    if (!driver) {
-      await maxApi(`/messages?chat_id=${encodeURIComponent(chatId)}`, {
-        text: 'Нажмите кнопку, чтобы привязаться по номеру телефона.',
-        attachments: [{ type: 'inline_keyboard', payload: { buttons: [[
-          { type: 'request_contact', text: '📱 Поделиться контактом' }]] } }] });
-      return;
-    }
-    // Вопрос диспетчеру — та же механика, что в Telegram.
-    const activeTrip = db.prepare(`SELECT id FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
-      ORDER BY starts_at LIMIT 1`).get(driver.vehicle_id);
-    const questionId = randomUUID();
-    db.prepare(`INSERT INTO driver_questions(id,vehicle_id,trip_id,driver_name,phone,topic,note,opened_by)
-      VALUES(?,?,?,?,?,?,?,NULL)`).run(questionId, driver.vehicle_id, activeTrip?.id || null,
-      driver.full_name, driver.phone || '', 'other', `MAX: ${text.slice(0, 480)}`);
-    notify('dispatcher', `📱 Вопрос водителя из MAX (${driver.full_name}): «${text.slice(0, 200)}» — ответьте звонком или через карточку вопроса`,
-      'question', questionId, { category: 'driver_questions' });
-    maxSend(chatId, 'Передал диспетчеру — ответят в ближайшие минуты.');
-  }
-}
 
 // ── GPS-контроль рейсов (этап 3 мониторинга) ──
 // Принципы (утверждены руководителем 07.09): GPS никогда не пишет факты
@@ -3880,7 +3724,7 @@ function runGreenAssign() {
         // После отметки «внесено в 1С» задание уйдёт в бот само (см. шаг
         // entered_1c); у водителей без бота — голосом, как раньше.
         const driver = driverForTrip(db.prepare('SELECT * FROM trips WHERE id=?').get(tripId));
-        const botNote = driver && (driver.telegram_chat_id || driver.max_chat_id)
+        const botNote = driver && driver.telegram_chat_id
           ? 'после 1С задание уйдёт водителю в бот само'
           : '⚠ у водителя НЕТ бота — после 1С передайте задание голосом';
         notify('dispatcher', `🤖 Автоназначение (зелёный коридор): ${vehicle.plate} → заявка `
@@ -4526,7 +4370,7 @@ async function api(request, response, url) {
 
   // ── Мини-приложение водителя «Мой рейс»: состояние, шаги, прогноз ──
   // Публичные роуты со своей авторизацией (подпись initData Telegram);
-  // ядро шагов и ETA общее с ботами Telegram/MAX.
+  // ядро шагов и ETA общее с Telegram-ботом.
   if (request.method === 'POST' && pathname === '/api/driver-app/state') {
     const body = await readJson(request);
     const driver = driverAppAuth(body, response);
@@ -5437,16 +5281,6 @@ async function api(request, response, url) {
       trailers: db.prepare(`SELECT tp.*, v.plate owner_plate FROM trailer_positions tp
         LEFT JOIN vehicles v ON v.id=tp.vehicle_id`).all()
     });
-  }
-  // Вебхук MAX: секрет в пути (не зависит от способа передачи secret у MAX).
-  match = route(/^\/api\/max\/webhook\/([A-Za-z0-9]+)$/, pathname);
-  if (match && request.method === 'POST') {
-    if (match[0] !== maxWebhookSecret()) return errorJson(response, 403, 'нет');
-    const update = await readJson(request);
-    json(response, 200, { ok: true });
-    try { await processMaxDriverUpdate(update); }
-    catch (error) { console.error('webhook max:', error.message); }
-    return;
   }
   match = route(/^\/api\/telegram\/webhook\/(staff|driver)$/, pathname);
   if (match && request.method === 'POST') {
@@ -7582,7 +7416,7 @@ async function api(request, response, url) {
           const fresh = db.prepare('SELECT * FROM trips WHERE id=?').get(match[0]);
           if (fresh && !fresh.driver_notified_at) {
             const driver = driverForTrip(fresh);
-            if (driver && (driver.telegram_chat_id || driver.max_chat_id)) {
+            if (driver && driver.telegram_chat_id) {
               applyDispatchStep(db, match[0], 'driver_notified', user.id);
               sendDriverAssignment(match[0]);
               notify('dispatcher', `🤖 Задание водителю по рейсу ${routeText(fresh)} отправлено в бот автоматически (после 1С)`, 'trip', match[0]);
@@ -8518,7 +8352,7 @@ async function api(request, response, url) {
     // Изменение настроек Telegram может включать/выключать вебхуки.
     // Токен MAX живёт в том же блоке настроек: подписываем и его вебхук —
     // иначе внесённый токен ждал бы рестарта сервера (кейс 09.09).
-    if (body.telegram !== undefined) { syncTelegramWebhooks(); syncMaxWebhook(); }
+    if (body.telegram !== undefined) syncTelegramWebhooks();
     return json(response, 200, { ok: true });
   }
   if (request.method === 'PUT' && pathname === '/api/admin/reference') {
