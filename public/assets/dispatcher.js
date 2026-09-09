@@ -1259,6 +1259,20 @@ export async function renderDispatcher(container, context, options = {}) {
             <input name="fromPoint" value="${escapeHtml(order.from_point || '')}"></label>
           <label class="field" style="grid-column:1/-1">Пункт выгрузки
             <input name="toPoint" value="${escapeHtml(order.to_point || '')}"></label>
+        </div>
+        <div class="field" style="margin-top:4px"><b>Промежуточные точки</b>
+          <small class="muted" style="display:block">Доп. погрузки и выгрузки по рейсу —
+            добавляйте и убирайте по заявке клиента; стоянки рейса и километраж
+            пересчитаются сами (до 8 точек).</small>
+          <div id="corrViaChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0"></div>
+          <div style="display:flex;gap:6px">
+            <select id="corrViaKind" style="width:auto">
+              <option value="D">📥 выгрузка</option>
+              <option value="P">📦 погрузка</option>
+            </select>
+            <input id="corrViaPoint" placeholder="город, адрес точки" style="flex:1" autocomplete="off">
+            <button type="button" class="button ghost small" id="corrViaAdd">+ Точка</button>
+          </div>
         </div>` : '<p class="muted">Рейс без заявки — доступна только сумма.</p>'}
         <label class="field">Ставка с НДС, ₽
           <input name="rateVat" inputmode="numeric" value="${Math.round(Number(trip.revenue_vat || 0))}"></label>
@@ -1267,11 +1281,48 @@ export async function renderDispatcher(container, context, options = {}) {
           <button type="button" class="button ghost" id="sumAsIs">✓ Всё верно</button>
           <button class="button">Сохранить корректировки</button>
         </div></form>`);
+      // Редактор промежуточных точек: чипы с удалением, добавление новой.
+      // Итоговый список уходит PATCH'ем заявки — сервер пересчитает
+      // плановый километраж и пересоберёт стоянки рейса (syncTripStopsWithVia).
+      const originalVia = (() => { try { return JSON.parse(order?.via_json || '[]'); } catch { return []; } })();
+      let editVia = originalVia.map(item => ({ ...item }));
+      const redrawVia = () => {
+        const box = document.getElementById('corrViaChips');
+        if (!box) return;
+        box.innerHTML = editVia.map((item, index) => `<span class="via-chip">
+            ${item.kind === 'P' ? '📦' : '📥'} ${escapeHtml(String(item.point || '').slice(0, 34))}
+            <button type="button" data-corr-via-del="${index}" title="Убрать точку">×</button></span>`).join('')
+          || '<span class="muted">точек нет</span>';
+        box.querySelectorAll('[data-corr-via-del]').forEach(del =>
+          del.addEventListener('click', () => {
+            editVia.splice(Number(del.dataset.corrViaDel), 1);
+            redrawVia();
+          }));
+      };
+      if (order) {
+        redrawVia();
+        document.getElementById('corrViaAdd')?.addEventListener('click', () => {
+          const input = document.getElementById('corrViaPoint');
+          const point = String(input?.value || '').trim();
+          if (!point) { toast('Введите пункт точки', 'error'); return; }
+          if (editVia.length >= 8) { toast('Максимум 8 промежуточных точек', 'error'); return; }
+          editVia.push({ point, kind: document.getElementById('corrViaKind')?.value === 'P' ? 'P' : 'D',
+            addressId: null });
+          input.value = '';
+          redrawVia();
+        });
+      }
       const submit = async form => {
         const corrections = [];
         try {
           if (order && form) {
             const patch = {};
+            if (JSON.stringify(editVia) !== JSON.stringify(originalVia)) {
+              patch.via = editVia;
+              const was = originalVia.map(item => item.point).join(', ') || '—';
+              const now = editVia.map(item => item.point).join(', ') || '—';
+              corrections.push(`точки: [${was.slice(0, 60)}] → [${now.slice(0, 60)}]`);
+            }
             const windowFrom = form.get('windowFrom') ? new Date(form.get('windowFrom')).toISOString() : null;
             const windowTo = form.get('windowTo') ? new Date(form.get('windowTo')).toISOString() : null;
             if (windowFrom && windowFrom !== order.window_from) {
@@ -1314,7 +1365,13 @@ export async function renderDispatcher(container, context, options = {}) {
           await context.onReload();
         } catch (error) { toast(error.message, 'error'); }
       };
-      document.getElementById('sumAsIs').onclick = () => submit(null);
+      document.getElementById('sumAsIs').onclick = () => {
+        if (order && JSON.stringify(editVia) !== JSON.stringify(originalVia)) {
+          toast('Вы изменили точки — нажмите «Сохранить корректировки»', 'error');
+          return;
+        }
+        submit(null);
+      };
       document.getElementById('sumForm').onsubmit = event => {
         event.preventDefault();
         submit(new FormData(event.currentTarget));
