@@ -3500,7 +3500,10 @@ function runTrackerTrustWatch() {
         AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
       JOIN vehicle_positions p ON p.vehicle_id=t.vehicle_id
       WHERE t.status IN ('run','unloaded') AND s.actual_arrival IS NOT NULL
-        AND s.actual_arrival < datetime('now','-3 hours')`).all();
+        AND s.actual_arrival < datetime('now','-3 hours')
+        -- Только свежие случаи: древние незакрытые рейсы-зомби (август,
+        -- №1126+) — не про трекеры, их ловит инвентаризация.
+        AND s.actual_arrival > datetime('now','-7 days')`).all();
     for (const row of rows) {
       const fixMs = row.fixed_at ? Date.parse(row.fixed_at) : 0;
       if (!fixMs || Date.now() - fixMs > GPS_FRESH_MS) continue;
