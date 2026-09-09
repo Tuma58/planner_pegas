@@ -5615,9 +5615,12 @@ async function api(request, response, url) {
   }
   match = route(/^\/api\/orders\/([^/]+)$/, pathname);
   if (match && request.method === 'PATCH') {
-    // Отклонять заявку могут и продажи, и логисты — отказ возможен с обеих сторон процесса.
+    // Отклонять заявку могут и продажи, и логисты; диспетчер правит окно,
+    // пункты и ставку через «Корректировку заказа» (решение руководителя
+    // 09.09: от продаж проскальзывают неверные время/адреса/суммы).
     const actor = currentUser(request);
-    const permission = hasPermission(actor, 'orders:write') ? 'orders:write' : 'trips:write';
+    const permission = hasPermission(actor, 'orders:write') ? 'orders:write'
+      : hasPermission(actor, 'trips:write') ? 'trips:write' : 'trip-status:write';
     const user = requirePermission(request, response, permission);
     if (!user) return;
     const body = await readJson(request);
@@ -7431,9 +7434,18 @@ async function api(request, response, url) {
         `(${trip.plate}) уточнена диспетчером: было ${Math.round(oldSum).toLocaleString('ru-RU')} ₽ → ` +
         `стало ${Math.round(newSum).toLocaleString('ru-RU')} ₽ (${user.full_name})`);
     }
+    // «Корректировка заказа»: диспетчер исправил и время/адреса — продажи
+    // получают список правок, чтобы вносить верные данные с первого раза.
+    const corrections = Array.isArray(body.corrections)
+      ? body.corrections.map(item => String(item).slice(0, 120)).slice(0, 8) : [];
+    if (corrections.length) {
+      notify('sales', `✏ Корректировка заказа ${trip.order_no ? `№ ${trip.order_no} ` : ''}` +
+        `(${trip.plate}) диспетчером ${user.full_name}: ${corrections.join('; ')}. ` +
+        `Проверьте источник заявки — данные должны приходить верными с первого раза`);
+    }
     db.prepare(`UPDATE trips SET sum_confirmed_at=CURRENT_TIMESTAMP,sum_confirmed_by=? WHERE id=?`)
       .run(user.full_name || user.username, match[0]);
-    audit(db, user, 'confirm-sum', 'trip', match[0], { oldSum, newSum });
+    audit(db, user, 'confirm-sum', 'trip', match[0], { oldSum, newSum, corrections });
     return json(response, 200, { ok: true, sum: newSum });
   }
 

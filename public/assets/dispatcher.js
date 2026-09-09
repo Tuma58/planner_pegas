@@ -694,15 +694,15 @@ export async function renderDispatcher(container, context, options = {}) {
   // «Уточнить сумму», после сверки показывает, кто и какую подтвердил.
   const sumLine = trip => {
     if (trip.sum_confirmed_at) {
-      return `<div class="sum-line ok">✓ Сумма ${money(trip.revenue_vat)} уточнена по заявке клиента
+      return `<div class="sum-line ok">✓ Заказ сверен: ${money(trip.revenue_vat)}
         · ${escapeHtml(trip.sum_confirmed_by || '')}
         ${canAct ? `<button class="button ghost small" data-confirm-sum="${trip.id}"
-          title="Поправить сумму ещё раз">✎</button>` : ''}</div>`;
+          title="Открыть корректировку ещё раз: сумма, окно, пункты">✎</button>` : ''}</div>`;
     }
     return `<div class="sum-line warn">💰 ${money(trip.revenue_vat)} — предварительно.
       ${canAct ? `<button class="button small" data-confirm-sum="${trip.id}"
-        title="Сверить ставку с заявкой клиента: подтвердить или внести точную — до внесения заказа в учётную систему">Уточнить сумму по заявке клиента</button>`
-      : '<b>Уточнить сумму по заявке клиента</b> (диспетчер)'}</div>`;
+        title="Сверить заказ с заявкой клиента: сумма, окно погрузки, пункты — от продаж данные иногда приходят неточными; в 1С должно уйти верное">✏ Корректировка заказа</button>`
+      : '<b>✏ Корректировка заказа</b> (диспетчер)'}</div>`;
   };
   // Данные водителя и ТС грузоотправителю: без них машину не пускают на
   // погрузку. Отметка параллельная — чек-лист не блокирует (урок отменённого
@@ -1223,33 +1223,87 @@ export async function renderDispatcher(container, context, options = {}) {
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.confirmSum);
       if (!trip) return;
+      // «Корректировка заказа» (09.09): от продаж проскальзывают неверные
+      // время, адреса и суммы — диспетчер сверяет заказ с заявкой клиента
+      // целиком. Окно и пункты уходят PATCH'ем заявки (каскад: рейс,
+      // стоянки, умный транзит), сумма — прежним confirm-sum; продажи
+      // получают список правок.
+      const order = (data.orders || []).find(item => item.id === trip.order_id) || null;
+      const toLocal = iso => iso ? toLocalInput(iso) : '';
       context.showModal(`<form id="sumForm">
-        <h2>💰 Сумма по заявке клиента</h2>
+        <h2>✏ Корректировка заказа</h2>
         <p class="muted">${escapeHtml(trip.vehicle_plate)} · ${escapeHtml(trip.customer_name || '')}
           ${trip.order_no ? `· № ${escapeHtml(trip.order_no)}` : ''}<br>
-          Сверьте ставку с заявкой клиента — в учётную систему должна попасть точная сумма.</p>
+          Сверьте с заявкой клиента: время, пункты, сумму — в учётную систему
+          должны попасть точные данные.</p>
+        ${order ? `<div class="form-grid" style="grid-template-columns:1fr 1fr">
+          <label class="field">Погрузка с
+            <input type="datetime-local" name="windowFrom" value="${toLocal(order.window_from)}"></label>
+          <label class="field">Погрузка по
+            <input type="datetime-local" name="windowTo" value="${toLocal(order.window_to)}"></label>
+          <label class="field" style="grid-column:1/-1">Пункт погрузки
+            <input name="fromPoint" value="${escapeHtml(order.from_point || '')}"></label>
+          <label class="field" style="grid-column:1/-1">Пункт выгрузки
+            <input name="toPoint" value="${escapeHtml(order.to_point || '')}"></label>
+        </div>` : '<p class="muted">Рейс без заявки — доступна только сумма.</p>'}
         <label class="field">Ставка с НДС, ₽
           <input name="rateVat" inputmode="numeric" value="${Math.round(Number(trip.revenue_vat || 0))}"></label>
         <div class="modal-actions">
           <button type="button" class="button ghost" data-close>Отмена</button>
-          <button type="button" class="button ghost" id="sumAsIs">✓ Сумма верна</button>
-          <button class="button">Сохранить точную</button>
+          <button type="button" class="button ghost" id="sumAsIs">✓ Всё верно</button>
+          <button class="button">Сохранить корректировки</button>
         </div></form>`);
-      const submitSum = async rateVat => {
+      const submit = async form => {
+        const corrections = [];
         try {
+          if (order && form) {
+            const patch = {};
+            const windowFrom = form.get('windowFrom') ? new Date(form.get('windowFrom')).toISOString() : null;
+            const windowTo = form.get('windowTo') ? new Date(form.get('windowTo')).toISOString() : null;
+            if (windowFrom && windowFrom !== order.window_from) {
+              patch.windowFrom = windowFrom;
+              corrections.push(`окно с: ${formatDateTime(order.window_from)} → ${formatDateTime(windowFrom)}`);
+            }
+            if (windowTo && windowTo !== order.window_to) {
+              patch.windowTo = windowTo;
+              corrections.push(`окно по: ${formatDateTime(order.window_to)} → ${formatDateTime(windowTo)}`);
+            }
+            const fromPoint = String(form.get('fromPoint') || '').trim();
+            const toPoint = String(form.get('toPoint') || '').trim();
+            if (fromPoint && fromPoint !== (order.from_point || '')) {
+              patch.fromPoint = fromPoint;
+              corrections.push(`пункт погрузки: «${(order.from_point || '—').slice(0, 30)}» → «${fromPoint.slice(0, 30)}»`);
+            }
+            if (toPoint && toPoint !== (order.to_point || '')) {
+              patch.toPoint = toPoint;
+              corrections.push(`пункт выгрузки: «${(order.to_point || '—').slice(0, 30)}» → «${toPoint.slice(0, 30)}»`);
+            }
+            if (Object.keys(patch).length) {
+              await api(`/api/orders/${order.id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+            }
+          }
+          let rateVat;
+          if (form) {
+            const value = parseMoney(form.get('rateVat'));
+            if (value && Math.round(value) !== Math.round(Number(trip.revenue_vat || 0))) {
+              rateVat = value;
+              corrections.push(`сумма: ${Math.round(trip.revenue_vat)} → ${Math.round(value)} ₽`);
+            }
+          }
           await api(`/api/trips/${trip.id}/confirm-sum`, { method: 'POST',
-            body: JSON.stringify(rateVat === undefined ? {} : { rateVat }) });
+            body: JSON.stringify({ ...(rateVat !== undefined ? { rateVat } : {}),
+              ...(corrections.length ? { corrections } : {}) }) });
           context.closeModal();
-          toast('Сумма уточнена по заявке клиента');
+          toast(corrections.length
+            ? `Заказ скорректирован (${corrections.length}) — продажи уведомлены`
+            : 'Заказ сверен — всё верно');
           await context.onReload();
         } catch (error) { toast(error.message, 'error'); }
       };
-      document.getElementById('sumAsIs').onclick = () => submitSum();
+      document.getElementById('sumAsIs').onclick = () => submit(null);
       document.getElementById('sumForm').onsubmit = event => {
         event.preventDefault();
-        const value = parseMoney(new FormData(event.currentTarget).get('rateVat'));
-        if (!value) { toast('Введите сумму — или нажмите «Сумма верна»', 'error'); return; }
-        submitSum(value);
+        submit(new FormData(event.currentTarget));
       };
     }));
 
