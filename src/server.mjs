@@ -8454,7 +8454,9 @@ async function api(request, response, url) {
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));
     // Изменение настроек Telegram может включать/выключать вебхуки.
-    if (body.telegram !== undefined) syncTelegramWebhooks();
+    // Токен MAX живёт в том же блоке настроек: подписываем и его вебхук —
+    // иначе внесённый токен ждал бы рестарта сервера (кейс 09.09).
+    if (body.telegram !== undefined) { syncTelegramWebhooks(); syncMaxWebhook(); }
     return json(response, 200, { ok: true });
   }
   if (request.method === 'PUT' && pathname === '/api/admin/reference') {
