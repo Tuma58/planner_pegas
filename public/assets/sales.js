@@ -1960,6 +1960,14 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
       <input id="assignVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off">
       <select id="assignVehicle" style="margin-top:4px">
       ${workFleet.map(vehicle => `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)} · ${escapeHtml(vehicle.driver_name || 'без водителя')}</option>`).join('')}
+      ${(() => {
+    // Машины вне статуса «в работе» видны в поиске с причиной, но не
+    // выбираются: раньше поиск «875» отвечал «ничего не найдено», и
+    // диспетчер думал, что система сломана, — а т875ат58 была в ремонте.
+    const STATUS_LABEL = { repair: '⛔ в ремонте', no_driver: '⛔ без водителя', out: '⛔ выведена из парка' };
+    return data.vehicles.filter(vehicle => vehicle.status !== 'work')
+      .map(vehicle => `<option value="" disabled>${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.type_name)} · ${STATUS_LABEL[vehicle.status] || '⛔ недоступна'} — назначить нельзя, статус меняется в «Ресурсе»</option>`).join('');
+  })()}
     </select></label>
     <div id="assignNext"></div>
     <div class="modal-actions">
