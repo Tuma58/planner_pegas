@@ -2343,10 +2343,55 @@ function tripFactKm(vehicleId, startsIso, finIso) {
     .get(vehicleId, fromDay, toDay);
   return fact?.km && fact.days >= calendarDays ? fact.km : null;
 }
+function plannedKmFor(fromAddressId, toAddressId, via = []) {
+  if (!fromAddressId || !toAddressId) return null;
+  const point = db.prepare('SELECT latitude,longitude FROM addresses WHERE id=?');
+  // Прямое плечо, по которому уже есть чистые факты — берём медиану
+  // реальных пробегов: точнее любой формулы. НО с дорожной физикой:
+  // медиана обязана лежать в коридоре прямая×1,05…×1,65 — календарные
+  // дни факта иногда цепляют чужие перегоны и раздувают медиану (кейс
+  // 10.09: Пенза→Москва 1 055 км при прямой ~557 — принималось молча).
+  if (!via.length) {
+    const leg = db.prepare(`SELECT median_km FROM leg_fact_km WHERE key=? AND samples>=2`)
+      .get(legKey(fromAddressId, toAddressId));
+    if (leg) {
+      const a = point.get(fromAddressId);
+      const b = point.get(toAddressId);
+      const straight = a && b
+        ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
+      if (!straight || straight < 30 ||
+          (leg.median_km >= straight * 1.05 && leg.median_km <= straight * 1.65)) {
+        return leg.median_km;
+      }
+      // Медиана вне физики дороги — падаем на прямую×коэффициент ниже.
+    }
+  }
+  const chain = [point.get(fromAddressId),
+    ...via.map(item => item.addressId ? point.get(item.addressId) : null).filter(Boolean),
+    point.get(toAddressId)].filter(Boolean);
+  if (chain.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < chain.length; i += 1) {
+    const leg = straightKm(chain[i - 1].latitude, chain[i - 1].longitude,
+      chain[i].latitude, chain[i].longitude);
+    if (leg == null) return null;
+    total += leg;
+  }
+  // Дорожный коэффициент калибруется фактом парка (медиана факт/прямая).
+  return Math.round(total * calibratedRoadFactor());
+}
+
 // Ночью: пересборка справочника плеч и калибровка коэффициента по чистым
 // рейсам за 60 дней; затем разовая миграция сентябрьских плановых км.
 function rebuildLegFacts() {
   try {
+    // Чистый рейс (перепроект 10.09 после кейса «Пенза→Москва 1 055 км»):
+    // факт-км считается по КАЛЕНДАРНЫМ дням, поэтому в выборку идут только
+    // рейсы с ЭКСКЛЮЗИВНЫМИ днями — в те же даты у машины нет других рейсов
+    // и перегонов, иначе чужие километры раздувают медиану плеча. Прежний
+    // порог «36 ч+» после умного транзита втянул короткие плечи с грязными
+    // днями и запустил порочный круг: план ↑ → длительность ↑ → грязных
+    // «чистых» больше → план ещё ↑. Теперь порог 20 ч + эксклюзивность.
     const clean = [];
     for (const trip of db.prepare(`SELECT t.vehicle_id, t.starts_at,
         COALESCE(t.unloaded_at, t.ends_at) fin, o.from_address_id, o.to_address_id, o.via_json
@@ -2354,9 +2399,17 @@ function rebuildLegFacts() {
       JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
       WHERE t.status IN ('unloaded','done','paid')
         AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-60 days')
-        AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 36
+        AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 20
         AND o.from_address_id IS NOT NULL AND o.to_address_id IS NOT NULL
-        AND COALESCE(o.via_json, '[]') = '[]'`).all()) {
+        AND COALESCE(o.via_json, '[]') = '[]'
+        AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.vehicle_id=t.vehicle_id AND x.id<>t.id
+          AND x.status<>'rejected'
+          AND date(x.starts_at) <= date(COALESCE(t.unloaded_at, t.ends_at))
+          AND date(COALESCE(x.unloaded_at, x.ends_at)) >= date(t.starts_at))
+        AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions dd WHERE dd.vehicle_id=t.vehicle_id
+          AND dd.kind='transfer'
+          AND date(dd.starts_at) <= date(COALESCE(t.unloaded_at, t.ends_at))
+          AND date(dd.ends_at) >= date(t.starts_at))`).all()) {
       const fact = tripFactKm(trip.vehicle_id, trip.starts_at, trip.fin);
       if (!fact || fact < 100) continue;
       clean.push({ key: legKey(trip.from_address_id, trip.to_address_id),
@@ -2367,14 +2420,32 @@ function rebuildLegFacts() {
       if (!byKey.has(row.key)) byKey.set(row.key, []);
       byKey.get(row.key).push(row.fact);
     }
+    // Пер-плечо санити при записи: медиана обязана лежать в коридоре
+    // прямая×1,05…×1,65. Вне коридора — плечо гасится (samples=0, часы
+    // остаются), plannedKmFor уходит на прямую×коэффициент.
+    const addrPoint = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+    const pairByKey = new Map(clean.map(row => [row.key, row]));
     const upsert = db.prepare(`INSERT INTO leg_fact_km(key,samples,median_km,updated_at)
       VALUES(?,?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(key) DO UPDATE SET samples=excluded.samples,
         median_km=excluded.median_km, updated_at=CURRENT_TIMESTAMP`);
+    let rejectedLegs = 0;
     for (const [key, facts] of byKey) {
       facts.sort((a, b) => a - b);
-      upsert.run(key, facts.length, Math.round(facts[Math.floor(facts.length / 2)]));
+      const medianKm = Math.round(facts[Math.floor(facts.length / 2)]);
+      const pair = pairByKey.get(key);
+      const a = pair && addrPoint.get(pair.from);
+      const b = pair && addrPoint.get(pair.to);
+      const straight = a && b ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
+      if (straight && straight >= 30 &&
+          (medianKm < straight * 1.05 || medianKm > straight * 1.65)) {
+        upsert.run(key, 0, 0);
+        rejectedLegs += 1;
+        continue;
+      }
+      upsert.run(key, facts.length, medianKm);
     }
+    if (rejectedLegs) console.log(`rebuildLegFacts: отвергнуто плеч вне физики дороги: ${rejectedLegs}`);
     // Калибровка дорожного коэффициента: по МЕДИАНАМ плеч справочника
     // (2+ примера) против их прямых — одиночные рейсы загрязнены краевыми
     // днями цепочки и завышали коэффициент (первая калибровка дала 1,55).
@@ -2397,6 +2468,7 @@ function rebuildLegFacts() {
     } else console.log(`rebuildLegFacts: плеч ${byKey.size}, мало данных для калибровки (${ratios.length})`);
     rebuildTransitFacts();
     recalcSeptemberKm();
+    sanitizeInflatedKm();
   } catch (error) { console.error('rebuildLegFacts:', error.message); }
 }
 
@@ -2502,6 +2574,38 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
   const unloadH = gateFactHours('unload', order.to_address_id, order.customer_name) ?? perOp;
   return loadH + legRow.h + unloadH + viaOps * perOp;
 }
+// Лечение раздутых планов (кейс 10.09, «Пенза→Москва 1 055 км»): активные
+// и будущие рейсы, чей план выбился из дорожной физики (> прямая×1,7),
+// пересчитываются заново — plannedKmFor уже защищён коридором и вернёт
+// здоровое значение. Повторный прогон безвреден (идемпотентно по условию).
+function sanitizeInflatedKm() {
+  try {
+    const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+    let updated = 0;
+    for (const trip of db.prepare(`SELECT t.id, t.order_id, t.distance_km, t.order_no,
+        o.from_address_id fa, o.to_address_id ta, o.via_json
+      FROM trips t JOIN orders o ON o.id=t.order_id
+      WHERE t.status IN ('plan','run')
+        AND o.from_address_id IS NOT NULL AND o.to_address_id IS NOT NULL
+        AND COALESCE(o.via_json,'[]')='[]' AND t.distance_km > 0`).all()) {
+      const a = point.get(trip.fa);
+      const b = point.get(trip.ta);
+      if (!a?.latitude || !b?.latitude) continue;
+      const straight = straightKm(a.latitude, a.longitude, b.latitude, b.longitude);
+      if (!straight || straight < 30 || trip.distance_km <= straight * 1.7) continue;
+      const next = plannedKmFor(trip.fa, trip.ta, []);
+      if (!next || Math.abs(next - trip.distance_km) / trip.distance_km <= 0.05) continue;
+      db.prepare(`UPDATE trips SET distance_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(next, trip.id);
+      db.prepare(`UPDATE orders SET planned_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(next, trip.order_id);
+      console.log(`  км-санация №${trip.order_no || trip.id.slice(0, 8)}: ${Math.round(trip.distance_km)} → ${next}`);
+      updated += 1;
+    }
+    if (updated) console.log(`sanitizeInflatedKm: вылечено рейсов ${updated}`);
+  } catch (error) { console.error('sanitizeInflatedKm:', error.message); }
+}
+
 // Разовая миграция: пересчёт плановых км сентябрьских рейсов и заявок
 // новой логикой (плечо из факта → прямая × калиброванный коэффициент);
 // правка при отличии > 10%. Помечается в app_meta.
@@ -5251,30 +5355,6 @@ async function api(request, response, url) {
   // Плановый километраж заявки: цепочка погрузка → промежуточные → выгрузка
   // по координатам справочника (точки без адреса пропускаются в километраже,
   // но считаются грузовой операцией в транзитном времени).
-  function plannedKmFor(fromAddressId, toAddressId, via = []) {
-    if (!fromAddressId || !toAddressId) return null;
-    // Прямое плечо, по которому уже есть чистые факты — берём медиану
-    // реальных пробегов: точнее любой формулы.
-    if (!via.length) {
-      const leg = db.prepare(`SELECT median_km FROM leg_fact_km WHERE key=? AND samples>=2`)
-        .get(legKey(fromAddressId, toAddressId));
-      if (leg) return leg.median_km;
-    }
-    const point = db.prepare('SELECT latitude,longitude FROM addresses WHERE id=?');
-    const chain = [point.get(fromAddressId),
-      ...via.map(item => item.addressId ? point.get(item.addressId) : null).filter(Boolean),
-      point.get(toAddressId)].filter(Boolean);
-    if (chain.length < 2) return null;
-    let total = 0;
-    for (let i = 1; i < chain.length; i += 1) {
-      const leg = straightKm(chain[i - 1].latitude, chain[i - 1].longitude,
-        chain[i].latitude, chain[i].longitude);
-      if (leg == null) return null;
-      total += leg;
-    }
-    // Дорожный коэффициент калибруется фактом парка (медиана факт/прямая).
-    return Math.round(total * calibratedRoadFactor());
-  }
 
   // Telegram: одноразовый код привязки чата и смена режима уведомлений.
   // Вебхуки Telegram: push-доставка обновлений обоих ботов. Аутентификация
