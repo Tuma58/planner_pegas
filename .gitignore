@@ -7,3 +7,4 @@ data/local/
 node_modules/
 .DS_Store
 .claude/
+*.bundle
