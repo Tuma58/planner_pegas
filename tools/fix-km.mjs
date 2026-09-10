@@ -4,7 +4,7 @@
 // Делает ровно то, что ночная санация нового кода:
 //   1) плечи справочника с медианой вне прямая×1,05…×1,65 — гасятся
 //      (samples=0; часы транзита не трогаются);
-//   2) активные/будущие рейсы с планом > прямая×1,7 получают здоровый
+//   2) активные/будущие рейсы с планом > прямая×1,65 получают здоровый
 //      план: медиана валидного плеча, иначе прямая×коэффициент (1,43).
 // Идемпотентно: повторный запуск ничего не меняет.
 import { DatabaseSync } from 'node:sqlite';
@@ -41,7 +41,7 @@ for (const trip of db.prepare(`SELECT t.id, t.order_id, t.order_no, t.distance_k
   const a = point.get(trip.fa); const b = point.get(trip.ta);
   if (!a?.latitude || !b?.latitude) continue;
   const line = straight(a.latitude, a.longitude, b.latitude, b.longitude);
-  if (line < 30 || trip.distance_km <= line * 1.7) continue;
+  if (line < 30 || trip.distance_km <= line * 1.65) continue;
   const key = [trip.fa, trip.ta].sort().join('|');
   const leg = db.prepare(`SELECT median_km FROM leg_fact_km WHERE key=? AND samples>=2`).get(key);
   const clean = leg && leg.median_km >= line * 1.05 && leg.median_km <= line * 1.65

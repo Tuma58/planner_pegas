@@ -2581,6 +2581,23 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
 function sanitizeInflatedKm() {
   try {
     const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+    // Заявка без привязанного адреса (продажи ввели пункт текстом) не
+    // проходит проверку физики вовсе — кейс №3167/3165: план 1 060–1 252 км
+    // на Пензу→Москву. Точное совпадение текста пункта с именем адреса
+    // справочника — безопасная автопривязка.
+    const byName = db.prepare(`SELECT id FROM addresses
+      WHERE name=? AND latitude IS NOT NULL LIMIT 1`);
+    for (const order of db.prepare(`SELECT o.id, o.from_address_id, o.to_address_id,
+        o.from_point, o.to_point FROM orders o JOIN trips t ON t.id=o.trip_id
+      WHERE t.status IN ('plan','run')
+        AND (o.from_address_id IS NULL OR o.to_address_id IS NULL)`).all()) {
+      const fa = order.from_address_id || byName.get(String(order.from_point || '').trim())?.id || null;
+      const ta = order.to_address_id || byName.get(String(order.to_point || '').trim())?.id || null;
+      if (fa !== order.from_address_id || ta !== order.to_address_id) {
+        db.prepare(`UPDATE orders SET from_address_id=?, to_address_id=?,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(fa, ta, order.id);
+      }
+    }
     let updated = 0;
     for (const trip of db.prepare(`SELECT t.id, t.order_id, t.distance_km, t.order_no,
         o.from_address_id fa, o.to_address_id ta, o.via_json
@@ -2592,7 +2609,9 @@ function sanitizeInflatedKm() {
       const b = point.get(trip.ta);
       if (!a?.latitude || !b?.latitude) continue;
       const straight = straightKm(a.latitude, a.longitude, b.latitude, b.longitude);
-      if (!straight || straight < 30 || trip.distance_km <= straight * 1.7) continue;
+      // Порог единый с коридором физики (×1,65): 1,7 упускал случаи «на
+      // грани» (№3187: 989 км при прямой ~590).
+      if (!straight || straight < 30 || trip.distance_km <= straight * 1.65) continue;
       const next = plannedKmFor(trip.fa, trip.ta, []);
       if (!next || Math.abs(next - trip.distance_km) / trip.distance_km <= 0.05) continue;
       db.prepare(`UPDATE trips SET distance_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)

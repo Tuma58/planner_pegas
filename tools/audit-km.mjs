@@ -2,7 +2,7 @@
 // 1 055 км»). Запуск на сервере:
 //   docker exec -i pegas-planner-planner-1 node --input-type=module - < tools/audit-km.mjs
 // Показывает: (1) все плечи справочника с медианой вне физики дороги
-// (прямая×1,05…×1,65); (2) все активные/будущие рейсы с планом > прямая×1,7.
+// (прямая×1,05…×1,65); (2) все активные/будущие рейсы с планом > прямая×1,65.
 import { DatabaseSync } from 'node:sqlite';
 const db = new DatabaseSync(process.env.DATABASE_PATH, { readOnly: true });
 const straight = (a, b, c, d) => { const r = v => v * Math.PI / 180;
@@ -26,7 +26,7 @@ for (const leg of db.prepare(`SELECT key, samples, median_km FROM leg_fact_km
 }
 console.log(`плеч вне физики: ${badLegs}`);
 
-console.log('\n=== 2. АКТИВНЫЕ/БУДУЩИЕ РЕЙСЫ С РАЗДУТЫМ ПЛАНОМ (> прямая×1,7) ===');
+console.log('\n=== 2. АКТИВНЫЕ/БУДУЩИЕ РЕЙСЫ С РАЗДУТЫМ ПЛАНОМ (> прямая×1,65) ===');
 let badTrips = 0; let kmExcess = 0;
 for (const trip of db.prepare(`SELECT t.order_no, t.distance_km, t.starts_at, t.status,
     v.plate, o.from_address_id fa, o.to_address_id ta, o.customer_name
@@ -37,7 +37,7 @@ for (const trip of db.prepare(`SELECT t.order_no, t.distance_km, t.starts_at, t.
   const a = point.get(trip.fa); const b = point.get(trip.ta);
   if (!a?.latitude || !b?.latitude) continue;
   const line = straight(a.latitude, a.longitude, b.latitude, b.longitude);
-  if (line < 30 || trip.distance_km <= line * 1.7) continue;
+  if (line < 30 || trip.distance_km <= line * 1.65) continue;
   badTrips += 1;
   const healthy = Math.round(line * 1.25);
   kmExcess += trip.distance_km - healthy;
