@@ -23,9 +23,13 @@
 
 задача → код → `node --test` (все зелёные) → правка гайда + `updated` →
 коммит (русское сообщение, трейлер Co-Authored-By Claude) → push в main →
-деплой: `ssh root@91.144.178.239 'cd /opt/pegas-planner && git pull
---ff-only && docker compose up -d --build'` → проверить `git log -1`
-на VPS (DNS github.com там падает — pull может молча не пройти) и статус
+деплой: ОСНОВНОЙ путь — внутренний адрес (решение руководителя 10.09):
+`ssh root@100.100.10.77 'cd /opt/pegas-planner && git pull --ff-only &&
+bash /tmp/deploy-pegas.sh'` (нужен маршрут с мака:
+`sudo route -n add -net 100.100.10.0/24 172.15.35.1`; фолбэк — внешний
+91.144.178.239, когда канал хостера жив) → проверить `git log -1` на VPS
+(DNS github.com там падает — pull молча не проходит: git bundle через
+scp, НЕ `git -C` из чужого cwd — bundle ляжет в репо) и статус
 контейнера «Up N seconds» (up --build иногда не перезапускает) →
 прод-проверка в браузере → обновить память проекта.
 
