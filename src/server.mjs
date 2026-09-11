@@ -2092,7 +2092,17 @@ async function collectTripGpsKm() {
       const answer = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${trip.imei}` +
         `&ts=${Math.floor(fromMs / 1000)}&te=${Math.floor(toMs / 1000)}`);
       await new Promise(resolve => setTimeout(resolve, 160));
-      const delta = Number(answer?.points?.stop_odo) - Number(answer?.points?.start_odo);
+      let delta = Number(answer?.points?.stop_odo) - Number(answer?.points?.start_odo);
+      if (!Number.isFinite(delta) || delta < 30 || delta > 6000) {
+        // CAN молчит — уровень 2 лестницы: GPS-трек за тот же интервал
+        // (сумма километров сегментов /vehicles/trips).
+        const segs = await pilotApi(`/api/v3/vehicles/trips?imei=${trip.imei}` +
+          `&ts=${Math.floor(fromMs / 1000)}&te=${Math.floor(toMs / 1000)}`);
+        await new Promise(resolve => setTimeout(resolve, 160));
+        const list = segs?.data?.trips || segs?.data || [];
+        delta = Array.isArray(list)
+          ? list.reduce((sum, seg) => sum + (Number(seg.gps) || 0), 0) : NaN;
+      }
       if (!Number.isFinite(delta) || delta < 30 || delta > 6000) { skipped += 1; continue; }
       // Санити против прямой: одометр не бывает меньше прямой и не втрое больше.
       const a = trip.fa ? addrXY.get(trip.fa) : null;
