@@ -8080,6 +8080,45 @@ async function api(request, response, url) {
     // упрощений (без дома → первые два сегмента), часть добьётся.
     fixed.geocodeRetries = db.prepare(`UPDATE addresses SET geocode_try_at=NULL
       WHERE latitude IS NULL AND geocode_try_at IS NOT NULL`).run().changes;
+    // Написание прицепов — к канону «АО 6753 58» (регистр, пробелы):
+    // разнобой прятал дубли (кейс АО 6753 58) и ломал точную проверку
+    // занятости прицепа при редактировании ТС.
+    fixed.trailerPlatesNormalized = 0;
+    for (const vehicle of db.prepare(`SELECT id, trailer_plate FROM vehicles
+      WHERE COALESCE(trailer_plate,'')<>''`).all()) {
+      const canon = vehicle.trailer_plate.toUpperCase().replace(/\s+/g, ' ').trim();
+      if (canon === vehicle.trailer_plate) continue;
+      db.prepare(`UPDATE vehicles SET trailer_plate=? WHERE id=?`).run(canon, vehicle.id);
+      fixed.trailerPlatesNormalized += 1;
+    }
+    // Телефоны водителей — к формату +7XXXXXXXXXX: звонилка и связки
+    // набирают без ручной чистки. Непонятные номера не трогаем.
+    fixed.phonesNormalized = 0;
+    for (const driver of db.prepare(`SELECT id, phone FROM drivers
+      WHERE COALESCE(phone,'')<>''`).all()) {
+      const digits = driver.phone.replace(/\D/g, '');
+      const canon = digits.length === 11 && (digits[0] === '8' || digits[0] === '7')
+        ? `+7${digits.slice(1)}`
+        : digits.length === 10 && digits[0] === '9' ? `+7${digits}` : null;
+      if (!canon || canon === driver.phone) continue;
+      db.prepare(`UPDATE drivers SET phone=? WHERE id=?`).run(canon, driver.id);
+      fixed.phonesNormalized += 1;
+    }
+    // Имена клиентов: хвостовые и двойные пробелы разрывают связки
+    // (сегменты, ворота, сверки) — сводим к одному написанию.
+    fixed.customerNamesTrimmed = 0;
+    for (const table of ['trips', 'orders']) {
+      for (const row of db.prepare(`SELECT id, customer_name FROM ${table}
+        WHERE customer_name<>TRIM(customer_name) OR customer_name LIKE '%  %'`).all()) {
+        db.prepare(`UPDATE ${table} SET customer_name=? WHERE id=?`)
+          .run(row.customer_name.replace(/\s+/g, ' ').trim(), row.id);
+        fixed.customerNamesTrimmed += 1;
+      }
+    }
+    // Статус отстал от факта: «выгружен» проставлен человеком, рейс
+    // всё ещё числится «в пути» — статус догоняет факт.
+    fixed.staleRunClosed = db.prepare(`UPDATE trips SET status='unloaded'
+      WHERE status='run' AND unloaded_at IS NOT NULL`).run().changes;
     audit(db, user, 'inventory-fix', 'system', null, fixed, requestIp(request));
     return json(response, 200, { ok: true, fixed });
   }
@@ -8286,7 +8325,7 @@ async function api(request, response, url) {
               AND starts_at <= datetime('now') AND ends_at > datetime('now')`).get(row.id);
           return { label: row.plate, vehicleId: row.id,
             sub: `${doc.what} ${String(doc.fin).slice(0, 10)} · GPS в ${Math.round(gap)} км от неё`
-              + (noDriver ? ' · машина БЕЗ ВОДИТЕЛЯ — похоже, сбита привязка трекера' : '') };
+              + (noDriver ? ' · машина БЕЗ ВОДИТЕЛЯ — перезагрузите трекер' : '') };
         })
         .filter(Boolean));
     // Водители

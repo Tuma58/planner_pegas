@@ -39,7 +39,7 @@ export async function inventoryDialog(context, scope = 'resource') {
     <p class="muted" style="margin:0 0 10px">Снимок на ${new Date(snapshot.generatedAt).toLocaleString('ru-RU')}.
       Всего находок: <strong>${snapshot.total}</strong>. Клик по госномеру — карточка ТС.</p>
     <p style="margin:0 0 10px"><button class="button small" id="invAutoFix"
-      title="Чинит то, что не требует решения человека: хвостовые пробелы в закреплениях, уволенных в карточках ТС, пустые геозоны адресов; негеокоженные адреса отправляет геокодеру на новый круг с упрощением запроса">⚙ Исправить автоматически</button></p>
+      title="Чинит то, что не требует решения человека: пробелы в закреплениях и именах клиентов, уволенных в карточках ТС, пустые геозоны, написание прицепов, телефоны водителей к +7, статусы, отставшие от факта выгрузки; негеокоженные адреса — геокодеру на новый круг">⚙ Исправить автоматически</button></p>
     ${problem.map(sectionHtml).join('')}
     ${clean.length ? `<details class="inv-section"><summary style="cursor:pointer;padding:6px 0" class="muted">
       ✅ Без замечаний: ${clean.length} провер${clean.length === 1 ? 'ка' : 'ок'}</summary>
@@ -65,7 +65,11 @@ export async function inventoryDialog(context, scope = 'resource') {
         f.firedUnlinked && `отвязано уволенных: ${f.firedUnlinked}`,
         f.firedNamesCleared && `очищено карточек ТС от уволенных: ${f.firedNamesCleared}`,
         f.zonesFilled && `зоны адресов: ${f.zonesFilled}`,
-        f.geocodeRetries && `адресов на повторный геокодинг: ${f.geocodeRetries} (по 1 в 90 с)`
+        f.geocodeRetries && `адресов на повторный геокодинг: ${f.geocodeRetries} (по 1 в 90 с)`,
+        f.trailerPlatesNormalized && `написание прицепов к канону: ${f.trailerPlatesNormalized}`,
+        f.phonesNormalized && `телефоны водителей к +7: ${f.phonesNormalized}`,
+        f.customerNamesTrimmed && `пробелы в именах клиентов: ${f.customerNamesTrimmed}`,
+        f.staleRunClosed && `статусы догнали факт выгрузки: ${f.staleRunClosed}`
       ].filter(Boolean);
       alert(parts.length ? `Исправлено:\n— ${parts.join('\n— ')}` : 'Автоматически исправимого не нашлось — остальное требует решения человека.');
       inventoryDialog(context, scope);
