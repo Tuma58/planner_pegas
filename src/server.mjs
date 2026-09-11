@@ -2061,6 +2061,49 @@ async function collectCanKm() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(yesterday);
     console.log(`collectCanKm: CAN-пробеги собраны ${fromDay}..${yesterday}`);
   } catch (error) { console.error('collectCanKm:', error.message); }
+  await collectTripGpsKm();
+}
+
+// Честный пробег РЕЙСА (финал разбора километражей 11.09): CAN-одометр за
+// интервал «выезд → выгрузка» — календарные дни цепляли чужие перегоны и
+// врали в разы (инвентаризация показывала «факт +374%» на здоровых планах).
+// До 120 рейсов за прогон, идемпотентно (только gps_km IS NULL).
+async function collectTripGpsKm() {
+  try {
+    const addrXY = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+    let saved = 0; let skipped = 0;
+    for (const trip of db.prepare(`SELECT t.id, t.order_no, t.starts_at, t.on_line_at,
+        t.unloaded_at, vt.imei,
+        (SELECT MIN(s.actual_departure) FROM trip_stops s WHERE s.trip_id=t.id
+          AND s.actual_departure IS NOT NULL) first_dep,
+        (SELECT o.from_address_id FROM orders o WHERE o.id=t.order_id) fa,
+        (SELECT o.to_address_id FROM orders o WHERE o.id=t.order_id) ta
+      FROM trips t JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
+      WHERE t.status IN ('unloaded','done','paid') AND t.gps_km IS NULL
+        AND t.unloaded_at IS NOT NULL
+        AND t.unloaded_at > datetime('now','-14 days')
+        AND COALESCE(vt.imei,'')<>''
+      ORDER BY t.unloaded_at DESC LIMIT 120`).all()) {
+      const fromMs = Date.parse(trip.first_dep || trip.on_line_at || trip.starts_at);
+      const toMs = Date.parse(trip.unloaded_at);
+      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs - fromMs < 1800_000) continue;
+      const answer = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${trip.imei}` +
+        `&ts=${Math.floor(fromMs / 1000)}&te=${Math.floor(toMs / 1000)}`);
+      await new Promise(resolve => setTimeout(resolve, 160));
+      const delta = Number(answer?.points?.stop_odo) - Number(answer?.points?.start_odo);
+      if (!Number.isFinite(delta) || delta < 30 || delta > 6000) { skipped += 1; continue; }
+      // Санити против прямой: одометр не бывает меньше прямой и не втрое больше.
+      const a = trip.fa ? addrXY.get(trip.fa) : null;
+      const b = trip.ta ? addrXY.get(trip.ta) : null;
+      if (a?.latitude && b?.latitude) {
+        const line = straightKm(a.latitude, a.longitude, b.latitude, b.longitude);
+        if (line >= 30 && (delta < line * 0.85 || delta > line * 3)) { skipped += 1; continue; }
+      }
+      db.prepare(`UPDATE trips SET gps_km=? WHERE id=?`).run(Math.round(delta), trip.id);
+      saved += 1;
+    }
+    if (saved || skipped) console.log(`collectTripGpsKm: пробегов рейсов сохранено ${saved}, отброшено ${skipped}`);
+  } catch (error) { console.error('collectTripGpsKm:', error.message); }
 }
 setInterval(collectDailyRuns, 3_600_000);
 setTimeout(collectDailyRuns, 160_000);
@@ -2411,7 +2454,7 @@ function rebuildLegFacts() {
     // днями и запустил порочный круг: план ↑ → длительность ↑ → грязных
     // «чистых» больше → план ещё ↑. Теперь порог 20 ч + эксклюзивность.
     const clean = [];
-    for (const trip of db.prepare(`SELECT t.vehicle_id, t.starts_at,
+    for (const trip of db.prepare(`SELECT t.vehicle_id, t.starts_at, t.gps_km,
         COALESCE(t.unloaded_at, t.ends_at) fin, o.from_address_id, o.to_address_id, o.via_json
       FROM trips t JOIN orders o ON o.id=t.order_id
       JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
@@ -2428,7 +2471,9 @@ function rebuildLegFacts() {
           AND dd.kind='transfer'
           AND date(dd.starts_at) <= date(COALESCE(t.unloaded_at, t.ends_at))
           AND date(dd.ends_at) >= date(t.starts_at))`).all()) {
-      const fact = tripFactKm(trip.vehicle_id, trip.starts_at, trip.fin);
+      // Первоисточник — честный одометр рейса; календарные дни — фолбэк
+      // (и только для рейсов с эксклюзивными днями, см. выборку выше).
+      const fact = trip.gps_km || tripFactKm(trip.vehicle_id, trip.starts_at, trip.fin);
       if (!fact || fact < 100) continue;
       clean.push({ key: legKey(trip.from_address_id, trip.to_address_id),
         from: trip.from_address_id, to: trip.to_address_id, fact });
@@ -8102,36 +8147,25 @@ async function api(request, response, url) {
       // экономику (₽/км, себестоимость) и скорости (кейс №2496: заглушка
       // 500 км на плече Пенза→Красноярск ~3800 км).
       const kmMismatch = [];
-      for (const trip of db.prepare(`SELECT t.id, t.order_no, t.vehicle_id, t.distance_km,
-          t.starts_at, COALESCE(t.unloaded_at, t.ends_at) fin, t.from_point, t.to_point, v.plate
+      // Факт — ТОЛЬКО честный CAN-одометр за интервал рейса (gps_km):
+      // прежняя сумма календарных дней цепляла чужие перегоны и показывала
+      // «+374%» на здоровых планах, толкая ломать правильные заявки.
+      for (const trip of db.prepare(`SELECT t.order_no, t.distance_km, t.gps_km,
+          t.from_point, t.to_point, t.vehicle_id, v.plate
         FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
-        JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
         WHERE t.status IN ('unloaded','done','paid')
-          AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-14 days')
-          AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 36
-          AND t.distance_km > 0`).all()) {
-        const fromDay = String(trip.starts_at).slice(0, 10);
-        const toDay = String(trip.fin).slice(0, 10);
-        const fact = db.prepare(`SELECT SUM(CASE WHEN COALESCE(can_km,0) > 0 AND move_hours > 0.5
-            AND can_km / move_hours <= 85 THEN can_km ELSE km END) km, COUNT(*) days
-          FROM vehicle_daily_runs WHERE vehicle_id=? AND day >= ? AND day <= ?`)
-          .get(trip.vehicle_id, fromDay, toDay);
-        // Полное покрытие днями пробегов (история с 25.08) и только сторона
-        // «факт заметно БОЛЬШЕ плана»: занижение плана (заглушка 500 км) —
-        // главная боль; обратная сторона шумит краевыми днями цепочки.
-        const calendarDays = Math.floor((Date.parse(trip.fin) - Date.parse(trip.starts_at)) / 86_400_000) + 1;
-        if (!fact?.km || fact.days < Math.min(calendarDays, 2)) continue;
-        if (fact.days < calendarDays) continue;
-        const ratio = fact.km / trip.distance_km;
+          AND t.unloaded_at > datetime('now','-14 days')
+          AND t.gps_km IS NOT NULL AND t.distance_km > 0`).all()) {
+        const ratio = trip.gps_km / trip.distance_km;
         if (ratio > 1.4) {
           kmMismatch.push({ ratio, label: `${trip.plate} №${trip.order_no || '—'}`, vehicleId: trip.vehicle_id,
-            sub: `план ${Math.round(trip.distance_km)} км · факт ~${Math.round(fact.km)} км `
-              + `(${ratio > 1 ? '+' : '−'}${Math.round(Math.abs(ratio - 1) * 100)}%) · `
+            sub: `план ${Math.round(trip.distance_km)} км · одометр ${Math.round(trip.gps_km)} км `
+              + `(+${Math.round((ratio - 1) * 100)}%) · `
               + `${(trip.from_point || '').slice(0, 18)} → ${(trip.to_point || '').slice(0, 18)}` });
         }
       }
       add('km_mismatch', '📏 Плановые км расходятся с фактом GPS (>40%)',
-        'Кривая дистанция ломает ₽/км, себестоимость и скорости — чините километраж в заявке (обычно заглушка 500 км на дальнем плече)',
+        'Факт — CAN-одометр за интервал рейса. Кривая дистанция ломает ₽/км и скорости — чините километраж в заявке',
         kmMismatch.sort((a, b) => b.ratio - a.ratio).map(({ ratio, ...rest }) => rest));
       const noCoords = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE latitude IS NULL OR longitude IS NULL`).get().n;
       const noZone = db.prepare(`SELECT COUNT(*) n FROM addresses WHERE zone_id IS NULL`).get().n;
