@@ -419,8 +419,14 @@ function tgApi(method, payload, tokenOverride = null) {
     const token = tokenOverride || telegramConfig().botToken;
     if (!token) return resolve(null);
     const body = JSON.stringify(payload || {});
+    // Релей Bot API: с ~08.09 api.telegram.org недоступен из сетей РФ
+    // (TCP 443 глухо и у хостера, и в офисе) — при заданном app_meta
+    // telegram_api_host запросы идут через НАШ релей (например,
+    // Cloudflare Worker), путь и токен не меняются. Пусто — прямой путь.
+    const relayHost = db.prepare(`SELECT value FROM app_meta
+      WHERE key='telegram_api_host'`).get()?.value?.trim();
     const request = httpsRequest({
-      host: 'api.telegram.org', family: 4, method: 'POST',
+      host: relayHost || 'api.telegram.org', family: 4, method: 'POST',
       path: `/bot${token}/${method}`, timeout: 10_000,
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
     }, response => {
