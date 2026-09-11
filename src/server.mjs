@@ -2728,8 +2728,13 @@ function sanitizeInflatedTransit() {
       let via = [];
       try { via = JSON.parse(trip.via_json || '[]'); } catch { /* мусор */ }
       const freshH = smartTransitHoursFor(trip, Number(trip.distance_km), via.length);
+      // Плановые точки без факта (например, возврат груза) — тоже нижняя
+      // граница: санация сжимает раздутый транзит, а не отменяет маршрут.
+      const lastPlanned = db.prepare(`SELECT MAX(planned_arrival) m FROM trip_stops
+        WHERE trip_id=? AND actual_departure IS NULL`).get(trip.id)?.m;
       const freshEnd = Math.max(Date.parse(trip.starts_at) + freshH * 3_600_000,
-        Date.parse(trip.window_to || 0) || 0);
+        Date.parse(trip.window_to || 0) || 0,
+        (Date.parse(lastPlanned || 0) || 0) + 2 * 3_600_000);
       const currentEnd = Date.parse(trip.ends_at);
       if (!Number.isFinite(freshEnd) || !Number.isFinite(currentEnd)) continue;
       // Сжимаем только заметно раздутые: новый конец раньше на 15%+ транзита.
@@ -7919,18 +7924,47 @@ async function api(request, response, url) {
       ? new Date(Date.parse(body.plannedArrival)).toISOString() : null;
     const plannedDeparture = body.plannedDeparture && Number.isFinite(Date.parse(body.plannedDeparture))
       ? new Date(Date.parse(body.plannedDeparture)).toISOString() : null;
+    // Защита от двойного клика: та же точка без фактов с планом в
+    // получасе — не добавляем второй раз (кейс №3179: два «ВОЗВРАТ»).
+    const twin = stops.find(stop => !stop.actual_arrival &&
+      stop.point === String(body.point).trim() &&
+      (!plannedArrival || !stop.planned_arrival ||
+        Math.abs(Date.parse(stop.planned_arrival) - Date.parse(plannedArrival)) < 30 * 60_000));
+    if (twin) return errorJson(response, 409, 'Такая точка уже добавлена к рейсу');
     const id = randomUUID();
     db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,planned_arrival,
       planned_departure,distance_km,note,updated_by) VALUES(?,?,?,?,?,?,?,?,?,?)`).run(
       id, match[0], 999, body.kind === 'P' ? 'P' : 'D', String(body.point).trim(),
       plannedArrival, plannedDeparture, Math.max(0, Number(body.distanceKm || 0)),
       String(body.note || '').trim(), user.id);
-    // Промежуточные стоянки — между погрузкой и конечной выгрузкой,
-    // по хронологии планового прибытия (без плана — в конец середины).
-    const middle = [...stops.slice(1, -1), { id, planned_arrival: plannedArrival }]
-      .sort((a, b) => String(a.planned_arrival || '9999').localeCompare(String(b.planned_arrival || '9999')));
+    const last = stops[stops.length - 1];
+    // Точка ПОСЛЕ конечной выгрузки — новая конечная (возврат груза:
+    // выгрузка уже состоялась с фактом убытия, или план новой точки позже
+    // плана конечной). Кейс №3179 Балабаново: возврат вставал «в середину»
+    // до точки с фактами — этапы выглядели завершёнными, контроль слеп.
+    const becomesFinal = body.kind !== 'P' && stops.length >= 2 && (last.actual_departure ||
+      (plannedArrival && String(plannedArrival) > String(last.planned_arrival || '')));
     const reseq = db.prepare('UPDATE trip_stops SET seq=? WHERE id=?');
-    [stops[0], ...middle, stops[stops.length - 1]].forEach((stop, index) => reseq.run(index + 1, stop.id));
+    if (becomesFinal) {
+      [...stops, { id }].forEach((stop, index) => reseq.run(index + 1, stop.id));
+    } else {
+      // Промежуточные стоянки — между погрузкой и конечной выгрузкой,
+      // по хронологии планового прибытия (без плана — в конец середины).
+      const middle = [...stops.slice(1, -1), { id, planned_arrival: plannedArrival }]
+        .sort((a, b) => String(a.planned_arrival || '9999').localeCompare(String(b.planned_arrival || '9999')));
+      [stops[0], ...middle, stops[stops.length - 1]].forEach((stop, index) => reseq.run(index + 1, stop.id));
+    }
+    // Конец рейса не может быть раньше плановой работы на новой точке:
+    // иначе гант не показывает возврат, а машина «освобождается» до него.
+    if (plannedArrival) {
+      const calc = settingsObject(db).calculation || {};
+      const newEnd = Date.parse(plannedArrival) +
+        Number(calc.handlingHoursPerOperation || 2) * 3_600_000;
+      if (Number.isFinite(newEnd) && newEnd > Date.parse(trip.ends_at)) {
+        db.prepare(`UPDATE trips SET ends_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(new Date(newEnd).toISOString(), trip.id);
+      }
+    }
     audit(db, user, 'create', 'trip_stop', id, body, requestIp(request));
     return json(response, 201, { id });
   }
