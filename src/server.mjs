@@ -2616,15 +2616,22 @@ function rebuildTransitFacts() {
         FROM trip_stops WHERE trip_id=? AND kind='P' AND actual_arrival IS NOT NULL
         ORDER BY seq LIMIT 1`).get(trip.id);
       const loadEnd = load && (load.actual_departure || load.work_finished_at || trip.on_line_at);
+      // Образец ворот только в коридоре 0,5–8 ч: приезд за сутки до окна
+      // клиента и поздние отметки «выгружен» — не ворота, а хвосты
+      // дисциплины, они не должны учить обещания (кейс 12.09).
       if (load && loadEnd) {
         const hours = (Date.parse(loadEnd) - Date.parse(load.actual_arrival)) / 3_600_000;
-        if (trip.fa) push(`addr-load:${trip.fa}`, hours);
-        if (cust) push(`cust-load:${cust}`, hours);
+        if (gateHoursOk(hours)) {
+          if (trip.fa) push(`addr-load:${trip.fa}`, hours);
+          if (cust) push(`cust-load:${cust}`, hours);
+        }
       }
       if (trip.arrived_at && trip.unloaded_at) {
         const hours = (Date.parse(trip.unloaded_at) - Date.parse(trip.arrived_at)) / 3_600_000;
-        if (trip.ta) push(`addr-unload:${trip.ta}`, hours);
-        if (cust) push(`cust-unload:${cust}`, hours);
+        if (gateHoursOk(hours)) {
+          if (trip.ta) push(`addr-unload:${trip.ta}`, hours);
+          if (cust) push(`cust-unload:${cust}`, hours);
+        }
       }
     }
     const upsertGate = db.prepare(`INSERT INTO gate_facts(key,samples,median_hours)
@@ -2634,24 +2641,39 @@ function rebuildTransitFacts() {
     for (const [key, list] of gates) {
       upsertGate.run(key, list.length, Math.round(median(list) * 10) / 10);
     }
+    // Застарелые записи вне коридора (собраны до клампа и в этой
+    // пересборке не обновились — валидных образцов не осталось) — удалить:
+    // чтение их уже отвергает, пусть не путают и отчёты.
+    const staleGates = db.prepare(`DELETE FROM gate_facts
+      WHERE median_hours < ? OR median_hours > ?`)
+      .run(GATE_HOURS_MIN, GATE_HOURS_MAX).changes;
     const addrGates = [...gates.keys()].filter(key => key.startsWith('addr')).length;
-    console.log(`rebuildTransitFacts: плеч с дорогой ${roads.size}, ворот адресных ${addrGates}, клиентских ${gates.size - addrGates}`);
+    console.log(`rebuildTransitFacts: плеч с дорогой ${roads.size}, ворот адресных ${addrGates}, клиентских ${gates.size - addrGates}`
+      + (staleGates ? `, удалено ворот вне клампа ${staleGates}` : ''));
   } catch (error) { console.error('rebuildTransitFacts:', error.message); }
 }
 
 // Умный транзит заявки: дорога из факта плеча + ворота из факта адреса или
 // клиента; чего факт не знает — добирает формула. Возвращает часы.
+// Кламп ворот 0,5–8 ч (кейс 12.09 «тонкая суббота»: ворота были
+// единственным выученным нормативом БЕЗ коридора — медианы вбирали
+// ожидание окна клиента и поздние отметки выгрузки, топ «ворот» 30–70 ч,
+// и обещания выгрузки уезжали на сутки позже окна — продажи не ставили
+// рейсы на завтра). Вне коридора — как у дорог: значение отвергается.
+const GATE_HOURS_MIN = 0.5;
+const GATE_HOURS_MAX = 8;
+const gateHoursOk = h => Number.isFinite(h) && h >= GATE_HOURS_MIN && h <= GATE_HOURS_MAX;
 function gateFactHours(kind, addressId, customerName) {
   if (addressId) {
     const byAddr = db.prepare('SELECT median_hours h, samples FROM gate_facts WHERE key=?')
       .get(`addr-${kind}:${addressId}`);
-    if (byAddr && byAddr.samples >= 2) return byAddr.h;
+    if (byAddr && byAddr.samples >= 2 && gateHoursOk(byAddr.h)) return byAddr.h;
   }
   const cust = String(customerName || '').trim().toLowerCase();
   if (cust) {
     const byCust = db.prepare('SELECT median_hours h, samples FROM gate_facts WHERE key=?')
       .get(`cust-${kind}:${cust}`);
-    if (byCust && byCust.samples >= 3) return byCust.h;
+    if (byCust && byCust.samples >= 3 && gateHoursOk(byCust.h)) return byCust.h;
   }
   return null;
 }
@@ -2854,6 +2876,19 @@ function recalcSeptemberKm() {
 }
 setInterval(rebuildLegFacts, 24 * 3_600_000);
 setTimeout(rebuildLegFacts, 200_000);
+// Разовая миграция 12.09 («тонкая суббота»): ворота получили кламп —
+// пересобрать gate_facts и сжать раздутые обещания активных рейсов
+// сразу, не дожидаясь ночного цикла. Идемпотентно по метке.
+setTimeout(() => {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='gate_clamp_2026_09_12'`).get()) return;
+    rebuildTransitFacts();
+    sanitizeInflatedTransit();
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('gate_clamp_2026_09_12','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+    console.log('миграция клампа ворот: выполнена');
+  } catch (error) { console.error('миграция клампа ворот:', error.message); }
+}, 30_000);
 
 // ── Автозакрытие упущенных выгрузок по GPS-истории ──
 // Решение руководителя 07.09: если выгрузка СВЕРШИЛАСЬ (машина стояла у
@@ -8047,6 +8082,96 @@ async function api(request, response, url) {
       WHERE latitude IS NULL AND geocode_try_at IS NOT NULL`).run().changes;
     audit(db, user, 'inventory-fix', 'system', null, fixed, requestIp(request));
     return json(response, 200, { ok: true, fixed });
+  }
+  // Реестр самообучающихся процессов («🧠 Живые нормативы» у руководителя):
+  // канонические имена, что каждый учит, текущее выученное значение, кламп
+  // здравого смысла и где смотреть дрейф. Руководитель обращается к
+  // процессам по этим именам.
+  if (request.method === 'GET' && pathname === '/api/self-tuning') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const safe = fn => { try { return fn(); } catch { return null; } };
+    safe(rebuildCustomerSegments);
+    const norms = customerSegmentsCache.norms || {};
+    const meta = key => db.prepare(`SELECT value FROM app_meta WHERE key=?`).get(key)?.value;
+    const legs = safe(() => db.prepare(`SELECT COUNT(*) t, SUM(samples >= 2) kmOk,
+        SUM(median_hours IS NOT NULL AND hour_samples >= 2) hOk FROM leg_fact_km`).get()) || {};
+    const gate = safe(() => db.prepare(`SELECT SUM(samples >= 2) ok FROM gate_facts`).get()) || {};
+    const odo = safe(() => db.prepare(`SELECT COUNT(*) n, SUM(gps_km IS NOT NULL) g FROM trips
+      WHERE status IN ('unloaded','done','paid')
+        AND unloaded_at > datetime('now','-14 days')`).get()) || {};
+    const trust = safe(() => {
+      const rows = db.prepare(`SELECT outcome, COUNT(*) c FROM assign_drafts
+        WHERE outcome IS NOT NULL AND COALESCE(override_reason,'')<>'auto'
+          AND resolved_at >= datetime('now','-14 day') GROUP BY outcome`).all();
+      const accepted = rows.find(row => row.outcome === 'accepted')?.c || 0;
+      const total = rows.reduce((sum, row) => sum + row.c, 0);
+      return total ? { pct: Math.round(accepted / total * 100), total } : null;
+    });
+    const repairNorm = safe(() => {
+      const loadDays = db.prepare(`SELECT COALESCE(SUM(
+          (julianday(MIN(datetime('now'), ends_at)) - julianday(MAX(datetime('now','-60 day'), starts_at)))
+        ),0) v FROM vehicle_dispositions
+        WHERE kind IN ('repair','shift') AND datetime(ends_at) > datetime('now','-60 day')
+          AND datetime(starts_at) < datetime('now')`).get().v;
+      return Math.max(1, Math.round(loadDays / 60 * 10) / 10);
+    });
+    const t = value => value == null ? '—' : `${Math.round(value / 1000)} т₽`;
+    const items = [
+      { name: 'Коэффициент дорог',
+        learns: 'медиана факт/прямая по чистым рейсам 60 дн — превращает прямую линию между адресами в дорожные километры',
+        value: `${safe(calibratedRoadFactor) ?? ROAD_FACTOR} (дефолт ${ROAD_FACTOR})`,
+        clamp: '1,05–1,45', drift: 'лог ночной пересборки · 📐 Нормативы недели' },
+      { name: 'Медианы плеч: километры',
+        learns: 'плановые км плеча адрес→адрес из честных фактов пробега',
+        value: `${legs.kmOk || 0} плеч из ${legs.t || 0} с выученными км`,
+        clamp: 'коридор прямая ×1,05…×1,65 (вне — коэффициент дорог)',
+        drift: '🧾 Инвентаризация → «Плановые км расходятся с фактом»' },
+      { name: 'Медианы плеч: часы дороги',
+        learns: 'фактические часы дороги плеча — основа умного транзита',
+        value: `${legs.hOk || 0} плеч из ${legs.t || 0} с выученными часами`,
+        clamp: 'км/80 … км/22+8 ч (вне — формула калькуляции)',
+        drift: 'лог ночной пересборки («отвергнуто дорог вне физики»)' },
+      { name: 'Ворота погрузки/выгрузки',
+        learns: 'медианы часов на воротах: адрес (s≥2) → клиент (s≥3) → операции из калькуляции',
+        value: `${gate.ok || 0} выученных ворот`,
+        clamp: '0,5–8 ч (введён 12.09: хвосты дисциплины отметок — не ворота)',
+        drift: '📐 Нормативы недели (строка «ворота»)' },
+      { name: 'Честный одометр рейса',
+        learns: 'факт-км рейса лестницей: CAN-одометр → GPS-трек → эксклюзивные календарные дни → «не измерено»',
+        value: `${odo.g || 0} из ${odo.n || 0} закрытых рейсов за 14 дн`,
+        clamp: '30–6000 км и прямая ×0,85…×3',
+        drift: '🧾 Инвентаризация (питает km-разделы)' },
+      { name: 'Сегменты клиентов A/B/C/D',
+        learns: 'пороги от медианы маржи парка: A ≥110%, B ≥55% медианы',
+        value: `A ≥${t(norms.thA)} · B ≥${t(norms.thB)}/сут · медиана парка ${t(norms.parkMedian)}/сут`,
+        clamp: 'A 12–40 · B 6–20 т₽/сут', drift: '📐 Нормативы недели (миграции клиентов)' },
+      { name: 'Переменная себестоимость',
+        learns: 'цель руководителя, не выучивается: слагаемые ₽/км из Настройки → Калькуляция (ноль — осознанное значение)',
+        value: `${safe(variableCostPerKm) ?? '—'} ₽/км`,
+        clamp: '—', drift: '📐 Нормативы недели (сверка с фактом ₽/км)' },
+      { name: 'Порог подгона (dock)',
+        learns: 'p90 принятых логистами подгонов ×1,2 — радиус поиска машин под заявку',
+        value: `${meta('dock_max_km') || 350} км`,
+        clamp: '150–500 км', drift: '🎯 Подбор ТС пн 08:00 (автотюнинг)' },
+      { name: 'Доверие автоназначению',
+        learns: 'доля принятых рекомендаций за 14 дн; ≥ цели — зелёный коридор включается сам',
+        value: trust ? `${trust.pct}% из ${trust.total} решений · цель ${meta('auto_assign_target') || 80}% · коридор ${meta('auto_assign_state') === 'on' ? 'ВКЛ' : 'выкл'}` : 'мало решений',
+        clamp: 'гистерезис 5 пп, минимум 20 решений', drift: '🎯 Подбор ТС' },
+      { name: 'Норма ремзоны',
+        learns: 'средняя дневная нагрузка ремонтов и пересменок за 60 суток',
+        value: `${repairNorm ?? '—'} машино-дн/день`,
+        clamp: 'минимум 1', drift: '⚖ Баланс выходов 07:40 (пики >×1,5 нормы)' },
+      { name: 'Санация раздутых километров',
+        learns: 'ночной лекарь: активный план > прямая ×1,7 → пересчёт защищённой логикой',
+        value: 'ночью, в цепочке пересборки', clamp: 'только пересчёт в коридор',
+        drift: 'лог ночной пересборки' },
+      { name: 'Санация раздутых сроков',
+        learns: 'ночной лекарь: план-транзит длиннее пересчитанного на 15%+ → сжатие, не раньше окна клиента',
+        value: 'ночью + разово при вводе клампа', clamp: 'только сжатие',
+        drift: 'лог ночной пересборки («транзит-санация №…»)' },
+    ];
+    return json(response, 200, { generatedAt: new Date().toISOString(), items });
   }
   if (request.method === 'GET' && pathname === '/api/inventory') {
     const user = requirePermission(request, response, 'planner:read');
