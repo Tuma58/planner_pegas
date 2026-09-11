@@ -8229,6 +8229,49 @@ async function api(request, response, url) {
           AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d2 WHERE d2.vehicle_id=v.id AND d2.starts_at<=? AND (d2.ends_at IS NULL OR d2.ends_at>?))`)
         .all(nowIso, nowIso, nowIso, nowIso)
         .map(row => ({ label: row.plate, sub: `${row.kind} до ${row.ends_at.slice(0, 10)}`, vehicleId: row.id })));
+    // ── Чистота данных местоположения (установка руководителя 12.09):
+    // истина о том, где машина, — КОНСТРУКЦИЯ (последняя выгрузка и
+    // плановые заказы); мониторинг — лишь подтверждение, он может виснуть.
+    // Обе проверки ищут расхождение слоёв, а не доверяют одному из них.
+    add('gps_silent', '📡 Мониторинг молчит', 'Трекер не шлёт позиции — подбор и GPS-контроль по машине слепы: проверить привязку в Пилоте',
+      db.prepare(`SELECT v.id, v.plate,
+          (SELECT MAX(p.fixed_at) FROM vehicle_positions p WHERE p.vehicle_id=v.id) last_fix,
+          EXISTS (SELECT 1 FROM vehicle_trackers vt WHERE vt.vehicle_id=v.id) linked
+        FROM vehicles v WHERE v.status='work'`).all()
+        // 12 ч — физика отказа железа: живой трекер шлёт позиции минутами,
+        // молчание полсуток — отказ канала или привязки, не бизнес-порог.
+        .filter(row => !row.linked || !row.last_fix
+          || Date.parse(row.last_fix) < Date.now() - 12 * 3_600_000)
+        .map(row => ({ label: row.plate, vehicleId: row.id,
+          sub: !row.linked ? 'привязки трекера нет вовсе — слепая зона'
+            : row.last_fix ? `последняя позиция ${mskStamp(row.last_fix)} МСК`
+              : 'привязка есть, позиций не приходило' })));
+    add('gps_vs_plan', '🧭 GPS расходится с конструкцией',
+      'Машина без задания, а позиция дальше 150 км от последней выгрузки: перевешен трекер, перегон без задания или выгрузка отмечена не там',
+      db.prepare(`SELECT v.id, v.plate, t.to_point, t.order_no,
+          COALESCE(t.unloaded_at, t.ends_at) fin, a.latitude ala, a.longitude alo
+        FROM vehicles v
+        JOIN trips t ON t.id = (SELECT t2.id FROM trips t2
+          WHERE t2.vehicle_id=v.id AND t2.status IN ('unloaded','done','paid')
+          ORDER BY COALESCE(t2.unloaded_at, t2.ends_at) DESC LIMIT 1)
+        LEFT JOIN orders o ON o.id=t.order_id
+        LEFT JOIN addresses a ON a.id=o.to_address_id
+        WHERE v.status='work' AND a.latitude IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM trips tr WHERE tr.vehicle_id=v.id
+            AND tr.status IN ('plan','run'))`).all()
+        .map(row => {
+          const pos = db.prepare(`SELECT latitude la, longitude lo, fixed_at FROM vehicle_positions
+            WHERE vehicle_id=? AND fixed_at > datetime('now','-12 hours')
+            ORDER BY fixed_at DESC LIMIT 1`).get(row.id);
+          // Порог 150 км — та же дорожная физика, что у сторожа доверия
+          // трекерам: меньше — «поехала на базу/стоянку», больше — уже
+          // другой регион, чьё-то враньё обязано объясниться.
+          const gap = pos ? straightKm(pos.la, pos.lo, row.ala, row.alo) : null;
+          return { ...row, gap };
+        })
+        .filter(row => row.gap != null && row.gap > 150)
+        .map(row => ({ label: row.plate, vehicleId: row.id,
+          sub: `выгрузка №${row.order_no || '—'} ${String(row.fin).slice(0, 10)} «${(row.to_point || '').slice(0, 24)}» · GPS в ${Math.round(row.gap)} км от неё` })));
     // Водители
     add('drv_no_phone', '📵 Водители без телефона', 'Не привяжутся к боту и приложению — задание Ларину',
       db.prepare(`SELECT full_name FROM drivers WHERE status<>'fired'
