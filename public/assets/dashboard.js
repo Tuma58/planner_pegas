@@ -450,7 +450,7 @@ export async function renderDashboard(container, context) {
       <div class="dd-split">${mode === 'past'
         ? `выгружено ${money(Math.round(day.done))}${day.expected > 0.5
             ? ` · <span class="danger">не выгружено ${money(Math.round(day.expected))}</span>` : ''}`
-        : `выгружено ${money(Math.round(day.done))} · едет ${money(Math.round(day.expected))} · ${day.trips} рейс.`}</div>
+        : `выгружено${mode === 'future' ? ' досрочно' : ''} ${money(Math.round(day.done))} · едет ${money(Math.round(day.expected))} · ${day.trips} рейс.`}</div>
       ${mode === 'today' ? `<div class="dd-loads">🚚 Вбито погрузок сегодня: <b>${metrics.dayLoads.count}</b>
         на <b>${money(Math.round(metrics.dayLoads.sum))}</b> · на линии ${metrics.dayLoads.online}
         — станут выгрузками завтра-послезавтра</div>` : ''}
