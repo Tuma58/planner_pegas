@@ -2487,6 +2487,7 @@ function rebuildLegFacts() {
     rebuildTransitFacts();
     recalcSeptemberKm();
     sanitizeInflatedKm();
+    sanitizeInflatedTransit();
   } catch (error) { console.error('rebuildLegFacts:', error.message); }
 }
 
@@ -2518,9 +2519,28 @@ function rebuildTransitFacts() {
       VALUES(?,0,0,?,?)
       ON CONFLICT(key) DO UPDATE SET median_hours=excluded.median_hours,
         hour_samples=excluded.hour_samples, updated_at=CURRENT_TIMESTAMP`);
+    // Коридор физики и на записи: медиана часов сверяется с дистанцией
+    // плеча (валидная медиана км, иначе прямая×1,3) — грязная гасится.
+    const addrXY = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+    let rejectedRoads = 0;
     for (const [key, list] of roads) {
-      upsertRoad.run(key, Math.round(median(list) * 10) / 10, list.length);
+      const medianH = Math.round(median(list) * 10) / 10;
+      const row = db.prepare('SELECT median_km, samples FROM leg_fact_km WHERE key=?').get(key);
+      let dist = row && row.samples >= 2 && row.median_km > 0 ? row.median_km : null;
+      if (!dist) {
+        const [a, b] = key.split('|').map(id => addrXY.get(id));
+        if (a?.latitude && b?.latitude) {
+          dist = straightKm(a.latitude, a.longitude, b.latitude, b.longitude) * 1.3;
+        }
+      }
+      if (dist && dist >= 30 && (medianH < dist / 80 || medianH > dist / 22 + 8)) {
+        upsertRoad.run(key, 0, 0);
+        rejectedRoads += 1;
+        continue;
+      }
+      upsertRoad.run(key, medianH, list.length);
     }
+    if (rejectedRoads) console.log(`rebuildTransitFacts: отвергнуто дорог вне физики: ${rejectedRoads}`);
     // Ворота: погрузка (первая P-стоянка: прибыл → убыл/закончил/на линии)
     // и выгрузка (прибыл на выгрузку → выгружен).
     const gates = new Map();
@@ -2584,7 +2604,15 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
     ? db.prepare('SELECT median_hours h, hour_samples s FROM leg_fact_km WHERE key=?')
       .get(legKey(order.from_address_id, order.to_address_id))
     : null;
-  if (!legRow || legRow.s < 2 || !legRow.h) {
+  // Коридор физики для дороги (кейс т726 11.09: Самара→Пенза 450 км
+  // «ехала» 29 ч — ранние отметки «на линию» загрязняют медиану так же,
+  // как календарные дни загрязняли километры): часы плеча обязаны лежать
+  // в [км/80 … км/22 + 8] — от «не быстрее 80 средней» до суточного
+  // темпа ~530 км/сут с РТО и припуском. Вне коридора — формула.
+  const roadOk = legRow && legRow.s >= 2 && legRow.h &&
+    Number(distanceKm) >= 30 &&
+    legRow.h >= distanceKm / 80 && legRow.h <= distanceKm / 22 + 8;
+  if (!roadOk) {
     return transitHours(distanceKm, calc, 2 + viaOps);
   }
   const perOp = Number(calc.handlingHoursPerOperation || 2) * Number(calc.transitFactor || 1.5);
@@ -2592,6 +2620,39 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
   const unloadH = gateFactHours('unload', order.to_address_id, order.customer_name) ?? perOp;
   return loadH + legRow.h + unloadH + viaOps * perOp;
 }
+// Лечение раздутых СРОКОВ (кейс т726 11.09: Самара→Пенза 450 км план
+// 39 ч, выгрузка на 19 ч позже окна клиента): активные рейсы, чей план-
+// транзит заметно длиннее пересчитанного защищённой логикой, получают
+// новый конец (умный транзит с коридором физики, не раньше окна заявки).
+// Только сжатие: удлинять сроки задним числом рискованно для контроля.
+function sanitizeInflatedTransit() {
+  try {
+    let updated = 0;
+    for (const trip of db.prepare(`SELECT t.id, t.order_no, t.starts_at, t.ends_at,
+        t.distance_km, o.window_to, o.from_address_id, o.to_address_id, o.customer_name, o.via_json
+      FROM trips t JOIN orders o ON o.id=t.order_id
+      WHERE t.status IN ('plan','run') AND o.from_address_id IS NOT NULL
+        AND o.to_address_id IS NOT NULL AND t.distance_km > 0`).all()) {
+      let via = [];
+      try { via = JSON.parse(trip.via_json || '[]'); } catch { /* мусор */ }
+      const freshH = smartTransitHoursFor(trip, Number(trip.distance_km), via.length);
+      const freshEnd = Math.max(Date.parse(trip.starts_at) + freshH * 3_600_000,
+        Date.parse(trip.window_to || 0) || 0);
+      const currentEnd = Date.parse(trip.ends_at);
+      if (!Number.isFinite(freshEnd) || !Number.isFinite(currentEnd)) continue;
+      // Сжимаем только заметно раздутые: новый конец раньше на 15%+ транзита.
+      const currentH = (currentEnd - Date.parse(trip.starts_at)) / 3_600_000;
+      if (currentEnd - freshEnd < currentH * 0.15 * 3_600_000 || currentEnd <= freshEnd) continue;
+      db.prepare(`UPDATE trips SET ends_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(new Date(freshEnd).toISOString(), trip.id);
+      console.log(`  транзит-санация №${trip.order_no || trip.id.slice(0, 8)}: `
+        + `${trip.ends_at.slice(5, 16)} → ${new Date(freshEnd).toISOString().slice(5, 16)}`);
+      updated += 1;
+    }
+    if (updated) console.log(`sanitizeInflatedTransit: сжато сроков ${updated}`);
+  } catch (error) { console.error('sanitizeInflatedTransit:', error.message); }
+}
+
 // Лечение раздутых планов (кейс 10.09, «Пенза→Москва 1 055 км»): активные
 // и будущие рейсы, чей план выбился из дорожной физики (> прямая×1,7),
 // пересчитываются заново — plannedKmFor уже защищён коридором и вернёт
