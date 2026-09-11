@@ -2034,7 +2034,9 @@ async function collectCanKm() {
   try {
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const done = db.prepare(`SELECT value FROM app_meta WHERE key='can_runs_done'`).get()?.value;
-    if (done >= yesterday) return;
+    // Дневные CAN-пробеги уже собраны — но честные пробеги РЕЙСОВ копятся
+    // весь день (рейсы закрываются постоянно): их сборщик не пропускаем.
+    if (done >= yesterday) { await collectTripGpsKm(); return; }
     const fromDay = done
       ? new Date(Date.parse(done) + 86_400_000).toISOString().slice(0, 10)
       : new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
