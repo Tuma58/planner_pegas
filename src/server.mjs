@@ -8247,31 +8247,48 @@ async function api(request, response, url) {
             : row.last_fix ? `последняя позиция ${mskStamp(row.last_fix)} МСК`
               : 'привязка есть, позиций не приходило' })));
     add('gps_vs_plan', '🧭 GPS расходится с конструкцией',
-      'Машина без задания, а позиция дальше 150 км от последней выгрузки: перевешен трекер, перегон без задания или выгрузка отмечена не там',
-      db.prepare(`SELECT v.id, v.plate, t.to_point, t.order_no,
-          COALESCE(t.unloaded_at, t.ends_at) fin, a.latitude ala, a.longitude alo
-        FROM vehicles v
-        JOIN trips t ON t.id = (SELECT t2.id FROM trips t2
-          WHERE t2.vehicle_id=v.id AND t2.status IN ('unloaded','done','paid')
-          ORDER BY COALESCE(t2.unloaded_at, t2.ends_at) DESC LIMIT 1)
-        LEFT JOIN orders o ON o.id=t.order_id
-        LEFT JOIN addresses a ON a.id=o.to_address_id
-        WHERE v.status='work' AND a.latitude IS NOT NULL
+      'Машина без задания, а позиция дальше 150 км от последнего документального местоположения (выгрузка или перегон): перевешен трекер, перегон без задания или выгрузка отмечена не там',
+      db.prepare(`SELECT v.id, v.plate FROM vehicles v
+        WHERE v.status='work'
           AND NOT EXISTS (SELECT 1 FROM trips tr WHERE tr.vehicle_id=v.id
             AND tr.status IN ('plan','run'))`).all()
         .map(row => {
-          const pos = db.prepare(`SELECT latitude la, longitude lo, fixed_at FROM vehicle_positions
+          // Документальное местоположение — позднейшее из: последняя
+          // выгрузка (адрес заявки) и последний завершённый перегон
+          // (address_id диспозиции). Конструкция — истина, GPS — сверка.
+          const unload = db.prepare(`SELECT COALESCE(t.unloaded_at, t.ends_at) fin,
+              t.order_no, t.to_point, a.latitude la, a.longitude lo
+            FROM trips t LEFT JOIN orders o ON o.id=t.order_id
+            LEFT JOIN addresses a ON a.id=o.to_address_id
+            WHERE t.vehicle_id=? AND t.status IN ('unloaded','done','paid')
+            ORDER BY COALESCE(t.unloaded_at, t.ends_at) DESC LIMIT 1`).get(row.id);
+          const move = db.prepare(`SELECT d.ends_at fin, a.name, a.latitude la, a.longitude lo
+            FROM vehicle_dispositions d JOIN addresses a ON a.id=d.address_id
+            WHERE d.vehicle_id=? AND d.kind='transfer' AND d.ends_at < datetime('now')
+            ORDER BY d.ends_at DESC LIMIT 1`).get(row.id);
+          const doc = move && (!unload || move.fin > unload.fin)
+            ? { ...move, what: `перегон в «${(move.name || '').slice(0, 24)}»` }
+            : unload && { ...unload, what: `выгрузка №${unload.order_no || '—'} «${(unload.to_point || '').slice(0, 24)}»` };
+          if (!doc || doc.la == null) return null;
+          const pos = db.prepare(`SELECT latitude la, longitude lo FROM vehicle_positions
             WHERE vehicle_id=? AND fixed_at > datetime('now','-12 hours')
             ORDER BY fixed_at DESC LIMIT 1`).get(row.id);
+          if (!pos) return null;
           // Порог 150 км — та же дорожная физика, что у сторожа доверия
           // трекерам: меньше — «поехала на базу/стоянку», больше — уже
           // другой регион, чьё-то враньё обязано объясниться.
-          const gap = pos ? straightKm(pos.la, pos.lo, row.ala, row.alo) : null;
-          return { ...row, gap };
+          const gap = straightKm(pos.la, pos.lo, doc.la, doc.lo);
+          if (!(gap > 150)) return null;
+          // Машина под «без водителя» физически ехать не могла: почти
+          // наверняка врёт привязка трекера, а не конструкция.
+          const noDriver = db.prepare(`SELECT 1 FROM vehicle_dispositions
+            WHERE vehicle_id=? AND kind IN ('no_driver','out')
+              AND starts_at <= datetime('now') AND ends_at > datetime('now')`).get(row.id);
+          return { label: row.plate, vehicleId: row.id,
+            sub: `${doc.what} ${String(doc.fin).slice(0, 10)} · GPS в ${Math.round(gap)} км от неё`
+              + (noDriver ? ' · машина БЕЗ ВОДИТЕЛЯ — похоже, сбита привязка трекера' : '') };
         })
-        .filter(row => row.gap != null && row.gap > 150)
-        .map(row => ({ label: row.plate, vehicleId: row.id,
-          sub: `выгрузка №${row.order_no || '—'} ${String(row.fin).slice(0, 10)} «${(row.to_point || '').slice(0, 24)}» · GPS в ${Math.round(row.gap)} км от неё` })));
+        .filter(Boolean));
     // Водители
     add('drv_no_phone', '📵 Водители без телефона', 'Не привяжутся к боту и приложению — задание Ларину',
       db.prepare(`SELECT full_name FROM drivers WHERE status<>'fired'
