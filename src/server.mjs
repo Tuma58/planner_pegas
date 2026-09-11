@@ -29,6 +29,14 @@ import {
   stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
 } from './trip-control.mjs';
 
+// Журнал неудачных логинов для fail2ban (living в data-томе рядом с БД);
+// простая ротация: файл больше 5 МБ обнуляется при старте.
+const authFailLogPath = path.join(path.dirname(config.databasePath), 'auth-fail.log');
+try {
+  if (fs.existsSync(authFailLogPath) && fs.statSync(authFailLogPath).size > 5 * 1024 * 1024) {
+    fs.truncateSync(authFailLogPath, 0);
+  }
+} catch { /* нет прав/файла — появится при первой неудаче */ }
 const db = openDatabase(config.databasePath, config.admin, {
   initialAllowedSubnets: config.initialAllowedSubnets
 });
@@ -4195,17 +4203,32 @@ async function api(request, response, url) {
 
   if (request.method === 'POST' && pathname === '/api/auth/login') {
     const body = await readJson(request);
-    const attemptKey = `${requestIp(request)}:${String(body.username || '').toLowerCase()}`;
+    const clientIp = requestIp(request);
+    const attemptKey = `${clientIp}:${String(body.username || '').toLowerCase()}`;
     const recentAttempts = (loginAttempts.get(attemptKey) || []).filter(time => Date.now() - time < 15 * 60_000);
     if (recentAttempts.length >= 10) return errorJson(response, 429, 'Слишком много попыток. Повторите позже');
+    // Второй рубеж — чистый IP: перебор РАЗНЫХ логинов с одного адреса
+    // не обходит лимит пары «IP+логин» (защита от брутфорса, 11.09).
+    const ipKey = `ip:${clientIp}`;
+    const ipAttempts = (loginAttempts.get(ipKey) || []).filter(time => Date.now() - time < 15 * 60_000);
+    if (ipAttempts.length >= 30) return errorJson(response, 429, 'Слишком много попыток. Повторите позже');
     const user = db.prepare('SELECT * FROM users WHERE username=? COLLATE NOCASE').get(String(body.username || '').trim());
     if (!user || !user.active || !verifyPassword(String(body.password || ''), user.password_hash)) {
       recentAttempts.push(Date.now());
       loginAttempts.set(attemptKey, recentAttempts);
-      audit(db, user, 'login_failed', 'session', null, {}, requestIp(request));
+      ipAttempts.push(Date.now());
+      loginAttempts.set(ipKey, ipAttempts);
+      audit(db, user, 'login_failed', 'session', null, {}, clientIp);
+      // Журнал неудач — сырьё для fail2ban на хосте (файл в data-томе):
+      // формат строки стабильный, по нему настроен failregex.
+      try {
+        fs.appendFileSync(authFailLogPath,
+          `${new Date().toISOString()} auth-fail ip=${clientIp} user=${String(body.username || '').slice(0, 30).replace(/\s/g, '_')}\n`);
+      } catch { /* журнал не критичен для входа */ }
       return errorJson(response, 401, 'Неверный логин или пароль');
     }
     loginAttempts.delete(attemptKey);
+    loginAttempts.delete(ipKey);
     const token = newSessionToken();
     const expires = new Date(Date.now() + config.sessionTtlMs).toISOString();
     db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
