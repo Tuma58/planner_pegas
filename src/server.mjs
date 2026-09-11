@@ -1810,6 +1810,11 @@ setTimeout(runMonitoringPoll, 45_000);
 const GPS_FRESH_MS = 15 * 60_000;   // подсказки только по свежему сигналу
 const GPS_NEAR_KM = 1.5;            // радиус «у точки» (точность геокода)
 const TEMP_TOLERANCE = 2;           // допуск к режиму заявки, °C
+// Свежесть самого термодатчика: у Пилота каждый отсчёт несёт свою метку
+// at, и она живёт отдельно от свежести GPS (кейс р170мт58 12.09: спутники
+// свежие, а температура — суточной давности +1,7° при факте −18°).
+// Датчик рефа шлёт постоянно; молчание 3 ч+ = значения нет.
+const TEMP_SENSOR_FRESH_MIN = 180;
 
 // «−20…−18 °C (заморозка)» → {min:-20, max:-18}; «0…+4» → {0,4};
 // одиночное число → точка с допуском. Не распознали — null (не контролируем).
@@ -1881,9 +1886,17 @@ function gpsControlSnapshot() {
         const avg = sensors.find(item => /средняя температура/i.test(item.name || ''))
           || sensors.find(item => /температуры 1/i.test(item.name || ''));
         if (avg && Number.isFinite(Number(avg.dig))) {
-          const value = Number(avg.dig);
-          temp = { value, min: range.min, max: range.max,
-            ok: value >= range.min - TEMP_TOLERANCE && value <= range.max + TEMP_TOLERANCE };
+          const atMs = Number(avg.at) > 0 ? Number(avg.at) * 1000 : null;
+          const ageMin = atMs ? Math.round((nowMs - atMs) / 60_000) : null;
+          if (ageMin != null && ageMin > TEMP_SENSOR_FRESH_MIN) {
+            // Протухший отсчёт нельзя выдавать за текущую температуру
+            // груза: ни тревог, ни успокоения — честное «датчик молчит».
+            temp = { stale: true, silentMin: ageMin, min: range.min, max: range.max, ok: true };
+          } else {
+            const value = Number(avg.dig);
+            temp = { value, min: range.min, max: range.max,
+              ok: value >= range.min - TEMP_TOLERANCE && value <= range.max + TEMP_TOLERANCE };
+          }
         }
       } catch { /* датчики не читаются */ }
     }

@@ -1051,7 +1051,14 @@ export async function renderDispatcher(container, context, options = {}) {
           const startMs = Date.parse(trip.starts_at);
           const soonLoad = !gps.loaded && !gps.temp.ok && Number.isFinite(startMs) &&
             startMs > Date.now() - 3_600_000 && startMs - Date.now() < 3 * 3_600_000;
-          if (gps.loaded) {
+          if (gps.temp.stale) {
+            // Термодатчик замолчал: последний отсчёт старше 3 часов —
+            // значение не показываем, оно не про текущий груз.
+            const ageH = Math.round(gps.temp.silentMin / 6) / 10;
+            bits.push(gps.loaded
+              ? `<span class="badge warn" title="Груз в прицепе, а термодатчик не передаёт уже ${ageH} ч — режим не виден: проверьте рефустановку и датчик, свяжитесь с водителем">🌡 датчик молчит ${ageH} ч</span>`
+              : `<span class="muted" title="Термодатчик прицепа не передаёт данные ${ageH} ч">🌡 датчик молчит</span>`);
+          } else if (gps.loaded) {
             bits.push(gps.temp.ok
               ? `<span class="muted" title="Температура прицепа в режиме заявки">🌡 ${gps.temp.value}° (${gps.temp.min}…${gps.temp.max} ✓)</span>`
               : `<span class="badge bad" title="Груз в прицепе, температура вне режима заявки — проверьте рефустановку, свяжитесь с водителем">🌡 ${gps.temp.value}° при режиме ${gps.temp.min}…${gps.temp.max}°!</span>`);

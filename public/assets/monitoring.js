@@ -53,6 +53,26 @@ function trailerSummary(raw) {
   };
 }
 
+// Температура с собственной свежестью: каждый отсчёт Пилота несёт метку
+// at, живущую отдельно от свежести GPS (кейс р170мт58: спутники свежие,
+// а температура суточной давности). Старше 3 ч — «датчик молчит».
+function tempHtml(tAvg, extra = '') {
+  if (!tAvg) return '';
+  const ageH = Number(tAvg.at) > 0
+    ? Math.round((Date.now() / 1000 - Number(tAvg.at)) / 360) / 10 : null;
+  if (ageH != null && ageH > 3) {
+    return `🌡 <span class="muted" title="Последний отсчёт термодатчика: ${escapeHtml(tAvg.value)}">датчик молчит ${ageH} ч</span>`;
+  }
+  return `🌡 <b>${escapeHtml(tAvg.value)}</b>${extra}`;
+}
+// Текстовый вариант для тултипов и строк списка.
+function tempText(tAvg) {
+  if (!tAvg) return '';
+  const ageH = Number(tAvg.at) > 0
+    ? Math.round((Date.now() / 1000 - Number(tAvg.at)) / 360) / 10 : null;
+  return ageH != null && ageH > 3 ? `🌡 молчит ${ageH} ч` : `🌡 ${tAvg.value}`;
+}
+
 const distKm = (a, b, c, d) => {
   const rad = Math.PI / 180;
   const x = (c - a) * rad, y = (d - b) * rad * Math.cos((a + c) / 2 * rad);
@@ -78,7 +98,7 @@ function truckPopupHtml(item) {
       ${escapeHtml((item.trip.from_point || '').slice(0, 24))} → ${escapeHtml((item.trip.to_point || '').slice(0, 24))}</small>` : ''}
     ${truckParts.length ? `<br><small class="muted">Тягач: ${truckParts.join(' · ')}</small>` : ''}
     ${(tr.door || tr.tAvg || tr.t1) ? `<br><small><b>Прицеп ${escapeHtml(item.trailer_number || '')}</b>:
-      ${tr.tAvg ? `🌡 <b>${escapeHtml(tr.tAvg.value)}</b>${temps ? ` (${temps})` : ''}` : ''}
+      ${tempHtml(tr.tAvg, temps ? ` (${temps})` : '')}
       ${tr.door ? ` · 🚪 ${escapeHtml(String(tr.door.value).toLowerCase())}` : ''}
       ${tr.gen ? ` · генератор ${escapeHtml(String(tr.gen.value).toLowerCase())}` : ''}</small>`
     : item.trailer_number ? `<br><small class="muted">Прицеп ${escapeHtml(item.trailer_number)}: датчики не отвечают</small>` : ''}
@@ -95,7 +115,7 @@ function trailerPopupHtml(trailer, owner) {
     <small>${!trailer.vehicle_id ? '🟣 свободный (нет в сцепках)'
       : detached ? `🟠 отдельно от тягача ${escapeHtml(trailer.owner_plate || '')} (${Math.round(away)} км)`
       : `в сцепке с ${escapeHtml(trailer.owner_plate || '')}`}</small><br>
-    ${info.tAvg ? `<small>🌡 <b>${escapeHtml(info.tAvg.value)}</b>${info.t1 ? ` (t1 ${escapeHtml(info.t1.value)}${info.t2 ? `, t2 ${escapeHtml(info.t2.value)}` : ''})` : ''}</small><br>` : ''}
+    ${info.tAvg ? `<small>${tempHtml(info.tAvg, info.t1 ? ` (t1 ${escapeHtml(info.t1.value)}${info.t2 ? `, t2 ${escapeHtml(info.t2.value)}` : ''})` : '')}</small><br>` : ''}
     ${info.door ? `<small>🚪 двери ${escapeHtml(String(info.door.value).toLowerCase())}</small><br>` : ''}
     <small class="muted">GPS: ${trailer.fixed_at ? formatDateTime(trailer.fixed_at) : '—'}</small>
   </div>`;
@@ -129,7 +149,7 @@ function truckIcon(item) {
 // CSS-transition, глиф/поворот обновляются точечно, попапы не сбрасываются.
 function upsertTruckMarker(item) {
   const tr = trailerSummary(item.trailer_sensors_json);
-  const tooltip = `${item.plate}${tr.tAvg ? ` · 🌡${tr.tAvg.value}` : ''}${tr.door
+  const tooltip = `${item.plate}${tr.tAvg ? ` · ${tempText(tr.tAvg)}` : ''}${tr.door
     ? ` · 🚪${String(tr.door.value).toLowerCase()}` : ''}`;
   let marker = truckMarkers.get(item.vehicle_id);
   if (!marker) {
@@ -162,7 +182,7 @@ function upsertTrailerMarker(trailer, owner) {
   const detached = away != null && away > 1;
   const color = !trailer.vehicle_id ? '#8e44ad' : detached ? '#e67e22' : '#7f8c8d';
   const info = trailerSummary(trailer.sensors_json);
-  const tooltip = `▢ ${trailer.number}${info.tAvg ? ` · 🌡${info.tAvg.value}` : ''}${info.door
+  const tooltip = `▢ ${trailer.number}${info.tAvg ? ` · ${tempText(info.tAvg)}` : ''}${info.door
     ? ` · 🚪${String(info.door.value).toLowerCase()}` : ''}`;
   const icon = L.divIcon({ className: 'mon-marker-anim', iconSize: [12, 12], iconAnchor: [6, 6],
     html: `<div class="mon-veh"><div style="width:11px;height:11px;background:${color};border:2px solid #fff;border-radius:2px;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>
@@ -267,7 +287,7 @@ export async function renderMonitoring(container, context) {
             ? `${Math.round(item.speed)} км/ч` : label} · ${item.ageMin < 2 ? 'сейчас' : `${item.ageMin} мин назад`}${item.trip
             ? ` · рейс №${escapeHtml(item.trip.order_no || '—')}` : ''}</small>
           ${(tr.tAvg || tr.door) ? `<small style="display:block">${tr.tAvg
-            ? `🌡 ${escapeHtml(tr.tAvg.value)}` : ''}${tr.door
+            ? escapeHtml(tempText(tr.tAvg)) : ''}${tr.door
             ? ` · 🚪 ${escapeHtml(String(tr.door.value).toLowerCase())}` : ''}</small>` : ''}
         </span></div>`;
     }).join('') || '<p class="muted">Никого не найдено</p>'}</div>`;
