@@ -2758,10 +2758,13 @@ function sanitizeInflatedTransit(revision = false) {
       let via = [];
       try { via = JSON.parse(trip.via_json || '[]'); } catch { /* мусор */ }
       const freshH = smartTransitHoursFor(trip, Number(trip.distance_km), via.length);
-      // Плановые точки без факта (например, возврат груза) — тоже нижняя
-      // граница: санация сжимает раздутый транзит, а не отменяет маршрут.
+      // Нижняя граница — только точки, поставленные ЧЕЛОВЕКОМ (возврат
+      // груза, ручная правка: updated_by заполнен). Автосозданные точки
+      // маршрута наследуют старый раздутый транзит и границей быть не
+      // могут — иначе санация душится собственной страховкой (ревизия
+      // 12.09 сжала ноль из 18); они подтягиваются вместе со сжатием.
       const lastPlanned = db.prepare(`SELECT MAX(planned_arrival) m FROM trip_stops
-        WHERE trip_id=? AND actual_departure IS NULL`).get(trip.id)?.m;
+        WHERE trip_id=? AND actual_departure IS NULL AND updated_by IS NOT NULL`).get(trip.id)?.m;
       const freshEnd = Math.max(Date.parse(trip.starts_at) + freshH * 3_600_000,
         Date.parse(trip.window_to || 0) || 0,
         (Date.parse(lastPlanned || 0) || 0) + 2 * 3_600_000);
@@ -2772,10 +2775,19 @@ function sanitizeInflatedTransit(revision = false) {
       const currentH = (currentEnd - Date.parse(trip.starts_at)) / 3_600_000;
       const minGainMs = revision ? 2 * 3_600_000 : currentH * 0.15 * 3_600_000;
       if (currentEnd <= freshEnd || currentEnd - freshEnd < minGainMs) continue;
+      const freshIso = new Date(freshEnd).toISOString();
       db.prepare(`UPDATE trips SET ends_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-        .run(new Date(freshEnd).toISOString(), trip.id);
+        .run(freshIso, trip.id);
+      // Автосозданные точки маршрута — вслед за новым концом, чтобы
+      // контроль и гант не жили по старому плану точек.
+      db.prepare(`UPDATE trip_stops SET planned_arrival=?
+        WHERE trip_id=? AND updated_by IS NULL AND actual_arrival IS NULL
+          AND planned_arrival > ?`).run(freshIso, trip.id, freshIso);
+      db.prepare(`UPDATE trip_stops SET planned_departure=?
+        WHERE trip_id=? AND updated_by IS NULL AND actual_departure IS NULL
+          AND planned_departure > ?`).run(freshIso, trip.id, freshIso);
       console.log(`  транзит-санация №${trip.order_no || trip.id.slice(0, 8)}: `
-        + `${trip.ends_at.slice(5, 16)} → ${new Date(freshEnd).toISOString().slice(5, 16)}`);
+        + `${trip.ends_at.slice(5, 16)} → ${freshIso.slice(5, 16)}`);
       updated += 1;
     }
     if (updated) console.log(`sanitizeInflatedTransit: сжато сроков ${updated}`);
@@ -2945,9 +2957,9 @@ setTimeout(() => {
 // (200 с), чтобы сжимать по свежим медианам. Идемпотентно по метке.
 setTimeout(() => {
   try {
-    if (db.prepare(`SELECT value FROM app_meta WHERE key='transit_revision_2026_09_12'`).get()) return;
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='transit_revision_2026_09_12_v2'`).get()) return;
     sanitizeInflatedTransit(true);
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('transit_revision_2026_09_12','done')
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('transit_revision_2026_09_12_v2','done')
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
     console.log('ревизия транзита по парку: выполнена');
   } catch (error) { console.error('ревизия транзита:', error.message); }
