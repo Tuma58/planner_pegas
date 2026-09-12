@@ -252,7 +252,13 @@ export async function renderMonitoring(container, context) {
     // Убираем префикс «Leaflet» с флагом из атрибуции; «© OpenStreetMap»
     // остаётся — обязательная подпись по лицензии данных карты.
     map.attributionControl.setPrefix(false);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    // Свой тайл-сервер (12.09): tile.openstreetmap.org заблокировал нас по
+    // политике волонтёрских серверов (403 на каждой плитке). Плитки теперь
+    // рисует наш tileserver-gl на LXC из экстракта OSM России, nginx отдаёт
+    // их с того же домена (/tiles/, кэш 30 дн) — без чужих лимитов, работает
+    // и во внутренней сети без интернета. Подпись OSM обязательна: данные
+    // карты — © участников OpenStreetMap (ODbL).
+    L.tileLayer('/tiles/{z}/{x}/{y}.png', {
       maxZoom: 18, attribution: '© OpenStreetMap'
     }).addTo(map);
     map.on('moveend', () => {
