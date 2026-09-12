@@ -206,8 +206,16 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
     const remaining = daysInMonth - date.getUTCDate() + 1;
     const plan = inMonth ? Math.max(0, (monthPlan - factBefore) / Math.max(1, remaining)) : null;
+    // Потенциал дня: забитое рейсами + внесённые заявки БЕЗ ТС с окном
+    // выгрузки этого дня — сколько день может стоить, если логисты
+    // назначат всё внесённое (в план заявка попадает при назначении ТС).
+    const unassigned = orders.filter(order => order.status === 'new' && !order.trip_id
+      && !order.deleted_at && order.window_to
+      && Date.parse(order.window_to) >= start && Date.parse(order.window_to) < end);
+    const unassignedSum = unassigned.reduce((sum, order) => sum + orderNet(order, data), 0);
     return { dateIso: date.toISOString().slice(0, 10), inMonth, plan,
       booked, done, expected: booked - done, trips: trips.length,
+      unassigned: unassigned.length, unassignedSum, potential: booked + unassignedSum,
       gap: plan != null ? Math.max(0, plan - booked) : 0 };
   };
   const days = { yesterday: dayMetricsAt(-1), today: dayMetricsAt(0), tomorrow: dayMetricsAt(1) };
@@ -451,6 +459,8 @@ export async function renderDashboard(container, context) {
         ? `выгружено ${money(Math.round(day.done))}${day.expected > 0.5
             ? ` · <span class="danger">не выгружено ${money(Math.round(day.expected))}</span>` : ''}`
         : `выгружено${mode === 'future' ? ' досрочно' : ''} ${money(Math.round(day.done))} · едет ${money(Math.round(day.expected))} · ${day.trips} рейс.`}</div>
+      ${mode !== 'past' && day.unassigned ? `<div class="dd-pot"
+        title="Внесённые заявки без назначенного ТС с окном выгрузки этого дня: в план выручки заявка попадает после назначения машины">⚡ потенциал ${money(Math.round(day.potential))} — ждут ТС ${day.unassigned} заявок на ${money(Math.round(day.unassignedSum))}</div>` : ''}
       ${mode === 'today' ? `<div class="dd-loads">🚚 Вбито погрузок сегодня: <b>${metrics.dayLoads.count}</b>
         на <b>${money(Math.round(metrics.dayLoads.sum))}</b> · на линии ${metrics.dayLoads.online}
         — станут выгрузками завтра-послезавтра</div>` : ''}

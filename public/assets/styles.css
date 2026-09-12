@@ -1461,3 +1461,17 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   border-radius: 4px; padding: 0 4px; font: 700 10px/1.5 ui-monospace, monospace;
   white-space: nowrap; pointer-events: none; }
 .mon-zoomed .mon-plate { display: block; }
+
+/* Баннер выручки дня у продаж: день перед глазами, «добрать» — ярко. */
+.sales-day-banner { display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; padding: 10px 16px; margin: 0 0 10px; border-radius: 10px; font-size: 15px;
+  background: rgba(127, 127, 127, .08); border: 1px solid rgba(127, 127, 127, .25); }
+.sales-day-banner b { font-size: 20px; }
+.sales-day-banner small { display: block; margin-top: 2px; }
+.sales-day-banner .sdb-gap { font-size: 21px; font-weight: 800; color: #fff;
+  background: var(--bad); padding: 5px 16px; border-radius: 9px; white-space: nowrap;
+  animation: sdbPulse 1.6s infinite; }
+.sales-day-banner .sdb-ok { color: var(--ok); font-weight: 700; font-size: 16px; }
+@keyframes sdbPulse { 50% { box-shadow: 0 0 16px var(--bad); } }
+/* Потенциал дня в карточках «Сегодня/Завтра» дашборда. */
+.dash-day .dd-pot { font-size: 12px; margin-top: 3px; color: var(--warn); }

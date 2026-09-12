@@ -8,6 +8,7 @@ import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { orderImportDialog } from './order-import.js';
 import { salesRadarDialog, directionMarket, freeVehiclesByZone } from './sales-radar.js';
+import { dashboardMetrics } from './dashboard.js';
 import { customerCardDialog } from './customer-card.js';
 import { vehiclePlace } from './transfer.js';
 import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
@@ -951,8 +952,20 @@ export async function renderSales(container, context) {
   // грузоотправителю, не тот адрес, нужен телефон клиента.
   const questions = questionsForOwner(await loadOpenQuestions(), 'Продажи');
   const savedScrolls = captureScrolls(container);
+  // Выручка дня перед глазами продаж (просьба руководителя 12.09):
+  // те же цифры, что на дашборде, но крупно — сколько уже стоит день
+  // и сколько ДОБРАТЬ до дневного плана (остаток месячного на дату).
+  const dayM = dashboardMetrics(data);
+  const dayGapValue = Math.max(0, Math.round(dayM.dayGap || 0));
+  const dayBannerHtml = `<div class="sales-day-banner ${dayGapValue ? 'lack' : 'met'}"
+    title="Выручка дня по назначенным рейсам (б/НДС): выгружено + едет к выгрузке. «Добрать» — до дневного плана: остаток месячного плана, поделённый на оставшиеся дни. Заявка попадает в выручку после назначения ТС">
+    <span>💰 Выручка дня: <b>${money(Math.round(dayM.dayFact || 0))}</b>
+      <small class="muted">выгружено ${money(Math.round(dayM.dayDone || 0))} · едет ${money(Math.round(dayM.dayExpected || 0))}</small></span>
+    ${dayGapValue ? `<span class="sdb-gap">⛔ ДОБРАТЬ ${money(dayGapValue)}</span>`
+    : '<span class="sdb-ok">✅ план дня закрыт</span>'}</div>`;
   const html = `<div class="saleswrap">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам', compact: true, open: state.salesQuestionsOpen })}
+    ${dayBannerHtml}
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
         title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">
