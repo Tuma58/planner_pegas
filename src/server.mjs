@@ -2497,17 +2497,23 @@ function rebuildLegFacts() {
       JOIN vehicle_trackers vt ON vt.vehicle_id=t.vehicle_id
       WHERE t.status IN ('unloaded','done','paid')
         AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-60 days')
-        AND (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 20
         AND o.from_address_id IS NOT NULL AND o.to_address_id IS NOT NULL
         AND COALESCE(o.via_json, '[]') = '[]'
-        AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.vehicle_id=t.vehicle_id AND x.id<>t.id
-          AND x.status<>'rejected'
-          AND date(x.starts_at) <= date(COALESCE(t.unloaded_at, t.ends_at))
-          AND date(COALESCE(x.unloaded_at, x.ends_at)) >= date(t.starts_at))
-        AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions dd WHERE dd.vehicle_id=t.vehicle_id
-          AND dd.kind='transfer'
-          AND date(dd.starts_at) <= date(COALESCE(t.unloaded_at, t.ends_at))
-          AND date(dd.ends_at) >= date(t.starts_at))`).all()) {
+        -- Порог 20 ч и эксклюзивные дни нужны ТОЛЬКО календарному
+        -- фолбэку: честный одометр (gps_km) измерен за интервал самого
+        -- рейса, соседние рейсы и перегоны ему не мешают. Иначе плечо
+        -- Аустрина→Пермская училось на 3 образцах при 19 одометрах.
+        AND (t.gps_km IS NOT NULL OR (
+          (julianday(COALESCE(t.unloaded_at, t.ends_at)) - julianday(t.starts_at)) * 24 >= 20
+          AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.vehicle_id=t.vehicle_id AND x.id<>t.id
+            AND x.status<>'rejected'
+            AND date(x.starts_at) <= date(COALESCE(t.unloaded_at, t.ends_at))
+            AND date(COALESCE(x.unloaded_at, x.ends_at)) >= date(t.starts_at))
+          AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions dd WHERE dd.vehicle_id=t.vehicle_id
+            AND dd.kind='transfer'
+            AND date(dd.starts_at) <= date(COALESCE(t.unloaded_at, t.ends_at))
+            AND date(dd.ends_at) >= date(t.starts_at))
+        ))`).all()) {
       // Первоисточник — честный одометр рейса; календарные дни — фолбэк
       // (и только для рейсов с эксклюзивными днями, см. выборку выше).
       const fact = trip.gps_km || tripFactKm(trip.vehicle_id, trip.starts_at, trip.fin);
@@ -2576,23 +2582,31 @@ function rebuildLegFacts() {
 // ── Самообучающийся транзит: дорога и ворота из фактов 60 дней ──
 // Формула (км/50 × 1,5 + операции) одинакова для всех, а факт разный:
 // ворота Новых ферм — 1,6 ч, Пензенской кондитерской — 22 ч. Дорога плеча
-// = медиана (вывод на линию → прибытие на выгрузку) чистых рейсов; ворота
-// = медиана по адресу (точно) и клиенту (фолбэк). Читает smartTransitHoursFor.
+// = медиана (УБЫТИЕ С ПОГРУЗКИ → прибытие на выгрузку) чистых рейсов;
+// ворота = медиана по адресу (точно) и клиенту (фолбэк). Читает
+// smartTransitHoursFor.
 function rebuildTransitFacts() {
   try {
     const median = list => { list.sort((a, b) => a - b); return list[Math.floor(list.length / 2)]; };
     // Дорожные часы плеча — чистые рейсы парой адресов без промежуточных.
+    // Интервал — от УБЫТИЯ С ПОГРУЗКИ (кейс Аустрина→Пермская 12.09:
+    // отсчёт от «на линию» вбирал подгон, очередь и саму погрузку —
+    // дорога 28,3 ч при честных 15,8, а ворота погрузки прибавлялись
+    // сверху ещё раз). Фолбэк — «на линию», если убытия не отметили.
     const roads = new Map();
     for (const trip of db.prepare(`SELECT t.on_line_at, t.arrived_at,
+        (SELECT MIN(s.actual_departure) FROM trip_stops s
+          WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) load_dep,
         o.from_address_id fa, o.to_address_id ta
       FROM trips t JOIN orders o ON o.id=t.order_id
       WHERE t.status IN ('unloaded','done','paid')
-        AND t.on_line_at IS NOT NULL AND t.arrived_at IS NOT NULL
+        AND t.arrived_at IS NOT NULL
         AND t.arrived_at > datetime('now','-60 days')
         AND o.from_address_id IS NOT NULL AND o.to_address_id IS NOT NULL
         AND COALESCE(o.via_json,'[]')='[]'`).all()) {
-      const hours = (Date.parse(trip.arrived_at) - Date.parse(trip.on_line_at)) / 3_600_000;
-      if (hours < 2 || hours > 240) continue;
+      const fromTs = Date.parse(trip.load_dep || trip.on_line_at || '');
+      const hours = (Date.parse(trip.arrived_at) - fromTs) / 3_600_000;
+      if (!Number.isFinite(hours) || hours < 2 || hours > 240) continue;
       const key = legKey(trip.fa, trip.ta);
       if (!roads.has(key)) roads.set(key, []);
       roads.get(key).push(hours);
