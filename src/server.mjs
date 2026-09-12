@@ -2104,7 +2104,13 @@ async function collectTripGpsKm() {
         AND t.unloaded_at IS NOT NULL
         AND t.unloaded_at > datetime('now','-14 days')
         AND COALESCE(vt.imei,'')<>''
-      ORDER BY t.unloaded_at DESC LIMIT 120`).all()) {
+        -- Очередь не должна застревать на безнадёжных (Пилот не отдаёт
+        -- данные за интервал): пробованные откладываются на 2 суток —
+        -- ретрай остаётся (данные у Пилота появляются с опозданием),
+        -- но дорога достаётся ещё не сканированным рейсам.
+        AND (t.gps_km_tried_at IS NULL OR t.gps_km_tried_at < datetime('now','-2 days'))
+      ORDER BY t.gps_km_tried_at IS NOT NULL, t.unloaded_at DESC LIMIT 120`).all()) {
+      db.prepare(`UPDATE trips SET gps_km_tried_at=datetime('now') WHERE id=?`).run(trip.id);
       const fromMs = Date.parse(trip.first_dep || trip.on_line_at || trip.starts_at);
       const toMs = Date.parse(trip.unloaded_at);
       if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs - fromMs < 1800_000) continue;
