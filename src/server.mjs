@@ -2743,7 +2743,11 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
 // транзит заметно длиннее пересчитанного защищённой логикой, получают
 // новый конец (умный транзит с коридором физики, не раньше окна заявки).
 // Только сжатие: удлинять сроки задним числом рискованно для контроля.
-function sanitizeInflatedTransit() {
+// revision=true — режим ревизии парка (12.09, по команде руководителя):
+// сжатие до честного расчёта без ежедневного порога 15%, достаточно
+// выигрыша 2 ч. Нижние границы те же: живой транзит, окно клиента,
+// плановые точки — маршрут ревизия не отменяет.
+function sanitizeInflatedTransit(revision = false) {
   try {
     let updated = 0;
     for (const trip of db.prepare(`SELECT t.id, t.order_no, t.starts_at, t.ends_at,
@@ -2763,9 +2767,11 @@ function sanitizeInflatedTransit() {
         (Date.parse(lastPlanned || 0) || 0) + 2 * 3_600_000);
       const currentEnd = Date.parse(trip.ends_at);
       if (!Number.isFinite(freshEnd) || !Number.isFinite(currentEnd)) continue;
-      // Сжимаем только заметно раздутые: новый конец раньше на 15%+ транзита.
+      // Ежедневно сжимаем только заметно раздутые (15%+ транзита);
+      // в ревизии — всё, что длиннее честного расчёта на 2 ч+.
       const currentH = (currentEnd - Date.parse(trip.starts_at)) / 3_600_000;
-      if (currentEnd - freshEnd < currentH * 0.15 * 3_600_000 || currentEnd <= freshEnd) continue;
+      const minGainMs = revision ? 2 * 3_600_000 : currentH * 0.15 * 3_600_000;
+      if (currentEnd <= freshEnd || currentEnd - freshEnd < minGainMs) continue;
       db.prepare(`UPDATE trips SET ends_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
         .run(new Date(freshEnd).toISOString(), trip.id);
       console.log(`  транзит-санация №${trip.order_no || trip.id.slice(0, 8)}: `
@@ -2933,6 +2939,19 @@ setTimeout(() => {
     console.log('миграция клампа ворот: выполнена');
   } catch (error) { console.error('миграция клампа ворот:', error.message); }
 }, 30_000);
+// Разовая ревизия парка 12.09 (команда руководителя после кейса
+// Аустрина→Пермская): все активные планы сжимаются до честного расчёта
+// без ежедневного порога. Через 400 с — после пересборки нормативов
+// (200 с), чтобы сжимать по свежим медианам. Идемпотентно по метке.
+setTimeout(() => {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='transit_revision_2026_09_12'`).get()) return;
+    sanitizeInflatedTransit(true);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('transit_revision_2026_09_12','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+    console.log('ревизия транзита по парку: выполнена');
+  } catch (error) { console.error('ревизия транзита:', error.message); }
+}, 400_000);
 
 // ── Автозакрытие упущенных выгрузок по GPS-истории ──
 // Решение руководителя 07.09: если выгрузка СВЕРШИЛАСЬ (машина стояла у
