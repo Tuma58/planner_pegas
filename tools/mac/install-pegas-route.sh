@@ -1,14 +1,32 @@
-#!/bin/bash
-# Установка постоянного маршрута к серверу ПегасЛогистик (запуск: sudo bash install-pegas-route.sh)
+#!/bin/sh
+# Установка службы маршрута к прод-сети планера.
+# Запуск: sudo bash tools/mac/install-pegas-route.sh
+#
+# Что делает служба: держит маршрут 100.100.10.0/24 через шлюз офисного
+# VPN (172.15.35.1) ТОЛЬКО пока VPN активен (на маке есть адрес
+# 172.15.35.x); при падении VPN маршрут убирается сам. Проверка — при
+# загрузке, каждые 45 с и при любой смене сети.
+#
+# Удаление службы:
+#   sudo launchctl bootout system/ru.pegas.route
+#   sudo rm /Library/LaunchDaemons/ru.pegas.route.plist /usr/local/lib/pegas-route.sh
 set -e
-DIR="$(cd "$(dirname "$0")" && pwd)"
-cp "$DIR/pegas-route.sh" /usr/local/bin/pegas-route.sh
-chmod 755 /usr/local/bin/pegas-route.sh
-cp "$DIR/ru.pegas.route.plist" /Library/LaunchDaemons/ru.pegas.route.plist
+cd "$(dirname "$0")"
+[ "$(id -u)" = "0" ] || { echo "Нужны права root: sudo bash $0"; exit 1; }
+
+mkdir -p /usr/local/lib
+cp pegas-route.sh /usr/local/lib/pegas-route.sh
+chmod 755 /usr/local/lib/pegas-route.sh
+chown root:wheel /usr/local/lib/pegas-route.sh
+
+cp ru.pegas.route.plist /Library/LaunchDaemons/ru.pegas.route.plist
 chown root:wheel /Library/LaunchDaemons/ru.pegas.route.plist
 chmod 644 /Library/LaunchDaemons/ru.pegas.route.plist
-launchctl unload /Library/LaunchDaemons/ru.pegas.route.plist 2>/dev/null || true
-launchctl load -w /Library/LaunchDaemons/ru.pegas.route.plist
-sleep 2
-netstat -rn -f inet | grep "^100\.100\.10/24" && echo "✅ Служба установлена, маршрут на месте" \
-  || echo "Служба установлена — маршрут появится в течение 30 секунд"
+
+launchctl bootout system/ru.pegas.route 2>/dev/null || true
+launchctl bootstrap system /Library/LaunchDaemons/ru.pegas.route.plist
+launchctl kickstart system/ru.pegas.route
+
+echo "Служба ru.pegas.route установлена."
+echo "Маршрут 100.100.10.0/24 появится сам, как только офисный VPN станет активен."
+echo "Журнал: log show --last 1h --predicate 'process == \"logger\"' | grep pegas-route"

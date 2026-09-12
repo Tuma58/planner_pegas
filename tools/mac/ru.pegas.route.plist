@@ -2,10 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- Маршрут 100.100.10.0/24 через офисный VPN Пегаса — живёт только
+       при активном VPN (172.15.35.x). Скрипт идемпотентный: служба
+       дёргает его при загрузке, каждые 45 с и при смене сети. -->
   <key>Label</key><string>ru.pegas.route</string>
   <key>ProgramArguments</key>
-  <array><string>/usr/local/bin/pegas-route.sh</string></array>
+  <array>
+    <string>/bin/sh</string>
+    <string>/usr/local/lib/pegas-route.sh</string>
+  </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>StartInterval</key><integer>45</integer>
+  <key>WatchPaths</key>
+  <array>
+    <string>/Library/Preferences/SystemConfiguration</string>
+  </array>
 </dict>
 </plist>
