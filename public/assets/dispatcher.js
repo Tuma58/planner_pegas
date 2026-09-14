@@ -672,7 +672,12 @@ export async function renderDispatcher(container, context, options = {}) {
         ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-prepnote="${trip.id}"
           title="Заметка по подготовке в произвольной форме — видна всей смене">💬${note ? ' ✎' : ' Заметка'}</button>` : ''}</small>
         ${note ? `<small class="prep-note">💬 ${escapeHtml(note.done_by || '')}: ${escapeHtml(note.note || '')}</small>` : ''}
-        ${prev1cNote(trip)}` };
+        ${prev1cNote(trip)}
+        ${trip.needs_1c_update_at ? `<small class="prep-note" style="color:var(--bad,#b3261e);font-weight:600">📒
+          Ранее заказ внесён в 1С на прежнее ТС (${escapeHtml(trip.needs_1c_note || 'замена ТС')}) —
+          внесите изменения в учётную систему
+          ${canAct ? `<button class="button small" data-step="1c_updated" data-trip="${trip.id}"
+            title="Данные в 1С обновлены на новое ТС — долг закрыт">✓ 1С обновлено</button>` : ''}</small>` : ''}` };
   };
   const salesCommentNote = trip => {
     const comment = orderOf(trip)?.comment;
