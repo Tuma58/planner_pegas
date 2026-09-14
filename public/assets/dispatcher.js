@@ -1260,7 +1260,7 @@ export async function renderDispatcher(container, context, options = {}) {
         ${order ? `<div class="form-grid" style="grid-template-columns:1fr 1fr">
           <label class="field">Погрузка с
             <input type="datetime-local" name="windowFrom" value="${toLocal(order.window_from)}"></label>
-          <label class="field">Погрузка по
+          <label class="field" title="Срок доставки по заявке клиента: плановая выгрузка рейса пересчитается и будет не раньше этого срока">Выгрузка до (доставить к)
             <input type="datetime-local" name="windowTo" value="${toLocal(order.window_to)}"></label>
           <label class="field" style="grid-column:1/-1">Пункт погрузки
             <input name="fromPoint" value="${escapeHtml(order.from_point || '')}"></label>
@@ -1334,11 +1334,11 @@ export async function renderDispatcher(container, context, options = {}) {
             const windowTo = form.get('windowTo') ? new Date(form.get('windowTo')).toISOString() : null;
             if (windowFrom && windowFrom !== order.window_from) {
               patch.windowFrom = windowFrom;
-              corrections.push(`окно с: ${formatDateTime(order.window_from)} → ${formatDateTime(windowFrom)}`);
+              corrections.push(`погрузка с: ${formatDateTime(order.window_from)} → ${formatDateTime(windowFrom)}`);
             }
             if (windowTo && windowTo !== order.window_to) {
               patch.windowTo = windowTo;
-              corrections.push(`окно по: ${formatDateTime(order.window_to)} → ${formatDateTime(windowTo)}`);
+              corrections.push(`выгрузка до: ${formatDateTime(order.window_to)} → ${formatDateTime(windowTo)}`);
             }
             const fromPoint = String(form.get('fromPoint') || '').trim();
             const toPoint = String(form.get('toPoint') || '').trim();

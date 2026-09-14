@@ -1114,9 +1114,9 @@ export async function renderSales(container, context) {
             <label class="field">Кузов<select name="bodyType">${bodies}</select></label>
           </div>
           <div class="form-grid">
-            <label class="field">Окно с<input name="windowFrom" id="salesWinFrom" type="datetime-local" required
+            <label class="field">Погрузка с<input name="windowFrom" id="salesWinFrom" type="datetime-local" required
               value="${inputValue(atHour(state.month, WORK_START_HOUR))}"></label>
-            <label class="field">Окно по<input name="windowTo" id="salesWinTo" type="datetime-local" required
+            <label class="field" title="Срок доставки по заявке клиента — плановая выгрузка рейса будет не раньше">Выгрузка до<input name="windowTo" id="salesWinTo" type="datetime-local" required
               value="${inputValue(atHour(new Date(state.month.getTime() + 2 * 86_400_000), WORK_END_HOUR))}"></label>
           </div>
           <div class="form-grid">
