@@ -2154,8 +2154,13 @@ async function collectSegmentEconomy() {
       WHERE t.status IN ('unloaded','done','paid') AND s.revenue_share IS NULL
       LIMIT 30`).all();
     for (const { id } of tripIds) {
-      const trip = db.prepare(`SELECT order_no, revenue_vat,
-          COALESCE(unloaded_at, ends_at) fin FROM trips WHERE id=?`).get(id);
+      const trip = db.prepare(`SELECT t.order_no, t.revenue_vat,
+          COALESCE(t.unloaded_at, t.ends_at) fin,
+          fa.latitude fla, fa.longitude flo, ta.latitude tla, ta.longitude tlo
+        FROM trips t LEFT JOIN orders o ON o.id=t.order_id
+        LEFT JOIN addresses fa ON fa.id=o.from_address_id
+        LEFT JOIN addresses ta ON ta.id=o.to_address_id
+        WHERE t.id=?`).get(id);
       const segments = db.prepare(`SELECT s.*, vt.imei FROM trip_segments s
         LEFT JOIN vehicle_trackers vt ON vt.vehicle_id=s.vehicle_id
         WHERE s.trip_id=? ORDER BY s.started_at`).all(id);
@@ -2175,7 +2180,20 @@ async function collectSegmentEconomy() {
           const delta = Number(answer?.points?.stop_odo) - Number(answer?.points?.start_odo);
           if (Number.isFinite(delta) && delta >= 0 && delta < 6000) km = delta;
         }
-        parts.push({ segment, km, hours: Math.max(1, (toMs - fromMs) / 3.6e6) });
+        parts.push({ segment, km, fromMs, toMs, hours: Math.max(1, (toMs - fromMs) / 3.6e6) });
+      }
+      // Фолбэк «по координатам перецепки» (решение руководителя 14.09):
+      // CAN и Пилот молчат — плечо звена оценивается прямой через точки
+      // «погрузка → передача → выгрузка» × калиброванный коэффициент дорог.
+      const chain = [{ la: trip.fla, lo: trip.flo },
+        ...parts.map(part => ({ la: part.segment.handover_lat, lo: part.segment.handover_lon })).slice(0, -1),
+        { la: trip.tla, lo: trip.tlo }];
+      for (let i = 0; i < parts.length; i += 1) {
+        if (parts[i].km != null) continue;
+        const a = chain[i], b = chain[i + 1];
+        if (a?.la != null && b?.la != null) {
+          parts[i].km = Math.round(straightKm(a.la, a.lo, b.la, b.lo) * calibratedRoadFactor());
+        }
       }
       const kmTotal = parts.reduce((sum, part) => sum + (part.km || 0), 0);
       const hoursTotal = parts.reduce((sum, part) => sum + part.hours, 0);
@@ -7335,6 +7353,57 @@ async function api(request, response, url) {
   // операция с журналом: снять со старого, повесить на нового, при занятом
   // приёмнике — обмен (swap) или отцеп его прицепа в свободные. Раньше
   // прицеп переписывали руками в двух карточках ТС и он числился за обоими.
+  // ── Пробег ПРИЦЕПА за период (фундамент ТОиР, 14.09) ──
+  // Прицеп не имеет своего одометра: его пробег = сумма пробегов тягачей
+  // за интервалы, когда прицеп был в сцепке с ними (журнал trailer_moves +
+  // текущее закрепление). Перецепляли несколько раз — куски суммируются.
+  // Дневные пробеги тягача: CAN, фолбэк GPS (vehicle_daily_runs).
+  if (request.method === 'GET' && pathname === '/api/trailer-mileage') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const plate = canonTrailerPlate(url.searchParams.get('plate') || '');
+    if (!plate) return errorJson(response, 422, 'Укажите прицеп (plate)');
+    const from = String(url.searchParams.get('from') || '2026-08-01').slice(0, 10);
+    const to = String(url.searchParams.get('to') || new Date().toISOString()).slice(0, 10);
+    // Интервалы сцепок: события журнала по канон-номеру + хвост от
+    // последнего события до «сейчас» на текущем держателе. До первого
+    // события истории нет — прицеп считается на держателе первого
+    // события «от начала периода» (честное допущение, видно в ответе).
+    const moves = db.prepare(`SELECT moved_at, from_vehicle_id, to_vehicle_id FROM trailer_moves
+      WHERE UPPER(REPLACE(trailer_plate,' ','')) = REPLACE(?,' ','')
+      ORDER BY moved_at`).all(plate);
+    const intervals = [];
+    let cursorVehicle = moves.length ? moves[0].from_vehicle_id : null;
+    let cursorFrom = from;
+    if (!moves.length) {
+      const holder = db.prepare(`SELECT id FROM vehicles
+        WHERE UPPER(REPLACE(COALESCE(trailer_plate,''),' ','')) = REPLACE(?,' ','')`).get(plate);
+      cursorVehicle = holder?.id || null;
+    }
+    for (const move of moves) {
+      const at = String(move.moved_at).slice(0, 10);
+      if (cursorVehicle && at > cursorFrom) intervals.push({ vehicleId: cursorVehicle, from: cursorFrom, to: at });
+      cursorVehicle = move.to_vehicle_id;
+      cursorFrom = at;
+    }
+    if (cursorVehicle && to > cursorFrom) intervals.push({ vehicleId: cursorVehicle, from: cursorFrom, to });
+    const runKm = db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(can_km,0) > 0
+        THEN can_km ELSE km END), 0) km
+      FROM vehicle_daily_runs WHERE vehicle_id=? AND day >= ? AND day < ?`);
+    const parts = intervals
+      .filter(part => part.to > from && part.from < to)
+      .map(part => {
+        const a = part.from < from ? from : part.from;
+        const b = part.to > to ? to : part.to;
+        const vehicle = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(part.vehicleId);
+        return { vehicle: vehicle?.plate || '?', from: a, to: b,
+          km: Math.round(runKm.get(part.vehicleId, a, b).km) };
+      });
+    return json(response, 200, { plate, from, to,
+      totalKm: parts.reduce((sum, part) => sum + part.km, 0),
+      parts, historyNote: moves.length ? null
+        : 'журнала перецепов по прицепу нет — весь период посчитан по текущему держателю' });
+  }
   if (request.method === 'GET' && pathname === '/api/trailers') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
