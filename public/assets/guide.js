@@ -6,6 +6,8 @@
 // правишь его раздел и ставишь сегодняшнюю дату. По дате сотрудники
 // видят точку на кнопке «?» и бейдж «обновлено» на вкладке раздела,
 // пока не откроют инструкции.
+import { api } from './api.js';
+
 const GUIDE_SEEN_KEY = 'pl_guide_seen';
 const guideSeen = () => { try { return localStorage.getItem(GUIDE_SEEN_KEY) || ''; } catch { return ''; } };
 export const guideUnseen = () => GUIDES.filter(guide => (guide.updated || '') > guideSeen());
@@ -2033,12 +2035,46 @@ export function setupGuide({ views, activeView, showModal }) {
         `<button class="button small ${guide.id === active ? '' : 'ghost'}"
           data-guide="${guide.id}">${guide.title}${isNew(guide) ? ' <span class="guide-new-badge">обновлено</span>' : ''}</button>`).join('')}</div>
       <div class="guide-body">${body.html}</div>
+      <div id="guideAckBar" style="margin:8px 0 0"></div>
       <div class="modal-actions">
         <button type="button" class="button ghost" id="guidePrintOne">Печать / PDF</button>
         <button type="button" class="button ghost" id="guidePrintAll">Печать всех</button>
         <button type="button" class="button" data-close>Закрыть</button>
       </div>
     </div>`, 'wide');
+    // Цифровое ознакомление (правило руководителя 14.09): подтверждение
+    // редакции раздела кнопкой — приравнено к подписи; новая редакция
+    // запрашивает подтверждение заново. Руководителю — счётчик и список.
+    if (body.updated) {
+      const bar = document.getElementById('guideAckBar');
+      api('/api/guide-ack/mine').then(({ acks }) => {
+        if (!bar) return;
+        const acked = (acks[active] || '') >= body.updated;
+        bar.innerHTML = acked
+          ? `<span class="badge ok">✓ Ознакомление с редакцией ${body.updated.split('-').reverse().join('.')} подтверждено</span>`
+          : `<button class="button small" id="guideAckBtn"
+              title="Подтверждение приравнивается к подписи об ознакомлении с этой редакцией инструкции">✍ Подтвердить ознакомление</button>
+            <small class="muted"> — фиксируется, кто и когда ознакомился</small>`;
+        const btn = document.getElementById('guideAckBtn');
+        if (btn) btn.onclick = async () => {
+          btn.disabled = true;
+          try {
+            await api('/api/guide-ack', { method: 'POST',
+              body: JSON.stringify({ guideId: active, updated: body.updated }) });
+            bar.innerHTML = `<span class="badge ok">✓ Ознакомление подтверждено</span>`;
+          } catch (error) { btn.disabled = false; alert(error.message); }
+        };
+      }).catch(() => {});
+      api(`/api/guide-acks?guideId=${active}&updated=${body.updated}`).then(({ items }) => {
+        if (!bar || !items) return;
+        const done = items.filter(item => item.acked_at);
+        const pending = items.filter(item => !item.acked_at);
+        const line = document.createElement('div');
+        line.innerHTML = `<small class="muted">Ознакомились с редакцией: <b>${done.length}</b> из ${items.length}
+          ${pending.length ? ` · не ознакомились: ${pending.slice(0, 12).map(item => item.full_name).join(', ')}${pending.length > 12 ? '…' : ''}` : ' — все ✓'}</small>`;
+        bar.appendChild(line);
+      }).catch(() => { /* не руководитель — списка нет */ });
+    }
     document.querySelectorAll('[data-guide]').forEach(button =>
       button.onclick = () => openGuide(button.dataset.guide));
     // Кнопки «Скопировать» в текстах гайда: копируют содержимое блока по id

@@ -8603,6 +8603,39 @@ async function api(request, response, url) {
     audit(db, user, 'inventory-fix', 'system', null, fixed, requestIp(request));
     return json(response, 200, { ok: true, fixed });
   }
+  // ── Ознакомление с инструкциями: цифровая «подпись» сотрудника ──
+  if (request.method === 'POST' && pathname === '/api/guide-ack') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const body = await readJson(request);
+    const guideId = String(body.guideId || '').slice(0, 40);
+    const updated = String(body.updated || '').slice(0, 10);
+    if (!guideId || !updated) return errorJson(response, 422, 'Раздел и редакция обязательны');
+    db.prepare(`INSERT OR IGNORE INTO guide_acks(user_id,guide_id,guide_updated) VALUES(?,?,?)`)
+      .run(user.id, guideId, updated);
+    audit(db, user, 'guide-ack', 'guide', guideId, { updated }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (request.method === 'GET' && pathname === '/api/guide-ack/mine') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const acks = {};
+    for (const row of db.prepare(`SELECT guide_id, MAX(guide_updated) u FROM guide_acks
+      WHERE user_id=? GROUP BY guide_id`).all(user.id)) acks[row.guide_id] = row.u;
+    return json(response, 200, { acks });
+  }
+  if (request.method === 'GET' && pathname === '/api/guide-acks') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const guideId = String(url.searchParams.get('guideId') || '');
+    const updated = String(url.searchParams.get('updated') || '');
+    const items = db.prepare(`SELECT u.full_name, u.role, u.roles, a.acked_at
+      FROM users u LEFT JOIN guide_acks a ON a.user_id=u.id
+        AND a.guide_id=? AND a.guide_updated=?
+      WHERE u.active=1 AND u.deleted_at IS NULL
+      ORDER BY a.acked_at IS NULL DESC, u.full_name`).all(guideId, updated);
+    return json(response, 200, { items });
+  }
   // Реестр самообучающихся процессов («🧠 Живые нормативы» у руководителя):
   // канонические имена, что каждый учит, текущее выученное значение, кламп
   // здравого смысла и где смотреть дрейф. Руководитель обращается к

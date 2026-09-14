@@ -1012,6 +1012,17 @@ function migrateColumns(db) {
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
   }
+  // ── Ознакомление с инструкциями (14.09.2026): цифровая «подпись» ──
+  // Сотрудник подтверждает ознакомление с редакцией раздела инструкций
+  // кнопкой «✓ Ознакомлен»; при новой редакции (updated) подтверждение
+  // запрашивается заново. Руководитель видит, кто не ознакомился.
+  db.exec(`CREATE TABLE IF NOT EXISTS guide_acks (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    guide_id TEXT NOT NULL,
+    guide_updated TEXT NOT NULL,
+    acked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, guide_id, guide_updated)
+  );`);
   // ── Справочник прицепов (правило руководителя 14.09.2026): тип кузова
   // живёт на ПРИЦЕПЕ — тип тягача подтягивается от прицепа при перецепке
   // и сверяется на исполнении, вручную не проставляется. Справочник
