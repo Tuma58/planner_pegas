@@ -11,6 +11,9 @@ const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json'
 
 // Плановый километраж: прямая по координатам × дорожный коэффициент 1,2.
 export const ROAD_FACTOR = 1.2;
+// Каноническое написание номера прицепа: регистр и пробелы не различаются.
+export const canonTrailerPlate = plate =>
+  String(plate || '').toUpperCase().replace(/\s+/g, ' ').trim();
 export function roadKm(latA, lonA, latB, lonB) {
   if (![latA, lonA, latB, lonB].every(Number.isFinite)) return null;
   const rad = value => value * Math.PI / 180;
@@ -1008,6 +1011,35 @@ function migrateColumns(db) {
       CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
+  }
+  // ── Справочник прицепов (правило руководителя 14.09.2026): тип кузова
+  // живёт на ПРИЦЕПЕ — тип тягача подтягивается от прицепа при перецепке
+  // и сверяется на исполнении, вручную не проставляется. Справочник
+  // самонаполняющийся: первая сцепка учит тип прицепа, дальше прицеп
+  // диктует тип каждой машине, к которой цепляется.
+  db.exec(`CREATE TABLE IF NOT EXISTS trailers (
+    plate TEXT PRIMARY KEY,
+    type_id TEXT REFERENCES vehicle_types(id),
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  // Разовое наполнение из текущих сцепок: тип прицепа = тип машины, на
+  // которой он закреплён; у дублей с разными типами тип остаётся пустым
+  // (находка инвентаризации — решает человек).
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='trailers_seed_v1'`).get()) {
+    const groups = new Map();
+    for (const row of db.prepare(`SELECT trailer_plate, type_id FROM vehicles
+      WHERE COALESCE(trailer_plate,'')<>''`).all()) {
+      const canon = canonTrailerPlate(row.trailer_plate);
+      if (!groups.has(canon)) groups.set(canon, new Set());
+      groups.get(canon).add(row.type_id);
+    }
+    const insert = db.prepare(`INSERT OR IGNORE INTO trailers(plate,type_id) VALUES(?,?)`);
+    for (const [canon, types] of groups) {
+      insert.run(canon, types.size === 1 ? [...types][0] : null);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('trailers_seed_v1','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
   }
   // ── Блок «Ремзона» (14.09.2026): АВТОНОМНАЯ конструкция ──
   // Заказ-наряды ремзоны — отдельная сущность, НЕ диспозиция: блок

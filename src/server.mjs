@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
-import { audit, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
+import { audit, canonTrailerPlate, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
@@ -3644,6 +3644,43 @@ function runCrewBalanceWatch() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(today);
   } catch (error) { console.error('Баланс выходов:', error.message); }
 }
+// ── Тип тягача — от прицепа (правило руководителя 14.09) ──
+// Тип кузова живёт на прицепе: при перецепке тип сцепки подтягивается из
+// справочника trailers, а этот сторож выравнивает расхождения на
+// исполнении (перецеп, оформленный мимо карточки, дубли, ручные правки).
+function runTrailerTypeSync() {
+  try {
+    let fixed = 0;
+    for (const vehicle of db.prepare(`SELECT v.id, v.plate, v.trailer_plate, v.type_id
+      FROM vehicles v WHERE v.status='work' AND COALESCE(v.trailer_plate,'')<>''`).all()) {
+      const trailer = db.prepare('SELECT type_id FROM trailers WHERE plate=?')
+        .get(canonTrailerPlate(vehicle.trailer_plate));
+      if (trailer?.type_id && trailer.type_id !== vehicle.type_id) {
+        db.prepare(`UPDATE vehicles SET type_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(trailer.type_id, vehicle.id);
+        fixed += 1;
+      }
+    }
+    if (fixed) console.log(`тип от прицепа: выровнено сцепок ${fixed}`);
+  } catch (error) { console.error('runTrailerTypeSync:', error.message); }
+}
+setInterval(runTrailerTypeSync, 3_600_000);
+setTimeout(runTrailerTypeSync, 90_000);
+// Тип сцепки при смене прицепа: известный прицеп диктует тип; новый или
+// бестиповый — учится от типа этой сцепки (первая сцепка заполняет
+// справочник, дальше прицеп главный). Возвращает итоговый type_id.
+function trailerDrivenTypeId(rawTrailerPlate, chosenTypeId) {
+  const canon = canonTrailerPlate(rawTrailerPlate);
+  if (!canon) return chosenTypeId;
+  const known = db.prepare('SELECT type_id FROM trailers WHERE plate=?').get(canon);
+  if (known?.type_id) return known.type_id;
+  db.prepare(`INSERT INTO trailers(plate,type_id) VALUES(?,?)
+    ON CONFLICT(plate) DO UPDATE SET
+      type_id=COALESCE(trailers.type_id, excluded.type_id),
+      updated_at=CURRENT_TIMESTAMP`).run(canon, chosenTypeId || null);
+  return chosenTypeId;
+}
+
 setInterval(runCrewBalanceWatch, 20 * 60_000);
 setTimeout(runCrewBalanceWatch, 60_000);
 
@@ -6779,9 +6816,12 @@ async function api(request, response, url) {
     if (conflict) return errorJson(response, 409,
       `Прицеп ${String(body.trailerPlate).trim()} уже закреплён за ${conflict.plate} — перецепите через «Ресурс → 🔗 Перецепка»`);
     const id = randomUUID();
+    // Тип кузова живёт на прицепе: известный прицеп диктует тип сцепки.
+    const createTrailer = canonTrailerPlate(body.trailerPlate || '');
+    const createTypeId = trailerDrivenTypeId(createTrailer, body.typeId);
     db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status)
       VALUES(?,?,?,?,?,?,?)`).run(
-      id, body.plate.trim(), body.trailerPlate || '', body.typeId, body.driverName || '',
+      id, body.plate.trim(), createTrailer, createTypeId, body.driverName || '',
       body.zoneId || null, body.status || 'work');
     audit(db, user, 'create', 'vehicle', id, body, requestIp(request));
     return json(response, 201, { id });
@@ -6799,10 +6839,15 @@ async function api(request, response, url) {
       if (conflict) return errorJson(response, 409,
         `Прицеп ${String(body.trailerPlate).trim()} уже закреплён за ${conflict.plate} — перецепите через «Ресурс → 🔗 Перецепка»`);
     }
+    // Тип кузова живёт на прицепе (правило руководителя 14.09): при смене
+    // прицепа тип сцепки подтягивается из справочника; вручную выбранный
+    // тип уважается только для нового/бестипового прицепа (и учит его).
+    const patchTrailer = canonTrailerPlate(body.trailerPlate ?? current.trailer_plate);
+    const patchTypeId = trailerDrivenTypeId(patchTrailer, body.typeId ?? current.type_id);
     db.prepare(`UPDATE vehicles SET plate=?,trailer_plate=?,type_id=?,driver_name=?,zone_id=?,status=?,
       unavailable_from=?,unavailable_to=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-      body.plate ?? current.plate, body.trailerPlate ?? current.trailer_plate,
-      body.typeId ?? current.type_id, body.driverName ?? current.driver_name,
+      body.plate ?? current.plate, patchTrailer,
+      patchTypeId, body.driverName ?? current.driver_name,
       body.zoneId ?? current.zone_id, body.status ?? current.status,
       body.unavailableFrom ?? current.unavailable_from, body.unavailableTo ?? current.unavailable_to,
       match[0]);
@@ -7234,6 +7279,14 @@ async function api(request, response, url) {
     const move = db.prepare(`INSERT INTO trailer_moves(id,trailer_plate,from_vehicle_id,to_vehicle_id,note,moved_by)
       VALUES(?,?,?,?,?,?)`);
     const targetOld = target ? String(target.trailer_plate || '').trim() : '';
+    // Тип кузова живёт на прицепе (правило руководителя 14.09): вместе с
+    // прицепом тягач получает и его тип из справочника trailers.
+    const applyTrailerType = (vehicleId, plate) => {
+      const trailer = db.prepare('SELECT type_id FROM trailers WHERE plate=?')
+        .get(canonTrailerPlate(plate));
+      if (trailer?.type_id) db.prepare(`UPDATE vehicles SET type_id=? WHERE id=?`)
+        .run(trailer.type_id, vehicleId);
+    };
     db.exec('BEGIN IMMEDIATE');
     try {
       if (holder) db.prepare(`UPDATE vehicles SET trailer_plate='', updated_at=CURRENT_TIMESTAMP
@@ -7241,9 +7294,10 @@ async function api(request, response, url) {
       if (target) {
         if (targetOld && targetOld.toLowerCase() !== 'без прицепа') {
           if (body.swap && holder) {
-            // Обмен: прицеп приёмника уезжает на прежний тягач.
+            // Обмен: прицеп приёмника уезжает на прежний тягач — с типом.
             db.prepare(`UPDATE vehicles SET trailer_plate=?, updated_at=CURRENT_TIMESTAMP
-              WHERE id=?`).run(targetOld, holder.id);
+              WHERE id=?`).run(canonTrailerPlate(targetOld), holder.id);
+            applyTrailerType(holder.id, targetOld);
             move.run(randomUUID(), targetOld, target.id, holder.id, `обмен: ${note}`, user.id);
           } else {
             // Прицеп приёмника отцепляется в свободные.
@@ -7251,7 +7305,8 @@ async function api(request, response, url) {
           }
         }
         db.prepare(`UPDATE vehicles SET trailer_plate=?, updated_at=CURRENT_TIMESTAMP
-          WHERE id=?`).run(trailerPlate, target.id);
+          WHERE id=?`).run(canonTrailerPlate(trailerPlate), target.id);
+        applyTrailerType(target.id, trailerPlate);
       }
       move.run(randomUUID(), trailerPlate, holder?.id || null, target?.id || null, note, user.id);
       db.exec('COMMIT');
