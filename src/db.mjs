@@ -1041,6 +1041,28 @@ function migrateColumns(db) {
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('trailers_seed_v1','done')
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
   }
+  // ── Звенья рейса (экономика перецепа, 14.09.2026) ──
+  // Перецеп на маршруте рвёт рейс между тягачами: выручка и километры
+  // должны делиться по плечам, иначе прежний тягач работал «бесплатно»,
+  // а новый получает всю выручку при половине пробега. Звено = кусок
+  // рейса одного тягача; создаются автоматически при замене ТС на
+  // идущем рейсе. Доли выручки делит ночной сборщик по честным км
+  // (CAN-одометры за интервалы звеньев), фолбэк — по длительности.
+  db.exec(`CREATE TABLE IF NOT EXISTS trip_segments (
+    id TEXT PRIMARY KEY,
+    trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+    vehicle_id TEXT NOT NULL REFERENCES vehicles(id),
+    driver_name TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    handover_lat REAL, handover_lon REAL,
+    odo_start REAL, odo_end REAL,
+    km REAL,
+    revenue_share REAL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_trip_segments_trip ON trip_segments(trip_id);`);
   // ── Блок «Ремзона» (14.09.2026): АВТОНОМНАЯ конструкция ──
   // Заказ-наряды ремзоны — отдельная сущность, НЕ диспозиция: блок
   // строится с полноценным фундаментом (статусная модель, работы,

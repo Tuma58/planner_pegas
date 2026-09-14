@@ -2140,7 +2140,56 @@ async function collectTripGpsKm() {
       saved += 1;
     }
     if (saved || skipped) console.log(`collectTripGpsKm: пробегов рейсов сохранено ${saved}, отброшено ${skipped}`);
+    await collectSegmentEconomy();
   } catch (error) { console.error('collectTripGpsKm:', error.message); }
+}
+// Экономика звеньев (перецеп на маршруте): закрытый рейс делит выручку
+// между тягачами по ЧЕСТНЫМ км плеч — одометры звеньев на передаче;
+// чего нет — добирает Пилот за интервал звена; последний фолбэк — доля
+// длительности. Идемпотентно: считаются только звенья без revenue_share.
+async function collectSegmentEconomy() {
+  try {
+    const tripIds = db.prepare(`SELECT DISTINCT s.trip_id id FROM trip_segments s
+      JOIN trips t ON t.id=s.trip_id
+      WHERE t.status IN ('unloaded','done','paid') AND s.revenue_share IS NULL
+      LIMIT 30`).all();
+    for (const { id } of tripIds) {
+      const trip = db.prepare(`SELECT order_no, revenue_vat,
+          COALESCE(unloaded_at, ends_at) fin FROM trips WHERE id=?`).get(id);
+      const segments = db.prepare(`SELECT s.*, vt.imei FROM trip_segments s
+        LEFT JOIN vehicle_trackers vt ON vt.vehicle_id=s.vehicle_id
+        WHERE s.trip_id=? ORDER BY s.started_at`).all(id);
+      const parts = [];
+      for (const segment of segments) {
+        const endIso = segment.ended_at || trip.fin;
+        if (!segment.ended_at) db.prepare(`UPDATE trip_segments SET ended_at=? WHERE id=?`)
+          .run(trip.fin, segment.id);
+        const fromMs = Date.parse(segment.started_at);
+        const toMs = Date.parse(endIso);
+        let km = segment.odo_start != null && segment.odo_end != null &&
+          segment.odo_end > segment.odo_start ? segment.odo_end - segment.odo_start : null;
+        if (km == null && segment.imei && toMs > fromMs) {
+          const answer = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${segment.imei}` +
+            `&ts=${Math.floor(fromMs / 1000)}&te=${Math.floor(toMs / 1000)}`);
+          await new Promise(resolve => setTimeout(resolve, 160));
+          const delta = Number(answer?.points?.stop_odo) - Number(answer?.points?.start_odo);
+          if (Number.isFinite(delta) && delta >= 0 && delta < 6000) km = delta;
+        }
+        parts.push({ segment, km, hours: Math.max(1, (toMs - fromMs) / 3.6e6) });
+      }
+      const kmTotal = parts.reduce((sum, part) => sum + (part.km || 0), 0);
+      const hoursTotal = parts.reduce((sum, part) => sum + part.hours, 0);
+      const byKm = kmTotal > 30 && parts.every(part => part.km != null);
+      for (const part of parts) {
+        const share = byKm ? part.km / kmTotal : part.hours / hoursTotal;
+        db.prepare(`UPDATE trip_segments SET km=?, revenue_share=? WHERE id=?`).run(
+          part.km != null ? Math.round(part.km) : null,
+          Math.round(share * 1000) / 1000, part.segment.id);
+      }
+      console.log(`звенья №${trip.order_no}: делёж ${byKm ? 'по честным км' : 'по длительности'} — ` +
+        parts.map(part => `${Math.round((byKm ? part.km / kmTotal : part.hours / hoursTotal) * 100)}%`).join(' / '));
+    }
+  } catch (error) { console.error('collectSegmentEconomy:', error.message); }
 }
 setInterval(collectDailyRuns, 3_600_000);
 setTimeout(collectDailyRuns, 160_000);
@@ -3666,6 +3715,17 @@ function runTrailerTypeSync() {
 }
 setInterval(runTrailerTypeSync, 3_600_000);
 setTimeout(runTrailerTypeSync, 90_000);
+// Одометр борта — из датчика «пробег по CAN» последней позиции: репер
+// межсервисного пробега (диспозиции, заказ-наряды) и звеньев рейса.
+function canOdometerKm(vehicleId) {
+  try {
+    const sensors = JSON.parse(db.prepare(`SELECT sensors_json FROM vehicle_positions
+      WHERE vehicle_id=?`).get(vehicleId)?.sensors_json || '[]');
+    const mileage = sensors.find(item => /пробег по can|одометр/i.test(item.name || ''));
+    return mileage && Number.isFinite(Number(mileage.dig)) && Number(mileage.dig) > 0
+      ? Math.round(Number(mileage.dig)) : null;
+  } catch { return null; }
+}
 // Тип сцепки при смене прицепа: известный прицеп диктует тип; новый или
 // бестиповый — учится от типа этой сцепки (первая сцепка заполняет
 // справочник, дальше прицеп главный). Возвращает итоговый type_id.
@@ -6270,12 +6330,42 @@ async function api(request, response, url) {
         // внесён в 1С — диспетчер обязан узнать, ВМЕСТО какой машины пришла
         // новая, иначе он заведёт второй заказ и в учётной системе дубль.
         const previous = db.prepare(`SELECT t.vehicle_id, t.entered_1c_at, t.deferred_1c_at,
-            v.plate FROM trips t JOIN vehicles v ON v.id=t.vehicle_id WHERE t.id=?`).get(tripId);
+            t.status, t.starts_at, t.on_line_at, v.plate, v.driver_name,
+            (SELECT MIN(s.actual_departure) FROM trip_stops s
+              WHERE s.trip_id=t.id AND s.actual_departure IS NOT NULL) first_dep
+          FROM trips t JOIN vehicles v ON v.id=t.vehicle_id WHERE t.id=?`).get(tripId);
         db.prepare(`UPDATE trips SET vehicle_id=?,status='plan',cash=?,order_no=?,empty_km=?,
           updated_by=?,updated_at=CURRENT_TIMESTAMP
           WHERE id=?`).run(vehicle.id, Number(order.cash || 0), order.order_no || '',
           assignEmptyKm, user.id, tripId);
         if (previous && previous.vehicle_id !== vehicle.id) {
+          // Перецеп на маршруте: рейс уже ЕХАЛ и продолжает его другой
+          // тягач — рвём рейс на звенья исполнения (экономика делится
+          // между плечами; доли считает ночной сборщик по честным км).
+          if (previous.status === 'run') {
+            const handoverIso = new Date().toISOString();
+            const pos = db.prepare(`SELECT latitude, longitude FROM vehicle_positions
+              WHERE vehicle_id=?`).get(previous.vehicle_id);
+            const openSegment = db.prepare(`SELECT id FROM trip_segments
+              WHERE trip_id=? AND ended_at IS NULL`).get(tripId);
+            if (openSegment) {
+              db.prepare(`UPDATE trip_segments SET ended_at=?, handover_lat=?, handover_lon=?,
+                odo_end=? WHERE id=?`).run(handoverIso, pos?.latitude ?? null,
+                pos?.longitude ?? null, canOdometerKm(previous.vehicle_id), openSegment.id);
+            } else {
+              // Первое звено — ретроспективно, от фактического выезда.
+              db.prepare(`INSERT INTO trip_segments(id,trip_id,vehicle_id,driver_name,
+                started_at,ended_at,handover_lat,handover_lon,odo_end,note)
+                VALUES(?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), tripId, previous.vehicle_id,
+                previous.driver_name || '',
+                previous.first_dep || previous.on_line_at || previous.starts_at, handoverIso,
+                pos?.latitude ?? null, pos?.longitude ?? null,
+                canOdometerKm(previous.vehicle_id), 'звено закрыто заменой ТС на маршруте');
+            }
+            db.prepare(`INSERT INTO trip_segments(id,trip_id,vehicle_id,driver_name,started_at,odo_start)
+              VALUES(?,?,?,?,?,?)`).run(randomUUID(), tripId, vehicle.id,
+              vehicle.driver_name || '', handoverIso, canOdometerKm(vehicle.id));
+          }
           resetDriverNotificationOnVehicleChange(db, tripId);
           if (previous.entered_1c_at || previous.deferred_1c_at) {
             db.prepare(`UPDATE trips SET needs_1c_update_at=?, needs_1c_note=?, debt_1c_alert_at=NULL
@@ -7472,17 +7562,6 @@ async function api(request, response, url) {
   // Ремзона: классификатор причин заезда в ремонт — без него система не
   // отличает ТО от поломки и нормативы работ не учатся (этап 1, 14.09).
   const REPAIR_PURPOSES = ['ТО', 'плановый ремонт', 'поломка на линии', 'ДТП', 'шины', 'документы', 'прочее'];
-  // Одометр борта — из датчика «пробег по CAN» последней позиции: репер
-  // для межсервисного пробега (и в диспозициях, и в заказ-нарядах).
-  const canOdometerKm = vehicleId => {
-    try {
-      const sensors = JSON.parse(db.prepare(`SELECT sensors_json FROM vehicle_positions
-        WHERE vehicle_id=?`).get(vehicleId)?.sensors_json || '[]');
-      const mileage = sensors.find(item => /пробег по can|одометр/i.test(item.name || ''));
-      return mileage && Number.isFinite(Number(mileage.dig)) && Number(mileage.dig) > 0
-        ? Math.round(Number(mileage.dig)) : null;
-    } catch { return null; }
-  };
   // ── Блок «Ремзона»: заказ-наряды (АВТОНОМНО — этап конструкции) ──
   // Никаких связей с подбором, гантом и диспозициями до этапа интеграции:
   // блок копит собственные факты (статусы, работы, часы, одометры).
@@ -8185,6 +8264,16 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Некорректный период контроля');
     }
     return json(response, 200, { items: controlSnapshot(db, from, to) });
+  }
+  // Звенья рейса (перецеп): кто какое плечо вёз и как поделена выручка.
+  match = route(/^\/api\/trips\/([^/]+)\/segments$/, pathname);
+  if (match && request.method === 'GET') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const items = db.prepare(`SELECT s.*, v.plate FROM trip_segments s
+      JOIN vehicles v ON v.id=s.vehicle_id
+      WHERE s.trip_id=? ORDER BY s.started_at`).all(match[0]);
+    return json(response, 200, { items });
   }
   match = route(/^\/api\/trips\/([^/]+)\/stops$/, pathname);
   if (match && request.method === 'POST') {

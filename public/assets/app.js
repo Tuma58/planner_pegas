@@ -1158,6 +1158,27 @@ function openTrip(trip) {
     state.dispatcherQuery = trip.vehicle_plate || '';
     document.querySelector('[data-view="dispatcher"]')?.click();
   };
+  // Звенья рейса (перецеп на маршруте): кто какое плечо вёз и доля выручки.
+  api(`/api/trips/${trip.id}/segments`).then(({ items }) => {
+    if (!items?.length) return;
+    const form = byId('editTripForm');
+    const actions = form?.querySelector('.modal-actions');
+    if (!form || !actions) return;
+    const box = document.createElement('div');
+    const fmt = iso => iso ? new Date(iso).toLocaleString('ru-RU',
+      { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' }) : '…';
+    box.innerHTML = `<h3 style="margin:8px 0 4px">🔗 Звенья рейса (перецеп)</h3>
+      ${items.map(segment => `<div class="list-item" style="padding:4px 8px">
+        <span style="flex:1"><strong class="mono">${escapeHtml(segment.plate)}</strong>
+          ${segment.driver_name ? ` · ${escapeHtml(segment.driver_name.split(' ')[0])}` : ''}
+          <small class="muted" style="display:block">${fmt(segment.started_at)} → ${fmt(segment.ended_at)}
+            ${segment.km != null ? ` · ${Math.round(segment.km)} км` : ''}</small></span>
+        <b>${segment.revenue_share != null
+          ? `${Math.round(segment.revenue_share * 100)}% · ${money(Math.round(trip.revenue_vat * segment.revenue_share))}`
+          : '<small class="muted">доля ночью</small>'}</b></div>`).join('')}
+      <small class="muted">Доли — по честным км плеч (одометры CAN); выручка рейса делится между тягачами.</small>`;
+    form.insertBefore(box, actions);
+  }).catch(() => { /* звеньев нет — рейс цельный */ });
   // Блок логиста: правка потребности (сумма, окно) прямо из карточки рейса.
   const tripToOrder = byId('tripToOrder');
   if (tripToOrder) tripToOrder.onclick = () => {
