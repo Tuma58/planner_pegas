@@ -1009,6 +1009,40 @@ function migrateColumns(db) {
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
   }
+  // ── Блок «Ремзона» (14.09.2026): АВТОНОМНАЯ конструкция ──
+  // Заказ-наряды ремзоны — отдельная сущность, НЕ диспозиция: блок
+  // строится с полноценным фундаментом (статусная модель, работы,
+  // одометры, механики), но до этапа интеграции ни на подбор, ни на
+  // гант, ни на занятость машин не влияет.
+  db.exec(`CREATE TABLE IF NOT EXISTS repair_orders (
+    id TEXT PRIMARY KEY,
+    vehicle_id TEXT NOT NULL REFERENCES vehicles(id),
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK(status IN ('queued','in_progress','ready','released','cancelled')),
+    purpose TEXT NOT NULL,
+    complaint TEXT NOT NULL DEFAULT '',
+    odometer_km REAL,
+    planned_out TEXT,
+    mechanic_id TEXT REFERENCES users(id),
+    arrived_at TEXT, work_started_at TEXT, finished_at TEXT, released_at TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT REFERENCES users(id), updated_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_repair_orders_vehicle ON repair_orders(vehicle_id, status);
+  CREATE TABLE IF NOT EXISTS repair_jobs (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES repair_orders(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    parts TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','done')),
+    hours REAL,
+    mechanic_id TEXT REFERENCES users(id),
+    done_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_repair_jobs_order ON repair_jobs(order_id);`);
   // Поля перегона: откуда вышли, зачем едем и три факта исполнения.
   ensure('vehicle_dispositions', 'from_label', "TEXT NOT NULL DEFAULT ''");
   ensure('vehicle_dispositions', 'purpose', "TEXT NOT NULL DEFAULT ''");

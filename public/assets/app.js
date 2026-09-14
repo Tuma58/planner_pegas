@@ -15,6 +15,7 @@ import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
 import { DISP_KINDS, renderResource } from './resource.js';
+import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
 import { setupVehicleHover } from './vehicle-hover.js';
@@ -752,6 +753,9 @@ const MAIN_VIEWS = [
   { id: 'dispatcher', title: 'Диспетчер', show: () => true },
   { id: 'monitoring', title: 'Мониторинг', show: () => true },
   { id: 'resource', title: 'Ресурс', show: () => can('fleet:write') },
+  // Блок «Ремзона» — отдельная вкладка (НЕ часть Ресурса): этап
+  // автономной конструкции, на подбор и гант пока не влияет.
+  { id: 'remzona', title: 'Ремзона', show: () => can('fleet:write') || can('reports:read') },
   { id: 'flows', title: 'Потоки', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
@@ -811,6 +815,9 @@ function renderMain() {
       showModal, closeModal,
       onReload: reload, taskContainer: byId('sidepanel')
     });
+  } else if (state.view === 'remzona') {
+    byId('timeline').innerHTML = '<div class="empty-state">Загружаю ремзону…</div>';
+    renderRemzona(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'dashboard') {
     renderDashboard(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'monitoring') {

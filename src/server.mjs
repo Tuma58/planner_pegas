@@ -7417,6 +7417,151 @@ async function api(request, response, url) {
   // Ремзона: классификатор причин заезда в ремонт — без него система не
   // отличает ТО от поломки и нормативы работ не учатся (этап 1, 14.09).
   const REPAIR_PURPOSES = ['ТО', 'плановый ремонт', 'поломка на линии', 'ДТП', 'шины', 'документы', 'прочее'];
+  // Одометр борта — из датчика «пробег по CAN» последней позиции: репер
+  // для межсервисного пробега (и в диспозициях, и в заказ-нарядах).
+  const canOdometerKm = vehicleId => {
+    try {
+      const sensors = JSON.parse(db.prepare(`SELECT sensors_json FROM vehicle_positions
+        WHERE vehicle_id=?`).get(vehicleId)?.sensors_json || '[]');
+      const mileage = sensors.find(item => /пробег по can|одометр/i.test(item.name || ''));
+      return mileage && Number.isFinite(Number(mileage.dig)) && Number(mileage.dig) > 0
+        ? Math.round(Number(mileage.dig)) : null;
+    } catch { return null; }
+  };
+  // ── Блок «Ремзона»: заказ-наряды (АВТОНОМНО — этап конструкции) ──
+  // Никаких связей с подбором, гантом и диспозициями до этапа интеграции:
+  // блок копит собственные факты (статусы, работы, часы, одометры).
+  if (request.method === 'GET' && pathname === '/api/repairs') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const items = db.prepare(`SELECT r.*, v.plate, vt.name vehicle_type,
+        u.full_name mechanic_name
+      FROM repair_orders r
+      JOIN vehicles v ON v.id=r.vehicle_id
+      LEFT JOIN vehicle_types vt ON vt.id=v.type_id
+      LEFT JOIN users u ON u.id=r.mechanic_id
+      WHERE r.status IN ('queued','in_progress','ready')
+        OR (r.status='released' AND r.released_at > datetime('now','-14 days'))
+      ORDER BY r.created_at DESC`).all();
+    const jobsFor = db.prepare(`SELECT id, title, parts, status, hours, done_at
+      FROM repair_jobs WHERE order_id=? ORDER BY created_at`);
+    return json(response, 200, { items: items.map(item =>
+      ({ ...item, jobs: jobsFor.all(item.id) })) });
+  }
+  if (request.method === 'POST' && pathname === '/api/repairs') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    if (!body.vehicleId || !db.prepare('SELECT 1 FROM vehicles WHERE id=?').get(body.vehicleId)) {
+      return errorJson(response, 422, 'Укажите машину');
+    }
+    if (!REPAIR_PURPOSES.includes(String(body.purpose))) {
+      return errorJson(response, 422, `Причина заезда: ${REPAIR_PURPOSES.join(' / ')}`);
+    }
+    if (body.purpose === 'прочее' && !String(body.complaint || '').trim()) {
+      return errorJson(response, 422, 'Для «прочее» опишите, что случилось');
+    }
+    const openOrder = db.prepare(`SELECT 1 FROM repair_orders WHERE vehicle_id=?
+      AND status IN ('queued','in_progress','ready')`).get(body.vehicleId);
+    if (openOrder) return errorJson(response, 409, 'По этой машине уже есть открытый заказ-наряд');
+    const id = randomUUID();
+    const plannedOut = body.plannedOut && Number.isFinite(Date.parse(body.plannedOut))
+      ? new Date(Date.parse(body.plannedOut)).toISOString() : null;
+    db.prepare(`INSERT INTO repair_orders(id,vehicle_id,purpose,complaint,odometer_km,
+      planned_out,arrived_at,created_by,updated_by)
+      VALUES(?,?,?,?,?,?,datetime('now'),?,?)`).run(
+      id, body.vehicleId, String(body.purpose), String(body.complaint || '').trim(),
+      canOdometerKm(body.vehicleId), plannedOut, user.id, user.id);
+    audit(db, user, 'create', 'repair_order', id, body, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/repairs\/([^/]+)\/jobs$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    if (!String(body.title || '').trim()) return errorJson(response, 422, 'Название работы обязательно');
+    if (!db.prepare('SELECT 1 FROM repair_orders WHERE id=?').get(match[0])) {
+      return errorJson(response, 404, 'Заказ-наряд не найден');
+    }
+    const id = randomUUID();
+    db.prepare(`INSERT INTO repair_jobs(id,order_id,title,parts) VALUES(?,?,?,?)`).run(
+      id, match[0], String(body.title).trim(), String(body.parts || '').trim());
+    audit(db, user, 'create', 'repair_job', id, body, requestIp(request));
+    return json(response, 201, { id });
+  }
+  match = route(/^\/api\/repairs\/jobs\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const job = db.prepare('SELECT * FROM repair_jobs WHERE id=?').get(match[0]);
+    if (!job) return errorJson(response, 404, 'Работа не найдена');
+    const done = body.done === true || body.done === false ? body.done : job.status === 'done';
+    const hours = Number.isFinite(Number(body.hours)) && Number(body.hours) > 0
+      ? Math.round(Number(body.hours) * 10) / 10 : job.hours;
+    db.prepare(`UPDATE repair_jobs SET status=?, hours=?, done_at=?, mechanic_id=? WHERE id=?`).run(
+      done ? 'done' : 'todo', hours,
+      done ? (job.done_at || new Date().toISOString()) : null,
+      done ? user.id : job.mechanic_id, match[0]);
+    audit(db, user, 'update', 'repair_job', match[0], body, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    db.prepare('DELETE FROM repair_jobs WHERE id=?').run(match[0]);
+    audit(db, user, 'delete', 'repair_job', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  match = route(/^\/api\/repairs\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const order = db.prepare('SELECT * FROM repair_orders WHERE id=?').get(match[0]);
+    if (!order) return errorJson(response, 404, 'Заказ-наряд не найден');
+    // Статусная модель: очередь → в работе → готов → выдан; отмена — из
+    // очереди. Времена ставятся фактами переходов (нормативы этапа 3).
+    const transitions = {
+      start: { from: ['queued'], to: 'in_progress', stamp: 'work_started_at' },
+      ready: { from: ['in_progress'], to: 'ready', stamp: 'finished_at' },
+      release: { from: ['ready'], to: 'released', stamp: 'released_at' },
+      reopen: { from: ['ready'], to: 'in_progress', stamp: null },
+      cancel: { from: ['queued'], to: 'cancelled', stamp: null }
+    };
+    let status = order.status;
+    const stamps = {};
+    if (body.action) {
+      const rule = transitions[body.action];
+      if (!rule || !rule.from.includes(order.status)) {
+        return errorJson(response, 422, `Переход «${body.action}» из статуса «${order.status}» невозможен`);
+      }
+      status = rule.to;
+      if (rule.stamp) stamps[rule.stamp] = new Date().toISOString();
+      if (body.action === 'ready') {
+        const openJobs = db.prepare(`SELECT COUNT(*) c FROM repair_jobs
+          WHERE order_id=? AND status='todo'`).get(match[0]).c;
+        if (openJobs) return errorJson(response, 422, `Не отмечены работы: ${openJobs} — закройте или удалите их`);
+      }
+    }
+    const plannedOut = 'plannedOut' in body
+      ? (body.plannedOut && Number.isFinite(Date.parse(body.plannedOut))
+        ? new Date(Date.parse(body.plannedOut)).toISOString() : null)
+      : order.planned_out;
+    const purpose = REPAIR_PURPOSES.includes(String(body.purpose)) ? String(body.purpose) : order.purpose;
+    db.prepare(`UPDATE repair_orders SET status=?, purpose=?, complaint=?, note=?, planned_out=?,
+      mechanic_id=?, work_started_at=COALESCE(?,work_started_at),
+      finished_at=COALESCE(?,finished_at), released_at=COALESCE(?,released_at),
+      updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      status, purpose, String(body.complaint ?? order.complaint),
+      String(body.note ?? order.note), plannedOut,
+      body.mechanicId !== undefined ? (body.mechanicId || null) : order.mechanic_id,
+      stamps.work_started_at || null, stamps.finished_at || null, stamps.released_at || null,
+      user.id, match[0]);
+    audit(db, user, 'update', 'repair_order', match[0], body, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   if (request.method === 'POST' && pathname === '/api/transfers') {
     // Перегон заводят и логист (планирует ресурс), и диспетчер (решение на линии).
     const actor = currentUser(request);
@@ -7553,19 +7698,7 @@ async function api(request, response, url) {
     if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt) || endsAt <= startsAt) {
       return errorJson(response, 422, 'Некорректный период недоступности');
     }
-    // Одометр борта на момент заезда — сам, из датчика «пробег по CAN»
-    // последней позиции: основа счётчика «до ТО осталось N км» (этап 2).
-    let odometerKm = null;
-    if (body.kind === 'repair') {
-      try {
-        const sensors = JSON.parse(db.prepare(`SELECT sensors_json FROM vehicle_positions
-          WHERE vehicle_id=?`).get(body.vehicleId)?.sensors_json || '[]');
-        const mileage = sensors.find(item => /пробег по can|одометр/i.test(item.name || ''));
-        if (mileage && Number.isFinite(Number(mileage.dig)) && Number(mileage.dig) > 0) {
-          odometerKm = Math.round(Number(mileage.dig));
-        }
-      } catch { /* датчики не читаются — одометр останется пустым */ }
-    }
+    const odometerKm = body.kind === 'repair' ? canOdometerKm(body.vehicleId) : null;
     const id = randomUUID();
     db.prepare(`INSERT INTO vehicle_dispositions(
       id,vehicle_id,kind,starts_at,ends_at,note,address_id,repair_km,purpose,odometer_km,created_by,updated_by)
