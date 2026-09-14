@@ -87,8 +87,8 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // ×0,5…×1,5 — защита от вырожденной истории; истории нет — средний темп.
   const factByDay = new Map();
   for (const trip of data.trips || []) {
-    if (!doneStatuses.has(trip.status) || !trip.unloaded_at) continue;
-    const ts = Date.parse(trip.unloaded_at);
+    if (!doneStatuses.has(trip.status)) continue;
+    const ts = Date.parse(trip.unloaded_at || trip.ends_at);
     if (!(ts >= dayStart - 35 * DAY_MS && ts < dayStart)) continue;
     const key = Math.floor(ts / DAY_MS);
     factByDay.set(key, (factByDay.get(key) || 0) + tripNet(trip, calc));
@@ -103,15 +103,22 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     const median = list[Math.floor(list.length / 2)];
     return Math.min(avgHistDay * 1.5, Math.max(avgHistDay * 0.5, median));
   };
-  let forecast = factPast;
-  for (let ts = dayStart; ts < monthEnd; ts += DAY_MS) {
-    const bookedDay = activeTrips.filter(trip => {
-      const ends = Date.parse(trip.ends_at);
-      return ends >= ts && ends < ts + DAY_MS;
-    }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-    forecast += Math.max(bookedDay, weekdayMedian(new Date(ts).getUTCDay()));
+  // Минимум образцов для медианного метода — 14 дней с выгрузками:
+  // на короткой истории медиана одного дня-гиганта раздувает месяц.
+  // Мало истории — прежний линейный темп прошедших полных дней.
+  let forecast;
+  if (factByDay.size >= 14) {
+    forecast = factPast;
+    for (let ts = dayStart; ts < monthEnd; ts += DAY_MS) {
+      const bookedDay = activeTrips.filter(trip => {
+        const ends = Date.parse(trip.ends_at);
+        return ends >= ts && ends < ts + DAY_MS;
+      }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+      forecast += Math.max(bookedDay, weekdayMedian(new Date(ts).getUTCDay()));
+    }
+  } else {
+    forecast = dayOfMonth > 1 ? factPast / (dayOfMonth - 1) * daysInMonth : monthFact;
   }
-  if (dayOfMonth <= 1 || !factByDay.size) forecast = monthFact;
   // Урок августа: прогноз «129» опирался на забитое, из которого 116 рейсов
   // отклонили, а 100 выгрузились уже в сентябре — итог 110. Раскладываем
   // честно: выгружено + доедет (за вычетом риска отклонений по доле
