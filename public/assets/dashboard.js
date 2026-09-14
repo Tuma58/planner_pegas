@@ -79,10 +79,39 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // Дневной план — остаток плана на остаток дней (включая сегодня); остаток
   // считается от факта прошедших дней — как в ленте «Вчера/Сегодня/Завтра».
   const dayPlan = Math.max(0, (monthPlan - factPast) / Math.max(1, remainingDays));
-  // Прогноз месяца — темп по фактическим выгрузкам прошедших полных дней.
-  // 1-го числа темпа ещё нет — прогнозом служит забитое на месяц.
-  const forecast = dayOfMonth > 1
-    ? factPast / (dayOfMonth - 1) * daysInMonth : monthFact;
+  // Прогноз месяца — реалистичный (пересмотр 14.09 по решению
+  // руководителя): факт прошедших дней + каждый оставшийся день по
+  // МЕДИАНЕ выгрузок того же дня недели за последние 5 недель (суббота
+  // прогнозируется субботами, а не средним темпом), но не меньше уже
+  // назначенного на этот день. Медиана дня клампится к среднему темпу
+  // ×0,5…×1,5 — защита от вырожденной истории; истории нет — средний темп.
+  const factByDay = new Map();
+  for (const trip of data.trips || []) {
+    if (!doneStatuses.has(trip.status) || !trip.unloaded_at) continue;
+    const ts = Date.parse(trip.unloaded_at);
+    if (!(ts >= dayStart - 35 * DAY_MS && ts < dayStart)) continue;
+    const key = Math.floor(ts / DAY_MS);
+    factByDay.set(key, (factByDay.get(key) || 0) + tripNet(trip, calc));
+  }
+  const avgHistDay = factByDay.size
+    ? [...factByDay.values()].reduce((a, b) => a + b, 0) / factByDay.size : 0;
+  const weekdayMedian = dow => {
+    const list = [...factByDay.entries()]
+      .filter(([key]) => new Date(key * DAY_MS).getUTCDay() === dow)
+      .map(([, value]) => value).sort((a, b) => a - b);
+    if (!list.length) return avgHistDay;
+    const median = list[Math.floor(list.length / 2)];
+    return Math.min(avgHistDay * 1.5, Math.max(avgHistDay * 0.5, median));
+  };
+  let forecast = factPast;
+  for (let ts = dayStart; ts < monthEnd; ts += DAY_MS) {
+    const bookedDay = activeTrips.filter(trip => {
+      const ends = Date.parse(trip.ends_at);
+      return ends >= ts && ends < ts + DAY_MS;
+    }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+    forecast += Math.max(bookedDay, weekdayMedian(new Date(ts).getUTCDay()));
+  }
+  if (dayOfMonth <= 1 || !factByDay.size) forecast = monthFact;
   // Урок августа: прогноз «129» опирался на забитое, из которого 116 рейсов
   // отклонили, а 100 выгрузились уже в сентябре — итог 110. Раскладываем
   // честно: выгружено + доедет (за вычетом риска отклонений по доле
@@ -98,6 +127,10 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     return starts >= monthStart && starts < monthEnd && Date.parse(trip.ends_at) >= monthEnd;
   }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   const forecastHonest = monthDone + monthBooked * (1 - rejShare);
+  // До какой даты вообще есть назначенные рейсы: горизонт заявок —
+  // подпись «назначено до …» у строки «Уже в кармане».
+  const bookedUntil = activeTrips.filter(trip => trip.status === 'plan' || trip.status === 'run')
+    .reduce((max, trip) => Math.max(max, Date.parse(trip.ends_at) || 0), 0);
 
   // Продажи: внесено за день, суммы и средний чек, назначено из внесённого пула.
   const orders = (data.orders || []).filter(order => order.status !== 'cancelled');
@@ -220,7 +253,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   };
   const days = { yesterday: dayMetricsAt(-1), today: dayMetricsAt(0), tomorrow: dayMetricsAt(1) };
 
-  return { monthPlan, monthFact, monthDone, monthBooked, rejShare, carryOver, forecastHonest,
+  return { monthPlan, monthFact, monthDone, monthBooked, rejShare, carryOver, forecastHonest, bookedUntil,
     dayPlan, dayFact, dayDone, dayExpected, dayGap, days,
     dayPace: { due: dueByNow, done: dayDone, diff: dayDone - dueByNow },
     dayLoads: { count: dayLoads.length, sum: dayLoadsSum,
@@ -540,14 +573,14 @@ export async function renderDashboard(container, context) {
         <b title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">${money(Math.round(metrics.monthFact))}</b>
         <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%
           · <span class="dash-done" title="Фактически выгружено с начала месяца (статус «выгружен» и далее)">выгружено <b>${money(Math.round(metrics.monthDone))}</b></span></span>
-        <span class="dash-month-side">Прогноз <small class="muted">(без НДС)</small>: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
+        <span class="dash-month-side" title="Реалистичный прогноз: факт прошедших дней + каждый оставшийся день по медиане выгрузок того же дня недели за 5 недель (суббота считается субботами), но не меньше уже назначенного на день">Прогноз <small class="muted">(без НДС)</small>: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
           ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
           · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
       </div>
-      <div class="dash-pace" title="Урок августа: прогноз опирался на «забитое», из которого часть рейсов отклонили, а часть выгрузилась уже в следующем месяце. Риск отклонений — по доле отклонённой выручки за последние 14 дней">
-        🧮 Честно: <b>${shortMln(metrics.forecastHonest)}</b> = выгружено ${shortMln(metrics.monthDone)}
+      <div class="dash-pace" title="Гарантированная база месяца, НЕ прогноз: выгружено + уже назначенное доедет (минус риск отклонений по доле последних 14 дней). Заявки вносятся на 1–3 дня вперёд, поэтому в середине месяца эта цифра всегда сильно меньше прогноза — вторая половина месяца ещё не внесена">
+        💼 Уже в кармане: <b>${shortMln(metrics.forecastHonest)}</b> = выгружено ${shortMln(metrics.monthDone)}
         + доедет ~${shortMln(metrics.monthBooked * (1 - metrics.rejShare))}
-        <span class="muted">(назначено ${shortMln(metrics.monthBooked)}, риск отклонений −${Math.round(metrics.rejShare * 100)}%)</span>${metrics.carryOver > 100_000
+        <span class="muted">(назначено до ${metrics.bookedUntil ? new Date(metrics.bookedUntil).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '—'}, риск отклонений −${Math.round(metrics.rejShare * 100)}%)</span>${metrics.carryOver > 100_000
     ? ` · переходят в следующий месяц: <b>${shortMln(metrics.carryOver)}</b> <span class="muted">(выгрузка за пределами месяца — не в этой цели)</span>` : ''}</div>
       <div class="dash-pace ${metrics.monthPace.diff >= 0 ? 'good' : 'bad'}">
         ⏱ По графику к концу ${metrics.dayOfMonth}-го: <b>${shortMln(metrics.monthPace.schedule)}</b>
