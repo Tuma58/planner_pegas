@@ -98,7 +98,7 @@ function breakdownDialog(trip, data, context) {
     await api('/api/dispositions', {
       method: 'POST',
       body: JSON.stringify({
-        vehicleId: trip.vehicle_id, kind: 'repair',
+        vehicleId: trip.vehicle_id, kind: 'repair', purpose: 'поломка на линии',
         startsAt: new Date().toISOString(),
         endsAt: new Date(Date.now() + 86_400_000).toISOString(),
         note: `Поломка на рейсе ${routeLabel(trip)}`

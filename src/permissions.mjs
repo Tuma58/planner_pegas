@@ -5,7 +5,8 @@ export const ROLE_LABELS = {
   dispatcher: 'Диспетчер',
   sales: 'Отдел продаж',
   accountant: 'Бухгалтерия',
-  manager: 'Руководитель'
+  manager: 'Руководитель',
+  mechanic: 'Механик'
 };
 
 const ALL = [
@@ -23,7 +24,10 @@ export const ROLE_PERMISSIONS = {
   sales: ['planner:read', 'orders:write', 'customers:read'],
   accountant: ['planner:read', 'payments:write', 'customers:read'],
   // График смен сотрудников ведёт руководитель (и админ через ALL).
-  manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write']
+  manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write'],
+  // Механик (блок «Ремзона», старт 14.09.2026): видит парк и ведёт
+  // недоступности — заезды в ремонт/ТО, их причины и закрытие.
+  mechanic: ['planner:read', 'fleet:write']
 };
 
 export function permissionsFor(role) {

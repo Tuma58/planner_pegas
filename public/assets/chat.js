@@ -10,7 +10,8 @@ import { api, escapeHtml, formatDateTime, toast } from './api.js';
 const POLL_MS = 20_000;
 const ROLE_LABELS = {
   logist: 'Логист', dispatcher: 'Диспетчер', sales: 'Продажи',
-  accountant: 'Бухгалтерия', resource: 'Ресурс', manager: 'Руководитель', admin: 'Администратор'
+  accountant: 'Бухгалтерия', resource: 'Ресурс', manager: 'Руководитель',
+  admin: 'Администратор', mechanic: 'Механик'
 };
 
 let audioContext = null;

@@ -25,6 +25,10 @@ const KIND_LABEL = {
 // Последнее действие для отмены: создание отменяется удалением, удаление —
 // воссозданием. Один шаг назад покрывает почти все случаи промаха.
 let lastAction = null;
+// Ремзона, этап 1: заезд в ремонт без причины сервер не принимает —
+// у кисти «Ремонт» свой селектор причины (переживает перерисовки).
+export const REPAIR_PURPOSES = ['ТО', 'плановый ремонт', 'поломка на линии', 'ДТП', 'шины', 'документы'];
+let brushRepairPurpose = 'плановый ремонт';
 
 export function brushPaletteHtml(state) {
   const active = state.resourceBrush || 'view';
@@ -34,6 +38,10 @@ export function brushPaletteHtml(state) {
     ${BRUSHES.map(brush => `<button class="brush ${brush.kind === active ? 'active' : ''}"
       data-brush="${brush.kind}" title="${brush.hint || `Клавиша ${String(brush.key).toUpperCase()}`}"
       ${brush.color ? `style="--brush-color:${brush.color}"` : ''}>${brush.label}</button>`).join('')}
+    <select id="brushRepairPurpose" class="brush-purpose" ${active === 'repair' ? '' : 'hidden'}
+      title="Причина заезда — пишется в каждый интервал ремонта, нарисованный кистью">
+      ${REPAIR_PURPOSES.map(reason => `<option ${reason === brushRepairPurpose ? 'selected' : ''}>${reason}</option>`).join('')}
+    </select>
     <span class="brush-sep"></span>
     <button class="brush ghost" id="brushUndo" ${lastAction ? '' : 'disabled'}
       title="Отменить последнее действие (Ctrl+Z)">↩ Отменить</button>
@@ -93,6 +101,7 @@ export function wireResourceBrush(container, context) {
         }
         const created = await api('/api/dispositions', { method: 'POST', body: JSON.stringify({
           vehicleId, kind,
+          purpose: kind === 'repair' ? brushRepairPurpose : undefined,
           startsAt: new Date(fromMs).toISOString(),
           endsAt: new Date(toMs).toISOString()
         }) });
@@ -138,7 +147,12 @@ export function wireResourceBrush(container, context) {
       container.querySelectorAll('[data-brush]').forEach(item =>
         item.classList.toggle('active', item.dataset.brush === state.resourceBrush));
       document.body.classList.toggle('brush-on', state.resourceBrush !== 'view');
+      const purposeSelect = container.querySelector('#brushRepairPurpose');
+      if (purposeSelect) purposeSelect.hidden = state.resourceBrush !== 'repair';
     }));
+  container.querySelector('#brushRepairPurpose')?.addEventListener('change', event => {
+    brushRepairPurpose = event.target.value;
+  });
 
   container.querySelector('#brushCompact')?.addEventListener('click', () => {
     state.resourceCompact = !state.resourceCompact;
@@ -198,6 +212,8 @@ export function bindResourceKeys(getContext) {
     document.body.classList.toggle('brush-on', brush !== 'view');
     document.querySelectorAll('[data-brush]').forEach(item =>
       item.classList.toggle('active', item.dataset.brush === brush));
+    const purposeSelect = document.getElementById('brushRepairPurpose');
+    if (purposeSelect) purposeSelect.hidden = brush !== 'repair';
     const label = BRUSHES.find(item => item.kind === brush)?.label || brush;
     toast(`Кисть: ${label}`);
   });

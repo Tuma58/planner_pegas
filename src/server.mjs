@@ -7414,6 +7414,9 @@ async function api(request, response, url) {
   // с заданием водителю и контролем прибытия: факт прибытия становится
   // местоположением сцепки для следующего назначения.
   const TRANSFER_PURPOSES = ['под погрузку', 'на базу', 'в ремонт', 'на пересменку', 'к месту стоянки'];
+  // Ремзона: классификатор причин заезда в ремонт — без него система не
+  // отличает ТО от поломки и нормативы работ не учатся (этап 1, 14.09).
+  const REPAIR_PURPOSES = ['ТО', 'плановый ремонт', 'поломка на линии', 'ДТП', 'шины', 'документы', 'прочее'];
   if (request.method === 'POST' && pathname === '/api/transfers') {
     // Перегон заводят и логист (планирует ресурс), и диспетчер (решение на линии).
     const actor = currentUser(request);
@@ -7526,6 +7529,16 @@ async function api(request, response, url) {
     if (!body.vehicleId || !allowed.has(body.kind)) {
       return errorJson(response, 422, 'ТС и вид диспозиции обязательны');
     }
+    // Ремзона, этап 1 (14.09): заезд в ремонт без причины не создаётся —
+    // без классификатора система не отличает ТО от поломки и не учится.
+    const repairPurpose = body.kind === 'repair'
+      ? (REPAIR_PURPOSES.includes(String(body.purpose)) ? String(body.purpose) : null) : null;
+    if (body.kind === 'repair' && !repairPurpose) {
+      return errorJson(response, 422, `Укажите причину заезда: ${REPAIR_PURPOSES.join(' / ')}`);
+    }
+    if (repairPurpose === 'прочее' && !String(body.note || '').trim()) {
+      return errorJson(response, 422, 'Для причины «прочее» опишите её в комментарии');
+    }
     const startsAt = Date.parse(body.startsAt);
     const endsAt = Date.parse(body.endsAt);
     // Место ремонта: пробег до сервиса от позиции сцепки — «ремонтный пробег».
@@ -7540,13 +7553,26 @@ async function api(request, response, url) {
     if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt) || endsAt <= startsAt) {
       return errorJson(response, 422, 'Некорректный период недоступности');
     }
+    // Одометр борта на момент заезда — сам, из датчика «пробег по CAN»
+    // последней позиции: основа счётчика «до ТО осталось N км» (этап 2).
+    let odometerKm = null;
+    if (body.kind === 'repair') {
+      try {
+        const sensors = JSON.parse(db.prepare(`SELECT sensors_json FROM vehicle_positions
+          WHERE vehicle_id=?`).get(body.vehicleId)?.sensors_json || '[]');
+        const mileage = sensors.find(item => /пробег по can|одометр/i.test(item.name || ''));
+        if (mileage && Number.isFinite(Number(mileage.dig)) && Number(mileage.dig) > 0) {
+          odometerKm = Math.round(Number(mileage.dig));
+        }
+      } catch { /* датчики не читаются — одометр останется пустым */ }
+    }
     const id = randomUUID();
     db.prepare(`INSERT INTO vehicle_dispositions(
-      id,vehicle_id,kind,starts_at,ends_at,note,address_id,repair_km,created_by,updated_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(
+      id,vehicle_id,kind,starts_at,ends_at,note,address_id,repair_km,purpose,odometer_km,created_by,updated_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, body.vehicleId, body.kind, new Date(startsAt).toISOString(),
       new Date(endsAt).toISOString(), String(body.note || ''),
-      repairAddressId, repairKm, user.id, user.id);
+      repairAddressId, repairKm, repairPurpose, odometerKm, user.id, user.id);
     invalidateDraftsForVehicle(body.vehicleId);
     audit(db, user, 'create', 'disposition', id, body, requestIp(request));
     return json(response, 201, { id });
@@ -7583,11 +7609,16 @@ async function api(request, response, url) {
           return origin && target
             ? roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude) : null;
         })() : null;
+    // Причина заезда: правится только на валидную из классификатора;
+    // у существующих ремонтов без причины остаётся как было (история).
+    const patchPurpose = kind === 'repair'
+      ? (REPAIR_PURPOSES.includes(String(body.purpose)) ? String(body.purpose) : current.purpose)
+      : current.purpose;
     db.prepare(`UPDATE vehicle_dispositions SET vehicle_id=?,kind=?,starts_at=?,ends_at=?,
-      note=?,address_id=?,repair_km=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      note=?,address_id=?,repair_km=?,purpose=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       patchVehicleId, kind, new Date(startsAt).toISOString(),
       new Date(endsAt).toISOString(), String(body.note ?? current.note),
-      patchAddressId, patchRepairKm, user.id, match[0]);
+      patchAddressId, patchRepairKm, patchPurpose, user.id, match[0]);
     invalidateDraftsForVehicle(patchVehicleId);
     if (patchVehicleId !== current.vehicle_id) invalidateDraftsForVehicle(current.vehicle_id);
     audit(db, user, 'update', 'disposition', match[0], body, requestIp(request));

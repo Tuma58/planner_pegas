@@ -578,6 +578,8 @@ function migrateColumns(db) {
   ensure('trips', 'empty_km', 'REAL');
   ensure('vehicle_dispositions', 'address_id', 'TEXT REFERENCES addresses(id)');
   ensure('vehicle_dispositions', 'repair_km', 'REAL');
+  // Ремзона: одометр борта (CAN) на момент заезда — основа счётчика ТО.
+  ensure('vehicle_dispositions', 'odometer_km', 'REAL');
   // Номер заявки присваивает система: сквозной счётчик в app_meta (с 1001).
   // Заявки без номера нумеруются по времени создания при каждом старте —
   // идемпотентно подхватываются и старые, и созданные обходными путями.

@@ -1593,6 +1593,11 @@ function openDisposition(item = null, prefill = null) {
       <label class="field">С<input name="startsAt" type="datetime-local" value="${isoInput(start)}" required></label>
       <label class="field">До<input name="endsAt" type="datetime-local" value="${isoInput(end)}" required></label>
     </div>
+    <label class="field" id="repairPurposeField" style="display:none">Причина заезда
+      <select name="purpose">
+        ${['ТО', 'плановый ремонт', 'поломка на линии', 'ДТП', 'шины', 'документы', 'прочее']
+          .map(reason => `<option ${item?.purpose === reason ? 'selected' : ''}>${reason}</option>`).join('')}
+      </select></label>
     <label class="field" id="repairPlaceField" style="display:none">Место ремонта (сервис)
       <input name="repairPlace" list="repairPlaces" autocomplete="off"
         placeholder="адрес из справочника — посчитается ремонтный пробег"
@@ -1611,8 +1616,9 @@ function openDisposition(item = null, prefill = null) {
   // Поле сервиса видно только для «В ремонте».
   const dispositionForm = byId('dispositionForm');
   const toggleRepairPlace = () => {
-    byId('repairPlaceField').style.display =
-      dispositionForm.elements.kind.value === 'repair' ? '' : 'none';
+    const isRepair = dispositionForm.elements.kind.value === 'repair';
+    byId('repairPlaceField').style.display = isRepair ? '' : 'none';
+    byId('repairPurposeField').style.display = isRepair ? '' : 'none';
   };
   dispositionForm.elements.kind.addEventListener('change', toggleRepairPlace);
   toggleRepairPlace();
