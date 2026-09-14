@@ -966,6 +966,26 @@ function migrateColumns(db) {
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
   }
+  // Роль «Механик» (блок «Ремзона», 14.09.2026): список ролей в CHECK
+  // users расширяется пересозданием таблицы по её же схеме — как у
+  // vehicle_dispositions ниже. users — родитель множества FK, поэтому
+  // на время танца внешние ключи выключаются (имена ссылок не меняются).
+  const usersSql = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='users'`).get()?.sql || '';
+  if (usersSql && !usersSql.includes("'mechanic'")) {
+    const rebuiltUsers = usersSql
+      .replace(/CREATE TABLE\s+"?users"?/i, 'CREATE TABLE users_new')
+      .replace(/role IN \([^)]*\)/i,
+        "role IN ('admin','logist','resource','dispatcher','sales','accountant','manager','mechanic')");
+    db.exec(`PRAGMA foreign_keys=OFF;
+      BEGIN IMMEDIATE;
+      ${rebuiltUsers};
+      INSERT INTO users_new SELECT * FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;
+      COMMIT;
+      PRAGMA foreign_keys=ON;`);
+  }
   // Порожний перегон (27.08.2026): машина едет пустой из точки освобождения
   // туда, где нужна — под погрузку, домой, в ремонт, на пересменку. Это не
   // рейс (нет груза и выручки, иначе поехали бы в отчёты и сверку 1С), а вид
