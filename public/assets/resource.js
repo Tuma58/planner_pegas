@@ -113,6 +113,21 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     const period = plannedAt(planned, midMs, 'driver_id', driverId)[0];
     return period ? period.vehicle_id : permAt(driverId, midMs);
   };
+  // Разрыв после пересменки (решение руководителя 15.09): пересменка,
+  // заканчивающаяся сегодня или позже, гасит постоянное закрепление —
+  // со дня её окончания фамилия берётся только из периодного назначения,
+  // иначе ячейка ПУСТАЯ с подсветкой отклонения. Прошлые пересменки
+  // историю не трогают (как в ленте водителей гант-сетки).
+  const shiftEndsByVehicle = new Map();
+  for (const item of dispositions) {
+    if (item.kind !== 'shift') continue;
+    const end = String(item.ends_at).slice(0, 10);
+    if (end < todayIso) continue;
+    if (!shiftEndsByVehicle.has(item.vehicle_id)) shiftEndsByVehicle.set(item.vehicle_id, []);
+    shiftEndsByVehicle.get(item.vehicle_id).push(end);
+  }
+  const shiftGapAt = (vehicleId, iso) =>
+    (shiftEndsByVehicle.get(vehicleId) || []).some(end => end <= iso);
   const dispoAt = (vehicleId, dayStartMs) => dispositions.filter(item =>
     item.vehicle_id === vehicleId &&
     Date.parse(item.starts_at) < dayStartMs + 86_400_000 &&
@@ -145,7 +160,10 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         const iso = day.toISOString().slice(0, 10);
         const midMs = day.getTime() + 43_200_000;
         const period = plannedAt(planned, midMs, 'driver_id', driver.id)[0];
-        const vehicleId = period ? period.vehicle_id : permAt(driver.id, midMs);
+        const perm = permAt(driver.id, midMs);
+        // После пересменки его машины сцепка не «его», пока не закрепили.
+        const gap = !period && perm && shiftGapAt(perm, iso);
+        const vehicleId = period ? period.vehicle_id : gap ? null : perm;
         const att = attByDriver.get(`${driver.id}|${iso}`);
         const absent = absentAt(driver, midMs);
         const shift = shiftStateAt(driver, iso);
@@ -171,7 +189,8 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         } else if (vehicleId && tripAt(vehicleId, midMs)) {
           cls = 'sched-trip';
           text = plateOf.get(vehicleId) || '—';
-        } else text = plateOf.get(vehicleId) || '—';
+        } else if (gap) cls = 'sk-gap';
+        else text = plateOf.get(vehicleId) || '—';
         const destHtml = cls === 'sk-overwork'
           ? '<small class="sk-fot">работает в выходной · ↑ФОТ</small>'
           : period && (cls === 'sched-trip' || !cls)
@@ -182,7 +201,9 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
         const clsAll = [cls,
           att?.status === 'present' ? 'att-ok' : att?.status === 'absent' ? 'att-bad' : '',
           period ? 'sk-period' : '', canWrite ? 'sched-act' : ''].filter(Boolean).join(' ');
-        const title = [vehicleId ? plateOf.get(vehicleId) : 'без сцепки',
+        const title = [gap
+            ? `после пересменки не закреплён (сцепка была ${plateOf.get(perm) || '—'}) — назначьте на период`
+            : vehicleId ? plateOf.get(vehicleId) : 'без сцепки',
           period ? `закреплён на период до ${String(period.ends_at).slice(0, 10)}${period.note ? ` (${period.note})` : ''}` : '',
           att ? (att.status === 'present' ? 'вышел' : `невыход: ${att.reason}`) : '',
           absent ? `${text} по карточке` : '',
@@ -210,7 +231,9 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           !plannedAt(planned, midMs, 'driver_id', driver.id).length);
         // Активная подмена вытесняет постоянного из ячейки полностью:
         // машину в эти дни ведёт подменный (постоянный — в подсказке).
-        const holders = periodHolders.length ? periodHolders : permHolders;
+        // После пересменки без периодного назначения держателей нет вовсе.
+        const gap = !periodHolders.length && shiftGapAt(vehicle.id, iso);
+        const holders = periodHolders.length ? periodHolders : gap ? [] : permHolders;
         const resting = holders.filter(driver => shiftStateAt(driver, iso)?.rest ||
           absentAt(driver, midMs));
         const activeHolders = holders.filter(driver => !resting.includes(driver));
@@ -233,6 +256,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           text = shortName(holders[0].full_name);
         } else if (main?.kind === 'no_driver') {
           if (holders.length) { cls = 'sk-rest'; text = 'выходной'; restUntil = main.ends_at; }
+          else if (gap) cls = 'sk-gap';
           else { cls = 'sk-nodrv'; text = 'нет водителя'; }
         } else if (main && KIND_CELL[main.kind]) [cls, text] = KIND_CELL[main.kind];
         else if (!activeHolders.length && holders.length) {
@@ -245,8 +269,10 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
             text = 'межвахта';
             restUntil = shiftStateAt(first, iso)?.until;
           }
-        } else if (!holders.length) { cls = 'sk-nodrv'; text = 'нет водителя'; }
-        else if (inTrip) {
+        } else if (!holders.length) {
+          if (gap) cls = 'sk-gap';
+          else { cls = 'sk-nodrv'; text = 'нет водителя'; }
+        } else if (inTrip) {
           cls = 'sched-trip';
           text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
         } else text = activeHolders.map(driver => shortName(driver.full_name)).join(', ');
@@ -274,7 +300,10 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
             return driver.full_name + (own ? ' (подменный)' : '') +
               (absentAt(driver, midMs) ? ' (отсутствие)'
                 : shift ? (shift.rest ? ` (межвахта до ${shift.until})` : ` (вахта до ${shift.until})`) : '');
-          }).join(', ') || 'водитель не закреплён',
+          }).join(', ') || (gap
+            ? `после пересменки водитель не назначен${permHolders.length
+              ? ` (был ${permHolders.map(driver => shortName(driver.full_name)).join(', ')})` : ''} — закрепите на период`
+            : 'водитель не закреплён'),
           periodHolders.length && permHolders.length
             ? `постоянный: ${permHolders.map(driver => driver.full_name).join(', ')}` : '',
           periodHolders.length && tripOf(vehicle.id, midMs)
@@ -299,6 +328,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     <span><i class="lg-chip" style="--c:#3f8a78"></i> в рейсе</span>
     <span><i class="lg-chip" style="--c:#5e87ad"></i> пересменка</span>
     <span><i class="lg-chip" style="--c:#b06a55"></i> нет водителя (некому работать)</span>
+    <span><i class="lg-chip lg-gap"></i> пусто = после пересменки водитель не назначен</span>
     <span><i class="lg-chip" style="--c:#bd8f42"></i> ремонт</span>
     <span><i class="lg-chip lg-stripe"></i> работает в выходной · ↑ФОТ</span>
     <span><i class="lg-chip" style="--c:#8a7fb3"></i> выходной · межвахта · отпуск</span>
