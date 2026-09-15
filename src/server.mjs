@@ -7982,7 +7982,10 @@ async function api(request, response, url) {
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, body.vehicleId, body.kind, new Date(startsAt).toISOString(),
       new Date(endsAt).toISOString(), String(body.note || ''),
-      repairAddressId, repairKm, repairPurpose, odometerKm, user.id, user.id);
+      // Причина есть только у ремонта; для остальных видов колонка NOT NULL
+      // требует пустую строку — явный null ронял ВСЕ не-ремонтные
+      // диспозиции с 14.09 («внутренняя ошибка сервера» у сотрудников).
+      repairAddressId, repairKm, repairPurpose ?? '', odometerKm, user.id, user.id);
     invalidateDraftsForVehicle(body.vehicleId);
     audit(db, user, 'create', 'disposition', id, body, requestIp(request));
     return json(response, 201, { id });
