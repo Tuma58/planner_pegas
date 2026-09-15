@@ -1019,6 +1019,28 @@ function migrateColumns(db) {
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
   }
+  // ── «Пусто» как назначение (15.09.2026, решение руководителя) ──
+  // Период без водителя (driver_id NULL) — осознанная пустота в графике
+  // закреплений: перекрывает постоянного, рисуется пустой ячейкой с
+  // подсветкой, подрезается заменой как обычный период. Снимаем NOT NULL
+  // пересозданием по живой схеме (паттерн users/dispositions выше).
+  const assignSql = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='driver_assignments'`).get()?.sql || '';
+  if (/driver_id\s+TEXT\s+NOT\s+NULL/i.test(assignSql)) {
+    const rebuiltAssign = assignSql
+      .replace(/CREATE TABLE\s+"?driver_assignments"?/i, 'CREATE TABLE driver_assignments_new')
+      .replace(/driver_id\s+TEXT\s+NOT\s+NULL/i, 'driver_id TEXT');
+    db.exec(`PRAGMA foreign_keys=OFF;
+      BEGIN IMMEDIATE;
+      ${rebuiltAssign};
+      INSERT INTO driver_assignments_new SELECT * FROM driver_assignments;
+      DROP TABLE driver_assignments;
+      ALTER TABLE driver_assignments_new RENAME TO driver_assignments;
+      CREATE INDEX IF NOT EXISTS idx_driver_assignments_span
+        ON driver_assignments(driver_id, starts_at);
+      COMMIT;
+      PRAGMA foreign_keys=ON;`);
+  }
   // ── Ознакомление с инструкциями (14.09.2026): цифровая «подпись» ──
   // Сотрудник подтверждает ознакомление с редакцией раздела инструкций
   // кнопкой «✓ Ознакомлен»; при новой редакции (updated) подтверждение

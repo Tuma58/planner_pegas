@@ -114,7 +114,7 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
         item.vehicle_id === vehicle.id &&
         Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
       return `<p class="muted">${sub
-        ? `<b>${escapeHtml(sub.driver_name)}</b> <span class="badge warn">подменный до ${String(sub.ends_at).slice(0, 10).split('-').reverse().slice(0, 2).join('.')}</span>
+        ? `<b>${escapeHtml(sub.driver_name || '🚫 водителя нет (назначено пустым)')}</b> <span class="badge warn">${sub.driver_name ? 'подменный' : 'пусто'} до ${String(sub.ends_at).slice(0, 10).split('-').reverse().slice(0, 2).join('.')}</span>
            · постоянный: ${escapeHtml(vehicle.driver_name || '—')}`
         : escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')} ${driverRatingBadge(rating, { small: true })}
       · приписка: ${escapeHtml(vehicle.zone_name || '—')}

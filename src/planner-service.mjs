@@ -401,14 +401,19 @@ export function createDriverAssignment(db, { driverId, vehicleId, startsAt, ends
       String(endsAt) <= String(startsAt)) {
     throw Object.assign(new Error('Нужен период: даты с и по (по — позже чем с)'), { status: 422 });
   }
-  const driver = db.prepare(`SELECT id,full_name FROM drivers WHERE id=? AND status<>'fired'`).get(driverId);
-  if (!driver) throw Object.assign(new Error('Водитель не найден'), { status: 404 });
+  // «Пусто» — тоже назначение (15.09): driverId не передан — период без
+  // водителя. Перекрывает постоянного (ячейки пустые с подсветкой),
+  // проверок занятости не требует.
+  const empty = !driverId;
+  const driver = empty ? null
+    : db.prepare(`SELECT id,full_name FROM drivers WHERE id=? AND status<>'fired'`).get(driverId);
+  if (!empty && !driver) throw Object.assign(new Error('Водитель не найден'), { status: 404 });
   const vehicle = db.prepare(`SELECT id,plate FROM vehicles WHERE id=?`).get(vehicleId);
   if (!vehicle) throw Object.assign(new Error('Сцепка не найдена'), { status: 404 });
   // Занятость на ДРУГОЙ машине — ошибка: снять человека с чужой сцепки
   // втихую нельзя, подрежьте период там, где он стоит. Пересечения на
   // ЭТОЙ машине — не ошибка, а замена: они подрезаются ниже.
-  const clash = db.prepare(`SELECT a.id, v.plate FROM driver_assignments a
+  const clash = empty ? null : db.prepare(`SELECT a.id, v.plate FROM driver_assignments a
     JOIN vehicles v ON v.id=a.vehicle_id
     WHERE a.driver_id=? AND a.vehicle_id<>? AND a.starts_at < ? AND a.ends_at > ?`)
     .get(driverId, vehicleId, endsAt, startsAt);
@@ -424,8 +429,9 @@ export function createDriverAssignment(db, { driverId, vehicleId, startsAt, ends
   const id = randomUUID();
   db.exec('BEGIN IMMEDIATE');
   try {
-    const overlaps = db.prepare(`SELECT a.*, d.full_name driver_name FROM driver_assignments a
-      JOIN drivers d ON d.id=a.driver_id
+    const overlaps = db.prepare(`SELECT a.*, COALESCE(d.full_name,'Пусто') driver_name
+      FROM driver_assignments a
+      LEFT JOIN drivers d ON d.id=a.driver_id
       WHERE a.vehicle_id=? AND a.starts_at < ? AND a.ends_at > ?`).all(vehicleId, endsAt, startsAt);
     for (const old of overlaps) {
       if (old.starts_at < startsAt && old.ends_at > endsAt) {
@@ -450,7 +456,7 @@ export function createDriverAssignment(db, { driverId, vehicleId, startsAt, ends
       }
     }
     db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at,note,created_by)
-      VALUES(?,?,?,?,?,?,?)`).run(id, driverId, vehicleId, startsAt, endsAt,
+      VALUES(?,?,?,?,?,?,?)`).run(id, empty ? null : driverId, vehicleId, startsAt, endsAt,
       String(note || '').slice(0, 200), userId);
     db.exec('COMMIT');
   } catch (error) {

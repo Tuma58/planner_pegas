@@ -224,15 +224,18 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
       const cells = days.map(day => {
         const iso = day.toISOString().slice(0, 10);
         const midMs = day.getTime() + 43_200_000;
-        const periodHolders = plannedAt(planned, midMs, 'vehicle_id', vehicle.id)
+        const periodRows = plannedAt(planned, midMs, 'vehicle_id', vehicle.id);
+        const periodHolders = periodRows
           .map(item => driverById.get(item.driver_id)).filter(Boolean);
         const permHolders = payload.drivers.filter(driver =>
           permAt(driver.id, midMs) === vehicle.id &&
           !plannedAt(planned, midMs, 'driver_id', driver.id).length);
         // Активная подмена вытесняет постоянного из ячейки полностью:
         // машину в эти дни ведёт подменный (постоянный — в подсказке).
-        // После пересменки без периодного назначения держателей нет вовсе.
-        const gap = !periodHolders.length && shiftGapAt(vehicle.id, iso);
+        // Пустота бывает назначенной (период без водителя — «водителя
+        // нет») и по умолчанию (после пересменки без назначения).
+        const gapSet = !periodHolders.length && periodRows.some(row => !row.driver_id);
+        const gap = gapSet || (!periodRows.length && shiftGapAt(vehicle.id, iso));
         const holders = periodHolders.length ? periodHolders : gap ? [] : permHolders;
         const resting = holders.filter(driver => shiftStateAt(driver, iso)?.rest ||
           absentAt(driver, midMs));
@@ -301,8 +304,10 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
               (absentAt(driver, midMs) ? ' (отсутствие)'
                 : shift ? (shift.rest ? ` (межвахта до ${shift.until})` : ` (вахта до ${shift.until})`) : '');
           }).join(', ') || (gap
-            ? `после пересменки водитель не назначен${permHolders.length
-              ? ` (был ${permHolders.map(driver => shortName(driver.full_name)).join(', ')})` : ''} — закрепите на период`
+            ? gapSet
+              ? 'водителя нет — назначено пустым (снять: карточка 📌 у номера)'
+              : `после пересменки водитель не назначен${permHolders.length
+                ? ` (был ${permHolders.map(driver => shortName(driver.full_name)).join(', ')})` : ''} — закрепите на период`
             : 'водитель не закреплён'),
           periodHolders.length && permHolders.length
             ? `постоянный: ${permHolders.map(driver => driver.full_name).join(', ')}` : '',
@@ -330,7 +335,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
     <span><i class="lg-chip" style="--c:#3f8a78"></i> в рейсе</span>
     <span><i class="lg-chip" style="--c:#5e87ad"></i> пересменка</span>
     <span><i class="lg-chip" style="--c:#b06a55"></i> нет водителя (некому работать)</span>
-    <span><i class="lg-chip lg-gap"></i> пусто = после пересменки водитель не назначен</span>
+    <span><i class="lg-chip lg-gap"></i> пусто = водителя нет (после пересменки или снят)</span>
     <span><i class="lg-chip" style="--c:#bd8f42"></i> ремонт</span>
     <span><i class="lg-chip lg-stripe"></i> работает в выходной · ↑ФОТ</span>
     <span><i class="lg-chip" style="--c:#8a7fb3"></i> выходной · межвахта · отпуск</span>
@@ -382,7 +387,7 @@ export function periodAssignDialog(context, preset = {}) {
     <h3 style="margin-top:12px">Действующие и будущие <span class="scount">${items.length}</span></h3>
     <div class="list" style="max-height:30vh;overflow:auto">${items.map(item => `
       <div class="list-item" style="padding:5px 8px">
-        <span style="flex:1;min-width:0"><b>${escapeHtml(item.driver_name)}</b>
+        <span style="flex:1;min-width:0"><b>${escapeHtml(item.driver_name || '🚫 пусто (водителя нет)')}</b>
           → <span class="mono">${escapeHtml(item.vehicle_plate)}</span>
           <small class="muted" style="display:block">${String(item.starts_at).slice(0, 10)} → ${String(item.ends_at).slice(0, 10)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></span>
         ${canWrite ? `<button class="button ghost small danger" data-pa-del="${item.id}">✕</button>` : ''}
@@ -479,7 +484,8 @@ function openAssignPop(context, { vehicleId, from, to, anchor = null, onDone = n
     <input id="apSearch" placeholder="🔍 фамилия — клик по строке закрепляет" autocomplete="off">
     <div class="apop-list" id="apList"></div>
     <div class="apop-foot">
-      <a href="#" id="apEmpty" title="Дни останутся пустыми с подсветкой — назначить некого">оставить пустым</a>
+      <button type="button" class="button ghost small danger" id="apEmpty"
+        title="Снять водителя: дни станут пустыми с подсветкой — периоды в диапазоне подрежутся, постоянный на эти дни не показывается">🚫 водителя нет</button>
       <a href="#" id="apCard">периоды машины →</a>
     </div>`;
   document.body.appendChild(pop);
@@ -511,14 +517,16 @@ function openAssignPop(context, { vehicleId, from, to, anchor = null, onDone = n
     const trim = pop.querySelector('#apTrim');
     trim.hidden = !clip.length;
     trim.innerHTML = clip.length ? `⚠ заняты: ${clip.map(item =>
-      `<b>${escapeHtml(item.driver_name)}</b> по ${isoShort(isoAddDays(item.ends_at, -1))}`).join(' · ')}
+      `<b>${escapeHtml(item.driver_name || '🚫 пусто')}</b> по ${isoShort(isoAddDays(item.ends_at, -1))}`).join(' · ')}
       — период будет подрезан под замену` : '';
   };
   const commit = async driverId => {
     const fromV = pop.querySelector('#apFrom').value;
     const lastV = pop.querySelector('#apTo').value;
     if (!fromV || !lastV || lastV < fromV) { toast('Проверьте даты', 'error'); return; }
-    const name = (data.drivers || []).find(item => item.id === driverId)?.full_name || '';
+    const name = driverId
+      ? (data.drivers || []).find(item => item.id === driverId)?.full_name || ''
+      : '🚫 Водителя нет';
     try {
       const created = await api('/api/driver-assignments', { method: 'POST', body: JSON.stringify({
         driverId, vehicleId, startsAt: fromV, endsAt: isoAddDays(lastV, 1), note: '' }) });
@@ -563,7 +571,7 @@ function openAssignPop(context, { vehicleId, from, to, anchor = null, onDone = n
   pop.querySelectorAll('#apFrom, #apTo').forEach(input =>
     input.addEventListener('change', () => { daysLabel(); renderList(); }));
   pop.querySelector('.apop-x').onclick = closeAssignPop;
-  pop.querySelector('#apEmpty').onclick = event => { event.preventDefault(); closeAssignPop(); };
+  pop.querySelector('#apEmpty').onclick = () => commit(null);
   pop.querySelector('#apCard').onclick = event => {
     event.preventDefault();
     closeAssignPop();
@@ -653,7 +661,9 @@ export function vehicleDriversDialog(context, vehicleId) {
   const dayInfo = day => {
     const period = periods.find(item =>
       String(item.starts_at).slice(0, 10) <= day && String(item.ends_at).slice(0, 10) > day);
-    if (period) return { kind: 'period', name: period.driver_name, id: period.id };
+    if (period) return period.driver_id
+      ? { kind: 'period', name: period.driver_name, id: period.id }
+      : { kind: 'empty', id: period.id };
     if (shifts.some(item =>
       String(item.starts_at).slice(0, 10) <= day && String(item.ends_at).slice(0, 10) >= day)) {
       return { kind: 'shift' };
@@ -681,6 +691,16 @@ export function vehicleDriversDialog(context, vehicleId) {
         <b style="flex:1">${escapeHtml(seg.name)}</b>
         <small class="muted">период</small>
         ${canWrite ? `<button class="button ghost small danger" data-vdrv-del="${seg.id}" title="Удалить закрепление">✕</button>` : ''}
+      </div>`;
+    }
+    if (seg.kind === 'empty') {
+      return `<div class="vdrv-row vdrv-gap">
+        <span class="vdrv-dates mono">${range(seg)}</span>
+        <span style="flex:1">🚫 водителя нет · назначено пустым</span>
+        ${canWrite ? `<button class="button small" data-vdrv-fill data-from="${seg.start}"
+          data-to="${isoAddDays(seg.start, seg.len)}">Назначить</button>
+        <button class="button ghost small danger" data-vdrv-del="${seg.id}"
+          title="Снять пустоту — вернётся постоянный водитель">✕</button>` : ''}
       </div>`;
     }
     if (seg.kind === 'shift') {
@@ -1335,7 +1355,9 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     const driverAt = day => {
       const period = vehPeriods.find(item =>
         String(item.starts_at).slice(0, 10) <= day && String(item.ends_at).slice(0, 10) > day);
-      if (period) return { name: period.driver_name, kind: 'period' };
+      // Период без водителя — назначенная пустота: рисуется как разрыв.
+      if (period) return period.driver_id
+        ? { name: period.driver_name, kind: 'period' } : { name: '', kind: 'gap' };
       const shiftEnd = [...futureShiftEnds].reverse().find(end => end <= day);
       if (shiftEnd) return { name: '', kind: 'gap' };
       return vehicle.driver_name ? { name: vehicle.driver_name, kind: 'base' } : { name: '', kind: 'gap' };

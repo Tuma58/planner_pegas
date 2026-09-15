@@ -4680,7 +4680,7 @@ async function api(request, response, url) {
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
       driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
         FROM driver_assignments a
-        JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
+        LEFT JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
         WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
       orderFiles: db.prepare(`SELECT f.id,f.order_id,f.file_name,f.mime,f.size,f.uploaded_at,
           u.full_name uploaded_by
@@ -4729,7 +4729,7 @@ async function api(request, response, url) {
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
       driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
         FROM driver_assignments a
-        JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
+        LEFT JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
         WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
       orderFiles: db.prepare(`SELECT f.id,f.order_id,f.file_name,f.mime,f.size,f.uploaded_at,
           u.full_name uploaded_by
@@ -9532,7 +9532,7 @@ async function api(request, response, url) {
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
       driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
         FROM driver_assignments a
-        JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
+        LEFT JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
         WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
       periodSnapshots: db.prepare('SELECT * FROM period_snapshots ORDER BY period_start DESC').all(),
       network: { currentIp: requestIp(request) },

@@ -2996,8 +2996,8 @@ test('замена по факту: новый период подрезает �
   db.prepare(`INSERT INTO drivers(id,full_name) VALUES('tr1','Плановый П')`).run();
   db.prepare(`INSERT INTO drivers(id,full_name) VALUES('tr2','Заменный З')`).run();
   db.prepare(`INSERT INTO drivers(id,full_name) VALUES('tr3','Третий Т')`).run();
-  const spans = () => db.prepare(`SELECT d.full_name name, a.starts_at s, a.ends_at e
-    FROM driver_assignments a JOIN drivers d ON d.id=a.driver_id
+  const spans = () => db.prepare(`SELECT COALESCE(d.full_name,'Пусто') name, a.starts_at s, a.ends_at e
+    FROM driver_assignments a LEFT JOIN drivers d ON d.id=a.driver_id
     WHERE a.vehicle_id=? ORDER BY a.starts_at`).all(vehicle)
     .map(row => `${row.name.split(' ')[0]} ${row.s}→${row.e}`);
   // План месяца: Плановый на весь период.
@@ -3022,4 +3022,21 @@ test('замена по факту: новый период подрезает �
   const other = db.prepare('SELECT id FROM vehicles LIMIT 1 OFFSET 1').get().id;
   assert.throws(() => createDriverAssignment(db, { driverId: 'tr3', vehicleId: other,
     startsAt: '2026-10-10', endsAt: '2026-10-12' }), /Пересечение/);
+  // «Пусто» — тоже назначение (запись без водителя): снимает водителя
+  // на диапазон, подрезая его период, и хранится в тех же периодах.
+  const emptied = createDriverAssignment(db, { driverId: null, vehicleId: vehicle,
+    startsAt: '2026-10-20', endsAt: '2026-10-25' });
+  assert.equal(emptied.driver_id, null);
+  assert.equal(emptied.trims[0].action, 'split');
+  assert.deepEqual(spans(), ['Плановый 2026-10-01→2026-10-08',
+    'Третий 2026-10-08→2026-10-20', 'Пусто 2026-10-20→2026-10-25',
+    'Третий 2026-10-25→2026-10-31']);
+  // Пустоту можно перекрыть обратно фамилией — она подрежется как период.
+  const refill = createDriverAssignment(db, { driverId: 'tr2', vehicleId: vehicle,
+    startsAt: '2026-10-21', endsAt: '2026-10-23' });
+  assert.equal(refill.trims[0].action, 'split');
+  assert.ok(spans().includes('Заменный 2026-10-21→2026-10-23'));
+  // Пустой период в выдаче графика: driver_id NULL доходит до фронта.
+  const schedule = driverScheduleData(db, '2026-10-15T00:00:00.000Z', '2026-10-30T00:00:00.000Z');
+  assert.ok(schedule.planned.some(item => item.driver_id === null));
 });
