@@ -356,6 +356,9 @@ export function periodAssignDialog(context, preset = {}) {
         ${canWrite ? `<button class="button ghost small danger" data-pa-del="${item.id}">✕</button>` : ''}
       </div>`).join('') || '<p class="muted">Периодных закреплений нет.</p>'}</div>`);
   if (canWrite) {
+    // Упрощение: курсор сразу в поиске водителя — сцепка и даты уже
+    // заполнены кликом по ленте, остаётся набрать фамилию и Enter.
+    setTimeout(() => document.getElementById('paDriverSearch')?.focus(), 50);
     wireSelectSearch(document.getElementById('paDriverSearch'),
       document.querySelector('#periodForm [name=driverId]'));
     wireSelectSearch(document.getElementById('paVehicleSearch'),
@@ -961,6 +964,48 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     // Занятость за месяц — сразу видно недогруженные сцепки.
     const busyDays = Math.min(days, Math.round(monthTrips.reduce((sum, trip) =>
       sum + (Math.min(monthEnd, new Date(trip.ends_at)) - Math.max(state.month, new Date(trip.starts_at))) / 86_400_000, 0)));
+    // Лента водителей (решение руководителя 15.09): фамилия — в ячейках
+    // на период закрепления. Периодное закрепление главнее постоянного;
+    // после пересменки, которая заканчивается сегодня или позже, дни без
+    // назначенного периода — ПУСТЫЕ с подсветкой «нет водителя»: ресурсник
+    // обязан явно закрепить следующего. Прошлые пересменки историю не гасят.
+    const dayIso = index => new Date(state.month.getTime() + index * 86_400_000).toISOString().slice(0, 10);
+    const vehPeriods = (data.driverAssignments || []).filter(item => item.vehicle_id === vehicle.id);
+    const futureShiftEnds = (data.dispositions || [])
+      .filter(item => item.vehicle_id === vehicle.id && item.kind === 'shift' &&
+        String(item.ends_at).slice(0, 10) >= today)
+      .map(item => String(item.ends_at).slice(0, 10)).sort();
+    const driverAt = day => {
+      const period = vehPeriods.find(item =>
+        String(item.starts_at).slice(0, 10) <= day && String(item.ends_at).slice(0, 10) > day);
+      if (period) return { name: period.driver_name, kind: 'period' };
+      const shiftEnd = [...futureShiftEnds].reverse().find(end => end <= day);
+      if (shiftEnd) return { name: '', kind: 'gap' };
+      return vehicle.driver_name ? { name: vehicle.driver_name, kind: 'base' } : { name: '', kind: 'gap' };
+    };
+    const shortName = full => {
+      const parts = String(full).trim().split(/\s+/);
+      return parts[0] + (parts[1] ? ` ${parts[1][0]}.` : '');
+    };
+    const bandSegs = [];
+    for (let index = 0; index < days; index += 1) {
+      const at = driverAt(dayIso(index));
+      const last = bandSegs[bandSegs.length - 1];
+      if (last && last.name === at.name && last.kind === at.kind) last.len += 1;
+      else bandSegs.push({ start: index, len: 1, ...at });
+    }
+    const bands = bandSegs.map(seg => {
+      const left = (seg.start * dayWidth).toFixed(0);
+      const width = Math.max(seg.len * dayWidth - 2, 8).toFixed(0);
+      if (seg.kind === 'gap') return `<span class="drv-band drv-gap" data-drvassign="${vehicle.id}"
+        data-drvday="${dayIso(seg.start)}" data-drvto="${dayIso(Math.min(seg.start + seg.len, days))}"
+        style="left:${left}px;width:${width}px"
+        title="Нет назначенного водителя (после пересменки) — кликните, чтобы закрепить на период">${seg.len * dayWidth >= 76 ? '⚠ нет водителя' : '⚠'}</span>`;
+      return `<span class="drv-band ${seg.kind === 'period' ? 'drv-period' : ''}" data-drvassign="${vehicle.id}"
+        data-drvday="${dayIso(seg.start)}" data-drvto="${dayIso(Math.min(seg.start + seg.len, days))}"
+        style="left:${left}px;width:${width}px"
+        title="${escapeHtml(seg.name)}${seg.kind === 'period' ? ' · закрепление на период' : ' · постоянное закрепление'} — клик: закрепить другого на период">${seg.len * dayWidth >= 46 ? escapeHtml(shortName(seg.name)) : ''}</span>`;
+    }).join('');
     return `<div class="vehicle-row">
       <div class="vehicle-cell"><span class="vehicle-stripe" style="background:${stateNow.color}"></span>
         <span class="vehicle-title res-vtitle"><strong class="mono vlink" data-vinfo="${vehicle.id}"
@@ -969,7 +1014,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
         <small>${escapeHtml(vehicle.trailer_plate || 'без прицепа')} · ${escapeHtml(vehicle.type_name || '')} · ${monthTrips.length} р. / ${busyDays} дн</small></span>
       </div>
       <div class="track" data-vehicle="${vehicle.id}" style="width:${days * dayWidth}px">
-        <div class="track-grid">${grid}</div>${trips}${bars}</div>
+        <div class="track-grid">${grid}</div>${trips}${bars}
+        <div class="drv-lane">${bands}</div></div>
     </div>`;
   }).join('');
 
@@ -1169,6 +1215,15 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
       document.addEventListener('pointerup', up);
     }));
 
+  // Упрощённое закрепление на период (15.09): клик по ленте водителя —
+  // диалог с уже заполненными сцепкой и датами сегмента, осталось выбрать
+  // водителя и нажать «Закрепить».
+  container.querySelectorAll('[data-drvassign]').forEach(band =>
+    band.addEventListener('click', () => periodAssignDialog(context, {
+      vehicleId: band.dataset.drvassign,
+      from: band.dataset.drvday < today ? today : band.dataset.drvday,
+      to: band.dataset.drvto
+    })));
   container.querySelectorAll('[data-disposition]').forEach(bar => {
     const item = (data.dispositions || []).find(row => row.id === bar.dataset.disposition);
     if (!item) return;

@@ -1483,3 +1483,14 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   font-size: 12.5px; text-align: left; }
 .rep-table th { background: rgba(127, 127, 127, .12); }
 .rep-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Лента водителей в сетке Ресурса: фамилия на период закрепления. */
+.resboard .dbar { bottom: 17px; }
+.drv-lane { position: absolute; left: 0; right: 0; bottom: 1px; height: 15px; }
+.drv-band { position: absolute; top: 0; height: 14px; border-radius: 4px;
+  background: rgb(90 110 130 / 14%); color: var(--ink); font-size: 9.5px; font-weight: 600;
+  display: flex; align-items: center; padding: 0 4px; overflow: hidden; white-space: nowrap;
+  cursor: pointer; border: 1px solid rgb(90 110 130 / 22%); }
+.drv-band.drv-period { background: rgb(63 138 120 / 22%); border-color: rgb(63 138 120 / 45%); }
+.drv-band.drv-gap { color: var(--bad); border-color: var(--bad); font-weight: 700;
+  background: repeating-linear-gradient(45deg, rgb(180 95 82 / 25%) 0 6px, rgb(180 95 82 / 10%) 6px 12px); }
