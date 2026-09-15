@@ -13,6 +13,7 @@ import { project160Dialog } from './project160.js';
 import { shiftDialog } from './shift-report.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { parkReportDialog } from './park-report.js';
+import { plannerParkDialog } from './park-planner.js';
 
 const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 const mln = value => `${(Number(value || 0) / 1e6).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} млн`;
@@ -355,6 +356,8 @@ export async function renderBoss(container, context) {
           title="Реестр самообучающихся процессов: имена, что каждый учит, текущее выученное значение, кламп и где смотреть дрейф">🧠 Живые нормативы</button>
         <button class="button ghost small" id="bossInventory"
           title="Инвентаризация всех процессов: ресурс (дубли прицепов, забытые машины, висящие рейсы, дыры по водителям) + заявки с ошибочными датами, застрявшие стадии, дыры адресов">🧾 Инвентаризация</button>
+        <button class="button ghost small" id="bossParkPlanner"
+          title="Эксплуатация парка ИЗ ДАННЫХ ПЛАНЕРА за период: каскад КТГ/КВЛ/КИП по единому канону, недели, клиенты, сценарии к плану — печать в PDF, 1С не требуется">🏭 Эксплуатация (планер)</button>
         <button class="button ghost small" id="bossParkReport"
           title="Отчёт эксплуатации автопарка из выгрузок 1С (Заказы/Путевые листы/Ремонты): каскад по ЧАСАМ под грузом, разбор причин, честные сценарии">🏭 Эксплуатация (1С)</button>
       </div>
@@ -554,6 +557,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossInventory').onclick = () => inventoryDialog(context, 'all');
   container.querySelector('#bossSelfTuning').onclick = () => selfTuningDialog(context);
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
+  container.querySelector('#bossParkPlanner').onclick = () => plannerParkDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;
     state.bossTo = b;

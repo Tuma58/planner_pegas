@@ -1476,3 +1476,10 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 /* Потенциал дня в карточках «Сегодня/Завтра» дашборда. */
 .dash-day .dd-pot { font-size: 12px; margin-top: 3px; color: var(--warn); }
 .brush-purpose { margin-left: 4px; padding: 3px 8px; border-radius: 7px; font-size: 13px; }
+
+/* Таблицы отчёта «Эксплуатация (планер)» — печатаются в PDF. */
+.rep-table { border-collapse: collapse; width: 100%; margin: 4px 0 10px; }
+.rep-table th, .rep-table td { border: 1px solid var(--line, #d5dce2); padding: 4px 8px;
+  font-size: 12.5px; text-align: left; }
+.rep-table th { background: rgba(127, 127, 127, .12); }
+.rep-table .num { text-align: right; font-variant-numeric: tabular-nums; }

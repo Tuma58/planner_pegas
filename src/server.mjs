@@ -8926,6 +8926,83 @@ async function api(request, response, url) {
     const total = sections.reduce((acc, section) => acc + section.count, 0);
     return json(response, 200, { scope, total, generatedAt: nowIso, sections });
   }
+  // ── Отчёт эксплуатации парка ИЗ ДАННЫХ ПЛАНЕРА (15.09, независимо от 1С) ──
+  // Канон КИП (принят руководителем 15.09, единый для планера и 1С-версии):
+  //   на линии  = факт «на линию» → факт выгрузки (+ перегоны);
+  //   под грузом = факт убытия с погрузки → факт ПРИБЫТИЯ на выгрузку;
+  //   стоянка у клиента после прибытия — потеря КИП, не «под грузом».
+  //   КТГ = 1 − ремонт/календарь; КВЛ = линия/(календарь − ремонт);
+  //   КИП = под грузом/линия; КОЭФ = КТГ × КВЛ × КИП.
+  if (request.method === 'GET' && pathname === '/api/park-report') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+      return errorJson(response, 422, 'Некорректный период (from/to, to — не включается)');
+    }
+    const fleet = db.prepare(`SELECT COUNT(*) c FROM vehicles WHERE status='work'`).get().c;
+    const netExpr = `CASE WHEN t.cash THEN t.revenue_vat
+      WHEN t.customer_name LIKE '%ИП%' THEN t.revenue_vat/1.07 ELSE t.revenue_vat/1.22 END`;
+    const clampH = (a, b, lo, hi) => Math.max(0,
+      (Math.min(Date.parse(b), Date.parse(hi)) - Math.max(Date.parse(a), Date.parse(lo))) / 3.6e6);
+    const period = (a, b) => {
+      const days = Math.round((Date.parse(b) - Date.parse(a)) / 864e5);
+      const adi = fleet * 24 * days;
+      const trips = db.prepare(`SELECT t.on_line_at, t.arrived_at, t.unloaded_at, t.starts_at,
+          t.ends_at, ${netExpr} net,
+          (SELECT MIN(s.actual_departure) FROM trip_stops s
+            WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
+        FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
+          AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(b, a);
+      let line = 0, prod = 0, cust = 0, rev = 0, n = 0;
+      for (const trip of trips) {
+        const online = trip.on_line_at || trip.starts_at;
+        const fin = String(trip.unloaded_at || trip.ends_at).replace(' ', 'T');
+        line += clampH(online, fin, a, b);
+        if (trip.dep) prod += clampH(trip.dep, trip.arrived_at || fin, a, b);
+        if (trip.arrived_at && trip.unloaded_at) cust += clampH(trip.arrived_at, fin, a, b);
+        if (trip.unloaded_at && trip.unloaded_at >= a && trip.unloaded_at < b) { rev += trip.net; n += 1; }
+      }
+      line += db.prepare(`SELECT COALESCE(SUM((julianday(MIN(COALESCE(arrived_at, ends_at), ?)) -
+          julianday(MAX(COALESCE(departed_at, starts_at), ?))) * 24), 0) h
+        FROM vehicle_dispositions WHERE kind='transfer' AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
+      const rem = db.prepare(`SELECT COALESCE(SUM((julianday(MIN(ends_at, ?)) -
+          julianday(MAX(starts_at, ?))) * 24), 0) h
+        FROM vehicle_dispositions WHERE kind='repair' AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
+      const noDrv = db.prepare(`SELECT COALESCE(SUM((julianday(MIN(ends_at, ?)) -
+          julianday(MAX(starts_at, ?))) * 24), 0) h
+        FROM vehicle_dispositions WHERE kind IN ('no_driver','shift') AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
+      const ktg = Math.max(0, 1 - rem / adi);
+      const kvl = Math.min(1, line / Math.max(1, adi - rem));
+      const kip = Math.min(1, prod / Math.max(1, line));
+      return { from: a, to: b, days, fleet, adi,
+        rev: Math.round(rev), trips: n,
+        lineH: Math.round(line), prodH: Math.round(prod), custH: Math.round(cust),
+        remH: Math.round(rem), noDrvH: Math.round(noDrv),
+        ktg: +(ktg * 100).toFixed(1), kvl: +(kvl * 100).toFixed(1),
+        kip: +(kip * 100).toFixed(1), koef: +(ktg * kvl * kip * 100).toFixed(1) };
+    };
+    const total = period(from, to);
+    // Недели внутри периода (по понедельникам) — динамика каскада.
+    const weeks = [];
+    let cursor = new Date(Date.parse(from));
+    cursor.setUTCDate(cursor.getUTCDate() - ((cursor.getUTCDay() + 6) % 7));
+    while (cursor.toISOString().slice(0, 10) < to) {
+      const wa = cursor.toISOString().slice(0, 10);
+      cursor = new Date(cursor.getTime() + 7 * 864e5);
+      const wb = cursor.toISOString().slice(0, 10);
+      if (wb <= from) continue;
+      weeks.push(period(wa < from ? from : wa, wb > to ? to : wb));
+    }
+    const clients = db.prepare(`SELECT t.customer_name name, COUNT(*) n,
+        ROUND(SUM(${netExpr})) rev
+      FROM trips t WHERE t.status IN ('unloaded','done','paid')
+        AND t.unloaded_at >= ? AND t.unloaded_at < ?
+      GROUP BY t.customer_name ORDER BY rev DESC LIMIT 12`).all(from, to);
+    return json(response, 200, { total, weeks, clients,
+      canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; стоянка у клиента — потеря КИП' });
+  }
   if (request.method === 'GET' && pathname === '/api/resource-stats') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
