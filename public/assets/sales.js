@@ -17,6 +17,16 @@ import { DISP_KINDS } from './resource.js';
 
 export { STAGES, orderStage };
 
+// Дыры кругов для баннера продаж: кэш 10 минут — вкладка перерисовывается
+// автообновлением часто, панель не должна дёргать сервер каждый раз.
+let ringLoadCache = { at: 0, data: null };
+async function loadRingHoles() {
+  if (Date.now() - ringLoadCache.at < 600_000) return ringLoadCache.data;
+  try { ringLoadCache = { at: Date.now(), data: await api('/api/ring-load') }; }
+  catch { ringLoadCache = { at: Date.now(), data: null }; }
+  return ringLoadCache.data;
+}
+
 const fmtDay = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
   .format(new Date(value));
 // Планирование ведётся с точностью до минут: окна погрузки и моменты освобождения
@@ -951,6 +961,20 @@ export async function renderSales(container, context) {
   // Вопросы водителей, где сбой на стороне продаж: данные не ушли
   // грузоотправителю, не тот адрес, нужен телефон клиента.
   const questions = questionsForOwner(await loadOpenQuestions(), 'Продажи');
+  const ringLoad = await loadRingHoles();
+  // Дыры кругов — задание руководителя 15.09: продажам видно, КУДА
+  // продавать объём (круг, недобор машин, цена дыры в марже за месяц).
+  const ringHolesHtml = (() => {
+    if (!ringLoad) return '';
+    const holes = ringLoad.items.filter(item => item.holeVehicles >= 1)
+      .sort((a, b) => b.holeMarginMonth - a.holeMarginMonth).slice(0, 5);
+    if (!holes.length) return '';
+    return `<div class="sales-rings"
+      title="Дыра круга = план машин по шаблону (при живом зазоре стыковки) минус машины, реально работавшие на плечах круга за неделю. Цена — маржа шаблона за месяц. Полная таблица — у руководителя: «⭕ Загрузка кругов»">
+      ⭕ Круги — куда продавать объём: ${holes.map(item =>
+    `<b>${escapeHtml(item.name.split(' · ')[0])}</b> −${item.holeVehicles} маш
+        (≈${Math.round(item.holeMarginMonth / 1000).toLocaleString('ru-RU')} т₽/мес)`).join(' · ')}</div>`;
+  })();
   const savedScrolls = captureScrolls(container);
   // Выручка дня перед глазами продаж (просьба руководителя 12.09):
   // те же цифры, что на дашборде, но крупно — сколько уже стоит день
@@ -965,7 +989,7 @@ export async function renderSales(container, context) {
     : '<span class="sdb-ok">✅ план дня закрыт</span>'}</div>`;
   const html = `<div class="saleswrap">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам', compact: true, open: state.salesQuestionsOpen })}
-    ${dayBannerHtml}
+    ${dayBannerHtml}${ringHolesHtml}
     <div class="salekpis">
       <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
         title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">

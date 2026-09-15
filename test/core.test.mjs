@@ -14,6 +14,8 @@ import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../s
 import { ensureTripStops, rescheduleTripStops } from '../src/trip-control.mjs';
 import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
+import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
+import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
   const password = 'Very-strong-password-2026';
@@ -2909,4 +2911,75 @@ test('подбор: без адреса погрузки расстояние с
     'самарская машина ближе к Уралу, чем московская');
   assert.ok(candidates[0].emptyKm < candidates[1].emptyKm,
     'подгон посчитан по центрам зон у обеих');
+});
+
+// ── Постоянные кольца и загрузка кругов (15.09.2026) ──
+test('зазор стыковки: медиана с клампом, мало образцов — фолбэк', () => {
+  // Мало образцов (<8) — работает фолбэк, и это видно по learned=false.
+  const few = dockGapDays([0.5, 0.6, 0.7]);
+  assert.equal(few.days, DOCK_GAP_FALLBACK);
+  assert.equal(few.learned, false);
+  // Достаточно образцов — честная медиана.
+  const learned = dockGapDays([0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1]);
+  assert.equal(learned.learned, true);
+  assert.equal(learned.days, 0.7);
+  // Паузы дольше 5 суток — простой, не стыковка: выпадают из образцов.
+  const filtered = dockGapDays([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 20, 30, 40]);
+  assert.equal(filtered.days, 0.5);
+  // Медиана вне клампа (вырожденные данные) — фолбэк.
+  const degenerate = dockGapDays(Array.from({ length: 20 }, () => 3));
+  assert.equal(degenerate.days, DOCK_GAP_FALLBACK);
+  assert.equal(degenerate.learned, false);
+});
+
+test('циклы кругов: последовательный матчинг, рейс — одному кругу', () => {
+  const zoneIds = new Map([['Дом', 'zD'], ['Москва', 'zM'], ['Самара', 'zS'], ['Новосибирск', 'zN']]);
+  const k1 = { key: 'k1', legs: [
+    { kind: 'Г', from: 'Дом', to: 'Москва' }, { kind: 'Г', from: 'Москва', to: 'Дом' }] };
+  const k2 = { key: 'k2', legs: [
+    { kind: 'Г', from: 'Дом', to: 'Москва' }, { kind: 'Г', from: 'Москва', to: 'Самара' },
+    { kind: 'Г', from: 'Самара', to: 'Дом' }] };
+  const k2p = { key: 'k2p', legs: [
+    { kind: 'Г', from: 'Дом', to: 'Москва' }, { kind: 'Г', from: 'Москва', to: 'Самара' },
+    { kind: 'П', from: 'Самара', to: 'Дом' }] };
+  const k5 = { key: 'k5', legs: [
+    { kind: 'Г', from: 'Москва', to: 'Восток' }, { kind: 'Г', from: 'Восток', to: 'Москва' }] };
+  const trip = (id, vehicle, from, to, day) =>
+    ({ id, vehicle_id: vehicle, from_zone_id: from, to_zone_id: to, starts_at: `2026-09-${String(day).padStart(2, '0')}` });
+  const trips = [
+    // v1: полный К2 (с возвратом из Самары) — К2п его переиспользовать не должен.
+    trip('t1', 'v1', 'zD', 'zM', 1), trip('t2', 'v1', 'zM', 'zS', 3), trip('t3', 'v1', 'zS', 'zD', 5),
+    // v2: маятник К1 с локалкой-заполнителем между плечами.
+    trip('t4', 'v2', 'zD', 'zM', 1), trip('t5', 'v2', 'zM', 'zM', 3), trip('t6', 'v2', 'zM', 'zD', 4),
+    // v3: восточный цикл конкретными подзонами куста «Восток».
+    trip('t7', 'v3', 'zM', 'zN', 2), trip('t8', 'v3', 'zN', 'zM', 9),
+    // v4: только туда — цикл не завершён, не считается.
+    trip('t9', 'v4', 'zD', 'zM', 6)
+  ];
+  const stats = matchRingCycles([k1, k2, k2p, k5], trips, zoneIds);
+  assert.equal(stats.get('k2').cycles, 1, 'полный К2 засчитан');
+  assert.equal(stats.get('k2p').cycles, 0, 'рейсы К2 не распались на К2п');
+  assert.equal(stats.get('k1').cycles, 1, 'локалка между плечами К1 не рвёт цикл');
+  assert.equal(stats.get('k5').cycles, 1, 'подзоны Новосибирска попали в куст «Восток»');
+  assert.equal(stats.get('k1').vehicles.has('v4'), false, 'недоехавший цикл не считается');
+});
+
+test('кольца К-1/К-2п/К-4а/К-5 сеются один раз и защищены от удаления причиной', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-rings-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const rings = db.prepare(`SELECT route_no, ring_key, status FROM routes
+    WHERE ring_key IS NOT NULL ORDER BY route_no`).all();
+  assert.deepEqual(rings.map(ring => ring.route_no), ['К-1', 'К-2п', 'К-4а', 'К-5']);
+  assert.ok(rings.every(ring => ring.status === 'assigned'));
+  // Сид идемпотентен: метка стоит, повторное открытие не плодит кольца.
+  assert.equal(db.prepare(`SELECT value FROM app_meta WHERE key='rings_seed_v1'`).get().value, 'done');
+  // Панель загрузки собирается на свежей базе и знает все шаблоны.
+  const load = ringLoadData(db);
+  assert.equal(load.items.length, ROUND_TEMPLATES.length);
+  assert.ok(load.items.every(item => item.planVehicles > 0));
+  assert.equal(load.items.filter(item => item.ring).length, 4);
 });

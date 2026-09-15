@@ -5,7 +5,7 @@
 // передаётся логисту и назначается на сцепку целиком (рейсы цепочкой).
 import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch, captureScrolls, restoreScrolls } from './api.js';
 import { driverRatingBadge, driverRatingOf } from './api.js';
-import { DAY_MARGIN, ROUND_TEMPLATES, roundKm, roundRevenue, roundVehicles } from './rounds.js';
+import { DAY_MARGIN, ROUND_TEMPLATES, roundByKey, roundKm, roundRevenue, roundVehicles } from './rounds.js';
 import { orderStage } from './pipeline.js';
 import { orderNet, plannedKmBetween, regionOfPlace, resolveAddress } from './sales.js';
 
@@ -361,7 +361,9 @@ const STATUS_LABELS = { draft: 'черновик', handed: 'у логиста', 
 export function renderRoutes(container, context) {
   const { state, can } = context;
   const data = state.data;
-  const routes = data.routes || [];
+  // Постоянные кольца — всегда сверху списка: это рамка недели, не черновик.
+  const routes = [...(data.routes || [])]
+    .sort((a, b) => (b.ring_key ? 1 : 0) - (a.ring_key ? 1 : 0));
   const ordersOf = routeId => (data.orders || [])
     .filter(order => order.route_id === routeId)
     .sort((a, b) => (a.route_seq || 0) - (b.route_seq || 0));
@@ -379,6 +381,37 @@ export function renderRoutes(container, context) {
       ? [escapeHtml(route.base_region || HOME_REGION),
         ...routeOrders.map(order => escapeHtml(order.to_point || order.to_name))].join(' → ')
       : 'пока пусто — откройте редактор';
+    // Постоянное кольцо (решение руководителя 15.09): стоячая карточка
+    // цикла из шаблона — плечи, экономика, закреплённые борта из «Плана
+    // парка». Удалить нельзя, закрыть — только с причиной.
+    if (route.ring_key) {
+      const round = roundByKey(route.ring_key);
+      const plates = (data.roundPlans || [])
+        .filter(plan => plan.round_key === route.ring_key)
+        .map(plan => (data.vehicles || []).find(vehicle => vehicle.id === plan.vehicle_id)?.plate)
+        .filter(Boolean);
+      return `<div class="card route-card ring" data-route="${route.id}">
+        <div class="rt-head">
+          <b class="rt-no">${escapeHtml(route.route_no)}</b>
+          <span class="tt-chip ring-chip" title="Постоянное кольцо парка: удалить нельзя, закрыть — только с причиной, закрытие видит руководитель">⭕ постоянное кольцо</span>
+          <span class="muted">${round ? escapeHtml(round.name) : escapeHtml(route.ring_key)}</span>
+        </div>
+        ${round ? `<div class="rt-chain">${round.legs.map(leg =>
+    `${leg.kind === 'П' ? '🚚' : '📦'} ${escapeHtml(leg.from)}→${escapeHtml(leg.to)}`).join(' · ')}
+          · ~${round.days} сут · маржа/день <b>${money(round.marginDay)}</b>
+          · машин ≈ ${roundVehicles(round).toFixed(1)}</div>` : ''}
+        <div class="rt-nums">
+          <span>бортов закреплено <b>${plates.length}</b></span>
+          ${plates.length
+    ? `<span class="mono">${plates.slice(0, 12).map(escapeHtml).join(', ')}${plates.length > 12 ? '…' : ''}</span>`
+    : '<span class="muted">закрепите борта: «План парка» → колонка «Круг»</span>'}
+        </div>
+        <div class="rt-actions">
+          ${canEdit ? `<button class="button ghost small danger" data-close-ring="${route.id}"
+            title="Кольцо не удаляется — закрывается с причиной, закрытие видит руководитель">Закрыть кольцо…</button>` : ''}
+        </div>
+      </div>`;
+    }
     return `<div class="card route-card ${route.status}" data-route="${route.id}">
       <div class="rt-head">
         <b class="rt-no">${escapeHtml(route.route_no)}</b>
@@ -553,6 +586,8 @@ export function renderRoutes(container, context) {
               · объём ${round.volume}/мес · машин ≈ ${roundVehicles(round).toFixed(1)}</small>
             <small style="display:block">${escapeHtml(round.note)}</small>
           </span>
+          ${(data.routes || []).some(item => item.ring_key === round.key)
+    ? '<span class="tt-chip ring-chip" title="Постоянное кольцо этого шаблона уже стоит в списке маршрутов">⭕ кольцо</span>' : ''}
           <button class="button small" data-round-make="${round.key}">Создать маршрут</button>
         </div>`).join('')}
       </div>
@@ -920,6 +955,19 @@ export function renderRoutes(container, context) {
       try {
         await api(`/api/routes/${button.dataset.deleteRoute}`, { method: 'DELETE' });
         toast('Маршрут удалён, заявки свободны');
+        await context.onReload();
+      } catch (error) { toast(error.message, 'error'); }
+    });
+  // Кольцо не удаляется — только закрытие с причиной, её видит руководитель.
+  container.querySelectorAll('[data-close-ring]').forEach(button =>
+    button.onclick = async () => {
+      const reason = prompt('Кольцо закрывается только с причиной — её увидит руководитель:');
+      if (reason == null) return;
+      if (reason.trim().length < 5) { toast('Причина не короче 5 символов', 'error'); return; }
+      try {
+        await api(`/api/routes/${button.dataset.closeRing}`, { method: 'PATCH',
+          body: JSON.stringify({ status: 'cancelled', reason: reason.trim() }) });
+        toast('Кольцо закрыто — руководитель уведомлён');
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
     });

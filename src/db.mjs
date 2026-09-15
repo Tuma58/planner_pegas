@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { hashPassword } from './security.mjs';
 import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
+import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -802,6 +803,12 @@ function migrateColumns(db) {
   // (собирает collectTripGpsKm). Точен в отличие от суммы календарных дней.
   ensure('trips', 'gps_km', 'REAL');
   ensure('trips', 'gps_km_tried_at', 'TEXT');
+  // Постоянные кольца парка (решение руководителя 15.09): маршрут с
+  // ring_key — стоячий цикл из шаблона кругов. Удалить нельзя — только
+  // закрыть с причиной (close_reason), закрытие видит руководитель.
+  // Урок: 30 маршрутов М-101…130 сотрудники тихо удалили за два месяца.
+  ensure('routes', 'ring_key', 'TEXT');
+  ensure('routes', 'close_reason', "TEXT NOT NULL DEFAULT ''");
   // Долги перед учётной системой: заказ отправлен в рейс без внесения в 1С
   // (deferred_1c_at) или после замены ТС данные в 1С требуют обновления
   // (needs_1c_update_at + пометка что изменилось); alert — антиспам сторожа.
@@ -1050,6 +1057,26 @@ function migrateColumns(db) {
       insert.run(canon, types.size === 1 ? [...types][0] : null);
     }
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('trailers_seed_v1','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+  }
+  // ── Постоянные кольца парка (решение руководителя 15.09.2026) ──
+  // К1/К2п/К4а/К5 заводятся маршрутами-кольцами один раз: номер К-*,
+  // ring_key связывает с шаблоном (rounds.js — единственный источник
+  // экономики круга). Борта закрепляются через «План парка»
+  // (vehicle_round_plans), загрузка — панель «⭕ Загрузка кругов».
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='rings_seed_v1'`).get()) {
+    const seedRings = [['k1', 'К-1'], ['k2p', 'К-2п'], ['k4a', 'К-4а'], ['k5', 'К-5']];
+    const insert = db.prepare(`INSERT INTO routes(id,route_no,status,base_region,
+      target_per_day,comment,ring_key) VALUES(?,?,?,?,?,?,?)`);
+    for (const [key, routeNo] of seedRings) {
+      const round = ROUND_TEMPLATES.find(item => item.key === key);
+      if (!round) continue;
+      if (db.prepare(`SELECT id FROM routes WHERE ring_key=?`).get(key)) continue;
+      insert.run(randomUUID(), routeNo, 'assigned', 'Пензенская обл',
+        Math.round(roundRevenue(round) / 1.22 / round.days),
+        `Постоянное кольцо парка. ${round.note}`, key);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('rings_seed_v1','done')
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
   }
   // ── Звенья рейса (экономика перецепа, 14.09.2026) ──

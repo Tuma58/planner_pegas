@@ -6,6 +6,7 @@
 // Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
 import { inventoryDialog } from './inventory.js';
 import { selfTuningDialog } from './self-tuning.js';
+import { ringLoadDialog } from './ring-load.js';
 import { api, escapeHtml, toast, rangePickerHtml, wireRangePicker, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, tripBusyFromMs, tripBusyUntilMs } from './api.js';
 import { demurrageDialog } from './demurrage.js';
 import { reconcileDialog } from './reconcile.js';
@@ -352,6 +353,8 @@ export async function renderBoss(container, context) {
           title="Визуальный график вывоза грузов от клиентов на месяц: слоты, заявки, ресурс и выручка план-факт">📅 План вывоза</button>
         <button class="button ghost small" id="bossShiftPlanner"
           title="Загрузка ремзоны на 14 дней: кто в ремонте/пересменке, кто заезжает и выходит, пики против живой нормы и рекомендации переносов">🔧 Ремзона</button>
+        <button class="button ghost small" id="bossRingLoad"
+          title="Загрузка кругов: план машин по шаблонам при живом зазоре стыковки, факт недели по плечам, дыра и её цена в марже">⭕ Загрузка кругов</button>
         <button class="button ghost small" id="bossSelfTuning"
           title="Реестр самообучающихся процессов: имена, что каждый учит, текущее выученное значение, кламп и где смотреть дрейф">🧠 Живые нормативы</button>
         <button class="button ghost small" id="bossInventory"
@@ -555,6 +558,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossDeliveryPlan').onclick = () => deliveryPlanDialog(context);
   container.querySelector('#bossShiftPlanner').onclick = () => shiftPlannerDialog(context);
   container.querySelector('#bossInventory').onclick = () => inventoryDialog(context, 'all');
+  container.querySelector('#bossRingLoad').onclick = () => ringLoadDialog(context);
   container.querySelector('#bossSelfTuning').onclick = () => selfTuningDialog(context);
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
   container.querySelector('#bossParkPlanner').onclick = () => plannerParkDialog(context);

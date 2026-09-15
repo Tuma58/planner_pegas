@@ -9,6 +9,7 @@ import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
+import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, checkQuestionSla, identifyCaller, listDriverQuestions,
   phoneDigits, phonePretty, questionStats } from './telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
@@ -3032,6 +3033,21 @@ setTimeout(() => {
   } catch (error) { console.error('ревизия транзита:', error.message); }
 }, 400_000);
 
+// Разовое задание продажам по кругам (решение руководителя 15.09):
+// три потерянных источника объёма — возврат лучшего цикла парка,
+// возврат клиента в восточный круг, расширение лучшей маржи.
+setTimeout(() => {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='ring_sales_task_v1'`).get()) return;
+    notify('sales', '🎯 Задание руководителя по кругам: 1) вернуть К3 «Питерская дуга» — лучший цикл парка' +
+      ' (57 т₽/сут маржи в августе, в сентябре 0 рейсов); 2) вернуть «Планету Колбас» в восточный круг К5;' +
+      ' 3) расширить К4а «Черноземье» — лучшая маржа/день парка. Дыры по кругам — блок «⭕ Круги» во вкладке Продажи.',
+      null, null, { category: 'sales_directions' });
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('ring_sales_task_v1','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+  } catch (error) { console.error('задание продажам по кругам:', error.message); }
+}, 90_000);
+
 // ── Автозакрытие упущенных выгрузок по GPS-истории ──
 // Решение руководителя 07.09: если выгрузка СВЕРШИЛАСЬ (машина стояла у
 // точки и уже уехала), а диспетчер её прозевал — факт проставляется
@@ -4336,6 +4352,18 @@ function runNormsDigest() {
         const line = ` · суточный пробег факт ${Math.round(fact)} км`;
         return conf && Math.abs(fact - conf) / conf > 0.1
           ? `${line} (в настройках ${conf} — 💡 обновите калькуляцию)` : line;
+      })() +
+      (() => {
+        // Загрузка кругов: дыра между планом машин по шаблонам и фактом
+        // недели — понедельничный ответ на «как загрузить парк».
+        try {
+          const load = ringLoadData(db);
+          const holes = load.items.filter(item => item.holeVehicles >= 1)
+            .sort((a, b) => b.holeMarginMonth - a.holeMarginMonth).slice(0, 3);
+          if (!holes.length) return '';
+          return ` · круги (зазор стыковки ${load.gap.days} дн): дыра ${holes.map(item =>
+            `${item.name.split(' · ')[0]} −${item.holeVehicles} маш`).join(', ')} — панель «⭕ Загрузка кругов»`;
+        } catch { return ''; }
       })() +
       (hints.length ? ` · 💡 ${hints.join('; ')}` : ' · без тревог'));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_last',?)
@@ -6556,6 +6584,16 @@ async function api(request, response, url) {
     audit(db, user, 'create', 'route', id, { routeNo, orders: orderIds.length }, requestIp(request));
     return json(response, 201, { id, routeNo });
   }
+  // ── Загрузка кругов: план машин по шаблонам ↔ факт недели ↔ дыра ──
+  // Панель руководителю и задание продажам из одних данных: шаблоны из
+  // rounds.js (общие с фронтом), план машин — при живом зазоре стыковки,
+  // факт — рейсы недели по гружёным плечам круга (циклы по узкому плечу).
+  if (request.method === 'GET' && pathname === '/api/ring-load') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, ringLoadData(db));
+  }
+
   match = route(/^\/api\/routes\/([^/]+)\/assign$/, pathname);
   if (match && request.method === 'POST') {
     const user = requirePermission(request, response, 'trips:write');
@@ -6728,6 +6766,25 @@ async function api(request, response, url) {
     }
     const status = ['draft', 'handed', 'done', 'cancelled'].includes(body.status)
       ? body.status : routeRow.status;
+    // Кольцо (ring_key) закрывается только с причиной — закрытие видит
+    // руководитель. Тихое закрытие = то же тихое удаление.
+    if (routeRow.ring_key && ['done', 'cancelled'].includes(status) && status !== routeRow.status) {
+      const reason = String(body.reason || '').trim();
+      if (reason.length < 5) {
+        return errorJson(response, 422, 'Кольцо закрывается только с причиной (не короче 5 символов)');
+      }
+      db.prepare(`UPDATE routes SET close_reason=? WHERE id=?`)
+        .run(reason.slice(0, 300), routeRow.id);
+      notify('manager', `⭕ Кольцо ${routeRow.route_no} закрыл(а) ${user.full_name || user.username}: ${reason.slice(0, 300)}`,
+        'route', routeRow.id);
+    }
+    // Кольцо снова открыли — причина закрытия своё отработала.
+    if (routeRow.ring_key && !['done', 'cancelled'].includes(status) &&
+      ['done', 'cancelled'].includes(routeRow.status)) {
+      db.prepare(`UPDATE routes SET close_reason='' WHERE id=?`).run(routeRow.id);
+      notify('manager', `⭕ Кольцо ${routeRow.route_no} снова открыто (${user.full_name || user.username})`,
+        'route', routeRow.id);
+    }
     db.prepare(`UPDATE routes SET status=?,planned_start=?,target_per_day=?,base_region=?,comment=?,
       updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       status, body.plannedStart ?? routeRow.planned_start,
@@ -6749,6 +6806,12 @@ async function api(request, response, url) {
     }
     const routeRow = db.prepare('SELECT * FROM routes WHERE id=?').get(match[0]);
     if (!routeRow) return errorJson(response, 404, 'Маршрут не найден');
+    // Постоянное кольцо парка удалить нельзя — только закрыть с причиной
+    // (урок: 30 маршрутов М-101…130 тихо удалены за два месяца).
+    if (routeRow.ring_key) {
+      return errorJson(response, 409,
+        'Это постоянное кольцо парка — удалять нельзя. Закрыть можно только с причиной, закрытие видит руководитель.');
+    }
     db.prepare(`UPDATE orders SET route_id=NULL,route_seq=NULL WHERE route_id=?`).run(routeRow.id);
     db.prepare('DELETE FROM routes WHERE id=?').run(routeRow.id);
     audit(db, user, 'delete', 'route', routeRow.id, {}, requestIp(request));
@@ -8726,6 +8789,16 @@ async function api(request, response, url) {
         learns: 'средняя дневная нагрузка ремонтов и пересменок за 60 суток',
         value: `${repairNorm ?? '—'} машино-дн/день`,
         clamp: 'минимум 1', drift: '⚖ Баланс выходов 07:40 (пики >×1,5 нормы)' },
+      { name: 'Зазор стыковки кругов',
+        learns: 'медиана паузы «выгрузка → следующая погрузка» по парку за 30 дн — по ней считается план машин на круг',
+        value: (() => {
+          const gap = safe(() => dockGapDays(collectDockPauses(db)));
+          if (!gap) return '—';
+          return gap.learned ? `${gap.days} дн (${gap.samples} пар рейсов)`
+            : `фолбэк ${gap.days} дн (образцов ${gap.samples})`;
+        })(),
+        clamp: '0,2–1,5 дня; меньше 8 образцов или вне — фолбэк 0,85',
+        drift: '⭕ Загрузка кругов · 📐 Нормативы недели (строка «круги»)' },
       { name: 'Санация раздутых километров',
         learns: 'ночной лекарь: активный план > прямая ×1,7 → пересчёт защищённой логикой',
         value: 'ночью, в цепочке пересборки', clamp: 'только пересчёт в коридор',

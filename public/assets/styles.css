@@ -1481,6 +1481,14 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   background: var(--bad); padding: 5px 16px; border-radius: 9px; white-space: nowrap;
   animation: sdbPulse 1.6s infinite; }
 .sales-day-banner .sdb-ok { color: var(--ok); font-weight: 700; font-size: 16px; }
+/* Дыры кругов под баннером продаж: куда продавать объём. */
+.sales-rings { padding: 7px 16px; margin: 0 0 10px; border-radius: 10px; font-size: 13px;
+  background: color-mix(in srgb, var(--teal) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--teal) 30%, transparent); }
+/* Карточка постоянного кольца в Конструкторе. */
+.route-card.ring { border-left: 4px solid var(--teal); }
+.ring-chip { background: color-mix(in srgb, var(--teal) 16%, transparent);
+  border-color: var(--teal); }
 @keyframes sdbPulse { 50% { box-shadow: 0 0 16px var(--bad); } }
 /* Потенциал дня в карточках «Сегодня/Завтра» дашборда. */
 .dash-day .dd-pot { font-size: 12px; margin-top: 3px; color: var(--warn); }
