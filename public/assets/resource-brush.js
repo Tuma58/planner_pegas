@@ -113,54 +113,66 @@ export function wireResourceBrush(container, context) {
     } catch (error) { toast(error.message, 'error'); }
   };
 
-  container.addEventListener('mousedown', event => {
-    const cell = event.target.closest('[data-sched-vehicle][data-sched-day]');
-    if (!cell || brushOf() === 'view') return;
-    event.preventDefault();
-    dragging = { vehicleId: cell.dataset.schedVehicle, from: cell.dataset.schedDay, to: cell.dataset.schedDay };
-    markSelection(dragging.vehicleId, dragging.from, dragging.to);
-  });
+  // Контейнер вкладки живёт всю сессию, а wireResourceBrush зовётся при
+  // каждой перерисовке: без флага обработчики копились бы и одна протяжка
+  // создавала бы интервал дважды.
+  if (!container.dataset.brushMouseWired) {
+    container.dataset.brushMouseWired = '1';
+    container.addEventListener('mousedown', event => {
+      const cell = event.target.closest('[data-sched-vehicle][data-sched-day]');
+      if (!cell || brushOf() === 'view') return;
+      event.preventDefault();
+      dragging = { vehicleId: cell.dataset.schedVehicle, from: cell.dataset.schedDay, to: cell.dataset.schedDay };
+      markSelection(dragging.vehicleId, dragging.from, dragging.to);
+    });
 
-  container.addEventListener('mouseover', event => {
-    if (!dragging) return;
-    const cell = event.target.closest('[data-sched-vehicle][data-sched-day]');
-    // Тянем только по своей строке: перенос между сцепками — отдельная
-    // операция, случайно «размазать» ремонт на соседей нельзя.
-    if (!cell || cell.dataset.schedVehicle !== dragging.vehicleId) return;
-    dragging.to = cell.dataset.schedDay;
-    markSelection(dragging.vehicleId, dragging.from, dragging.to);
-  });
+    container.addEventListener('mouseover', event => {
+      if (!dragging) return;
+      const cell = event.target.closest('[data-sched-vehicle][data-sched-day]');
+      // Тянем только по своей строке: перенос между сцепками — отдельная
+      // операция, случайно «размазать» ремонт на соседей нельзя.
+      if (!cell || cell.dataset.schedVehicle !== dragging.vehicleId) return;
+      dragging.to = cell.dataset.schedDay;
+      markSelection(dragging.vehicleId, dragging.from, dragging.to);
+    });
 
-  const finish = async () => {
-    if (!dragging) return;
-    const { vehicleId, from, to } = dragging;
-    dragging = null;
-    clearSelection();
-    await applyBrush(vehicleId, from, to);
-  };
-  container.addEventListener('mouseup', finish);
-  container.addEventListener('mouseleave', () => { dragging = null; clearSelection(); });
+    const finish = async () => {
+      if (!dragging) return;
+      const { vehicleId, from, to } = dragging;
+      dragging = null;
+      clearSelection();
+      await applyBrush(vehicleId, from, to);
+    };
+    container.addEventListener('mouseup', finish);
+    container.addEventListener('mouseleave', () => { dragging = null; clearSelection(); });
+  }
 
-  container.querySelectorAll('[data-brush]').forEach(button =>
-    button.addEventListener('click', () => {
-      state.resourceBrush = button.dataset.brush;
-      container.querySelectorAll('[data-brush]').forEach(item =>
-        item.classList.toggle('active', item.dataset.brush === state.resourceBrush));
-      document.body.classList.toggle('brush-on', state.resourceBrush !== 'view');
-      const purposeSelect = container.querySelector('#brushRepairPurpose');
-      if (purposeSelect) purposeSelect.hidden = state.resourceBrush !== 'repair';
-    }));
-  container.querySelector('#brushRepairPurpose')?.addEventListener('change', event => {
-    brushRepairPurpose = event.target.value;
-  });
+  // Кнопки палитры пересоздаются вместе с каркасом — навес по флагу на
+  // самой кнопке: живой каркас второй раз не обвешиваем.
+  const palette = container.querySelector('[data-brush]');
+  if (palette && !palette.dataset.wired) {
+    palette.dataset.wired = '1';
+    container.querySelectorAll('[data-brush]').forEach(button =>
+      button.addEventListener('click', () => {
+        state.resourceBrush = button.dataset.brush;
+        container.querySelectorAll('[data-brush]').forEach(item =>
+          item.classList.toggle('active', item.dataset.brush === state.resourceBrush));
+        document.body.classList.toggle('brush-on', state.resourceBrush !== 'view');
+        const purposeSelect = container.querySelector('#brushRepairPurpose');
+        if (purposeSelect) purposeSelect.hidden = state.resourceBrush !== 'repair';
+      }));
+    container.querySelector('#brushRepairPurpose')?.addEventListener('change', event => {
+      brushRepairPurpose = event.target.value;
+    });
 
-  container.querySelector('#brushCompact')?.addEventListener('click', () => {
-    state.resourceCompact = !state.resourceCompact;
-    document.body.classList.toggle('res-compact', Boolean(state.resourceCompact));
-    container.querySelector('#brushCompact').classList.toggle('on', Boolean(state.resourceCompact));
-  });
+    container.querySelector('#brushCompact')?.addEventListener('click', () => {
+      state.resourceCompact = !state.resourceCompact;
+      document.body.classList.toggle('res-compact', Boolean(state.resourceCompact));
+      container.querySelector('#brushCompact').classList.toggle('on', Boolean(state.resourceCompact));
+    });
 
-  container.querySelector('#brushUndo')?.addEventListener('click', () => undoLast(context));
+    container.querySelector('#brushUndo')?.addEventListener('click', () => undoLast(context));
+  }
 }
 
 // Отмена последнего действия: создание — удаляем, удаление — возвращаем.

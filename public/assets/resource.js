@@ -314,12 +314,14 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
           .filter(Boolean).join(' · ');
         return `<td class="${clsAll}" ${canWrite
             ? `data-sched-vehicle="${vehicle.id}" data-sched-day="${iso}"` : ''}
-          title="${escapeHtml(title)}${canWrite ? ' · клик — назначить водителя на период' : ''}">
+          title="${escapeHtml(title)}${canWrite ? ' · протяните по дням — закрепить водителя на период' : ''}">
           ${cls === 'sk-rest' || cls === 'sk-nodrv'
             ? `<i class="sk-dim">${escapeHtml(text)}</i>${callHtml}` : `${escapeHtml(text)}${destHtml}`}</td>`;
       }).join('');
-      return `<tr><th class="sched-name mono vlink" data-vinfo="${vehicle.id}"
-        title="Карточка ТС">${escapeHtml(vehicle.plate)}</th>${cells}</tr>`;
+      return `<tr><th class="sched-name"><span class="mono vlink" data-vinfo="${vehicle.id}"
+        title="Карточка ТС">${escapeHtml(vehicle.plate)}</span>${canWrite
+    ? `<button class="sched-pin" data-vdrv="${vehicle.id}"
+        title="Периоды водителей сцепки: цепочка закреплений, дыры, удаление">📌</button>` : ''}</th>${cells}</tr>`;
     }).join('');
   }
   const total = view === 'drivers' ? payload.drivers.length : payload.vehicles.length;
@@ -416,6 +418,313 @@ export function periodAssignDialog(context, preset = {}) {
     }));
 }
 
+// ── Быстрое закрепление из таблицы графика (решение руководителя 15.09) ──
+// Сценарий «01–14 Сараев, 15–30 Пономарёв, дальше пусто» делается
+// протяжками: выделил дни → всплыло окошко → фамилия → готово. Ничего
+// не назначил — дни остаются пустыми, это законное состояние.
+
+const isoShort = iso => String(iso).slice(0, 10).split('-').reverse().slice(0, 2).join('.');
+const isoAddDays = (iso, days) =>
+  new Date(Date.parse(`${String(iso).slice(0, 10)}T00:00:00Z`) + days * 86_400_000)
+    .toISOString().slice(0, 10);
+
+// Кандидаты в окошко: сперва свои водители машины (постоянный и бывшие
+// на ней по периодам), затем свободные без сцепки, затем остальные.
+// Занятые периодом внахлёст уходят вниз с пометкой — сервер их всё
+// равно отклонит, лучше сказать заранее.
+function assignCandidates(data, vehicleId, fromIso, toIso) {
+  const busyOf = driverId => (data.driverAssignments || []).find(item =>
+    item.driver_id === driverId && item.vehicle_id !== vehicleId &&
+    String(item.starts_at).slice(0, 10) < toIso && String(item.ends_at).slice(0, 10) > fromIso);
+  const wasHere = new Set((data.driverAssignments || [])
+    .filter(item => item.vehicle_id === vehicleId).map(item => item.driver_id));
+  return (data.drivers || [])
+    .filter(driver => driver.status !== 'fired')
+    .map(driver => ({ driver, busy: busyOf(driver.id),
+      rank: driver.vehicle_id === vehicleId ? 0 : wasHere.has(driver.id) ? 1
+        : !driver.vehicle_id ? 2 : 3 }))
+    .sort((a, b) => (a.busy ? 1 : 0) - (b.busy ? 1 : 0) || a.rank - b.rank ||
+      a.driver.full_name.localeCompare(b.driver.full_name, 'ru'));
+}
+
+function closeAssignPop() {
+  const pop = document.getElementById('assignPop');
+  if (pop?.cleanup) pop.cleanup();
+  pop?.remove();
+}
+
+// Лёгкое окошко закрепления у выделенных ячеек: даты уже заполнены
+// протяжкой («по» — включительно, как выделено), остаётся фамилия.
+// Клик по фамилии закрепляет сразу; Esc/мимо/«оставить пустым» — ничего.
+function openAssignPop(context, { vehicleId, from, to, anchor = null, onDone = null }) {
+  const { state } = context;
+  const data = state.data;
+  const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
+  if (!vehicle) return;
+  closeAssignPop();
+  const lastInc = isoAddDays(to, -1);
+  const pop = document.createElement('div');
+  pop.id = 'assignPop';
+  pop.className = 'apop';
+  pop.innerHTML = `
+    <div class="apop-head"><b class="mono">${escapeHtml(vehicle.plate)}</b>
+      <span class="muted" id="apDays"></span>
+      <button type="button" class="apop-x" title="Закрыть (Esc)">✕</button></div>
+    <div class="apop-dates">
+      <input type="date" id="apFrom" value="${from}">
+      <span>→</span>
+      <input type="date" id="apTo" value="${lastInc}" title="последний день, включительно">
+    </div>
+    <input id="apSearch" placeholder="🔍 фамилия — клик по строке закрепляет" autocomplete="off">
+    <div class="apop-list" id="apList"></div>
+    <div class="apop-foot">
+      <a href="#" id="apEmpty" title="Дни останутся пустыми с подсветкой — назначить некого">оставить пустым</a>
+      <a href="#" id="apCard">периоды машины →</a>
+    </div>`;
+  document.body.appendChild(pop);
+  // Позиция: у ячейки, где отпустили мышь; без якоря — по центру.
+  const place = () => {
+    const width = pop.offsetWidth || 280;
+    const height = pop.offsetHeight || 240;
+    if (anchor) {
+      pop.style.left = `${Math.min(Math.max(8, anchor.left), window.innerWidth - width - 8)}px`;
+      pop.style.top = `${anchor.bottom + 6 + height > window.innerHeight
+        ? Math.max(8, anchor.top - height - 6) : anchor.bottom + 6}px`;
+    } else {
+      pop.style.left = `${Math.max(8, (window.innerWidth - width) / 2)}px`;
+      pop.style.top = `${Math.max(8, (window.innerHeight - height) / 3)}px`;
+    }
+  };
+  const daysLabel = () => {
+    const fromV = pop.querySelector('#apFrom').value;
+    const lastV = pop.querySelector('#apTo').value;
+    const days = Math.round((Date.parse(lastV) - Date.parse(fromV)) / 86_400_000) + 1;
+    pop.querySelector('#apDays').textContent =
+      days > 0 ? `${isoShort(fromV)} → ${isoShort(lastV)} · ${days} дн` : 'даты перепутаны';
+  };
+  const commit = async driverId => {
+    const fromV = pop.querySelector('#apFrom').value;
+    const lastV = pop.querySelector('#apTo').value;
+    if (!fromV || !lastV || lastV < fromV) { toast('Проверьте даты', 'error'); return; }
+    const name = (data.drivers || []).find(item => item.id === driverId)?.full_name || '';
+    try {
+      await api('/api/driver-assignments', { method: 'POST', body: JSON.stringify({
+        driverId, vehicleId, startsAt: fromV, endsAt: isoAddDays(lastV, 1), note: '' }) });
+      toast(`${name}: ${vehicle.plate} с ${isoShort(fromV)} по ${isoShort(lastV)}`);
+      closeAssignPop();
+      await context.onReload();
+      if (onDone) onDone();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  const renderList = () => {
+    const query = pop.querySelector('#apSearch').value.trim().toLowerCase();
+    const fromV = pop.querySelector('#apFrom').value;
+    const toV = isoAddDays(pop.querySelector('#apTo').value, 1);
+    const rows = assignCandidates(data, vehicleId, fromV, toV)
+      .filter(({ driver }) => !query || driver.full_name.toLowerCase().includes(query))
+      .slice(0, 8);
+    pop.querySelector('#apList').innerHTML = rows.map(({ driver, busy, rank }) => `
+      <div class="ap-row ${busy ? 'ap-busy' : ''}" data-ap-driver="${driver.id}" ${busy
+    ? `data-ap-note="занят: ${escapeHtml(busy.vehicle_plate || '')} по ${isoShort(isoAddDays(busy.ends_at, -1))}"` : ''}>
+        <span>${escapeHtml(driver.full_name)}</span>
+        <small class="muted">${busy ? `⛔ ${escapeHtml(busy.vehicle_plate || '')} до ${isoShort(busy.ends_at)}`
+    : rank === 0 ? 'этой машины' : rank === 1 ? 'работал на ней' : rank === 2 ? 'без сцепки'
+      : escapeHtml(driver.vehicle_plate || '')}</small>
+      </div>`).join('') || '<div class="ap-row muted">никого не нашлось</div>';
+  };
+  pop.querySelector('#apList').addEventListener('mousedown', event => {
+    const row = event.target.closest('[data-ap-driver]');
+    if (!row) return;
+    event.preventDefault();
+    if (row.classList.contains('ap-busy')) { toast(row.dataset.apNote, 'error'); return; }
+    commit(row.dataset.apDriver);
+  });
+  pop.querySelector('#apSearch').addEventListener('input', renderList);
+  pop.querySelector('#apSearch').addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const first = pop.querySelector('[data-ap-driver]:not(.ap-busy)');
+    if (first) commit(first.dataset.apDriver);
+  });
+  pop.querySelectorAll('#apFrom, #apTo').forEach(input =>
+    input.addEventListener('change', () => { daysLabel(); renderList(); }));
+  pop.querySelector('.apop-x').onclick = closeAssignPop;
+  pop.querySelector('#apEmpty').onclick = event => { event.preventDefault(); closeAssignPop(); };
+  pop.querySelector('#apCard').onclick = event => {
+    event.preventDefault();
+    closeAssignPop();
+    vehicleDriversDialog(context, vehicleId);
+  };
+  const onKey = event => { if (event.key === 'Escape') closeAssignPop(); };
+  const onOutside = event => { if (!pop.contains(event.target)) closeAssignPop(); };
+  document.addEventListener('keydown', onKey);
+  // Отложенно — чтобы mouseup самой протяжки не закрыл окошко.
+  setTimeout(() => document.addEventListener('mousedown', onOutside), 0);
+  pop.cleanup = () => {
+    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('mousedown', onOutside);
+  };
+  daysLabel();
+  renderList();
+  place();
+  setTimeout(() => pop.querySelector('#apSearch')?.focus(), 30);
+}
+
+// Протяжка по строке машины в режиме «Просмотр»: выделение дней тем же
+// жестом, что у кисти состояний, но результат — закрепление водителя.
+// Одиночный клик = период на неделю от дня (даты правятся в окошке).
+function wireScheduleAssign(box, context) {
+  const { state } = context;
+  let drag = null;
+  const clear = () => box.querySelectorAll('.asel').forEach(cell => cell.classList.remove('asel'));
+  const mark = () => {
+    clear();
+    const [a, b] = [drag.from, drag.to].sort();
+    box.querySelectorAll(`[data-sched-vehicle="${drag.vehicleId}"]`).forEach(cell => {
+      const day = cell.dataset.schedDay;
+      if (day >= a && day <= b) cell.classList.add('asel');
+    });
+  };
+  box.addEventListener('mousedown', event => {
+    if (event.button !== 0 || (state.resourceBrush || 'view') !== 'view') return;
+    const cell = event.target.closest('[data-sched-vehicle][data-sched-day]');
+    if (!cell || event.target.closest('.vlink, .sched-pin')) return;
+    event.preventDefault();
+    drag = { vehicleId: cell.dataset.schedVehicle, from: cell.dataset.schedDay,
+      to: cell.dataset.schedDay, moved: false };
+    mark();
+  });
+  box.addEventListener('mouseover', event => {
+    if (!drag) return;
+    const cell = event.target.closest('[data-sched-vehicle][data-sched-day]');
+    if (!cell || cell.dataset.schedVehicle !== drag.vehicleId) return;
+    if (cell.dataset.schedDay !== drag.from) drag.moved = true;
+    drag.to = cell.dataset.schedDay;
+    mark();
+  });
+  box.addEventListener('mouseup', event => {
+    if (!drag) return;
+    const { vehicleId, from, to, moved } = drag;
+    drag = null;
+    clear();
+    const [a, b] = [from, to].sort();
+    const cell = event.target.closest('[data-sched-vehicle][data-sched-day]');
+    openAssignPop(context, { vehicleId,
+      from: a,
+      // Одна ячейка — неделя по умолчанию; протяжка — ровно как выделено.
+      to: moved ? isoAddDays(b, 1) : isoAddDays(a, 7),
+      anchor: (cell || event.target.closest('td'))?.getBoundingClientRect() || null });
+  });
+  box.addEventListener('mouseleave', () => { drag = null; clear(); });
+}
+
+// Карточка «Периоды водителей сцепки»: цепочка на 30 дней вперёд —
+// периоды, пересменки, постоянный водитель и дыры с кнопкой «Назначить».
+// Одна машина — один экран, общий реестр парка остаётся в «На период».
+export function vehicleDriversDialog(context, vehicleId) {
+  const { state } = context;
+  const data = state.data;
+  const vehicle = (data.vehicles || []).find(item => item.id === vehicleId);
+  if (!vehicle) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const HORIZON = 30;
+  const periods = (data.driverAssignments || [])
+    .filter(item => item.vehicle_id === vehicleId)
+    .sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
+  const shifts = (data.dispositions || [])
+    .filter(item => item.vehicle_id === vehicleId && item.kind === 'shift');
+  const futureShiftEnds = shifts
+    .filter(item => String(item.ends_at).slice(0, 10) >= today)
+    .map(item => String(item.ends_at).slice(0, 10)).sort();
+  const dayInfo = day => {
+    const period = periods.find(item =>
+      String(item.starts_at).slice(0, 10) <= day && String(item.ends_at).slice(0, 10) > day);
+    if (period) return { kind: 'period', name: period.driver_name, id: period.id };
+    if (shifts.some(item =>
+      String(item.starts_at).slice(0, 10) <= day && String(item.ends_at).slice(0, 10) >= day)) {
+      return { kind: 'shift' };
+    }
+    if (futureShiftEnds.some(end => end <= day)) return { kind: 'gap' };
+    return vehicle.driver_name
+      ? { kind: 'base', name: vehicle.driver_name } : { kind: 'gap' };
+  };
+  const segments = [];
+  for (let index = 0; index < HORIZON; index += 1) {
+    const day = isoAddDays(today, index);
+    const info = dayInfo(day);
+    const last = segments[segments.length - 1];
+    if (last && last.kind === info.kind && last.name === info.name && last.id === info.id) {
+      last.len += 1;
+    } else segments.push({ start: day, len: 1, ...info });
+  }
+  const canWrite = (data.user.permissions || []).includes('fleet:write');
+  const past = periods.filter(item => String(item.ends_at).slice(0, 10) <= today).slice(-2);
+  const range = seg => `${isoShort(seg.start)} → ${isoShort(isoAddDays(seg.start, seg.len - 1))}`;
+  const rows = segments.map(seg => {
+    if (seg.kind === 'period') {
+      return `<div class="vdrv-row">
+        <span class="vdrv-dates mono">${range(seg)}</span>
+        <b style="flex:1">${escapeHtml(seg.name)}</b>
+        <small class="muted">период</small>
+        ${canWrite ? `<button class="button ghost small danger" data-vdrv-del="${seg.id}" title="Удалить закрепление">✕</button>` : ''}
+      </div>`;
+    }
+    if (seg.kind === 'shift') {
+      return `<div class="vdrv-row vdrv-dim">
+        <span class="vdrv-dates mono">${range(seg)}</span>
+        <span style="flex:1">🔁 пересменка</span></div>`;
+    }
+    if (seg.kind === 'base') {
+      return `<div class="vdrv-row vdrv-dim">
+        <span class="vdrv-dates mono">${range(seg)}</span>
+        <span style="flex:1">${escapeHtml(seg.name)}</span>
+        <small class="muted">постоянный</small></div>`;
+    }
+    return `<div class="vdrv-row vdrv-gap">
+      <span class="vdrv-dates mono">${range(seg)}</span>
+      <span style="flex:1">пусто · ${seg.len} дн</span>
+      ${canWrite ? `<button class="button small" data-vdrv-fill data-from="${seg.start}"
+        data-to="${isoAddDays(seg.start, seg.len)}">Назначить</button>` : ''}
+    </div>`;
+  }).join('');
+  context.showModal(`<h2 style="margin-bottom:2px">📌 Водители сцепки <span class="mono">${escapeHtml(vehicle.plate)}</span></h2>
+    <p class="muted" style="margin:0 0 8px">30 дней вперёд. Даты включительно. Фамилия в графике
+      стоит только на период закрепления; «пусто» после пересменки — назначьте, кто принимает
+      машину, либо оставьте пустым, если некого.</p>
+    ${past.length ? `<div class="vdrv-past muted">${past.map(item =>
+    `${isoShort(item.starts_at)} → ${isoShort(isoAddDays(item.ends_at, -1))} · ${escapeHtml(item.driver_name)}`)
+    .join(' · ')}</div>` : ''}
+    <div class="vdrv-list">${rows}</div>
+    ${canWrite ? `<div class="modal-actions" style="justify-content:space-between">
+      <button type="button" class="button ghost small" data-vdrv-add>+ период</button>
+      <button type="button" class="button ghost" data-close>Закрыть</button>
+    </div>` : ''}`);
+  const reopen = () => vehicleDriversDialog(context, vehicleId);
+  document.querySelectorAll('[data-vdrv-del]').forEach(button =>
+    button.addEventListener('click', async () => {
+      if (!confirm('Удалить закрепление на период?')) return;
+      try {
+        await api(`/api/driver-assignments/${button.dataset.vdrvDel}`, { method: 'DELETE' });
+        toast('Закрепление удалено');
+        await context.onReload();
+        reopen();
+      } catch (error) { toast(error.message, 'error'); }
+    }));
+  document.querySelectorAll('[data-vdrv-fill]').forEach(button =>
+    button.addEventListener('click', () => {
+      context.closeModal();
+      openAssignPop(context, { vehicleId,
+        from: button.dataset.from, to: button.dataset.to, onDone: reopen });
+    }));
+  document.querySelector('[data-vdrv-add]')?.addEventListener('click', () => {
+    const lastEnd = periods.length
+      ? String(periods[periods.length - 1].ends_at).slice(0, 10) : today;
+    const from = lastEnd > today ? lastEnd : today;
+    context.closeModal();
+    openAssignPop(context, { vehicleId, from, to: isoAddDays(from, 14), onDone: reopen });
+  });
+}
+
 // Асинхронная дорисовка сетки графика во вкладке (данные — /api/driver-schedule).
 async function loadResourceSchedule(container, context) {
   const { state } = context;
@@ -453,24 +762,28 @@ async function loadResourceSchedule(container, context) {
     wireResourceBrush(container, context);
     bindResourceKeys(() => context);
   }
-  // Клик по ячейке в режиме просмотра — периодное закрепление с
-  // подставленной машиной/водителем и датами от дня клика.
-  if (canWrite) {
+  // Навесы на сам wrap — один раз: box переживает тихие перерисовки
+  // (renderInto с тем же каркасом), повторный навес задваивал бы окошки.
+  if (canWrite && !box.dataset.schedWired) {
+    box.dataset.schedWired = '1';
+    // Закрепление из таблицы (упрощение 15.09, решение руководителя):
+    // в виде «по сцепкам» период рисуется ПРОТЯЖКОЙ по дням строки —
+    // отпустили мышь, всплыло окошко с фамилией. Одиночный клик — период
+    // на неделю от дня. В виде «по водителям» клик открывает прежнюю
+    // форму с пресетом (там водителю назначается ТС).
     box.addEventListener('click', event => {
-      // Кисть занимает клик под себя: иначе после каждой покраски
-      // открывалась бы форма закрепления водителя.
-      if ((state.resourceBrush || 'view') !== 'view') return;
+      const pin = event.target.closest('[data-vdrv]');
+      if (pin) { vehicleDriversDialog(context, pin.dataset.vdrv); return; }
+      if (state.resourceView !== 'drivers') return;
       const cell = event.target.closest('[data-sched-day]');
       if (!cell || event.target.closest('.vlink')) return;
       const from = cell.dataset.schedDay;
-      const to = new Date(Date.parse(`${from}T00:00:00Z`) + 7 * 86_400_000)
-        .toISOString().slice(0, 10);
       periodAssignDialog(context, {
-        vehicleId: cell.dataset.schedVehicle || undefined,
         driverId: cell.dataset.schedDriver || undefined,
-        from, to
+        from, to: isoAddDays(from, 7)
       });
     });
+    wireScheduleAssign(box, context);
   }
 }
 
@@ -1145,6 +1458,10 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   // Разметка не изменилась — DOM не трогаем: без мигания и прыжков.
   if (!renderInto(container, html)) {
     restoreScrolls(container, savedScrolls);
+    // Каркас тот же, но данные могли смениться (закрепление из окошка,
+    // тихое автообновление): график дорисовывается всегда, иначе свежие
+    // изменения не видны до перерисовки каркаса.
+    if (state.resourceView !== 'gantt') loadResourceSchedule(container, context);
     return;
   }
   wireQuestionsStrip(container, context, questions);

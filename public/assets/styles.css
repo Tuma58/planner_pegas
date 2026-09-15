@@ -652,6 +652,45 @@ input.warn-border { border-color: #c99a2e; }
 .sched-trip { background: color-mix(in srgb, var(--teal) 14%, transparent); }
 .sched-act { cursor: pointer; }
 .sched-act:hover { outline: 2px solid var(--teal); outline-offset: -2px; }
+/* Протяжка закрепления в режиме «Просмотр» — выделение дней. */
+.sched-table td.asel { outline: 2px solid var(--teal); outline-offset: -2px;
+  background: color-mix(in srgb, var(--teal) 16%, transparent); }
+/* 📌 у госномера — периоды водителей сцепки; не шумит, виден при наведении. */
+.sched-pin { border: none; background: none; cursor: pointer; font-size: 10px;
+  padding: 0 2px; opacity: .18; vertical-align: middle; }
+.sched-table tr:hover .sched-pin { opacity: .9; }
+/* Окошко закрепления у выделенных ячеек. */
+.apop { position: fixed; z-index: 1200; width: 300px; background: var(--paper, #fff);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgb(0 0 0 / 22%);
+  padding: 10px 12px; font-size: 13px; }
+.apop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.apop-head b { font-size: 14px; }
+.apop-x { margin-left: auto; border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 13px; padding: 2px 4px; }
+.apop-dates { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.apop-dates input { padding: 3px 6px; font-size: 12.5px; }
+.apop input#apSearch { width: 100%; box-sizing: border-box; padding: 5px 8px; }
+.apop-list { max-height: 200px; overflow: auto; margin-top: 4px; }
+.ap-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 7px; border-radius: 6px; cursor: pointer; }
+.ap-row:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+.ap-row.ap-busy { cursor: not-allowed; opacity: .55; }
+.ap-row.ap-busy:hover { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.apop-foot { display: flex; justify-content: space-between; margin-top: 8px;
+  font-size: 12px; }
+.apop-foot a { color: var(--muted); }
+.apop-foot a#apCard { color: var(--teal); }
+/* Карточка «Водители сцепки»: цепочка периодов и дыр. */
+.vdrv-list { display: flex; flex-direction: column; gap: 3px; max-height: 48vh; overflow: auto; }
+.vdrv-row { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+  border: 1px solid var(--line); border-radius: 8px; }
+.vdrv-dates { white-space: nowrap; font-size: 12.5px; }
+.vdrv-row.vdrv-dim { opacity: .6; border-style: dashed; }
+.vdrv-row.vdrv-gap { border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: repeating-linear-gradient(45deg,
+    color-mix(in srgb, var(--bad) 10%, transparent) 0 6px,
+    color-mix(in srgb, var(--bad) 3%, transparent) 6px 12px); }
+.vdrv-past { font-size: 12px; margin: 0 0 6px; }
 
 /* Карточка ТС по клику на госномер */
 .vlink { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
