@@ -3089,12 +3089,23 @@ async function closeMissedUnloads() {
       // История стоянок за последние 36 часов: ищем стоянку 20+ минут в
       // радиусе 1,5 км от точки выгрузки — это и была выгрузка.
       const imei = db.prepare(`SELECT imei FROM vehicle_trackers WHERE vehicle_id=?`).get(row.vehicle_id)?.imei;
+      // Нижняя граница окна — ВЫЕЗД С ПОГРУЗКИ ТЕКУЩЕГО рейса (кейс
+      // т935ав58 №3403, 15.09): челнок ездит на одну и ту же точку, и
+      // стоянка ПРОШЛОГО рейса попадала в «последние 36 часов» — автофакт
+      // закрывал новый рейс визитом, случившимся до его старта.
+      const tripRow = db.prepare(`SELECT starts_at, on_line_at,
+          (SELECT MIN(s2.actual_departure) FROM trip_stops s2
+            WHERE s2.trip_id=? AND s2.kind='P' AND s2.actual_departure IS NOT NULL) dep
+        FROM trips WHERE id=?`).get(row.trip_id, row.trip_id);
+      const notBeforeMs = Date.parse(tripRow?.dep || tripRow?.on_line_at || tripRow?.starts_at || 0) || 0;
       const te = Math.floor(Date.now() / 1000);
-      const ts = te - 36 * 3600;
+      const ts = Math.max(te - 36 * 3600, Math.floor(notBeforeMs / 1000));
+      if (ts >= te) continue;
       const answer = await pilotApi(`/api/v3/vehicles/track/stops?imei=${imei}&ts=${ts}&te=${te}`);
       const stops = answer?.data?.stops || [];
       const visit = [...stops].reverse().find(item =>
         Number(item.duration) >= 20 * 60 &&
+        Number(item.ts) * 1000 > notBeforeMs &&
         roadKm(Number(item.lat), Number(item.lon), point.latitude, point.longitude) <= 1.5 * ROAD_FACTOR + 1.5);
       if (!visit) continue;
       // Координат стоянки мало: автофакт только с подтверждением датчиков
