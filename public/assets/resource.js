@@ -475,6 +475,7 @@ function openAssignPop(context, { vehicleId, from, to, anchor = null, onDone = n
       <span>→</span>
       <input type="date" id="apTo" value="${lastInc}" title="последний день, включительно">
     </div>
+    <div class="apop-trim" id="apTrim" hidden></div>
     <input id="apSearch" placeholder="🔍 фамилия — клик по строке закрепляет" autocomplete="off">
     <div class="apop-list" id="apList"></div>
     <div class="apop-foot">
@@ -501,6 +502,17 @@ function openAssignPop(context, { vehicleId, from, to, anchor = null, onDone = n
     const days = Math.round((Date.parse(lastV) - Date.parse(fromV)) / 86_400_000) + 1;
     pop.querySelector('#apDays').textContent =
       days > 0 ? `${isoShort(fromV)} → ${isoShort(lastV)} · ${days} дн` : 'даты перепутаны';
+    // Замена по факту: дни заняты другим периодом — предупреждаем, что он
+    // будет подрезан (история до даты замены остаётся за прежним).
+    const toV = isoAddDays(lastV, 1);
+    const clip = (data.driverAssignments || []).filter(item =>
+      item.vehicle_id === vehicleId &&
+      String(item.starts_at).slice(0, 10) < toV && String(item.ends_at).slice(0, 10) > fromV);
+    const trim = pop.querySelector('#apTrim');
+    trim.hidden = !clip.length;
+    trim.innerHTML = clip.length ? `⚠ заняты: ${clip.map(item =>
+      `<b>${escapeHtml(item.driver_name)}</b> по ${isoShort(isoAddDays(item.ends_at, -1))}`).join(' · ')}
+      — период будет подрезан под замену` : '';
   };
   const commit = async driverId => {
     const fromV = pop.querySelector('#apFrom').value;
@@ -508,9 +520,11 @@ function openAssignPop(context, { vehicleId, from, to, anchor = null, onDone = n
     if (!fromV || !lastV || lastV < fromV) { toast('Проверьте даты', 'error'); return; }
     const name = (data.drivers || []).find(item => item.id === driverId)?.full_name || '';
     try {
-      await api('/api/driver-assignments', { method: 'POST', body: JSON.stringify({
+      const created = await api('/api/driver-assignments', { method: 'POST', body: JSON.stringify({
         driverId, vehicleId, startsAt: fromV, endsAt: isoAddDays(lastV, 1), note: '' }) });
-      toast(`${name}: ${vehicle.plate} с ${isoShort(fromV)} по ${isoShort(lastV)}`);
+      const trims = created.item?.trims || [];
+      toast(`${name}: ${vehicle.plate} с ${isoShort(fromV)} по ${isoShort(lastV)}${trims.length
+        ? ` · ${trims.map(trim => trim.label).join('; ')}` : ''}`);
       closeAssignPop();
       await context.onReload();
       if (onDone) onDone();

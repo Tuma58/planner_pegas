@@ -9235,7 +9235,9 @@ async function api(request, response, url) {
       note: String(body.note || ''), userId: user.id
     });
     audit(db, user, 'assign-period', 'driver', row.driver_id,
-      { vehicleId: row.vehicle_id, startsAt: row.starts_at, endsAt: row.ends_at }, requestIp(request));
+      { vehicleId: row.vehicle_id, startsAt: row.starts_at, endsAt: row.ends_at,
+        ...(row.trims?.length ? { trims: row.trims.map(trim => trim.label) } : {}) },
+      requestIp(request));
     return json(response, 201, { item: row });
   }
   match = route(/^\/api\/driver-assignments\/([\w-]+)$/, pathname);

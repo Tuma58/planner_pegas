@@ -405,17 +405,61 @@ export function createDriverAssignment(db, { driverId, vehicleId, startsAt, ends
   if (!driver) throw Object.assign(new Error('Водитель не найден'), { status: 404 });
   const vehicle = db.prepare(`SELECT id,plate FROM vehicles WHERE id=?`).get(vehicleId);
   if (!vehicle) throw Object.assign(new Error('Сцепка не найдена'), { status: 404 });
+  // Занятость на ДРУГОЙ машине — ошибка: снять человека с чужой сцепки
+  // втихую нельзя, подрежьте период там, где он стоит. Пересечения на
+  // ЭТОЙ машине — не ошибка, а замена: они подрезаются ниже.
   const clash = db.prepare(`SELECT a.id, v.plate FROM driver_assignments a
     JOIN vehicles v ON v.id=a.vehicle_id
-    WHERE a.driver_id=? AND a.starts_at < ? AND a.ends_at > ?`).get(driverId, endsAt, startsAt);
+    WHERE a.driver_id=? AND a.vehicle_id<>? AND a.starts_at < ? AND a.ends_at > ?`)
+    .get(driverId, vehicleId, endsAt, startsAt);
   if (clash) {
     throw Object.assign(new Error(`Пересечение: водитель уже закреплён на ${clash.plate} в этот период`), { status: 422 });
   }
+  // Замена по факту (решение руководителя 15.09): новый период приводит
+  // план к факту — пересекающиеся периоды этой машины подрезаются, дни
+  // до замены остаются за прежним водителем, как и было в жизни. Замена
+  // куском в середине рвёт старый период на «до» и «после»; полностью
+  // перекрытый — удаляется. Всё одной транзакцией.
+  const trims = [];
   const id = randomUUID();
-  db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at,note,created_by)
-    VALUES(?,?,?,?,?,?,?)`).run(id, driverId, vehicleId, startsAt, endsAt,
-    String(note || '').slice(0, 200), userId);
-  return db.prepare(`SELECT * FROM driver_assignments WHERE id=?`).get(id);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const overlaps = db.prepare(`SELECT a.*, d.full_name driver_name FROM driver_assignments a
+      JOIN drivers d ON d.id=a.driver_id
+      WHERE a.vehicle_id=? AND a.starts_at < ? AND a.ends_at > ?`).all(vehicleId, endsAt, startsAt);
+    for (const old of overlaps) {
+      if (old.starts_at < startsAt && old.ends_at > endsAt) {
+        db.prepare(`UPDATE driver_assignments SET ends_at=? WHERE id=?`).run(startsAt, old.id);
+        db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at,note,created_by)
+          VALUES(?,?,?,?,?,?,?)`).run(randomUUID(), old.driver_id, vehicleId,
+          endsAt, old.ends_at, old.note, userId);
+        trims.push({ driver: old.driver_name, action: 'split',
+          label: `${old.driver_name}: разрыв, до ${startsAt} и с ${endsAt}` });
+      } else if (old.starts_at < startsAt) {
+        db.prepare(`UPDATE driver_assignments SET ends_at=? WHERE id=?`).run(startsAt, old.id);
+        trims.push({ driver: old.driver_name, action: 'cut_tail',
+          label: `${old.driver_name}: подрезан до ${startsAt}` });
+      } else if (old.ends_at > endsAt) {
+        db.prepare(`UPDATE driver_assignments SET starts_at=? WHERE id=?`).run(endsAt, old.id);
+        trims.push({ driver: old.driver_name, action: 'cut_head',
+          label: `${old.driver_name}: начнётся с ${endsAt}` });
+      } else {
+        db.prepare(`DELETE FROM driver_assignments WHERE id=?`).run(old.id);
+        trims.push({ driver: old.driver_name, action: 'removed',
+          label: `${old.driver_name}: период снят целиком` });
+      }
+    }
+    db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at,note,created_by)
+      VALUES(?,?,?,?,?,?,?)`).run(id, driverId, vehicleId, startsAt, endsAt,
+      String(note || '').slice(0, 200), userId);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  const row = db.prepare(`SELECT * FROM driver_assignments WHERE id=?`).get(id);
+  row.trims = trims;
+  return row;
 }
 
 // График работы водителей: две проекции (водители × дни → ТС;

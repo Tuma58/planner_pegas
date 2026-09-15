@@ -2983,3 +2983,43 @@ test('кольца К-1/К-2п/К-4а/К-5 сеются один раз и за�
   assert.ok(load.items.every(item => item.planVehicles > 0));
   assert.equal(load.items.filter(item => item.ring).length, 4);
 });
+
+// ── Замена водителя по факту: подрезка периодов (15.09.2026) ──
+test('замена по факту: новый период подрезает пересекающиеся на машине', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-trim-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  db.prepare(`INSERT INTO drivers(id,full_name) VALUES('tr1','Плановый П')`).run();
+  db.prepare(`INSERT INTO drivers(id,full_name) VALUES('tr2','Заменный З')`).run();
+  db.prepare(`INSERT INTO drivers(id,full_name) VALUES('tr3','Третий Т')`).run();
+  const spans = () => db.prepare(`SELECT d.full_name name, a.starts_at s, a.ends_at e
+    FROM driver_assignments a JOIN drivers d ON d.id=a.driver_id
+    WHERE a.vehicle_id=? ORDER BY a.starts_at`).all(vehicle)
+    .map(row => `${row.name.split(' ')[0]} ${row.s}→${row.e}`);
+  // План месяца: Плановый на весь период.
+  createDriverAssignment(db, { driverId: 'tr1', vehicleId: vehicle,
+    startsAt: '2026-10-01', endsAt: '2026-10-31' });
+  // Замена куском в середине: старый рвётся на «до» и «после».
+  const middle = createDriverAssignment(db, { driverId: 'tr2', vehicleId: vehicle,
+    startsAt: '2026-10-10', endsAt: '2026-10-15' });
+  assert.equal(middle.trims.length, 1);
+  assert.equal(middle.trims[0].action, 'split');
+  assert.deepEqual(spans(), ['Плановый 2026-10-01→2026-10-10',
+    'Заменный 2026-10-10→2026-10-15', 'Плановый 2026-10-15→2026-10-31']);
+  // Замена с даты до конца: хвост планового укорачивается, сам кусок
+  // заменного полностью перекрыт — удаляется.
+  const tail = createDriverAssignment(db, { driverId: 'tr3', vehicleId: vehicle,
+    startsAt: '2026-10-08', endsAt: '2026-10-31' });
+  assert.deepEqual(tail.trims.map(trim => trim.action).sort(),
+    ['cut_tail', 'removed', 'removed'].sort());
+  assert.deepEqual(spans(), ['Плановый 2026-10-01→2026-10-08',
+    'Третий 2026-10-08→2026-10-31']);
+  // Занятость на ДРУГОЙ машине по-прежнему ошибка, а не тихая подрезка.
+  const other = db.prepare('SELECT id FROM vehicles LIMIT 1 OFFSET 1').get().id;
+  assert.throws(() => createDriverAssignment(db, { driverId: 'tr3', vehicleId: other,
+    startsAt: '2026-10-10', endsAt: '2026-10-12' }), /Пересечение/);
+});

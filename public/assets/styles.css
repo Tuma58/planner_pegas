@@ -670,6 +670,9 @@ input.warn-border { border-color: #c99a2e; }
 .apop-dates { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .apop-dates input { padding: 3px 6px; font-size: 12.5px; }
 .apop input#apSearch { width: 100%; box-sizing: border-box; padding: 5px 8px; }
+.apop-trim { margin: 0 0 6px; padding: 5px 8px; border-radius: 7px; font-size: 12px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
 .apop-list { max-height: 200px; overflow: auto; margin-top: 4px; }
 .ap-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 5px 7px; border-radius: 6px; cursor: pointer; }
