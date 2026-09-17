@@ -196,6 +196,9 @@ export function runScheduleAutoFact(db, userId = null, daysBack = 3) {
     .map(row => [canonPlate(row.plate), row.id]));
   const touched = new Set();
   let marks = 0;
+  // Покрытие обкатки: сколько машино-дней с работой план назвал
+  // однозначно — гейт этапа 3 (замер руководителю каждое утро).
+  const counters = { busyDays: 0, noHolder: 0, many: 0, already: 0 };
   for (const crew of crews.values()) {
     for (const ts of crew.ts || []) {
       const vehicleId = vehicleByPlate.get(canonPlate(ts.tyagach));
@@ -216,9 +219,11 @@ export function runScheduleAutoFact(db, userId = null, daysBack = 3) {
             }
           }
         }
-        if (holders.length !== 1) continue;
+        counters.busyDays += 1;
+        if (!holders.length) { counters.noHolder += 1; continue; }
+        if (holders.length > 1) { counters.many += 1; continue; }
         const { crew: holderCrew, drv, code } = holders[0];
-        if (factCode(drv, iso)) continue;
+        if (factCode(drv, iso)) { counters.already += 1; continue; }
         setFact(drv, iso, code);
         touched.add(holderCrew.id);
         marks += 1;
@@ -234,7 +239,7 @@ export function runScheduleAutoFact(db, userId = null, daysBack = 3) {
         what: `автофакт: рейсы и перегоны подтвердили ${marks} отметок факта` }]
     }, userId);
   }
-  return { marks };
+  return { marks, ...counters };
 }
 
 // Достройка из планера (решение руководителя 17.09: «данные по ТС и

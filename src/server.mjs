@@ -622,8 +622,13 @@ setInterval(runResourceWatch, 60 * 60_000);
 // планера подтверждают факт-слой — раз в час, окно «сегодня −3 дня».
 function runScheduleFactWatch() {
   try {
-    const { marks } = runScheduleAutoFact(db);
-    if (marks) console.log(`график: автофакт подтвердил отметок — ${marks}`);
+    const result = runScheduleAutoFact(db);
+    const covered = result.busyDays - result.noHolder - result.many;
+    if (result.busyDays) {
+      console.log(`график: автофакт — отметок ${result.marks}, машино-дней с работой ` +
+        `${result.busyDays}, покрытие плана ${Math.round(covered / result.busyDays * 100)}% ` +
+        `(без водителя в плане ${result.noHolder}, «двое» ${result.many})`);
+    }
   } catch (error) { console.error('график: автофакт упал', error); }
 }
 setInterval(runScheduleFactWatch, 60 * 60_000);
