@@ -1045,6 +1045,28 @@ function migrateColumns(db) {
   // Сотрудник подтверждает ознакомление с редакцией раздела инструкций
   // кнопкой «✓ Ознакомлен»; при новой редакции (updated) подтверждение
   // запрашивается заново. Руководитель видит, кто не ознакомился.
+  // ── Новый график работы (перестройка Ресурса, этап 1, 17.09.2026) ──
+  // Экипаж хранится JSON-блоком в формате прототипа руководителя
+  // (протокол /api/schedule/sync, last-write-wins по экипажу);
+  // нормализация в таблицы планера — этап 2 перестройки.
+  db.exec(`CREATE TABLE IF NOT EXISTS schedule_crews (
+    id TEXT PRIMARY KEY,
+    body TEXT NOT NULL,
+    rev INTEGER NOT NULL DEFAULT 0,
+    updated_by TEXT REFERENCES users(id),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS schedule_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    t TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    what TEXT NOT NULL DEFAULT '',
+    who TEXT NOT NULL DEFAULT '',
+    rev INTEGER NOT NULL DEFAULT 0,
+    user_id TEXT REFERENCES users(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_schedule_crews_rev ON schedule_crews(rev);
+  CREATE INDEX IF NOT EXISTS idx_schedule_log_rev ON schedule_log(rev);`);
   db.exec(`CREATE TABLE IF NOT EXISTS guide_acks (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     guide_id TEXT NOT NULL,

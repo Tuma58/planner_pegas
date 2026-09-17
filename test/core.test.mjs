@@ -3040,3 +3040,74 @@ test('замена по факту: новый период подрезает �
   const schedule = driverScheduleData(db, '2026-10-15T00:00:00.000Z', '2026-10-30T00:00:00.000Z');
   assert.ok(schedule.planned.some(item => item.driver_id === null));
 });
+
+// ── Новый график работы: сервер синхронизации (этап 1, 17.09.2026) ──
+test('график: посев, инкрементальный обмен, удаление и журнал', async t => {
+  const { applyScheduleSync } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-sched-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const crewA = { id: 'E001', ts: [{ id: 'T1', tyagach: 'р170мт58', pricep: '', tip: '', filial: 'Пенза', crew: 'E001' }],
+    drv: [{ id: 'D1', fio: 'Викторкин Артем', tel: '', crew: 'E001', filial: 'Пенза', ts: 'T1',
+      rezhim: '45/15', logist: '', vac: false, plan: { '2026-09': ['в', 'в'] }, fact: {} }] };
+  // Посев: пустой клиент получает пустой сервер, затем заливает экипаж.
+  const first = applyScheduleSync(db, { since: 0, crews: {}, log: [] });
+  assert.equal(first.rev, 0);
+  assert.deepEqual(first.crews, {});
+  const seeded = applyScheduleSync(db, { since: 0, crews: { E001: crewA },
+    log: [{ t: '2026-09-17T05:00:00Z', a: 'Тест', what: 'посев' }] });
+  assert.equal(seeded.rev, 1);
+  assert.ok(seeded.crews.E001);
+  // Второй клиент с since=0 видит экипаж и журнал.
+  const other = applyScheduleSync(db, { since: 0, crews: {}, log: [] });
+  assert.equal(other.crews.E001.drv[0].fio, 'Викторкин Артем');
+  assert.equal(other.log[0].what, 'посев');
+  // Инкремент: с since=1 изменений нет.
+  const idle = applyScheduleSync(db, { since: 1, crews: {}, log: [] });
+  assert.deepEqual(idle.crews, {});
+  // Правка экипажа повышает rev; отстающий клиент её получает.
+  crewA.drv[0].plan['2026-09'][1] = 'П';
+  applyScheduleSync(db, { since: 1, crews: { E001: crewA }, log: [] });
+  const catchUp = applyScheduleSync(db, { since: 1, crews: {}, log: [] });
+  assert.equal(catchUp.crews.E001.drv[0].plan['2026-09'][1], 'П');
+  // Удаление экипажа.
+  applyScheduleSync(db, { since: 2, crews: {}, remove: ['E001'], log: [] });
+  const gone = applyScheduleSync(db, { since: 0, crews: {}, log: [] });
+  assert.deepEqual(gone.crews, {});
+  // Кривой экипаж отклоняется целиком.
+  assert.throws(() => applyScheduleSync(db, { since: 0, crews: { X: { id: 'X' } } }), /ожидаю/);
+});
+
+test('график: достройка из планера добавляет недостающие машины и водителей', async t => {
+  const { applyScheduleSync, augmentScheduleFromPlanner } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-augm-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2] = db.prepare('SELECT id, plate FROM vehicles LIMIT 2').all();
+  db.prepare(`INSERT INTO drivers(id,full_name,phone,vehicle_id) VALUES('gd1','Графиков G','+7 900',?)`).run(v1.id);
+  db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id) VALUES('gd2','Вне Графика',?)`).run(v2.id);
+  // Посев: в графике есть машина v1 и водитель gd1 — их дублировать нельзя.
+  applyScheduleSync(db, { since: 0, crews: { E001: { id: 'E001',
+    ts: [{ id: 'T1', tyagach: v1.plate, pricep: '', tip: '', filial: 'Пенза', crew: 'E001' }],
+    drv: [{ id: 'D1', fio: 'Графиков G', tel: '', crew: 'E001', filial: 'Пенза', ts: 'T1',
+      rezhim: '', logist: '', vac: false, plan: {}, fact: {} }] } }, log: [] });
+  const report = augmentScheduleFromPlanner(db);
+  assert.ok(report.addedVehicles.includes(v2.plate), 'вторая машина парка добавлена');
+  assert.ok(!report.addedVehicles.includes(v1.plate), 'существующая не дублируется');
+  assert.ok(report.addedDrivers.includes('Вне Графика'));
+  assert.ok(!report.addedDrivers.includes('Графиков G'));
+  // Водитель встал в экипаж своей машины.
+  const snapshot = applyScheduleSync(db, { since: 0, crews: {}, log: [] });
+  const holder = Object.values(snapshot.crews).find(crew =>
+    crew.drv.some(item => item.fio === 'Вне Графика'));
+  assert.ok(holder.ts.some(item => item.tyagach === v2.plate));
+  // Повтор ничего не добавляет (идемпотентность).
+  const again = augmentScheduleFromPlanner(db);
+  assert.equal(again.addedVehicles.length + again.addedDrivers.length, 0);
+});

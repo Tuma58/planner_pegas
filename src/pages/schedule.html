@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>График работы и закрепление водителей</title>
+<style>
+  :root{
+    --ink:#1b222c; --ink-2:#5c6673; --ink-3:#8b95a3;
+    --line:#d4d9e0; --line-2:#e7ebf0; --bg:#f2f4f7; --panel:#fff; --head:#e3e8ee;
+    --c-v:#cfe8d1; --c-otp:#ffe7ad; --c-bl:#cddff5; --c-bs:#e3e3e3;
+    --c-p:#ffc9a6; --c-rp:#f3c3dd; --c-r:#ddd2f6; --c-zam:#d9ecff;
+    --warn:#b8352a; --warn-bg:#fdeceb; --ok:#2f7d46; --accent:#1f4e79;
+  }
+  :root[data-theme="dark"], :root:not([data-theme="light"]){}
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e5eaf0; --ink-2:#9ba5b3; --ink-3:#77818f;
+      --line:#39414d; --line-2:#2a313b; --bg:#14181e; --panel:#1c212a; --head:#252c36;
+      --c-v:#2f5b3a; --c-otp:#6b5620; --c-bl:#2a4a6e; --c-bs:#3a3f47;
+      --c-p:#7a4324; --c-rp:#6b3552; --c-r:#453a6d; --c-zam:#26445f;
+      --warn:#ef8377; --warn-bg:#3a2320; --accent:#8ab4e0;
+    }
+  }
+  :root[data-theme="dark"]{
+      --ink:#e5eaf0; --ink-2:#9ba5b3; --ink-3:#77818f;
+      --line:#39414d; --line-2:#2a313b; --bg:#14181e; --panel:#1c212a; --head:#252c36;
+      --c-v:#2f5b3a; --c-otp:#6b5620; --c-bl:#2a4a6e; --c-bs:#3a3f47;
+      --c-p:#7a4324; --c-rp:#6b3552; --c-r:#453a6d; --c-zam:#26445f;
+      --warn:#ef8377; --warn-bg:#3a2320; --accent:#8ab4e0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.35 "Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}
+  header{background:var(--panel);border-bottom:1px solid var(--line);padding:12px 16px 0}
+  h1{margin:0;font-size:16px;font-weight:650}
+  .sub{color:var(--ink-2);font-size:12px;margin-top:2px}
+  .tabs{display:flex;gap:2px;margin-top:10px}
+  .tab{padding:6px 14px;border:1px solid var(--line);border-bottom:none;border-radius:4px 4px 0 0;
+       background:var(--bg);cursor:pointer;font-size:13px;color:var(--ink-2)}
+  .tab[aria-selected="true"]{background:var(--panel);color:var(--ink);font-weight:600;
+       box-shadow:0 1px 0 var(--panel);position:relative;top:1px}
+  .bar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:8px 16px;
+       background:var(--panel);border-bottom:1px solid var(--line-2)}
+  .bar label{font-size:12px;color:var(--ink-2);display:inline-flex;gap:5px;align-items:center}
+  select,input,button{font:inherit;color:var(--ink);background:var(--panel);
+       border:1px solid var(--line);border-radius:3px;padding:3px 6px}
+  button{cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .kpis{display:flex;flex-wrap:wrap;gap:16px 22px;padding:9px 16px;background:var(--panel);
+        border-bottom:1px solid var(--line)}
+  .kpi b{display:block;font-size:18px;font-weight:650;line-height:1.15}
+  .kpi span{font-size:11px;color:var(--ink-2)}
+  .kpi.bad b{color:var(--warn)}
+  .palette{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .chip{border:1px solid var(--line);border-radius:3px;padding:2px 8px;font-size:12px;cursor:pointer}
+  .chip[aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:-2px;font-weight:600}
+  .chip.v{background:var(--c-v)} .chip.otp{background:var(--c-otp)} .chip.bl{background:var(--c-bl)}
+  .chip.bs{background:var(--c-bs)} .chip.P{background:var(--c-p)} .chip.RP{background:var(--c-rp)}
+  .chip.R{background:var(--c-r)} .chip.zam{background:var(--c-zam)}
+  .wrap{overflow:auto;max-height:calc(100vh - 235px)}
+  table{border-collapse:separate;border-spacing:0;font-size:12px;width:max-content}
+  th,td{border-right:1px solid var(--line-2);border-bottom:1px solid var(--line-2);padding:1px 5px;white-space:nowrap}
+  thead th{position:sticky;top:0;z-index:5;background:var(--head);font-weight:600;font-size:11px;text-align:center}
+  thead tr.sum th{top:23px;font-weight:400;color:var(--ink-2);font-size:10px;background:var(--panel)}
+  thead tr.sum th.lbl{text-align:right;font-size:10px}
+  .fix{position:sticky;background:var(--panel);z-index:3}
+  thead .fix{z-index:6;background:var(--head)}
+  tbody tr:hover .fix{background:var(--line-2)}
+  td.day{text-align:center;width:25px;min-width:25px;cursor:cell;user-select:none;font-size:11px}
+  td.we{box-shadow:inset 0 0 0 99px rgba(184,53,42,.055)}
+  .v{background:var(--c-v)} .otp{background:var(--c-otp)} .bl{background:var(--c-bl)}
+  .bs{background:var(--c-bs)} .P{background:var(--c-p)} .RP{background:var(--c-rp)}
+  .R{background:var(--c-r)} .zam{background:var(--c-zam);font-weight:600}
+  tr.crew-top td{border-top:2px solid var(--line)}
+  tr.fact td{color:var(--ink-2);font-style:italic}
+  tr.machine td{background:var(--head)}
+  tr.machine td.mday{text-align:center;font-size:10px;width:25px;min-width:25px;overflow:hidden;
+                     text-overflow:clip;letter-spacing:-.2px}
+  td.mday.v{background:var(--c-v)}
+  td.mday.gap{background:var(--warn-bg)}
+  td.mday.hand{border-left:2px solid var(--accent)}
+  td.mday.hand.late{border-left:2px solid var(--warn)}
+  td.mday.hand.bad{border-left:2px dashed var(--warn)}
+  td.mday.hand.early{border-left:2px solid #c98a1b}
+  td.day.overday{box-shadow:inset 0 0 0 2px #c0392b; font-weight:700; position:relative}
+  td.day.overday::after{content:'';position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(45deg, rgba(192,57,43,.20) 0 3px, transparent 3px 6px)}
+  td.fix.over{color:var(--warn);font-weight:700}
+  td.conflict{outline:2px solid var(--warn);outline-offset:-2px}
+  td.today{border-left:2px solid var(--accent)}
+  .vac{color:var(--warn);font-weight:600}
+  .over{color:var(--warn);font-weight:600}
+  .tag{font-size:10px;padding:0 5px;border:1px solid var(--line);border-radius:8px;color:var(--ink-3)}
+  .msg{padding:6px 16px;font-size:12px;color:var(--ink-2);background:var(--panel);border-top:1px solid var(--line)}
+  .msg b{color:var(--warn)}
+  select.inline{font-size:11px;padding:0 2px;border:1px solid transparent;background:transparent;max-width:170px}
+  select.inline:hover,select.inline:focus{border-color:var(--line);background:var(--panel)}
+  .pane{display:none} .pane.on{display:block}
+  .cards{display:flex;flex-wrap:wrap;gap:12px;padding:14px 16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:12px 14px;min-width:210px}
+  .card h3{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--ink-2)}
+  .card table{font-size:12px;width:100%}
+  .card td{border:none;padding:1px 0}
+  .card td:last-child{text-align:right;font-weight:600}
+  .bars{display:flex;gap:1px;align-items:flex-end;height:64px;padding:0 16px 8px}
+  .bars div{flex:1;background:var(--c-v);min-width:3px}
+  .bars div.b-free{background:var(--warn)}
+  .hint{color:var(--ink-3);font-size:11px}
+  .netbar{margin-top:6px;font-size:12px;color:var(--ink-2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);display:inline-block}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--warn)} .dot.sync{background:#c98a1b}
+  .who{color:var(--ink-3);font-size:10px}
+  #logTable td{font-size:12px}
+  #logTable tr.mine td{background:var(--line-2)}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;
+         justify-content:center;z-index:50;padding:20px}
+  .modal[hidden]{display:none}
+  .modal-box{background:var(--panel);border:1px solid var(--line);border-radius:6px;max-width:660px;
+             max-height:84vh;overflow:auto;padding:18px 22px}
+  .modal-box h2{margin:0 0 10px;font-size:15px}
+  .modal-box p{margin:0 0 10px;max-width:68ch}
+  .modal-box b{font-weight:600}
+  @media print{
+    header,.bar,.msg{display:none} .wrap{max-height:none;overflow:visible}
+    body{background:#fff} td.day{width:auto}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>График работы и закрепление водителей</h1>
+  <div class="sub">Единое поле по обоим филиалам. Исходные данные — август и сентябрь 2026.</div>
+  <div class="netbar">
+    <span class="dot" id="netDot"></span><span id="netTxt">Общий график планера</span>
+    <label>Вы: <input type="text" id="who" size="16" placeholder="фамилия"></label>
+    <button id="btnHelp">Как пользоваться</button>
+    <button id="btnSync">Подключить сервер…</button>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-pane="grid" aria-selected="true">График</button>
+    <button class="tab" role="tab" data-pane="fix" aria-selected="false">Закрепление</button>
+    <button class="tab" role="tab" data-pane="sum" aria-selected="false">Сводка</button>
+    <button class="tab" role="tab" data-pane="log" aria-selected="false">Журнал правок</button>
+  </div>
+</header>
+
+<!-- ================= ГРАФИК ================= -->
+<section class="pane on" id="pane-grid">
+  <div class="bar">
+    <label>Филиал <select id="fFilial"><option>Все</option><option>Пенза</option><option>Москва</option></select></label>
+    <label>Период <select id="fMonth">
+      </select></label>
+    <button id="btnAddMonth" title="добавить следующий месяц пустым">+ месяц</button>
+    <button id="btnExtend" title="добавить следующий месяц и продолжить вахты по режиму">Продлить по режиму</button>
+    <button id="btnDelMonth" title="убрать последний месяц">− месяц</button>
+    <label>Показывать <select id="fView">
+      <option value="all">машины и водителей</option>
+      <option value="ts">только машины</option>
+      <option value="drv">только водителей</option></select></label>
+    <label>Слой <select id="fLayer"><option value="plan">План</option><option value="both">План и факт</option><option value="fact">Факт</option></select></label>
+    <label>Поиск <input type="text" id="fSearch" placeholder="ФИО или госномер" size="16"></label>
+    <label><input type="checkbox" id="fVac"> вакансии</label>
+    <label><input type="checkbox" id="fGap"> машины с простоем</label>
+    <label><input type="checkbox" id="fConf"> нарушения</label>
+    <button id="btnFact">Факт = план</button>
+    <button id="btnCsv">CSV</button>
+    <button id="btnBackup">Сохранить копию</button>
+    <button id="btnRestore">Загрузить копию</button>
+    <button id="btnReset">Исходные данные</button>
+    <input type="file" id="fileIn" accept=".json" hidden>
+  </div>
+
+  <div class="bar">
+    <span class="hint">Кисть:</span>
+    <div class="palette" id="palette"></div>
+    <select id="zamTs" style="max-width:150px"></select>
+    <span class="hint">Проведите мышью по дням. Диапазон:</span>
+    <label>с <input type="number" id="dFrom" min="1" max="61" style="width:52px"></label>
+    <label>по <input type="number" id="dTo" min="1" max="61" style="width:52px"></label>
+    <button id="btnRange">Залить выбранным строкам</button>
+    <span class="hint" id="selInfo">строк выбрано: 0</span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+  <div class="wrap"><table id="grid"></table></div>
+  <div class="msg" id="msg"></div>
+</section>
+
+<!-- ================= ЗАКРЕПЛЕНИЕ ================= -->
+<section class="pane" id="pane-fix">
+  <div class="bar">
+    <label>Филиал <select id="xFilial"><option>Все</option><option>Пенза</option><option>Москва</option></select></label>
+    <label>Поиск <input type="text" id="xSearch" placeholder="госномер, ФИО, экипаж" size="20"></label>
+    <label><input type="checkbox" id="xFree"> только без водителя</label>
+    <button id="btnAddTs">Добавить сцепку</button>
+    <button id="btnAddDrv">Добавить водителя</button>
+  </div>
+  <div class="wrap"><table id="fixTable"></table></div>
+  <div class="msg" id="fixMsg"></div>
+</section>
+
+<!-- ================= СВОДКА ================= -->
+<section class="pane" id="pane-sum">
+  <div class="bar">
+    <label>Месяц <select id="sMonth"></select></label>
+    <button id="btnOverCsv">Выгрузить дни сверх вахты</button>
+  </div>
+  <div class="cards" id="sumCards"></div>
+  <div class="bar" style="border:none;padding-bottom:0"><span class="hint">Сцепки в работе по дням (красным — без водителя)</span></div>
+  <div class="bars" id="sumBars"></div>
+  <div class="bar" style="border:none;padding-bottom:0">
+    <span class="hint">Дни сверх вахты — к доплате (по плану и по факту за месяц)</span></div>
+  <div class="wrap" style="max-height:40vh"><table id="overTable"></table></div>
+  <div class="bar" style="border:none;padding-bottom:0"><span class="hint">По дням месяца</span></div>
+  <div class="wrap" style="max-height:40vh"><table id="sumTable"></table></div>
+</section>
+
+<div id="dlg" class="modal" hidden><div class="modal-box" id="dlgBox"></div></div>
+
+<div id="help" class="modal" hidden>
+  <div class="modal-box">
+    <h2>Как пользоваться</h2>
+    <p><b>Три плоскости в одной сетке.</b> В каждом экипаже сверху идут строки машин — кто сидит за рулём
+       каждый день (три буквы фамилии, полное имя в подсказке); розовая клетка значит, что машина в этот день
+       без водителя. Под ними строки водителей с кодами. Синяя полоса на границе клетки в строке машины —
+       день, когда водитель сменился: сплошная красная — пересмена с опозданием против режима,
+       пунктирная — смена произошла, но код П никто не поставил. Переключатель «Показывать» оставляет
+       только машины или только водителей, «Период» показывает август, сентябрь или оба месяца лентой,
+       чтобы пересмены были видны насквозь.</p>
+    <p><b>График.</b> Сетка та же, что в Excel: экипаж блоком, на каждого водителя строки план и факт.
+       Выберите код в строке «Кисть» и проведите мышью по дням — код проставится. Замещение:
+       нажмите «зам», выберите тягач в списке, потом красьте дни.</p>
+    <p><b>Сразу много дней.</b> Отметьте строки галочкой слева от фамилии, задайте «с» и «по», нажмите
+       «Залить выбранным строкам». Кнопка «Факт = план» переписывает факт по плану для отмеченных строк
+       (или для всех в текущем фильтре, если ничего не отмечено).</p>
+    <p><b>Что показывает шапка.</b> Под номерами дней — сколько машин в работе, сколько людей в отпуске,
+       сколько пересмен и сколько сцепок в этот день осталось без водителя. Красная рамка на ячейке —
+       нарушение: двое на одной машине, «в» без закреплённого ТС или превышение режима. Наведите — увидите причину.</p>
+    <p><b>Как назначить водителя.</b> Прямо в графике: в строке машины есть список «назначить водителя».
+       В нём и свободные, и уже занятые — если выбрать занятого, инструмент спросит подтверждение и перенесёт
+       его с прежней машины одним действием, график водителя при этом сохранится. То же самое есть на вкладке
+       «Закрепление». Снять водителя — крестик рядом с фамилией там же.</p>
+    <p><b>Вакансии.</b> В строке «потребность» нажмите «закрыть», впишите ФИО, телефон и режим —
+       фамилия встанет в уже расписанную строку, проставленные дни не потеряются.
+       Для совсем нового человека есть кнопка «Добавить водителя» на вкладке «Закрепление».</p>
+    <p><b>Закрепление.</b> Вторая вкладка: все сцепки, их филиал, кто закреплён. Филиал меняется прямо
+       в строке — и в графике, и здесь.</p>
+    <p><b>Работа сверх вахты.</b> День, который выходит за режим (46-й при 45/15), помечается красной
+       штриховкой прямо в сетке, в подсказке — какой это день переработки. В колонке «Сверх нормы»
+       у каждого водителя стоит счёт за показанный период: план / факт. Внизу вкладки «Сводка» —
+       список к доплате по всем водителям с выгрузкой в CSV. Считается только у тех, кому задан режим.</p>
+    <p><b>Сводка.</b> Машинодни, покрытие, отпуска, пересмены по каждому филиалу и по дням месяца,
+       плюс дни сверх вахты по каждому водителю.</p>
+    <p><b>Журнал правок.</b> Кто и что менял. Впишите свою фамилию в поле «Вы» вверху — она попадёт в журнал
+       и в колонку «Изменил».</p>
+    <p><b>Сохранность.</b> Правки живут в браузере этого компьютера. «Сохранить копию» выгружает всё поле
+       одним файлом, «Загрузить копию» — поднимает его обратно, в том числе на другом компьютере.
+       «Исходные данные» откатывает к выгрузке из Excel.</p>
+    <button id="btnHelpClose" class="primary">Понятно</button>
+  </div>
+</div>
+
+<section class="pane" id="pane-log">
+  <div class="bar">
+    <label>Автор <select id="lWho"><option>Все</option></select></label>
+    <label>Поиск <input type="text" id="lSearch" placeholder="водитель, экипаж, код" size="22"></label>
+    <button id="btnLogCsv">Выгрузить журнал</button>
+    <span class="hint" id="logInfo"></span>
+  </div>
+  <div class="wrap"><table id="logTable"></table></div>
+</section>
+
+<script src="/schedule.js"></script>
+</body>
+</html>

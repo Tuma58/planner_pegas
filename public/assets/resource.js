@@ -1474,6 +1474,8 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
             title="Перецепка прицепа: снять с одного тягача и повесить на другой (или отцепить) — прицеп числится ровно за одной сцепкой">🔗 Перецепка</button>
           <button class="button ghost small" id="resourcePeriod"
             title="Периодные закрепления водителей за ТС: подмены на межвахту, командировки">📌 На период</button>
+          <button class="button small" id="resourceSchedulePage"
+            title="Новый график работы и закрепления: экипажи, план/факт, вахтовые режимы, сверхвахта к доплате. Этап 1 перестройки — работает параллельно с этой вкладкой">📋 График (бета)</button>
           ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
           <button class="button small" id="resourceAdd">+ диспозиция</button>
         </span>
@@ -1544,6 +1546,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resourceTransfer').onclick = () => transferPickVehicleDialog(context);
   container.querySelector('#resourceTrailerMove').onclick = () => trailerMoveDialog(context);
   container.querySelector('#resourcePeriod').onclick = () => periodAssignDialog(context);
+  container.querySelector('#resourceSchedulePage').onclick = () => window.open('/schedule', '_blank');
   const setView = view => { state.resourceView = view; renderResource(container, context); };
   container.querySelector('#resViewTs').onclick = () => setView('ts');
   container.querySelector('#resViewDrivers').onclick = () => setView('drivers');

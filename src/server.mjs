@@ -23,6 +23,7 @@ import {
   reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner } from './schedule.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
@@ -8681,6 +8682,34 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true, fixed });
   }
   // ── Ознакомление с инструкциями: цифровая «подпись» сотрудника ──
+  // ── Новый график работы (перестройка Ресурса, этап 1) ──
+  // Протокол прототипа руководителя: клиент шлёт изменённые экипажи и
+  // журнал, получает чужие изменения после since. Чистый опрос (без
+  // изменений) доступен на чтение любому вошедшему; правки — праву парка.
+  if (request.method === 'POST' && pathname === '/api/schedule/sync') {
+    const body = await readJson(request, 4_000_000);
+    const writes = Object.keys(body.crews || {}).length ||
+      (body.remove || []).length || (body.log || []).length;
+    const user = writes
+      ? requirePermission(request, response, 'fleet:write')
+      : requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, applyScheduleSync(db, body, user.id));
+  }
+  // Достройка графика из планера (машины/водители, которых в нём нет).
+  if (request.method === 'POST' && pathname === '/api/schedule/augment') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const report = augmentScheduleFromPlanner(db, user.id);
+    audit(db, user, 'update', 'schedule', 'augment', report, requestIp(request));
+    return json(response, 200, report);
+  }
+  // Лёгкое «кто я» — страница графика подставляет автора правок.
+  if (request.method === 'GET' && pathname === '/api/whoami') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    return json(response, 200, { name: user.full_name || user.username });
+  }
   if (request.method === 'POST' && pathname === '/api/guide-ack') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
@@ -9731,6 +9760,27 @@ const MIME = {
 const ASSET_VERSION = Date.now().toString(36);
 const VERSIONED_ASSETS = /^\/assets\/v[a-z0-9]+\//;
 
+// Страница нового графика работы (этап 1 перестройки Ресурса) лежит ВНЕ
+// public/ и отдаётся только вошедшим: в ней парк, ФИО и телефоны
+// водителей. Незалогиненного отправляем на вход.
+const PAGES_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'pages');
+function privatePage(request, response, filename) {
+  const user = currentUser(request);
+  if (!user) {
+    response.writeHead(302, { Location: '/' });
+    return response.end();
+  }
+  const resolved = path.join(PAGES_PATH, filename);
+  if (!fs.existsSync(resolved)) return errorJson(response, 404, 'Страница не найдена');
+  const content = fs.readFileSync(resolved);
+  response.writeHead(200, {
+    'Content-Type': MIME[path.extname(resolved)] || 'text/plain',
+    'Content-Length': content.length,
+    'Cache-Control': 'no-cache'
+  });
+  response.end(content);
+}
+
 function staticFile(request, response, url) {
   let pathname = url.pathname === '/' ? '/login.html' : url.pathname;
   if (pathname === '/planner') pathname = '/app.html';
@@ -9778,6 +9828,8 @@ export const server = http.createServer(async (request, response) => {
       return errorJson(response, 403, 'Подключение из вашей сети запрещено администратором');
     }
     if (url.pathname.startsWith('/api/')) await api(request, response, url);
+    else if (url.pathname === '/schedule') privatePage(request, response, 'schedule.html');
+    else if (url.pathname === '/schedule.js') privatePage(request, response, 'schedule.js');
     else staticFile(request, response, url);
   } catch (error) {
     const status = error.status || (String(error.message).includes('UNIQUE constraint') ? 409 : 500);
