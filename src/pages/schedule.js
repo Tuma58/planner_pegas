@@ -34,7 +34,7 @@ function seed(){
     c.drv.forEach(d=>{
       const own = ts.find(x=>x.crew===c.id && x.tyagach===d.tc);
       drv.push({id:'D'+(++di), fio:d.fio, tel:d.tel, crew:c.id, filial:c.filial,
-                ts: own? own.id : '', rezhim:c.rezhim, logist:c.logist, vac:d.vacancy,
+                ts: own? own.id : '', rezhim:c.rezhim, logist:'', vac:d.vacancy,
                 plan:{'2026-08':d.pa.split('|').slice(0,31), '2026-09':d.ps.split('|').slice(0,30)},
                 fact:{'2026-08':d.fa.split('|').slice(0,31), '2026-09':d.fs.split('|').slice(0,30)}});
     });
@@ -646,7 +646,7 @@ function renderGrid(){
             `<td class="fix" style="left:${LEFT[2]}px">${t?t.pricep:''}</td>`,
             `<td class="fix" style="left:${LEFT[3]}px">${t?t.tip:''}</td>`,
             `<td class="fix" style="left:${LEFT[4]}px">${dr.crew}</td>`,
-            `<td class="fix" style="left:${LEFT[5]}px" title="${dr.tel||''}${dr.logist?' · логист '+dr.logist:''}">
+            `<td class="fix" style="left:${LEFT[5]}px" title="${dr.tel||''}">
                <input type="checkbox" class="pick" data-r="${ri}" ${selected.has(dr.id)?'checked':''}>
                ${dr.vac? '<span class="vac">потребность</span> <button data-act="fillvac" data-id="'+dr.id+'" title="вписать водителя, сохранив расписанные дни">закрыть</button>' : dr.fio}</td>`,
             `<td class="fix" style="left:${LEFT[6]}px"><select class="inline" data-act="rez" data-id="${dr.id}">
