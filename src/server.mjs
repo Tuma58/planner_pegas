@@ -23,7 +23,7 @@ import {
   reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge } from './schedule.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
@@ -618,6 +618,16 @@ function runResourceWatch() {
   }
 }
 setInterval(runResourceWatch, 60 * 60_000);
+// Автофакт нового графика (этап 2 перестройки Ресурса): рейсы и перегоны
+// планера подтверждают факт-слой — раз в час, окно «сегодня −3 дня».
+function runScheduleFactWatch() {
+  try {
+    const { marks } = runScheduleAutoFact(db);
+    if (marks) console.log(`график: автофакт подтвердил отметок — ${marks}`);
+  } catch (error) { console.error('график: автофакт упал', error); }
+}
+setInterval(runScheduleFactWatch, 60 * 60_000);
+setTimeout(runScheduleFactWatch, 90_000);
 setTimeout(runResourceWatch, 25_000);
 
 // 🚦 Взятые за день заявки клиентов сегментов C/D — с фамилиями продаж:
@@ -8694,7 +8704,16 @@ async function api(request, response, url) {
       ? requirePermission(request, response, 'fleet:write')
       : requirePermission(request, response, 'planner:read');
     if (!user) return;
-    return json(response, 200, applyScheduleSync(db, body, user.id));
+    const result = applyScheduleSync(db, body, user.id);
+    // Мост этапа 2: П в плане изменённых экипажей → пересменки-диспозиции
+    // (их видят подбор ТС, гант и сторожа старой вкладки).
+    if (writes && Object.keys(body.crews || {}).length) {
+      const bridge = syncShiftBridge(db, Object.keys(body.crews), user.id);
+      if (bridge.created || bridge.removed) {
+        audit(db, user, 'update', 'schedule', 'shift-bridge', bridge, requestIp(request));
+      }
+    }
+    return json(response, 200, result);
   }
   // Достройка графика из планера (машины/водители, которых в нём нет).
   if (request.method === 'POST' && pathname === '/api/schedule/augment') {

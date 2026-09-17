@@ -3111,3 +3111,82 @@ test('график: достройка из планера добавляет н
   const again = augmentScheduleFromPlanner(db);
   assert.equal(again.addedVehicles.length + again.addedDrivers.length, 0);
 });
+
+// ── Этап 2 перестройки: мосты график ↔ планер (17.09.2026) ──
+test('график: П в плане создаёт и убирает пересменку-диспозицию, ручную не трогает', async t => {
+  const { applyScheduleSync, syncShiftBridge } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-bridge-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id, plate FROM vehicles LIMIT 1').get();
+  const today = new Date();
+  const mk = today.toISOString().slice(0, 7);
+  const dayIndex = today.getUTCDate() - 1; // сегодня — внутри окна моста
+  const daysInMonth = new Date(today.getUTCFullYear(), today.getUTCMonth() + 1, 0).getDate();
+  const plan = Array(daysInMonth).fill('в');
+  plan[dayIndex] = 'П';
+  const crew = { id: 'EB1', ts: [{ id: 'T1', tyagach: vehicle.plate, pricep: '', tip: '', filial: 'Пенза', crew: 'EB1' }],
+    drv: [{ id: 'D1', fio: 'Мостовой Пётр', tel: '', crew: 'EB1', filial: 'Пенза', ts: 'T1',
+      rezhim: '45/15', logist: '', vac: false, plan: { [mk]: plan }, fact: {} }] };
+  applyScheduleSync(db, { since: 0, crews: { EB1: crew }, log: [] });
+  const first = syncShiftBridge(db, ['EB1']);
+  assert.equal(first.created, 1);
+  const created = db.prepare(`SELECT * FROM vehicle_dispositions WHERE vehicle_id=? AND kind='shift'`)
+    .all(vehicle.id);
+  assert.equal(created.length, 1);
+  assert.ok(created[0].note.startsWith('из графика'));
+  // Повтор идемпотентен.
+  assert.deepEqual(syncShiftBridge(db, ['EB1']), { created: 0, removed: 0 });
+  // Ручная пересменка на другой день — мост её не удалит.
+  const otherDay = new Date(Date.parse(`${mk}-01T00:00:00Z`) + 86_400_000 * (dayIndex + 3));
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note,purpose)
+    VALUES('manual1',?,'shift',?,?,'кистью','')`).run(vehicle.id,
+    otherDay.toISOString(), new Date(otherDay.getTime() + 86_400_000).toISOString());
+  // П снят — мостовая пересменка уходит, ручная остаётся.
+  crew.drv[0].plan[mk][dayIndex] = 'в';
+  applyScheduleSync(db, { since: 1, crews: { EB1: crew }, log: [] });
+  const second = syncShiftBridge(db, ['EB1']);
+  assert.equal(second.removed, 1);
+  const left = db.prepare(`SELECT note FROM vehicle_dispositions WHERE vehicle_id=? AND kind='shift'`)
+    .all(vehicle.id);
+  assert.deepEqual(left.map(item => item.note), ['кистью']);
+});
+
+test('график: автофакт подтверждает факт по рейсу, занятые клетки не трогает', async t => {
+  const { applyScheduleSync, runScheduleAutoFact } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-fact-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id, plate FROM vehicles LIMIT 1').get();
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const mk = todayIso.slice(0, 7);
+  const dayIndex = Number(todayIso.slice(8, 10)) - 1;
+  const daysInMonth = new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate();
+  const plan = Array(daysInMonth).fill('');
+  plan[dayIndex] = 'в';
+  const fact = Array(daysInMonth).fill('');
+  if (dayIndex > 0) fact[dayIndex - 1] = 'отп'; // ручная клетка — неприкосновенна
+  const crew = { id: 'EF1', ts: [{ id: 'T1', tyagach: vehicle.plate, pricep: '', tip: '', filial: 'Пенза', crew: 'EF1' }],
+    drv: [{ id: 'D1', fio: 'Фактов Ф', tel: '', crew: 'EF1', filial: 'Пенза', ts: 'T1',
+      rezhim: '', logist: '', vac: false, plan: { [mk]: plan }, fact: { [mk]: fact } }] };
+  applyScheduleSync(db, { since: 0, crews: { EF1: crew }, log: [] });
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,
+    distance_km,revenue_vat)
+    VALUES('trF', ?, ?, ?, 'run', ?, ?, 500, 100000)`).run(vehicle.id, zone.id, zone.id,
+    `${todayIso}T03:00:00.000Z`, `${todayIso}T20:00:00.000Z`);
+  const result = runScheduleAutoFact(db);
+  assert.equal(result.marks, 1);
+  const snap = applyScheduleSync(db, { since: 0, crews: {}, log: [] });
+  const drv = snap.crews.EF1.drv[0];
+  assert.equal(drv.fact[mk][dayIndex], 'в', 'факт подтверждён рейсом');
+  if (dayIndex > 0) assert.equal(drv.fact[mk][dayIndex - 1], 'отп', 'ручная клетка цела');
+  // Повтор ничего не добавляет.
+  assert.equal(runScheduleAutoFact(db).marks, 0);
+});

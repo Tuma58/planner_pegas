@@ -67,6 +67,176 @@ export function applyScheduleSync(db, body = {}, userId = null) {
   return { rev, crews: outCrews, log: outLog };
 }
 
+// ── Этап 2 перестройки: мосты график ↔ оперативный планер ──────────
+// Направления выбраны без циклов: план людей ЖИВЁТ в графике и
+// транслируется в диспозиции планера (пересменки — их читают подбор ТС,
+// гант, сторожа); факт работы ЖИВЁТ в планере (рейсы/перегоны) и
+// подтверждает факт-слой графика. Обратных записей нет.
+
+const dayIso = (base, offset) =>
+  new Date(base + offset * 86_400_000).toISOString().slice(0, 10);
+const canonPlate = value => String(value || '').toLowerCase().replace(/\s+/g, '');
+const tail3 = plate => (String(plate).match(/\d{3}/) || [''])[0];
+
+function loadCrews(db, ids = null) {
+  const rows = ids
+    ? ids.map(id => db.prepare('SELECT id, body FROM schedule_crews WHERE id=?').get(id)).filter(Boolean)
+    : db.prepare('SELECT id, body FROM schedule_crews').all();
+  const out = new Map();
+  for (const row of rows) {
+    try { out.set(row.id, JSON.parse(row.body)); } catch { /* битый блок пропускаем */ }
+  }
+  return out;
+}
+
+// Код дня водителя из план-слоя. r = {mk, d} не нужен: день ISO.
+const planCode = (drv, iso) => {
+  const arr = (drv.plan || {})[iso.slice(0, 7)];
+  return arr ? String(arr[Number(iso.slice(8, 10)) - 1] || '') : '';
+};
+const factCode = (drv, iso) => {
+  const arr = (drv.fact || {})[iso.slice(0, 7)];
+  return arr ? String(arr[Number(iso.slice(8, 10)) - 1] || '') : '';
+};
+const setFact = (drv, iso, code) => {
+  drv.fact = drv.fact || {};
+  const mk = iso.slice(0, 7);
+  if (!drv.fact[mk]) {
+    const days = new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate();
+    drv.fact[mk] = Array(days).fill('');
+  }
+  drv.fact[mk][Number(iso.slice(8, 10)) - 1] = code;
+};
+
+// Мост «П в плане → пересменка-диспозиция машины» для изменённых
+// экипажей. Создаёт shift-сутки с пометкой «из графика», убирает свои
+// же пометки, если П сняли; ручные интервалы старой вкладки не трогает,
+// при пересечении с любой существующей диспозицией — день пропускает.
+export function syncShiftBridge(db, crewIds, userId = null, horizonDays = 35) {
+  const crews = loadCrews(db, crewIds);
+  if (!crews.size) return { created: 0, removed: 0 };
+  const vehicleByPlate = new Map(db.prepare(`SELECT id, plate FROM vehicles`).all()
+    .map(row => [canonPlate(row.plate), row.id]));
+  const todayMs = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
+  const result = { created: 0, removed: 0 };
+  for (const crew of crews.values()) {
+    for (const ts of crew.ts || []) {
+      const vehicleId = vehicleByPlate.get(canonPlate(ts.tyagach));
+      if (!vehicleId) continue;
+      // Желаемые дни пересменки: П/РП у СВОЕГО водителя этой машины.
+      const want = new Map();
+      for (const drv of crew.drv || []) {
+        if (drv.ts !== ts.id) continue;
+        for (let offset = 0; offset < horizonDays; offset += 1) {
+          const iso = dayIso(todayMs, offset);
+          if (['П', 'РП'].includes(planCode(drv, iso))) want.set(iso, drv.fio);
+        }
+      }
+      const horizonIso = dayIso(todayMs, horizonDays);
+      const existing = db.prepare(`SELECT id, starts_at, ends_at, note FROM vehicle_dispositions
+        WHERE vehicle_id=? AND kind='shift' AND starts_at < ? AND ends_at > ?`)
+        .all(vehicleId, `${horizonIso}T00:00:00.000Z`, new Date(todayMs).toISOString());
+      const mine = existing.filter(item => String(item.note).startsWith('из графика'));
+      const mineByDay = new Map(mine.map(item => [String(item.starts_at).slice(0, 10), item]));
+      for (const [iso, fio] of want) {
+        if (mineByDay.has(iso)) continue;
+        const dayStart = `${iso}T00:00:00.000Z`;
+        const dayEnd = new Date(Date.parse(dayStart) + 86_400_000).toISOString();
+        // Любая существующая диспозиция в этих сутках — день не наш.
+        const busy = db.prepare(`SELECT 1 FROM vehicle_dispositions
+          WHERE vehicle_id=? AND starts_at < ? AND ends_at > ? LIMIT 1`)
+          .get(vehicleId, dayEnd, dayStart);
+        if (busy) continue;
+        db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note,purpose,created_by,updated_by)
+          VALUES(?,?,?,?,?,?,'',?,?)`).run(randomUUID(), vehicleId, 'shift',
+          dayStart, dayEnd, `из графика: ${String(fio).split(/\s+/)[0]}`, userId, userId);
+        result.created += 1;
+      }
+      for (const item of mine) {
+        const iso = String(item.starts_at).slice(0, 10);
+        if (!want.has(iso)) {
+          db.prepare('DELETE FROM vehicle_dispositions WHERE id=?').run(item.id);
+          result.removed += 1;
+        }
+      }
+    }
+  }
+  return result;
+}
+
+// Автофакт: рейс или перегон машины в день D подтверждает факт-слой
+// того, кто по ПЛАНУ был за рулём (свой водитель с «в»/«П»/«РП» или
+// замещающий по хвосту номера). Пустая клетка факта получает плановый
+// код; занятую руками не трогаем; «двое на машине» — пропуск.
+export function runScheduleAutoFact(db, userId = null, daysBack = 3) {
+  const crews = loadCrews(db);
+  if (!crews.size) return { marks: 0 };
+  const todayMs = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
+  const fromIso = new Date(todayMs - daysBack * 86_400_000).toISOString();
+  const nowIso = new Date().toISOString();
+  const busyByVehicle = new Map();
+  const markBusy = (vehicleId, fromMs, toMs) => {
+    if (!busyByVehicle.has(vehicleId)) busyByVehicle.set(vehicleId, []);
+    busyByVehicle.get(vehicleId).push([fromMs, toMs]);
+  };
+  for (const trip of db.prepare(`SELECT vehicle_id, starts_at, ends_at, unloaded_at, status
+      FROM trips WHERE status<>'rejected' AND starts_at < ? AND COALESCE(unloaded_at, ends_at) > ?`)
+    .all(nowIso, fromIso)) {
+    const from = Date.parse(trip.starts_at);
+    const rawTo = trip.unloaded_at ? Date.parse(trip.unloaded_at)
+      : ['plan', 'run'].includes(trip.status)
+        ? Math.max(Date.parse(trip.ends_at), Date.now()) : Date.parse(trip.ends_at);
+    markBusy(trip.vehicle_id, from, rawTo);
+  }
+  for (const move of db.prepare(`SELECT vehicle_id, starts_at, ends_at FROM vehicle_dispositions
+      WHERE kind='transfer' AND starts_at < ? AND ends_at > ?`).all(nowIso, fromIso)) {
+    markBusy(move.vehicle_id, Date.parse(move.starts_at), Date.parse(move.ends_at));
+  }
+  const vehicleByPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+    .map(row => [canonPlate(row.plate), row.id]));
+  const touched = new Set();
+  let marks = 0;
+  for (const crew of crews.values()) {
+    for (const ts of crew.ts || []) {
+      const vehicleId = vehicleByPlate.get(canonPlate(ts.tyagach));
+      const spans = vehicleId ? busyByVehicle.get(vehicleId) : null;
+      if (!spans) continue;
+      for (let offset = 0; offset <= daysBack; offset += 1) {
+        const iso = dayIso(todayMs, -offset);
+        const dayStart = Date.parse(`${iso}T00:00:00Z`);
+        if (!spans.some(([from, to]) => from < dayStart + 86_400_000 && to > dayStart)) continue;
+        // Кто за рулём по плану: свой водитель или замещающий по хвосту.
+        const holders = [];
+        for (const other of crews.values()) {
+          for (const drv of other.drv || []) {
+            const code = planCode(drv, iso);
+            if ((drv.ts === ts.id && ['в', 'П', 'РП'].includes(code)) ||
+                (code && code === tail3(ts.tyagach))) {
+              holders.push({ crew: other, drv, code });
+            }
+          }
+        }
+        if (holders.length !== 1) continue;
+        const { crew: holderCrew, drv, code } = holders[0];
+        if (factCode(drv, iso)) continue;
+        setFact(drv, iso, code);
+        touched.add(holderCrew.id);
+        marks += 1;
+      }
+    }
+  }
+  if (touched.size) {
+    const snapshot = Object.fromEntries([...crews].filter(([id]) => touched.has(id)));
+    applyScheduleSync(db, {
+      since: Number(metaGet(db, 'schedule_rev') || 0),
+      crews: snapshot,
+      log: [{ t: new Date().toISOString(), a: 'планер',
+        what: `автофакт: рейсы и перегоны подтвердили ${marks} отметок факта` }]
+    }, userId);
+  }
+  return { marks };
+}
+
 // Достройка из планера (решение руководителя 17.09: «данные по ТС и
 // водителям достраиваем из планера»). Идемпотентна: добавляет только
 // то, чего в графике нет. Машины планера вне графика — в экипаж
