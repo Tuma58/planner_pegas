@@ -109,7 +109,8 @@ function mergeLog(list){
 }
 function localSave(){ LS.set(KEY, JSON.stringify(S)); }
 async function sync(force){
-  if(!SYNC.url || SYNC.busy || painting) return;
+  if(!SYNC.url || painting) return;
+  if(SYNC.busy){ SYNC.pending=true; return; }
   SYNC.busy=true;
   const m=bodies();
   /* первое подключение: сначала только смотрим, что уже лежит на сервере,
@@ -149,17 +150,31 @@ async function sync(force){
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
     SYNC.rev=j.rev||0;
-    if(j.crews){ applyCrews(j.crews); migrate(S); rebuildMonths(); }
+    if(j.crews){
+      /* защита от отката: экипаж, изменённый локально пока запрос летел,
+         серверной версией не затираем — наши правки уйдут следующим sync */
+      const now=bodies();
+      Object.keys(j.crews).forEach(id=>{
+        const localNow=JSON.stringify(now[id]||null), snap=JSON.stringify(m[id]||null);
+        if(localNow!==snap) delete j.crews[id];
+      });
+      applyCrews(j.crews); migrate(S); rebuildMonths();
+    }
     if(j.log) mergeLog(j.log);
-    lastBody={}; const m2=bodies(); Object.keys(m2).forEach(id=>lastBody[id]=JSON.stringify(m2[id]));
+    /* фиксируем только доставленное и принятое: экипажи с непосланными
+       правками остаются «грязными» и уйдут следующим обменом */
+    Object.keys(out).forEach(id=>{ lastBody[id]=JSON.stringify(out[id]); });
+    gone.forEach(id=>{ delete lastBody[id]; });
+    Object.keys(j.crews||{}).forEach(id=>{ lastBody[id]=JSON.stringify(j.crews[id]); });
     localSave();
-    net('Общий доступ: '+Object.keys(m2).length+' экипажей, последний обмен '+shortTime(new Date().toISOString()),'on');
+    net('Общий доступ: '+Object.keys(bodies()).length+' экипажей, последний обмен '+shortTime(new Date().toISOString()),'on');
     if(!painting) redraw();
   }catch(e){
     fresh.forEach(x=>delete x.sent);
     net('Общий сервер недоступен ('+e.message+') — работаю локально','off');
   }
   SYNC.busy=false;
+  if(SYNC.pending){ SYNC.pending=false; sync(false); }
 }
 function save(){ localSave(); sync(false); }
 function startSync(){
@@ -227,20 +242,18 @@ function overInfo(dr, lay, days){
 }
 
 /* ---------- палитра / кисть ---------- */
-let brush='в';
+// Режима кисти нет: сначала выделение дней (как в Excel), потом клик по коду.
 const pal=document.getElementById('palette');
 CODES.forEach(([code,title,c])=>{
   const b=document.createElement('button');
-  b.className='chip '+c; b.textContent=code||'·'; b.title=title; b.dataset.code=code;
-  b.onclick=()=>{brush=code; chips();};
+  b.className='chip '+c; b.textContent=code||'·'; b.title=title+' — применить к выделенным дням'; b.dataset.code=code;
+  b.onclick=()=>applyCode(code);
   pal.appendChild(b);
 });
 const zb=document.createElement('button');
-zb.className='chip zam'; zb.textContent='зам'; zb.dataset.code='ЗАМ'; zb.title='замещение на чужом ТС';
-zb.onclick=()=>{brush='ЗАМ'; chips();};
+zb.className='chip zam'; zb.textContent='зам'; zb.dataset.code='ЗАМ'; zb.title='замещение на чужом ТС — применить к выделенным дням';
+zb.onclick=()=>applyCode('ЗАМ');
 pal.appendChild(zb);
-function chips(){ [...pal.children].forEach(b=>b.setAttribute('aria-pressed', b.dataset.code===brush)); }
-chips();
 function fillZam(){
   const z=document.getElementById('zamTs');
   z.innerHTML='<option value="">— тягач замещения —</option>'+
@@ -248,7 +261,7 @@ function fillZam(){
         .map(t=>`<option value="${t.id}">${t.tyagach} · ${t.filial}</option>`).join('');
 }
 fillZam();
-document.getElementById('zamTs').onchange=e=>{ if(e.target.value){brush='ЗАМ'; chips();} };
+// Выбор тягача замещения — просто параметр кнопки «зам», режим не переключает.
 
 /* ---------- назначение водителей ---------- */
 function dialog(title, body, okLabel, onOk){
@@ -631,7 +644,7 @@ function renderGrid(){
           const ttl= ov.over[i]
             ? ` title="${ov.over[i]}-й день сверх вахты ${dr.rezhim} — подлежит доплате"`
             : (bad[ri+':'+i]?` title="${bad[ri+':'+i]}"`:'');
-          return `<td class="day ${cls(code)}${we}${td}${cf}${ox}" data-r="${ri}" data-i="${i}" data-l="${lay}"${ttl}>${code}</td>`;
+          return `<td class="day ${cls(code)}${we}${td}${cf}${ox}" data-r="${ri}" data-i="${i}" data-l="${lay}" data-did="${dr.id}"${ttl}>${code}</td>`;
         }).join('');
         let info;
         if(li>0){
@@ -680,28 +693,98 @@ function renderGrid(){
     ? parts.join(' · ')+'. Наведите на ячейку — покажет причину.'
     : 'Машины укомплектованы, пересмены в срок, нарушений нет.';
   document.getElementById('dFrom').max=DAYS.length; document.getElementById('dTo').max=DAYS.length;
+  if(typeof paintSel==='function') paintSel();
 }
 
-/* ---------- ввод ---------- */
+/* ---------- ввод: выделение как в Excel, затем клик по коду ---------- */
 let painting=false, strokes={};
+let sel=new Set(), anchorKey=null;
 const grid=document.getElementById('grid');
+const keyOf=td=>{ const D=DAYS[+td.dataset.i];
+  return td.dataset.did+'|'+td.dataset.l+'|'+D.mk+'|'+D.d; };
+const tdByKey=k=>[...grid.querySelectorAll('td.day')].find(t=>keyOf(t)===k);
+function paintSel(){
+  grid.querySelectorAll('td.day.sel').forEach(t=>t.classList.remove('sel'));
+  if(sel.size) grid.querySelectorAll('td.day').forEach(t=>{ if(sel.has(keyOf(t))) t.classList.add('sel'); });
+  const box=document.getElementById('selInfo');
+  if(box) box.textContent='строк выбрано: '+selected.size+(sel.size?` · дней выделено: ${sel.size}`:'');
+}
+function rectSelect(a,b,add){
+  const r1=a.parentElement.rowIndex, r2=b.parentElement.rowIndex;
+  const i1=+a.dataset.i, i2=+b.dataset.i;
+  const rlo=Math.min(r1,r2), rhi=Math.max(r1,r2), ilo=Math.min(i1,i2), ihi=Math.max(i1,i2);
+  if(!add) sel.clear();
+  grid.querySelectorAll('td.day').forEach(t=>{
+    const rr=t.parentElement.rowIndex, ii=+t.dataset.i;
+    if(rr>=rlo&&rr<=rhi&&ii>=ilo&&ii<=ihi) sel.add(keyOf(t));
+  });
+  paintSel();
+}
 grid.addEventListener('mousedown',e=>{
   const td=e.target.closest('td.day'); if(!td) return;
-  painting=true; strokes={}; paint(td); e.preventDefault();
+  e.preventDefault();
+  const a=anchorKey&&tdByKey(anchorKey);
+  if(e.shiftKey&&a){ rectSelect(a,td,false); return; }
+  if(e.ctrlKey||e.metaKey){ // добавить/убрать ячейку из выделения
+    const k=keyOf(td);
+    sel.has(k)? sel.delete(k) : sel.add(k);
+    anchorKey=k; paintSel(); return;
+  }
+  anchorKey=keyOf(td); painting=true; rectSelect(td,td,false);
 });
-grid.addEventListener('mouseover',e=>{ if(painting){ const td=e.target.closest('td.day'); if(td) paint(td); }});
-document.addEventListener('mouseup',()=>{
+grid.addEventListener('mouseover',e=>{
   if(!painting) return;
-  painting=false;
+  const td=e.target.closest('td.day'); const a=anchorKey&&tdByKey(anchorKey);
+  if(td&&a) rectSelect(a,td,false);
+});
+document.addEventListener('mouseup',()=>{ painting=false; });
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&!['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName)){
+    sel.clear(); paintSel();
+  }
+});
+function applyCode(codeRaw){
+  const code=codeFor(codeRaw); if(code===null) return;
+  strokes={};
+  if(sel.size){
+    sel.forEach(k=>{
+      const [did,l,mk,d]=k.split('|');
+      const dr=S.drv.find(x=>x.id===did); if(!dr) return;
+      const day={mk, d:+d};
+      const idx=DAYS.findIndex(x=>x.mk===mk&&x.d===+d);
+      if(cget(dr,l,day)!==code){
+        if(!strokes[did]) strokes[did]={code, days:[]};
+        if(idx>=0 && !strokes[did].days.includes(idx)) strokes[did].days.push(idx);
+      }
+      cset(dr,l,day,code);
+    });
+  } else if(selected.size){
+    // выделения нет — работает прежняя массовая заливка: галки строк + «с/по»
+    let a=+document.getElementById('dFrom').value||1, b=+document.getElementById('dTo').value||DAYS.length;
+    if(a>b) [a,b]=[b,a];
+    a=Math.max(1,a); b=Math.min(DAYS.length,b);
+    const lay=document.getElementById('fLayer').value==='fact'? 'fact':'plan';
+    S.drv.filter(d=>selected.has(d.id)).forEach(d=>{
+      for(let i=a-1;i<b;i++){
+        if(cget(d,lay,DAYS[i])!==code){
+          if(!strokes[d.id]) strokes[d.id]={code, days:[]};
+          if(!strokes[d.id].days.includes(i)) strokes[d.id].days.push(i);
+        }
+        cset(d,lay,DAYS[i],code);
+      }
+    });
+  } else {
+    document.getElementById('msg').innerHTML='<b>Сначала выделите дни</b> в сетке (клик, протяжка или Shift-клик), затем кликните код. Либо отметьте строки галочками и задайте диапазон «с/по».';
+    return;
+  }
   const ids=Object.keys(strokes);
   if(ids.length){
-    const code=strokes[ids[0]].code;
-    const parts=ids.map(id=>{ const d=strokes[id].days.slice().sort((a,b)=>a-b);
+    const parts=ids.map(id=>{ const d=strokes[id].days.slice().sort((x,y)=>x-y);
       return d.length>1? dayLabel(DAYS[d[0]])+'–'+dayLabel(DAYS[d[d.length-1]]) : dayLabel(DAYS[d[0]]); });
     logAdd(`код «${code||'пусто'}», ${parts.join(', ')}`, ids);
   }
   save(); renderGrid();
-});
+}
 grid.addEventListener('click',e=>{
   const b=e.target.closest('button[data-act="fillvac"]');
   if(b){ e.preventDefault(); fillVacancy(b.dataset.id); }
@@ -727,38 +810,16 @@ grid.addEventListener('change',e=>{
   const p=e.target.closest('input.pick');
   if(p){ const dr=view[+p.dataset.r];
     p.checked? selected.add(dr.id) : selected.delete(dr.id);
-    document.getElementById('selInfo').textContent='строк выбрано: '+selected.size; }
+    paintSel(); }
 });
-function code4brush(){
-  if(brush!=='ЗАМ') return brush;
+function codeFor(codeRaw){
+  if(codeRaw!=='ЗАМ') return codeRaw;
   const id=document.getElementById('zamTs').value;
-  if(!id){ document.getElementById('msg').innerHTML='<b>Выберите тягач замещения</b> в списке рядом с кистью.'; return null; }
+  if(!id){ document.getElementById('msg').innerHTML='<b>Выберите тягач замещения</b> в списке рядом с кодами.'; return null; }
   return tail(tsById(id).tyagach);
 }
-function paint(td){
-  const code=code4brush(); if(code===null) return;
-  const dr=view[+td.dataset.r], i=+td.dataset.i, r=DAYS[i];
-  if(cget(dr,td.dataset.l,r)!==code){
-    if(!strokes[dr.id]) strokes[dr.id]={code, days:[]};
-    if(!strokes[dr.id].days.includes(i)) strokes[dr.id].days.push(i);
-  }
-  cset(dr,td.dataset.l,r,code);
-  td.textContent=code;
-  td.className='day '+cls(code)+(td.classList.contains('we')?' we':'')+(td.classList.contains('today')?' today':'');
-}
-document.getElementById('btnRange').onclick=()=>{
-  const code=code4brush(); if(code===null) return;
-  let a=+document.getElementById('dFrom').value||1, b=+document.getElementById('dTo').value||DAYS.length;
-  if(a>b) [a,b]=[b,a];
-  a=Math.max(1,a); b=Math.min(DAYS.length,b);
-  const targets = selected.size? S.drv.filter(d=>selected.has(d.id)) : [];
-  if(!targets.length){ document.getElementById('msg').innerHTML='<b>Отметьте строки</b> галочкой слева от ФИО — заливка применяется к ним.'; return; }
-  const lay = document.getElementById('fLayer').value==='fact'? 'fact':'plan';
-  targets.forEach(d=>{ for(let i=a-1;i<b;i++) cset(d,lay,DAYS[i],code); });
-  logAdd(`залит код «${code||'пусто'}» ${dayLabel(DAYS[a-1])} – ${dayLabel(DAYS[b-1])} (${lay==='fact'?'факт':'план'})`,
-         targets.map(d=>d.id));
-  save(); renderGrid();
-};
+// paint() упразднена: применение кодов — applyCode() по выделению.
+// Массовая заливка «галки + с/по» делается кликом по коду (applyCode).
 document.getElementById('btnFact').onclick=()=>{
   const v=document.getElementById('fMonth').value;
   const targets = selected.size? S.drv.filter(d=>selected.has(d.id)) : rowsFor();
