@@ -109,11 +109,47 @@ function htmlFingerprint(text) {
   }
   return `${text.length}:${hash}`;
 }
+// Текстовое поле, в котором сейчас печатают: только его есть смысл
+// проносить через перерисовку живым узлом.
+const isTypingField = el => el && (el.tagName === 'TEXTAREA' ||
+  (el.tagName === 'INPUT' && ['text', 'search', 'tel', 'number'].includes(el.type || 'text')));
+
 export function renderInto(container, html) {
   const fingerprint = htmlFingerprint(html);
   if (container.dataset.render === fingerprint) return false;
+  // Щит ввода (решение руководителя 18.09: «правки тихо пропадали по всем
+  // блокам»). Любая перерисовка — тихое автообновление, onReload после
+  // действия, фильтр — раньше пересоздавала поля: набранное между снятием
+  // значения и восстановлением терялось, каретка прыгала. Теперь:
+  // 1) поле, в котором печатают, проносится через перерисовку ЖИВЫМ узлом
+  //    (непрерывны значение, каретка, обработчики, IME);
+  // 2) значения остальных текстовых полей с id возвращаются, если новая
+  //    разметка пришла с пустым полем (полу-ввод не стирается).
+  const active = document.activeElement;
+  const keepLive = container.contains(active) && isTypingField(active) && active.id
+    ? active : null;
+  const caret = keepLive && keepLive.selectionStart != null ? keepLive.selectionStart : null;
+  const kept = [...container.querySelectorAll('input[id], textarea[id]')]
+    .filter(el => el !== keepLive && isTypingField(el) && el.value)
+    .map(el => ({ id: el.id, value: el.value }));
   container.innerHTML = html;
   container.dataset.render = fingerprint;
+  if (keepLive) {
+    const again = container.querySelector(`#${CSS.escape(keepLive.id)}`);
+    if (again) {
+      again.replaceWith(keepLive);
+      if (document.activeElement !== keepLive) {
+        keepLive.focus();
+        if (caret != null) {
+          try { keepLive.setSelectionRange(caret, caret); } catch { /* number */ }
+        }
+      }
+    }
+  }
+  for (const item of kept) {
+    const el = container.querySelector(`#${CSS.escape(item.id)}`);
+    if (el && !el.value) el.value = item.value;
+  }
   return true;
 }
 
@@ -324,9 +360,14 @@ export function formatDateTime(value) {
 // возвращаются в пересозданное поле. apply может быть асинхронным.
 export function attachSearch(input, apply, delay = 250) {
   let timer = null;
+  // Ответы асинхронных apply могут приходить не по порядку (медленный
+  // fetch по «аб» после быстрого по «абв» показывал устаревший список —
+  // жалоба руководителя 18.09). Применяется только последний запуск.
+  let seq = 0;
   input.oninput = () => {
     clearTimeout(timer);
     timer = setTimeout(async () => {
+      const my = ++seq;
       const value = input.value;
       const caret = input.selectionStart ?? value.length;
       // Перерисовка блока пересоздаёт поле поиска, и символы, набранные во
@@ -345,11 +386,13 @@ export function attachSearch(input, apply, delay = 250) {
         }
       };
       await apply(value);
+      if (my !== seq) return; // уже набрали новее — этот результат устарел
       restore();
       // Асинхронные рендеры (fetch внутри) довершаются ПОСЛЕ apply и снова
       // пересоздают поле — добиваем восстановление парой отложенных попыток.
-      setTimeout(restore, 150);
+      setTimeout(() => { if (my === seq) restore(); }, 150);
       setTimeout(() => {
+        if (my !== seq) return;
         restore();
         // Пользователь дописал текст, пока блок перерисовывался, —
         // догоняем состояние ещё одним циклом.

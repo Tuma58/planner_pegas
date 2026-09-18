@@ -2160,12 +2160,21 @@ const markActivity = () => { lastUserActivity = Date.now(); };
 window.addEventListener('scroll', markActivity, { passive: true, capture: true });
 window.addEventListener('wheel', markActivity, { passive: true });
 window.addEventListener('touchmove', markActivity, { passive: true });
+// Протяжка мышью (кисть, рисование интервалов, выделение) — святое:
+// перерисовка посреди неё рвёт жест и роняет введённое (решение
+// руководителя 18.09 «правки тихо пропадали»). Кнопка зажата — тик ждёт.
+let mouseHeld = false;
+window.addEventListener('mousedown', () => { mouseHeld = true; markActivity(); },
+  { passive: true, capture: true });
+window.addEventListener('mouseup', () => { mouseHeld = false; markActivity(); },
+  { passive: true, capture: true });
 
 async function autoRefreshTick(force = false) {
   if (!state.data) return;
   if (!force) {
     if (document.hidden) return;
     if (byId('modalRoot').innerHTML.trim()) return;
+    if (mouseHeld) return;
     const tag = document.activeElement?.tagName;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
   }
@@ -2191,6 +2200,11 @@ async function autoRefreshTick(force = false) {
     return;
   }
   lastAutoRefresh = Date.now();
+  // Снимок качается секунды: если за это время сотрудник начал печатать,
+  // зажал мышь или открыл карточку — перерисовку не начинаем, данные
+  // доедут следующим тиком (rev не обновлён — проверка это увидит).
+  if (!force && (mouseHeld || byId('modalRoot').innerHTML.trim() ||
+      ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName))) return;
   if (!state.dataRev && JSON.stringify(fresh) === state.dataSnapshot) return;
   // Поисковые поля и фильтры переживают перерисовку: значения и фокус
   // снимаются до reload и возвращаются после («в поисковом режиме всё
