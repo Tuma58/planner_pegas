@@ -177,6 +177,10 @@ async function sync(force){
   if(SYNC.pending){ SYNC.pending=false; sync(false); }
 }
 function save(){ localSave(); sync(false); }
+fetch('/api/health').then(r=>r.json()).then(j=>{
+  if(j.assetVersion){ const el=document.querySelector('.sub');
+    if(el) el.textContent+=' · сборка '+j.assetVersion; }
+}).catch(()=>{});
 function startSync(){
   clearInterval(SYNC.timer);
   if(!SYNC.url){ net(LS.ok
@@ -721,7 +725,14 @@ function rectSelect(a,b,add){
   paintSel();
 }
 grid.addEventListener('mousedown',e=>{
-  const td=e.target.closest('td.day'); if(!td) return;
+  const td=e.target.closest('td.day');
+  if(!td){
+    // Клик в строку машины: молчание читалось как «не работает».
+    if(e.target.closest('td.mday')) document.getElementById('msg').innerHTML=
+      '<b>Коды ставятся в строках водителей</b> (план/факт). Строка машины показывает, '+
+      'кто за рулём в этот день, — выделение и коды в ней не работают.';
+    return;
+  }
   e.preventDefault();
   const a=anchorKey&&tdByKey(anchorKey);
   if(e.shiftKey&&a){ rectSelect(a,td,false); return; }
