@@ -532,8 +532,10 @@ function dayStats(days,set,filial,occ){
 
 /* ---------- отрисовка графика ---------- */
 let selected=new Set(), view=[], DAYS=[];
-const FIX=[['Филиал',66],['Тягач',88],['Прицеп',84],['Тип',52],['Экипаж',52],['Водитель / машина',196],
-           ['Режим',56],['Подряд',52],['Сверх нормы',86],['Изменил',104],['',40]];
+/* Компакт (18.09, решение руководителя): в обзор помещается целый месяц.
+   Прицеп, тип, экипаж, филиал и «кто менял» живут в подсказках ячеек;
+   редактирование филиала — на вкладке «Закрепление». */
+const FIX=[['Тягач',78],['Водитель / машина',168],['Реж.',52],['Подр.',36],['Сверх',56],['',34]];
 let LEFT=[]; { let l=0; FIX.forEach(f=>{LEFT.push(l); l+=f[1];}); }
 
 function renderGrid(){
@@ -618,18 +620,13 @@ function renderGrid(){
           return `<td class="mday gap${we}" title="${dayLabel(r)}: машина без водителя"></td>`;
         }).join('');
         h+=`<tr class="${first?'crew-top':''} machine">`+
-           `<td class="fix" style="left:${LEFT[0]}px">${t.filial}</td>`+
-           `<td class="fix" style="left:${LEFT[1]}px"><b>${t.tyagach}</b></td>`+
-           `<td class="fix" style="left:${LEFT[2]}px">${t.pricep}</td>`+
-           `<td class="fix" style="left:${LEFT[3]}px">${t.tip}</td>`+
-           `<td class="fix" style="left:${LEFT[4]}px">${t.crew}</td>`+
-           `<td class="fix" style="left:${LEFT[5]}px">машина · закрыта ${busy} из ${DAYS.length} дн.
-              <select class="inline" data-act="assign" data-ts="${t.id}">${drvOptions(t.id)}</select></td>`+
-           `<td class="fix" style="left:${LEFT[6]}px"></td>`+
-           `<td class="fix" style="left:${LEFT[7]}px"></td>`+
-           `<td class="fix" style="left:${LEFT[8]}px"></td>`+
-           `<td class="fix" style="left:${LEFT[9]}px"></td>`+
-           `<td class="fix" style="left:${LEFT[10]}px">ТС</td>${cells}</tr>`;
+           `<td class="fix" style="left:${LEFT[0]}px" title="${t.filial} · прицеп ${t.pricep||'—'} · ${t.tip||'тип не указан'} · экипаж ${t.crew}"><b>${t.tyagach}</b></td>`+
+           `<td class="fix" style="left:${LEFT[1]}px" title="дней с водителем: ${busy} из ${DAYS.length}">${busy}/${DAYS.length}
+              <button class="asgBtn" data-act="assign-btn" data-ts="${t.id}">назначить ▾</button></td>`+
+           `<td class="fix" style="left:${LEFT[2]}px"></td>`+
+           `<td class="fix" style="left:${LEFT[3]}px"></td>`+
+           `<td class="fix" style="left:${LEFT[4]}px"></td>`+
+           `<td class="fix" style="left:${LEFT[5]}px">ТС</td>${cells}</tr>`;
         first=false;
       });
     }
@@ -656,25 +653,20 @@ function renderGrid(){
         }else{
           const run=runAt(dr,DAYS,DAYS.length-1), lim=rezLimit(dr.rezhim);
           const ovp=overInfo(dr,'plan',DAYS).n, ovf=overInfo(dr,'fact',DAYS).n;
+          const drvTitle=[dr.tel||'', dr.filial, t?`прицеп ${t.pricep||'—'} · ${t.tip||''}`:'', `экипаж ${dr.crew}`,
+            dr.lastBy? `изменил: ${dr.lastBy}, ${fullTime(dr.lastAt)}`:'правок не было'].filter(Boolean).join(' · ');
           info=[
-            `<td class="fix" style="left:${LEFT[0]}px"><select class="inline" data-act="filial" data-id="${dr.id}">
-               ${['Пенза','Москва'].map(f=>`<option ${dr.filial===f?'selected':''}>${f}</option>`).join('')}</select></td>`,
-            `<td class="fix" style="left:${LEFT[1]}px">${t?t.tyagach:'<span class="tag">подмена</span>'}</td>`,
-            `<td class="fix" style="left:${LEFT[2]}px">${t?t.pricep:''}</td>`,
-            `<td class="fix" style="left:${LEFT[3]}px">${t?t.tip:''}</td>`,
-            `<td class="fix" style="left:${LEFT[4]}px">${dr.crew}</td>`,
-            `<td class="fix" style="left:${LEFT[5]}px" title="${dr.tel||''}">
+            `<td class="fix" style="left:${LEFT[0]}px">${t?t.tyagach:'<span class="tag">подмена</span>'}</td>`,
+            `<td class="fix" style="left:${LEFT[1]}px" title="${drvTitle}">
                <input type="checkbox" class="pick" data-r="${ri}" ${selected.has(dr.id)?'checked':''}>
                ${dr.vac? '<span class="vac">потребность</span> <button data-act="fillvac" data-id="'+dr.id+'" title="вписать водителя, сохранив расписанные дни">закрыть</button>' : dr.fio}</td>`,
-            `<td class="fix" style="left:${LEFT[6]}px"><select class="inline" data-act="rez" data-id="${dr.id}">
+            `<td class="fix" style="left:${LEFT[2]}px"><select class="inline" data-act="rez" data-id="${dr.id}">
                ${REZ.map(r=>`<option ${dr.rezhim===r?'selected':''}>${r||'—'}</option>`).join('')}</select></td>`,
-            `<td class="fix ${lim&&run>lim?'over':''}" style="left:${LEFT[7]}px">${run||''}</td>`,
-            `<td class="fix ${ovp||ovf?'over':''}" style="left:${LEFT[8]}px"
+            `<td class="fix ${lim&&run>lim?'over':''}" style="left:${LEFT[3]}px">${run||''}</td>`,
+            `<td class="fix ${ovp||ovf?'over':''}" style="left:${LEFT[4]}px"
                  title="${lim? 'дней сверх вахты '+dr.rezhim+' за период: план '+ovp+', факт '+ovf : 'режим не задан — переработка не считается'}">
                ${lim? (ovp||ovf? ovp+' / '+ovf : '') : '<span class="who">режим?</span>'}</td>`,
-            `<td class="fix" style="left:${LEFT[9]}px" title="${dr.lastBy?dr.lastBy+', '+fullTime(dr.lastAt):'правок не было'}">
-               ${dr.lastBy? `${dr.lastBy} <span class="who">${shortTime(dr.lastAt)}</span>`:''}</td>`,
-            `<td class="fix" style="left:${LEFT[10]}px">${layer==='both'?'план':(lay==='fact'?'факт':'план')}</td>`
+            `<td class="fix" style="left:${LEFT[5]}px">${layer==='both'?'план':(lay==='fact'?'факт':'план')}</td>`
           ].join('');
         }
         h+=`<tr class="${first&&li===0?'crew-top':''} ${lay==='fact'?'fact':''}">${info}${cells}</tr>`;
@@ -798,8 +790,54 @@ function applyCode(codeRaw){
 }
 grid.addEventListener('click',e=>{
   const b=e.target.closest('button[data-act="fillvac"]');
-  if(b){ e.preventDefault(); fillVacancy(b.dataset.id); }
+  if(b){ e.preventDefault(); fillVacancy(b.dataset.id); return; }
+  const a=e.target.closest('button[data-act="assign-btn"]');
+  if(a){ e.preventDefault(); openAsgPicker(a.dataset.ts, a); }
 });
+/* Назначение с поиском (18.09): 176 водителей листать выпадашкой —
+   мучение. Кнопка открывает окошко: три буквы фамилии → клик или Enter.
+   Свободные первыми, занятые с номером их машины; перенос занятого —
+   прежнее подтверждение assignDriver. */
+function closeAsgPicker(){ document.getElementById('asgPick')?.remove();
+  document.removeEventListener('mousedown', outsideAsg); }
+function outsideAsg(e){ const box=document.getElementById('asgPick');
+  if(box && !box.contains(e.target)) closeAsgPicker(); }
+function openAsgPicker(tsId, btn){
+  closeAsgPicker();
+  const free=S.drv.filter(d=>!d.ts && !d.vac).sort(byFio);
+  const busy=S.drv.filter(d=>d.ts && !d.vac && d.ts!==tsId).sort(byFio);
+  const box=document.createElement('div');
+  box.id='asgPick'; box.className='asg-pop';
+  box.innerHTML='<input id="asgQ" placeholder="фамилия — клик или Enter назначает" autocomplete="off">'+
+    '<div class="asg-list" id="asgList"></div>';
+  document.body.appendChild(box);
+  const r=btn.getBoundingClientRect();
+  box.style.left=Math.max(8, Math.min(r.left, innerWidth-330))+'px';
+  box.style.top=Math.min(r.bottom+4, innerHeight-320)+'px';
+  const list=box.querySelector('#asgList'), q=box.querySelector('#asgQ');
+  const render=()=>{
+    const needle=q.value.trim().toLowerCase();
+    const f=d=>!needle || d.fio.toLowerCase().includes(needle);
+    const opt=(d,extra,cls)=>'<div class="asg-row" data-id="'+d.id+'">'+d.fio+
+      (extra?' <span class="who '+(cls||'')+'">'+extra+'</span>':'')+'</div>';
+    list.innerHTML=(free.filter(f).map(d=>opt(d,'свободен','ok')).join('')+
+      busy.filter(f).map(d=>opt(d, (tsById(d.ts)||{}).tyagach||'')).join(''))
+      || '<div class="asg-row who">никого не нашлось</div>';
+  };
+  list.addEventListener('mousedown',e=>{
+    const row=e.target.closest('.asg-row[data-id]'); if(!row) return;
+    e.preventDefault(); const id=row.dataset.id;
+    closeAsgPicker(); assignDriver(id, tsId);
+  });
+  q.oninput=render;
+  q.onkeydown=e=>{
+    if(e.key==='Enter'){ const first=list.querySelector('.asg-row[data-id]');
+      if(first){ const id=first.dataset.id; closeAsgPicker(); assignDriver(id, tsId); } }
+    if(e.key==='Escape') closeAsgPicker();
+  };
+  render();
+  setTimeout(()=>{ q.focus(); document.addEventListener('mousedown', outsideAsg); }, 0);
+}
 grid.addEventListener('change',e=>{
   const s=e.target.closest('select.inline');
   if(s && s.dataset.act==='assign'){
