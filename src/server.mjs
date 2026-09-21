@@ -688,6 +688,65 @@ function runDailyOpsReport() {
   } catch (error) { console.error('ежедневный отчёт эксплуатации упал', error); }
 }
 setInterval(runDailyOpsReport, 5 * 60_000);
+// Плановые перецепки (решение руководителя 21.09, вариант «автоматика с
+// уведомлением»): запись с applied_at IS NULL созревает в свой moved_at —
+// прицеп переезжает (тип кузова следом), уведомление в конвейер; если
+// по факту не перецепили, правится задним числом штатной перецепкой.
+function runPlannedTrailerMoves() {
+  try {
+    const due = db.prepare(`SELECT * FROM trailer_moves
+        WHERE applied_at IS NULL AND datetime(moved_at) <= datetime('now')`).all();
+    for (const plan of due) {
+      const plate = canonTrailerPlate(plan.trailer_plate);
+      const holder = db.prepare(`SELECT id, plate FROM vehicles
+          WHERE TRIM(COALESCE(trailer_plate,''))=?`).get(plate);
+      const target = db.prepare('SELECT id, plate, trailer_plate FROM vehicles WHERE id=?')
+        .get(plan.to_vehicle_id);
+      if (!target) {
+        db.prepare(`UPDATE trailer_moves SET applied_at=datetime('now'),
+          note=note||' [не применена: тягач не найден]' WHERE id=?`).run(plan.id);
+        continue;
+      }
+      const applyType = (vehicleId, trailerPlate) => {
+        const trailer = db.prepare('SELECT type_id FROM trailers WHERE plate=?')
+          .get(canonTrailerPlate(trailerPlate));
+        if (trailer?.type_id) db.prepare('UPDATE vehicles SET type_id=? WHERE id=?')
+          .run(trailer.type_id, vehicleId);
+      };
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (holder && holder.id !== target.id) {
+          db.prepare(`UPDATE vehicles SET trailer_plate='', updated_at=CURRENT_TIMESTAMP
+            WHERE id=?`).run(holder.id);
+        }
+        const targetOld = String(target.trailer_plate || '').trim();
+        if (targetOld && targetOld.toLowerCase() !== 'без прицепа' &&
+            canonTrailerPlate(targetOld) !== plate) {
+          db.prepare(`INSERT INTO trailer_moves(id,trailer_plate,from_vehicle_id,to_vehicle_id,note,moved_at,applied_at)
+            VALUES(?,?,?,NULL,'отцеплен плановой перецепкой',datetime('now'),datetime('now'))`)
+            .run(randomUUID(), canonTrailerPlate(targetOld), target.id);
+        }
+        db.prepare(`UPDATE vehicles SET trailer_plate=?, updated_at=CURRENT_TIMESTAMP
+          WHERE id=?`).run(plate, target.id);
+        applyType(target.id, plate);
+        db.prepare(`UPDATE trailer_moves SET from_vehicle_id=?, applied_at=datetime('now')
+          WHERE id=?`).run(holder?.id || null, plan.id);
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+      notify('dispatcher', `🔗 Плановая перецепка применена: прицеп ${plan.trailer_plate} ` +
+        `${holder ? `снят с ${holder.plate} и ` : ''}поставлен на ${target.plate} ` +
+        `(план от ${String(plan.moved_at).slice(0, 10)}). Проверьте фактическое исполнение; ` +
+        `если по факту иначе — поправьте перецепкой задним числом`, 'vehicle', target.id,
+      { category: 'other' });
+      console.log('плановая перецепка применена:', plan.trailer_plate, '→', target.plate);
+    }
+  } catch (error) { console.error('плановые перецепки:', error); }
+}
+setInterval(runPlannedTrailerMoves, 5 * 60_000);
+setTimeout(runPlannedTrailerMoves, 80_000);
 setTimeout(runResourceWatch, 25_000);
 
 // 🚦 Взятые за день заявки клиентов сегментов C/D — с фамилиями продаж:
@@ -7640,14 +7699,43 @@ async function api(request, response, url) {
       WHERE TRIM(COALESCE(trailer_plate,''))=?`).get(trailerPlate);
     const target = body.toVehicleId
       ? db.prepare('SELECT id, plate, trailer_plate FROM vehicles WHERE id=?').get(String(body.toVehicleId))
-      : null;
-    if (body.toVehicleId && !target) return errorJson(response, 404, 'ТС-приёмник не найдено');
+      : body.toVehiclePlate
+        ? db.prepare(`SELECT id, plate, trailer_plate FROM vehicles
+            WHERE LOWER(REPLACE(plate,' ',''))=LOWER(REPLACE(?, ' ',''))`)
+          .get(String(body.toVehiclePlate))
+        : null;
+    if ((body.toVehicleId || body.toVehiclePlate) && !target) return errorJson(response, 404, 'ТС-приёмник не найдено');
     if (target && holder && target.id === holder.id) {
       return errorJson(response, 422, 'Прицеп уже на этой сцепке');
     }
     const note = String(body.note || '').slice(0, 200);
-    const move = db.prepare(`INSERT INTO trailer_moves(id,trailer_plate,from_vehicle_id,to_vehicle_id,note,moved_by)
-      VALUES(?,?,?,?,?,?)`);
+    // Дата перецепки (решение руководителя 21.09): голая дата читается как
+    // 00:00 предприятия (МСК); прошлое/сейчас — применяем сразу с журналом
+    // задним числом; будущее — плановая, применит сторож в свой час.
+    const movedAtRaw = String(body.movedAt || '').trim();
+    let movedAtIso = new Date().toISOString();
+    if (movedAtRaw) {
+      const ms = /^\d{4}-\d{2}-\d{2}$/.test(movedAtRaw)
+        ? Date.parse(`${movedAtRaw}T00:00:00+03:00`) : Date.parse(movedAtRaw);
+      if (!Number.isFinite(ms)) return errorJson(response, 422, 'Некорректная дата перецепки');
+      movedAtIso = new Date(ms).toISOString();
+    }
+    const movedAtSql = movedAtIso.replace('T', ' ').slice(0, 19);
+    const planned = Date.parse(movedAtIso) > Date.now() + 60_000;
+    if (planned) {
+      if (!target) return errorJson(response, 422, 'Плановой перецепке нужен тягач-приёмник');
+      const id = randomUUID();
+      db.prepare(`INSERT INTO trailer_moves(id,trailer_plate,from_vehicle_id,to_vehicle_id,note,moved_by,moved_at)
+        VALUES(?,?,NULL,?,?,?,?)`).run(id, canonTrailerPlate(trailerPlate), target.id,
+        note, user.id, movedAtSql);
+      audit(db, user, 'trailer-move-plan', 'vehicle', target.id,
+        { trailerPlate, to: target.plate, movedAt: movedAtIso }, requestIp(request));
+      return json(response, 200, { ok: true, planned: true,
+        moved: `${trailerPlate} → ${target.plate} по плану с ` +
+          new Date(Date.parse(movedAtIso) + 3 * 3.6e6).toISOString().slice(0, 10) });
+    }
+    const move = db.prepare(`INSERT INTO trailer_moves(id,trailer_plate,from_vehicle_id,to_vehicle_id,note,moved_by,moved_at,applied_at)
+      VALUES(?,?,?,?,?,?,?,datetime('now'))`);
     const targetOld = target ? String(target.trailer_plate || '').trim() : '';
     // Тип кузова живёт на прицепе (правило руководителя 14.09): вместе с
     // прицепом тягач получает и его тип из справочника trailers.
@@ -7668,17 +7756,17 @@ async function api(request, response, url) {
             db.prepare(`UPDATE vehicles SET trailer_plate=?, updated_at=CURRENT_TIMESTAMP
               WHERE id=?`).run(canonTrailerPlate(targetOld), holder.id);
             applyTrailerType(holder.id, targetOld);
-            move.run(randomUUID(), targetOld, target.id, holder.id, `обмен: ${note}`, user.id);
+            move.run(randomUUID(), targetOld, target.id, holder.id, `обмен: ${note}`, user.id, movedAtSql);
           } else {
             // Прицеп приёмника отцепляется в свободные.
-            move.run(randomUUID(), targetOld, target.id, null, `отцеплен при перецепке: ${note}`, user.id);
+            move.run(randomUUID(), targetOld, target.id, null, `отцеплен при перецепке: ${note}`, user.id, movedAtSql);
           }
         }
         db.prepare(`UPDATE vehicles SET trailer_plate=?, updated_at=CURRENT_TIMESTAMP
           WHERE id=?`).run(canonTrailerPlate(trailerPlate), target.id);
         applyTrailerType(target.id, trailerPlate);
       }
-      move.run(randomUUID(), trailerPlate, holder?.id || null, target?.id || null, note, user.id);
+      move.run(randomUUID(), trailerPlate, holder?.id || null, target?.id || null, note, user.id, movedAtSql);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -8848,6 +8936,75 @@ async function api(request, response, url) {
     const report = augmentScheduleFromPlanner(db, user.id);
     audit(db, user, 'update', 'schedule', 'augment', report, requestIp(request));
     return json(response, 200, report);
+  }
+  // Интервалы прицепов по тягачам за период (график: «до 16-го один,
+  // с 16-го другой»). Реконструкция: текущее состояние vehicles + откат
+  // применённых записей назад + проекция плановых вперёд.
+  if (request.method === 'GET' && pathname === '/api/trailer-timeline') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const nowIso = new Date().toISOString();
+    const vehicles = db.prepare(`SELECT id, plate, TRIM(COALESCE(trailer_plate,'')) tp
+      FROM vehicles`).all();
+    const curr = new Map(vehicles.map(v => [v.id, v.tp && v.tp.toLowerCase() !== 'без прицепа' ? v.tp : '']));
+    const plateOf = new Map(vehicles.map(v => [v.id, v.plate]));
+    // интервалы по тягачу: список {from, to, trailer} (null = открыт)
+    const lanes = new Map(vehicles.map(v => [v.id, [{ from: null, to: null, trailer: curr.get(v.id) }]]));
+    const tIso = value => {
+      const raw = String(value || '');
+      const ms = Date.parse(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`);
+      return Number.isFinite(ms) ? new Date(ms).toISOString() : raw;
+    };
+    const applied = db.prepare(`SELECT * FROM trailer_moves WHERE applied_at IS NOT NULL
+        AND datetime(moved_at) > datetime('now','-90 days')
+        ORDER BY datetime(moved_at) DESC, rowid DESC`).all();
+    for (const move of applied) {
+      const t = tIso(move.moved_at);
+      if (move.to_vehicle_id && lanes.has(move.to_vehicle_id)) {
+        const lane = lanes.get(move.to_vehicle_id);
+        const head = lane[0];
+        if (head.from === null) {
+          head.from = t;
+          lane.unshift({ from: null, to: t, trailer: '' });
+        }
+      }
+      if (move.from_vehicle_id && lanes.has(move.from_vehicle_id)) {
+        const lane = lanes.get(move.from_vehicle_id);
+        const head = lane[0];
+        if (head.from === null) head.trailer = canonTrailerPlate(move.trailer_plate);
+      }
+    }
+    const plannedMoves = db.prepare(`SELECT * FROM trailer_moves WHERE applied_at IS NULL
+        ORDER BY datetime(moved_at) ASC`).all();
+    const proj = new Map(curr);
+    for (const move of plannedMoves) {
+      const t = tIso(move.moved_at);
+      const plate = canonTrailerPlate(move.trailer_plate);
+      // у нынешнего носителя прицеп уезжает в t
+      for (const [vid, tp] of proj) {
+        if (canonTrailerPlate(tp) === plate && vid !== move.to_vehicle_id) {
+          const lane = lanes.get(vid);
+          const tail = lane[lane.length - 1];
+          if (tail.to === null) { tail.to = t; lane.push({ from: t, to: null, trailer: '' }); }
+          proj.set(vid, '');
+        }
+      }
+      if (move.to_vehicle_id && lanes.has(move.to_vehicle_id)) {
+        const lane = lanes.get(move.to_vehicle_id);
+        const tail = lane[lane.length - 1];
+        if (tail.to === null) { tail.to = t; }
+        lane.push({ from: t, to: null, trailer: plate, planned: true });
+        proj.set(move.to_vehicle_id, plate);
+      }
+    }
+    const out = {};
+    for (const [vid, lane] of lanes) {
+      const plate = plateOf.get(vid);
+      // отдаём только тягачи, у которых есть смены или прицеп
+      if (lane.length === 1 && !lane[0].trailer) continue;
+      out[plate] = lane;
+    }
+    return json(response, 200, { asOf: nowIso, lanes: out });
   }
   // «Прямо сейчас» для главной руководителя: в пути, без заказа и
   // причины (поимённо), покрытие плана графика к гейту этапа 3.

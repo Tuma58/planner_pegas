@@ -177,6 +177,35 @@ async function sync(force){
   if(SYNC.pending){ SYNC.pending=false; sync(false); }
 }
 function save(){ localSave(); sync(false); }
+/* Перецепка с датой (21.09): интервалы прицепов приходят из планера —
+   один контур с «Ресурсом», журналом и пробегом прицепов. */
+let TRAILER_TL = {};
+function loadTrailerTl(){
+  fetch('/api/trailer-timeline').then(r=>r.json())
+    .then(j=>{ TRAILER_TL = j.lanes || {}; renderGrid(); })
+    .catch(()=>{});
+}
+loadTrailerTl();
+const canonPlate = v => String(v||'').toLowerCase().replace(/\s+/g,'');
+function trailerOn(tyagach, iso){
+  const lane = TRAILER_TL[Object.keys(TRAILER_TL).find(p=>canonPlate(p)===canonPlate(tyagach))||''];
+  if(!lane) return null;
+  const t = iso+'T23:59:59';
+  for(const seg of lane){
+    if((seg.from===null || seg.from<=t) && (seg.to===null || seg.to>iso+'T00:00:00')){
+      if(seg.from!==null && seg.from>t) continue;
+      if(seg.to!==null && seg.to<=iso+'T00:00:00') continue;
+      return seg;
+    }
+  }
+  return null;
+}
+const mskDay = t => t ? new Date(Date.parse(t)+3*3.6e6).toISOString().slice(0,10) : '';
+function trailerSwitchAt(tyagach, iso){
+  const lane = TRAILER_TL[Object.keys(TRAILER_TL).find(p=>canonPlate(p)===canonPlate(tyagach))||''];
+  if(!lane) return null;
+  return lane.find(seg=>seg.from && mskDay(seg.from)===iso) || null;
+}
 fetch('/api/health').then(r=>r.json()).then(j=>{
   if(j.assetVersion){ const el=document.querySelector('.sub');
     if(el) el.textContent+=' · сборка '+j.assetVersion; }
@@ -615,14 +644,19 @@ function renderGrid(){
           const hv=handAt[t.id+':'+i];
           const hcls=hv? ' hand '+hv.kind : '';
           const title=hv? `пересмена ${dayLabel(r)}: ${hv.from.fio||'?'} → ${hv.to.fio||'?'}, ${hv.status}` : '';
-          if(c && c.conflict) return `<td class="mday conflict${we}" title="двое: ${c.drv.fio} и ${c.second.fio}">!!</td>`;
-          if(c) return `<td class="mday v${we}${hcls}" title="${(c.drv.fio||'подмена')}${title?' · '+title:''}">${shortFio(c.drv.fio)||'—'}</td>`;
-          return `<td class="mday gap${we}" title="${dayLabel(r)}: машина без водителя"></td>`;
+          const hs = trailerSwitchAt(t.tyagach, `${r.mk}-${String(r.n).padStart(2,'0')}`);
+          const hMark = hs ? `<span class="hitch" title="с этого дня прицеп ${hs.trailer||'снят'}${hs.planned?' (план)':''}">🔗</span>` : '';
+          if(c && c.conflict) return `<td class="mday conflict${we}" title="двое: ${c.drv.fio} и ${c.second.fio}">!!${hMark}</td>`;
+          if(c) return `<td class="mday v${we}${hcls}" title="${(c.drv.fio||'подмена')}${title?' · '+title:''}">${shortFio(c.drv.fio)||'—'}${hMark}</td>`;
+          return `<td class="mday gap${we}" title="${dayLabel(r)}: машина без водителя">${hMark}</td>`;
         }).join('');
         h+=`<tr class="${first?'crew-top':''} machine">`+
-           `<td class="fix" style="left:${LEFT[0]}px" title="${t.filial} · прицеп ${t.pricep||'—'} · ${t.tip||'тип не указан'} · экипаж ${t.crew}"><b>${t.tyagach}</b></td>`+
+           `<td class="fix" style="left:${LEFT[0]}px" title="${t.filial} · прицеп ${t.pricep||'—'} · ${t.tip||'тип не указан'} · экипаж ${t.crew}${(()=>{
+              const sw=DAYS.map(r=>trailerSwitchAt(t.tyagach, r.mk+'-'+String(r.n).padStart(2,'0'))).filter(Boolean);
+              return sw.length? ' · перецепки: '+sw.map(x=>mskDay(x.from).slice(8,10)+'.'+mskDay(x.from).slice(5,7)+'→'+(x.trailer||'снят')+(x.planned?' (план)':'')).join(', ') : '';
+            })()}"><b>${t.tyagach}</b></td>`+
            `<td class="fix" style="left:${LEFT[1]}px" title="дней с водителем: ${busy} из ${DAYS.length}">${busy}/${DAYS.length}
-              <button class="asgBtn" data-act="assign-btn" data-ts="${t.id}">назначить ▾</button></td>`+
+              <button class="asgBtn" data-act="assign-btn" data-ts="${t.id}">назначить ▾</button><button class="asgBtn" data-act="hitch-btn" data-ts="${t.id}" title="Перецепка: сменить прицеп с даты (сегодня, задним числом или планово)">🔗</button></td>`+
            `<td class="fix" style="left:${LEFT[2]}px"></td>`+
            `<td class="fix" style="left:${LEFT[3]}px"></td>`+
            `<td class="fix" style="left:${LEFT[4]}px"></td>`+
@@ -792,8 +826,69 @@ grid.addEventListener('click',e=>{
   const b=e.target.closest('button[data-act="fillvac"]');
   if(b){ e.preventDefault(); fillVacancy(b.dataset.id); return; }
   const a=e.target.closest('button[data-act="assign-btn"]');
-  if(a){ e.preventDefault(); openAsgPicker(a.dataset.ts, a); }
+  if(a){ e.preventDefault(); openAsgPicker(a.dataset.ts, a); return; }
+  const hb=e.target.closest('button[data-act="hitch-btn"]');
+  if(hb){ e.preventDefault(); openHitchPicker(hb.dataset.ts, hb); }
 });
+/* Окошко перецепки: прицеп из справочника планера (свободные первыми,
+   занятые с носителем), дата «с» — сегодня, задним числом или в будущее
+   (плановая: применится автоматикой в свой день, придёт уведомление). */
+function closeHitch(){ document.getElementById('hitchPick')?.remove();
+  document.removeEventListener('mousedown', outsideHitch); }
+function outsideHitch(e){ const box=document.getElementById('hitchPick');
+  if(box && !box.contains(e.target)) closeHitch(); }
+async function openHitchPicker(tsId, btn){
+  closeHitch(); closeAsgPicker();
+  const t=tsById(tsId); if(!t) return;
+  let cat={attached:[],detached:[]};
+  try{ cat=await (await fetch('/api/trailers')).json(); }catch(e){}
+  const box=document.createElement('div');
+  box.id='hitchPick'; box.className='asg-pop';
+  const today=new Date().toISOString().slice(0,10);
+  box.innerHTML='<div style="margin-bottom:6px"><b>🔗 Перецепка · '+t.tyagach+'</b>'+
+    ' <span class="who">сейчас: '+(t.pricep||'без прицепа')+'</span></div>'+
+    '<label style="display:block;margin-bottom:6px">с даты <input type="date" id="hitchDate" value="'+today+'"></label>'+
+    '<input id="hitchQ" placeholder="прицеп — клик назначает" autocomplete="off">'+
+    '<div class="asg-list" id="hitchList"></div>'+
+    '<div class="who" style="margin-top:6px">будущая дата = плановая перецепка: применится автоматически в свой день, диспетчерам придёт уведомление</div>';
+  document.body.appendChild(box);
+  const r=btn.getBoundingClientRect();
+  box.style.left=Math.max(8, Math.min(r.left, innerWidth-330))+'px';
+  box.style.top=Math.min(r.bottom+4, innerHeight-340)+'px';
+  const list=box.querySelector('#hitchList'), q=box.querySelector('#hitchQ');
+  const render=()=>{
+    const needle=q.value.trim().toLowerCase();
+    const row=(plate,extra,cls)=>'<div class="asg-row" data-plate="'+plate+'">'+plate+
+      (extra?' <span class="who '+(cls||'')+'">'+extra+'</span>':'')+'</div>';
+    const free=(cat.detached||[]).filter(x=>!needle||x.tp.toLowerCase().includes(needle))
+      .map(x=>row(x.tp,'свободен','ok'));
+    const busyRows=(cat.attached||[]).filter(x=>x.plate!==t.tyagach)
+      .filter(x=>!needle||x.tp.toLowerCase().includes(needle))
+      .map(x=>row(x.tp,'на '+x.plate));
+    list.innerHTML=free.join('')+busyRows.join('') || '<div class="asg-row who">не найдено</div>';
+  };
+  list.addEventListener('mousedown',async e=>{
+    const rw=e.target.closest('.asg-row[data-plate]'); if(!rw) return;
+    e.preventDefault();
+    const plate=rw.dataset.plate, when=box.querySelector('#hitchDate').value;
+    closeHitch();
+    try{
+      const res=await fetch('/api/trailer-move',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({trailerPlate:plate, toVehiclePlate:t.tyagach, movedAt:when,
+          note:'из графика'})});
+      const j=await res.json();
+      if(!res.ok) throw new Error(j.error||'не удалось');
+      document.getElementById('msg').innerHTML='🔗 '+(j.moved||'перецепка оформлена');
+      if(when<=new Date().toISOString().slice(0,10)){ t.pricep=plate; save(); }
+      loadTrailerTl();
+    }catch(err){ document.getElementById('msg').innerHTML='<b>Перецепка: '+err.message+'</b>'; }
+  });
+  q.oninput=render;
+  q.onkeydown=e=>{ if(e.key==='Escape') closeHitch(); };
+  render();
+  setTimeout(()=>{ q.focus(); document.addEventListener('mousedown', outsideHitch); },0);
+}
 /* Назначение с поиском (18.09): 176 водителей листать выпадашкой —
    мучение. Кнопка открывает окошко: три буквы фамилии → клик или Enter.
    Свободные первыми, занятые с номером их машины; перенос занятого —

@@ -1186,6 +1186,14 @@ function migrateColumns(db) {
   ensure('vehicle_dispositions', 'driver_notified_at', 'TEXT');
   ensure('vehicle_dispositions', 'departed_at', 'TEXT');
   ensure('vehicle_dispositions', 'arrived_at', 'TEXT');
+  // Перецепка с датой (решение руководителя 21.09): applied_at — момент
+  // фактического применения; NULL = плановая, применит сторож в свой час.
+  // Backfill: все прежние записи журнала — свершившиеся факты.
+  ensure('trailer_moves', 'applied_at', 'TEXT');
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='trailer_applied_backfill_v1'`).get()) {
+    db.prepare(`UPDATE trailer_moves SET applied_at=moved_at WHERE applied_at IS NULL`).run();
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('trailer_applied_backfill_v1',datetime('now'))`).run();
+  }
 }
 
 // Справочник адресов из выгрузки 1С «АДРЕС.xlsx»: 611 пунктов с геозонами
