@@ -418,6 +418,17 @@ const notifyLevelOf = category => {
 // а undici-fetch упорно коннектится по v6 (при том что dns.lookup отдаёт
 // v4 из /etc/hosts) — таймаут. Прямой https с family:4 стабилен (~200 мс).
 function tgApi(method, payload, tokenOverride = null) {
+  // Не-прод НЕ имеет права трогать Telegram (инцидент 21.09 «Погрузок: 0»):
+  // тест-сервер с копией прод-базы слал руководителю сводки со старыми
+  // данными через живой релей и перебивал secret_token вебхуков ботов.
+  // Прод определяется NODE_ENV=production (ставится только в Dockerfile).
+  if (!config.isProduction) {
+    if (!tgApi.mutedWarned) {
+      tgApi.mutedWarned = true;
+      console.log('telegram: исходящие подавлены — NODE_ENV не production');
+    }
+    return Promise.resolve(null);
+  }
   return new Promise(resolve => {
     const token = tokenOverride || telegramConfig().botToken;
     if (!token) return resolve(null);
