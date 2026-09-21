@@ -628,6 +628,20 @@ function runScheduleFactWatch() {
       console.log(`график: автофакт — отметок ${result.marks}, машино-дней с работой ` +
         `${result.busyDays}, покрытие плана ${Math.round(covered / result.busyDays * 100)}% ` +
         `(без водителя в плане ${result.noHolder}, «двое» ${result.many})`);
+      // Гейт этапа 3 (решение руководителя 21.09: «ждём 85%»): цель в
+      // app_meta schedule_gate_coverage, при достижении — одно уведомление
+      // руководителю, дальше этап 3 стартует по его команде.
+      const gatePct = Number(db.prepare(`SELECT value FROM app_meta
+        WHERE key='schedule_gate_coverage'`).get()?.value || 85);
+      const pct = covered / result.busyDays * 100;
+      const told = db.prepare(`SELECT value FROM app_meta
+        WHERE key='schedule_gate_notified'`).get()?.value;
+      if (pct >= gatePct && !told && result.busyDays >= 100) {
+        db.prepare(`INSERT INTO app_meta(key,value) VALUES('schedule_gate_notified',datetime('now'))
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+        notify('manager', `📋 График: покрытие плана ${Math.round(pct)}% — гейт этапа 3 ` +
+          `(${gatePct}%) пройден. План ведётся, можно пересаживать явку, табель и доплаты.`);
+      }
     }
   } catch (error) { console.error('график: автофакт упал', error); }
 }
