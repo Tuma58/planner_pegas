@@ -359,6 +359,8 @@ export async function renderBoss(container, context) {
           title="Реестр самообучающихся процессов: имена, что каждый учит, текущее выученное значение, кламп и где смотреть дрейф">🧠 Живые нормативы</button>
         <button class="button ghost small" id="bossInventory"
           title="Инвентаризация всех процессов: ресурс (дубли прицепов, забытые машины, висящие рейсы, дыры по водителям) + заявки с ошибочными датами, застрявшие стадии, дыры адресов">🧾 Инвентаризация</button>
+        <button class="button small" id="bossOpsReport"
+          title="Отчёт эксплуатации за период: показатели КОЛИЧЕСТВОМ машин (КТГ/КВЛ/КИП), простой по причинам, опоздания на погрузку и выгрузку, живые графики. Ежедневная выжимка приходит в Telegram в 07:15">📊 Отчёт эксплуатации</button>
         <button class="button ghost small" id="bossParkPlanner"
           title="Эксплуатация парка ИЗ ДАННЫХ ПЛАНЕРА за период: каскад КТГ/КВЛ/КИП по единому канону, недели, клиенты, сценарии к плану — печать в PDF, 1С не требуется">🏭 Эксплуатация (планер)</button>
         <button class="button ghost small" id="bossParkReport"
@@ -561,6 +563,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossRingLoad').onclick = () => ringLoadDialog(context);
   container.querySelector('#bossSelfTuning').onclick = () => selfTuningDialog(context);
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
+  container.querySelector('#bossOpsReport').onclick = () => window.open('/ops-report', '_blank');
   container.querySelector('#bossParkPlanner').onclick = () => plannerParkDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;
