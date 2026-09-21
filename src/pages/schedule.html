@@ -91,6 +91,8 @@
   tr>*.fix:nth-child(4){max-width:36px;width:36px}
   tr>*.fix:nth-child(5){max-width:56px;width:56px}
   tr>*.fix:nth-child(6){max-width:34px;width:34px}
+  .pfill{font-size:9.5px;margin-left:5px;padding:0 4px;border-radius:6px}
+  .pfill.ok{color:var(--ok)} .pfill.part{color:#c98a1b} .pfill.none{color:var(--warn);font-weight:600}
   .hitch{font-size:9px;position:absolute;margin-left:1px;opacity:.9}
   td.mday{position:relative}
   .asg-pop{position:fixed;z-index:60;width:320px;background:var(--panel);border:1px solid var(--line);
@@ -183,6 +185,7 @@
     <label><input type="checkbox" id="fVac"> вакансии</label>
     <label><input type="checkbox" id="fGap"> машины с простоем</label>
     <label><input type="checkbox" id="fConf"> нарушения</label>
+    <label title="только строки, где в видимом периоде остались пустые дни плана — что ещё не отработано"><input type="checkbox" id="fUnplanned"> план не заполнен</label>
     <button id="btnFact">Факт = план</button>
     <button id="btnCsv">CSV</button>
     <button id="btnBackup">Сохранить копию</button>
@@ -252,6 +255,13 @@
        по нескольким строкам), Shift-клик расширяет выделение, Ctrl-клик добавляет отдельные ячейки,
        Esc снимает. Затем кликните код (в / отп / бл / бс / П / РП / Р / «·» — снять код) — он проставится
        во всё выделение. Замещение: выделите дни, выберите тягач в списке и нажмите «зам».</p>
+    <p><b>Что уже расписано.</b> У каждой фамилии метка: зелёная ✓ — план
+       заполнен на весь видимый период; оранжевая «→дата» — есть пустые дни,
+       показана последняя расписанная дата; красная «пуст» — строка не тронута.
+       Галочка «план не заполнен» в фильтрах оставляет только недоработанные
+       строки; счётчик «Расписан план (период)» в шапке показывает прогресс.
+       Пустая клетка плана считается нерасписанной — отдых отмечайте кодом
+       «отп», межвахту тоже.</p>
     <p><b>Перецепка.</b> Кнопка 🔗 в строке машины: выберите прицеп (свободные
        первыми, занятые — с номером носителя) и дату «с». Сегодня или задним
        числом — прицеп переезжает сразу (журнал перецепок и тип кузова — как в

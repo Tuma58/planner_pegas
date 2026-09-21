@@ -567,6 +567,17 @@ let selected=new Set(), view=[], DAYS=[];
 const FIX=[['Тягач',78],['Водитель / машина',168],['Реж.',52],['Подр.',36],['Сверх',56],['',34]];
 let LEFT=[]; { let l=0; FIX.forEach(f=>{LEFT.push(l); l+=f[1];}); }
 
+/* Расписанность плана (просьба руководителя 21.09: «не вижу, какие
+   отработаны»): пустая клетка плана = не расписан (отдых в данных
+   обозначается кодом «отп», а не пустотой). */
+const planHasGaps = dr => DAYS.some(r=>!cget(dr,'plan',r));
+function planFilledUntil(dr){
+  for(let mi=MK.length-1; mi>=0; mi--){
+    const mk=MK[mi], arr=(dr.plan||{})[mk]||[];
+    for(let i=arr.length-1;i>=0;i--) if(arr[i]) return `${String(i+1).padStart(2,'0')}.${mk.slice(5,7)}`;
+  }
+  return null;
+}
 function renderGrid(){
   DAYS=daysSel();
   const layer=document.getElementById('fLayer').value;
@@ -576,6 +587,9 @@ function renderGrid(){
   const bad=issues(DAYS,set);
   if(document.getElementById('fConf').checked)
     set=set.filter((r,i)=>Object.keys(bad).some(k=>+k.split(':')[0]===i));
+  const fullSet=set;
+  if(document.getElementById('fUnplanned')?.checked)
+    set=set.filter(planHasGaps);
   view=set;
   const occ=occupancy(DAYS,S.drv);
   const hands=handovers(DAYS,occ);
@@ -599,7 +613,10 @@ function renderGrid(){
     ['Водителей с переработкой', overTotal.men, overTotal.men?'bad':''],
     ['С опозданием',late, late?'bad':''],
     ['Без отметки П',noP, noP?'bad':''],
-    ['Нарушений',Object.keys(bad).length, Object.keys(bad).length?'bad':'']];
+    ['Нарушений',Object.keys(bad).length, Object.keys(bad).length?'bad':''],
+    (()=>{ const total=fullSet.length;
+      const done=fullSet.filter(d=>!planHasGaps(d)).length;
+      return ['Расписан план (период)', done+' из '+total, done<total?'bad':'']; })()];
   document.getElementById('kpis').innerHTML=kp.map(([l,v,c])=>
     `<div class="kpi ${c}"><b>${v}</b><span>${l}</span></div>`).join('');
 
@@ -693,7 +710,12 @@ function renderGrid(){
             `<td class="fix" style="left:${LEFT[0]}px">${t?t.tyagach:'<span class="tag">подмена</span>'}</td>`,
             `<td class="fix" style="left:${LEFT[1]}px" title="${drvTitle}">
                <input type="checkbox" class="pick" data-r="${ri}" ${selected.has(dr.id)?'checked':''}>
-               ${dr.vac? '<span class="vac">потребность</span> <button data-act="fillvac" data-id="'+dr.id+'" title="вписать водителя, сохранив расписанные дни">закрыть</button>' : dr.fio}</td>`,
+               ${dr.vac? '<span class="vac">потребность</span> <button data-act="fillvac" data-id="'+dr.id+'" title="вписать водителя, сохранив расписанные дни">закрыть</button>' : dr.fio}${(()=>{
+                 const until=planFilledUntil(dr);
+                 if(!planHasGaps(dr)) return `<span class="pfill ok" title="план заполнен на весь видимый период${until?' · расписан до '+until:''}">✓</span>`;
+                 return until? `<span class="pfill part" title="в видимом периоде есть пустые дни плана; последняя запись — ${until}">→${until}</span>`
+                             : `<span class="pfill none" title="план пуст — строка не расписана">пуст</span>`;
+               })()}</td>`,
             `<td class="fix" style="left:${LEFT[2]}px"><select class="inline" data-act="rez" data-id="${dr.id}">
                ${REZ.map(r=>`<option ${dr.rezhim===r?'selected':''}>${r||'—'}</option>`).join('')}</select></td>`,
             `<td class="fix ${lim&&run>lim?'over':''}" style="left:${LEFT[3]}px">${run||''}</td>`,
@@ -1204,7 +1226,7 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   if(t.dataset.pane==='sum') renderSum();
   if(t.dataset.pane==='log') renderLog();
 });
-['fFilial','fMonth','fLayer','fView','fSearch','fVac','fGap','fConf'].forEach(id=>
+['fFilial','fMonth','fLayer','fView','fSearch','fVac','fGap','fConf','fUnplanned'].forEach(id=>
   document.getElementById(id).addEventListener('input',renderGrid));
 ['xFilial','xSearch','xFree'].forEach(id=>
   document.getElementById(id).addEventListener('input',renderFix));
