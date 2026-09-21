@@ -1553,3 +1553,11 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .drv-band.drv-period { background: rgb(63 138 120 / 22%); border-color: rgb(63 138 120 / 45%); }
 .drv-band.drv-gap { color: var(--bad); border-color: var(--bad); font-weight: 700;
   background: repeating-linear-gradient(45deg, rgb(180 95 82 / 25%) 0 6px, rgb(180 95 82 / 10%) 6px 12px); }
+
+/* Главная руководителя: первый экран «Эксплуатация» (21.09). */
+.boss-viewbar { display: flex; gap: 6px; margin: 4px 0 8px; }
+.ops-now { background: color-mix(in srgb, var(--teal) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--teal) 30%, transparent);
+  border-radius: 8px; padding: 7px 12px; font-size: 13px; margin-bottom: 8px; }
+#opsFrame { width: 100%; border: 1px solid var(--line); border-radius: 10px;
+  background: #fff; }

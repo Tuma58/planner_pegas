@@ -167,7 +167,7 @@ const esc = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&
 
 // HTML-страница отчёта: самодостаточная, графики SVG с подсказками,
 // светлая/тёмная тема, печать в PDF браузером.
-export function renderOpsReportHtml(data) {
+export function renderOpsReportHtml(data, theme = '') {
   const { park, days, revDays, tripDays, online, downtime, idleNow, late } = data;
   const T = park.total;
   const cars = h => (h / 24 / T.days).toFixed(1);
@@ -244,7 +244,7 @@ export function renderOpsReportHtml(data) {
   const clientRows = park.clients.map(c =>
     `<tr><td>${esc(c.name)}</td><td>${c.n}</td><td>${(c.rev / 1e6).toFixed(1)}</td></tr>`).join('');
 
-  return `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+  return `<!DOCTYPE html><html lang="ru"${theme ? ` data-theme="${theme}"` : ''}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Отчёт эксплуатации · планер · ${data.from} — ${data.to}</title>
 <style>
@@ -296,6 +296,7 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <div class="sub">Период ${data.from} — ${data.to} (конец не включается) · выручка без НДС по канону
  (наличные как есть, ИП ÷1,07, организации ÷1,22) · ${esc(park.canon)}</div>
 <form class="pick" method="get">
+  ${theme ? `<input type="hidden" name="theme" value="${theme}">` : ''}
   <label>с <input type="date" name="from" value="${data.from}"></label>
   <label>по <input type="date" name="to" value="${data.to}"></label>
   <button>Показать</button>

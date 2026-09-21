@@ -635,6 +635,8 @@ function runScheduleFactWatch() {
       const gatePct = Number(db.prepare(`SELECT value FROM app_meta
         WHERE key='schedule_gate_coverage'`).get()?.value || 85);
       const pct = covered / result.busyDays * 100;
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('schedule_coverage_last',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(pct.toFixed(0));
       const told = db.prepare(`SELECT value FROM app_meta
         WHERE key='schedule_gate_notified'`).get()?.value;
       if (pct >= gatePct && !told && result.busyDays >= 100) {
@@ -8836,6 +8838,32 @@ async function api(request, response, url) {
     audit(db, user, 'update', 'schedule', 'augment', report, requestIp(request));
     return json(response, 200, report);
   }
+  // «Прямо сейчас» для главной руководителя: в пути, без заказа и
+  // причины (поимённо), покрытие плана графика к гейту этапа 3.
+  if (request.method === 'GET' && pathname === '/api/ops-now') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const run = db.prepare(`SELECT COUNT(*) c FROM trips WHERE status='run'`).get().c;
+    const nowIso = new Date().toISOString();
+    const soonIso = new Date(Date.now() + 12 * 3.6e6).toISOString();
+    const idle = [];
+    for (const v of db.prepare(`SELECT id, plate FROM vehicles WHERE status='work'`).all()) {
+      const busy = db.prepare(`SELECT 1 FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
+          AND starts_at < ? AND (unloaded_at IS NULL OR unloaded_at > ?) LIMIT 1`)
+        .get(v.id, soonIso, nowIso);
+      if (busy) continue;
+      if (db.prepare(`SELECT 1 FROM vehicle_dispositions WHERE vehicle_id=?
+          AND starts_at < ? AND ends_at > ? LIMIT 1`).get(v.id, nowIso, nowIso)) continue;
+      const last = db.prepare(`SELECT unloaded_at FROM trips WHERE vehicle_id=?
+          AND unloaded_at IS NOT NULL ORDER BY unloaded_at DESC LIMIT 1`).get(v.id);
+      idle.push({ plate: v.plate, since: last ? String(last.unloaded_at).slice(5, 10) : '—' });
+    }
+    const coverage = Number(db.prepare(`SELECT value FROM app_meta
+        WHERE key='schedule_coverage_last'`).get()?.value || 0);
+    const gate = Number(db.prepare(`SELECT value FROM app_meta
+        WHERE key='schedule_gate_coverage'`).get()?.value || 85);
+    return json(response, 200, { run, idle, coverage, gate });
+  }
   // Лёгкое «кто я» — страница графика подставляет автора правок.
   if (request.method === 'GET' && pathname === '/api/whoami') {
     const user = requireUser(request, response);
@@ -9906,7 +9934,7 @@ export const server = http.createServer(async (request, response) => {
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Content-Security-Policy',
     // img-src: OSM-тайлы для карты «Мониторинга» (грузятся браузером напрямую).
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' https://telegram.org; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' https://telegram.org; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'");
   try {
     if (!networkAccessAllowed(request, url.pathname)) {
       return errorJson(response, 403, 'Подключение из вашей сети запрещено администратором');
@@ -9923,7 +9951,9 @@ export const server = http.createServer(async (request, response) => {
         from = monthFrom < today ? monthFrom : new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
         to = today;
       }
-      const html = Buffer.from(renderOpsReportHtml(opsReportData(db, from, to, parkReportData)));
+      const theme = ['light', 'dark'].includes(url.searchParams.get('theme'))
+        ? url.searchParams.get('theme') : '';
+      const html = Buffer.from(renderOpsReportHtml(opsReportData(db, from, to, parkReportData), theme));
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8',
         'Content-Length': html.length, 'Cache-Control': 'no-cache' });
       return response.end(html);

@@ -60,6 +60,43 @@ const tripNet = (trip, calc) => trip.revenue_vat / (1 + (trip.cash ? 0 : /(?<![\
 
 export async function renderBoss(container, context) {
   const { state } = context;
+  // Главная руководителя (конструкция утверждена 21.09): первый экран —
+  // «Эксплуатация» (строка «прямо сейчас» + отчёт за период), прежние
+  // показатели периода целиком живут во втором виде, ничего не потеряно.
+  if ((state.bossView || 'ops') === 'ops') {
+    container.innerHTML = `<div class="boss-viewbar">
+        <button class="button small" id="bossViewOps">📊 Эксплуатация</button>
+        <button class="button ghost small" id="bossViewClassic">📈 Показатели периода</button>
+      </div>
+      <div class="ops-now" id="opsNow">⏳ прямо сейчас: считаю…</div>
+      <iframe id="opsFrame" title="Отчёт эксплуатации"></iframe>`;
+    container.querySelector('#bossViewClassic').onclick = () => {
+      state.bossView = 'classic';
+      renderBoss(container, context);
+    };
+    const frame = container.querySelector('#opsFrame');
+    const appTheme = document.documentElement.dataset.theme ||
+      (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    frame.src = `/ops-report?theme=${appTheme}`;
+    const fit = () => { frame.style.height = `${Math.max(700, window.innerHeight - frame.getBoundingClientRect().top - 14)}px`; };
+    fit();
+    const nowBox = container.querySelector('#opsNow');
+    const refreshNow = async () => {
+      if (!nowBox.isConnected) return;
+      try {
+        const now = await api('/api/ops-now');
+        const idleTxt = now.idle.length
+          ? `⚠ без заказа и причины: <b>${now.idle.length}</b> (${now.idle.slice(0, 5)
+            .map(item => `${item.plate} с ${item.since}`).join(', ')}${now.idle.length > 5 ? '…' : ''})`
+          : '✅ без заказа и причины: 0';
+        nowBox.innerHTML = `Прямо сейчас: в пути <b>${now.run}</b> · ${idleTxt}` +
+          ` · график: покрытие плана <b>${now.coverage}%</b> (гейт этапа 3 — ${now.gate}%)`;
+      } catch { nowBox.textContent = 'прямо сейчас: нет данных'; }
+      setTimeout(refreshNow, 60_000);
+    };
+    refreshNow();
+    return;
+  }
   const monthIso = state.month.toISOString().slice(0, 10);
   const nextMonth = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
   const from = state.bossFrom || monthIso;
@@ -359,8 +396,8 @@ export async function renderBoss(container, context) {
           title="Реестр самообучающихся процессов: имена, что каждый учит, текущее выученное значение, кламп и где смотреть дрейф">🧠 Живые нормативы</button>
         <button class="button ghost small" id="bossInventory"
           title="Инвентаризация всех процессов: ресурс (дубли прицепов, забытые машины, висящие рейсы, дыры по водителям) + заявки с ошибочными датами, застрявшие стадии, дыры адресов">🧾 Инвентаризация</button>
-        <button class="button small" id="bossOpsReport"
-          title="Отчёт эксплуатации за период: показатели КОЛИЧЕСТВОМ машин (КТГ/КВЛ/КИП), простой по причинам, опоздания на погрузку и выгрузку, живые графики. Ежедневная выжимка приходит в Telegram в 07:15">📊 Отчёт эксплуатации</button>
+        <button class="button small" id="bossViewOpsBack"
+          title="Вернуться на первый экран: отчёт эксплуатации со строкой «прямо сейчас»">📊 Эксплуатация</button>
         <button class="button ghost small" id="bossParkPlanner"
           title="Эксплуатация парка ИЗ ДАННЫХ ПЛАНЕРА за период: каскад КТГ/КВЛ/КИП по единому канону, недели, клиенты, сценарии к плану — печать в PDF, 1С не требуется">🏭 Эксплуатация (планер)</button>
         <button class="button ghost small" id="bossParkReport"
@@ -563,7 +600,10 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossRingLoad').onclick = () => ringLoadDialog(context);
   container.querySelector('#bossSelfTuning').onclick = () => selfTuningDialog(context);
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
-  container.querySelector('#bossOpsReport').onclick = () => window.open('/ops-report', '_blank');
+  container.querySelector('#bossViewOpsBack').onclick = () => {
+    state.bossView = 'ops';
+    renderBoss(container, context);
+  };
   container.querySelector('#bossParkPlanner').onclick = () => plannerParkDialog(context);
   wireRangePicker(container, 'bossFrom', 'bossTo', (a, b) => {
     state.bossFrom = a;
