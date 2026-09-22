@@ -801,7 +801,12 @@ function renderMain() {
   if (isGantt) {
     renderTimeline();
   } else if (state.view === 'boss') {
-    byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
+    // Щит iframe (жалоба 22.09): тик автообновления затирал живой отчёт
+    // эксплуатации плейсхолдером — слетали выбранные внутри период и
+    // тема. Ops-вид уже живёт — renderBoss сам выйдет, не трогая iframe.
+    if (!byId('timeline').querySelector('#opsFrame')) {
+      byId('timeline').innerHTML = '<div class="empty-state">Загрузка отчёта…</div>';
+    }
     renderBoss(byId('timeline'), { state, can, onReload: reload, openReport, showModal, closeModal });
   } else if (state.view === 'sales') {
     renderSales(byId('timeline'), {

@@ -25,6 +25,7 @@ import {
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge } from './schedule.mjs';
 import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
+import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
@@ -10142,6 +10143,26 @@ export const server = http.createServer(async (request, response) => {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8',
         'Content-Length': html.length, 'Cache-Control': 'no-cache' });
       return response.end(html);
+    }
+    // PDF-файл отчёта эксплуатации (заказ 22.09): скачивается сразу,
+    // без диалога печати; собирается pdf-lite из того же канона данных.
+    else if (url.pathname === '/ops-report/pdf') {
+      const user = currentUser(request);
+      if (!user) { response.writeHead(302, { Location: '/' }); return response.end(); }
+      const today = new Date().toISOString().slice(0, 10);
+      const monthFrom = `${today.slice(0, 7)}-01`;
+      let from = String(url.searchParams.get('from') || (monthFrom < today ? monthFrom : today)).slice(0, 10);
+      let to = String(url.searchParams.get('to') || today).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+        from = monthFrom < today ? monthFrom : new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
+        to = today;
+      }
+      const pdf = renderOpsReportPdf(opsReportData(db, from, to, parkReportData));
+      const disposition = url.searchParams.get('inline') ? 'inline' : 'attachment';
+      response.writeHead(200, { 'Content-Type': 'application/pdf',
+        'Content-Length': pdf.length, 'Cache-Control': 'no-cache',
+        'Content-Disposition': `${disposition}; filename="ops-report_${from}_${to}.pdf"` });
+      return response.end(pdf);
     }
     else if (url.pathname === '/schedule') privatePage(request, response, 'schedule.html');
     else if (url.pathname === '/schedule.js') privatePage(request, response, 'schedule.js');

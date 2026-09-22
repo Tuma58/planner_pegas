@@ -64,6 +64,11 @@ export async function renderBoss(container, context) {
   // «Эксплуатация» (строка «прямо сейчас» + отчёт за период), прежние
   // показатели периода целиком живут во втором виде, ничего не потеряно.
   if ((state.bossView || 'ops') === 'ops') {
+    // Щит iframe (жалоба руководителя 22.09): тик автообновления звал
+    // renderBoss заново, iframe пересоздавался — слетали выбранные внутри
+    // отчёта период и тема. Вид уже живёт — не трогаем DOM вовсе (даже
+    // перенос узла iframe перезагружает его содержимое).
+    if (container.querySelector('#opsFrame')) return;
     container.innerHTML = `<div class="boss-viewbar">
         <button class="button small" id="bossViewOps">📊 Эксплуатация</button>
         <button class="button ghost small" id="bossViewClassic">📈 Показатели периода</button>

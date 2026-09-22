@@ -3228,4 +3228,14 @@ test('эксплуатация: динамика КТГ/КВЛ/КИП по дн�
   assert.ok(Math.abs(sum(W.rev) - sum(D.rev)) < 0.05, 'выручка недель = сумме дней');
   assert.equal(W.labels.length, 1, '10–14.03 — одна неделя (пн–вс)');
   assert.equal(W.kip[0], 50, 'недельный КИП из тех же часов');
+  // PDF-версия отчёта: валидная структура, кириллический шрифт встроен.
+  const { renderOpsReportPdf } = await import('../src/ops-report-pdf.mjs');
+  const pdf = renderOpsReportPdf(data);
+  assert.ok(pdf.length > 100_000, 'PDF со встроенным шрифтом не пустой');
+  assert.equal(pdf.subarray(0, 5).toString(), '%PDF-', 'заголовок PDF');
+  assert.ok(pdf.subarray(-6).toString().includes('%%EOF'), 'концовка PDF');
+  const text = pdf.toString('latin1');
+  assert.ok((text.match(/\/Type \/Page[^s]/g) || []).length >= 1, 'есть страницы');
+  assert.ok(text.includes('/FontFile2'), 'шрифт встроен');
+  assert.ok(text.includes('/ToUnicode'), 'текст копируемый');
 });

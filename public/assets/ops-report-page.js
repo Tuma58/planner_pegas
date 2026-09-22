@@ -4,15 +4,13 @@
 (() => {
   'use strict';
 
-  // Тема: параметр ?theme= (его передаёт iframe планера) приоритетнее;
-  // без параметра — запомненный выбор, иначе системная.
+  // Тема: запомненный выбор пользователя главнее параметра ?theme= из
+  // iframe планера (жалоба 22.09: перерисовка главной сбрасывала тёмную
+  // тему отчёта). Параметр остаётся стартовым дефолтом до первого выбора.
   try {
-    const q = new URLSearchParams(location.search).get('theme');
-    if (!q) {
-      const saved = localStorage.getItem('opsTheme');
-      if (saved) document.documentElement.dataset.theme = saved;
-    }
-  } catch { /* приватный режим без localStorage — остаёмся на системной */ }
+    const saved = localStorage.getItem('opsTheme');
+    if (saved) document.documentElement.dataset.theme = saved;
+  } catch { /* приватный режим без localStorage — тема из параметра/системная */ }
 
   document.addEventListener('DOMContentLoaded', () => {
     // Подсказки у точек и столбцов графиков.
@@ -56,8 +54,13 @@
       });
     }
 
-    // Сохранение в PDF — системный диалог печати браузера.
+    // Скачивание PDF-файла с сервера (заказ 22.09: сразу файл на
+    // компьютер, а не диалог печати); печать по-прежнему через Ctrl+P.
     const pdfBtn = document.getElementById('pdfBtn');
-    if (pdfBtn) pdfBtn.addEventListener('click', () => window.print());
+    if (pdfBtn) pdfBtn.addEventListener('click', () => {
+      const from = document.querySelector('.pick input[name="from"]')?.value || '';
+      const to = document.querySelector('.pick input[name="to"]')?.value || '';
+      window.location.assign(`/ops-report/pdf?from=${from}&to=${to}`);
+    });
   });
 })();

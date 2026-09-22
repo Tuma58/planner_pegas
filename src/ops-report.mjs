@@ -274,13 +274,17 @@ export function renderOpsReportHtml(data, theme = '') {
     }
     return s;
   };
+  // Подпись значения (заказ 22.09 «показатели в цифрах на графиках»):
+  // короткий формат, чтобы влезало над узким столбцом/точкой.
+  const fmtVal = v => Math.abs(v) >= 20 ? String(Math.round(v)) : String(+(+v).toFixed(1));
   const barsSvg = (vals, axis, tips, color, unit, step = 2) => {
-    const mx = Math.max(...vals, 0.001) * 1.12;
+    const mx = Math.max(...vals, 0.001) * 1.18;
     const bw = (W - PL - PR) / vals.length;
     let s = grid(mx);
     vals.forEach((v, i) => {
       const h = plotH * v / mx;
-      s += `<rect x="${(PL + i * bw + 1).toFixed(1)}" y="${(H - PB - h).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${color}" data-tip="${tips[i]}: ${v}${unit}"/>`;
+      s += `<rect x="${(PL + i * bw + 1).toFixed(1)}" y="${(H - PB - h).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${color}" data-tip="${tips[i]}: ${v}${unit}"/>` +
+        `<text x="${(PL + i * bw + bw / 2).toFixed(0)}" y="${(H - PB - h - 4).toFixed(0)}" text-anchor="middle" class="val" font-size="9.5">${fmtVal(v)}</text>`;
       if (i % step === 0) s += `<text x="${(PL + i * bw + bw / 2).toFixed(0)}" y="${H - PB + 14}" text-anchor="middle">${axis[i]}</text>`;
     });
     return `<svg viewBox="0 0 ${W} ${H}" width="100%">${s}</svg>`;
@@ -289,6 +293,10 @@ export function renderOpsReportHtml(data, theme = '') {
     const mx = ymax || Math.max(...series.flat(), 1) * 1.15;
     const n = series[0].length;
     const dx = (W - PL - PR) / Math.max(1, n - 1);
+    // Подписи значений: на каждой точке, пока просторно, иначе с шагом
+    // оси; чётные серии подписываются над точкой, нечётные — под, чтобы
+    // близкие линии не слепляли цифры.
+    const labelStep = n > 16 ? step : 1;
     let s = grid(mx);
     series.forEach((vals, si) => {
       const pts = vals.map((v, i) => `${(PL + i * dx).toFixed(1)},${(H - PB - plotH * v / mx).toFixed(1)}`).join(' ');
@@ -298,6 +306,9 @@ export function renderOpsReportHtml(data, theme = '') {
         const cy = (H - PB - plotH * v / mx).toFixed(1);
         s += `<circle cx="${cx}" cy="${cy}" r="8" fill="transparent" data-tip="${tips[i]} · ${names[si]}: ${v}${unit}"/>` +
           `<circle cx="${cx}" cy="${cy}" r="3" fill="${colors[si]}" stroke="var(--surface-1)" stroke-width="2" pointer-events="none"/>`;
+        if (i % labelStep === 0) {
+          s += `<text x="${cx}" y="${(Number(cy) + (si % 2 ? 16 : -7)).toFixed(0)}" text-anchor="middle" class="val" font-size="9.5" pointer-events="none">${fmtVal(v)}</text>`;
+        }
       });
     });
     return `<svg viewBox="0 0 ${W} ${H}" width="100%">${s + xLabels(axis, step)}</svg>`;
@@ -410,7 +421,7 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
   <label>по <input type="date" name="to" value="${data.to}"></label>
   <button>Показать</button>
   <button type="button" id="themeBtn">🌙 Тёмная</button>
-  <button type="button" id="pdfBtn">💾 Сохранить в PDF</button>
+  <button type="button" id="pdfBtn">💾 Скачать PDF</button>
 </form>
 <div class="tiles">
 <div class="tile"><span>Выручка без НДС</span><b>${(T.rev / 1e6).toFixed(1)} млн</b><small>${T.trips} рейсов за ${T.days} дн</small></div>
