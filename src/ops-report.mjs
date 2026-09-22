@@ -151,7 +151,11 @@ export function dailyOpsText(db, parkFn) {
   const lines = [
     `📊 Эксплуатация за ${y.slice(8, 10)}.${y.slice(5, 7)} (планер)`,
     `Выручка без НДС: ${fmtM(T.rev)} млн · рейсов ${T.trips} · месяц к дате: ${fmtM(M.rev)} млн`,
-    `Парк ${T.fleet}: на линии ${day.avgOnline} маш · под грузом ~${(day.avgOnline * M.kip / 100).toFixed(0)} маш (КИП мес ${M.kip}%) · техготовность ${(T.fleet - day.downtime.repair.avg).toFixed(0)} маш (КТГ мес ${M.ktg}%)`,
+    (() => {
+      const ktgCars = T.fleet - day.downtime.repair.avg;
+      const kvlDay = ktgCars ? Math.round(day.avgOnline / ktgCars * 100) : 0;
+      return `Парк ${T.fleet}: техготовность ${ktgCars.toFixed(0)} маш (КТГ ${Math.round(ktgCars / T.fleet * 100)}%) · на линии ${day.avgOnline} маш (КВЛ ${kvlDay}%) · под грузом ~${(day.avgOnline * M.kip / 100).toFixed(0)} маш (КИП мес ${M.kip}%)`;
+    })(),
     `Простой: ремонт ${day.downtime.repair.avg} · без водителя ${day.downtime.no_driver.avg} · пересменка ${day.downtime.shift.avg} · без причины ${day.downtime.no_reason.avg} маш/сут`,
     `Опоздания >1ч: погрузка ${day.late.P.late1}/${day.late.P.n} · выгрузка ${day.late.D.late1}/${day.late.D.n}` +
       (day.late.D.top[0] ? ` · чаще всех ждал: ${day.late.D.top[0].name}` : ''),

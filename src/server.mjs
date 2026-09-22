@@ -830,7 +830,13 @@ function runDailyFleetReport() {
     }
     const rubShort = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
     const pctShort = value => `${Math.round((value || 0) * 100)}%`;
-    const u = snap.utilization || {};
+    // Единый канон с «📊 Эксплуатацией» (решение руководителя 22.09
+    // «добьёмся точности»): те же формулы parkReportData/opsReportData,
+    // показатели в машинах и процентах, без внутренних противоречий.
+    const ops = opsReportData(db, dayIso, todayIso, parkReportData);
+    const T = ops.park.total;
+    const ktgCars = T.fleet - ops.downtime.repair.avg;
+    const kvlDay = ktgCars ? ops.avgOnline / ktgCars : 0;
     const dayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
       .format(new Date(`${dayIso}T12:00:00Z`));
     // Смена продаж и план дня: внесено/назначено, средний чек, выполнение
@@ -850,19 +856,21 @@ function runDailyFleetReport() {
     const daysInMonth = new Date(Date.UTC(dayDate.getUTCFullYear(), dayDate.getUTCMonth() + 1, 0)).getUTCDate();
     const remainingFromDay = daysInMonth - dayDate.getUTCDate() + 1;
     const dayPlan = Math.max(0, (monthPlan - factBefore) / Math.max(1, remainingFromDay));
-    const tripsDone = db.prepare(`SELECT COUNT(*) c FROM trips
-      WHERE status<>'rejected' AND ends_at>=? AND ends_at<?`)
-      .get(`${dayIso}T00:00:00.000Z`, `${todayIso}T00:00:00.000Z`).c;
-    const avgCheck = tripsDone ? (snap.netRevenue || 0) / tripsDone : 0;
-    notifyEveryone(`📆 Отчёт дня за ${dayLabel}: парк ${fleet.length} · в рейсе ${inTrip.size}` +
-      ` (${pctShort(inTrip.size / (fleet.length || 1))}) · простой без причины ${idlePlates.length}` +
+    const avgCheck = 0; // считается ниже от канонических выгрузок дня
+    notifyEveryone(`📆 Отчёт дня за ${dayLabel}: парк ${T.fleet}` +
+      ` · работали за день ${inTrip.size} машин · на линии среднесуточно ${ops.avgOnline}` +
+      ` · простой без причины ${idlePlates.length}` +
       `${idlePlates.length ? ` (${idlePlates.slice(0, 6).join(', ')}${idlePlates.length > 6 ? '…' : ''})` : ''}` +
-      ` · ремонт ${counts.repair}, пересм. ${counts.shift}, без вод. ${counts.no_driver}, резерв ${counts.reserve}` +
-      ` · выручка бНДС ${rubShort(snap.netRevenue)} · пробег ${Math.round(snap.loadedKm || 0)} км` +
+      ` · простой ср-сут: ремонт ${ops.downtime.repair.avg}, пересм. ${ops.downtime.shift.avg},` +
+      ` без вод. ${ops.downtime.no_driver.avg}, резерв ${ops.downtime.reserve.avg}` +
+      ` · выручка бНДС ${rubShort(T.rev)} (${T.trips} выгрузок)` +
+      ` · пробег ${Math.round(snap.loadedKm || 0)} км` +
       ` + ${Math.round(snap.emptyKm || 0)} порожних (${pctShort(snap.emptyRatio)})` +
-      ` · КТГ ${pctShort(u.ktg)} · КВЛ ${pctShort(u.kvl)} · КИП ${pctShort(u.kip)}` +
-      ` · план дня ${rubShort(dayPlan)} — выполнение ${Math.round((snap.netRevenue || 0) / (dayPlan || 1) * 100)}%` +
-      ` · ср. чек ${rubShort(avgCheck)} · смена: внесено ${created.c} заявок на ${rubShort(created.s)}, назначено ${assignedCount}` +
+      ` · КТГ ${ktgCars.toFixed(1)} маш (${pctShort(ktgCars / T.fleet)})` +
+      ` · КВЛ ${ops.avgOnline} маш (${pctShort(kvlDay)})` +
+      ` · КИП ${(ops.avgOnline * T.kip / 100).toFixed(1)} маш (${T.kip}% по закрытым)` +
+      ` · план дня ${rubShort(dayPlan)} — выполнение ${Math.round((T.rev || 0) / (dayPlan || 1) * 100)}%` +
+      ` · ср. чек ${rubShort(T.trips ? T.rev / T.trips : 0)} · смена: внесено ${created.c} заявок на ${rubShort(created.s)}, назначено ${assignedCount}` +
       (() => {
         // Явка водителей за вчера: вышло/невыход по причинам/не отмечено.
         const att = attendanceSummary(db, dayIso);
