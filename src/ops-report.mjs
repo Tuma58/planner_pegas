@@ -18,6 +18,11 @@ const dayList = (from, to) => {
 };
 
 export function opsReportData(db, from, to, parkFn) {
+  // Будущие дни — не машино-дни: период обрезается по «завтра» (сегодня
+  // входит целиком), иначе нулевой хвост будущего занижает линию и
+  // раздувает «без причины». Полностью будущий период не трогаем.
+  const cap = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  if (to > cap && cap > from) to = cap;
   const park = parkFn(from, to);
   const days = dayList(from, to);
   const T = park.total;

@@ -109,6 +109,34 @@ export async function renderBoss(container, context) {
     return;
   }
   const u = report.utilization;
+  // Канон (решение руководителя 22.09): каскад, состав машино-дней и
+  // средние — те же цифры, что «Отчёт эксплуатации» и утренние сводки.
+  // Переопределяем поля до использования — все формулы ниже наследуют.
+  if (report.canon) {
+    const C = report.canon;
+    const fleetN = C.total.fleet || u.vehicles;
+    const days = C.total.days || u.days || 1;
+    const techAvg = Math.max(0, fleetN - C.downtime.repair.avg - C.downtime.out.avg);
+    const kipShare = (C.total.kip || 0) / 100;
+    u.vehicles = fleetN;
+    u.days = days;
+    u.futureDays = Math.max(0, (u.periodDays || days) - days);
+    u.calendarDays = fleetN * days;
+    u.techDays = techAvg * days;
+    u.lineDays = C.avgOnline * days;
+    u.workDays = C.avgOnline * kipShare * days;
+    u.ktg = fleetN ? techAvg / fleetN : 0;
+    u.kvl = techAvg ? C.avgOnline / techAvg : 0;
+    u.kip = kipShare;
+    u.machineDays = {
+      work: Math.round(u.workDays),
+      idle: Math.round(C.downtime.no_reason.avg * days),
+      noDriver: Math.round(C.downtime.no_driver.avg * days),
+      shift: Math.round(C.downtime.shift.avg * days),
+      repair: Math.round(C.downtime.repair.avg * days),
+      out: Math.round(C.downtime.out.avg * days)
+    };
+  }
   const md = u.machineDays;
   const calc = state.data.settings.calculation;
   const planPeriod = monthOf(from);

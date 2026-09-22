@@ -9516,7 +9516,16 @@ async function api(request, response, url) {
     const from = /^\d{4}-\d{2}$/.test(start) ? `${start}-01` : start;
     const base = new Date(`${from}T00:00:00.000Z`);
     const defaultTo = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1)).toISOString();
-    return json(response, 200, reportSnapshot(db, from, url.searchParams.get('to') || defaultTo));
+    const toValue = url.searchParams.get('to') || defaultTo;
+    const snap = reportSnapshot(db, from, toValue);
+    // Канон для каскада «Показателей периода» (решение руководителя 22.09):
+    // те же цифры, что в «Отчёте эксплуатации» и утренних сводках.
+    try {
+      snap.canon = (({ park, avgOnline, downtime }) =>
+        ({ total: park.total, avgOnline, downtime }))(
+        opsReportData(db, String(from).slice(0, 10), String(toValue).slice(0, 10), parkReportData));
+    } catch { /* канон не собрался — экран покажет прежние цифры */ }
+    return json(response, 200, snap);
   }
   // Явка водителей (контур ОУВ): список на день и отметка с классификацией
   // причин невыхода. Отмечает ресурс (право fleet:write), смотрят все.
