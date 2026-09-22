@@ -19,10 +19,25 @@ export function resolveZone(db, value) {
 // (по 2 ч), сумма × 1,5 — запас включает отдых водителя, после ends_at
 // сцепка готова к следующему рейсу.
 export function transitHours(distanceKm, calculation = {}, operations = 2) {
+  const km = Number(distanceKm || 0);
+  const live = calculation.liveSpeeds;
+  if (live && (live.vroad || live.mid)) {
+    // Живой транзит (этап 2 проекта «Скорости», 22.09): дорожная
+    // скорость из отметок парка по дальности плеча (короткое — город,
+    // дальнее — трасса; отдых уже внутри медиан), ворота — средние
+    // живые, поверх — только запас надёжности обещания (рычаг
+    // руководителя transitReservePct; ноль — осознанное «без запаса»).
+    const speed = (km < 200 ? live.short : km <= 600 ? live.mid : live.long)
+      || live.vroad || live.mid;
+    const perOperation = live.gateH || Number(calculation.handlingHoursPerOperation || 2);
+    const reserve = 1 + Math.max(0, Number(calculation.transitReservePct ?? 10)) / 100;
+    return (km / speed + operations * perOperation) * reserve;
+  }
+  // Скорости ещё не выучены — прежняя формула из настроек калькуляции.
   const speed = Number(calculation.techSpeedKmh || 50);
   const perOperation = Number(calculation.handlingHoursPerOperation || 2);
   const factor = Number(calculation.transitFactor || 1.5);
-  return (Number(distanceKm || 0) / speed + operations * perOperation) * factor;
+  return (km / speed + operations * perOperation) * factor;
 }
 
 function routeDistance(db, fromId, toId) {

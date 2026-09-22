@@ -12,7 +12,7 @@
 //
 // Поэтому считаем честный дедлайн: окно погрузки минус подгон ближайшей
 // свободной машины минус время на подготовку выхода.
-import { formatDateTime } from './api.js';
+import { formatDateTime, transitHours } from './api.js';
 import { plannedKmBetween, resolveAddress } from './sales.js';
 
 // Подготовка выхода: внести в 1С, передать задание водителю, вывести на
@@ -77,8 +77,9 @@ export function feedHoursFor(data, order, nowMs = Date.now(), points = null) {
     if (best == null || km < best) best = km;
   }
   if (best == null) return DEFAULT_FEED_HOURS;
-  // Та же формула, что у транзита: 50 км/ч с коэффициентом 1,5 на отдых.
-  return Math.max(0.5, (best / 50) * 1.5);
+  // Живой транзит с 0 операций: подгон порожняком по выученной скорости
+  // с запасом руководителя; фолбэк — прежние 50 км/ч × 1,5.
+  return Math.max(0.5, transitHours(best, data.settings?.calculation || {}, 0));
 }
 
 // Дедлайн назначения и остаток времени до него. Для списка заявок

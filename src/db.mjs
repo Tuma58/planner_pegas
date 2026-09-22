@@ -643,6 +643,14 @@ function migrateColumns(db) {
       db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
         .run(JSON.stringify(calculation));
     }
+    // Запас надёжности обещаний, % (этап 2 проекта «Скорости», 22.09):
+    // рычаг руководителя поверх живого транзита; ноль — осознанное
+    // «без запаса», дефолт подставляется только вместо пустоты.
+    if (calculation.transitReservePct == null) {
+      calculation.transitReservePct = 10;
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
+        .run(JSON.stringify(calculation));
+    }
   }
   // Нормативы простоя под погрузкой/выгрузкой: бесплатный порог 8 ч от
   // планового времени операции, сверх — счёт клиенту по тарифу за начатый час.

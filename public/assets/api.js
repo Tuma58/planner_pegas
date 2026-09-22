@@ -402,14 +402,26 @@ export function attachSearch(input, apply, delay = 250) {
   };
 }
 
-// Транзитное время рейса, часов: (км ÷ 50 км/ч + 2 операции × 2 ч) × 1,5.
-// Формула совпадает с серверной (transitHours в planner-service.mjs);
-// коэффициент включает отдых водителя — после рейса сцепка готова к новому.
+// Транзитное время рейса, часов. Формула совпадает с серверной
+// (transitHours в planner-service.mjs). С 22.09 живая: сервер подмешивает
+// в settings.calculation.liveSpeeds выученные дорожные скорости по
+// дальности плеча (отдых уже в медианах) и средние ворота; поверх —
+// запас надёжности руководителя (transitReservePct, ноль осознан).
+// Фолбэк, пока скорости не выучены: (км ÷ 50 + операции × 2 ч) × 1,5.
 export function transitHours(distanceKm, calculation = {}, operations = 2) {
+  const km = Number(distanceKm || 0);
+  const live = calculation.liveSpeeds;
+  if (live && (live.vroad || live.mid)) {
+    const speed = (km < 200 ? live.short : km <= 600 ? live.mid : live.long)
+      || live.vroad || live.mid;
+    const perOperation = live.gateH || Number(calculation.handlingHoursPerOperation || 2);
+    const reserve = 1 + Math.max(0, Number(calculation.transitReservePct ?? 10)) / 100;
+    return (km / speed + operations * perOperation) * reserve;
+  }
   const speed = Number(calculation.techSpeedKmh || 50);
   const perOperation = Number(calculation.handlingHoursPerOperation || 2);
   const factor = Number(calculation.transitFactor || 1.5);
-  return (Number(distanceKm || 0) / speed + operations * perOperation) * factor;
+  return (km / speed + operations * perOperation) * factor;
 }
 
 export function formValues(form) {

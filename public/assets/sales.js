@@ -689,8 +689,10 @@ export function matchVehicles(data, fromZoneName, windowFrom, fromAddress = null
       // Порожний подгон: от позиции сцепки до точки погрузки (адрес, город
       // из текста или центр зоны — насколько хватает точности данных).
       const emptyKm = plannedKmBetween(zoneCenterFallback({ ...place, zoneName }), loadPlace);
-      // Готовность к подаче: 2 ч + время подгона (порожние км ÷ 50 км/ч).
-      const feedMs = DISPATCH_LAG_MS + (emptyKm ? emptyKm / 50 * 3_600_000 : 0);
+      // Готовность к подаче: 2 ч + подгон живым транзитом (0 операций —
+      // дорога порожняком по выученной скорости с запасом руководителя).
+      const feedMs = DISPATCH_LAG_MS +
+        (emptyKm ? transitHours(emptyKm, data.settings?.calculation || {}, 0) * 3_600_000 : 0);
       const readyAt = lastTrip ? tripBusyUntilMs(lastTrip) + feedMs : null;
       // Сцепка ещё едет (факта выгрузки нет) — освобождение расчётное, риск опоздания.
       const stillRunning = Boolean(lastTrip && (lastTrip.status === 'plan' || lastTrip.status === 'run'));

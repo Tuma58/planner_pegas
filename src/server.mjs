@@ -89,6 +89,11 @@ function plannerSettings() {
   // bodyCompat — совместимость кузовов автоподбора: клиент («Потоки»,
   // подсказки назначения) обязан фильтровать теми же правилами, что сервер.
   const { telegram, ...rest } = settings;
+  // Живой пакет скоростей — фронту: transitHours в карточках продаж,
+  // хвосты подгона и дедлайны назначения считают тем же каноном, что
+  // сервер (этап 2 проекта «Скорости»).
+  const liveSpeeds = liveSpeedNorms()?.live;
+  if (liveSpeeds) rest.calculation = { ...rest.calculation, liveSpeeds };
   return { ...rest, bodyCompat: BODY_COMPAT,
     telegram: { enabled: Boolean(telegram?.botToken), botName: telegram?.botName || '' },
     telephony: telephony
@@ -2812,10 +2817,14 @@ function rebuildLegFacts() {
 // учат нормативы. Кламп отверг значение — работает прежнее, и это
 // видно в логе. Хранение: app_meta speed_norms, дрейф — «📐 Нормативы
 // недели» и отчёт «Скорости парка».
-const SPEED_CLAMPS = { vt: [40, 75], ve: [12, 35], vroad: [20, 60] };
+const SPEED_CLAMPS = { vt: [40, 75], ve: [12, 35], vroad: [20, 60],
+  short: [15, 45], mid: [25, 60], long: [30, 65] };
+// Диапазоны дальности плеча: короткое — город и манёвры, дальнее — трасса.
+const SPEED_RANGE = km => km < 200 ? 'short' : km <= 600 ? 'mid' : 'long';
 function rebuildSpeedNorms() {
   try {
     const median = list => { list.sort((a, b) => a - b); return list[Math.floor(list.length / 2)]; };
+    const quantile = (list, q) => { list.sort((a, b) => a - b); return list[Math.min(list.length - 1, Math.floor(list.length * q))]; };
     const prev = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='speed_norms'`)
       .get()?.value || 'null');
     // Vт: скорость каждого машино-дня за 28 дн (правило отчёта скоростей:
@@ -2829,6 +2838,8 @@ function rebuildSpeedNorms() {
       }).filter(v => v > 5 && v < 110);
     const veList = [];
     const vroadList = [];
+    const byRange = { short: [], mid: [], long: [] };
+    const cleanTrips = [];
     let clean = 0;
     let total = 0;
     for (const trip of db.prepare(`SELECT t.distance_km km, t.starts_at, t.arrived_at, t.unloaded_at,
@@ -2851,7 +2862,13 @@ function rebuildSpeedNorms() {
       if (!(st <= parr && parr <= dep && dep <= arr && arr <= fin)) continue;
       clean += 1;
       const roadH = (arr - dep) / 3.6e6;
-      if (roadH >= 1 && km / roadH >= 10 && km / roadH <= 90) vroadList.push(km / roadH);
+      if (roadH >= 1 && km / roadH >= 10 && km / roadH <= 90) {
+        vroadList.push(km / roadH);
+        byRange[SPEED_RANGE(km)].push(km / roadH);
+      }
+      if (Number.isFinite(totH) && totH >= 1 && totH <= 240 && km >= 30) {
+        cleanTrips.push({ km, totH });
+      }
     }
     const learn = (key, list, minSamples) => {
       if (list.length < minSamples) return { value: prev?.[key] ?? null, note: `мало образцов (${list.length})` };
@@ -2863,19 +2880,95 @@ function rebuildSpeedNorms() {
     const vt = learn('vt', vtList, 50);
     const ve = learn('ve', veList, 30);
     const vroad = learn('vroad', vroadList, 20);
+    // Живой пакет для транзита (этап 2): дорожные скорости по дальности
+    // плеча, средние ворота, границы коридора физики, рекомендация запаса.
+    const rangeSpeed = key => {
+      const list = byRange[key];
+      if (list.length < 15) return null;
+      const raw = Math.round(median(list) * 10) / 10;
+      const [lo, hi] = SPEED_CLAMPS[key];
+      return raw >= lo && raw <= hi ? raw : null;
+    };
+    const gateOf = kind => {
+      const rows = db.prepare(`SELECT median_hours h FROM gate_facts
+          WHERE key LIKE ? AND samples >= 2 AND median_hours > 0`).all(`addr-${kind}:%`)
+        .map(row => row.h);
+      return rows.length >= 10 ? Math.round(median(rows) * 10) / 10 : null;
+    };
+    const gateLoadH = gateOf('load');
+    const gateUnloadH = gateOf('unload');
+    // Коридор физики из распределения дорожных скоростей: быстрее p95 не
+    // бывает, медленнее p05 — грязь; клампы держат вырожденные выборки.
+    const physFast = vroadList.length >= 30
+      ? Math.min(90, Math.max(60, Math.round(quantile([...vroadList], 0.95)))) : null;
+    const physSlow = vroadList.length >= 30
+      ? Math.min(30, Math.max(12, Math.round(quantile([...vroadList], 0.05)))) : null;
+    const live = (vroad.value || rangeSpeed('mid')) ? {
+      vroad: vroad.value,
+      short: rangeSpeed('short'), mid: rangeSpeed('mid'), long: rangeSpeed('long'),
+      gateH: gateLoadH && gateUnloadH ? Math.round((gateLoadH + gateUnloadH) / 2 * 10) / 10 : null,
+      gateLoadH, gateUnloadH, physFast, physSlow
+    } : null;
+    // Рекомендация запаса: какой процент поверх честного расчёта покрыл
+    // бы 80% фактических рейсов (факт/расчёт, p80), кламп 0–40%.
+    let reserveP80 = null;
+    let reserveP50 = null;
+    if (live && cleanTrips.length >= 30) {
+      const ratios = cleanTrips.map(({ km, totH }) => {
+        const spd = live[SPEED_RANGE(km)] || live.vroad;
+        const honest = km / spd + (gateLoadH || 2) + (gateUnloadH || 2);
+        return honest > 0 ? totH / honest : null;
+      }).filter(v => Number.isFinite(v) && v > 0.2 && v < 5);
+      if (ratios.length >= 30) {
+        // p50 — типичный рейс; p80 — верхняя граница с хвостами (в них
+        // сидит и ожидание окна клиента, его запас покрывать не обязан).
+        reserveP50 = Math.min(40, Math.max(0, Math.round((quantile([...ratios], 0.5) - 1) * 100)));
+        reserveP80 = Math.min(40, Math.max(0, Math.round((quantile(ratios, 0.8) - 1) * 100)));
+      }
+    }
     const norms = {
       vt: vt.value, ve: ve.value, vroad: vroad.value,
       disciplinePct: total ? Math.round(clean / total * 100) : null,
-      samples: { vtDays: vtList.length, veTrips: veList.length, roadTrips: vroadList.length, clean, total },
+      live, reserveP80, reserveP50,
+      samples: { vtDays: vtList.length, veTrips: veList.length, roadTrips: vroadList.length,
+        short: byRange.short.length, mid: byRange.mid.length, long: byRange.long.length, clean, total },
       prev: prev ? { vt: prev.vt, ve: prev.ve, vroad: prev.vroad, disciplinePct: prev.disciplinePct } : null,
       at: new Date().toISOString()
     };
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('speed_norms',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(norms));
+    speedNormsCache = { at: 0, value: null };
     console.log(`rebuildSpeedNorms: Vт ${norms.vt}${vt.note ? ` (${vt.note})` : ''} · Vэ ${norms.ve}${ve.note ? ` (${ve.note})` : ''}`
-      + ` · дорожная ${norms.vroad}${vroad.note ? ` (${vroad.note})` : ''} · дисциплина отметок ${norms.disciplinePct}% (${clean}/${total})`);
+      + ` · дорожная ${norms.vroad}${vroad.note ? ` (${vroad.note})` : ''}`
+      + (live ? ` · дороги кор/ср/дальн ${live.short ?? '—'}/${live.mid ?? '—'}/${live.long ?? '—'} · ворота П/В ${live.gateLoadH ?? '—'}/${live.gateUnloadH ?? '—'} ч · физика ${live.physSlow ?? '—'}–${live.physFast ?? '—'}` : '')
+      + ` · запас: типичный p50 ${norms.reserveP50 ?? '—'}% / с хвостами p80 ${norms.reserveP80 ?? '—'}% · дисциплина отметок ${norms.disciplinePct}% (${clean}/${total})`);
     return norms;
   } catch (error) { console.error('rebuildSpeedNorms:', error.message); return null; }
+}
+
+// Кэш живого пакета скоростей: транзит считается на каждый чих, из
+// БД пакет перечитывается не чаще раза в 10 минут (пересборка сбрасывает).
+let speedNormsCache = { at: 0, value: null };
+function liveSpeedNorms() {
+  if (Date.now() - speedNormsCache.at > 600_000) {
+    speedNormsCache = { at: Date.now(),
+      value: JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='speed_norms'`)
+        .get()?.value || 'null') };
+  }
+  return speedNormsCache.value;
+}
+// Калькуляция с подмешанным живым пакетом — её ждут transitHours и
+// smartTransitHoursFor; без пакета формула честно падает на настройки.
+function liveCalc() {
+  const calc = settingsObject(db).calculation || {};
+  const live = liveSpeedNorms()?.live;
+  return live ? { ...calc, liveSpeeds: live } : calc;
+}
+// Коридор физики часов плеча: границы из выученного распределения
+// скоростей (p95/p05 с клампами), фолбэк — прежние 80 и 22 км/ч.
+function physHoursRange(km) {
+  const live = liveSpeedNorms()?.live;
+  return [km / (live?.physFast || 80), km / (live?.physSlow || 22) + 8];
 }
 
 // ── Самообучающийся транзит: дорога и ворота из фактов 60 дней ──
@@ -2928,10 +3021,13 @@ function rebuildTransitFacts() {
           dist = straightKm(a.latitude, a.longitude, b.latitude, b.longitude) * 1.3;
         }
       }
-      if (dist && dist >= 30 && (medianH < dist / 80 || medianH > dist / 22 + 8)) {
-        upsertRoad.run(key, 0, 0);
-        rejectedRoads += 1;
-        continue;
+      if (dist && dist >= 30) {
+        const [lo, hi] = physHoursRange(dist);
+        if (medianH < lo || medianH > hi) {
+          upsertRoad.run(key, 0, 0);
+          rejectedRoads += 1;
+          continue;
+        }
       }
       upsertRoad.run(key, medianH, list.length);
     }
@@ -3016,7 +3112,7 @@ function gateFactHours(kind, addressId, customerName) {
   return null;
 }
 function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
-  const calc = settingsObject(db).calculation || {};
+  const calc = liveCalc();
   const legRow = order.from_address_id && order.to_address_id
     ? db.prepare('SELECT median_hours h, hour_samples s FROM leg_fact_km WHERE key=?')
       .get(legKey(order.from_address_id, order.to_address_id))
@@ -3024,15 +3120,19 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
   // Коридор физики для дороги (кейс т726 11.09: Самара→Пенза 450 км
   // «ехала» 29 ч — ранние отметки «на линию» загрязняют медиану так же,
   // как календарные дни загрязняли километры): часы плеча обязаны лежать
-  // в [км/80 … км/22 + 8] — от «не быстрее 80 средней» до суточного
-  // темпа ~530 км/сут с РТО и припуском. Вне коридора — формула.
+  // в живом коридоре из распределения скоростей парка (p95…p05 с
+  // клампами; фолбэк — прежние 80 и 22 км/ч + 8 ч). Вне — формула.
+  const [physLo, physHi] = physHoursRange(Number(distanceKm) || 0);
   const roadOk = legRow && legRow.s >= 2 && legRow.h &&
     Number(distanceKm) >= 30 &&
-    legRow.h >= distanceKm / 80 && legRow.h <= distanceKm / 22 + 8;
+    legRow.h >= physLo && legRow.h <= physHi;
   if (!roadOk) {
     return transitHours(distanceKm, calc, 2 + viaOps);
   }
-  const perOp = Number(calc.handlingHoursPerOperation || 2) * Number(calc.transitFactor || 1.5);
+  // Ворота без факта адреса/клиента: средние живые ворота парка,
+  // фолбэк — операция из калькуляции с прежним коэффициентом.
+  const perOp = calc.liveSpeeds?.gateH
+    ?? Number(calc.handlingHoursPerOperation || 2) * Number(calc.transitFactor || 1.5);
   const loadH = gateFactHours('load', order.from_address_id, order.customer_name) ?? perOp;
   const unloadH = gateFactHours('unload', order.to_address_id, order.customer_name) ?? perOp;
   return loadH + legRow.h + unloadH + viaOps * perOp;
@@ -4548,6 +4648,14 @@ function runNormsDigest() {
     const speedN = rebuildSpeedNorms();
     if (speedN?.disciplinePct != null && speedN.disciplinePct < 40) {
       hints.push(`дисциплина отметок ${speedN.disciplinePct}% — нормативы учатся на трети рейсов: жёлтые «сверьте отметку» в Диспетчере`);
+    }
+    // Рычаг запаса против факта: ниже типичного рейса (p50) — обещания
+    // тесны, систематика срывов; выше хвостов (p80) — обещания раздуты.
+    const reserveCfg = Number((settingsObject(db).calculation || {}).transitReservePct ?? 10);
+    if (speedN?.reserveP50 != null && reserveCfg < speedN.reserveP50 - 5) {
+      hints.push(`запас обещаний ${reserveCfg}% ниже типичного рейса (+${speedN.reserveP50}% p50) — сроки тесноваты: Настройки → Калькуляция → «Запас надёжности»`);
+    } else if (speedN?.reserveP80 != null && reserveCfg > speedN.reserveP80 + 8) {
+      hints.push(`запас обещаний ${reserveCfg}% выше хвостов факта (+${speedN.reserveP80}% p80) — сроки раздуты, машины заняты на бумаге: уменьшите «Запас надёжности»`);
     }
     notifyEveryone(`📐 Нормативы недели: переменные ${norms.varCost} ₽/км (Настройки → Калькуляция)` +
       ` · медиана маржи парка ${Math.round(norms.parkMedian / 100) / 10} т₽/сут${
@@ -8202,9 +8310,9 @@ async function api(request, response, url) {
       || addressPointByText(zoneName);
     const km = origin && Number.isFinite(target.latitude)
       ? roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude) : null;
-    const calc = settingsObject(db).calculation;
-    const hours = Number.isFinite(km)
-      ? (km / (Number(calc.techSpeedKmh) || 50)) * (Number(calc.transitFactor) || 1.5) : 12;
+    // Перегон = дорога без операций: живой транзит (скорость по дальности
+    // плеча + запас руководителя), фолбэк — прежняя формула настроек.
+    const hours = Number.isFinite(km) ? transitHours(km, liveCalc(), 0) : 12;
     const endsAt = Number.isFinite(Date.parse(body.endsAt))
       ? new Date(Date.parse(body.endsAt))
       : new Date(startsAt.getTime() + Math.max(1, hours) * 3_600_000);
@@ -9237,14 +9345,19 @@ async function api(request, response, url) {
         clamp: '0,5–8 ч (введён 12.09: хвосты дисциплины отметок — не ворота)',
         drift: '📐 Нормативы недели (строка «ворота»)' },
       { name: 'Скорости парка Vт/Vэ/дорожная',
-        learns: 'медианы 28 дн: Vт — техническая из дневных пробегов (Пилот — справка); Vэ — эксплуатационная и дорожная — из отметок рейсов (канон, только чистые цепочки); дисциплина отметок = доля чистых',
+        learns: 'медианы 28 дн: Vт — техническая из дневных пробегов (Пилот — справка); Vэ, дорожная (и её разбивка кор/ср/дальн для транзита новых плеч) — из отметок рейсов (канон, только чистые цепочки); средние ворота; коридор физики p05–p95; дисциплина отметок = доля чистых',
         value: (() => {
           const sn = safe(() => JSON.parse(db.prepare(`SELECT value FROM app_meta
             WHERE key='speed_norms'`).get()?.value || 'null')) || safe(rebuildSpeedNorms);
-          return sn ? `Vт ${sn.vt ?? '—'} · Vэ ${sn.ve ?? '—'} · дорожная ${sn.vroad ?? '—'} км/ч · дисциплина отметок ${sn.disciplinePct ?? '—'}%`
-            : 'ещё не выучены';
+          if (!sn) return 'ещё не выучены';
+          const lv = sn.live;
+          const cfg = Number((settingsObject(db).calculation || {}).transitReservePct ?? 10);
+          return `Vт ${sn.vt ?? '—'} · Vэ ${sn.ve ?? '—'} · дорожная ${sn.vroad ?? '—'} км/ч`
+            + (lv ? ` (кор/ср/дальн ${lv.short ?? '—'}/${lv.mid ?? '—'}/${lv.long ?? '—'} · ворота П/В ${lv.gateLoadH ?? '—'}/${lv.gateUnloadH ?? '—'} ч · физика ${lv.physSlow ?? '—'}–${lv.physFast ?? '—'})` : '')
+            + ` · дисциплина отметок ${sn.disciplinePct ?? '—'}%`
+            + ` · ЗАПАС обещаний: настроен ${cfg}%, факт: типичный рейс +${sn.reserveP50 ?? '—'}% (p50), с хвостами +${sn.reserveP80 ?? '—'}% (p80; хвосты включают ожидание окон клиентов)`;
         })(),
-        clamp: 'Vт 40–75 · Vэ 12–35 · дорожная 20–60 км/ч; вне клампа — прежнее значение',
+        clamp: 'Vт 40–75 · Vэ 12–35 · дорожная 20–60 (кор 15–45 · ср 25–60 · дальн 30–65) км/ч; запас 0–50% задаёт руководитель (Настройки → Калькуляция)',
         drift: '📐 Нормативы недели · отчёт «Скорости парка» (водопад)' },
       { name: 'Честный одометр рейса',
         learns: 'факт-км рейса лестницей: CAN-одометр → GPS-трек → эксклюзивные календарные дни → «не измерено»',

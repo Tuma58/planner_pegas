@@ -50,9 +50,10 @@ function renderGeneral() {
       <label class="field">Накладные, ₽/машино-день<input id="overheadPerVehicleDay" type="number" min="0" value="${calculation.overheadPerVehicleDay}"></label>
       <label class="field">Ставка НДС<input id="vatRate" type="number" min="0" max="1" step=".01" value="${calculation.vatRate}"></label>
       <label class="field">НДС для ИП<input id="individualEntrepreneurVatRate" type="number" min="0" max="1" step=".01" value="${calculation.individualEntrepreneurVatRate}"></label>
-      <label class="field">Скорость транзита, км/ч<input id="techSpeedKmh" type="number" min="1" value="${calculation.techSpeedKmh ?? 50}"></label>
-      <label class="field">Грузовая операция, ч<input id="handlingHoursPerOperation" type="number" min="0" step=".5" value="${calculation.handlingHoursPerOperation ?? 2}"></label>
-      <label class="field">Коэффициент транзита<input id="transitFactor" type="number" min="1" step=".1" value="${calculation.transitFactor ?? 1.5}" title="(км/скорость + 2 операции) × коэффициент — запас включает отдых водителя"></label>
+      <label class="field">Запас надёжности обещаний, %<input id="transitReservePct" type="number" min="0" max="50" step="1" value="${calculation.transitReservePct ?? 10}" title="Главный рычаг сроков (22.09): живой транзит (выученная дорожная скорость по дальности плеча + средние ворота) умножается на 1+запас. Рекомендацию из факта (p80) смотрите в «🧠 Живые нормативы» у руководителя; 0 — осознанно без запаса"></label>
+      <label class="field">Скорость транзита, км/ч<input id="techSpeedKmh" type="number" min="1" value="${calculation.techSpeedKmh ?? 50}" title="Резервная: работает, только пока живые скорости не выучены (свежая база)"></label>
+      <label class="field">Грузовая операция, ч<input id="handlingHoursPerOperation" type="number" min="0" step=".5" value="${calculation.handlingHoursPerOperation ?? 2}" title="Резерв на операцию, пока средние ворота не выучены"></label>
+      <label class="field">Коэффициент транзита<input id="transitFactor" type="number" min="1" step=".1" value="${calculation.transitFactor ?? 1.5}" title="Резервный: применяется только в старой формуле (пока скорости не выучены); в живом транзите его сменил «Запас надёжности, %»"></label>
       <label class="field">Целевая утилизация<input id="utilizationTarget" type="number" min="0" max="1" step=".001" value="${calculation.utilizationTarget}"></label>
       <label class="field">Простой: бесплатно, ч<input id="demurrageFreeHours" type="number" min="0" step="1" value="${calculation.demurrageFreeHours ?? 8}" title="Норматив бесплатного простоя под погрузкой/выгрузкой от планового времени операции по заявке; сверх — претензия клиенту"></label>
       <label class="field">Простой: тариф, ₽/ч<input id="demurrageRatePerHour" type="number" min="0" step="50" value="${calculation.demurrageRatePerHour ?? 1000}" title="Ставка за каждый начатый час сверхнормативного простоя — попадает в документ претензии"></label>
@@ -91,6 +92,7 @@ async function saveGeneral() {
       overheadPerVehicleDay: numeric('overheadPerVehicleDay'),
       individualEntrepreneurVatRate: numeric('individualEntrepreneurVatRate'),
       techSpeedKmh: numeric('techSpeedKmh'),
+      transitReservePct: numeric('transitReservePct'),
       handlingHoursPerOperation: numeric('handlingHoursPerOperation'),
       transitFactor: numeric('transitFactor'),
       utilizationTarget: numeric('utilizationTarget'),

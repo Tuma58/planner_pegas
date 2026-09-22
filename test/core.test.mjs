@@ -3239,3 +3239,21 @@ test('эксплуатация: динамика КТГ/КВЛ/КИП по дн�
   assert.ok(text.includes('/FontFile2'), 'шрифт встроен');
   assert.ok(text.includes('/ToUnicode'), 'текст копируемый');
 });
+
+test('живой транзит: скорость по дальности, ворота, рычаг запаса', () => {
+  const live = { vroad: 40, short: 30, mid: 42, long: 48, gateH: 4.5 };
+  const calc = { liveSpeeds: live, transitReservePct: 10,
+    techSpeedKmh: 50, handlingHoursPerOperation: 2, transitFactor: 1.5 };
+  // Дальнее плечо 900 км: 900/48 + 2×4,5 = 27,75 × 1,1 = 30,525.
+  assert.ok(Math.abs(transitHours(900, calc) - 30.525) < 0.01, 'дальнее плечо по живой скорости');
+  // Короткое 100 км: 100/30 + 2×4,5 = 12,33 × 1,1.
+  assert.ok(Math.abs(transitHours(100, calc) - (100 / 30 + 9) * 1.1) < 0.01, 'короткое — своя скорость');
+  // Перегон без операций: только дорога с запасом.
+  assert.ok(Math.abs(transitHours(300, calc, 0) - 300 / 42 * 1.1) < 0.01, 'перегон = дорога + запас');
+  // Ноль запаса — осознанное значение, не затирается дефолтом.
+  assert.ok(Math.abs(transitHours(300, { ...calc, transitReservePct: 0 }, 0) - 300 / 42) < 0.01, 'ноль запаса честный');
+  // Диапазон без своей медианы падает на общую дорожную.
+  assert.ok(Math.abs(transitHours(100, { ...calc, liveSpeeds: { ...live, short: null } }, 0) - 100 / 40 * 1.1) < 0.01);
+  // Скорости не выучены — прежняя формула из настроек.
+  assert.ok(Math.abs(transitHours(900, { techSpeedKmh: 50, handlingHoursPerOperation: 2, transitFactor: 1.5 }) - (900 / 50 + 4) * 1.5) < 0.01, 'фолбэк — старая формула');
+});
