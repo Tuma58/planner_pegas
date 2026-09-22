@@ -960,6 +960,14 @@ export function demurrageSettings(db) {
 
 export function demurrageCases(db, nowMs = Date.now()) {
   const { freeHours, rate } = demurrageSettings(db);
+  // Договорной простой из профиля клиента (этап 3, 22.09): у кого ставка
+  // заведена — их часы/тариф и признак contractual (только такие кейсы
+  // становятся претензиями автоматически); остальным глобальные
+  // настройки — аналитика «дорогих ворот», не претензия.
+  const contracts = new Map(db.prepare(`SELECT customer_name, demurrage_rate, demurrage_free_hours
+      FROM customer_profiles WHERE demurrage_rate IS NOT NULL AND demurrage_rate > 0`).all()
+    .map(row => [row.customer_name.trim().toLowerCase(),
+      { rate: row.demurrage_rate, freeHours: row.demurrage_free_hours ?? freeHours }]));
   const since = new Date(nowMs - 45 * 86_400_000).toISOString();
   const trips = db.prepare(`SELECT t.id,t.status,t.starts_at,t.ends_at,t.order_id,t.order_no,
       t.customer_name,t.from_point,t.to_point,t.arrived_at,t.unloaded_at,t.on_line_at,
@@ -970,14 +978,19 @@ export function demurrageCases(db, nowMs = Date.now()) {
   const stopsStmt = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq`);
   const cases = [];
   const push = (trip, order, kind, point, planMs, arrivedMs, endMs, open) => {
+    const customer = trip.customer_name || order?.customer_name || '';
+    const contract = contracts.get(customer.trim().toLowerCase()) || null;
+    const caseFree = contract ? contract.freeHours : freeHours;
+    const caseRate = contract ? contract.rate : rate;
     // План неизвестен (нет заявки и дат) — отсчёт от прибытия.
     const startMs = Number.isFinite(planMs) ? Math.max(planMs, arrivedMs) : arrivedMs;
     const idleHours = (endMs - startMs) / 3_600_000;
-    if (!(idleHours > freeHours)) return;
-    const paidHours = Math.ceil(idleHours - freeHours);
+    if (!(idleHours > caseFree)) return;
+    const paidHours = Math.ceil(idleHours - caseFree);
     cases.push({
       tripId: trip.id, kind, open,
-      customer: trip.customer_name || order?.customer_name || '',
+      customer,
+      contractual: Boolean(contract),
       orderNo: String(trip.order_no || order?.order_no || ''),
       vehiclePlate: trip.vehicle_plate, trailerPlate: trip.trailer_plate || '',
       driverName: trip.driver_name || '', point: point || '',
@@ -985,7 +998,7 @@ export function demurrageCases(db, nowMs = Date.now()) {
       arrivedAt: new Date(arrivedMs).toISOString(),
       finishedAt: open ? null : new Date(endMs).toISOString(),
       idleHours: Math.round(idleHours * 10) / 10,
-      paidHours, rate, amount: paidHours * rate
+      paidHours, rate: caseRate, amount: paidHours * caseRate
     });
   };
   for (const trip of trips) {

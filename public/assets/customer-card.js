@@ -60,6 +60,9 @@ export async function customerCardDialog(name, context) {
         <div class="cc-row">Ответственный: <b>${escapeHtml(profile.manager_name || '—')}</b></div>
         <div class="cc-row">Договор: <b>${escapeHtml(profile.contract_no || '—')}</b>${profile.contract_until ? ` до ${fmtDay(profile.contract_until)}` : ''}</div>
         <div class="cc-row">Отсрочка: <b>${profile.payment_days != null ? `${profile.payment_days} дн` : '—'}</b> · ИНН ${escapeHtml(profile.inn || '—')}</div>
+        <div class="cc-row">Простой по договору: <b>${profile.demurrage_rate > 0
+          ? `${Math.round(profile.demurrage_rate)} ₽/ч после ${profile.demurrage_free_hours ?? '—'} ч (претензии идут автоматически)`
+          : 'не заведён — автопретензии не выставляются'}</b></div>
         ${profile.conditions ? `<div class="cc-row muted">${escapeHtml(profile.conditions)}</div>` : ''}
       </div>
       <div>
@@ -127,6 +130,8 @@ export async function customerCardDialog(name, context) {
         <label class="field">Договор №<input name="contractNo" value="${escapeHtml(profile.contract_no || '')}" maxlength="60"></label>
         <label class="field">Договор до<input name="contractUntil" type="date" value="${profile.contract_until ? profile.contract_until.slice(0, 10) : ''}"></label>
         <label class="field">Отсрочка, дней<input name="paymentDays" type="number" min="0" value="${profile.payment_days ?? ''}"></label>
+        <label class="field">Простой: ставка, ₽/ч<input name="demurrageRate" type="number" min="0" step="50" value="${profile.demurrage_rate ?? ''}" placeholder="пусто = не в договоре" title="Заполняется, если оплата простоя заведена в договоре клиента. С заполненной ставкой сверхнормативный простой П/В автоматически рождает претензию в «⏳ Простои П/В»; пусто — клиент попадает только в понедельничную аналитику «Дорогие ворота»"></label>
+        <label class="field">Простой: бесплатно, ч<input name="demurrageFreeHours" type="number" min="0" step="1" value="${profile.demurrage_free_hours ?? ''}" placeholder="из настроек" title="Бесплатные часы по договору этого клиента; пусто — берётся общий норматив из Настроек"></label>
         <label class="field">Теги<input name="tags" value="${escapeHtml(profile.tags || '')}" placeholder="мясо, реф, сеть"></label>
       </div>
       <label class="field">Условия и особенности<textarea name="conditions" rows="3" maxlength="1000">${escapeHtml(profile.conditions || '')}</textarea></label>
@@ -162,7 +167,9 @@ export async function customerCardDialog(name, context) {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
     post('/api/customers/profile', 'PUT', { ...profileBody(profile), name, ...values,
-      contractUntil: values.contractUntil || null, paymentDays: values.paymentDays === '' ? null : values.paymentDays });
+      contractUntil: values.contractUntil || null, paymentDays: values.paymentDays === '' ? null : values.paymentDays,
+      demurrageRate: values.demurrageRate === '' ? null : values.demurrageRate,
+      demurrageFreeHours: values.demurrageFreeHours === '' ? null : values.demurrageFreeHours });
   });
   document.querySelectorAll('[data-cc-del-contact]').forEach(button =>
     button.addEventListener('click', () => {
@@ -176,5 +183,6 @@ export async function customerCardDialog(name, context) {
 const profileBody = profile => ({
   inn: profile.inn, segment: profile.segment, status: profile.status, managerId: profile.manager_id,
   contractNo: profile.contract_no, contractUntil: profile.contract_until, paymentDays: profile.payment_days,
-  conditions: profile.conditions, nextContactAt: profile.next_contact_at, tags: profile.tags
+  conditions: profile.conditions, nextContactAt: profile.next_contact_at, tags: profile.tags,
+  demurrageRate: profile.demurrage_rate, demurrageFreeHours: profile.demurrage_free_hours
 });

@@ -2224,6 +2224,17 @@ test('пять этапов рейса: два клика на точку, пр�
   assert.ok(Math.abs(load1.idleHours - 12) < 0.2, `простой погрузки ~12 ч, получили ${load1?.idleHours}`);
   assert.ok(unload1, 'случай простоя на выгрузке найден');
   assert.ok(Math.abs(unload1.idleHours - 13) < 0.2, `простой выгрузки ~13 ч, получили ${unload1?.idleHours}`);
+  // Без ставки в карточке клиент не договорной: кейс аналитический,
+  // тариф глобальный (этап 3 «не всех под одно»).
+  assert.equal(unload1.contractual, false, 'без ставки в карточке — не претензия автоматом');
+  // Заведём договорной простой: своя ставка и свои бесплатные часы.
+  db.prepare(`INSERT INTO customer_profiles(customer_name,demurrage_rate,demurrage_free_hours)
+    VALUES('Клиент',1500,4)`).run();
+  const cases2 = demurrageCases(db);
+  const unload2 = cases2.find(item => item.tripId === 'st-1' && item.kind === 'unload');
+  assert.equal(unload2.contractual, true, 'со ставкой в карточке — договорной');
+  assert.equal(unload2.rate, 1500, 'тариф из договора клиента');
+  assert.equal(unload2.paidHours, Math.ceil(unload2.idleHours - 4), 'бесплатные часы из договора');
 
   // Имена операций для отчёта смены различают приезд и убытие.
   assert.equal(operationNameOf({ entity: 'trip_stop', action: 'update',

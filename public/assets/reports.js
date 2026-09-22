@@ -623,7 +623,7 @@ export async function buildReport(kind, from, to, data) {
           <tr><td>Подача и ожидание погрузки</td><td class="num">${perTrip(wf.preH)}</td><td class="num">${pct(wf.preH)}%</td><td>логистика</td></tr>
           <tr><td>Ворота погрузки</td><td class="num">${perTrip(wf.loadH)}</td><td class="num">${pct(wf.loadH)}%</td><td>клиент/претензии</td></tr>
           <tr><td>Дорога (убыл с погрузки → прибыл на выгрузку)</td><td class="num">${perTrip(wf.roadH)}</td><td class="num">${pct(wf.roadH)}%</td><td>водитель + РТО</td></tr>
-          <tr><td><b>Ворота выгрузки</b></td><td class="num"><b>${perTrip(wf.unloadH)}</b></td><td class="num"><b>${pct(wf.unloadH)}%</b></td><td>клиент/претензии</td></tr>
+          <tr><td><b>Ворота выгрузки</b> <small class="muted">цель ${sp.gateTarget || 6} ч</small></td><td class="num"><b>${perTrip(wf.unloadH)}</b></td><td class="num"><b>${pct(wf.unloadH)}%</b></td><td>клиент/претензии</td></tr>
           <tr><td><b>Весь рейс</b></td><td class="num"><b>${perTrip(wf.totH)}</b></td><td class="num">100%</td><td>${Math.round(wf.km / wf.n)} км в среднем</td></tr>
         </tbody></table>
         <p class="muted" style="margin:4px 0 2px">Каскад скоростей: в движении <b>${techAvg ? techAvg.toFixed(1) : '—'}</b> (Пилот, справка)
@@ -646,7 +646,7 @@ export async function buildReport(kind, from, to, data) {
       <table class="rtable"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
         <th class="num">Ср. время на точке</th><th class="num">Экспл. скорость рейсов</th></tr></thead>
       <tbody>${slowCust.map(c => `<tr><td>${escapeHtml(c.name.slice(0, 30))}</td><td class="num">${c.trips}</td>
-        <td class="num ${c.dwellH > 8 ? 'bad' : ''}"><b>${c.dwellH ?? '—'} ч</b></td><td class="num">${c.op}</td></tr>`).join('')}</tbody></table>
+        <td class="num ${c.dwellH > (sp.gateTarget || 6) ? 'bad' : ''}"><b>${c.dwellH ?? '—'} ч</b></td><td class="num">${c.op}</td></tr>`).join('')}</tbody></table>
       <p class="muted" style="margin:2px 0">Быстрые клиенты: ${fastCust.map(c => `${escapeHtml(c.name.slice(0, 18))} ${c.op}`).join(' · ')} км/ч.
         Долгие стоянки у клиента — кандидаты на претензии «⏳ Простои П/В».</p>`;
   } else if (kind === 'history') {

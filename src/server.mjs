@@ -916,7 +916,11 @@ setTimeout(runDailyFleetReport, 40_000);
 // простой под погрузкой — она сохраняется (ON CONFLICT DO NOTHING).
 const FALSE_CALL_REASONS = ['Отказ клиента', 'Нет груза'];
 function falseCallClaim(trip, reason) {
-  const { rate } = demurrageSettings(db);
+  // Ставка договора клиента, если заведена в карточке; иначе глобальная.
+  const contract = db.prepare(`SELECT demurrage_rate FROM customer_profiles
+    WHERE customer_name=? COLLATE NOCASE AND demurrage_rate > 0`)
+    .get(String(trip.customer_name || '').trim());
+  const rate = contract?.demurrage_rate || demurrageSettings(db).rate;
   const planMs = Date.parse(trip.starts_at);
   const nowMs = Date.now();
   const idleHours = Math.max(0, (nowMs - planMs) / 3_600_000);
@@ -969,7 +973,12 @@ function runDailyDemurrage() {
       WHERE demurrage_claims.status='new'`);
     let created = 0;
     let createdSum = 0;
+    let analytic = 0;
     for (const item of cases) {
+      // Претензия автоматом — только клиентам с простоем в договоре
+      // (ставка в карточке клиента; решение руководителя 22.09 «не всех
+      // под одно»). Остальные случаи — аналитика «дорогих ворот».
+      if (!item.contractual) { analytic += 1; continue; }
       upsert.run(randomUUID(), item.tripId, item.kind, item.customer, item.orderNo,
         item.vehiclePlate, item.driverName, item.point, item.planAt, item.arrivedAt,
         item.finishedAt, item.idleHours, item.paidHours, item.rate, item.amount, todayIso);
@@ -978,8 +987,10 @@ function runDailyDemurrage() {
     if (created) {
       const rub = value => `${Math.round(value).toLocaleString('ru-RU')} ₽`;
       notify('sales', `📑 Простой под погрузкой/выгрузкой: сформировано ${created} претензий` +
-        ` на ${rub(createdSum)} (сверх норматива от планового времени по заявке)` +
-        ` — плашка «⏳ Простои П/В», документ на печать в карточке случая`, null, null, { category: 'claims' });
+        ` на ${rub(createdSum)} по договорным клиентам (ставка — в карточке клиента)` +
+        ` — плашка «⏳ Простои П/В», документ на печать в карточке случая` +
+        (analytic ? `. Ещё ${analytic} сверхнормативных случаев у клиентов без простоя в договоре — они копятся в понедельничные «Дорогие ворота»` : ''),
+        null, null, { category: 'claims' });
     }
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('demurrage_claims_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
@@ -4728,6 +4739,54 @@ function runNormsDigest() {
 }
 setInterval(runNormsDigest, 10 * 60_000);
 
+// ── «Дорогие ворота» — понедельничное задание продажам (этап 3, 22.09) ──
+// Клиенты БЕЗ простоя в договоре, чья медиана ворот выгрузки за 28 дн
+// выше цели руководителя (gateTargetHours): претензию им не выставить —
+// аргумент продажам на слоты выгрузки, тариф или простой в договор.
+// Договорные сюда не попадают: по ним претензии идут ежедневно.
+function runGateCostDigest() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCDay() !== 1 || msk.getUTCHours() < 8) return;
+    const day = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='gate_cost_week'`).get()?.value === day) return;
+    const target = Number((settingsObject(db).calculation || {}).gateTargetHours ?? 6);
+    const contractual = new Set(db.prepare(`SELECT customer_name FROM customer_profiles
+        WHERE demurrage_rate IS NOT NULL AND demurrage_rate > 0`).all()
+      .map(row => row.customer_name.trim().toLowerCase()));
+    const byCustomer = new Map();
+    for (const trip of db.prepare(`SELECT customer_name, arrived_at, unloaded_at FROM trips
+        WHERE status IN ('unloaded','done','paid') AND arrived_at IS NOT NULL
+          AND unloaded_at >= datetime('now','-28 day')`).all()) {
+      const hours = (Date.parse(trip.unloaded_at) - Date.parse(trip.arrived_at)) / 3_600_000;
+      if (!(hours > 0.2 && hours < 72)) continue;
+      const name = String(trip.customer_name || '').trim();
+      if (!name) continue;
+      if (!byCustomer.has(name)) byCustomer.set(name, []);
+      byCustomer.get(name).push(hours);
+    }
+    const rows = [...byCustomer.entries()].map(([name, list]) => {
+      list.sort((a, b) => a - b);
+      return { name, n: list.length,
+        medianH: Math.round(list[Math.floor(list.length / 2)] * 10) / 10,
+        lostH: Math.round(list.reduce((s, h) => s + Math.max(0, h - target), 0)) };
+    }).filter(row => row.n >= 3 && row.medianH > target
+      && !contractual.has(row.name.toLowerCase()))
+      .sort((a, b) => b.lostH - a.lostH);
+    const totalLost = rows.reduce((s, row) => s + row.lostH, 0);
+    if (rows.length) {
+      notify('sales', `🚪 Дорогие ворота недели (цель выгрузки ${target} ч, клиенты без простоя в договоре):` +
+        rows.slice(0, 6).map(row => ` ${row.name.slice(0, 24)} — медиана ${row.medianH} ч, ${row.n} рейсов, потеряно ~${row.lostH} маш-ч`).join(' ·') +
+        (rows.length > 6 ? ` · и ещё ${rows.length - 6}` : '') +
+        `. Всего ~${totalLost} маш-ч за 28 дн. Что делать: слоты выгрузки, пересмотр тарифа или простой в договор при продлении — ставка заводится в карточке клиента, дальше претензии пойдут сами`,
+        null, null, { category: 'claims' });
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('gate_cost_week',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+  } catch (error) { console.error('Дорогие ворота:', error.message); }
+}
+setInterval(runGateCostDigest, 10 * 60_000);
+
 // Автопересев плана вывоза: сетку заполнили из истории один раз и забыли —
 // через месяц она врёт. Раз в неделю (в ночь на понедельник) пересеваем из
 // свежей истории; плечи, правленные вручную (manual=1), не трогаем.
@@ -5202,21 +5261,26 @@ async function api(request, response, url) {
     const name = String(body.name || '').trim();
     if (!name) return errorJson(response, 422, 'Нужно имя клиента');
     const status = ['active', 'prospect', 'sleeping', 'lost'].includes(body.status) ? body.status : 'active';
+    // Договорной простой (этап 3, 22.09): пусто = не заведён, автоматика
+    // претензий клиента не трогает; число — ставка ₽/ч и бесплатные часы.
+    const numOrNull = value => Number.isFinite(Number(value)) && value !== '' && value !== null
+      ? Number(value) : null;
     db.prepare(`INSERT INTO customer_profiles(customer_name,inn,segment,status,manager_id,contract_no,
-        contract_until,payment_days,conditions,next_contact_at,tags,updated_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        contract_until,payment_days,conditions,next_contact_at,tags,
+        demurrage_rate,demurrage_free_hours,updated_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(customer_name) DO UPDATE SET inn=excluded.inn, segment=excluded.segment,
         status=excluded.status, manager_id=excluded.manager_id, contract_no=excluded.contract_no,
         contract_until=excluded.contract_until, payment_days=excluded.payment_days,
         conditions=excluded.conditions, next_contact_at=excluded.next_contact_at, tags=excluded.tags,
+        demurrage_rate=excluded.demurrage_rate, demurrage_free_hours=excluded.demurrage_free_hours,
         updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
       .run(name, String(body.inn || '').trim().slice(0, 20), String(body.segment || '').trim().slice(0, 2),
         status, body.managerId || null, String(body.contractNo || '').trim().slice(0, 60),
-        body.contractUntil || null,
-        Number.isFinite(Number(body.paymentDays)) && body.paymentDays !== '' && body.paymentDays !== null
-          ? Number(body.paymentDays) : null,
+        body.contractUntil || null, numOrNull(body.paymentDays),
         String(body.conditions || '').trim().slice(0, 1000), body.nextContactAt || null,
-        String(body.tags || '').trim().slice(0, 200), user.id);
+        String(body.tags || '').trim().slice(0, 200),
+        numOrNull(body.demurrageRate), numOrNull(body.demurrageFreeHours), user.id);
     audit(db, user, 'update', 'customer-profile', name, { status, segment: body.segment });
     return json(response, 200, { ok: true });
   }
@@ -9765,7 +9829,8 @@ async function api(request, response, url) {
     const speedNorms = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='speed_norms'`)
       .get()?.value || 'null') || rebuildSpeedNorms();
     return json(response, 200, { from, to, techDays, opDays, byVehicle, byCustomer, skipped,
-      waterfall: phases.n ? phases : null, norms: speedNorms });
+      waterfall: phases.n ? phases : null, norms: speedNorms,
+      gateTarget: Number((settingsObject(db).calculation || {}).gateTargetHours ?? 6) });
   }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const user = requirePermission(request, response, 'reports:read');
