@@ -138,7 +138,78 @@ export function opsReportData(db, from, to, parkFn) {
     late[kind] = c;
   }
 
-  return { from, to, days, park, revDays, tripDays, online, avgOnline, downtime, idleNow, late };
+  // Динамика КТГ/КВЛ/КИП и выручки: по дням и понедельно (пн–вс).
+  // Методика та же, что в плитках: техготовность и «выведена» — из
+  // диспозиций, линия — живой ряд, КИП — по закрытым рейсам.
+  const dayMs = days.map(d => Date.parse(`${d}T00:00:00Z`));
+  const perDayHours = rows => {
+    const out = days.map(() => 0);
+    for (const r of rows) {
+      const a = Date.parse(String(r.starts_at).replace(' ', 'T'));
+      const b = Date.parse(String(r.ends_at).replace(' ', 'T'));
+      days.forEach((d, i) => {
+        out[i] += Math.max(0, Math.min(b, dayMs[i] + 86_400_000) - Math.max(a, dayMs[i])) / 3.6e6;
+      });
+    }
+    return out;
+  };
+  const remDayH = perDayHours(db.prepare(`SELECT starts_at,ends_at FROM vehicle_dispositions
+      WHERE kind='repair' AND starts_at < ? AND ends_at > ?`).all(to, from));
+  const outDayH = perDayHours(db.prepare(`SELECT starts_at,ends_at FROM vehicle_dispositions
+      WHERE kind='out' AND starts_at < ? AND ends_at > ?`).all(to, from));
+  const techDay = days.map((d, i) => Math.max(0, T.fleet - remDayH[i] / 24 - outDayH[i] / 24));
+  const lineDayH = days.map(() => 0), prodDayH = days.map(() => 0);
+  for (const t of db.prepare(`SELECT t.on_line_at,t.starts_at,t.ends_at,t.unloaded_at,t.arrived_at,
+      (SELECT MIN(s.actual_departure) FROM trip_stops s WHERE s.trip_id=t.id AND s.kind='P'
+        AND s.actual_departure IS NOT NULL) dep
+      FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
+        AND t.starts_at < ? AND COALESCE(t.unloaded_at,t.ends_at) > ?`).all(to, from)) {
+    const on = Date.parse(String(t.on_line_at || t.starts_at).replace(' ', 'T'));
+    const fin = Date.parse(String(t.unloaded_at || t.ends_at).replace(' ', 'T'));
+    const dp = t.dep ? Date.parse(String(t.dep).replace(' ', 'T')) : null;
+    const de = t.arrived_at ? Date.parse(String(t.arrived_at).replace(' ', 'T')) : fin;
+    days.forEach((d, i) => {
+      const a0 = dayMs[i], b0 = a0 + 86_400_000;
+      lineDayH[i] += Math.max(0, Math.min(fin, b0) - Math.max(on, a0)) / 3.6e6;
+      if (dp) prodDayH[i] += Math.max(0, Math.min(de, b0) - Math.max(dp, a0)) / 3.6e6;
+    });
+  }
+  const pct1 = v => +Math.min(100, Math.max(0, v * 100)).toFixed(1);
+  const trendDay = {
+    labels: days.map(d => d.slice(8)),
+    tips: days.map(d => `${d.slice(8)}.${d.slice(5, 7)}`),
+    rev: revDays,
+    ktg: techDay.map(v => pct1(v / Math.max(1, T.fleet))),
+    kvl: techDay.map((v, i) => pct1(online[i] / Math.max(0.001, v))),
+    kip: days.map((d, i) => lineDayH[i] > 0.5 ? pct1(prodDayH[i] / lineDayH[i]) : 0)
+  };
+  const wkKey = d => {
+    const t = Date.parse(`${d}T00:00:00Z`);
+    return new Date(t - ((new Date(t).getUTCDay() + 6) % 7) * 86_400_000).toISOString().slice(0, 10);
+  };
+  const wOrder = [], wMap = new Map();
+  days.forEach((d, i) => {
+    const k = wkKey(d);
+    if (!wMap.has(k)) { wMap.set(k, []); wOrder.push(k); }
+    wMap.get(k).push(i);
+  });
+  const avg = arr => arr.reduce((s, v) => s + v, 0) / Math.max(1, arr.length);
+  const trendWeek = { labels: [], tips: [], rev: [], ktg: [], kvl: [], kip: [] };
+  for (const k of wOrder) {
+    const idx = wMap.get(k);
+    const d1 = days[idx[0]], d2 = days[idx[idx.length - 1]];
+    trendWeek.labels.push(`${d1.slice(8)}–${d2.slice(8)}`);
+    trendWeek.tips.push(`${d1.slice(8)}.${d1.slice(5, 7)}–${d2.slice(8)}.${d2.slice(5, 7)}`);
+    trendWeek.rev.push(+idx.reduce((s, i) => s + revDays[i], 0).toFixed(2));
+    const tech = avg(idx.map(i => techDay[i]));
+    trendWeek.ktg.push(pct1(tech / Math.max(1, T.fleet)));
+    trendWeek.kvl.push(pct1(avg(idx.map(i => online[i])) / Math.max(0.001, tech)));
+    const lh = idx.reduce((s, i) => s + lineDayH[i], 0);
+    trendWeek.kip.push(lh > 0.5 ? pct1(idx.reduce((s, i) => s + prodDayH[i], 0) / lh) : 0);
+  }
+  const trend = { day: trendDay, week: trendWeek };
+
+  return { from, to, days, park, revDays, tripDays, online, avgOnline, downtime, idleNow, late, trend };
 }
 
 // Текстовая ежедневная сводка (Telegram и лента руководителя): вчера +
@@ -177,8 +248,9 @@ const esc = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&
 // HTML-страница отчёта: самодостаточная, графики SVG с подсказками,
 // светлая/тёмная тема, печать в PDF браузером.
 export function renderOpsReportHtml(data, theme = '') {
-  const { park, days, revDays, tripDays, online, downtime, idleNow, late } = data;
+  const { park, days, revDays, tripDays, online, downtime, idleNow, late, trend } = data;
   const T = park.total;
+  const D = trend.day, WK = trend.week;
   const cars = h => (h / 24 / T.days).toFixed(1);
   const W = 980, H = 190, PL = 44, PR = 10, PT = 12, PB = 26;
   const plotH = H - PT - PB;
@@ -192,26 +264,28 @@ export function renderOpsReportHtml(data, theme = '') {
     }
     return s;
   };
-  const xLabels = (n, step) => {
+  const xLabels = (axis, step) => {
     let s = '';
-    const dx = (W - PL - PR) / Math.max(1, n - 1);
-    for (let i = 0; i < n; i += step) {
-      s += `<text x="${(PL + i * dx).toFixed(0)}" y="${H - PB + 14}" text-anchor="middle">${days[i].slice(8)}</text>`;
+    const dx = (W - PL - PR) / Math.max(1, axis.length - 1);
+    for (let i = 0; i < axis.length; i += step) {
+      // Длинную подпись у правого края прижимаем, чтобы не резалась.
+      const x = Math.min(PL + i * dx, axis[i].length > 3 ? W - 4 * axis[i].length : W - PR);
+      s += `<text x="${x.toFixed(0)}" y="${H - PB + 14}" text-anchor="middle">${axis[i]}</text>`;
     }
     return s;
   };
-  const barsSvg = (vals, color, unit) => {
+  const barsSvg = (vals, axis, tips, color, unit, step = 2) => {
     const mx = Math.max(...vals, 0.001) * 1.12;
     const bw = (W - PL - PR) / vals.length;
     let s = grid(mx);
     vals.forEach((v, i) => {
       const h = plotH * v / mx;
-      s += `<rect x="${(PL + i * bw + 1).toFixed(1)}" y="${(H - PB - h).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${color}" data-tip="${days[i].slice(8)}.${days[i].slice(5, 7)}: ${v}${unit}"/>`;
-      if (i % 2 === 0) s += `<text x="${(PL + i * bw + bw / 2).toFixed(0)}" y="${H - PB + 14}" text-anchor="middle">${days[i].slice(8)}</text>`;
+      s += `<rect x="${(PL + i * bw + 1).toFixed(1)}" y="${(H - PB - h).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${color}" data-tip="${tips[i]}: ${v}${unit}"/>`;
+      if (i % step === 0) s += `<text x="${(PL + i * bw + bw / 2).toFixed(0)}" y="${H - PB + 14}" text-anchor="middle">${axis[i]}</text>`;
     });
     return `<svg viewBox="0 0 ${W} ${H}" width="100%">${s}</svg>`;
   };
-  const linesSvg = (series, names, colors, unit, ymax) => {
+  const linesSvg = (series, names, axis, tips, colors, unit, ymax, step = 2) => {
     const mx = ymax || Math.max(...series.flat(), 1) * 1.15;
     const n = series[0].length;
     const dx = (W - PL - PR) / Math.max(1, n - 1);
@@ -222,12 +296,20 @@ export function renderOpsReportHtml(data, theme = '') {
       vals.forEach((v, i) => {
         const cx = (PL + i * dx).toFixed(1);
         const cy = (H - PB - plotH * v / mx).toFixed(1);
-        s += `<circle cx="${cx}" cy="${cy}" r="8" fill="transparent" data-tip="${days[i].slice(8)}.${days[i].slice(5, 7)} · ${names[si]}: ${v}${unit}"/>` +
+        s += `<circle cx="${cx}" cy="${cy}" r="8" fill="transparent" data-tip="${tips[i]} · ${names[si]}: ${v}${unit}"/>` +
           `<circle cx="${cx}" cy="${cy}" r="3" fill="${colors[si]}" stroke="var(--surface-1)" stroke-width="2" pointer-events="none"/>`;
       });
     });
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%">${s + xLabels(n, 2)}</svg>`;
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%">${s + xLabels(axis, step)}</svg>`;
   };
+  // Переключатель «По дням | По неделям»: оба SVG отрисованы сервером,
+  // клиентский скрипт лишь меняет видимость (CSP: инлайн-JS запрещён).
+  const granPair = (key, daySvg, weekSvg) =>
+    `<div class="chart" data-chart="${key}" data-mode="day">${daySvg}</div>` +
+    `<div class="chart" data-chart="${key}" data-mode="week" hidden>${weekSvg}</div>`;
+  const granSeg = key => `<span class="seg" data-tgl="${key}">` +
+    `<button type="button" class="on" data-mode="day">По дням</button>` +
+    `<button type="button" data-mode="week">По неделям</button></span>`;
   const hbars = (items, color) => {
     if (!items.length) return '<p class="note">опозданий не зафиксировано</p>';
     const rh = 26;
@@ -266,7 +348,10 @@ export function renderOpsReportHtml(data, theme = '') {
 :root[data-theme="dark"] .viz-root{color-scheme:dark;
  --surface-1:#1a1a19;--surface-2:#242422;--text-primary:#fff;--text-secondary:#c3c2b7;--muted:#8f8d83;
  --line:#393833;--s1:#3987e5;--s2:#d95926;--s3:#199e70;--bad:#ef8377}
-body{margin:0;background:var(--surface-1)}
+body{margin:0;background:#fcfcfb}
+@media (prefers-color-scheme: dark){:root:where(:not([data-theme="light"])) body{background:#1a1a19}}
+:root[data-theme="dark"] body{background:#1a1a19}
+:root[data-theme="light"] body{background:#fcfcfb}
 .viz-root{font:14px/1.45 "Segoe UI",Roboto,Arial,sans-serif;color:var(--text-primary);
  background:var(--surface-1);max-width:1080px;margin:0 auto;padding:24px 30px 50px}
 h1{font-size:20px;margin:0 0 2px}
@@ -286,8 +371,13 @@ h2{font-size:15px;margin:26px 0 8px;border-bottom:1px solid var(--line);padding-
 svg text{font:11px "Segoe UI",Arial,sans-serif;fill:var(--text-secondary)}
 svg .val{fill:var(--text-primary);font-weight:600}
 .gridline{stroke:var(--line);stroke-width:1}
-.legend{display:flex;gap:16px;font-size:12px;color:var(--text-secondary);margin:2px 0 6px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;color:var(--text-secondary);margin:2px 0 6px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.crow{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 0 6px}
+.crow .legend{margin:0}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-left:auto}
+.seg button{font:inherit;font-size:12px;border:0;background:var(--surface-1);color:var(--text-secondary);padding:3px 12px;cursor:pointer}
+.seg button.on{background:var(--surface-2);color:var(--text-primary);font-weight:600}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{border-bottom:1px solid var(--line);padding:4px 8px;text-align:right}
 th:first-child,td:first-child{text-align:left}
@@ -298,8 +388,18 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 #tip{position:fixed;pointer-events:none;background:var(--surface-2);border:1px solid var(--line);
  border-radius:6px;padding:5px 9px;font-size:12px;display:none;z-index:9;box-shadow:0 4px 14px rgba(0,0,0,.18)}
 .note{font-size:12px;color:var(--text-secondary)}
-@media print{.viz-root{max-width:none}#tip,.pick{display:none!important}}
-</style></head><body><div class="viz-root">
+@media print{
+ :root .viz-root,:root[data-theme="dark"] .viz-root{color-scheme:light;
+  --surface-1:#fff;--surface-2:#f3f2ef;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#8a887f;
+  --line:#d8d6cf;--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--bad:#b8352a}
+ :root body,:root[data-theme="dark"] body{background:#fff}
+ .viz-root{max-width:none;padding:0}
+ #tip,.pick,.seg{display:none!important}
+ [hidden]{display:none!important}
+ h2{break-after:avoid}.chart{break-inside:avoid}}
+</style>
+<script src="/assets/ops-report-page.js"></script>
+</head><body><div class="viz-root">
 <div id="tip"></div>
 <h1>Отчёт эксплуатации автопарка — планер</h1>
 <div class="sub">Период ${data.from} — ${data.to} (конец не включается) · выручка без НДС по канону
@@ -309,7 +409,8 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
   <label>с <input type="date" name="from" value="${data.from}"></label>
   <label>по <input type="date" name="to" value="${data.to}"></label>
   <button>Показать</button>
-  <span class="note">печать в PDF — Ctrl+P</span>
+  <button type="button" id="themeBtn">🌙 Тёмная</button>
+  <button type="button" id="pdfBtn">💾 Сохранить в PDF</button>
 </form>
 <div class="tiles">
 <div class="tile"><span>Выручка без НДС</span><b>${(T.rev / 1e6).toFixed(1)} млн</b><small>${T.trips} рейсов за ${T.days} дн</small></div>
@@ -320,21 +421,31 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <div class="tile"><span>Прибытия на выгрузку вовремя</span><b>${onD}%</b><small>${late.D.late1} опозд. &gt;1 ч из ${late.D.n}</small></div>
 </div>
 
+<h2>КТГ · КВЛ · КИП в динамике, %</h2>
+<div class="crow"><div class="legend"><span><i style="background:var(--s1)"></i>КТГ — техготовность</span><span><i style="background:var(--s2)"></i>КВЛ — выпуск на линию</span><span><i style="background:var(--s3)"></i>КИП — использование</span></div>${granSeg('kkk')}</div>
+${granPair('kkk',
+    linesSvg([D.ktg, D.kvl, D.kip], ['КТГ', 'КВЛ', 'КИП'], D.labels, D.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100),
+    linesSvg([WK.ktg, WK.kvl, WK.kip], ['КТГ', 'КВЛ', 'КИП'], WK.labels, WK.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100, 1))}
+<p class="note">техготовность и линия — среднесуточно (ремонт/выведенные из диспозиций, линия — живой ряд рейсов и перегонов), КИП — по закрытым рейсам; недели — пн–вс внутри периода.</p>
+
 <h2>Простой парка по причинам — среднесуточно машин</h2>
 <div class="tiles">${dtRow}</div>
 <details><summary>кто в простое прямо сейчас (${idleNow.length})</summary>
 <table><thead><tr><th>Машина</th><th>Водитель</th><th>Причина</th><th>Где</th><th>Свободна с</th></tr></thead>
 <tbody>${idleRows}</tbody></table></details>
 
-<h2>Выручка по дням, млн ₽ без НДС</h2>
-<div class="chart">${barsSvg(revDays, 'var(--s1)', ' млн ₽')}</div>
+<h2>Выручка, млн ₽ без НДС</h2>
+<div class="crow"><div class="legend"><span><i style="background:var(--s1)"></i>по дате выгрузки</span></div>${granSeg('rev')}</div>
+${granPair('rev',
+    barsSvg(D.rev, D.labels, D.tips, 'var(--s1)', ' млн ₽'),
+    barsSvg(WK.rev, WK.labels, WK.tips, 'var(--s1)', ' млн ₽', 1))}
 
 <h2>Машины на линии по дням</h2>
-<div class="chart">${linesSvg([online], ['на линии'], ['var(--s1)'], ' машин')}</div>
+<div class="chart">${linesSvg([online], ['на линии'], D.labels, D.tips, ['var(--s1)'], ' машин')}</div>
 
 <h2>Опоздания прибытий: доля &gt;1 ч по дням, %</h2>
 <div class="legend"><span><i style="background:var(--s1)"></i>на погрузку</span><span><i style="background:var(--s2)"></i>на выгрузку</span></div>
-<div class="chart">${linesSvg([late.P.byDayPct, late.D.byDayPct], ['погрузка', 'выгрузка'], ['var(--s1)', 'var(--s2)'], '%', 60)}</div>
+<div class="chart">${linesSvg([late.P.byDayPct, late.D.byDayPct], ['погрузка', 'выгрузка'], D.labels, D.tips, ['var(--s1)', 'var(--s2)'], '%', 60)}</div>
 <p class="note">медиана опоздания среди опоздавших: погрузка ${late.P.median} ч, выгрузка ${late.D.median} ч;
  опозданий &gt;3 ч: погрузка ${late.P.late3}, выгрузка ${late.D.late3}.</p>
 
@@ -351,14 +462,5 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <table class="wide"><thead><tr><th>Клиент</th><th>Рейсов</th><th>Выручка, млн</th></tr></thead>
 <tbody>${clientRows}</tbody></table>
 
-<script>
-const tip=document.getElementById('tip');
-document.addEventListener('mousemove',e=>{
-  const t=e.target.closest('[data-tip]');
-  if(!t){tip.style.display='none';return;}
-  tip.textContent=t.dataset.tip;tip.style.display='block';
-  tip.style.left=Math.min(e.clientX+14,window.innerWidth-tip.offsetWidth-8)+'px';
-  tip.style.top=(e.clientY+16)+'px';
-});
-</script></div></body></html>`;
+</div></body></html>`;
 }

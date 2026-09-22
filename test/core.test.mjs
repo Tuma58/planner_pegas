@@ -3190,3 +3190,42 @@ test('график: автофакт подтверждает факт по ре
   // Повтор ничего не добавляет.
   assert.equal(runScheduleAutoFact(db).marks, 0);
 });
+
+test('эксплуатация: динамика КТГ/КВЛ/КИП по дням и неделям', async t => {
+  const { opsReportData } = await import('../src/ops-report.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-trend-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get();
+  // День 1 (10.03): машина в ремонте сутки. День 2 (11.03): закрытый рейс
+  // с линией 24 ч и под грузом 12 ч (dep 06:00 → arrived 18:00).
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('dTR1', ?, 'repair', '2025-03-10T00:00:00.000Z', '2025-03-11T00:00:00.000Z')`)
+    .run(vehicle.id);
+  db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,
+      on_line_at,unloaded_at,arrived_at,distance_km,revenue_vat,cash)
+    VALUES('trTR1', ?, ?, ?, 'unloaded', '2025-03-11T00:00:00.000Z', '2025-03-12T00:00:00.000Z',
+      '2025-03-11T00:00:00.000Z', '2025-03-12T00:00:00.000Z', '2025-03-11T18:00:00.000Z',
+      500, 122000, 1)`).run(vehicle.id, zone.id, zone.id);
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,actual_departure)
+    VALUES('tsTR1', 'trTR1', 1, 'P', '2025-03-11T06:00:00.000Z')`).run();
+  const parkFn = () => ({ total: { fleet: 10, days: 4, kip: 50, ktg: 0, kvl: 0, rev: 0, trips: 0 },
+    weeks: [], clients: [], canon: '' });
+  const data = opsReportData(db, '2025-03-10', '2025-03-14', parkFn);
+  const D = data.trend.day, W = data.trend.week;
+  assert.equal(D.labels.length, 4, 'четыре дня в периоде');
+  assert.equal(D.ktg[0], 90, 'сутки ремонта: техготовность 9 из 10');
+  assert.equal(D.ktg[1], 100, 'день без ремонта: КТГ 100');
+  assert.equal(D.kvl[1], 10, 'одна машина на линии из 10 готовых');
+  assert.equal(D.kip[1], 50, '12 ч под грузом из 24 ч линии');
+  assert.ok(D.kip.every(v => v >= 0 && v <= 100) && D.kvl.every(v => v >= 0 && v <= 100));
+  // Понедельная агрегация сходится с дневной.
+  const sum = arr => arr.reduce((s, v) => s + v, 0);
+  assert.ok(Math.abs(sum(W.rev) - sum(D.rev)) < 0.05, 'выручка недель = сумме дней');
+  assert.equal(W.labels.length, 1, '10–14.03 — одна неделя (пн–вс)');
+  assert.equal(W.kip[0], 50, 'недельный КИП из тех же часов');
+});
