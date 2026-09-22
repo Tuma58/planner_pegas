@@ -1042,12 +1042,21 @@ export async function renderDispatcher(container, context, options = {}) {
         const bits = [];
         if (gps.silentMin != null && gps.silentMin > 60) {
           bits.push(`<span class="badge warn" title="Трекер не выходит на связь — контроль этого рейса только звонком и ботом">📡 борт молчит ${Math.floor(gps.silentMin / 60)} ч</span>`);
+        } else if (gps.mismatchKm != null) {
+          // Мониторинг вспомогателен (решение 22.09): истина — отметка,
+          // GPS лишь сверяет её. Расхождение — повод поправить факт.
+          bits.push(`<span class="badge warn" title="По отметке машина на точке «${escapeHtml(String(gps.nextStopPointText || '').slice(0, 24))}», а свежий GPS видит её в ${gps.mismatchKm} км — проверьте отметку прибытия или закройте рейс (выгружен)">📡 GPS в ${gps.mismatchKm} км от точки — сверьте отметку</span>`);
+        } else if (gps.atStop) {
+          bits.push(`<span class="muted" title="Прибытие отмечено, GPS подтверждает — машина у точки">📡 на точке ✓</span>`);
         } else if (gps.nearStop && !gps.moving) {
           bits.push(`<span class="badge ok" title="По свежему GPS машина в радиусе точки — подтвердите факт кнопкой этапа (факт ставит человек)">📡 стоит у точки «${escapeHtml(String(gps.nextStopPointText || '').slice(0, 24))}»</span>`);
         } else if (gps.distToNextKm != null) {
           bits.push(`<span class="muted">📡 ${gps.distToNextKm} км до точки${gps.moving ? ` · ${Math.round(gps.speed)} км/ч` : ' · стоит'}</span>`);
         }
-        if (gps.temp) {
+        // После отметки прибытия на выгрузку температура рефа больше не
+        // про груз — строка режима убрана вовсе (жалоба 22.09: «−17° при
+        // 0…4°» у выгруженной машины читалось как отклонение).
+        if (gps.temp && !gps.afterArrive) {
           // Красная тревога — только ПОД ГРУЗОМ (между убытием с погрузки и
           // прибытием на выгрузку): порожний реф до погрузки не в режиме —
           // это норма, а не отклонение (кейс Саглаева 09.09: погрузка после

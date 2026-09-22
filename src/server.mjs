@@ -2016,7 +2016,14 @@ function gpsControlSnapshot() {
     // выгрузку: только в этом окне температура рефа = температура груза.
     const loaded = stops.length >= 2 && stops[0].actual_departure &&
       !stops[stops.length - 1].actual_arrival;
+    // Прибытие на конечную выгрузку отмечено: контроль режима закончен
+    // по нашей механике — GPS дальше только сверка (решение 22.09:
+    // мониторинг вспомогателен, истина — отметки).
+    const afterArrive = stops.length >= 2 && !!stops[stops.length - 1].actual_arrival;
     const target = nextStopPoint(trip, stops);
+    // По механике машина УЖЕ на точке (прибытие отмечено, убытия нет):
+    // «км до точки» бессмысленны — GPS может лишь сверить отметку.
+    const atStop = !!target?.stop?.actual_arrival;
     let distKmValue = null;
     if (target?.latitude != null && Number.isFinite(pos.latitude)) {
       // roadKm — уже дорожная оценка (прямая × 1,2), ничем не делим:
@@ -2052,8 +2059,16 @@ function gpsControlSnapshot() {
       fixed_at: pos.fixed_at, silentMin, fresh,
       nextStopId: target?.stop?.id || null,
       nextStopPointText: target?.stop?.point || null,
-      distToNextKm: distKmValue != null ? Math.round(distKmValue) : null,
-      nearStop: fresh && distKmValue != null && distKmValue <= GPS_NEAR_KM,
+      distToNextKm: !atStop && distKmValue != null ? Math.round(distKmValue) : null,
+      nearStop: !atStop && fresh && distKmValue != null && distKmValue <= GPS_NEAR_KM,
+      // Отметка «прибыл» стоит, а свежий GPS видит машину далеко от
+      // точки: не «км до точки», а расхождение — проверить отметку или
+      // закрыть рейс (кейс т046 22.09: прибыл в Вязьму по механике,
+      // GPS — Смоленск, 160 км; заодно чинит дисциплину отметок).
+      atStop,
+      mismatchKm: atStop && fresh && distKmValue != null && distKmValue > GPS_NEAR_KM * 3
+        ? Math.round(distKmValue) : null,
+      afterArrive,
       moving: fresh && Number(pos.speed) >= 5,
       loaded, temp
     });
