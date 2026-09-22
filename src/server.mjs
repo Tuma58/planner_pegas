@@ -2795,10 +2795,87 @@ function rebuildLegFacts() {
       console.log(`rebuildLegFacts: плеч ${byKey.size}, чистых рейсов ${clean.length}, коэффициент ${factor}`);
     } else console.log(`rebuildLegFacts: плеч ${byKey.size}, мало данных для калибровки (${ratios.length})`);
     rebuildTransitFacts();
+    rebuildSpeedNorms();
     recalcSeptemberKm();
     sanitizeInflatedKm();
     sanitizeInflatedTransit();
   } catch (error) { console.error('rebuildLegFacts:', error.message); }
+}
+
+// ── Живой канон скоростей (проект «Скорости», этап 1 — 22.09) ──
+// Vт — техническая (Пилот, СПРАВКА): медиана скоростей машино-дней.
+// Vэ — эксплуатационная (КАНОН из отметок): медиана скоростей закрытых
+// рейсов, км плана / всё время рейса. Дорожная — медиана по чистым
+// цепочкам отметок (убыл с погрузки → прибыл на выгрузку) — кандидат
+// на замену константы техскорости в транзите (этап 2, по команде).
+// Дисциплина отметок — доля рейсов с монотонной цепочкой: только они
+// учат нормативы. Кламп отверг значение — работает прежнее, и это
+// видно в логе. Хранение: app_meta speed_norms, дрейф — «📐 Нормативы
+// недели» и отчёт «Скорости парка».
+const SPEED_CLAMPS = { vt: [40, 75], ve: [12, 35], vroad: [20, 60] };
+function rebuildSpeedNorms() {
+  try {
+    const median = list => { list.sort((a, b) => a - b); return list[Math.floor(list.length / 2)]; };
+    const prev = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='speed_norms'`)
+      .get()?.value || 'null');
+    // Vт: скорость каждого машино-дня за 28 дн (правило отчёта скоростей:
+    // CAN-км при согласованности с часами ≤85, иначе GPS-км).
+    const vtList = db.prepare(`SELECT km, can_km, move_hours FROM vehicle_daily_runs
+        WHERE day >= date('now','-28 day') AND move_hours > 0.5`).all()
+      .map(row => {
+        const can = Number(row.can_km) || 0;
+        const km = can > 0 && can / row.move_hours <= 85 ? can : Number(row.km) || 0;
+        return km / row.move_hours;
+      }).filter(v => v > 5 && v < 110);
+    const veList = [];
+    const vroadList = [];
+    let clean = 0;
+    let total = 0;
+    for (const trip of db.prepare(`SELECT t.distance_km km, t.starts_at, t.arrived_at, t.unloaded_at,
+        (SELECT MIN(s.actual_departure) FROM trip_stops s WHERE s.trip_id=t.id AND s.kind='P'
+          AND s.actual_departure IS NOT NULL) dep,
+        (SELECT MIN(s.actual_arrival) FROM trip_stops s WHERE s.trip_id=t.id AND s.kind='P'
+          AND s.actual_arrival IS NOT NULL) parr
+      FROM trips t WHERE t.status IN ('unloaded','done','paid')
+        AND t.unloaded_at >= datetime('now','-28 day')`).all()) {
+      const P = value => value ? Date.parse(String(value).replace(' ', 'T')) : NaN;
+      const st = P(trip.starts_at), fin = P(trip.unloaded_at), arr = P(trip.arrived_at),
+        dep = P(trip.dep), parr = P(trip.parr);
+      const totH = (fin - st) / 3.6e6;
+      const km = Number(trip.km) || 0;
+      if (Number.isFinite(totH) && totH >= 1 && totH <= 240 && km / totH >= 5 && km / totH <= 80) {
+        veList.push(km / totH);
+      }
+      total += 1;
+      if (![st, parr, dep, arr, fin].every(Number.isFinite)) continue;
+      if (!(st <= parr && parr <= dep && dep <= arr && arr <= fin)) continue;
+      clean += 1;
+      const roadH = (arr - dep) / 3.6e6;
+      if (roadH >= 1 && km / roadH >= 10 && km / roadH <= 90) vroadList.push(km / roadH);
+    }
+    const learn = (key, list, minSamples) => {
+      if (list.length < minSamples) return { value: prev?.[key] ?? null, note: `мало образцов (${list.length})` };
+      const raw = Math.round(median(list) * 10) / 10;
+      const [lo, hi] = SPEED_CLAMPS[key];
+      if (raw < lo || raw > hi) return { value: prev?.[key] ?? null, note: `вне клампа (${raw})` };
+      return { value: raw, note: null };
+    };
+    const vt = learn('vt', vtList, 50);
+    const ve = learn('ve', veList, 30);
+    const vroad = learn('vroad', vroadList, 20);
+    const norms = {
+      vt: vt.value, ve: ve.value, vroad: vroad.value,
+      disciplinePct: total ? Math.round(clean / total * 100) : null,
+      samples: { vtDays: vtList.length, veTrips: veList.length, roadTrips: vroadList.length, clean, total },
+      prev: prev ? { vt: prev.vt, ve: prev.ve, vroad: prev.vroad, disciplinePct: prev.disciplinePct } : null,
+      at: new Date().toISOString()
+    };
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('speed_norms',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(norms));
+    console.log(`rebuildSpeedNorms: Vт ${norms.vt}${vt.note ? ` (${vt.note})` : ''} · Vэ ${norms.ve}${ve.note ? ` (${ve.note})` : ''}`
+      + ` · дорожная ${norms.vroad}${vroad.note ? ` (${vroad.note})` : ''} · дисциплина отметок ${norms.disciplinePct}% (${clean}/${total})`);
+    return norms;
+  } catch (error) { console.error('rebuildSpeedNorms:', error.message); return null; }
 }
 
 // ── Самообучающийся транзит: дорога и ворота из фактов 60 дней ──
@@ -4466,6 +4543,12 @@ function runNormsDigest() {
     if (last?.gateH != null && gateH != null && gateH > last.gateH * 1.25) {
       hints.push('ворота растут — реестр «⏳ Простои П/В» и слоты выгрузки');
     }
+    // Живой канон скоростей (этап 1 проекта «Скорости»): пересчёт здесь
+    // же — дайджест всегда говорит свежими медианами 28 дн.
+    const speedN = rebuildSpeedNorms();
+    if (speedN?.disciplinePct != null && speedN.disciplinePct < 40) {
+      hints.push(`дисциплина отметок ${speedN.disciplinePct}% — нормативы учатся на трети рейсов: жёлтые «сверьте отметку» в Диспетчере`);
+    }
     notifyEveryone(`📐 Нормативы недели: переменные ${norms.varCost} ₽/км (Настройки → Калькуляция)` +
       ` · медиана маржи парка ${Math.round(norms.parkMedian / 100) / 10} т₽/сут${
         delta(norms.parkMedian / 1000, last ? last.parkMedian / 1000 : null, ' т₽')}` +
@@ -4473,6 +4556,9 @@ function runNormsDigest() {
       ` · факт недели: ${rubKm} ₽/км б/НДС${delta(rubKm, last?.rubKm, ' ₽')}` +
       `, техскорость ${techSpeed} км/ч${delta(techSpeed, last?.techSpeed, '')}` +
       (gateH != null ? `, ворота ${gateH} ч${delta(gateH, last?.gateH, ' ч')}` : '') +
+      (speedN ? ` · скорости 28 дн (канон отметок): Vэ ${speedN.ve ?? '—'} км/ч${speedN.ve != null ? delta(speedN.ve, last?.ve, '') : ''}` +
+        `, дорожная ${speedN.vroad ?? '—'}${speedN.vroad != null ? delta(speedN.vroad, last?.vroad, '') : ''}` +
+        `, дисциплина отметок ${speedN.disciplinePct ?? '—'}%${speedN.disciplinePct != null ? delta(speedN.disciplinePct, last?.disciplinePct, ' п.п.') : ''}` : '') +
       moveLine('⬆ выросли', ups) + moveLine('⬇ просели', downs) +
       (() => {
         // Покрытие умного транзита: сколько план-дат уже считается из факта.
@@ -4523,7 +4609,9 @@ function runNormsDigest() {
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_last',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
       .run(JSON.stringify({ parkMedian: norms.parkMedian, varCost: norms.varCost,
-        rubKm, techSpeed, gateH }));
+        rubKm, techSpeed, gateH,
+        ve: speedN?.ve ?? null, vroad: speedN?.vroad ?? null,
+        disciplinePct: speedN?.disciplinePct ?? null }));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_segment_moves','[]')
       ON CONFLICT(key) DO UPDATE SET value='[]'`).run();
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_digest_week',?)
@@ -9148,6 +9236,16 @@ async function api(request, response, url) {
         value: `${gate.ok || 0} выученных ворот`,
         clamp: '0,5–8 ч (введён 12.09: хвосты дисциплины отметок — не ворота)',
         drift: '📐 Нормативы недели (строка «ворота»)' },
+      { name: 'Скорости парка Vт/Vэ/дорожная',
+        learns: 'медианы 28 дн: Vт — техническая из дневных пробегов (Пилот — справка); Vэ — эксплуатационная и дорожная — из отметок рейсов (канон, только чистые цепочки); дисциплина отметок = доля чистых',
+        value: (() => {
+          const sn = safe(() => JSON.parse(db.prepare(`SELECT value FROM app_meta
+            WHERE key='speed_norms'`).get()?.value || 'null')) || safe(rebuildSpeedNorms);
+          return sn ? `Vт ${sn.vt ?? '—'} · Vэ ${sn.ve ?? '—'} · дорожная ${sn.vroad ?? '—'} км/ч · дисциплина отметок ${sn.disciplinePct ?? '—'}%`
+            : 'ещё не выучены';
+        })(),
+        clamp: 'Vт 40–75 · Vэ 12–35 · дорожная 20–60 км/ч; вне клампа — прежнее значение',
+        drift: '📐 Нормативы недели · отчёт «Скорости парка» (водопад)' },
       { name: 'Честный одометр рейса',
         learns: 'факт-км рейса лестницей: CAN-одометр → GPS-трек → эксклюзивные календарные дни → «не измерено»',
         value: `${odo.g || 0} из ${odo.n || 0} закрытых рейсов за 14 дн`,
@@ -9523,7 +9621,38 @@ async function api(request, response, url) {
         op: row.h > 0 ? Math.round(row.km / row.h * 10) / 10 : null,
         dwellH: row.dwellH != null ? Math.round(row.dwellH * 10) / 10 : null }))
       .filter(row => row.op != null);
-    return json(response, 200, { from, to, techDays, opDays, byVehicle, byCustomer, skipped });
+    // Водопад скорости (этап 1 проекта «Скорости»): разложение времени
+    // рейса по ЧИСТЫМ цепочкам отметок за период — мониторинг здесь не
+    // участвует, только наша механика (решение руководителя 22.09).
+    const phases = { preH: 0, loadH: 0, roadH: 0, unloadH: 0, totH: 0, km: 0, n: 0, total: 0 };
+    for (const trip of db.prepare(`SELECT t.distance_km km, t.starts_at, t.arrived_at, t.unloaded_at,
+        (SELECT MIN(s.actual_departure) FROM trip_stops s WHERE s.trip_id=t.id AND s.kind='P'
+          AND s.actual_departure IS NOT NULL) dep,
+        (SELECT MIN(s.actual_arrival) FROM trip_stops s WHERE s.trip_id=t.id AND s.kind='P'
+          AND s.actual_arrival IS NOT NULL) parr
+      FROM trips t WHERE t.status IN ('unloaded','done','paid')
+        AND COALESCE(t.unloaded_at, t.ends_at) >= ? AND COALESCE(t.unloaded_at, t.ends_at) < ?`)
+      .all(from, to)) {
+      const P = value => value ? Date.parse(String(value).replace(' ', 'T')) : NaN;
+      const st = P(trip.starts_at), fin = P(trip.unloaded_at), arr = P(trip.arrived_at),
+        dep = P(trip.dep), parr = P(trip.parr);
+      phases.total += 1;
+      if (![st, parr, dep, arr, fin].every(Number.isFinite)) continue;
+      if (!(st <= parr && parr <= dep && dep <= arr && arr <= fin)) continue;
+      const totH = (fin - st) / 3.6e6;
+      if (totH < 1 || totH > 240) continue;
+      phases.n += 1;
+      phases.totH += totH;
+      phases.preH += (parr - st) / 3.6e6;
+      phases.loadH += (dep - parr) / 3.6e6;
+      phases.roadH += (arr - dep) / 3.6e6;
+      phases.unloadH += (fin - arr) / 3.6e6;
+      phases.km += Number(trip.km) || 0;
+    }
+    const speedNorms = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='speed_norms'`)
+      .get()?.value || 'null') || rebuildSpeedNorms();
+    return json(response, 200, { from, to, techDays, opDays, byVehicle, byCustomer, skipped,
+      waterfall: phases.n ? phases : null, norms: speedNorms });
   }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const user = requirePermission(request, response, 'reports:read');

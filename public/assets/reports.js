@@ -606,6 +606,33 @@ export async function buildReport(kind, from, to, data) {
         на часы движения; потолок ~65–70. Эксплуатационная —
         километры рейса на всё его время: разрыв между ними = стоянки (погрузка, выгрузка, очереди,
         отдых). Рычаг — не газ, а сокращение стоянок: смотрите разрез «Клиенты».</p>
+      ${(() => {
+        // Водопад скорости (этап 1 проекта «Скорости», 22.09): куда
+        // уходит время рейса — только по чистым цепочкам отметок
+        // (мониторинг — справка, канон времени — наша механика).
+        const wf = sp.waterfall;
+        const sn = sp.norms;
+        if (!wf) return '';
+        const perTrip = v => (v / wf.n).toFixed(1);
+        const pct = v => Math.round(v / wf.totH * 100);
+        const vRoad = wf.roadH ? (wf.km / wf.roadH).toFixed(1) : '—';
+        const vTrip = wf.totH ? (wf.km / wf.totH).toFixed(1) : '—';
+        const discipline = wf.total ? Math.round(wf.n / wf.total * 100) : 0;
+        return `<h4>⏱ Куда уходит скорость — средний рейс за период (${wf.n} рейсов с чистой цепочкой отметок)</h4>
+        <table class="rtable"><thead><tr><th>Фаза рейса</th><th class="num">Часов</th><th class="num">Доля времени</th><th>Чей процесс</th></tr></thead><tbody>
+          <tr><td>Подача и ожидание погрузки</td><td class="num">${perTrip(wf.preH)}</td><td class="num">${pct(wf.preH)}%</td><td>логистика</td></tr>
+          <tr><td>Ворота погрузки</td><td class="num">${perTrip(wf.loadH)}</td><td class="num">${pct(wf.loadH)}%</td><td>клиент/претензии</td></tr>
+          <tr><td>Дорога (убыл с погрузки → прибыл на выгрузку)</td><td class="num">${perTrip(wf.roadH)}</td><td class="num">${pct(wf.roadH)}%</td><td>водитель + РТО</td></tr>
+          <tr><td><b>Ворота выгрузки</b></td><td class="num"><b>${perTrip(wf.unloadH)}</b></td><td class="num"><b>${pct(wf.unloadH)}%</b></td><td>клиент/претензии</td></tr>
+          <tr><td><b>Весь рейс</b></td><td class="num"><b>${perTrip(wf.totH)}</b></td><td class="num">100%</td><td>${Math.round(wf.km / wf.n)} км в среднем</td></tr>
+        </tbody></table>
+        <p class="muted" style="margin:4px 0 2px">Каскад скоростей: в движении <b>${techAvg ? techAvg.toFixed(1) : '—'}</b> (Пилот, справка)
+          → по дороге с отдыхом <b>${vRoad}</b> → рейс целиком <b>${vTrip} км/ч</b> (канон по отметкам).
+          Разрыв «дорога → рейс» — это ворота и подача: главный рычаг — ворота выгрузки.</p>
+        <p class="muted" style="margin:2px 0 8px">Дисциплина отметок: чистая цепочка у <b>${wf.n} из ${wf.total}</b> рейсов периода (${discipline}%) —
+          только они учат нормативы. Жёлтые «📡 сверьте отметку» в Диспетчере поднимают эту долю.${sn && sn.ve != null
+            ? ` Живые нормативы 28 дн: Vт ${sn.vt ?? '—'} · дорожная ${sn.vroad ?? '—'} · Vэ ${sn.ve} км/ч (реестр «🧠 Живые нормативы»).` : ''}</p>`;
+      })()}
       ${chart}
       <h4>🚛 ТС: тянут скорость вниз</h4>${vtable(worstVeh)}
       <h4 style="margin-top:8px">🚛 ТС: лучшие</h4>${vtable(bestVeh)}
