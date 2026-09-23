@@ -1208,7 +1208,7 @@ export function customerCard(db, name, nowMs = Date.now()) {
 export function tripsWithoutNext(db, nowMs = Date.now(), horizonMs = 2 * 3_600_000, onlyUnalerted = true) {
   const until = new Date(nowMs + horizonMs).toISOString();
   const rows = db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.ends_at, t.to_point, t.customer_name,
-      t.next_alert_at, v.plate,
+      t.next_alert_at, t.next_sales_alert_at, v.plate,
       (SELECT name FROM zones WHERE id=t.to_zone_id) to_name
     FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
     WHERE t.status='run' AND t.ends_at<=? ORDER BY t.ends_at`).all(until);
@@ -1216,6 +1216,28 @@ export function tripsWithoutNext(db, nowMs = Date.now(), horizonMs = 2 * 3_600_0
     AND id<>? AND starts_at>=? LIMIT 1`);
   return rows.filter(trip => (!onlyUnalerted || !trip.next_alert_at) &&
     !hasNext.get(trip.vehicle_id, trip.id, trip.starts_at));
+}
+
+// Норматив стыковки (разбор 23.09): доля рейсов периода, у которых
+// следующий рейс той же машины был СОЗДАН до фактической выгрузки —
+// такой стык в среднем 8 ч против 27,6 у назначенных после. Пары без
+// следующего рейса вовсе не считаются (следующий мог ещё не появиться).
+// Цель руководителя — calculation.nextAssignTargetPct.
+export function nextAssignedShare(db, fromIso, toIso) {
+  const ts = value => value ? Date.parse(String(value).replace(' ', 'T')) : NaN;
+  const nextStmt = db.prepare(`SELECT created_at FROM trips
+    WHERE vehicle_id=? AND status<>'rejected' AND starts_at>? ORDER BY starts_at LIMIT 1`);
+  let before = 0;
+  let total = 0;
+  for (const trip of db.prepare(`SELECT vehicle_id, starts_at, unloaded_at FROM trips
+      WHERE status IN ('unloaded','done','paid') AND unloaded_at >= ? AND unloaded_at < ?`)
+    .all(fromIso, toIso)) {
+    const next = nextStmt.get(trip.vehicle_id, trip.starts_at);
+    if (!next) continue;
+    total += 1;
+    if (ts(next.created_at) <= ts(trip.unloaded_at)) before += 1;
+  }
+  return { before, total, pct: total ? Math.round(before / total * 100) : null };
 }
 
 // ── Рейтинг водителей ──

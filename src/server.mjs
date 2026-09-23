@@ -20,7 +20,7 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
+  nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge } from './schedule.mjs';
@@ -889,6 +889,17 @@ function runDailyFleetReport() {
           : ' · явка за день не велась';
       })() +
       cdSegmentLine(dayIso, todayIso) + assignQualityLine(dayIso, todayIso) + demurrageBacklogLine() +
+      (() => {
+        // Норматив стыковки (23.09): следующий рейс назначен до выгрузки.
+        // Семидневное окно — дневные выборки слишком малы и дёргаются.
+        const share = nextAssignedShare(db,
+          new Date(Date.parse(`${todayIso}T00:00:00Z`) - 7 * 86_400_000).toISOString(),
+          `${todayIso}T00:00:00.000Z`);
+        if (share.pct == null) return '';
+        const target = Number((settingsObject(db).calculation || {}).nextAssignTargetPct ?? 85);
+        return ` · стыковка за 7 дн: следующий до выгрузки ${share.before} из ${share.total}` +
+          ` (${share.pct}% при цели ${target}%)`;
+      })() +
       ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
@@ -4673,6 +4684,13 @@ function runNormsDigest() {
     } else if (speedN?.reserveP80 != null && reserveCfg > speedN.reserveP80 + 8) {
       hints.push(`запас обещаний ${reserveCfg}% выше хвостов факта (+${speedN.reserveP80}% p80) — сроки раздуты, машины заняты на бумаге: уменьшите «Запас надёжности»`);
     }
+    // Норматив стыковки: следующий до выгрузки (стык 8 ч против 27,6).
+    const nextShare = nextAssignedShare(db,
+      new Date(Date.now() - 7 * 86_400_000).toISOString(), new Date().toISOString());
+    const nextTarget = Number((settingsObject(db).calculation || {}).nextAssignTargetPct ?? 85);
+    if (nextShare.pct != null && nextShare.pct < nextTarget) {
+      hints.push(`стыковка ${nextShare.pct}% при цели ${nextTarget}% — продажам приходит «🔎 Освобождаются без груза» за 6–24 ч до выгрузки`);
+    }
     notifyEveryone(`📐 Нормативы недели: переменные ${norms.varCost} ₽/км (Настройки → Калькуляция)` +
       ` · медиана маржи парка ${Math.round(norms.parkMedian / 100) / 10} т₽/сут${
         delta(norms.parkMedian / 1000, last ? last.parkMedian / 1000 : null, ' т₽')}` +
@@ -4683,6 +4701,9 @@ function runNormsDigest() {
       (speedN ? ` · скорости 28 дн (канон отметок): Vэ ${speedN.ve ?? '—'} км/ч${speedN.ve != null ? delta(speedN.ve, last?.ve, '') : ''}` +
         `, дорожная ${speedN.vroad ?? '—'}${speedN.vroad != null ? delta(speedN.vroad, last?.vroad, '') : ''}` +
         `, дисциплина отметок ${speedN.disciplinePct ?? '—'}%${speedN.disciplinePct != null ? delta(speedN.disciplinePct, last?.disciplinePct, ' п.п.') : ''}` : '') +
+      (nextShare.pct != null
+        ? ` · стыковка: следующий до выгрузки ${nextShare.pct}%${delta(nextShare.pct, last?.nextPct, ' п.п.')} (цель ${nextTarget}%)`
+        : '') +
       moveLine('⬆ выросли', ups) + moveLine('⬇ просели', downs) +
       (() => {
         // Покрытие умного транзита: сколько план-дат уже считается из факта.
@@ -4735,7 +4756,8 @@ function runNormsDigest() {
       .run(JSON.stringify({ parkMedian: norms.parkMedian, varCost: norms.varCost,
         rubKm, techSpeed, gateH,
         ve: speedN?.ve ?? null, vroad: speedN?.vroad ?? null,
-        disciplinePct: speedN?.disciplinePct ?? null }));
+        disciplinePct: speedN?.disciplinePct ?? null,
+        nextPct: nextShare.pct ?? null }));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_segment_moves','[]')
       ON CONFLICT(key) DO UPDATE SET value='[]'`).run();
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_digest_week',?)
@@ -4828,10 +4850,28 @@ setTimeout(runEmptyKmWatch, 40_000);
 
 function runNextTripWatch() {
   try {
-    // Горизонт 6 часов: за 2 часа груз уже не найти — сигнал приходил,
-    // когда зазор было не спасти. Теперь сторож стыковки успевает подобрать
-    // черновик, и в уведомлении сразу есть рекомендация.
-    const rows = tripsWithoutNext(db, Date.now(), 6 * 3_600_000, true);
+    const nowMs = Date.now();
+    // Ранняя ступень — продажам (разбор стыков 23.09: назначение ПОСЛЕ
+    // выгрузки утраивает стык — 27,6 ч против 8): выгрузка через 6–24
+    // часа, следующего нет — ещё есть время найти груз под освобождение.
+    const salesRows = tripsWithoutNext(db, nowMs, 24 * 3_600_000, false)
+      .filter(trip => Date.parse(trip.ends_at) > nowMs + 6 * 3_600_000 && !trip.next_sales_alert_at);
+    if (salesRows.length) {
+      const when = iso => {
+        const at = new Date(Date.parse(iso) + 3 * 3_600_000).toISOString();
+        return `${at.slice(8, 10)}.${at.slice(5, 7)} ${at.slice(11, 16)}`;
+      };
+      notify('sales', `🔎 Освобождаются без следующего груза (выгрузка через 6–24 ч): ${salesRows.slice(0, 12)
+        .map(trip => `${trip.plate} → ${trip.to_name || trip.to_point || '—'} (${when(trip.ends_at)} МСК)`)
+        .join('; ')}${salesRows.length > 12 ? ` и ещё ${salesRows.length - 12}` : ''}.` +
+        ' Найдите груз до выгрузки: назначение после неё утраивает простой стыка (норматив — в Отчёте дня)',
+        null, null, { category: 'no_next' });
+      const stampSales = db.prepare('UPDATE trips SET next_sales_alert_at=CURRENT_TIMESTAMP WHERE id=?');
+      for (const trip of salesRows) stampSales.run(trip.id);
+    }
+    // Поздняя ступень — логисту: за 6 часов груз уже не найти, но можно
+    // назначить из имеющихся заявок (черновик-рекомендация прилагается).
+    const rows = tripsWithoutNext(db, nowMs, 6 * 3_600_000, true);
     if (!rows.length) return;
     const fmt = iso => new Date(Date.parse(iso) + 3 * 3_600_000).toISOString().slice(11, 16);
     const draftFor = db.prepare(`SELECT d.empty_km, o.order_no FROM assign_drafts d

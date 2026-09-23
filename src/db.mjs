@@ -659,6 +659,13 @@ function migrateColumns(db) {
       db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
         .run(JSON.stringify(calculation));
     }
+    // Цель стыковки (разбор 23.09): доля рейсов, у которых следующий
+    // назначен ДО выгрузки (такой стык 8 ч против 27,6 у «после»).
+    if (calculation.nextAssignTargetPct == null) {
+      calculation.nextAssignTargetPct = 85;
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
+        .run(JSON.stringify(calculation));
+    }
   }
   // Нормативы простоя под погрузкой/выгрузкой: бесплатный порог 8 ч от
   // планового времени операции, сверх — счёт клиенту по тарифу за начатый час.
@@ -838,6 +845,9 @@ function migrateColumns(db) {
   // затягивал бы выход (урок отменённого этапа «документы получены»).
   ensure('trips', 'shipper_notified_at', 'TEXT');
   ensure('trips', 'shipper_notified_by', "TEXT NOT NULL DEFAULT ''");
+  // Штамп ранней ступени сторожа стыковки (23.09): продажам за 6–24 ч
+  // до выгрузки, отдельно от next_alert_at логиста (6 ч).
+  ensure('trips', 'next_sales_alert_at', 'TEXT');
   // Слот плана вывоза, правленный вручную: автопересев из истории его не
   // трогает — иначе договорённости продаж перетирались бы статистикой.
   ensure('delivery_slots', 'manual', 'INTEGER NOT NULL DEFAULT 0');

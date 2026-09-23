@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { effectivePermissions, hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, tripsWithoutNext, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, tripsWithoutNext, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, nextAssignedShare, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -3267,4 +3267,29 @@ test('живой транзит: скорость по дальности, во�
   assert.ok(Math.abs(transitHours(100, { ...calc, liveSpeeds: { ...live, short: null } }, 0) - 100 / 40 * 1.1) < 0.01);
   // Скорости не выучены — прежняя формула из настроек.
   assert.ok(Math.abs(transitHours(900, { techSpeedKmh: 50, handlingHoursPerOperation: 2, transitFactor: 1.5 }) - (900 / 50 + 4) * 1.5) < 0.01, 'фолбэк — старая формула');
+});
+
+test('стыковка: следующий рейс назначен до выгрузки — норматив', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-next-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const put = (id, starts, unloaded, created, status) => db.prepare(`INSERT INTO trips(
+      id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,unloaded_at,created_at,
+      distance_km,revenue_vat)
+    VALUES(?,?,?,?,?,?,?,?,?,500,100000)`)
+    .run(id, vehicle, zone, zone, status, starts, unloaded || starts, unloaded, created);
+  // Рейс A выгружен 10.04; следующий B создан 09.04 (ДО выгрузки).
+  put('nxA', '2025-04-08T00:00:00.000Z', '2025-04-10T00:00:00.000Z', '2025-04-07T00:00:00.000Z', 'unloaded');
+  put('nxB', '2025-04-11T00:00:00.000Z', '2025-04-12T00:00:00.000Z', '2025-04-09T00:00:00.000Z', 'unloaded');
+  // Следующий за B — C, создан 13.04 (ПОСЛЕ выгрузки B 12.04).
+  put('nxC', '2025-04-14T00:00:00.000Z', null, '2025-04-13T00:00:00.000Z', 'plan');
+  const share = nextAssignedShare(db, '2025-04-01', '2025-04-30');
+  assert.equal(share.total, 2, 'две пары с существующим следующим');
+  assert.equal(share.before, 1, 'до выгрузки назначен один');
+  assert.equal(share.pct, 50);
 });
