@@ -2869,8 +2869,13 @@ function rebuildSpeedNorms() {
         veList.push(km / totH);
       }
       total += 1;
-      if (![st, parr, dep, arr, fin].every(Number.isFinite)) continue;
-      if (!(st <= parr && parr <= dep && dep <= arr && arr <= fin)) continue;
+      // Чистая цепочка — четыре ФАКТА по порядку: прибыл-П ≤ убыл-П ≤
+      // прибыл-В ≤ выгружен. Плановый старт в проверке не участвует
+      // (урок 23.09: машина штатно подаётся РАНЬШЕ планового окна —
+      // 854 из 890 «нарушений» были ранней подачей, и обучение теряло
+      // две трети нормальных рейсов).
+      if (![parr, dep, arr, fin].every(Number.isFinite)) continue;
+      if (!(parr <= dep && dep <= arr && arr <= fin)) continue;
       clean += 1;
       const roadH = (arr - dep) / 3.6e6;
       if (roadH >= 1 && km / roadH >= 10 && km / roadH <= 90) {
@@ -9814,13 +9819,17 @@ async function api(request, response, url) {
       const st = P(trip.starts_at), fin = P(trip.unloaded_at), arr = P(trip.arrived_at),
         dep = P(trip.dep), parr = P(trip.parr);
       phases.total += 1;
-      if (![st, parr, dep, arr, fin].every(Number.isFinite)) continue;
-      if (!(st <= parr && parr <= dep && dep <= arr && arr <= fin)) continue;
-      const totH = (fin - st) / 3.6e6;
+      // Цепочка фактов без планового старта (урок 23.09: ранняя подача —
+      // норма). Приехал раньше окна — отсчёт с прибытия: ожидание окна
+      // честно ложится в ворота погрузки, машина ведь стоит у клиента.
+      if (![parr, dep, arr, fin].every(Number.isFinite)) continue;
+      if (!(parr <= dep && dep <= arr && arr <= fin)) continue;
+      const startMs = Number.isFinite(st) ? Math.min(st, parr) : parr;
+      const totH = (fin - startMs) / 3.6e6;
       if (totH < 1 || totH > 240) continue;
       phases.n += 1;
       phases.totH += totH;
-      phases.preH += (parr - st) / 3.6e6;
+      phases.preH += Math.max(0, parr - startMs) / 3.6e6;
       phases.loadH += (dep - parr) / 3.6e6;
       phases.roadH += (arr - dep) / 3.6e6;
       phases.unloadH += (fin - arr) / 3.6e6;
