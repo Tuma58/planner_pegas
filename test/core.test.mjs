@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { effectivePermissions, hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, tripsWithoutNext, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, gapStats, markAttendance, nextAssignedShare, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, tripsWithoutNext, demurrageCases, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, gapStats, markAttendance, nextAssignedShare, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -3322,4 +3322,38 @@ test('целевой стык: разложение «ждали заказ / ж
   assert.ok(Math.abs(gs.medianH - 18) < 0.1, `стык 18 ч, получили ${gs.medianH}`);
   assert.ok(Math.abs(gs.waitOrderAvg - 6) < 0.1, `ждали заказ 6 ч, получили ${gs.waitOrderAvg}`);
   assert.ok(Math.abs(gs.waitSlotAvg - 12) < 0.1, `ждали окно 12 ч, получили ${gs.waitSlotAvg}`);
+});
+
+test('профиль водителя: метрики за период по закреплению', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-drvprof-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const drv = db.prepare('SELECT id, full_name FROM drivers LIMIT 1').get();
+  db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at)
+    VALUES('dp-a1',?,?,'2025-06-01T00:00:00.000Z','2025-06-30T00:00:00.000Z')`).run(drv.id, vehicle);
+  // Рейс 480 км за 24 ч (Vэ 20), чистая цепочка, ворота выгрузки 4 ч.
+  db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,
+      arrived_at,unloaded_at,distance_km,empty_km,revenue_vat)
+    VALUES('dpT1',?,?,?,'unloaded','2025-06-10T00:00:00.000Z','2025-06-11T00:00:00.000Z',
+      '2025-06-10T20:00:00.000Z','2025-06-11T00:00:00.000Z',480,20,90000)`).run(vehicle, zone, zone);
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,planned_arrival,actual_arrival,actual_departure)
+    VALUES('dpS1','dpT1',1,'P','2025-06-10T02:00:00.000Z','2025-06-10T04:00:00.000Z','2025-06-10T06:00:00.000Z')`).run();
+  // Машино-день в закреплении: 600 км за 9 ч движения → Vт ~66,7.
+  db.prepare(`INSERT INTO vehicle_daily_runs(vehicle_id,day,km,can_km,move_hours,max_speed)
+    VALUES(?,'2025-06-10',600,600,9,82)`).run(vehicle);
+  const out = driverPeriodMetrics(db, '2025-06-01T00:00:00.000Z', '2025-06-20T00:00:00.000Z');
+  const me = out.drivers.find(d => d.name === drv.full_name.trim());
+  assert.ok(me, 'водитель найден по закреплению');
+  assert.equal(me.trips, 1);
+  assert.equal(me.km, 500, 'км с порожним');
+  assert.ok(Math.abs(me.ve - 20) < 0.1, `Vэ 20, получили ${me.ve}`);
+  assert.ok(Math.abs(me.vt - 66.7) < 0.2, `Vт ~66,7, получили ${me.vt}`);
+  assert.equal(me.lateLoad, 1, 'опоздание на погрузку >1 ч');
+  assert.equal(me.gateUnloadH, 4, 'ворота выгрузки 4 ч');
+  assert.equal(me.cleanPct, 100, 'цепочка чистая');
 });

@@ -12,6 +12,7 @@ export const REPORT_TITLES = {
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
+  drivers: 'Водители: профиль и дисциплина',
   execution: 'Контроль выполнения рейсов',
   vehicles: 'Аналитика по сцепкам',
   conflicts: 'История конфликтов',
@@ -544,6 +545,43 @@ export async function buildReport(kind, from, to, data) {
       <h4>Вернулись из плана в продажи</h4>
       <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина возврата</th></tr></thead>
         <tbody>${rows(returned) || '<tr><td colspan=5>Возвратов нет</td></tr>'}</tbody></table>`;
+  } else if (kind === 'drivers') {
+    // Профиль водителей (24.09): едет или стоит — по каждому за период.
+    // Водитель рейса определяется закреплением на момент старта.
+    const dr = await api(`/api/reports/drivers?from=${from}&to=${to}`);
+    const P = dr.park;
+    const cellVe = d => d.ve == null ? '—'
+      : `<span class="${P.ve && d.ve < P.ve * 0.8 ? 'bad' : ''}">${d.ve.toFixed(1)}</span>`;
+    const cellLate = (late, facts) => !facts ? '—'
+      : `<span class="${late / facts > 0.3 ? 'bad' : ''}">${late}/${facts}</span>`;
+    const cellClean = d => d.cleanPct == null ? '—'
+      : `<span class="${d.cleanPct < 70 ? 'bad' : ''}">${d.cleanPct}%</span>`;
+    body = `<div class="rsums">
+        <span class="rsum">Водителей с рейсами: <b>${dr.drivers.length}</b></span>
+        <span class="rsum">Медиана парка: рейс целиком <b>${P.ve ?? '—'} км/ч</b></span>
+        <span class="rsum">в движении <b>${P.vt ?? '—'} км/ч</b></span>
+        <span class="rsum">ворота выгрузки <b>${P.gateUnloadH ?? '—'} ч</b></span></div>
+      <p class="geohint">Как читать: <b>«Рейс целиком»</b> ниже парковой на 20%+ (красным) —
+        водитель много стоит; смотрите «В движении»: если и она низкая — вопрос к машине
+        или стилю езды, если нормальная — к организации (ворота, стыки). <b>«Ворота
+        выгрузки»</b> — справочная колонка: это время клиента, водителя им не винят.
+        <b>«Отметки»</b> — доля рейсов с чистой цепочкой прибыл→убыл→прибыл→выгружен:
+        низкая доля значит, что фактам по этим рейсам верить нельзя. Водитель рейса —
+        по закреплению на момент старта; «В движении» считается по машино-дням
+        закреплений — у водителя без закрепления в «Ресурсе» там прочерк.</p>
+      <table class="rtable"><thead><tr><th>Водитель</th><th class="num">Рейсов</th>
+        <th class="num">км (с порожним)</th><th class="num">Рейс целиком, км/ч</th>
+        <th class="num">В движении, км/ч</th><th class="num">Опозд. П</th>
+        <th class="num">Опозд. В</th><th class="num">Ворота В, ч</th><th class="num">Отметки</th></tr></thead>
+      <tbody>${dr.drivers.map(d => `<tr><td>${escapeHtml(d.name.slice(0, 30))}${d.vehicles > 1 ? ` <small class="muted">×${d.vehicles} ТС</small>` : ''}</td>
+        <td class="num">${d.trips}</td><td class="num">${d.km.toLocaleString('ru-RU')}</td>
+        <td class="num"><b>${cellVe(d)}</b></td><td class="num">${d.vt ?? '—'}</td>
+        <td class="num">${cellLate(d.lateLoad, d.loadFacts)}</td>
+        <td class="num">${cellLate(d.lateUnload, d.unloadFacts)}</td>
+        <td class="num">${d.gateUnloadH ?? '—'}</td><td class="num">${cellClean(d)}</td></tr>`).join('')
+        || '<tr><td colspan=9>Рейсов за период нет</td></tr>'}</tbody></table>
+      <p class="muted" style="margin-top:6px">Сверхвахта и доплаты появятся здесь после
+        этапа 3 перестройки Ресурса (явка ↔ факт графика).</p>`;
   } else if (kind === 'speed') {
     const sp = await api(`/api/reports/speed?from=${from}&to=${to}`);
     const techSum = sp.techDays.reduce((a, d) => ({ km: a.km + d.km, h: a.h + d.h }), { km: 0, h: 0 });

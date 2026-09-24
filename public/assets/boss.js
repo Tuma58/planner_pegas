@@ -406,6 +406,7 @@ export async function renderBoss(container, context) {
           <option value="conflicts">История конфликтов</option>
           <option value="rejected-orders">Реестр заявок (подтверждённые/отклонённые)</option>
           <option value="speed">Скорости парка (техническая/эксплуатационная)</option>
+          <option value="drivers">Водители: профиль и дисциплина</option>
           <option value="history">История периодов</option>
         </select>
         <button class="button small" id="bossReport">📄 Сформировать</button>

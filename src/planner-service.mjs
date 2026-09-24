@@ -1291,6 +1291,107 @@ export function nextAssignedShare(db, fromIso, toIso) {
   return { before, total, pct: total ? Math.round(before / total * 100) : null };
 }
 
+// ── Профиль водителя (заказ 24.09): метрики за период по каждому ──
+// Водитель рейса — по закреплению driver_assignments на момент старта
+// (пересадки учтены честно), фолбэк — текущий водитель сцепки. Vт — по
+// машино-дням его закреплений (Пилот, справка); Vэ, опоздания, ворота
+// и дисциплина отметок — из нашей механики (канон). Ворота выгрузки —
+// в колонке отдельно: это клиентский процесс, водителя им не винят.
+export function driverPeriodMetrics(db, fromIso, toIso) {
+  const ts = value => value ? Date.parse(String(value).replace(' ', 'T')) : NaN;
+  const median = list => { list.sort((a, b) => a - b); return list.length ? list[Math.floor(list.length / 2)] : null; };
+  const assigns = db.prepare(`SELECT a.vehicle_id, a.starts_at, a.ends_at, d.full_name name
+      FROM driver_assignments a JOIN drivers d ON d.id=a.driver_id
+      WHERE a.starts_at < ? AND a.ends_at > ?`).all(toIso, fromIso);
+  const currentName = new Map(db.prepare(`SELECT id, driver_name FROM vehicles`).all()
+    .map(row => [row.id, (row.driver_name || '').trim()]));
+  const driverOf = (vehicleId, startsAt) => {
+    const hit = assigns.find(a => a.vehicle_id === vehicleId && a.starts_at <= startsAt && a.ends_at > startsAt);
+    return (hit?.name || currentName.get(vehicleId) || '').trim();
+  };
+  const stopsStmt = db.prepare(`SELECT kind, seq, planned_arrival, actual_arrival, actual_departure
+    FROM trip_stops WHERE trip_id=? ORDER BY seq`);
+  const byDriver = new Map();
+  const box = name => {
+    if (!byDriver.has(name)) {
+      byDriver.set(name, { name, trips: 0, km: 0, veList: [], lateLoad: 0, loadFacts: 0,
+        lateUnload: 0, unloadFacts: 0, gates: [], clean: 0, chainTotal: 0,
+        vehicles: new Set(), vtKm: 0, vtH: 0 });
+    }
+    return byDriver.get(name);
+  };
+  for (const trip of db.prepare(`SELECT id, vehicle_id, starts_at, arrived_at, unloaded_at, ends_at,
+      distance_km, empty_km FROM trips
+      WHERE status IN ('unloaded','done','paid')
+        AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?`)
+    .all(fromIso, toIso)) {
+    const name = driverOf(trip.vehicle_id, trip.starts_at);
+    if (!name) continue;
+    const item = box(name);
+    item.trips += 1;
+    item.km += Number(trip.distance_km || 0) + Number(trip.empty_km || 0);
+    item.vehicles.add(trip.vehicle_id);
+    const totH = (ts(trip.unloaded_at) - ts(trip.starts_at)) / 3.6e6;
+    const km = Number(trip.distance_km) || 0;
+    if (totH >= 1 && totH <= 240 && km / totH >= 5 && km / totH <= 80) item.veList.push(km / totH);
+    const stops = stopsStmt.all(trip.id);
+    const load = stops.find(stop => stop.kind === 'P');
+    const unload = [...stops].reverse().find(stop => stop.kind === 'D');
+    if (load?.actual_arrival && load.planned_arrival) {
+      item.loadFacts += 1;
+      if (ts(load.actual_arrival) - ts(load.planned_arrival) > 3.6e6) item.lateLoad += 1;
+    }
+    if (unload?.actual_arrival && unload.planned_arrival) {
+      item.unloadFacts += 1;
+      if (ts(unload.actual_arrival) - ts(unload.planned_arrival) > 3.6e6) item.lateUnload += 1;
+    }
+    const gate = (ts(trip.unloaded_at) - ts(trip.arrived_at)) / 3.6e6;
+    if (gate > 0.2 && gate < 72) item.gates.push(gate);
+    // Дисциплина отметок — чистая цепочка фактов (без планового старта).
+    const parr = ts(load?.actual_arrival);
+    const dep = ts(load?.actual_departure);
+    const arr = ts(trip.arrived_at);
+    const fin = ts(trip.unloaded_at);
+    item.chainTotal += 1;
+    if ([parr, dep, arr, fin].every(Number.isFinite) && parr <= dep && dep <= arr && arr <= fin) {
+      item.clean += 1;
+    }
+  }
+  // Vт по машино-дням внутри закреплений (CAN при согласованности ≤85).
+  const runsStmt = db.prepare(`SELECT day, km, can_km, move_hours FROM vehicle_daily_runs
+    WHERE vehicle_id=? AND day >= ? AND day < ? AND move_hours > 0.5`);
+  for (const a of assigns) {
+    const item = byDriver.get(a.name.trim());
+    if (!item) continue;
+    const from = a.starts_at > fromIso ? a.starts_at.slice(0, 10) : fromIso.slice(0, 10);
+    const to = a.ends_at < toIso ? a.ends_at.slice(0, 10) : toIso.slice(0, 10);
+    for (const run of runsStmt.all(a.vehicle_id, from, to)) {
+      const can = Number(run.can_km) || 0;
+      item.vtKm += can > 0 && can / run.move_hours <= 85 ? can : Number(run.km) || 0;
+      item.vtH += run.move_hours;
+    }
+  }
+  const round1 = value => value == null ? null : Math.round(value * 10) / 10;
+  const drivers = [...byDriver.values()].filter(item => item.trips >= 1).map(item => ({
+    name: item.name, trips: item.trips, km: Math.round(item.km),
+    vehicles: item.vehicles.size,
+    ve: round1(median(item.veList)),
+    vt: item.vtH > 3 ? round1(item.vtKm / item.vtH) : null,
+    lateLoad: item.lateLoad, loadFacts: item.loadFacts,
+    lateUnload: item.lateUnload, unloadFacts: item.unloadFacts,
+    gateUnloadH: round1(median(item.gates)),
+    cleanPct: item.chainTotal ? Math.round(item.clean / item.chainTotal * 100) : null
+  })).sort((a, b) => b.trips - a.trips);
+  return {
+    drivers,
+    park: {
+      ve: round1(median(drivers.map(d => d.ve).filter(v => v != null))),
+      vt: round1(median(drivers.map(d => d.vt).filter(v => v != null))),
+      gateUnloadH: round1(median(drivers.map(d => d.gateUnloadH).filter(v => v != null)))
+    }
+  };
+}
+
 // ── Рейтинг водителей ──
 // Переназначения ТС чаще всего случаются из-за того, что машина не
 // выгрузилась в слот или водитель опоздал, — рейтинг делает это видимым

@@ -19,7 +19,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
@@ -9935,6 +9935,19 @@ async function api(request, response, url) {
     return json(response, 200, { from, to, techDays, opDays, byVehicle, byCustomer, skipped,
       waterfall: phases.n ? phases : null, norms: speedNorms,
       gateTarget: Number((settingsObject(db).calculation || {}).gateTargetHours ?? 6) });
+  }
+  // Профиль водителей (заказ 24.09): метрики за период по каждому —
+  // рейсы/км, Vэ и Vт, опоздания П/В, ворота выгрузки (не вина водителя,
+  // колонка справочная), дисциплина отметок; водитель рейса по
+  // закреплению на момент старта.
+  if (request.method === 'GET' && pathname === '/api/reports/drivers') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!from || !to) return errorJson(response, 422, 'Задайте период');
+    return json(response, 200, { from, to,
+      ...driverPeriodMetrics(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`) });
   }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const user = requirePermission(request, response, 'reports:read');
