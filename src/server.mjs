@@ -23,7 +23,7 @@ import {
   gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge, pushAttendanceToSchedule } from './schedule.mjs';
 import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import {
@@ -10046,6 +10046,13 @@ async function api(request, response, url) {
     });
     audit(db, user, 'attendance', 'driver', row.driver_id,
       { day: row.day, status: row.status, reason: row.reason }, requestIp(request));
+    // Этап 3 (24.09): ручная явка — обратный мост в факт-слой графика
+    // (вышел/отпуск/больничный; осознанные коды сотрудников не трогает).
+    try {
+      const fio = db.prepare('SELECT full_name FROM drivers WHERE id=?').get(row.driver_id)?.full_name;
+      if (fio) pushAttendanceToSchedule(db, fio, row.day, row.status, row.reason,
+        user.full_name || 'явка', user.id);
+    } catch (error) { console.error('явка → график:', error.message); }
     return json(response, 200, { ok: true, item: row });
   }
 
@@ -10061,13 +10068,25 @@ async function api(request, response, url) {
     const driverIds = Array.isArray(body.driverIds) ? body.driverIds.slice(0, 400) : [];
     if (!driverIds.length) return errorJson(response, 422, 'Пустой список водителей');
     let marked = 0;
+    const bridged = [];
     for (const driverId of driverIds) {
       try {
-        markAttendance(db, { driverId: String(driverId), day, status: 'present',
+        const row = markAttendance(db, { driverId: String(driverId), day, status: 'present',
           reason: '', note: '', userId: user.id });
         marked += 1;
+        bridged.push(row.driver_id);
       } catch { /* уволенный или чужой id — пропускаем, остальных отмечаем */ }
     }
+    // Этап 3 (24.09): массовая явка — пакетный мост в факт-слой графика
+    // (один подъём rev на всех, а не 150 отдельных записей).
+    try {
+      const names = bridged.map(id =>
+        db.prepare('SELECT full_name FROM drivers WHERE id=?').get(id)?.full_name).filter(Boolean);
+      const written = pushAttendanceBatch(db,
+        names.map(fio => ({ fio, iso: day, status: 'present', reason: '' })),
+        user.full_name || 'явка', user.id);
+      if (written) console.log(`явка → график: массовая отметка, записано клеток ${written}`);
+    } catch (error) { console.error('явка → график (масс.):', error.message); }
     audit(db, user, 'attendance-bulk', 'driver', null, { day, marked }, requestIp(request));
     return json(response, 200, { ok: true, marked });
   }

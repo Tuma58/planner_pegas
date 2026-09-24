@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { scheduleAttendanceFor } from './schedule.mjs';
 import { settingsObject } from './db.mjs';
 
 export const TRIP_STATUS = {
@@ -320,7 +321,22 @@ export function staffReport(db, fromDay, toDay) {
       ? Math.round(agg.gaps[Math.floor(agg.gaps.length / 2)] * 10) / 10 : null;
     row.assignGapCount = agg.gaps.length;
   }
-  return { plans: STAFF_PLANS, items: [...byId.values()]
+  // Этап 3 перестройки Ресурса (24.09): сверхвахта водителей к доплате —
+  // дни РВ из табеля (работал, когда по плану графика/вахте — отдых).
+  // Табель ограничен 62 днями — длинный период честно урезаем с хвоста.
+  let overworkDrivers = [];
+  try {
+    const capFrom = (Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${fromDay}T00:00:00Z`)) / 86_400_000 > 62
+      ? new Date(Date.parse(`${toDay}T00:00:00Z`) - 62 * 86_400_000).toISOString().slice(0, 10)
+      : fromDay;
+    const sheet = attendanceTimesheet(db, capFrom, toDay);
+    overworkDrivers = sheet.rows
+      .map(row => ({ name: row.name, plate: row.plate,
+        rvDays: row.totals['РВ'] || 0, workDays: (row.totals['Я'] || 0) + (row.totals['РВ'] || 0) }))
+      .filter(row => row.rvDays > 0)
+      .sort((a, b) => b.rvDays - a.rvDays);
+  } catch { /* табель не собрался — секция просто пустая */ }
+  return { plans: STAFF_PLANS, overworkDrivers, items: [...byId.values()]
     .map(item => ({ ...item,
       jobRole: jobRoles.get(item.name)?.jobRole || '',
       userId: jobRoles.get(item.name)?.userId || null,
@@ -583,6 +599,47 @@ export function attendanceEffective(db, day) {
     const restByShift = !shiftIsWorkday(driver.shift_on, driver.shift_off, driver.shift_anchor, day);
     const absentCard = driver.absent_from && driver.absent_to &&
       driver.absent_from <= dayEndIso && driver.absent_to >= dayStartIso;
+    // Этап 3 перестройки Ресурса (24.09): факт-слой ГРАФИКА — главный
+    // авто-источник явки (ниже только ручная отметка ресурсника).
+    // Сверхвахта: работал в день, который по ПЛАНУ графика — отдых
+    // («отп»). Заполненный рабочий план глушит старую вахтовую модель
+    // (график — источник плана); лишь при пустом плане дня решают
+    // прежние вахта/карточка отсутствия.
+    const sched = scheduleAttendanceFor(db, driver.full_name, day);
+    if (sched?.fact) {
+      const code = sched.fact;
+      const overwork = sched.plan === 'отп' ||
+        (sched.plan === '' && Boolean(restByShift || absentCard));
+      if (code === 'в') {
+        return { ...base, status: 'present', reason: '', source: 'auto',
+          auto: 'график: работал', overwork };
+      }
+      if (code === 'П' || code === 'РП') {
+        return { ...base, status: 'present', reason: '', source: 'auto',
+          auto: 'график: пересменка', overwork };
+      }
+      if (code === 'Р') {
+        return { ...base, status: 'present', reason: '', source: 'auto',
+          auto: 'график: ремонт', overwork };
+      }
+      if (/^\d/.test(code)) {
+        return { ...base, status: 'present', reason: '', source: 'auto',
+          auto: `график: замещение (${code})`, overwork };
+      }
+      if (code === 'отп') {
+        return { ...base, status: 'absent', reason: 'vacation', source: 'auto',
+          auto: 'график: отпуск' };
+      }
+      if (code === 'бл') {
+        return { ...base, status: 'absent', reason: 'sick', source: 'auto',
+          auto: 'график: больничный' };
+      }
+      if (code === 'бс') {
+        return { ...base, status: 'absent', reason: 'other', source: 'auto',
+          auto: 'график: без сохранения' };
+      }
+      // Незнакомый код — вниз по прежнему каскаду.
+    }
     const inTrip = vehicleId && tripOn.get(vehicleId, dayEndIso, dayStartIso);
     if (inTrip) {
       return { ...base, status: 'present', reason: '', source: 'auto',

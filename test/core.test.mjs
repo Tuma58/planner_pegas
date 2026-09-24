@@ -3357,3 +3357,48 @@ test('профиль водителя: метрики за период по з�
   assert.equal(me.gateUnloadH, 4, 'ворота выгрузки 4 ч');
   assert.equal(me.cleanPct, 100, 'цепочка чистая');
 });
+
+test('этап 3: явка и табель читают факт-слой графика, явка пишет обратно', async t => {
+  const { applyScheduleSync, pushAttendanceToSchedule, scheduleAttendanceFor } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-e3-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const drv = db.prepare('SELECT id, full_name FROM drivers LIMIT 1').get();
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = today.slice(0, 7);
+  const dayIndex = Number(today.slice(8, 10)) - 1;
+  const daysInMonth = new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate();
+  const plan = Array(daysInMonth).fill('');
+  plan[dayIndex] = 'отп'; // по плану — отдых: работа в этот день = сверхвахта
+  const fact = Array(daysInMonth).fill('');
+  fact[dayIndex] = 'в';
+  const crew = { id: 'E3T', ts: [{ id: 'T1', tyagach: 'х001хх58', pricep: '', tip: '', filial: 'Пенза', crew: 'E3T' }],
+    drv: [{ id: 'D1', fio: drv.full_name, tel: '', crew: 'E3T', filial: 'Пенза', ts: 'T1',
+      rezhim: '', logist: '', vac: false, plan: { [mk]: plan }, fact: { [mk]: fact } }] };
+  applyScheduleSync(db, { since: 0, crews: { E3T: crew }, log: [] });
+  // Явка видит график: работал, и это сверхвахта (план — отдых).
+  const eff = attendanceEffective(db, today).find(item => item.driver_id === drv.id);
+  assert.equal(eff.status, 'present', 'график даёт выход');
+  assert.equal(eff.source, 'auto');
+  assert.ok(eff.auto.includes('график'), 'источник подписан');
+  assert.equal(eff.overwork, true, 'план «отп» + факт «в» = сверхвахта');
+  // Табель превращает это в РВ (доплата).
+  const sheet = attendanceTimesheet(db, today, new Date(Date.parse(today) + 86_400_000).toISOString().slice(0, 10));
+  assert.equal(sheet.rows.find(row => row.driverId === drv.id).days[today], 'РВ');
+  // Ручная отметка ресурсника главнее графика.
+  markAttendance(db, { driverId: drv.id, day: today, status: 'absent', reason: 'sick' });
+  const eff2 = attendanceEffective(db, today).find(item => item.driver_id === drv.id);
+  assert.equal(eff2.source, 'manual');
+  assert.equal(eff2.reason, 'sick');
+  // Обратный мост: больничный лёг в факт-слой поверх совместимого «в».
+  assert.equal(pushAttendanceToSchedule(db, drv.full_name, today, 'absent', 'sick'), true);
+  assert.equal(scheduleAttendanceFor(db, drv.full_name, today).fact, 'бл');
+  // Осознанный код (пересменка) явка не затирает.
+  fact[dayIndex] = 'П';
+  applyScheduleSync(db, { since: 0, crews: { E3T: { ...crew, drv: [{ ...crew.drv[0], fact: { [mk]: fact } }] } }, log: [] });
+  assert.equal(pushAttendanceToSchedule(db, drv.full_name, today, 'present', ''), false);
+  assert.equal(scheduleAttendanceFor(db, drv.full_name, today).fact, 'П', 'пересменка цела');
+});

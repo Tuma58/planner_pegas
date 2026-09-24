@@ -266,7 +266,22 @@ export async function buildReport(kind, from, to, data) {
         .map(row => `<tr><td>${escapeHtml(row.name)}</td><td class="num">${row.assignOrders}</td>
           <td class="num"><b class="${row.assignFirstTryPct >= 70 ? 'ok' : row.assignFirstTryPct >= 55 ? '' : 'bad'}">${row.assignFirstTryPct}%</b></td>
           <td class="num">${row.assignGapMedianH != null ? `${row.assignGapMedianH} ч <small class="muted">(${row.assignGapCount} стыков)</small>` : '—'}</td></tr>`).join('')}</tbody></table>` : '';
-    body = `${freshPanel}${logistPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
+    // Этап 3 Ресурса (24.09): сверхвахта водителей к доплате — дни РВ
+    // из табеля (работал, когда по плану графика — отдых).
+    const overworkPanel = (staff.overworkDrivers || []).length
+      ? `<h4>🚚 Водители: сверхвахта к доплате (РВ)</h4>
+        <table class="rtable"><thead><tr><th>Водитель</th><th>ТС</th>
+          <th class="num">Дней РВ</th><th class="num">Всего рабочих</th></tr></thead>
+        <tbody>${staff.overworkDrivers.slice(0, 25).map(row => `<tr>
+          <td>${escapeHtml(row.name.slice(0, 30))}</td><td class="mono">${escapeHtml(row.plate || '—')}</td>
+          <td class="num"><b>${row.rvDays}</b></td><td class="num">${row.workDays}</td></tr>`).join('')}
+        </tbody></table>
+        <p class="muted" style="margin:2px 0 10px">РВ = работал в день, который по плану
+          графика или вахте — отдых (↑ФОТ). Источник — факт-слой «📋 Графика» и явка;
+          подробности по дням — Ресурс → Табель.${staff.overworkDrivers.length > 25
+            ? ` Показаны первые 25 из ${staff.overworkDrivers.length}.` : ''}</p>`
+      : '';
+    body = `${freshPanel}${logistPanel}${overworkPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
         × активные дни в периоде (нормативы по должностям — базовые, скажите руководителю
         планера, если нужно их подстроить). Должность назначается администратором прямо здесь
         и не влияет на права доступа. «Дней» — активные дни в системе.</div>

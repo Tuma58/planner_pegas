@@ -75,6 +75,11 @@ export function applyScheduleSync(db, body = {}, userId = null) {
 
 const dayIso = (base, offset) =>
   new Date(base + offset * 86_400_000).toISOString().slice(0, 10);
+// Каноническое ФИО для сличения график ↔ планер (то же правило, что в
+// достройке: скобки-пометки отбрасываются, регистр и пробелы неважны).
+const fioWords = value => String(value || '').toLowerCase()
+  .replace(/\([^)]*\)/g, ' ').split(/\s+/).filter(Boolean);
+export const canonFio = value => fioWords(value).join(' ');
 const canonPlate = value => String(value || '').toLowerCase().replace(/\s+/g, '');
 const tail3 = plate => (String(plate).match(/\d{3}/) || [''])[0];
 
@@ -107,6 +112,88 @@ const setFact = (drv, iso, code) => {
   }
   drv.fact[mk][Number(iso.slice(8, 10)) - 1] = code;
 };
+
+// ── Этап 3 перестройки (запуск руководителя 24.09): явка и табель
+// читают ФАКТ-СЛОЙ графика, ручная отметка явки пишется обратно.
+// Направления без циклов: график — источник кода дня для явки (авто-
+// слой ниже ручной отметки ресурсника), явка ресурсника — единственная
+// обратная запись, и только в пустые/совместимые клетки.
+
+// Карта «каноническое ФИО → строка графика» с кэшем по schedule_rev:
+// весь график парсится один раз и живёт, пока его никто не правил
+// (attendanceEffective зовёт нас на каждый день табеля).
+let fioMapCache = { rev: -1, map: null };
+export function scheduleFioMap(db) {
+  const rev = Number(metaGet(db, 'schedule_rev') || 0);
+  if (fioMapCache.rev === rev && fioMapCache.map) return fioMapCache.map;
+  const map = new Map();
+  for (const crew of loadCrews(db).values()) {
+    for (const drv of crew.drv || []) {
+      if (drv.vac) continue;
+      const key = canonFio(drv.fio);
+      if (key && !map.has(key)) map.set(key, { crewId: crew.id, drv });
+    }
+  }
+  fioMapCache = { rev, map };
+  return map;
+}
+
+// Коды дня графика для явки. Рабочие: в (работал), П/РП (пересменка),
+// Р (ремонт), цифры (замещение на другом борту). Отсутствия: отп/бл/бс.
+export function scheduleAttendanceFor(db, fio, iso) {
+  const hit = scheduleFioMap(db).get(canonFio(fio));
+  if (!hit) return null;
+  return { fact: factCode(hit.drv, iso), plan: planCode(hit.drv, iso) };
+}
+
+// Обратный мост: ручная отметка явки → факт-слой графика. Пишем только
+// коды с однозначным смыслом (вышел/отпуск/больничный) и только в
+// пустую клетку или поверх совместимого «в» — осознанные П/Р/бс/замены
+// сотрудник ставил руками, явка их не затирает.
+const ATTENDANCE_FACT = { vacation: 'отп', sick: 'бл' };
+// Пакетная запись (массовая отметка «все вышли» — 150+ человек): один
+// проход по карте, каждый экипаж читается и пишется один раз, один
+// подъём rev. Возвращает число записанных клеток.
+export function pushAttendanceBatch(db, items, author = 'явка', userId = null) {
+  const map = scheduleFioMap(db);
+  const crews = new Map();
+  const log = [];
+  let written = 0;
+  for (const item of items) {
+    const code = item.status === 'present' ? 'в'
+      : item.status === 'absent' ? ATTENDANCE_FACT[item.reason] || null : null;
+    if (!code) continue;
+    const hit = map.get(canonFio(item.fio));
+    if (!hit) continue;
+    // Экипаж читаем свежим из БД один раз: кэш карты — только для
+    // поиска, мутировать его до успешной записи нельзя.
+    if (!crews.has(hit.crewId)) {
+      const fresh = loadCrews(db, [hit.crewId]).get(hit.crewId);
+      if (!fresh) continue;
+      crews.set(hit.crewId, { crew: fresh, dirty: false });
+    }
+    const slot = crews.get(hit.crewId);
+    const drv = (slot.crew.drv || []).find(row => canonFio(row.fio) === canonFio(item.fio));
+    if (!drv) continue;
+    const current = factCode(drv, item.iso);
+    if (current === code) continue;
+    if (current && current !== 'в') continue;
+    setFact(drv, item.iso, code);
+    slot.dirty = true;
+    written += 1;
+    log.push({ t: new Date().toISOString(), a: author,
+      what: `явка: ${drv.fio} ${item.iso.slice(8, 10)}.${item.iso.slice(5, 7)} → ${code}`, who: drv.fio });
+  }
+  const changed = Object.fromEntries([...crews.entries()]
+    .filter(([, slot]) => slot.dirty).map(([id, slot]) => [id, slot.crew]));
+  if (!Object.keys(changed).length) return 0;
+  applyScheduleSync(db, { since: Number(metaGet(db, 'schedule_rev') || 0),
+    crews: changed, log: log.slice(0, 200) }, userId);
+  return written;
+}
+export function pushAttendanceToSchedule(db, fio, iso, status, reason, author = 'явка', userId = null) {
+  return pushAttendanceBatch(db, [{ fio, iso, status, reason }], author, userId) > 0;
+}
 
 // Мост «П в плане → пересменка-диспозиция машины» для изменённых
 // экипажей. Создаёт shift-сутки с пометкой «из графика», убирает свои
@@ -269,10 +356,8 @@ export function augmentScheduleFromPlanner(db, userId = null) {
   // Сличение людей: полное ФИО, а при сокращённой записи в графике
   // («Тулчин Олег» против «Тулчин Олег Иванович» в планере) — по
   // «Фамилия Имя», только когда такая пара однозначна с обеих сторон.
-  // Суффиксы-пометки в скобках («(н)») в сравнении не участвуют.
-  const fioWords = value => String(value || '').toLowerCase()
-    .replace(/\([^)]*\)/g, ' ').split(/\s+/).filter(Boolean);
-  const canonFio = value => fioWords(value).join(' ');
+  // Суффиксы-пометки в скобках («(н)») в сравнении не участвуют
+  // (canonFio/fioWords — модульные, ими же живёт мост явки этапа 3).
   const pairOf = value => fioWords(value).slice(0, 2).join(' ');
   const fioSet = new Set();
   const pairCount = new Map();
