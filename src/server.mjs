@@ -20,7 +20,7 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
+  gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge } from './schedule.mjs';
@@ -890,15 +890,18 @@ function runDailyFleetReport() {
       })() +
       cdSegmentLine(dayIso, todayIso) + assignQualityLine(dayIso, todayIso) + demurrageBacklogLine() +
       (() => {
-        // Норматив стыковки (23.09): следующий рейс назначен до выгрузки.
-        // Семидневное окно — дневные выборки слишком малы и дёргаются.
-        const share = nextAssignedShare(db,
-          new Date(Date.parse(`${todayIso}T00:00:00Z`) - 7 * 86_400_000).toISOString(),
-          `${todayIso}T00:00:00.000Z`);
+        // Норматив стыковки (23.09) + целевой стык (24.09). Семидневное
+        // окно — дневные выборки слишком малы и дёргаются.
+        const weekAgo = new Date(Date.parse(`${todayIso}T00:00:00Z`) - 7 * 86_400_000).toISOString();
+        const share = nextAssignedShare(db, weekAgo, `${todayIso}T00:00:00.000Z`);
         if (share.pct == null) return '';
-        const target = Number((settingsObject(db).calculation || {}).nextAssignTargetPct ?? 85);
+        const calc = settingsObject(db).calculation || {};
+        const target = Number(calc.nextAssignTargetPct ?? 85);
+        const gapTarget = Number(calc.targetGapHours ?? 8);
+        const gs = gapStats(db, weekAgo, `${todayIso}T00:00:00.000Z`);
         return ` · стыковка за 7 дн: следующий до выгрузки ${share.before} из ${share.total}` +
-          ` (${share.pct}% при цели ${target}%)`;
+          ` (${share.pct}% при цели ${target}%)` +
+          (gs.medianH != null ? `, стык медиана ${gs.medianH} ч (цель ${gapTarget})` : '');
       })() +
       ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
@@ -4689,7 +4692,18 @@ function runNormsDigest() {
       new Date(Date.now() - 7 * 86_400_000).toISOString(), new Date().toISOString());
     const nextTarget = Number((settingsObject(db).calculation || {}).nextAssignTargetPct ?? 85);
     if (nextShare.pct != null && nextShare.pct < nextTarget) {
-      hints.push(`стыковка ${nextShare.pct}% при цели ${nextTarget}% — продажам приходит «🔎 Освобождаются без груза» за 6–24 ч до выгрузки`);
+      hints.push(`стыковка ${nextShare.pct}% при цели ${nextTarget}% — продажам приходит «🔎 Освобождаются без груза» заранее`);
+    }
+    // Целевой стык (рычаг 24.09): факт против цели + кто передержал —
+    // адресная подсказка по большему из слагаемых.
+    const gapTarget = Number((settingsObject(db).calculation || {}).targetGapHours ?? 8);
+    const gapWeek = gapStats(db, new Date(Date.now() - 7 * 86_400_000).toISOString(), new Date().toISOString());
+    if (gapWeek.medianH != null && gapWeek.medianH > gapTarget) {
+      const excess = Math.round(gapWeek.gaps.reduce((s, g) => s + Math.max(0, g - gapTarget), 0));
+      const owner = (gapWeek.waitOrderAvg || 0) >= (gapWeek.waitSlotAvg || 0)
+        ? `главное слагаемое — ждали заказ (${gapWeek.waitOrderAvg} ч/стык, продажи)`
+        : `главное слагаемое — ждали окно клиента (${gapWeek.waitSlotAvg} ч/стык, слоты погрузки)`;
+      hints.push(`стык ${gapWeek.medianH} ч при цели ${gapTarget} — сверх цели ${excess} маш-ч за неделю; ${owner}`);
     }
     notifyEveryone(`📐 Нормативы недели: переменные ${norms.varCost} ₽/км (Настройки → Калькуляция)` +
       ` · медиана маржи парка ${Math.round(norms.parkMedian / 100) / 10} т₽/сут${
@@ -4703,6 +4717,9 @@ function runNormsDigest() {
         `, дисциплина отметок ${speedN.disciplinePct ?? '—'}%${speedN.disciplinePct != null ? delta(speedN.disciplinePct, last?.disciplinePct, ' п.п.') : ''}` : '') +
       (nextShare.pct != null
         ? ` · стыковка: следующий до выгрузки ${nextShare.pct}%${delta(nextShare.pct, last?.nextPct, ' п.п.')} (цель ${nextTarget}%)`
+        : '') +
+      (gapWeek.medianH != null
+        ? ` · стык: медиана ${gapWeek.medianH} ч${delta(gapWeek.medianH, last?.gapMedianH, ' ч')} (цель ${gapTarget}; ждали заказ ${gapWeek.waitOrderAvg} ч, окно ${gapWeek.waitSlotAvg} ч в среднем)`
         : '') +
       moveLine('⬆ выросли', ups) + moveLine('⬇ просели', downs) +
       (() => {
@@ -4757,7 +4774,8 @@ function runNormsDigest() {
         rubKm, techSpeed, gateH,
         ve: speedN?.ve ?? null, vroad: speedN?.vroad ?? null,
         disciplinePct: speedN?.disciplinePct ?? null,
-        nextPct: nextShare.pct ?? null }));
+        nextPct: nextShare.pct ?? null,
+        gapMedianH: gapWeek.medianH ?? null }));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_segment_moves','[]')
       ON CONFLICT(key) DO UPDATE SET value='[]'`).run();
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_digest_week',?)
@@ -4848,23 +4866,48 @@ function runEmptyKmWatch() {
 setInterval(runEmptyKmWatch, 6 * 3_600_000);
 setTimeout(runEmptyKmWatch, 40_000);
 
+// Живой лид поиска груза: сколько часов проходит от сигнала «🔎» до
+// появления следующего рейса машины (медиана 28 дн). Он задаёт, за
+// сколько до выгрузки поднимать продажам раннюю ступень: кламп 8–48 ч,
+// фолбэк 18, минимум 10 образцов; кэш на час — сторож тикает часто.
+let searchLeadCache = { at: 0, value: 18 };
+function learnedSearchLeadH() {
+  if (Date.now() - searchLeadCache.at < 3_600_000) return searchLeadCache.value;
+  let lead = 18;
+  try {
+    const list = db.prepare(`SELECT t.next_sales_alert_at a,
+        (SELECT MIN(created_at) FROM trips n WHERE n.vehicle_id=t.vehicle_id
+          AND n.status<>'rejected' AND n.created_at > t.next_sales_alert_at) c
+      FROM trips t WHERE t.next_sales_alert_at IS NOT NULL
+        AND t.next_sales_alert_at > datetime('now','-28 day')`).all()
+      .map(row => row.c ? (Date.parse(String(row.c).replace(' ', 'T')) - Date.parse(String(row.a).replace(' ', 'T'))) / 3.6e6 : null)
+      .filter(h => Number.isFinite(h) && h > 0.5 && h < 96)
+      .sort((x, y) => x - y);
+    if (list.length >= 10) lead = Math.min(48, Math.max(8, Math.round(list[Math.floor(list.length / 2)])));
+  } catch { /* остаёмся на прежнем */ }
+  searchLeadCache = { at: Date.now(), value: lead };
+  return lead;
+}
+
 function runNextTripWatch() {
   try {
     const nowMs = Date.now();
     // Ранняя ступень — продажам (разбор стыков 23.09: назначение ПОСЛЕ
-    // выгрузки утраивает стык — 27,6 ч против 8): выгрузка через 6–24
-    // часа, следующего нет — ещё есть время найти груз под освобождение.
-    const salesRows = tripsWithoutNext(db, nowMs, 24 * 3_600_000, false)
+    // выгрузки утраивает стык): выгрузка ближе выученного лида поиска,
+    // следующего нет — ещё есть время найти груз под освобождение.
+    const leadH = learnedSearchLeadH();
+    const salesRows = tripsWithoutNext(db, nowMs, Math.max(leadH, 7) * 3_600_000, false)
       .filter(trip => Date.parse(trip.ends_at) > nowMs + 6 * 3_600_000 && !trip.next_sales_alert_at);
     if (salesRows.length) {
       const when = iso => {
         const at = new Date(Date.parse(iso) + 3 * 3_600_000).toISOString();
         return `${at.slice(8, 10)}.${at.slice(5, 7)} ${at.slice(11, 16)}`;
       };
-      notify('sales', `🔎 Освобождаются без следующего груза (выгрузка через 6–24 ч): ${salesRows.slice(0, 12)
+      const targetGap = Number((settingsObject(db).calculation || {}).targetGapHours ?? 8);
+      notify('sales', `🔎 Освобождаются без следующего груза (выгрузка ближе ${leadH} ч — типичное время поиска): ${salesRows.slice(0, 12)
         .map(trip => `${trip.plate} → ${trip.to_name || trip.to_point || '—'} (${when(trip.ends_at)} МСК)`)
         .join('; ')}${salesRows.length > 12 ? ` и ещё ${salesRows.length - 12}` : ''}.` +
-        ' Найдите груз до выгрузки: назначение после неё утраивает простой стыка (норматив — в Отчёте дня)',
+        ` Цель руководителя: стык не длиннее ${targetGap} ч — заказ должен существовать к моменту выгрузки`,
         null, null, { category: 'no_next' });
       const stampSales = db.prepare('UPDATE trips SET next_sales_alert_at=CURRENT_TIMESTAMP WHERE id=?');
       for (const trip of salesRows) stampSales.run(trip.id);
@@ -9468,6 +9511,18 @@ async function api(request, response, url) {
         })(),
         clamp: 'Vт 40–75 · Vэ 12–35 · дорожная 20–60 (кор 15–45 · ср 25–60 · дальн 30–65) км/ч; запас 0–50% задаёт руководитель (Настройки → Калькуляция)',
         drift: '📐 Нормативы недели · отчёт «Скорости парка» (водопад)' },
+      { name: 'Стыковка рейсов (целевой стык)',
+        learns: 'факт стыков «выгрузка → старт следующего» по парам рейсов (7 дн) с разложением: ждали заказ / ждали окно клиента; лид поиска груза — медиана «сигнал 🔎 → появление следующего рейса» (28 дн)',
+        value: (() => {
+          const calc = settingsObject(db).calculation || {};
+          const gs = safe(() => gapStats(db, new Date(Date.now() - 7 * 86_400_000).toISOString(), new Date().toISOString()));
+          const lead = safe(learnedSearchLeadH);
+          return gs && gs.medianH != null
+            ? `цель ${calc.targetGapHours ?? 8} ч · факт медиана ${gs.medianH} ч (${gs.pairs} пар: ждали заказ ${gs.waitOrderAvg} ч, окно ${gs.waitSlotAvg} ч) · до выгрузки ${safe(() => nextAssignedShare(db, new Date(Date.now() - 7 * 86_400_000).toISOString(), new Date().toISOString()).pct) ?? '—'}% (цель ${calc.nextAssignTargetPct ?? 85}%) · лид поиска ${lead ?? 18} ч`
+            : 'пар за неделю ещё нет';
+        })(),
+        clamp: 'лид поиска 8–48 ч (мин 10 образцов, фолбэк 18); стыки >7 сут — простой, не стык',
+        drift: '📆 Отчёт дня (строка «стыковка») · 📐 Нормативы недели (медиана, сверх цели, кто передержал)' },
       { name: 'Честный одометр рейса',
         learns: 'факт-км рейса лестницей: CAN-одометр → GPS-трек → эксклюзивные календарные дни → «не измерено»',
         value: `${odo.g || 0} из ${odo.n || 0} закрытых рейсов за 14 дн`,

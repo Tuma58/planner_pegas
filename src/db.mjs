@@ -666,6 +666,14 @@ function migrateColumns(db) {
       db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
         .run(JSON.stringify(calculation));
     }
+    // Целевой стык между рейсами, ч (рычаг руководителя, 24.09): от него
+    // живут дедлайны поиска груза, сигналы и дрейф в сводках. 8 ч — стык
+    // лучших пар из разбора 23.09.
+    if (calculation.targetGapHours == null) {
+      calculation.targetGapHours = 8;
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
+        .run(JSON.stringify(calculation));
+    }
   }
   // Нормативы простоя под погрузкой/выгрузкой: бесплатный порог 8 ч от
   // планового времени операции, сверх — счёт клиенту по тарифу за начатый час.

@@ -1218,6 +1218,57 @@ export function tripsWithoutNext(db, nowMs = Date.now(), horizonMs = 2 * 3_600_0
     !hasNext.get(trip.vehicle_id, trip.id, trip.starts_at));
 }
 
+// Разложение фактических стыков (проект «Целевой стык», 24.09): для пар
+// «рейс → следующий той же машины» с выгрузкой в периоде — часы стыка
+// (выгрузка → старт следующего) и из чего он состоит: ждали ЗАКАЗ
+// (следующий ещё не был создан), ждали ОКНО погрузки клиента, прочее
+// (подгон и хвосты). Стыки дольше 7 суток отбрасываются (простой, не стык).
+export function gapStats(db, fromIso, toIso) {
+  const ts = value => value ? Date.parse(String(value).replace(' ', 'T')) : NaN;
+  const winStmt = db.prepare('SELECT window_from FROM orders WHERE id=?');
+  const byVehicle = new Map();
+  for (const trip of db.prepare(`SELECT vehicle_id, starts_at, unloaded_at, created_at, order_id
+      FROM trips WHERE status<>'rejected'
+        AND starts_at >= datetime(?, '-40 day') AND starts_at < datetime(?, '+10 day')
+      ORDER BY vehicle_id, starts_at`).all(fromIso, toIso)) {
+    if (!byVehicle.has(trip.vehicle_id)) byVehicle.set(trip.vehicle_id, []);
+    byVehicle.get(trip.vehicle_id).push(trip);
+  }
+  const gaps = [];
+  let waitOrderSum = 0;
+  let waitSlotSum = 0;
+  for (const list of byVehicle.values()) {
+    for (let i = 0; i + 1 < list.length; i += 1) {
+      const a = list[i];
+      const b = list[i + 1];
+      const unlo = ts(a.unloaded_at);
+      if (!Number.isFinite(unlo) || a.unloaded_at < fromIso || a.unloaded_at >= toIso) continue;
+      const gapH = (ts(b.starts_at) - unlo) / 3.6e6;
+      if (!(gapH >= 0 && gapH <= 7 * 24)) continue;
+      const created = ts(b.created_at);
+      const waitOrder = Number.isFinite(created) ? Math.min(gapH, Math.max(0, (created - unlo) / 3.6e6)) : 0;
+      const win = b.order_id ? ts(winStmt.get(b.order_id)?.window_from) : NaN;
+      const waitSlot = Number.isFinite(win)
+        ? Math.max(0, Math.min((win - Math.max(unlo, Number.isFinite(created) ? created : unlo)) / 3.6e6, gapH - waitOrder))
+        : 0;
+      gaps.push(gapH);
+      waitOrderSum += waitOrder;
+      waitSlotSum += waitSlot;
+    }
+  }
+  if (!gaps.length) return { pairs: 0, medianH: null, avgH: null, waitOrderAvg: null, waitSlotAvg: null, gaps: [] };
+  const sorted = [...gaps].sort((x, y) => x - y);
+  const round1 = value => Math.round(value * 10) / 10;
+  return {
+    pairs: gaps.length,
+    medianH: round1(sorted[Math.floor(sorted.length / 2)]),
+    avgH: round1(gaps.reduce((s, v) => s + v, 0) / gaps.length),
+    waitOrderAvg: round1(waitOrderSum / gaps.length),
+    waitSlotAvg: round1(waitSlotSum / gaps.length),
+    gaps
+  };
+}
+
 // Норматив стыковки (разбор 23.09): доля рейсов периода, у которых
 // следующий рейс той же машины был СОЗДАН до фактической выгрузки —
 // такой стык в среднем 8 ч против 27,6 у назначенных после. Пары без

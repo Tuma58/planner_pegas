@@ -55,6 +55,7 @@ function renderGeneral() {
       <label class="field">Грузовая операция, ч<input id="handlingHoursPerOperation" type="number" min="0" step=".5" value="${calculation.handlingHoursPerOperation ?? 2}" title="Резерв на операцию, пока средние ворота не выучены"></label>
       <label class="field">Коэффициент транзита<input id="transitFactor" type="number" min="1" step=".1" value="${calculation.transitFactor ?? 1.5}" title="Резервный: применяется только в старой формуле (пока скорости не выучены); в живом транзите его сменил «Запас надёжности, %»"></label>
       <label class="field">Целевая утилизация<input id="utilizationTarget" type="number" min="0" max="1" step=".001" value="${calculation.utilizationTarget}"></label>
+      <label class="field">Целевой стык между рейсами, ч<input id="targetGapHours" type="number" min="1" max="48" step="1" value="${calculation.targetGapHours ?? 8}" title="Рычаг стыковки (24.09): сколько часов допустимо от выгрузки до старта следующего рейса. От цели живут сигналы продажам, строка в Отчёте дня и разбор «кто передержал» в Нормативах недели. 8 ч — стык лучших пар"></label>
       <label class="field">Цель: следующий до выгрузки, %<input id="nextAssignTargetPct" type="number" min="0" max="100" step="1" value="${calculation.nextAssignTargetPct ?? 85}" title="Норматив стыковки (23.09): у какой доли рейсов следующий должен быть назначен ДО фактической выгрузки. Такой стык — 8 ч против 27,6 у назначенных после. Факт — в Отчёте дня и Нормативах недели; продажам приходит «🔎 Освобождаются без груза» за 6–24 ч до выгрузки"></label>
       <label class="field">Цель: ворота выгрузки, ч<input id="gateTargetHours" type="number" min="1" step="1" value="${calculation.gateTargetHours ?? 6}" title="Цель руководителя (22.09): сколько часов машина должна проводить на выгрузке (прибыл → выгружен). Превышение у клиентов со ставкой простоя в карточке — претензия; у остальных — понедельничная аналитика «Дорогие ворота» продажам"></label>
       <label class="field">Простой: бесплатно, ч<input id="demurrageFreeHours" type="number" min="0" step="1" value="${calculation.demurrageFreeHours ?? 8}" title="Общий норматив бесплатного простоя от планового времени операции — применяется, когда в карточке клиента не заданы свои часы"></label>
@@ -101,7 +102,8 @@ async function saveGeneral() {
       demurrageFreeHours: numeric('demurrageFreeHours'),
       demurrageRatePerHour: numeric('demurrageRatePerHour'),
       gateTargetHours: numeric('gateTargetHours'),
-      nextAssignTargetPct: numeric('nextAssignTargetPct')
+      nextAssignTargetPct: numeric('nextAssignTargetPct'),
+      targetGapHours: numeric('targetGapHours')
     },
     orderOptions: {
       temperatureModes: byId('temperatureModes').value.split('\n').map(item => item.trim()).filter(Boolean),

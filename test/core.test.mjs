@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { nextOrderNo, nextRouteNo, openDatabase, queueOutbox, settingsObject } from '../src/db.mjs';
 import { effectivePermissions, hasPermission, permissionsFor } from '../src/permissions.mjs';
-import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, tripsWithoutNext, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance, nextAssignedShare, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
+import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, daysUntilAnnual, upcomingCustomerDates, dayStateOf, tripBusyRange, tripsWithoutNext, demurrageCases, driverCardData, driverScheduleData, importTelematics, importTripsFrom1C, gapStats, markAttendance, nextAssignedShare, reportSnapshot, resolveZone, shiftIsWorkday, staffReport, transitHours } from '../src/planner-service.mjs';
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
@@ -3292,4 +3292,34 @@ test('стыковка: следующий рейс назначен до выг
   assert.equal(share.total, 2, 'две пары с существующим следующим');
   assert.equal(share.before, 1, 'до выгрузки назначен один');
   assert.equal(share.pct, 50);
+});
+
+test('целевой стык: разложение «ждали заказ / ждали окно»', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-gap-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  // Заявка следующего рейса с окном погрузки 11.05 06:00.
+  db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
+    window_from,window_to,stage,status) VALUES('gp-o1','Клиент',?,?,90000,
+    '2025-05-11T06:00:00.000Z','2025-05-11T18:00:00.000Z',3,'planned')`).run(zone, zone);
+  const put = (id, starts, unloaded, created, orderId) => db.prepare(`INSERT INTO trips(
+      id,vehicle_id,order_id,from_zone_id,to_zone_id,status,starts_at,ends_at,unloaded_at,
+      created_at,distance_km,revenue_vat)
+    VALUES(?,?,?,?,?,'unloaded',?,?,?,?,500,100000)`)
+    .run(id, vehicle, orderId, zone, zone, starts, unloaded || starts, unloaded, created);
+  // Рейс A выгружен 10.05 12:00. Следующий B: создан 10.05 18:00 (ждали
+  // заказ 6 ч), окно погрузки 11.05 06:00 (ждали окно 12 ч), старт
+  // 11.05 06:00 → стык 18 ч.
+  put('gpA', '2025-05-09T00:00:00.000Z', '2025-05-10T12:00:00.000Z', '2025-05-08T00:00:00.000Z', null);
+  put('gpB', '2025-05-11T06:00:00.000Z', '2025-05-12T00:00:00.000Z', '2025-05-10T18:00:00.000Z', 'gp-o1');
+  const gs = gapStats(db, '2025-05-10T00:00:00.000Z', '2025-05-11T00:00:00.000Z');
+  assert.equal(gs.pairs, 1);
+  assert.ok(Math.abs(gs.medianH - 18) < 0.1, `стык 18 ч, получили ${gs.medianH}`);
+  assert.ok(Math.abs(gs.waitOrderAvg - 6) < 0.1, `ждали заказ 6 ч, получили ${gs.waitOrderAvg}`);
+  assert.ok(Math.abs(gs.waitSlotAvg - 12) < 0.1, `ждали окно 12 ч, получили ${gs.waitSlotAvg}`);
 });
