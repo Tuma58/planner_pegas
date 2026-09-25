@@ -3356,6 +3356,21 @@ test('профиль водителя: метрики за период по з�
   assert.equal(me.lateLoad, 1, 'опоздание на погрузку >1 ч');
   assert.equal(me.gateUnloadH, 4, 'ворота выгрузки 4 ч');
   assert.equal(me.cleanPct, 100, 'цепочка чистая');
+  // Светофор: 1 рейс — рано судить; с 3 рейсами — балл и цвет.
+  assert.equal(me.light, 'none', 'меньше 3 рейсов — без оценки');
+  for (const n of [2, 3]) {
+    db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,
+        arrived_at,unloaded_at,distance_km,empty_km,revenue_vat)
+      VALUES('dpT${n}',?,?,?,'unloaded','2025-06-1${n}T00:00:00.000Z','2025-06-1${n}T20:00:00.000Z',
+        '2025-06-1${n}T16:00:00.000Z','2025-06-1${n}T20:00:00.000Z',400,0,90000)`).run(vehicle, zone, zone);
+  }
+  const out2 = driverPeriodMetrics(db, '2025-06-01T00:00:00.000Z', '2025-06-20T00:00:00.000Z');
+  const me2 = out2.drivers.find(d => d.name === drv.full_name.trim());
+  // Скорость = парковой медиане (штраф 0), опоздание П 1 из 1 факта
+  // (−30), выгрузка без плановых времён и цепочки двух добавленных
+  // рейсов рваные (нет стоянок) → −15 за отметки частично.
+  assert.ok(me2.score != null && me2.light !== 'none', 'с 3 рейсами балл появился');
+  assert.ok(me2.score <= 70, `балл со штрафом за опоздание, получили ${me2.score}`);
 });
 
 test('этап 3: явка и табель читают факт-слой графика, явка пишет обратно', async t => {

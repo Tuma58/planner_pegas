@@ -26,6 +26,7 @@ import {
 import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge, pushAttendanceToSchedule } from './schedule.mjs';
 import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
+import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
@@ -10604,6 +10605,24 @@ export const server = http.createServer(async (request, response) => {
     }
     // PDF-файл отчёта эксплуатации (заказ 22.09): скачивается сразу,
     // без диалога печати; собирается pdf-lite из того же канона данных.
+    else if (url.pathname === '/reports/drivers/pdf') {
+      // PDF отчёта «Водители: профиль и дисциплина» (заказ 25.09) —
+      // те же driverPeriodMetrics, что и экранная таблица.
+      const user = currentUser(request);
+      if (!user) { response.writeHead(302, { Location: '/' }); return response.end(); }
+      const from = String(url.searchParams.get('from') || '').slice(0, 10);
+      const to = String(url.searchParams.get('to') || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+        response.writeHead(422, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return response.end('Нужны from и to (ГГГГ-ММ-ДД)');
+      }
+      const pdf = renderDriversReportPdf({ from, to,
+        ...driverPeriodMetrics(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`) });
+      response.writeHead(200, { 'Content-Type': 'application/pdf',
+        'Content-Length': pdf.length, 'Cache-Control': 'no-cache',
+        'Content-Disposition': `attachment; filename="drivers-report_${from}_${to}.pdf"` });
+      return response.end(pdf);
+    }
     else if (url.pathname === '/ops-report/pdf') {
       const user = currentUser(request);
       if (!user) { response.writeHead(302, { Location: '/' }); return response.end(); }

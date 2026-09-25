@@ -1439,14 +1439,29 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
     gateUnloadH: round1(median(item.gates)),
     cleanPct: item.chainTotal ? Math.round(item.clean / item.chainTotal * 100) : null
   })).sort((a, b) => b.trips - a.trips);
-  return {
-    drivers,
-    park: {
-      ve: round1(median(drivers.map(d => d.ve).filter(v => v != null))),
-      vt: round1(median(drivers.map(d => d.vt).filter(v => v != null))),
-      gateUnloadH: round1(median(drivers.map(d => d.gateUnloadH).filter(v => v != null)))
-    }
+  const park = {
+    ve: round1(median(drivers.map(d => d.ve).filter(v => v != null))),
+    vt: round1(median(drivers.map(d => d.vt).filter(v => v != null))),
+    gateUnloadH: round1(median(drivers.map(d => d.gateUnloadH).filter(v => v != null)))
   };
+  // Светофор эффективности (заказ руководителя 25.09): балл 0–100 по
+  // той же оценочной шкале, что рейтинг водителей при назначении.
+  // Скорость меряется ОТНОСИТЕЛЬНО парковой медианы периода (не
+  // зашитой цифры): полный штраф — отставание на 30%+. Ворота выгрузки
+  // в балл не входят — это клиентский процесс.
+  for (const d of drivers) {
+    if (d.trips < 3) { d.score = null; d.light = 'none'; continue; }
+    let score = 100;
+    if (d.ve != null && park.ve) {
+      score -= 40 * Math.min(1, Math.max(0, (park.ve - d.ve) / (park.ve * 0.3)));
+    }
+    if (d.loadFacts) score -= 30 * (d.lateLoad / d.loadFacts);
+    if (d.unloadFacts) score -= 15 * (d.lateUnload / d.unloadFacts);
+    if (d.cleanPct != null) score -= 15 * (1 - d.cleanPct / 100);
+    d.score = Math.round(score);
+    d.light = d.score >= 80 ? 'green' : d.score >= 60 ? 'yellow' : 'red';
+  }
+  return { drivers, park };
 }
 
 // ── Рейтинг водителей ──

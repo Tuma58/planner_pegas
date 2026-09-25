@@ -25,6 +25,15 @@ const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} 
 // Обработчики отчёта «Показатели сотрудников»: селект должности (admin).
 // Вызывается из openReport после вставки разметки в модал.
 export function wireReport(kind, { reopen }) {
+  // Отчёт водителей: кнопка «💾 Сохранить в PDF» — файл с сервера
+  // (CSP запрещает инлайн-обработчики, вешаем здесь).
+  if (kind === 'drivers') {
+    document.getElementById('drvPdf')?.addEventListener('click', event => {
+      const { from, to } = event.currentTarget.dataset;
+      window.location.assign(`/reports/drivers/pdf?from=${from}&to=${to}`);
+    });
+    return;
+  }
   if (kind !== 'staff') return;
   document.querySelectorAll('[data-staff-role]').forEach(select =>
     select.addEventListener('change', async () => {
@@ -571,11 +580,21 @@ export async function buildReport(kind, from, to, data) {
       : `<span class="${late / facts > 0.3 ? 'bad' : ''}">${late}/${facts}</span>`;
     const cellClean = d => d.cleanPct == null ? '—'
       : `<span class="${d.cleanPct < 70 ? 'bad' : ''}">${d.cleanPct}%</span>`;
+    const LIGHT = { green: '🟢', yellow: '🟡', red: '🔴', none: '⚪' };
     body = `<div class="rsums">
         <span class="rsum">Водителей с рейсами: <b>${dr.drivers.length}</b></span>
+        <span class="rsum">🟢 <b>${dr.drivers.filter(d => d.light === 'green').length}</b></span>
+        <span class="rsum">🟡 <b>${dr.drivers.filter(d => d.light === 'yellow').length}</b></span>
+        <span class="rsum">🔴 <b>${dr.drivers.filter(d => d.light === 'red').length}</b></span>
         <span class="rsum">Медиана парка: рейс целиком <b>${P.ve ?? '—'} км/ч</b></span>
         <span class="rsum">в движении <b>${P.vt ?? '—'} км/ч</b></span>
-        <span class="rsum">ворота выгрузки <b>${P.gateUnloadH ?? '—'} ч</b></span></div>
+        <span class="rsum">ворота выгрузки <b>${P.gateUnloadH ?? '—'} ч</b></span>
+        <button type="button" class="button small" id="drvPdf" data-from="${from}" data-to="${to}"
+          title="Скачать этот отчёт файлом PDF на компьютер">💾 Сохранить в PDF</button></div>
+      <p class="geohint">Оценка = 100 − отставание скорости рейса от парковой медианы (до 40) −
+        опоздания на погрузку (до 30) − опоздания на выгрузку (до 15) − рваные отметки (до 15).
+        🟢 80+ — норма · 🟡 60–79 — внимание · 🔴 до 60 — разбор · ⚪ меньше 3 рейсов — рано судить.
+        Ворота выгрузки в оценку не входят — это время клиента.</p>
       <p class="geohint">Как читать: <b>«Рейс целиком»</b> ниже парковой на 20%+ (красным) —
         водитель много стоит; смотрите «В движении»: если и она низкая — вопрос к машине
         или стилю езды, если нормальная — к организации (ворота, стыки). <b>«Ворота
@@ -584,17 +603,18 @@ export async function buildReport(kind, from, to, data) {
         низкая доля значит, что фактам по этим рейсам верить нельзя. Водитель рейса —
         по закреплению на момент старта; «В движении» считается по машино-дням
         закреплений — у водителя без закрепления в «Ресурсе» там прочерк.</p>
-      <table class="rtable"><thead><tr><th>Водитель</th><th class="num">Рейсов</th>
+      <table class="rtable"><thead><tr><th>Оценка</th><th>Водитель</th><th class="num">Рейсов</th>
         <th class="num">км (с порожним)</th><th class="num">Рейс целиком, км/ч</th>
         <th class="num">В движении, км/ч</th><th class="num">Опозд. П</th>
         <th class="num">Опозд. В</th><th class="num">Ворота В, ч</th><th class="num">Отметки</th></tr></thead>
-      <tbody>${dr.drivers.map(d => `<tr><td>${escapeHtml(d.name.slice(0, 30))}${d.vehicles > 1 ? ` <small class="muted">×${d.vehicles} ТС</small>` : ''}</td>
+      <tbody>${dr.drivers.map(d => `<tr><td>${LIGHT[d.light] || '⚪'} <b>${d.score ?? '—'}</b></td>
+        <td>${escapeHtml(d.name.slice(0, 30))}${d.vehicles > 1 ? ` <small class="muted">×${d.vehicles} ТС</small>` : ''}</td>
         <td class="num">${d.trips}</td><td class="num">${d.km.toLocaleString('ru-RU')}</td>
         <td class="num"><b>${cellVe(d)}</b></td><td class="num">${d.vt ?? '—'}</td>
         <td class="num">${cellLate(d.lateLoad, d.loadFacts)}</td>
         <td class="num">${cellLate(d.lateUnload, d.unloadFacts)}</td>
         <td class="num">${d.gateUnloadH ?? '—'}</td><td class="num">${cellClean(d)}</td></tr>`).join('')
-        || '<tr><td colspan=9>Рейсов за период нет</td></tr>'}</tbody></table>
+        || '<tr><td colspan=10>Рейсов за период нет</td></tr>'}</tbody></table>
       <p class="muted" style="margin-top:6px">Сверхвахта и доплаты появятся здесь после
         этапа 3 перестройки Ресурса (явка ↔ факт графика).</p>`;
   } else if (kind === 'speed') {
