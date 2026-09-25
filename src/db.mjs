@@ -748,6 +748,18 @@ function migrateColumns(db) {
     }
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('transit_replan_v2','1')`).run();
   }
+  // Донесённым из 1С рейсам — выгрузка = дате выполнения (решение
+  // руководителя 25.09): у 1846 закрытых импортированных рейсов
+  // (июнь–август) unloaded_at пуст — канон по выгрузкам терял август
+  // на 18,4 млн против плитки. Только 1С (external_id), только с
+  // прошедшим концом; живые рейсы планера не трогаем. Однократно.
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='unloaded_backfill_1c_v1'`).get()) {
+    const done = db.prepare(`UPDATE trips SET unloaded_at = ends_at
+      WHERE status IN ('unloaded','done','paid') AND unloaded_at IS NULL
+        AND external_id IS NOT NULL AND datetime(ends_at) < datetime('now')`).run().changes;
+    if (done) console.log(`Бэкфилл выгрузок 1С: проставлено ${done} рейсам (unloaded_at = ends_at)`);
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('unloaded_backfill_1c_v1','1')`).run();
+  }
   // Отметки «отработано» в заданиях живут неделю после своей даты — дальше мусор.
   db.prepare(`DELETE FROM task_marks WHERE day < date('now','-7 day')`).run();
   // Вид 'dispatcher' добавлен позже: CHECK старой таблицы его не пускает —
