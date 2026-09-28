@@ -1046,7 +1046,6 @@ export async function renderSales(container, context) {
         <small class="skm">${periodTrips.length} рейсов завершено</small></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter">
-        <span class="skl">Фильтр</span>
         <input id="salesSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС"
           value="${escapeHtml(filter.q)}">
         <select id="salesFilterZone">

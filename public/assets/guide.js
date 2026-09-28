@@ -2249,7 +2249,8 @@ export function setupGuide({ views, activeView, showModal }) {
   if (!toolbarEnd || document.getElementById('guideToggle')) return;
   const toggle = document.createElement('button');
   toggle.id = 'guideToggle';
-  toggle.className = 'button ghost small';
+  // Единый ряд плашек правой зоны (28.09): круглые иконки одного вида.
+  toggle.className = 'tb-icon';
   toggle.title = 'Инструкции сотрудников конвейера';
   toggle.textContent = '?';
   toolbarEnd.prepend(toggle);

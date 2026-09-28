@@ -69,9 +69,9 @@ export function setupChat(state) {
   if (!toolbarEnd || document.getElementById('chatToggle')) return;
   const toggle = document.createElement('button');
   toggle.id = 'chatToggle';
-  toggle.className = 'button small chat-toggle';
-  toggle.title = 'Внутренний чат: общий канал, лента конвейера, личные и группы';
-  toggle.innerHTML = '💬 Чат <span class="chat-unread hidden" id="chatUnread">0</span>';
+  toggle.className = 'tb-icon chat-toggle';
+  toggle.title = 'Чат: общий канал, лента конвейера, личные и группы';
+  toggle.innerHTML = '💬<span class="chat-unread hidden" id="chatUnread">0</span>';
   toolbarEnd.prepend(toggle);
 
   const myRoles = state.data.user.roles || [state.data.user.role];

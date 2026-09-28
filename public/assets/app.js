@@ -1931,7 +1931,7 @@ function setupTelegramButton() {
   if (!toolbarEnd) return;
   const toggle = document.createElement('button');
   toggle.id = 'tgToggle';
-  toggle.className = 'button ghost small';
+  toggle.className = 'tb-icon';
   toggle.title = 'Уведомления планера в Telegram на телефон';
   toggle.textContent = '🔔';
   toolbarEnd.prepend(toggle);
