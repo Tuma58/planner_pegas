@@ -971,12 +971,35 @@ export async function renderSales(container, context) {
     const holes = ringLoad.items.filter(item => item.holeVehicles >= 1)
       .sort((a, b) => b.holeMarginMonth - a.holeMarginMonth).slice(0, 5);
     if (!holes.length) return '';
-    return `<div class="sales-rings"
+    // Свёртка с памятью (паттерн 28.09): по умолчанию только итоговая
+    // строка, разворот по клику, выбор запоминается на устройстве.
+    let ringsOpen = false;
+    try { ringsOpen = localStorage.getItem('plSalesRings') === 'open'; } catch { /* приватный режим */ }
+    const holeVeh = holes.reduce((sum, item) => sum + item.holeVehicles, 0);
+    return `<details class="sales-rings" id="salesRingsStrip" ${ringsOpen ? 'open' : ''}
       title="Дыра круга = план машин по шаблону (при живом зазоре стыковки) минус машины, реально работавшие на плечах круга за неделю. Цена — маржа шаблона за месяц. Полная таблица — у руководителя: «⭕ Загрузка кругов»">
-      ⭕ Круги — куда продавать объём: ${holes.map(item =>
+      <summary>⭕ Куда продавать объём: ${holes.length} кругов · −${holeVeh} маш</summary>
+      <div style="margin-top:4px">${holes.map(item =>
     `<b>${escapeHtml(item.name.split(' · ')[0])}</b> −${item.holeVehicles} маш
-        (≈${Math.round(item.holeMarginMonth / 1000).toLocaleString('ru-RU')} т₽/мес)`).join(' · ')}</div>`;
+        (≈${Math.round(item.holeMarginMonth / 1000).toLocaleString('ru-RU')} т₽/мес)`).join(' · ')}</div>
+    </details>`;
   })();
+  // Свёртка кругов: запоминаем выбор; меню «⋯ Инструменты» закрывается
+  // выбором пункта или кликом мимо (как справочники в тулбаре).
+  setTimeout(() => {
+    const rings = container.querySelector('#salesRingsStrip');
+    if (rings) rings.addEventListener('toggle', () => {
+      try { localStorage.setItem('plSalesRings', rings.open ? 'open' : 'closed'); } catch { /* некритично */ }
+    });
+    const tools = container.querySelector('#salesToolsMenu');
+    if (tools) {
+      document.addEventListener('click', event => {
+        if (!tools.contains(event.target)) tools.removeAttribute('open');
+      }, { once: false });
+      tools.querySelectorAll('.tb-menu-list button').forEach(button =>
+        button.addEventListener('click', () => tools.removeAttribute('open')));
+    }
+  }, 0);
   const savedScrolls = captureScrolls(container);
   // Выручка дня перед глазами продаж (просьба руководителя 12.09):
   // те же цифры, что на дашборде, но крупно — сколько уже стоит день
@@ -992,11 +1015,11 @@ export async function renderSales(container, context) {
   const html = `<div class="saleswrap">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам', compact: true, open: state.salesQuestionsOpen })}
     ${dayBannerHtml}${ringHolesHtml}
-    <div class="salekpis">
+    <div class="salekpis compact">
       <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
         title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">
         <span class="skl">Клиенты</span><span class="skv">${clients.length}</span>
-        <small class="skm">${unconfirmedTotal ? `ждут подтверждения ${unconfirmedTotal}${hotTotal ? ` · 🔥 ${hotTotal}` : ''}` : 'всё подтверждено'}</small>
+        ${unconfirmedTotal ? `<small class="skm">ждут подтверждения ${unconfirmedTotal}${hotTotal ? ` · 🔥 ${hotTotal}` : ''}</small>` : ''}
         ${kpiDrop('clients', clients.map(client => `<div class="skpi-row" data-kpi-client="${escapeHtml(client.name)}">
           <span style="flex:1;min-width:0"><strong>${escapeHtml(client.name)}</strong>
             <small class="muted" style="display:block">заказов ${client.orders.length} · ${fmtDay(client.first)}</small></span>
@@ -1012,12 +1035,12 @@ export async function renderSales(container, context) {
       <div class="skpi clickable ${state.salesKpiOpen === 'logist' ? 'open' : ''}" data-kpi="logist"
         title="Назначено, рейс ещё не выехал — выбор открывает редактирование; выгруженные и завершённые — в отчётах">
         <span class="skl">В плане у логиста</span><span class="skv">${assigned}</span>
-        <small class="skm">в пути ${inRunCount}</small>
+        ${inRunCount ? `<small class="skm">в пути ${inRunCount}</small>` : ''}
         ${kpiDrop('logist', inPlanOrders.map(orderRow).join(''))}</div>
-      <div class="skpi clickable ${state.salesKpiOpen === 'expired' ? 'open' : ''} ${expiredOrders.length ? 'skpi-hot' : ''}"
+      ${expiredOrders.length ? `<div class="skpi clickable ${state.salesKpiOpen === 'expired' ? 'open' : ''} skpi-hot"
         data-kpi="expired" title="Окно погрузки истекло, ТС не назначено: передоговорите сроки («Изменить») или отклоните — в подбор такие заявки не встают">
         <span class="skl">⚠ Окно истекло</span><span class="skv">${expiredOrders.length}</span>
-        ${kpiDrop('expired', expiredOrders.map(orderRow).join(''))}</div>
+        ${kpiDrop('expired', expiredOrders.map(orderRow).join(''))}</div>` : ''}
       <div class="skpi" title="Выручка без НДС по рейсам, завершённым в текущем календарном месяце (не зависит от листания периода; НДС ИП — 7%)">
         <span class="skl">Выручка б. НДС · ${escapeHtml(periodLabel)}</span><span class="skv">${money(periodNet)}</span>
         <small class="skm">${periodTrips.length} рейсов завершено</small></div>
@@ -1039,14 +1062,19 @@ export async function renderSales(container, context) {
         <input type="date" id="salesFilterFrom" value="${filter.from}" title="Окно заявки / освобождение сцепки — с даты">
         <span class="muted">–</span>
         <input type="date" id="salesFilterTo" value="${filter.to}" title="Окно заявки / освобождение сцепки — по дату">
-        <button class="button small" id="salesTask"
-          title="Срез на дату: свободные и освобождающиеся сцепки, ремонты и пересменки, незакрытые регионы">📋 Задание</button>
-        <button class="button ghost small" id="salesDeliveryPlan"
-          title="График вывоза на месяц: жёлтые слоты без заявок — ваши задачи на прозвон">📅 План вывоза</button>
-        <button class="button ghost small" id="salesMailImport"
-          title="Вставьте письмо клиента (таблицей или прописью) — строки распознаются в заявки пакетом">📥 Из письма</button>
         <button class="button small" id="salesRadar"
           title="Куда продавать: горящие зоны со свободными машинами, рынок направлений и дыры плана — с бронированием ТС">🎯 Куда продавать</button>
+        <details class="tb-menu" id="salesToolsMenu">
+          <summary class="button ghost small">⋯ Инструменты</summary>
+          <div class="tb-menu-list">
+            <button class="button ghost small" id="salesTask"
+              title="Срез на дату: свободные и освобождающиеся сцепки, ремонты и пересменки, незакрытые регионы">📋 Задание</button>
+            <button class="button ghost small" id="salesDeliveryPlan"
+              title="График вывоза на месяц: жёлтые слоты без заявок — ваши задачи на прозвон">📅 План вывоза</button>
+            <button class="button ghost small" id="salesMailImport"
+              title="Вставьте письмо клиента (таблицей или прописью) — строки распознаются в заявки пакетом">📥 Из письма</button>
+          </div>
+        </details>
         <button class="button ghost small" id="salesPresetToday" title="Только сегодняшний день">Сегодня</button>
         <button class="button ghost small" id="salesPresetWeek" title="Ближайшие 7 дней">7 дн</button>
         ${filterActive ? '<button class="button ghost small" id="salesFilterReset">✕ Сброс</button>' : ''}

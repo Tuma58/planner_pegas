@@ -1026,6 +1026,21 @@ input.warn-border { border-color: #c99a2e; }
 /* Доска продаж (ТК 21) */
 .saleswrap { padding: 10px 14px 12px; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .salekpis { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; flex-shrink: 0; }
+/* Инфо-строка (паттерн 28.09, пилот — Продажи): те же .skpi, но чипами
+   в одну строку — подпись и число рядом, детали чуть мельче. */
+.salekpis.compact { gap: 6px; margin-bottom: 8px; align-items: center; }
+.salekpis.compact .skpi {
+  flex-direction: row; align-items: baseline; gap: 7px;
+  padding: 5px 12px; border-radius: 15px;
+}
+.salekpis.compact .skv { font-size: 15px; }
+.salekpis.compact .skm { margin-top: 0; }
+/* Свёртка «⭕ Круги» и меню «⋯ Инструменты» — как в мобильных: по
+   умолчанию закрыто, состояние запоминается. */
+details.sales-rings summary { cursor: pointer; list-style: none; font-weight: 700; }
+details.sales-rings summary::-webkit-details-marker { display: none; }
+details.sales-rings summary::after { content: ' ▾'; color: var(--muted); }
+details.sales-rings[open] summary::after { content: ' ▴'; }
 .skpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; }
 /* Операционный отчёт руководителя (вместо панели приборов) */
 .brep { display: flex; flex-direction: column; gap: 14px; padding: 12px 16px 40px; }
