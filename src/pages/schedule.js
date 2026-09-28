@@ -604,21 +604,33 @@ function renderGrid(){
     if(!rezLimit(d.rezhim)){ overTotal.noRez++; return; }
     const o=overInfo(d,'plan',DAYS); if(o.n){ overTotal.days+=o.n; overTotal.men++; } });
   const noP=handsView.filter(h=>h.kind==='bad').length;
-  const kp=[['Сцепок',fleetIds.length,''],['Водителей',set.filter(d=>!d.vac).length,''],
-    ['Вакансий',set.filter(d=>d.vac).length, set.filter(d=>d.vac).length?'bad':''],
-    ['Машинодни',md+' из '+cap,''],['Укомплектовано', cap?Math.round(md/cap*100)+'%':'—',''],
-    ['Дней без водителя',st.reduce((a,x)=>a+x.free,0), st.some(x=>x.free)?'bad':''],
-    ['Смен водителя на машинах',handsView.length,''],
-    ['Дней сверх вахты (план)', overTotal.days, overTotal.days?'bad':''],
-    ['Водителей с переработкой', overTotal.men, overTotal.men?'bad':''],
-    ['С опозданием',late, late?'bad':''],
-    ['Без отметки П',noP, noP?'bad':''],
-    ['Нарушений',Object.keys(bad).length, Object.keys(bad).length?'bad':''],
-    (()=>{ const total=fullSet.length;
-      const done=fullSet.filter(d=>!planHasGaps(d)).length;
-      return ['Расписан план (период)', done+' из '+total, done<total?'bad':'']; })()];
-  document.getElementById('kpis').innerHTML=kp.map(([l,v,c])=>
-    `<div class="kpi ${c}"><b>${v}</b><span>${l}</span></div>`).join('');
+  /* Компакт-чипы (паттерн инфо-строки 29.09): базовые всегда, проблемные —
+     только при ненуле (тишина = норма), чип с f кликом включает фильтр. */
+  const planTotal=fullSet.length, planDone=fullSet.filter(d=>!planHasGaps(d)).length;
+  const vacN=set.filter(d=>d.vac).length, freeN=st.reduce((a,x)=>a+x.free,0),
+        badN=Object.keys(bad).length;
+  const kp=[
+    {v:fleetIds.length, l:'сцепок'},
+    {v:set.filter(d=>!d.vac).length, l:'водителей'},
+    {v:md+' / '+cap, l:'машинодни'},
+    {v:cap?Math.round(md/cap*100)+'%':'—', l:'укомплектовано'},
+    {v:vacN, l:'вакансий', bad:true, zero:true, f:'fVac'},
+    {v:freeN, l:'дней без водителя', bad:true, zero:true, f:'fGap'},
+    {v:handsView.length, l:'пересмен', zero:true},
+    {v:late, l:'пересмен с опозданием', bad:true, zero:true},
+    {v:noP, l:'смен без отметки П', bad:true, zero:true},
+    {v:overTotal.days, l:'дн. сверх вахты · '+overTotal.men+' чел', bad:true, zero:true},
+    {v:badN, l:'нарушений', bad:true, zero:true, f:'fConf'},
+    {v:planDone+' из '+planTotal, l:'расписан план', bad:true,
+     zero:true, hide:planDone>=planTotal, f:'fUnplanned'},
+  ];
+  document.getElementById('kpis').innerHTML=kp
+    .filter(k=>!(k.zero && (k.hide || k.v===0)))
+    .map(k=>{
+      const on=k.f && document.getElementById(k.f)?.checked;
+      const act=k.f?` data-f="${k.f}" role="button" title="клик — оставить только это"`:'';
+      return `<span class="kchip${k.bad?' bad':''}${on?' act':''}"${act}><b>${k.v}</b>${k.l}</span>`;
+    }).join('');
 
   /* шапка */
   const monthTh=[], dayTh=[], sums={'машин в работе':[],'без водителя':[],'пересмен':[],'отпуск':[]};
@@ -1228,6 +1240,18 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
 });
 ['fFilial','fMonth','fLayer','fView','fSearch','fVac','fGap','fConf','fUnplanned'].forEach(id=>
   document.getElementById(id).addEventListener('input',renderGrid));
+/* Чип-счётчик с data-f включает свой фильтр (повторный клик выключает). */
+document.getElementById('kpis').addEventListener('click',e=>{
+  const chip=e.target.closest('[data-f]'); if(!chip) return;
+  const cb=document.getElementById(chip.dataset.f); if(!cb) return;
+  cb.checked=!cb.checked; renderGrid();
+});
+/* Меню «⋯ Инструменты»: закрывается по клику мимо и после выбора кнопки. */
+{ const tm=document.getElementById('toolsMenu');
+  if(tm){
+    document.addEventListener('click',e=>{ if(tm.open && !tm.contains(e.target)) tm.open=false; });
+    tm.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ tm.open=false; }));
+  } }
 ['xFilial','xSearch','xFree'].forEach(id=>
   document.getElementById(id).addEventListener('input',renderFix));
 document.getElementById('sMonth').addEventListener('input',renderSum);

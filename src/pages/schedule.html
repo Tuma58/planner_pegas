@@ -32,10 +32,11 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
        font:13px/1.35 "Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}
-  header{background:var(--panel);border-bottom:1px solid var(--line);padding:12px 16px 0}
+  header{background:var(--panel);border-bottom:1px solid var(--line);padding:9px 16px 0}
   h1{margin:0;font-size:16px;font-weight:650}
-  .sub{color:var(--ink-2);font-size:12px;margin-top:2px}
-  .tabs{display:flex;gap:2px;margin-top:10px}
+  .hrow{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap}
+  .icon-round{width:26px;height:26px;border-radius:13px;padding:0;font-weight:700;color:var(--ink-2)}
+  .tabs{display:flex;gap:2px;margin-top:8px}
   .tab{padding:6px 14px;border:1px solid var(--line);border-bottom:none;border-radius:4px 4px 0 0;
        background:var(--bg);cursor:pointer;font-size:13px;color:var(--ink-2)}
   .tab[aria-selected="true"]{background:var(--panel);color:var(--ink);font-weight:600;
@@ -48,18 +49,42 @@
   button{cursor:pointer}
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-  .kpis{display:flex;flex-wrap:wrap;gap:16px 22px;padding:9px 16px;background:var(--panel);
+  .kpis{display:flex;flex-wrap:wrap;gap:6px;padding:7px 16px;background:var(--panel);
         border-bottom:1px solid var(--line)}
-  .kpi b{display:block;font-size:18px;font-weight:650;line-height:1.15}
-  .kpi span{font-size:11px;color:var(--ink-2)}
-  .kpi.bad b{color:var(--warn)}
+  /* Компакт-чипы счётчиков (паттерн инфо-строки 29.09): подпись·число одной
+     строкой, нулевые скрыты (тишина = норма), чип с data-f кликом включает
+     свой фильтр. */
+  .kchip{display:inline-flex;align-items:baseline;gap:6px;border:1px solid var(--line);
+         border-radius:14px;padding:3px 11px;font-size:12px;color:var(--ink-2);background:var(--panel)}
+  .kchip b{font-size:14px;font-weight:700;color:var(--ink)}
+  .kchip.bad{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+  .kchip.bad b{color:var(--warn)}
+  .kchip[data-f]{cursor:pointer}
+  .kchip[data-f]:hover{border-color:var(--accent)}
+  .kchip.act{outline:2px solid var(--accent);outline-offset:-1px}
+  /* Фильтры-чипы (галочка спрятана, label — кнопка) */
+  .fchip{border:1px solid var(--line);border-radius:14px;padding:3px 11px;cursor:pointer;
+         user-select:none;background:var(--panel)}
+  .fchip input{display:none}
+  .fchip:has(input:checked){background:var(--accent);border-color:var(--accent);color:#fff}
+  /* Меню «⋯ Инструменты» — свёртка сервисных кнопок (паттерн планера) */
+  details.tools{position:relative;margin-left:auto}
+  details.tools>summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:3px;
+        padding:3px 10px;background:var(--panel);color:var(--ink-2);font-size:12px;user-select:none}
+  details.tools>summary::-webkit-details-marker{display:none}
+  details.tools[open]>summary{border-color:var(--accent);color:var(--ink)}
+  .tools-list{position:absolute;right:0;top:calc(100% + 4px);z-index:40;display:flex;
+        flex-direction:column;gap:4px;background:var(--panel);border:1px solid var(--line);
+        border-radius:5px;padding:8px;box-shadow:0 8px 26px rgba(0,0,0,.25);min-width:200px}
+  .tools-list button{text-align:left}
+  .help-tip{cursor:help;border-bottom:1px dotted var(--ink-3)}
   .palette{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
   .chip{border:1px solid var(--line);border-radius:3px;padding:2px 8px;font-size:12px;cursor:pointer}
   .chip[aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:-2px;font-weight:600}
   .chip.v{background:var(--c-v)} .chip.otp{background:var(--c-otp)} .chip.bl{background:var(--c-bl)}
   .chip.bs{background:var(--c-bs)} .chip.P{background:var(--c-p)} .chip.RP{background:var(--c-rp)}
   .chip.R{background:var(--c-r)} .chip.zam{background:var(--c-zam)}
-  .wrap{overflow:auto;max-height:calc(100vh - 235px)}
+  .wrap{overflow:auto;max-height:calc(100vh - 205px)}
   table{border-collapse:separate;border-spacing:0;font-size:12px;width:max-content}
   th,td{border-right:1px solid var(--line-2);border-bottom:1px solid var(--line-2);padding:1px 5px;white-space:nowrap}
   thead th{position:sticky;top:0;z-index:5;background:var(--head);font-weight:600;font-size:11px;text-align:center}
@@ -129,7 +154,7 @@
   .bars div{flex:1;background:var(--c-v);min-width:3px}
   .bars div.b-free{background:var(--warn)}
   .hint{color:var(--ink-3);font-size:11px}
-  .netbar{margin-top:6px;font-size:12px;color:var(--ink-2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .netbar{font-size:12px;color:var(--ink-2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);display:inline-block}
   .dot.on{background:var(--ok)} .dot.off{background:var(--warn)} .dot.sync{background:#c98a1b}
   .who{color:var(--ink-3);font-size:10px}
@@ -151,13 +176,14 @@
 </head>
 <body>
 <header>
-  <h1>График работы и закрепление водителей</h1>
-  <div class="sub">Единое поле по обоим филиалам. Исходные данные — август и сентябрь 2026.</div>
-  <div class="netbar">
-    <span class="dot" id="netDot"></span><span id="netTxt">Общий график планера</span>
-    <label>Вы: <input type="text" id="who" size="16" placeholder="фамилия"></label>
-    <button id="btnHelp">Как пользоваться</button>
-    <button id="btnSync">Подключить сервер…</button>
+  <div class="hrow">
+    <h1>График работы и закрепление водителей</h1>
+    <div class="netbar">
+      <span class="dot" id="netDot"></span><span id="netTxt">Общий график планера</span>
+      <label>Вы: <input type="text" id="who" size="16" placeholder="фамилия"></label>
+      <button id="btnSync">Подключить сервер…</button>
+      <button id="btnHelp" class="icon-round" title="Как пользоваться — подробная инструкция">?</button>
+    </div>
   </div>
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" data-pane="grid" aria-selected="true">График</button>
@@ -173,24 +199,29 @@
     <label>Филиал <select id="fFilial"><option>Все</option><option>Пенза</option><option>Москва</option></select></label>
     <label>Период <select id="fMonth">
       </select></label>
-    <button id="btnAddMonth" title="добавить следующий месяц пустым">+ месяц</button>
-    <button id="btnExtend" title="добавить следующий месяц и продолжить вахты по режиму">Продлить по режиму</button>
-    <button id="btnDelMonth" title="убрать последний месяц">− месяц</button>
     <label>Показывать <select id="fView">
       <option value="all">машины и водителей</option>
       <option value="ts">только машины</option>
       <option value="drv">только водителей</option></select></label>
     <label>Слой <select id="fLayer"><option value="plan">План</option><option value="both">План и факт</option><option value="fact">Факт</option></select></label>
+    <label class="fchip"><input type="checkbox" id="fVac"> вакансии</label>
+    <label class="fchip"><input type="checkbox" id="fGap"> машины с простоем</label>
+    <label class="fchip"><input type="checkbox" id="fConf"> нарушения</label>
+    <label class="fchip" title="только строки, где в видимом периоде остались пустые дни плана — что ещё не отработано"><input type="checkbox" id="fUnplanned"> план не заполнен</label>
     <label>Поиск <input type="text" id="fSearch" placeholder="ФИО или госномер" size="16"></label>
-    <label><input type="checkbox" id="fVac"> вакансии</label>
-    <label><input type="checkbox" id="fGap"> машины с простоем</label>
-    <label><input type="checkbox" id="fConf"> нарушения</label>
-    <label title="только строки, где в видимом периоде остались пустые дни плана — что ещё не отработано"><input type="checkbox" id="fUnplanned"> план не заполнен</label>
-    <button id="btnFact">Факт = план</button>
-    <button id="btnCsv">CSV</button>
-    <button id="btnBackup">Сохранить копию</button>
-    <button id="btnRestore">Загрузить копию</button>
-    <button id="btnReset">Исходные данные</button>
+    <details class="tools" id="toolsMenu">
+      <summary>⋯ Инструменты</summary>
+      <div class="tools-list">
+        <button id="btnAddMonth" title="добавить следующий месяц пустым">+ месяц</button>
+        <button id="btnExtend" title="добавить следующий месяц и продолжить вахты по режиму">Продлить по режиму</button>
+        <button id="btnDelMonth" title="убрать последний месяц">− месяц</button>
+        <button id="btnFact">Факт = план</button>
+        <button id="btnCsv">Выгрузить CSV</button>
+        <button id="btnBackup">Сохранить копию</button>
+        <button id="btnRestore">Загрузить копию</button>
+        <button id="btnReset">Исходные данные</button>
+      </div>
+    </details>
     <input type="file" id="fileIn" accept=".json" hidden>
   </div>
 
@@ -198,10 +229,10 @@
     <span class="hint">Выделите дни → кликните код:</span>
     <div class="palette" id="palette"></div>
     <select id="zamTs" style="max-width:150px"></select>
-    <span class="hint">Выделение как в Excel: клик · протяжка · Shift-клик · Ctrl-клик · Esc — снять. Массово: галочки строк + диапазон</span>
     <label>с <input type="number" id="dFrom" min="1" max="61" style="width:52px"></label>
     <label>по <input type="number" id="dTo" min="1" max="61" style="width:52px"></label>
     <span class="hint" id="selInfo">строк выбрано: 0</span>
+    <span class="hint help-tip" title="Выделение как в Excel: клик · протяжка мышью · Shift-клик расширяет · Ctrl-клик добавляет · Esc снимает. Сразу много строк: галочки слева от фамилий + диапазон «с/по», затем клик по коду.">ⓘ как выделять</span>
   </div>
 
   <div class="kpis" id="kpis"></div>
@@ -270,8 +301,12 @@
        помечен значком 🔗, полная раскладка — в подсказке номера тягача.</p>
     <p><b>Сразу много строк.</b> Отметьте строки галочкой слева от фамилии, задайте «с» и «по» — и кликните
        код: он зальётся всем отмеченным строкам в диапазоне (работает, когда нет выделения ячеек).
-       Кнопка «Факт = план» переписывает факт по плану для отмеченных строк
-       (или для всех в текущем фильтре, если ничего не отмечено).</p>
+       Кнопка «Факт = план» (в меню «⋯ Инструменты» справа) переписывает факт по плану
+       для отмеченных строк (или для всех в текущем фильтре, если ничего не отмечено).</p>
+    <p><b>Счётчики над сеткой.</b> Показываются только ненулевые — если чипа нет,
+       значит проблемы нет. Красные чипы «вакансий», «дней без водителя», «нарушений»
+       и «расписан план» кликабельны: клик включает соответствующий фильтр строк,
+       повторный клик выключает.</p>
     <p><b>Что показывает шапка.</b> Под номерами дней — сколько машин в работе, сколько людей в отпуске,
        сколько пересмен и сколько сцепок в этот день осталось без водителя. Красная рамка на ячейке —
        нарушение: двое на одной машине, «в» без закреплённого ТС или превышение режима. Наведите — увидите причину.</p>
@@ -297,7 +332,9 @@
        и в колонку «Изменил».</p>
     <p><b>Сохранность.</b> Правки живут в браузере этого компьютера. «Сохранить копию» выгружает всё поле
        одним файлом, «Загрузить копию» — поднимает его обратно, в том числе на другом компьютере.
-       «Исходные данные» откатывает к выгрузке из Excel.</p>
+       «Исходные данные» откатывает к выгрузке из Excel. Эти кнопки, работа с месяцами
+       (+ месяц / продлить по режиму / − месяц) и выгрузка CSV собраны в меню
+       «⋯ Инструменты» справа в строке фильтров.</p>
     <button id="btnHelpClose" class="primary">Понятно</button>
   </div>
 </div>
