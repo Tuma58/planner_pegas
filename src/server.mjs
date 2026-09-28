@@ -642,6 +642,8 @@ setInterval(runResourceWatch, 60 * 60_000);
 function runScheduleFactWatch() {
   try {
     const result = runScheduleAutoFact(db);
+    // Этап 4-lite: держатели из плана → закрепления (догон горизонта).
+    try { syncAssignBridge(db); } catch (error) { console.error('график → закрепления:', error.message); }
     const covered = result.busyDays - result.noHolder - result.many;
     if (result.busyDays) {
       console.log(`график: автофакт — отметок ${result.marks}, машино-дней с работой ` +
@@ -9361,6 +9363,11 @@ async function api(request, response, url) {
       if (bridge.created || bridge.removed) {
         audit(db, user, 'update', 'schedule', 'shift-bridge', bridge, requestIp(request));
       }
+      // Этап 4-lite (28.09): держатели бортов из плана → закрепления.
+      try {
+        const asg = syncAssignBridge(db, user.id);
+        if (asg.made) console.log(`график → закрепления: периодов ${asg.made} (${asg.days} машино-дней)`);
+      } catch (error) { console.error('график → закрепления:', error.message); }
     }
     return json(response, 200, result);
   }

@@ -450,12 +450,29 @@ export function createDriverAssignment(db, { driverId, vehicleId, startsAt, ends
   // Занятость на ДРУГОЙ машине — ошибка: снять человека с чужой сцепки
   // втихую нельзя, подрежьте период там, где он стоит. Пересечения на
   // ЭТОЙ машине — не ошибка, а замена: они подрезаются ниже.
+  // Исключение (этап 4-lite, 28.09): автозакрепления моста «из графика»
+  // человеку не принадлежат — ручная правка их просто вытесняет (мост
+  // пересоберёт свои по актуальному плану при следующем сохранении).
   const clash = empty ? null : db.prepare(`SELECT a.id, v.plate FROM driver_assignments a
     JOIN vehicles v ON v.id=a.vehicle_id
-    WHERE a.driver_id=? AND a.vehicle_id<>? AND a.starts_at < ? AND a.ends_at > ?`)
+    WHERE a.driver_id=? AND a.vehicle_id<>? AND a.starts_at < ? AND a.ends_at > ?
+      AND a.note NOT LIKE 'из графика%'`)
     .get(driverId, vehicleId, endsAt, startsAt);
   if (clash) {
     throw Object.assign(new Error(`Пересечение: водитель уже закреплён на ${clash.plate} в этот период`), { status: 422 });
+  }
+  if (!empty) {
+    db.prepare(`DELETE FROM driver_assignments
+      WHERE driver_id=? AND vehicle_id<>? AND note LIKE 'из графика%'
+        AND starts_at >= ? AND ends_at <= ?`).run(driverId, vehicleId, startsAt, endsAt);
+    db.prepare(`UPDATE driver_assignments SET ends_at=?
+      WHERE driver_id=? AND vehicle_id<>? AND note LIKE 'из графика%'
+        AND starts_at < ? AND ends_at > ? AND ends_at <= ?`)
+      .run(startsAt, driverId, vehicleId, startsAt, startsAt, endsAt);
+    db.prepare(`UPDATE driver_assignments SET starts_at=?
+      WHERE driver_id=? AND vehicle_id<>? AND note LIKE 'из графика%'
+        AND starts_at >= ? AND starts_at < ? AND ends_at > ?`)
+      .run(endsAt, driverId, vehicleId, startsAt, endsAt, endsAt);
   }
   // Замена по факту (решение руководителя 15.09): новый период приводит
   // план к факту — пересекающиеся периоды этой машины подрезаются, дни

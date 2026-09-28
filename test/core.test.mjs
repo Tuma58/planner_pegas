@@ -3453,3 +3453,51 @@ test('профиль водителя: подмена не приписывае�
   assert.equal(hole.trips, 1, 'рейс родной машины во время подмены — в дыру оформления');
   assert.equal(hole.light, 'none', 'светофор для дыры не считается');
 });
+
+test('этап 4-lite: план графика создаёт закрепления, ручные целы', async t => {
+  const { applyScheduleSync, syncAssignBridge } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-asg-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicles = db.prepare('SELECT id, plate FROM vehicles LIMIT 2').all();
+  const drvs = db.prepare("SELECT id, full_name FROM drivers WHERE status<>'fired' LIMIT 2").all();
+  const [v1, v2] = vehicles;
+  const [d1, d2] = drvs;
+  const t3 = plate => (String(plate).match(/\d{3}/) || [''])[0];
+  const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  const day = off => new Date(todayMs + off * 86_400_000).toISOString().slice(0, 10);
+  const mkOf = off => day(off).slice(0, 7);
+  // План: d1 на своём борту v1 дни 0–2 ('в'), в день 1 — замещение на v2.
+  const lanes = {};
+  for (const off of [0, 1, 2]) {
+    const mk = mkOf(off);
+    if (!lanes[mk]) lanes[mk] = Array(new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate()).fill('');
+    lanes[mk][Number(day(off).slice(8, 10)) - 1] = off === 1 ? t3(v2.plate) : 'в';
+  }
+  const crew = { id: 'A4T', ts: [
+      { id: 'T1', tyagach: v1.plate, pricep: '', tip: '', filial: 'Пенза', crew: 'A4T' },
+      { id: 'T2', tyagach: v2.plate, pricep: '', tip: '', filial: 'Пенза', crew: 'A4T' }],
+    drv: [{ id: 'D1', fio: d1.full_name, tel: '', crew: 'A4T', filial: 'Пенза', ts: 'T1',
+      rezhim: '', logist: '', vac: false, plan: lanes, fact: {} }] };
+  applyScheduleSync(db, { since: 0, crews: { A4T: crew }, log: [] });
+  // Ручное закрепление d2 на v1 в день 2 — мост его день не занимает.
+  db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at,note)
+    VALUES('manual-1',?,?,?,?,'руками')`).run(d2.id, v1.id, day(2), day(3));
+  const out = syncAssignBridge(db);
+  assert.ok(out.made >= 2, `создаёт периоды, made=${out.made}`);
+  const mine = db.prepare(`SELECT vehicle_id, starts_at, ends_at FROM driver_assignments
+    WHERE driver_id=? AND note LIKE 'из графика%' ORDER BY starts_at`).all(d1.id);
+  assert.deepEqual(mine.map(x => [x.vehicle_id, x.starts_at, x.ends_at]),
+    [[v1.id, day(0), day(1)], [v2.id, day(1), day(2)]],
+    'свой борт день 0, замещение день 1; день 2 отдан ручному');
+  const manual = db.prepare(`SELECT COUNT(*) n FROM driver_assignments WHERE id='manual-1'`).get();
+  assert.equal(manual.n, 1, 'ручное цело');
+  // Идемпотентность: повторный прогон не плодит записей.
+  syncAssignBridge(db);
+  const again = db.prepare(`SELECT COUNT(*) n FROM driver_assignments
+    WHERE note LIKE 'из графика%'`).get();
+  assert.equal(again.n, mine.length, 'повтор без дублей');
+});

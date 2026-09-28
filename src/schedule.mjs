@@ -195,6 +195,134 @@ export function pushAttendanceToSchedule(db, fio, iso, status, reason, author = 
   return pushAttendanceBatch(db, [{ fio, iso, status, reason }], author, userId) > 0;
 }
 
+// ── Этап 4-lite (решение руководителя 28.09): держатели бортов из
+// ПЛАН-слоя графика → периодные закрепления driver_assignments.
+// Только ЗАПИСЬ (читатели закреплений не меняются): рабочий код
+// в/П/РП/Р у своего водителя = он за бортом; код-замещение NNN =
+// водитель в этот день на борту NNN (свой борт на день освобождает).
+// Защиты в духе автофакта: горизонт от сегодня, держатель однозначен
+// (двое на борту — день пропускаем), ручные закрепления и дни клэшей
+// с ними неприкосновенны, свои записи (note «из графика») полностью
+// пересобираются — правка плана сразу отражается. Идемпотентно.
+export function syncAssignBridge(db, userId = null, horizonDays = 35) {
+  const crews = loadCrews(db);
+  if (!crews.size) return { made: 0, days: 0 };
+  const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  const today = dayIso(todayMs, 0);
+  const horizon = [...Array(horizonDays)].map((_, i) => dayIso(todayMs, i));
+  // ФИО графика → водитель планера (однозначные; дубль ФИО не сличаем).
+  const idByFio = new Map();
+  for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
+    const key = canonFio(row.full_name);
+    idByFio.set(key, idByFio.has(key) ? null : row.id);
+  }
+  const vehByPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+    .map(v => [canonPlate(v.plate), v.id]));
+  const ownVehicle = new Map();
+  const byTail = new Map();
+  for (const crew of crews.values()) {
+    for (const ts of crew.ts || []) {
+      const vid = vehByPlate.get(canonPlate(ts.tyagach));
+      if (!vid) continue;
+      ownVehicle.set(crew.id + '|' + ts.id, vid);
+      const t3 = tail3(ts.tyagach);
+      if (t3) byTail.set(t3, byTail.has(t3) ? 'many' : vid);
+    }
+  }
+  // Держатель каждого борта по дням: сначала свои, замещения NNN поверх.
+  const MANY = Symbol('many');
+  const holder = new Map();
+  const put = (vid, day, drvId) => {
+    const key = vid + '|' + day;
+    holder.set(key, holder.has(key) && holder.get(key) !== drvId ? MANY : drvId);
+  };
+  const drop = (vid, day) => holder.delete(vid + '|' + day);
+  const passes = [
+    codes => ['в', 'П', 'РП', 'Р'].includes(codes.code),
+    codes => /^\d{3}$/.test(codes.code)
+  ];
+  for (const pass of [0, 1]) {
+    for (const crew of crews.values()) {
+      for (const drv of crew.drv || []) {
+        if (drv.vac) continue;
+        const drvId = idByFio.get(canonFio(drv.fio));
+        if (!drvId) continue;
+        const own = ownVehicle.get(crew.id + '|' + drv.ts);
+        for (const day of horizon) {
+          const code = planCode(drv, day);
+          if (!code) continue;
+          if (pass === 0 && passes[0]({ code }) && own) put(own, day, drvId);
+          if (pass === 1 && passes[1]({ code })) {
+            const sub = byTail.get(code);
+            if (own) drop(own, day);
+            if (sub && sub !== 'many') put(sub, day, drvId);
+          }
+        }
+      }
+    }
+  }
+  // Дни, занятые ручными закреплениями (или клэшем водителя на другом
+  // борту руками), вычитаем из своих.
+  const manualVeh = new Set();
+  const manualDrv = new Set();
+  for (const row of db.prepare(`SELECT vehicle_id, driver_id, starts_at, ends_at
+      FROM driver_assignments WHERE note NOT LIKE 'из графика%' AND ends_at > ?`).all(today)) {
+    for (const day of horizon) {
+      if (row.starts_at <= day && row.ends_at > day) {
+        manualVeh.add(row.vehicle_id + '|' + day);
+        if (row.driver_id) manualDrv.add(row.driver_id + '|' + day);
+      }
+    }
+  }
+  // Пересборка своих записей: будущая часть удаляется, пересекающие
+  // сегодня — подрезаются (история остаётся историей).
+  db.exec('BEGIN IMMEDIATE');
+  let made = 0;
+  let days = 0;
+  try {
+    db.prepare(`DELETE FROM driver_assignments
+      WHERE note LIKE 'из графика%' AND starts_at >= ?`).run(today);
+    db.prepare(`UPDATE driver_assignments SET ends_at=?
+      WHERE note LIKE 'из графика%' AND starts_at < ? AND ends_at > ?`).run(today, today, today);
+    const insert = db.prepare(`INSERT INTO driver_assignments(
+        id,driver_id,vehicle_id,starts_at,ends_at,note,created_by)
+      VALUES(?,?,?,?,?,'из графика',?)`);
+    const byVehicle = new Map();
+    for (const [key, drvId] of holder) {
+      if (drvId === MANY) continue;
+      const [vid, day] = key.split('|');
+      if (manualVeh.has(vid + '|' + day) || manualDrv.has(drvId + '|' + day)) continue;
+      if (!byVehicle.has(vid)) byVehicle.set(vid, new Map());
+      byVehicle.get(vid).set(day, drvId);
+    }
+    for (const [vid, map] of byVehicle) {
+      let start = null;
+      let prevDay = null;
+      let prevDrv = null;
+      const flush = () => {
+        if (!start) return;
+        insert.run(randomUUID(), prevDrv, vid, start, dayIso(Date.parse(prevDay + 'T00:00:00Z'), 1), userId);
+        made += 1;
+        start = null;
+      };
+      for (const day of horizon) {
+        const drvId = map.get(day);
+        if (!drvId) { flush(); prevDay = null; prevDrv = null; continue; }
+        days += 1;
+        if (!start || drvId !== prevDrv) { flush(); start = day; }
+        prevDay = day;
+        prevDrv = drvId;
+      }
+      flush();
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return { made, days };
+}
+
 // Мост «П в плане → пересменка-диспозиция машины» для изменённых
 // экипажей. Создаёт shift-сутки с пометкой «из графика», убирает свои
 // же пометки, если П сняли; ручные интервалы старой вкладки не трогает,
