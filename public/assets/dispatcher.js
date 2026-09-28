@@ -1164,9 +1164,9 @@ export async function renderDispatcher(container, context, options = {}) {
     ${!canAct ? `<div class="view-only">👁 Режим просмотра: отметки контроля доступны роли «Диспетчер».
       Если вы ведёте рейсы на линии — попросите администратора добавить вам роль
       в «Настройки → Пользователи».</div>` : ''}
-    <div class="salekpis">
-      <div class="skpi"><span class="skl">Ждут логиста</span><span class="skv">${waitingLogist.length}</span></div>
-      <div class="skpi"><span class="skl">В подготовке</span><span class="skv">${preparing.length}</span></div>
+    <div class="salekpis compact">
+      ${waitingLogist.length ? `<div class="skpi"><span class="skl">Ждут логиста</span><span class="skv">${waitingLogist.length}</span></div>` : ''}
+      ${preparing.length ? `<div class="skpi"><span class="skl">В подготовке</span><span class="skv">${preparing.length}</span></div>` : ''}
       <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:220px">

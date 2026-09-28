@@ -1005,13 +1005,20 @@ export async function renderSales(container, context) {
   // те же цифры, что на дашборде, но крупно — сколько уже стоит день
   // и сколько ДОБРАТЬ до дневного плана (остаток месячного на дату).
   const dayM = dashboardMetrics(data);
-  const dayGapValue = Math.max(0, Math.round(dayM.dayGap || 0));
-  const dayBannerHtml = `<div class="sales-day-banner ${dayGapValue ? 'lack' : 'met'}"
-    title="Выручка дня по назначенным рейсам (б/НДС): выгружено + едет к выгрузке. «Добрать» — до дневного плана: остаток месячного плана, поделённый на оставшиеся дни. Заявка попадает в выручку после назначения ТС">
-    <span>💰 Выручка дня: <b>${money(Math.round(dayM.dayFact || 0))}</b>
-      <small class="muted">выгружено ${money(Math.round(dayM.dayDone || 0))} · едет ${money(Math.round(dayM.dayExpected || 0))}</small></span>
-    ${dayGapValue ? `<span class="sdb-gap">⛔ ДОБРАТЬ ${money(dayGapValue)}</span>`
-    : '<span class="sdb-ok">✅ план дня закрыт</span>'}</div>`;
+  // Опережающий баннер (решение руководителя 29.09): продажи не могут
+  // повлиять на СЕГОДНЯШНИЕ выгрузки (это заказы прошлых дней) — акцент
+  // на завтра: проданный сейчас груз выгружается завтра-послезавтра.
+  // Сегодняшний факт — мелкой справкой, статус дня остаётся виден.
+  const tom = dayM.days?.tomorrow;
+  const tomGap = Math.max(0, Math.round(tom?.gap || 0));
+  const dayBannerHtml = `<div class="sales-day-banner ${tomGap ? 'lack' : 'met'}"
+    title="Опережающий показатель: план завтра = остаток месячного плана на день; «забито» — расчётные выгрузки завтра по уже назначенным рейсам; ⚡ — внесённые заявки без ТС с окном выгрузки завтра (назначит логист — попадут в забитое). Сегодняшние выгрузки — справка: на них влияли заказы прошлых дней">
+    <span>🎯 Завтра: забито <b>${money(Math.round(tom?.booked || 0))}</b>${tom?.plan != null
+    ? ` из ${money(Math.round(tom.plan))}` : ''}${tom?.unassigned
+    ? ` <small class="muted">· ⚡ ждут ТС ${tom.unassigned} на ${money(Math.round(tom.unassignedSum || 0))}</small>` : ''}</span>
+    ${tomGap ? `<span class="sdb-gap">ДОБРАТЬ НА ЗАВТРА ${money(tomGap)}</span>`
+    : '<span class="sdb-ok">✅ завтра забит</span>'}
+    <small class="muted">сегодня: выгружено ${money(Math.round(dayM.dayDone || 0))} · едет ${money(Math.max(0, Math.round(dayM.dayExpected || 0)))}</small></div>`;
   const html = `<div class="saleswrap">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам', compact: true, open: state.salesQuestionsOpen })}
     ${dayBannerHtml}${ringHolesHtml}

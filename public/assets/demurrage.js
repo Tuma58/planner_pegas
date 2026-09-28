@@ -24,9 +24,8 @@ export function demurrageChipHtml(data) {
       случаи сейчас, история претензий и печать документа на счёт клиенту">
     <span class="skl">⏳ Простои П/В</span>
     <span class="skv">${summary.openCount}</span>
-    <small class="skm">${hot ? `сейчас ⬆${summary.openLoad} ⬇${summary.openUnload} · ${money(summary.openAmount)}`
-      : 'сверхнормативных нет'}${summary.monthCount
-      ? ` · мес ${summary.monthCount} на ${money(summary.monthAmount)}` : ''}</small>
+    ${hot || summary.monthCount ? `<small class="skm">${hot ? `сейчас ⬆${summary.openLoad} ⬇${summary.openUnload} · ${money(summary.openAmount)}` : ''}${summary.monthCount
+      ? `${hot ? ' · ' : ''}мес ${summary.monthCount} на ${money(summary.monthAmount)}` : ''}</small>` : ''}
   </div>`;
 }
 

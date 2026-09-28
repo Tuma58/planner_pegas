@@ -683,19 +683,19 @@ export async function renderLogist(container, context) {
   const savedScrolls = captureScrolls(container);
   const html = `<div class="saleswrap">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — логисту', compact: true, open: state.logistQuestionsOpen })}
-    <div class="salekpis">
+    <div class="salekpis compact">
       <div class="skpi clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
         title="Показать только очередь на назначение">
         <span class="skl">Ждут назначения ТС</span><span class="skv">${queue.length}</span>
         <small class="skm">${money(queueSum)}${oldestWait > 3_600_000 ? ` · ждёт ${waitingLabel(oldestWait)}` : ''}</small></div>
-      <div class="skpi clickable ${focus === 'returned' ? 'open' : ''} ${returned ? 'skpi-warn' : ''}" data-kpi="returned"
+      ${returned ? `<div class="skpi clickable ${focus === 'returned' ? 'open' : ''} skpi-warn" data-kpi="returned"
         title="Показать только возвраты из плана — их причины требуют решения">
         <span class="skl">Возвраты из плана</span><span class="skv">${returned}</span>
-        <small class="skm">${returned ? 'разобрать причины' : 'возвратов нет'}</small></div>
-      <div class="skpi clickable ${focus === 'confirm' ? 'open' : ''} ${needConfirm ? 'skpi-hot' : ''}" data-kpi="confirm"
+        <small class="skm">разобрать причины</small></div>` : ''}
+      ${needConfirm ? `<div class="skpi clickable ${focus === 'confirm' ? 'open' : ''} skpi-hot" data-kpi="confirm"
         title="Показать только рейсы на подтверждении — приоритет №1">
         <span class="skl">На подтверждении</span><span class="skv">${needConfirm}</span>
-        <small class="skm">${needConfirm ? `${money(confirmSum)} · диспетчер ждёт` : 'всё подтверждено'}</small></div>
+        <small class="skm">${money(confirmSum)} · диспетчер ждёт</small></div>` : ''}
       <div class="skpi clickable ${focus === 'plan' ? 'open' : ''}" data-kpi="plan"
         title="Показать только рейсы в плане">
         <span class="skl">В плане</span><span class="skv">${confirmedTrips.filter(trip => trip.status === 'plan').length}</span>
@@ -739,11 +739,16 @@ export async function renderLogist(container, context) {
         <button class="button ghost small" id="logistPresetWeek" title="Ближайшие 7 дней">7 дн</button>
         ${zone || region || dateFrom || dateTo || query ? '<button class="button ghost small" id="logistFilterReset" title="Сбросить все фильтры">✕ Сброс</button>' : ''}
         <input id="logistSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС, № заявки" value="${escapeHtml(state.logistQuery || '')}" style="flex:1">
-        <button class="button small" id="logistTask"
-          title="Срез на дату: весь парк учтён — кто обеспечен рейсом, кто требует работы, баланс с очередью">📋 Задание</button>
-        <button class="button ghost small" id="logistFleetPlan"
-          title="Сетка машин на месяц: рейсы, круги, свободные дни — резерв под новых клиентов">🚛 План парка</button>
         ${can('trips:write') ? '<button class="button small" id="logistNewTrip">+ Рейс</button>' : ''}
+        <details class="tb-menu" id="logistToolsMenu">
+          <summary class="button ghost small">⋯ Инструменты</summary>
+          <div class="tb-menu-list">
+            <button class="button ghost small" id="logistTask"
+              title="Срез на дату: весь парк учтён — кто обеспечен рейсом, кто требует работы, баланс с очередью">📋 Задание</button>
+            <button class="button ghost small" id="logistFleetPlan"
+              title="Сетка машин на месяц: рейсы, круги, свободные дни — резерв под новых клиентов">🚛 План парка</button>
+          </div>
+        </details>
       </div>
     </div>
     <div class="salesboard">
@@ -885,6 +890,16 @@ export async function renderLogist(container, context) {
       if (request) pickOrderDialog(request, queue, data, context);
     }));
   wireDemurrageChip(container, context);
+  (() => {
+    const menu = container.querySelector('#logistToolsMenu');
+    if (menu) {
+      document.addEventListener('click', event => {
+        if (!menu.contains(event.target)) menu.removeAttribute('open');
+      });
+      menu.querySelectorAll('.tb-menu-list button').forEach(button =>
+        button.addEventListener('click', () => menu.removeAttribute('open')));
+    }
+  })();
   container.querySelector('#logistTask').onclick = () =>
     logistTaskDialog(data, context, allVehicleRequests, queueAll);
   container.querySelectorAll('[data-hold-toggle]').forEach(button =>
