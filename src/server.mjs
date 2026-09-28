@@ -644,6 +644,17 @@ function runScheduleFactWatch() {
     const result = runScheduleAutoFact(db);
     // Этап 4-lite: держатели из плана → закрепления (догон горизонта).
     try { syncAssignBridge(db); } catch (error) { console.error('график → закрепления:', error.message); }
+    // Жизненный цикл парка: ежечасная достройка графика из справочника —
+    // купленные борта всплывают сами, выведенные помечаются датой.
+    try {
+      const aug = augmentScheduleFromPlanner(db);
+      if (aug.addedVehicles.length || aug.addedDrivers.length ||
+          aug.markedOut.length || aug.returned.length) {
+        console.log(`график: достройка — машин +${aug.addedVehicles.length}, ` +
+          `водителей +${aug.addedDrivers.length}, выведено ${aug.markedOut.length}, ` +
+          `возвращено ${aug.returned.length}`);
+      }
+    } catch (error) { console.error('график: достройка упала', error.message); }
     const covered = result.busyDays - result.noHolder - result.many;
     if (result.busyDays) {
       console.log(`график: автофакт — отметок ${result.marks}, машино-дней с работой ` +
@@ -7621,6 +7632,14 @@ async function api(request, response, url) {
     return db.prepare(`SELECT plate FROM vehicles
       WHERE TRIM(COALESCE(trailer_plate,''))=? AND id<>?`).get(plate, exceptVehicleId || '');
   }
+  // Выведенный из эксплуатации прицеп нельзя вписать в сцепку или
+  // прицепить перецепкой — сначала «вернуть в работу» в справочнике.
+  function trailerOutSince(trailerPlate) {
+    const plate = String(trailerPlate || '').trim();
+    if (!plate) return null;
+    return db.prepare(`SELECT out_since FROM trailers
+      WHERE plate=? AND out_since IS NOT NULL`).get(plate)?.out_since || null;
+  }
 
   if (request.method === 'POST' && pathname === '/api/vehicles') {
     const user = requirePermission(request, response, 'fleet:write');
@@ -7630,14 +7649,19 @@ async function api(request, response, url) {
     const conflict = trailerConflict(body.trailerPlate, null);
     if (conflict) return errorJson(response, 409,
       `Прицеп ${String(body.trailerPlate).trim()} уже закреплён за ${conflict.plate} — перецепите через «Ресурс → 🔗 Перецепка»`);
+    const outTrailer = trailerOutSince(canonTrailerPlate(body.trailerPlate || ''));
+    if (outTrailer) return errorJson(response, 409,
+      `Прицеп ${String(body.trailerPlate).trim()} выведен из эксплуатации с ${outTrailer} — верните его в работу в справочнике прицепов`);
     const id = randomUUID();
     // Тип кузова живёт на прицепе: известный прицеп диктует тип сцепки.
     const createTrailer = canonTrailerPlate(body.trailerPlate || '');
     const createTypeId = trailerDrivenTypeId(createTrailer, body.typeId);
-    db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status)
-      VALUES(?,?,?,?,?,?,?)`).run(
+    const createStatus = body.status || 'work';
+    db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status,out_since)
+      VALUES(?,?,?,?,?,?,?,?)`).run(
       id, body.plate.trim(), createTrailer, createTypeId, body.driverName || '',
-      body.zoneId || null, body.status || 'work');
+      body.zoneId || null, createStatus,
+      createStatus === 'out' ? String(body.outSince || new Date().toISOString()).slice(0, 10) : null);
     audit(db, user, 'create', 'vehicle', id, body, requestIp(request));
     return json(response, 201, { id });
   }
@@ -7653,18 +7677,30 @@ async function api(request, response, url) {
       const conflict = trailerConflict(body.trailerPlate, match[0]);
       if (conflict) return errorJson(response, 409,
         `Прицеп ${String(body.trailerPlate).trim()} уже закреплён за ${conflict.plate} — перецепите через «Ресурс → 🔗 Перецепка»`);
+      const patchOutTrailer = trailerOutSince(canonTrailerPlate(body.trailerPlate || ''));
+      if (patchOutTrailer && canonTrailerPlate(body.trailerPlate) !== String(current.trailer_plate || '').trim()) {
+        return errorJson(response, 409,
+          `Прицеп ${String(body.trailerPlate).trim()} выведен из эксплуатации с ${patchOutTrailer} — верните его в работу в справочнике прицепов`);
+      }
     }
     // Тип кузова живёт на прицепе (правило руководителя 14.09): при смене
     // прицепа тип сцепки подтягивается из справочника; вручную выбранный
     // тип уважается только для нового/бестипового прицепа (и учит его).
     const patchTrailer = canonTrailerPlate(body.trailerPlate ?? current.trailer_plate);
     const patchTypeId = trailerDrivenTypeId(patchTrailer, body.typeId ?? current.type_id);
+    // Жизненный цикл: статус «Выведен» несёт дату вывода (можно задним
+    // числом, по умолчанию сегодня); возврат в работу дату очищает.
+    const patchStatus = body.status ?? current.status;
+    const patchOutSince = patchStatus === 'out'
+      ? String(body.outSince || current.out_since || new Date().toISOString()).slice(0, 10)
+      : null;
     db.prepare(`UPDATE vehicles SET plate=?,trailer_plate=?,type_id=?,driver_name=?,zone_id=?,status=?,
-      unavailable_from=?,unavailable_to=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      unavailable_from=?,unavailable_to=?,out_since=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       body.plate ?? current.plate, patchTrailer,
       patchTypeId, body.driverName ?? current.driver_name,
-      body.zoneId ?? current.zone_id, body.status ?? current.status,
+      body.zoneId ?? current.zone_id, patchStatus,
       body.unavailableFrom ?? current.unavailable_from, body.unavailableTo ?? current.unavailable_to,
+      patchOutSince,
       match[0]);
     // Смена водителя из карточки/справочника ТС синхронизирует справочник
     // водителей: имя ищется без учёта регистра, новый — создаётся и
@@ -8122,8 +8158,48 @@ async function api(request, response, url) {
     const detached = db.prepare(`SELECT trailer_plate tp, MAX(moved_at) at FROM trailer_moves
       GROUP BY trailer_plate HAVING (SELECT to_vehicle_id FROM trailer_moves m2
         WHERE m2.trailer_plate=trailer_moves.trailer_plate ORDER BY moved_at DESC LIMIT 1) IS NULL`).all()
-      .filter(row => !attached.some(item => item.tp === row.tp));
+      .filter(row => !attached.some(item => item.tp === row.tp))
+      // выведенные из эксплуатации прицепы перецепке не предлагаются
+      .filter(row => !db.prepare(`SELECT 1 FROM trailers
+        WHERE plate=? AND out_since IS NOT NULL`).get(row.tp));
     return json(response, 200, { attached, detached });
+  }
+
+  // Реестр прицепов (жизненный цикл 29.09): номер, тип, где висит,
+  // дата вывода из эксплуатации. Правится в «Настройки → Состав ТС».
+  if (request.method === 'GET' && pathname === '/api/trailers-registry') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const list = db.prepare(`SELECT tr.plate, tr.out_since, vt.name type_name,
+        (SELECT v.plate FROM vehicles v WHERE TRIM(COALESCE(v.trailer_plate,''))=tr.plate
+           AND v.status<>'out' LIMIT 1) holder_plate
+      FROM trailers tr LEFT JOIN vehicle_types vt ON vt.id=tr.type_id
+      ORDER BY tr.out_since IS NOT NULL, tr.plate`).all();
+    return json(response, 200, { trailers: list });
+  }
+  match = route(/^\/api\/trailers\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const plate = decodeURIComponent(match[0]).trim();
+    const trailer = db.prepare('SELECT plate, out_since FROM trailers WHERE plate=?').get(plate);
+    if (!trailer) return errorJson(response, 404, 'Прицеп не найден в реестре');
+    if (body.outSince !== undefined) {
+      if (body.outSince) {
+        const holder = db.prepare(`SELECT plate FROM vehicles
+          WHERE TRIM(COALESCE(trailer_plate,''))=? AND status<>'out'`).get(plate);
+        if (holder) return errorJson(response, 409,
+          `Прицеп висит на ${holder.plate} — сначала отцепите через «Ресурс → 🔗 Перецепка»`);
+        db.prepare(`UPDATE trailers SET out_since=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+          .run(String(body.outSince).slice(0, 10), plate);
+      } else {
+        db.prepare(`UPDATE trailers SET out_since=NULL, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+          .run(plate);
+      }
+      audit(db, user, 'update', 'trailer', plate, body, requestIp(request));
+    }
+    return json(response, 200, { ok: true });
   }
 
   if (request.method === 'POST' && pathname === '/api/trailer-move') {
@@ -8144,6 +8220,12 @@ async function api(request, response, url) {
     if ((body.toVehicleId || body.toVehiclePlate) && !target) return errorJson(response, 404, 'ТС-приёмник не найдено');
     if (target && holder && target.id === holder.id) {
       return errorJson(response, 422, 'Прицеп уже на этой сцепке');
+    }
+    if (target) {
+      const outSince = db.prepare(`SELECT out_since FROM trailers
+        WHERE plate=? AND out_since IS NOT NULL`).get(trailerPlate)?.out_since;
+      if (outSince) return errorJson(response, 409,
+        `Прицеп ${trailerPlate} выведен из эксплуатации с ${outSince} — верните его в работу в справочнике прицепов`);
     }
     const note = String(body.note || '').slice(0, 200);
     // Дата перецепки (решение руководителя 21.09): голая дата читается как
@@ -9355,6 +9437,13 @@ async function api(request, response, url) {
       ? requirePermission(request, response, 'fleet:write')
       : requirePermission(request, response, 'planner:read');
     if (!user) return;
+    // Первый обмен клиента (пустой снимок) — момент открытия страницы:
+    // достраиваем график из справочника (новые борта/водители, вывод из
+    // эксплуатации), чтобы человек сразу видел актуальный парк.
+    if (!writes && !Number(body.since || 0)) {
+      try { augmentScheduleFromPlanner(db, user.id); }
+      catch (error) { console.error('график: достройка при открытии', error.message); }
+    }
     const result = applyScheduleSync(db, body, user.id);
     // Мост этапа 2: П в плане изменённых экипажей → пересменки-диспозиции
     // (их видят подбор ТС, гант и сторожа старой вкладки).
@@ -9378,6 +9467,14 @@ async function api(request, response, url) {
     const report = augmentScheduleFromPlanner(db, user.id);
     audit(db, user, 'update', 'schedule', 'augment', report, requestIp(request));
     return json(response, 200, report);
+  }
+  // Типы кузова для форм вне планера (страница графика заводит новую
+  // сцепку прямо в справочник) — лёгкий список без bootstrap.
+  if (request.method === 'GET' && pathname === '/api/vehicle-types') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200,
+      { types: db.prepare('SELECT id,name FROM vehicle_types ORDER BY name').all() });
   }
   // Интервалы прицепов по тягачам за период (график: «до 16-го один,
   // с 16-го другой»). Реконструкция: текущее состояние vehicles + откат

@@ -484,6 +484,11 @@ function occupant(dr,r){
   if(/^\d{3}$/.test(c)){ const t=tsByTail(c); return t? t.id : null; }
   return null;
 }
+/* ISO-дата дня сетки и признак «машина выведена из эксплуатации в этот день»
+   (метку ts.out ставит мост достройки из справочника планера). */
+const dayIso=r=>r.mk+'-'+String(r.n).padStart(2,'0');
+const outOn=(t,r)=>!!(t && t.out && dayIso(r)>=t.out);
+const outDate=t=>t.out? t.out.slice(8,10)+'.'+t.out.slice(5,7)+'.'+t.out.slice(0,4) : '';
 function occupancy(days,set){
   const occ={}; S.ts.forEach(t=>occ[t.id]=days.map(()=>null));
   set.forEach(dr=>days.forEach((r,i)=>{
@@ -521,11 +526,14 @@ function handovers(days,occ){
 /* нарушения по строкам водителей */
 function issues(days,set){
   const bad={};
+  const tsMap={}; S.ts.forEach(t=>tsMap[t.id]=t);
   days.forEach((r,i)=>{
     const busy={};
     set.forEach((dr,ri)=>{
       if(cget(dr,'plan',r)==='в' && !dr.ts){ bad[ri+':'+i]='«в» без закреплённой машины'; return; }
       const id=occupant(dr,r); if(!id) return;
+      if(outOn(tsMap[id],r))
+        bad[ri+':'+i]='машина '+(tsMap[id].tyagach||'')+' выведена из эксплуатации с '+outDate(tsMap[id])+' — переназначьте водителя';
       if(busy[id]!==undefined){ bad[busy[id]+':'+i]='двое на одном ТС'; bad[ri+':'+i]='двое на одном ТС'; }
       else busy[id]=ri;
     });
@@ -541,7 +549,7 @@ function issues(days,set){
   return bad;
 }
 function dayStats(days,set,filial,occ){
-  const fleet=S.ts.filter(t=>!filial||filial==='Все'||t.filial===filial).map(t=>t.id);
+  const fleetTs=S.ts.filter(t=>!filial||filial==='Все'||t.filial===filial);
   const O = occ || occupancy(days,set);
   return days.map((r,i)=>{
     let v=0,zam=0,otp=0,bl=0,per=0,rem=0;
@@ -554,8 +562,11 @@ function dayStats(days,set,filial,occ){
       else if(c==='П'||c==='РП') per++;
       else if(c==='Р') rem++;
     });
-    const busy=fleet.filter(id=>O[id] && O[id][i]).length;
-    return {v,zam,otp,bl,per,rem, fleet:fleet.length, busy, free:Math.max(fleet.length-busy,0)};
+    /* выведенная из эксплуатации машина с даты вывода не в парке дня:
+       не «в работе» и не «без водителя» */
+    const alive=fleetTs.filter(t=>!outOn(t,r));
+    const busy=alive.filter(t=>O[t.id] && O[t.id][i]).length;
+    return {v,zam,otp,bl,per,rem, fleet:alive.length, busy, free:Math.max(alive.length-busy,0)};
   });
 }
 
@@ -595,9 +606,15 @@ function renderGrid(){
   const hands=handovers(DAYS,occ);
   const st=dayStats(DAYS,set,fil,occ);
 
-  const fleetIds=S.ts.filter(t=>fil==='Все'||t.filial===fil).map(t=>t.id);
+  const firstIso=dayIso(DAYS[0]), lastIso=dayIso(DAYS[DAYS.length-1]);
+  const fleetAll=S.ts.filter(t=>fil==='Все'||t.filial===fil);
+  /* живые хоть день видимого периода — для пересмен и счётчиков */
+  const fleetIds=fleetAll.filter(t=>!t.out || t.out>firstIso).map(t=>t.id);
+  const outCnt=fleetAll.filter(t=>t.out && t.out>firstIso && t.out<=lastIso).length;
+  const liveEnd=fleetAll.filter(t=>!t.out || t.out>lastIso).length;
   const handsView=hands.filter(h=>fleetIds.includes(h.ts));
-  const md=st.reduce((a,x)=>a+x.busy,0), cap=fleetIds.length*DAYS.length;
+  /* ёмкость парка по дням: выведенные машины выпадают с даты вывода */
+  const md=st.reduce((a,x)=>a+x.busy,0), cap=st.reduce((a,x)=>a+x.fleet,0);
   const late=handsView.filter(h=>h.kind==='late').length;
   const overTotal={days:0, men:0, noRez:0};
   set.forEach(d=>{ if(d.vac) return;
@@ -610,10 +627,11 @@ function renderGrid(){
   const vacN=set.filter(d=>d.vac).length, freeN=st.reduce((a,x)=>a+x.free,0),
         badN=Object.keys(bad).length;
   const kp=[
-    {v:fleetIds.length, l:'сцепок'},
+    {v:liveEnd, l:'сцепок'},
     {v:set.filter(d=>!d.vac).length, l:'водителей'},
     {v:md+' / '+cap, l:'машинодни'},
     {v:cap?Math.round(md/cap*100)+'%':'—', l:'укомплектовано'},
+    {v:outCnt, l:'выведено ТС в периоде', zero:true},
     {v:vacN, l:'вакансий', bad:true, zero:true, f:'fVac'},
     {v:freeN, l:'дней без водителя', bad:true, zero:true, f:'fGap'},
     {v:handsView.length, l:'пересмен', zero:true},
@@ -663,13 +681,21 @@ function renderGrid(){
 
   byCrew.forEach(cid=>{
     let first=true;
+    const crewTs=S.ts.filter(t=>t.crew===cid && (fil==='Все'||t.filial===fil));
+    /* Сцепка, выведенная до начала видимого периода, прячется целиком,
+       когда у её водителей в периоде пусто, — история прошлых месяцев
+       остаётся, будущее не засоряется проданными бортами. */
+    if(crewTs.length && crewTs.every(t=>t.out && t.out<=dayIso(DAYS[0])) &&
+       seenCrew[cid].every(dr=>dr.vac || DAYS.every(r=>!cget(dr,'plan',r)&&!cget(dr,'fact',r)))) return;
     if(plane!=='drv'){
       const onlyGap=document.getElementById('fGap').checked;
-      S.ts.filter(t=>t.crew===cid && (fil==='Все'||t.filial===fil)).forEach(t=>{
+      crewTs.forEach(t=>{
         const line=occ[t.id], busy=line.filter(Boolean).length;
         if(onlyGap && busy===DAYS.length) return;
+        const outAll=outOn(t,DAYS[0]);
         const cells=line.map((c,i)=>{
           const r=DAYS[i], we=(r.wd===0||r.wd===6)?' we':'';
+          if(outOn(t,r)) return `<td class="mday outd${we}" title="${t.tyagach} выведен из эксплуатации с ${outDate(t)}">—</td>`;
           const hv=handAt[t.id+':'+i];
           const hcls=hv? ' hand '+hv.kind : '';
           const title=hv? `пересмена ${dayLabel(r)}: ${hv.from.fio||'?'} → ${hv.to.fio||'?'}, ${hv.status}` : '';
@@ -680,12 +706,12 @@ function renderGrid(){
           return `<td class="mday gap${we}" title="${dayLabel(r)}: машина без водителя">${hMark}</td>`;
         }).join('');
         h+=`<tr class="${first?'crew-top':''} machine">`+
-           `<td class="fix" style="left:${LEFT[0]}px" title="${t.filial} · прицеп ${t.pricep||'—'} · ${t.tip||'тип не указан'} · экипаж ${t.crew}${(()=>{
+           `<td class="fix" style="left:${LEFT[0]}px" title="${t.filial} · прицеп ${t.pricep||'—'} · ${t.tip||'тип не указан'} · экипаж ${t.crew}${t.out?' · выведен из эксплуатации с '+outDate(t):''}${(()=>{
               const sw=DAYS.map(r=>trailerSwitchAt(t.tyagach, r.mk+'-'+String(r.n).padStart(2,'0'))).filter(Boolean);
               return sw.length? ' · перецепки: '+sw.map(x=>mskDay(x.from).slice(8,10)+'.'+mskDay(x.from).slice(5,7)+'→'+(x.trailer||'снят')+(x.planned?' (план)':'')).join(', ') : '';
-            })()}"><b>${t.tyagach}</b></td>`+
+            })()}"><b>${t.tyagach}</b>${t.out?` <span class="tag out" title="выведен из эксплуатации с ${outDate(t)}">выведен</span>`:''}</td>`+
            `<td class="fix" style="left:${LEFT[1]}px" title="дней с водителем: ${busy} из ${DAYS.length}">${busy}/${DAYS.length}
-              <button class="asgBtn" data-act="assign-btn" data-ts="${t.id}">назначить ▾</button><button class="asgBtn" data-act="hitch-btn" data-ts="${t.id}" title="Перецепка: сменить прицеп с даты (сегодня, задним числом или планово)">🔗</button></td>`+
+              ${outAll?'':`<button class="asgBtn" data-act="assign-btn" data-ts="${t.id}">назначить ▾</button><button class="asgBtn" data-act="hitch-btn" data-ts="${t.id}" title="Перецепка: сменить прицеп с даты (сегодня, задним числом или планово)">🔗</button>`}</td>`+
            `<td class="fix" style="left:${LEFT[2]}px"></td>`+
            `<td class="fix" style="left:${LEFT[3]}px"></td>`+
            `<td class="fix" style="left:${LEFT[4]}px"></td>`+
@@ -1030,7 +1056,7 @@ function renderFix(){
   list.forEach(t=>{
     const crew=S.drv.filter(d=>d.ts===t.id);
     h+=`<tr>
-      <td>${t.tyagach}</td><td>${t.pricep}</td><td>${t.tip}</td>
+      <td>${t.tyagach}${t.out?` <span class="tag out" title="выведен из эксплуатации с ${outDate(t)}">выведен</span>`:''}</td><td>${t.pricep}</td><td>${t.tip}</td>
       <td><select class="inline" data-x="tsfil" data-id="${t.id}">
           ${['Пенза','Москва'].map(x=>`<option ${t.filial===x?'selected':''}>${x}</option>`).join('')}</select></td>
       <td>${t.crew}</td>
@@ -1040,7 +1066,7 @@ function renderFix(){
             <button data-x="unpin" data-id="${d.id}" title="снять закрепление">×</button>`).join(' · ')
           : '<span class="vac">нет водителя</span>'}</td>
       <td><select class="inline" data-x="pin" data-id="${t.id}">${drvOptions(t.id)}</select></td>
-      <td><button data-x="delts" data-id="${t.id}" title="удалить сцепку">удалить</button></td></tr>`;
+      <td><button data-x="delts" data-id="${t.id}" title="удалить строку из графика; борт, живой в справочнике планера, вернётся при достройке — продажу/списание оформляйте статусом «Выведен» в Справочнике ТС">удалить</button></td></tr>`;
   });
   h+='</tbody>';
   document.getElementById('fixTable').innerHTML=h;
@@ -1072,24 +1098,81 @@ document.getElementById('fixTable').addEventListener('click',e=>{
   }
   save(); renderFix(); renderGrid(); fillZam();
 });
-document.getElementById('btnAddTs').onclick=()=>{
-  const ty=prompt('Гос. номер тягача'); if(!ty) return;
-  const pr=prompt('Прицеп')||'', tp=prompt('Тип кузова')||'';
-  const fl=prompt('Филиал: Пенза или Москва','Пенза')==='Москва'?'Москва':'Пенза';
-  S.ts.push({id:'T'+Date.now(), tyagach:ty, pricep:pr, tip:tp, filial:fl, crew:'X'+Date.now()});
-  logAdd('добавлена сцепка '+ty+' ('+fl+')', []);
-  save(); renderFix(); fillZam();
+/* Покупка борта/приход водителя оформляются В СПРАВОЧНИКЕ ПЛАНЕРА (29.09,
+   решение руководителя: один источник правды) — формы ниже пишут через
+   API планера и лишь затем добавляют строку в график; борт сразу виден
+   подбору ТС, ганту и отчётам. Пустые ленты — по всем видимым месяцам
+   (раньше хардкод aug/sep ронял добавленных в другие месяцы). */
+function blankLayersAll(){
+  const plan={}, fact={};
+  MK.forEach(mk=>{ plan[mk]=Array(MON[mk].days).fill(''); fact[mk]=Array(MON[mk].days).fill(''); });
+  return {plan, fact};
+}
+document.getElementById('btnAddTs').onclick=async()=>{
+  let types=[];
+  try{ const r=await fetch('/api/vehicle-types'); if(r.ok) types=(await r.json()).types||[]; }catch(e){}
+  dialog('Новая сцепка — в справочник планера',
+    `<p class="hint" style="max-width:46ch">Борт заводится в общем справочнике ТС и сам
+       появится здесь, в подборе ТС, ганте и отчётах. Продажа/списание — статус
+       «Выведен» там же.</p>
+     <p><label>Тягач <input id="nvPlate" size="14" placeholder="х000хх58"></label></p>
+     <p><label>Прицеп <input id="nvTrailer" size="14" placeholder="можно пусто"></label></p>
+     <p><label>Тип кузова <select id="nvType">${types.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select></label></p>
+     <p><label>Филиал <select id="nvFilial"><option>Пенза</option><option>Москва</option></select></label></p>
+     <div id="nvErr" style="color:var(--warn);margin-top:6px"></div>`,
+    'Добавить', box=>{
+      const plate=box.querySelector('#nvPlate').value.trim();
+      const err=box.querySelector('#nvErr');
+      if(!plate){ err.textContent='Гос. номер тягача обязателен'; return false; }
+      err.textContent='Заводим в справочник…';
+      (async()=>{
+        try{
+          const r=await fetch('/api/vehicles',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({plate, trailerPlate:box.querySelector('#nvTrailer').value.trim(),
+              typeId:box.querySelector('#nvType').value})});
+          const j=await r.json().catch(()=>({}));
+          if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+          const fl=box.querySelector('#nvFilial').value;
+          const tp=types.find(t=>t.id===box.querySelector('#nvType').value)?.name||'';
+          S.ts.push({id:'T'+Date.now(), tyagach:plate, pricep:box.querySelector('#nvTrailer').value.trim(),
+            tip:String(tp).slice(0,12), filial:fl, crew:'X'+Date.now()});
+          logAdd('добавлена сцепка '+plate+' ('+fl+') — заведена в справочник планера', []);
+          save(); renderFix(); fillZam(); renderGrid();
+          document.getElementById('dlg').hidden=true;
+        }catch(e){ err.textContent='Справочник не принял: '+e.message; }
+      })();
+      return false;
+    });
 };
 document.getElementById('btnAddDrv').onclick=()=>{
-  const fio=prompt('ФИО водителя'); if(!fio) return;
-  const tel=prompt('Телефон')||'';
-  const fl=prompt('Филиал: Пенза или Москва','Пенза')==='Москва'?'Москва':'Пенза';
-  const nid='D'+Date.now();
-  S.drv.push({id:nid, fio, tel, crew:'X'+Date.now(), filial:fl, ts:'', rezhim:'', logist:'', vac:false,
-    plan:{aug:Array(31).fill(''), sep:Array(30).fill('')},
-    fact:{aug:Array(31).fill(''), sep:Array(30).fill('')}});
-  logAdd('добавлен водитель '+fio+' ('+fl+')', [nid]);
-  save(); renderFix(); renderGrid();
+  dialog('Новый водитель — в справочник планера',
+    `<p class="hint" style="max-width:46ch">Водитель заводится в общем справочнике и сам
+       появится здесь и в профилях водителей.</p>
+     <p><label>ФИО <input id="ndFio" size="30" placeholder="Фамилия Имя Отчество"></label></p>
+     <p><label>Телефон <input id="ndTel" size="18" placeholder="можно пусто"></label></p>
+     <p><label>Филиал <select id="ndFilial"><option>Пенза</option><option>Москва</option></select></label></p>
+     <div id="ndErr" style="color:var(--warn);margin-top:6px"></div>`,
+    'Добавить', box=>{
+      const fio=box.querySelector('#ndFio').value.trim();
+      const err=box.querySelector('#ndErr');
+      if(!fio){ err.textContent='ФИО обязательно'; return false; }
+      err.textContent='Заводим в справочник…';
+      (async()=>{
+        try{
+          const r=await fetch('/api/drivers',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({fullName:fio, phone:box.querySelector('#ndTel').value.trim()})});
+          const j=await r.json().catch(()=>({}));
+          if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+          const fl=box.querySelector('#ndFilial').value, nid='D'+Date.now();
+          S.drv.push({id:nid, fio, tel:box.querySelector('#ndTel').value.trim(), crew:'X'+Date.now(),
+            filial:fl, ts:'', rezhim:'', logist:'', vac:false, ...blankLayersAll()});
+          logAdd('добавлен водитель '+fio+' ('+fl+') — заведён в справочник планера', [nid]);
+          save(); renderFix(); renderGrid();
+          document.getElementById('dlg').hidden=true;
+        }catch(e){ err.textContent='Справочник не принял: '+e.message; }
+      })();
+      return false;
+    });
 };
 
 /* ---------- сводка ---------- */
@@ -1098,9 +1181,13 @@ function renderSum(){
   const cards=[];
   ['Пенза','Москва','Все'].forEach(f=>{
     const set=S.drv.filter(d=>f==='Все'||d.filial===f);
-    const st=dayStats(daysOf(mk),set,f);
-    const fleet=S.ts.filter(t=>f==='Все'||t.filial===f).length;
-    const md=st.reduce((a,x)=>a+x.busy,0), cap=fleet*M.days;
+    const mdays=daysOf(mk);
+    const st=dayStats(mdays,set,f);
+    /* выведенные из эксплуатации не в парке: сцепок — живые на конец
+       месяца, ёмкость — сумма живых машин по дням */
+    const lastIso=dayIso(mdays[mdays.length-1]);
+    const fleet=S.ts.filter(t=>(f==='Все'||t.filial===f) && (!t.out||t.out>lastIso)).length;
+    const md=st.reduce((a,x)=>a+x.busy,0), cap=st.reduce((a,x)=>a+x.fleet,0);
     cards.push(`<div class="card"><h3>${f==='Все'?'Оба филиала':'Филиал '+f}</h3><table>
       <tr><td>Сцепок</td><td>${fleet}</td></tr>
       <tr><td>Водителей</td><td>${set.filter(d=>!d.vac).length}</td></tr>

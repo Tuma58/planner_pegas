@@ -3123,6 +3123,41 @@ test('график: достройка из планера добавляет н
   assert.equal(again.addedVehicles.length + again.addedDrivers.length, 0);
 });
 
+test('жизненный цикл парка: вывод из эксплуатации доезжает до графика и снимается', async t => {
+  const { applyScheduleSync, augmentScheduleFromPlanner } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-out-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id, plate FROM vehicles LIMIT 1').get();
+  applyScheduleSync(db, { since: 0, crews: { E001: { id: 'E001',
+    ts: [{ id: 'T1', tyagach: vehicle.plate, pricep: '', tip: '', filial: 'Пенза', crew: 'E001' }],
+    drv: [] } }, log: [] });
+  // Продажа: статус «Выведен» с датой — мост ставит метку на сцепку графика.
+  db.prepare(`UPDATE vehicles SET status='out', out_since='2026-09-15' WHERE id=?`).run(vehicle.id);
+  const marked = augmentScheduleFromPlanner(db);
+  assert.ok(marked.markedOut.some(item => item.includes(vehicle.plate)), 'вывод отмечен');
+  assert.ok(!marked.addedVehicles.includes(vehicle.plate), 'выведенный не добавляется заново');
+  let snapshot = applyScheduleSync(db, { since: 0, crews: {}, log: [] });
+  assert.equal(snapshot.crews.E001.ts[0].out, '2026-09-15');
+  // Повтор идемпотентен.
+  const repeat = augmentScheduleFromPlanner(db);
+  assert.equal(repeat.markedOut.length + repeat.returned.length, 0);
+  // Возврат в работу: метка снимается, дата очищена (как в PATCH).
+  db.prepare(`UPDATE vehicles SET status='work', out_since=NULL WHERE id=?`).run(vehicle.id);
+  const returned = augmentScheduleFromPlanner(db);
+  assert.ok(returned.returned.includes(vehicle.plate), 'возврат отмечен');
+  snapshot = applyScheduleSync(db, { since: 0, crews: {}, log: [] });
+  assert.equal(snapshot.crews.E001.ts[0].out, undefined);
+  // Вывод без явной даты: мост берёт дату правки статуса.
+  db.prepare(`UPDATE vehicles SET status='out', out_since=NULL,
+    updated_at='2026-09-20 10:00:00' WHERE id=?`).run(vehicle.id);
+  const fallback = augmentScheduleFromPlanner(db);
+  assert.ok(fallback.markedOut.some(item => item.includes('2026-09-20')), 'дата из updated_at');
+});
+
 // ── Этап 2 перестройки: мосты график ↔ планер (17.09.2026) ──
 test('график: П в плане создаёт и убирает пересменку-диспозицию, ручную не трогает', async t => {
   const { applyScheduleSync, syncShiftBridge } = await import('../src/schedule.mjs');

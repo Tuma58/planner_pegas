@@ -196,12 +196,62 @@ function renderFleet() {
       <tbody>${vehicles.map(vehicle => `<tr><td class="mono"><strong>${escapeHtml(vehicle.plate)}</strong></td>
         <td class="mono">${escapeHtml(vehicle.trailer_plate || '—')}</td><td>${escapeHtml(vehicle.type_name)}</td>
         <td>${escapeHtml(vehicle.driver_name || '—')}</td><td>${escapeHtml(vehicle.zone_name || '—')}</td>
-        <td>${statusBadge(vehicle.status)}</td><td><button class="button ghost small" data-edit-vehicle="${vehicle.id}">Изменить</button></td>
+        <td>${statusBadge(vehicle.status)}${vehicle.status === 'out' && vehicle.out_since
+          ? ` <span class="hint" title="дата вывода из эксплуатации">с ${vehicle.out_since.slice(8, 10)}.${vehicle.out_since.slice(5, 7)}.${vehicle.out_since.slice(0, 4)}</span>` : ''}</td>
+        <td><button class="button ghost small" data-edit-vehicle="${vehicle.id}">Изменить</button></td>
       </tr>`).join('')}</tbody></table></div></div>
+    <div class="section-head" style="margin-top:18px"><div><h1>Прицепы</h1>
+      <p>Реестр прицепов: тип, на каком тягаче, вывод из эксплуатации.
+         Двигать прицепы — только перецепкой в «Ресурсе».</p></div></div>
+    <div class="card"><div class="table-wrap" id="trailerRegistry">Загрузка…</div></div>
   </section>`;
   byId('newVehicle').onclick = () => editVehicle();
   document.querySelectorAll('[data-edit-vehicle]').forEach(button =>
     button.onclick = () => editVehicle(vehicles.find(vehicle => vehicle.id === button.dataset.editVehicle)));
+  renderTrailerRegistry();
+}
+
+async function renderTrailerRegistry() {
+  const box = byId('trailerRegistry');
+  if (!box) return;
+  try {
+    const data = await api('/api/trailers-registry');
+    const rows = data.trailers || [];
+    box.innerHTML = `<table><thead><tr><th>Прицеп</th><th>Тип</th><th>Где</th><th>Статус</th><th></th></tr></thead>
+      <tbody>${rows.map(item => `<tr>
+        <td class="mono"><strong>${escapeHtml(item.plate)}</strong></td>
+        <td>${escapeHtml(item.type_name || '—')}</td>
+        <td>${item.holder_plate ? 'на ' + escapeHtml(item.holder_plate) : '<span class="hint">свободен</span>'}</td>
+        <td>${item.out_since
+          ? `<span class="badge bad">Выведен</span> <span class="hint">с ${item.out_since.slice(8, 10)}.${item.out_since.slice(5, 7)}.${item.out_since.slice(0, 4)}</span>`
+          : '<span class="badge ok">В работе</span>'}</td>
+        <td>${item.out_since
+          ? `<button class="button ghost small" data-trailer-return="${escapeHtml(item.plate)}">Вернуть в работу</button>`
+          : `<button class="button ghost small" data-trailer-out="${escapeHtml(item.plate)}"
+               ${item.holder_plate ? `title="прицеп висит на ${escapeHtml(item.holder_plate)} — сначала отцепите перецепкой" disabled` : 'title="продажа или списание — с датой, можно задним числом"'}>Вывести</button>`}</td>
+      </tr>`).join('')}</tbody></table>`;
+    box.querySelectorAll('[data-trailer-out]').forEach(button => button.onclick = async () => {
+      const date = prompt(`Дата вывода прицепа ${button.dataset.trailerOut} (ГГГГ-ММ-ДД, пусто — сегодня)`,
+        new Date().toISOString().slice(0, 10));
+      if (date === null) return;
+      try {
+        await api(`/api/trailers/${encodeURIComponent(button.dataset.trailerOut)}`, {
+          method: 'PATCH', body: JSON.stringify({ outSince: date || new Date().toISOString().slice(0, 10) })
+        });
+        toast('Прицеп выведен из эксплуатации'); renderTrailerRegistry();
+      } catch (error) { toast(error.message, 'error'); }
+    });
+    box.querySelectorAll('[data-trailer-return]').forEach(button => button.onclick = async () => {
+      try {
+        await api(`/api/trailers/${encodeURIComponent(button.dataset.trailerReturn)}`, {
+          method: 'PATCH', body: JSON.stringify({ outSince: null })
+        });
+        toast('Прицеп возвращён в работу'); renderTrailerRegistry();
+      } catch (error) { toast(error.message, 'error'); }
+    });
+  } catch (error) {
+    box.innerHTML = `<p class="hint">Реестр прицепов не загрузился: ${escapeHtml(error.message)}</p>`;
+  }
 }
 
 function editVehicle(vehicle = null) {
@@ -223,6 +273,8 @@ function editVehicle(vehicle = null) {
     <div class="form-grid">
       <label class="field">Недоступно с<input name="unavailableFrom" type="date" value="${vehicle?.unavailable_from || ''}"></label>
       <label class="field">Недоступно до<input name="unavailableTo" type="date" value="${vehicle?.unavailable_to || ''}"></label>
+      <label class="field" title="учитывается при статусе «Выведен»: продажа или списание, можно задним числом; пусто — сегодня. График и процессы закрываются с этой даты, история остаётся">
+        Выведен с<input name="outSince" type="date" value="${vehicle?.out_since || ''}"></label>
     </div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сохранить</button></div></form>`);

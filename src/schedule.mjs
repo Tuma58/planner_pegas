@@ -513,7 +513,7 @@ export function augmentScheduleFromPlanner(db, userId = null) {
     }
     return { plan, fact };
   };
-  const report = { addedVehicles: [], addedDrivers: [], fixes: [] };
+  const report = { addedVehicles: [], addedDrivers: [], fixes: [], markedOut: [], returned: [] };
   const touched = new Set();
   // Опечатка исходного файла: т492ат58 нет в парке, на проде — т492ве58.
   const typo = tsByPlate.get('т492ат58');
@@ -546,6 +546,28 @@ export function augmentScheduleFromPlanner(db, userId = null) {
     report.addedVehicles.push(vehicle.plate);
     touched.add(crew.id);
   }
+  // Вывод из эксплуатации: статус «Выведен» в справочнике доезжает до
+  // графика меткой ts.out (дата вывода) — клиент запирает клетки строки
+  // машины с этой даты и прячет сцепку, когда весь видимый период после
+  // вывода и коды водителей пусты. Возврат в работу метку снимает.
+  const outByPlate = new Map(db.prepare(`SELECT plate,
+      COALESCE(out_since, substr(updated_at,1,10)) out_since
+    FROM vehicles WHERE status='out'`).all()
+    .map(row => [canon(row.plate), row.out_since]));
+  for (const crew of crews.values()) {
+    for (const ts of crew.ts || []) {
+      const out = outByPlate.get(canon(ts.tyagach)) || null;
+      if (out && ts.out !== out) {
+        ts.out = out;
+        report.markedOut.push(`${ts.tyagach} с ${out}`);
+        touched.add(crew.id);
+      } else if (!out && ts.out) {
+        delete ts.out;
+        report.returned.push(ts.tyagach);
+        touched.add(crew.id);
+      }
+    }
+  }
   const drivers = db.prepare(`SELECT d.full_name, d.phone, v.plate FROM drivers d
     LEFT JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status<>'fired'`).all();
   const plannerPairCount = new Map();
@@ -573,6 +595,8 @@ export function augmentScheduleFromPlanner(db, userId = null) {
       log: [{ t: new Date().toISOString(), a: 'планер',
         what: `достройка из планера: машин +${report.addedVehicles.length}, ` +
           `водителей +${report.addedDrivers.length}` +
+          (report.markedOut.length ? `, выведены: ${report.markedOut.join(', ')}` : '') +
+          (report.returned.length ? `, возвращены в работу: ${report.returned.join(', ')}` : '') +
           (report.fixes.length ? `, исправления: ${report.fixes.join(', ')}` : '') }]
     }, userId);
   }
