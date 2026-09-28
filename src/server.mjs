@@ -1438,18 +1438,31 @@ function pickVehicleFor(order) {
   // блокирующей диспозиции. Разбор замен 03–04.09: «не успеет по времени»,
   // «у предложенного пересменка» — точечная проверка windowFrom пропускала
   // занятость, начинающуюся часом позже.
+  // Конец занятости рейсом — ЖИВОЕ правило (разбор отписок 28.09
+  // «рекомендуемое ТС не разгружено»): незакрытый рейс держит машину и
+  // после расчётного конца, пока не проставлен факт выгрузки.
+  const busyEnd = `datetime(COALESCE(t.unloaded_at,
+    CASE WHEN t.status IN ('plan','run') AND datetime(t.ends_at) < datetime('now')
+      THEN datetime('now', '+2 hours') ELSE t.ends_at END))`;
   const candidates = db.prepare(`SELECT v.id, v.plate,
       (SELECT name FROM vehicle_types WHERE id=v.type_id) type_name
     FROM vehicles v
     WHERE v.status='work'
       AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status<>'rejected'
-        AND datetime(t.starts_at) < datetime(?) AND datetime(t.ends_at) > datetime(?))
+        AND datetime(t.starts_at) < datetime(?) AND ${busyEnd} > datetime(?))
       AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d WHERE d.vehicle_id=v.id
         AND d.kind<>'reserve'
         AND datetime(d.starts_at) < datetime(?) AND datetime(d.ends_at) > datetime(?))
       AND NOT EXISTS (SELECT 1 FROM vehicle_holds h WHERE h.vehicle_id=v.id
         AND datetime(h.until) > datetime('now'))`)
     .all(windowTo, windowFrom, windowTo, windowFrom);
+  // Освобождение перед окном (разбор «назначено на более ранний рейс»):
+  // машина обязана УСПЕТЬ с выгрузки предыдущего рейса на эту погрузку —
+  // released + живой подгон должны укладываться в окно.
+  const releasedRows = db.prepare(`SELECT t.vehicle_id vid, MAX(${busyEnd}) rel
+    FROM trips t WHERE t.status<>'rejected'
+      AND datetime(t.starts_at) < datetime(?) GROUP BY t.vehicle_id`).all(windowFrom);
+  const releasedAt = new Map(releasedRows.map(row => [row.vid, Date.parse(String(row.rel).replace(' ', 'T'))]));
   // Кузовные привычки клиента по истории 90 дней: тип, который клиент
   // никогда не грузил (при 10+ рейсах истории), не рекомендуем — «Хлебпром
   // грузит только паллетники»; доминирующий тип (≥70%) получает приоритет —
@@ -1478,6 +1491,14 @@ function pickVehicleFor(order) {
     const origin = vehiclePositionBefore(vehicle.id, windowFrom);
     if (!origin || !Number.isFinite(origin.latitude)) continue;
     const km = roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude);
+    // Успевает ли к окну: освобождение (живой конец прошлого рейса) +
+    // подгон живым транзитом ≤ край окна погрузки. Не успевает — не
+    // рекомендуем (главная причина замен по отпискам логистов).
+    const released = releasedAt.get(vehicle.id);
+    if (Number.isFinite(released)) {
+      const arriveMs = Math.max(released, Date.now()) + transitHours(km, liveCalc(), 0) * 3.6e6;
+      if (arriveMs > Date.parse(windowTo)) continue;
+    }
     if (!best || km < best.km) best = { vehicle, km };
     if (dominant && vehicle.type_name === dominant && (!bestDominant || km < bestDominant.km)) {
       bestDominant = { vehicle, km };
@@ -4446,6 +4467,10 @@ function runAssignQualityReport() {
     const accepted = rows.filter(row => row.outcome === 'accepted').length;
     const overridden = rows.filter(row => row.outcome === 'overridden');
     const CATS = [
+      // «Назначено на более ранний рейс», «не разгружено» — главная
+      // категория отписок 28.09; подбор с released-фильтром должен её
+      // высушить, а строка в дайджесте покажет динамику.
+      ['занят/не освободился', /ранн|не\s+разгру|не\s+выгру|освобо|не\s+успе/i],
       ['занятость машины', /зан|друго[йм]\s+рейс|кру[гз]|стыков/i],
       ['кузов/температура', /кузов|реф|тент|изотерм|температур|режим/i],
       ['география/подгон', /далеко|подгон|км\b|географ|регион|город/i],
