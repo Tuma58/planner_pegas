@@ -23,7 +23,7 @@ import {
   gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner, runScheduleAutoFact, syncShiftBridge, pushAttendanceToSchedule } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
 import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
