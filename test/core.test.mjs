@@ -3417,3 +3417,39 @@ test('этап 3: явка и табель читают факт-слой гра
   assert.equal(pushAttendanceToSchedule(db, drv.full_name, today, 'present', ''), false);
   assert.equal(scheduleAttendanceFor(db, drv.full_name, today).fact, 'П', 'пересменка цела');
 });
+
+test('профиль водителя: подмена не приписывает рейсы родной сцепки', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-swap-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicles = db.prepare('SELECT id FROM vehicles LIMIT 2').all();
+  const [own, sub] = [vehicles[0].id, vehicles[1].id];
+  const drv = db.prepare('SELECT id, full_name FROM drivers LIMIT 1').get();
+  // Водитель постоянно на own, но в июле закреплён подменой на sub.
+  db.prepare('UPDATE vehicles SET driver_name=? WHERE id=?').run(drv.full_name, own);
+  db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at)
+    VALUES('sw-a1',?,?,'2025-07-01T00:00:00.000Z','2025-07-20T00:00:00.000Z')`).run(drv.id, sub);
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const put = (id, veh, starts, unloaded) => db.prepare(`INSERT INTO trips(
+      id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,unloaded_at,
+      distance_km,revenue_vat)
+    VALUES(?,?,?,?,'unloaded',?,?,?,400,90000)`).run(id, veh, zone, zone, starts, unloaded, unloaded);
+  // Рейс подменной машины — его; рейс родной в те же даты — сменщика без
+  // закрепления → «не оформлено», а не приписка.
+  put('swT1', sub, '2025-07-05T00:00:00.000Z', '2025-07-06T00:00:00.000Z');
+  put('swT2', own, '2025-07-05T06:00:00.000Z', '2025-07-06T06:00:00.000Z');
+  // После конца подмены рейс родной машины — снова его (фолбэк).
+  put('swT3', own, '2025-07-25T00:00:00.000Z', '2025-07-26T00:00:00.000Z');
+  const out = driverPeriodMetrics(db, '2025-07-01T00:00:00.000Z', '2025-08-01T00:00:00.000Z');
+  const me = out.drivers.find(d => d.name === drv.full_name.trim());
+  const hole = out.drivers.find(d => d.name.includes('не оформлено'));
+  assert.equal(me.trips, 2, 'подменный + свой после возврата');
+  assert.equal(me.km, 800);
+  assert.equal(me.vehicles, 2);
+  assert.ok(hole, 'строка «не оформлено» есть');
+  assert.equal(hole.trips, 1, 'рейс родной машины во время подмены — в дыру оформления');
+  assert.equal(hole.light, 'none', 'светофор для дыры не считается');
+});

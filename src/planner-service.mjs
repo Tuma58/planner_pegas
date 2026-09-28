@@ -1412,9 +1412,20 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
       WHERE a.starts_at < ? AND a.ends_at > ?`).all(toIso, fromIso);
   const currentName = new Map(db.prepare(`SELECT id, driver_name FROM vehicles`).all()
     .map(row => [row.id, (row.driver_name || '').trim()]));
+  // Разбор Трещёва/Танцырева 28.09: пока постоянный водитель закреплён
+  // подменой на ДРУГОЙ машине, рейсы его родной сцепки водит неоформленный
+  // сменщик — фолбэк «текущий водитель» приписывал их постоянному, и у
+  // человека выходили два борта разом с задвоенными километрами. Такие
+  // рейсы теперь честно падают в строку «не оформлено», а не в приписку.
+  const UNASSIGNED = '⚠ не оформлено (замена без закрепления)';
   const driverOf = (vehicleId, startsAt) => {
     const hit = assigns.find(a => a.vehicle_id === vehicleId && a.starts_at <= startsAt && a.ends_at > startsAt);
-    return (hit?.name || currentName.get(vehicleId) || '').trim();
+    if (hit?.name) return hit.name.trim();
+    const current = (currentName.get(vehicleId) || '').trim();
+    if (!current) return '';
+    const busyElsewhere = assigns.some(a => a.name.trim() === current &&
+      a.vehicle_id !== vehicleId && a.starts_at <= startsAt && a.ends_at > startsAt);
+    return busyElsewhere ? UNASSIGNED : current;
   };
   const stopsStmt = db.prepare(`SELECT kind, seq, planned_arrival, actual_arrival, actual_departure
     FROM trip_stops WHERE trip_id=? ORDER BY seq`);
@@ -1489,10 +1500,13 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
     gateUnloadH: round1(median(item.gates)),
     cleanPct: item.chainTotal ? Math.round(item.clean / item.chainTotal * 100) : null
   })).sort((a, b) => b.trips - a.trips);
+  // Строка «не оформлено» в парковые медианы и светофор не входит —
+  // это дыра оформления, а не водитель.
+  const real = drivers.filter(d => d.name !== UNASSIGNED);
   const park = {
-    ve: round1(median(drivers.map(d => d.ve).filter(v => v != null))),
-    vt: round1(median(drivers.map(d => d.vt).filter(v => v != null))),
-    gateUnloadH: round1(median(drivers.map(d => d.gateUnloadH).filter(v => v != null)))
+    ve: round1(median(real.map(d => d.ve).filter(v => v != null))),
+    vt: round1(median(real.map(d => d.vt).filter(v => v != null))),
+    gateUnloadH: round1(median(real.map(d => d.gateUnloadH).filter(v => v != null)))
   };
   // Светофор эффективности (заказ руководителя 25.09): балл 0–100 по
   // той же оценочной шкале, что рейтинг водителей при назначении.
@@ -1500,7 +1514,7 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
   // зашитой цифры): полный штраф — отставание на 30%+. Ворота выгрузки
   // в балл не входят — это клиентский процесс.
   for (const d of drivers) {
-    if (d.trips < 3) { d.score = null; d.light = 'none'; continue; }
+    if (d.trips < 3 || d.name === UNASSIGNED) { d.score = null; d.light = 'none'; continue; }
     let score = 100;
     if (d.ve != null && park.ve) {
       score -= 40 * Math.min(1, Math.max(0, (park.ve - d.ve) / (park.ve * 0.3)));
