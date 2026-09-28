@@ -1138,7 +1138,26 @@ function renderResourceTasks(container, context, refDay, withState) {
       Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
   });
 
-  container.innerHTML = `<h2>Что требует решения</h2>
+  // Плашка (решение руководителя 28.09): панель по умолчанию свёрнута в
+  // узкую полоску с числом — гант Ресурса получает всю ширину; клик
+  // разворачивает, выбор запоминается на этом устройстве.
+  let collapsed = true;
+  try { collapsed = localStorage.getItem('plResTasks') !== 'open'; } catch { /* приватный режим */ }
+  container.classList.toggle('collapsed', collapsed);
+  const toggleBtn = (label, title) =>
+    `<button class="side-collapse ${tasks.length ? 'warn' : ''}" id="resTasksToggle" title="${title}">${label}</button>`;
+  if (collapsed) {
+    container.innerHTML = toggleBtn(`⚠ ${tasks.length}`,
+      `Что требует решения: ${tasks.length} — клик развернёт панель`) +
+      `<div class="side-vlabel">Требует решения</div>`;
+    container.querySelector('#resTasksToggle').onclick = () => {
+      try { localStorage.setItem('plResTasks', 'open'); } catch { /* некритично */ }
+      renderResourceTasks(container, context, refDay, withState);
+    };
+    return;
+  }
+  container.innerHTML = toggleBtn('⟩ Свернуть', 'Свернуть панель в плашку') +
+    `<h2>Что требует решения</h2>
     <p class="muted">На ${refDay.split('-').reverse().join('.')} — по одному действию на строку.</p>
     <div class="summary-grid">
       <div class="metric"><span>Требуют внимания</span><strong>${tasks.length}</strong></div>
@@ -1224,6 +1243,10 @@ function renderResourceTasks(container, context, refDay, withState) {
       </div>`).join('') || '<p class="muted">Все машины при деле: у каждой есть заказ или оформленный простой.</p>'}
     </div>`;
 
+  container.querySelector('#resTasksToggle').onclick = () => {
+    try { localStorage.setItem('plResTasks', 'closed'); } catch { /* некритично */ }
+    renderResourceTasks(container, context, refDay, withState);
+  };
   container.querySelectorAll('[data-task-assign-driver]').forEach(button =>
     button.addEventListener('click', () => periodAssignDialog(context, {
       vehicleId: button.dataset.taskAssignDriver,

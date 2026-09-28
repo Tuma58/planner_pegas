@@ -138,7 +138,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .panel-tabs button { flex: 1 1 auto; }
 .toolbar-end { margin-left: auto; display: flex; gap: 8px; }
 /* Зоны тулбара (28.09): строгие группы с разделителями, единая высота. */
-.tb-zone { display: flex; align-items: center; gap: 8px; }
+.tb-zone { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+/* Дети зон не сжимаются (сегмент с overflow:hidden схлопывался в ноль) —
+   при нехватке места переносятся строкой. */
+.tb-zone > * { flex: 0 0 auto; }
+#tbContext { flex: 1 1 auto; }
 .tb-zone + .tb-zone { border-left: 1px solid var(--line); padding-left: 12px; }
 .tb-zone.hidden { display: none; }
 .chip-alert {
@@ -166,6 +170,24 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .planner-layout.full { grid-template-columns: 1fr; }
 .board { overflow: auto; background: var(--card); }
 .sidepanel { overflow: auto; padding: 15px; background: var(--card); border-left: 1px solid var(--line); }
+/* Панель Ресурса «Что требует решения» — плашка (28.09): свёрнута в
+   узкую полоску с числом, гант получает всю ширину. */
+.planner-layout:has(.sidepanel.collapsed) { grid-template-columns: minmax(0, 1fr) 46px; }
+.sidepanel.collapsed {
+  padding: 8px 4px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.side-collapse {
+  border: 1px solid var(--line); background: var(--card); color: var(--muted);
+  border-radius: 14px; padding: 4px 10px; font-weight: 800; cursor: pointer;
+  white-space: nowrap; font-size: var(--fs-sm);
+}
+.side-collapse.warn { background: #fbe9e7; border-color: #e5b3a8; color: #a4321f; }
+.sidepanel:not(.collapsed) .side-collapse { float: right; margin: 0 0 6px 8px; }
+.side-vlabel {
+  writing-mode: vertical-rl; color: var(--muted); font-size: var(--fs-xs);
+  font-weight: 700; letter-spacing: .04em; user-select: none;
+}
 .sidepanel h2, .sidepanel h3 { color: var(--ink); }
 .sidepanel h2 { margin: 0 0 4px; font-size: 15px; }
 .sidepanel h3 { margin: 20px 0 8px; font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: .04em; }
