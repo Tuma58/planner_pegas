@@ -5111,24 +5111,61 @@ function parkReportData(from, to) {
   const period = (a, b) => {
     const days = Math.round((Date.parse(b) - Date.parse(a)) / 864e5);
     const adi = fleet * 24 * days;
-    const trips = db.prepare(`SELECT t.on_line_at, t.arrived_at, t.unloaded_at, t.starts_at,
-        t.ends_at, ${netExpr} net,
+    const trips = db.prepare(`SELECT t.vehicle_id, t.on_line_at, t.arrived_at, t.unloaded_at,
+        t.starts_at, t.ends_at, ${netExpr} net,
         (SELECT MIN(s.actual_departure) FROM trip_stops s
           WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
       FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
         AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(b, a);
-    let line = 0, prod = 0, cust = 0, rev = 0, n = 0;
+    // Часы линии/груза — ОБЪЕДИНЕНИЕ интервалов по машине, не сумма по
+    // рейсам (разбор «КВЛ 100%» 28.09: плотная стыковка легально даёт
+    // старт следующего рейса раньше отметки выгрузки предыдущего —
+    // сумма клампов двоила машино-часы, за неделю набегало 2 779 ч и
+    // линия «превышала» техфонд). Машина не может быть на линии дважды.
+    const aMs = Date.parse(a);
+    const bMs = Date.parse(b);
+    const clampMs = (fromValue, toValue) => {
+      const s = Math.max(Date.parse(String(fromValue).replace(' ', 'T')), aMs);
+      const e = Math.min(Date.parse(String(toValue).replace(' ', 'T')), bMs);
+      return e > s ? [s, e] : null;
+    };
+    const lineIv = new Map();
+    const prodIv = new Map();
+    const push = (map, vid, span) => {
+      if (!span) return;
+      if (!map.has(vid)) map.set(vid, []);
+      map.get(vid).push(span);
+    };
+    const unionH = map => {
+      let total = 0;
+      for (const list of map.values()) {
+        list.sort((x, y) => x[0] - y[0]);
+        let [s, e] = list[0];
+        for (let i = 1; i < list.length; i += 1) {
+          const [ns, ne] = list[i];
+          if (ns <= e) e = Math.max(e, ne);
+          else { total += e - s; [s, e] = [ns, ne]; }
+        }
+        total += e - s;
+      }
+      return total / 3.6e6;
+    };
+    let cust = 0, rev = 0, n = 0;
     for (const trip of trips) {
       const online = trip.on_line_at || trip.starts_at;
       const fin = String(trip.unloaded_at || trip.ends_at).replace(' ', 'T');
-      line += clampH(online, fin, a, b);
-      if (trip.dep) prod += clampH(trip.dep, trip.arrived_at || fin, a, b);
+      push(lineIv, trip.vehicle_id, clampMs(online, fin));
+      if (trip.dep) push(prodIv, trip.vehicle_id, clampMs(trip.dep, trip.arrived_at || fin));
       if (trip.arrived_at && trip.unloaded_at) cust += clampH(trip.arrived_at, fin, a, b);
       if (trip.unloaded_at && trip.unloaded_at >= a && trip.unloaded_at < b) { rev += trip.net; n += 1; }
     }
-    line += db.prepare(`SELECT COALESCE(SUM((julianday(MIN(COALESCE(arrived_at, ends_at), ?)) -
-        julianday(MAX(COALESCE(departed_at, starts_at), ?))) * 24), 0) h
-      FROM vehicle_dispositions WHERE kind='transfer' AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
+    for (const move of db.prepare(`SELECT vehicle_id, COALESCE(departed_at, starts_at) s,
+        COALESCE(arrived_at, ends_at) e FROM vehicle_dispositions
+      WHERE kind='transfer' AND starts_at < ? AND ends_at > ?`).all(b, a)) {
+      push(lineIv, move.vehicle_id, clampMs(move.s, move.e));
+    }
+    const line = unionH(lineIv);
+    const prod = unionH(prodIv);
     const rem = db.prepare(`SELECT COALESCE(SUM((julianday(MIN(ends_at, ?)) -
         julianday(MAX(starts_at, ?))) * 24), 0) h
       FROM vehicle_dispositions WHERE kind='repair' AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
