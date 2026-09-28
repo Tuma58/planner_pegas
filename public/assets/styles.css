@@ -137,6 +137,29 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .panel-tabs { flex-wrap: wrap; margin-bottom: 12px; }
 .panel-tabs button { flex: 1 1 auto; }
 .toolbar-end { margin-left: auto; display: flex; gap: 8px; }
+/* Зоны тулбара (28.09): строгие группы с разделителями, единая высота. */
+.tb-zone { display: flex; align-items: center; gap: 8px; }
+.tb-zone + .tb-zone { border-left: 1px solid var(--line); padding-left: 12px; }
+.tb-zone.hidden { display: none; }
+.chip-alert {
+  min-width: 36px; height: 28px; padding: 0 10px; border-radius: 14px;
+  border: 1px solid var(--line); background: var(--card); color: var(--muted);
+  font-weight: 800; font-size: var(--fs-sm); cursor: pointer;
+}
+.chip-alert.warn { background: #fbe9e7; border-color: #e5b3a8; color: #a4321f; }
+.tb-menu { position: relative; }
+.tb-menu summary { list-style: none; cursor: pointer; display: inline-flex; }
+.tb-menu summary::-webkit-details-marker { display: none; }
+.tb-menu-list {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  display: flex; flex-direction: column; gap: 4px; min-width: 160px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px; box-shadow: 0 8px 24px rgba(15, 30, 50, .14);
+}
+.tb-menu-list .button { width: 100%; justify-content: flex-start; }
+@media (max-width: 980px) {
+  .tb-zone + .tb-zone { border-left: 0; padding-left: 0; }
+}
 .sync-state { color: var(--ok); font-size: var(--fs-sm); }
 
 .planner-layout { display: grid; grid-template-columns: minmax(0, 1fr) 350px; min-height: 0; }

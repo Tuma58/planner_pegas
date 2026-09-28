@@ -28,29 +28,41 @@
         <button class="icon-button" id="logout" title="Выйти">Выйти</button>
       </div>
     </header>
+    <!-- Тулбар зонами (решение руководителя 28.09: «строго, упорядоченно,
+         как в мобильных»): 1 — вкладки ролей, 2 — контекст периода (только
+         там, где есть канва), 3 — плашки и меню справа. Зоны разделены
+         линиями, элементы одной высоты. -->
     <div class="toolbar">
-      <div class="segmented" id="viewTabs"></div>
-      <div class="period-nav">
-        <button class="button ghost small" id="periodPrev" title="Предыдущий месяц">←</button>
-        <strong id="periodLabel">—</strong>
-        <button class="button ghost small" id="periodNext" title="Следующий месяц">→</button>
+      <div class="tb-zone"><div class="segmented" id="viewTabs"></div></div>
+      <div class="tb-zone" id="tbContext">
+        <div class="period-nav">
+          <button class="button ghost small" id="periodPrev" title="Предыдущий месяц">←</button>
+          <strong id="periodLabel">—</strong>
+          <button class="button ghost small" id="periodNext" title="Следующий месяц">→</button>
+        </div>
+        <div class="period-nav" id="scrollNav">
+          <button class="button ghost small" id="scrollLeft" title="Прокрутить на неделю назад">‹</button>
+          <span class="today-combo" title="Дата отбора: занятость сцепок, фильтры зон и состояний">
+            <button class="button ghost small" id="scrollToday">Сегодня</button>
+            <input type="date" id="dayPicker" class="day-picker">
+          </span>
+          <button class="button ghost small" id="scrollRight" title="Прокрутить на неделю вперёд">›</button>
+        </div>
+        <div class="segmented" id="rangeTabs" title="Обозримый период канвы"></div>
+        <div class="segmented" id="typeFilter"></div>
+        <div class="legend" id="legend"></div>
       </div>
-      <div class="period-nav" id="scrollNav">
-        <button class="button ghost small" id="scrollLeft" title="Прокрутить на неделю назад">‹</button>
-        <span class="today-combo" title="Дата отбора: занятость сцепок, фильтры зон и состояний">
-          <button class="button ghost small" id="scrollToday">Сегодня</button>
-          <input type="date" id="dayPicker" class="day-picker">
-        </span>
-        <button class="button ghost small" id="scrollRight" title="Прокрутить на неделю вперёд">›</button>
-      </div>
-      <div class="segmented" id="rangeTabs" title="Обозримый период канвы"></div>
-      <div class="segmented" id="typeFilter"></div>
-      <div class="legend" id="legend"></div>
-      <div class="toolbar-end">
-        <button class="button ghost small hidden" id="exceptionsChip">⚠</button>
+      <div class="tb-zone toolbar-end">
+        <button class="chip-alert hidden" id="exceptionsChip"
+          title="Требует решения — реестр проблем, клик откроет список">⚠</button>
         <button class="button ghost small" id="geoButton">🗺 Карта</button>
-        <button class="button ghost small" id="customersButton">Заказчики</button>
-        <button class="button ghost small" id="addressesButton">Адреса</button>
+        <details class="tb-menu" id="refsMenu">
+          <summary class="button ghost small">📚 Справочники ▾</summary>
+          <div class="tb-menu-list">
+            <button class="button ghost small" id="customersButton">Заказчики</button>
+            <button class="button ghost small" id="addressesButton">Адреса</button>
+          </div>
+        </details>
         <span class="sync-state" id="syncState">● подключено</span>
       </div>
     </div>

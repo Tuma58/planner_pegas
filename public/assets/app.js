@@ -788,6 +788,7 @@ function renderMain() {
   const timelineView = isGantt || isResource;
   ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'].forEach(id =>
     byId(id).classList.toggle('hidden', !timelineView));
+  byId('tbContext')?.classList.toggle('hidden', !timelineView);
   byId('typeFilter').classList.toggle('hidden', !isGantt);
   byId('rangeTabs').classList.toggle('hidden', !isGantt);
   byId('legend').classList.toggle('hidden', !isGantt);
@@ -870,11 +871,28 @@ async function openReport(kind, from, to) {
   }
 }
 
+// Меню «📚 Справочники» в тулбаре: как в мобильных — открылось по тапу,
+// закрывается выбором пункта или кликом мимо.
+(() => {
+  const menu = byId('refsMenu');
+  if (!menu) return;
+  document.addEventListener('click', event => {
+    if (!menu.contains(event.target)) menu.removeAttribute('open');
+  });
+  menu.querySelectorAll('.tb-menu-list button').forEach(button =>
+    button.addEventListener('click', () => menu.removeAttribute('open')));
+})();
+
 async function refreshExceptions() {
   try {
     state.exceptions = await api('/api/exceptions');
     const chip = byId('exceptionsChip');
-    chip.textContent = `⚠ Требует решения ${state.exceptions.count}`;
+    // Плашка (решение руководителя 28.09): компактный бейдж, не мешает
+    // визуализации; полный реестр — по клику, подпись — в тултипе.
+    chip.textContent = state.exceptions.count ? `⚠ ${state.exceptions.count}` : '⚠';
+    chip.title = state.exceptions.count
+      ? `Требует решения: ${state.exceptions.count} — клик откроет реестр`
+      : 'Требующих решения нет';
     chip.classList.remove('hidden');
     chip.classList.toggle('warn', state.exceptions.count > 0);
   } catch { /* нет права planner:read — чип остаётся скрытым */ }
