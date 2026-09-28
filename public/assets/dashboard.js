@@ -47,18 +47,27 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // Факт действительно прошедших дней: только выгрузки до начала сегодняшних
   // суток. Забронированное будущее (и незакрытый сегодняшний день) сюда не
   // входит — иначе темп и план дня искажаются ещё не привезённой выручкой.
-  const factPast = monthTrips.filter(trip => Date.parse(trip.ends_at) < dayStart)
-    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-  // «Забито на сегодня» = все расчётные выгрузки дня; из них выгружено
-  // фактически (статус после выгрузки) и ещё едет/ждёт выхода.
+  // КАНОН выгрузок (28.09, сверка с отбивкой «Отчёта дня»): «выгружено
+  // за день» считается по дате ФАКТИЧЕСКОЙ выгрузки (фолбэк — расчётная),
+  // как во всех отчётах; «забито» остаётся планом по расчётной дате.
   const doneStatuses = new Set(['unloaded', 'done', 'paid']);
-  const dayDone = dayTrips.filter(trip => doneStatuses.has(trip.status))
-    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  const doneTs = trip => Date.parse(trip.unloaded_at || trip.ends_at);
+  const doneTrips = activeTrips.filter(trip => doneStatuses.has(trip.status));
+  const factPast = doneTrips.filter(trip => {
+    const ts = doneTs(trip);
+    return ts >= monthStart && ts < dayStart;
+  }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  const dayDone = doneTrips.filter(trip => {
+    const ts = doneTs(trip);
+    return ts >= dayStart && ts < dayEnd;
+  }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   // «Выгружено за месяц» — только фактически выгруженные рейсы месяца
   // (статус после выгрузки); главная цифра плашки — «забито» (monthFact:
   // факт + ещё не привезённая выручка броней до конца месяца).
-  const monthDone = monthTrips.filter(trip => doneStatuses.has(trip.status))
-    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+  const monthDone = doneTrips.filter(trip => {
+    const ts = doneTs(trip);
+    return ts >= monthStart && ts < monthEnd;
+  }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   const dayExpected = dayFact - dayDone;
   // Динамика внутри дня: что по расчётному времени выгрузки уже ДОЛЖНО быть
   // выгружено к текущему моменту — против фактически выгруженного. Даёт
@@ -238,11 +247,17 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
       return ends >= start && ends < end;
     });
     const booked = trips.reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-    const done = trips.filter(trip => doneStatuses.has(trip.status))
+    // «Выгружено» дня — канон по дате фактической выгрузки; «ещё едет» —
+    // незакрытая часть забитого (это план, у него своя дата).
+    const done = doneTrips.filter(trip => {
+      const ts = doneTs(trip);
+      return ts >= start && ts < end;
+    }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+    const rideRest = trips.filter(trip => !doneStatuses.has(trip.status))
       .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-    const factBefore = activeTrips.filter(trip => {
-      const ends = Date.parse(trip.ends_at);
-      return ends >= monthStart && ends < start;
+    const factBefore = doneTrips.filter(trip => {
+      const ts = doneTs(trip);
+      return ts >= monthStart && ts < start;
     }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
     const remaining = daysInMonth - date.getUTCDate() + 1;
     const plan = inMonth ? Math.max(0, (monthPlan - factBefore) / Math.max(1, remaining)) : null;
@@ -254,7 +269,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
       && Date.parse(order.window_to) >= start && Date.parse(order.window_to) < end);
     const unassignedSum = unassigned.reduce((sum, order) => sum + orderNet(order, data), 0);
     return { dateIso: date.toISOString().slice(0, 10), inMonth, plan,
-      booked, done, expected: booked - done, trips: trips.length,
+      booked, done, expected: rideRest, trips: trips.length,
       unassigned: unassigned.length, unassignedSum, potential: booked + unassignedSum,
       gap: plan != null ? Math.max(0, plan - booked) : 0 };
   };
@@ -468,15 +483,18 @@ export async function renderDashboard(container, context) {
   const fmtDayShort = iso => new Intl.DateTimeFormat('ru-RU',
     { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
   const dayCard = (day, title, mode) => {
-    const pct = day.plan ? Math.min(999, Math.round(day.booked / day.plan * 100)) : 0;
-    const met = day.plan != null && day.booked >= day.plan;
+    // Прошедший день оценивается по ФАКТУ выгрузок (канон отбивки),
+    // сегодня/завтра — по забитому (план дня).
+    const factOf = mode === 'past' ? day.done : day.booked;
+    const pct = day.plan ? Math.min(999, Math.round(factOf / day.plan * 100)) : 0;
+    const met = day.plan != null && factOf >= day.plan;
     let verdict = '';
     if (day.plan == null) {
       verdict = '<span class="muted">план соседнего месяца — не считается</span>';
     } else if (mode === 'past') {
       verdict = met
-        ? `✅ выполнен ${day.plan ? `+${money(Math.round(day.booked - day.plan))}` : ''}`
-        : `✗ недобор ${money(Math.round(day.plan - day.booked))} — перетёк в план сегодня`;
+        ? `✅ выполнен ${day.plan ? `+${money(Math.round(day.done - day.plan))}` : ''}`
+        : `✗ недобор ${money(Math.round(day.plan - day.done))} — перетёк в план сегодня`;
     } else if (day.gap > 0) {
       verdict = `⛔ добрать: <b>${money(Math.round(day.gap))}</b>`;
     } else {
@@ -485,8 +503,8 @@ export async function renderDashboard(container, context) {
     return `<div class="dash-day ${mode === 'today' ? 'today' : ''} ${day.plan != null && (mode === 'past' ? !met : day.gap > 0) ? 'lack' : 'met'}">
       <div class="dd-head"><b>${title}</b><span class="muted">${fmtDayShort(day.dateIso)}</span></div>
       <div class="dd-plan"><span>план</span><b>${day.plan != null ? money(Math.round(day.plan)) : '—'}</b></div>
-      <div class="dd-fact"><span>${mode === 'past' ? 'факт' : 'забито'}</span>
-        <b>${money(Math.round(day.booked))}</b>
+      <div class="dd-fact"><span>${mode === 'past' ? 'факт выгрузок' : 'забито'}</span>
+        <b>${money(Math.round(factOf))}</b>
         ${day.plan ? `<em>${pct}%</em>` : ''}</div>
       ${(() => {
         const base = day.plan || day.booked || 1;

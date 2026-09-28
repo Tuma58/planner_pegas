@@ -336,7 +336,13 @@ export function staffReport(db, fromDay, toDay) {
       .filter(row => row.rvDays > 0)
       .sort((a, b) => b.rvDays - a.rvDays);
   } catch { /* табель не собрался — секция просто пустая */ }
-  return { plans: STAFF_PLANS, overworkDrivers, items: [...byId.values()]
+  // Стыковка по назначающим (28.09): кто создаёт следующий рейс до
+  // выгрузки, а кто после — за период отчёта.
+  let nextAssigners = [];
+  try {
+    nextAssigners = nextAssignersReport(db, `${fromDay}T00:00:00.000Z`, `${toDay}T00:00:00.000Z`);
+  } catch { /* секция просто пустая */ }
+  return { plans: STAFF_PLANS, overworkDrivers, nextAssigners, items: [...byId.values()]
     .map(item => ({ ...item,
       jobRole: jobRoles.get(item.name)?.jobRole || '',
       userId: jobRoles.get(item.name)?.userId || null,
@@ -1324,6 +1330,50 @@ export function gapStats(db, fromIso, toIso) {
     waitSlotAvg: round1(waitSlotSum / gaps.length),
     gaps
   };
+}
+
+// Стыковка по назначающим (заказ 28.09): те же пары «рейс → следующий»,
+// атрибуция — кто СОЗДАЛ следующий рейс. Показывает, кто держит цель
+// «следующий до выгрузки», а кто разбирает выгрузки задним числом.
+export function nextAssignersReport(db, fromIso, toIso) {
+  const ts = value => value ? Date.parse(String(value).replace(' ', 'T')) : NaN;
+  const median = list => { list.sort((a, b) => a - b); return list.length ? list[Math.floor(list.length / 2)] : null; };
+  const names = new Map(db.prepare('SELECT id, full_name FROM users').all()
+    .map(row => [row.id, row.full_name]));
+  const byVehicle = new Map();
+  for (const trip of db.prepare(`SELECT vehicle_id, starts_at, unloaded_at, created_at, created_by
+      FROM trips WHERE status<>'rejected'
+        AND starts_at >= datetime(?, '-40 day') AND starts_at < datetime(?, '+10 day')
+      ORDER BY vehicle_id, starts_at`).all(fromIso, toIso)) {
+    if (!byVehicle.has(trip.vehicle_id)) byVehicle.set(trip.vehicle_id, []);
+    byVehicle.get(trip.vehicle_id).push(trip);
+  }
+  const agg = new Map();
+  for (const list of byVehicle.values()) {
+    for (let i = 0; i + 1 < list.length; i += 1) {
+      const a = list[i];
+      const b = list[i + 1];
+      const unlo = ts(a.unloaded_at);
+      if (!Number.isFinite(unlo) || a.unloaded_at < fromIso || a.unloaded_at >= toIso) continue;
+      const gap = (ts(b.starts_at) - unlo) / 3.6e6;
+      if (!(gap >= 0 && gap <= 7 * 24)) continue;
+      const who = names.get(b.created_by) || 'система/1С';
+      if (!agg.has(who)) agg.set(who, { name: who, pairs: 0, before: 0, gaps: [], lag: [] });
+      const item = agg.get(who);
+      item.pairs += 1;
+      item.gaps.push(gap);
+      const created = ts(b.created_at);
+      if (Number.isFinite(created) && created <= unlo) item.before += 1;
+      else if (Number.isFinite(created)) item.lag.push((created - unlo) / 3.6e6);
+    }
+  }
+  const round1 = value => value == null ? null : Math.round(value * 10) / 10;
+  return [...agg.values()].filter(item => item.pairs >= 5).map(item => ({
+    name: item.name, pairs: item.pairs,
+    beforePct: Math.round(item.before / item.pairs * 100),
+    gapMedianH: round1(median(item.gaps)),
+    lagMedianH: item.lag.length ? round1(median(item.lag)) : null
+  })).sort((a, b) => b.pairs - a.pairs);
 }
 
 // Норматив стыковки (разбор 23.09): доля рейсов периода, у которых

@@ -290,7 +290,26 @@ export async function buildReport(kind, from, to, data) {
           подробности по дням — Ресурс → Табель.${staff.overworkDrivers.length > 25
             ? ` Показаны первые 25 из ${staff.overworkDrivers.length}.` : ''}</p>`
       : '';
-    body = `${freshPanel}${logistPanel}${overworkPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
+    // Стыковка по назначающим (28.09): кто держит «следующий до выгрузки».
+    const gapTargetPct = 85;
+    const assignersPanel = (staff.nextAssigners || []).length
+      ? `<h4>⏱ Стыковка по назначающим (кто создаёт следующий рейс)</h4>
+        <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Пар</th>
+          <th class="num">До выгрузки</th><th class="num">Медиана стыка, ч</th>
+          <th class="num">Опоздание назначения, ч</th></tr></thead>
+        <tbody>${staff.nextAssigners.map(row => `<tr>
+          <td>${escapeHtml(row.name.slice(0, 28))}</td><td class="num">${row.pairs}</td>
+          <td class="num"><b><span class="${row.beforePct >= gapTargetPct ? '' : row.beforePct >= 70 ? 'warn' : 'bad'}">${row.beforePct}%</span></b></td>
+          <td class="num">${row.gapMedianH ?? '—'}</td>
+          <td class="num">${row.lagMedianH != null ? '+' + row.lagMedianH : '—'}</td></tr>`).join('')}
+        </tbody></table>
+        <p class="muted" style="margin:2px 0 10px">Пара — рейс машины и её следующий рейс;
+          «до выгрузки» — следующий был создан раньше фактической выгрузки (цель 85%;
+          такой стык ~8 ч против ~28 у созданных после). «Опоздание назначения» — медиана
+          «создал через N часов после выгрузки» среди опоздавших. Сигнал «🔎 Освобождаются
+          без груза» приходит заранее — разбирать его нужно в день получения, не утром после.</p>`
+      : '';
+    body = `${freshPanel}${logistPanel}${assignersPanel}${overworkPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
         × активные дни в периоде (нормативы по должностям — базовые, скажите руководителю
         планера, если нужно их подстроить). Должность назначается администратором прямо здесь
         и не влияет на права доступа. «Дней» — активные дни в системе.</div>
