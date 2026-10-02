@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Пересборка выручки методикой плитки руководителя (по дате выполнения).
+# Пересборка выручки по КАНОНУ ВЫГРУЗОК (как дашборд; решение 01.10.2026).
 import json
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -7,7 +7,7 @@ from openpyxl.utils import get_column_letter
 
 S = '/private/tmp/claude-501/-Users-aleksey-pegas-planner/e1757453-d539-4377-b209-1ccd478bae1d/scratchpad'
 r2 = json.load(open(S + '/revenue2.json'))
-A, Sp, SF = r2['aug'], r2['sep'], r2['sepFull']
+A, Sp = r2['aug'], r2['sep']
 
 path = S + '/Сравнение эффективности август–сентябрь 2026.xlsx'
 wb = load_workbook(path)
@@ -20,8 +20,8 @@ BORDER = Border(bottom=Side(style='thin', color='D8D6CF'))
 
 # ── Сводка: выручечные строки методикой плитки ──
 ws = wb['Сводка']
-ws['A2'] = ('Выручка — ПО ДАТЕ ВЫПОЛНЕНИЯ рейса (методика плитки руководителя; у 209 августовских рейсов из 1С '
-            'нет отметки выгрузки — методика по выгрузкам занижала август на 18,4 млн) · август 31 дн · сентябрь по 27.09 (27 дн)')
+ws['A2'] = ('Выручка — КАНОН ВЫГРУЗОК, как на дашборде: только выгруженные рейсы, дата фактической выгрузки '
+            '(фолбэк — расчётная), без НДС по ставкам настроек (обычные 22%, ИП 7%, наличные 0%) · август 31 дн · сентябрь 30 дн')
 def dset(row, a, s, fmt='#,##0.0', good_up=True, comment=None):
     dv = None if (a is None or s is None) else s - a
     ws.cell(row=row, column=2, value=a).number_format = fmt
@@ -33,21 +33,19 @@ def dset(row, a, s, fmt='#,##0.0', good_up=True, comment=None):
     if comment is not None: ws.cell(row=row, column=5, value=comment)
 
 dset(5, A['total']['s']/1e6, Sp['total']['s']/1e6, '#,##0.1', True,
-     'по дате выполнения; сентябрь к 27.09')
-dset(6, A['total']['s']/1e6/31, Sp['total']['s']/1e6/27, '#,##0.00', True, 'главная строка: темп')
-ws.cell(row=7, column=3, value=SF['total']['s']/1e6).number_format = '#,##0.1'
-ws.cell(row=7, column=1, value='Забито на весь сентябрь (вкл. рейсы до 30.09), млн ₽')
-ws.cell(row=7, column=5, value='плитка «забито»; план 165')
-dset(8, A['total']['n'], Sp['total']['n'], '#,##0', True, 'по дате выполнения')
-dset(9, A['total']['n']/31, Sp['total']['n']/27, '#,##0.1', True)
+     'канон выгрузок; сверяется с плиткой дашборда «выгружено за месяц»')
+dset(6, A['total']['s']/1e6/31, Sp['total']['s']/1e6/30, '#,##0.00', True, 'главная строка: темп')
+dset(7, A['total']['g']/1e6, Sp['total']['g']/1e6, '#,##0.1', True, 'те же рейсы с НДС — для сверки с 1С')
+dset(8, A['total']['n'], Sp['total']['n'], '#,##0', True, 'выгруженных рейсов')
+dset(9, A['total']['n']/31, Sp['total']['n']/30, '#,##0.1', True)
 dset(10, A['total']['s']/max(1,A['total']['n']), Sp['total']['s']/max(1,Sp['total']['n']), '#,##0', True)
 
 # ── Лист Выручка: перезаписать целиком той же методикой ──
 del wb['Выручка']
 ws = wb.create_sheet('Выручка', 1)
 ws['A1'] = 'Выручка по неделям и клиентам'; ws['A1'].font = F(bold=True, size=14)
-ws['A2'] = ('По ДАТЕ ВЫПОЛНЕНИЯ рейса, без НДС (методика плитки) · недели с понедельника · '
-            'сентябрь по 27.09; строка «забито на месяц» включает рейсы до 30.09')
+ws['A2'] = ('Канон выгрузок, без НДС по ставкам настроек · недели с понедельника · '
+            'сентябрь полный: 01–30.09')
 ws['A2'].font = F(size=9, color='666666')
 def header(row, cols, widths=None):
     for i, name in enumerate(cols, 1):
@@ -67,7 +65,7 @@ for key, label, days in (('aug', 'август', 7), ('sep', 'сентябрь',
         ws.cell(row=r, column=5, value=w['s']/1e6/7).number_format = '#,##0.2'
         r += 1
 r += 1
-ws.cell(row=r, column=1, value='Топ клиентов, сравнение (по дате выполнения)').font = H
+ws.cell(row=r, column=1, value='Топ клиентов, сравнение (канон выгрузок)').font = H
 r += 1
 header(r, ['Клиент', 'Август: рейсов', 'млн бНДС', 'Сентябрь: рейсов', 'млн бНДС', 'Δ млн'], [36, 14, 12, 15, 12, 11])
 r += 1

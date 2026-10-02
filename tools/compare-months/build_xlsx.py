@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 S = '/private/tmp/claude-501/-Users-aleksey-pegas-planner/e1757453-d539-4377-b209-1ccd478bae1d/scratchpad'
 d = json.load(open(S + '/compare.json'))
 A, Sp = d['aug'], d['sep']
-DAYS = {'aug': 31, 'sep': 27}
+DAYS = {'aug': 31, 'sep': 30}
 
 wb = Workbook()
 F = lambda **kw: Font(name='Arial', **kw)
@@ -23,7 +23,7 @@ BORDER = Border(bottom=thin)
 
 def sheet(ws, title, note):
     ws['A1'] = title; ws['A1'].font = TITLE
-    ws['A2'] = note + ' · август: 01–31.08 (31 дн) · сентябрь: 01–27.09 включительно (27 дн) · выручка без НДС по канону'
+    ws['A2'] = note + ' · август: 01–31.08 (31 дн) · сентябрь: 01–30.09 (30 дн, месяц закрыт) · выручка без НДС по канону выгрузок'
     ws['A2'].font = SUB
 
 def header(ws, row, cols, widths=None):
@@ -50,7 +50,7 @@ def delta_font(val, good_up=True, eps=0):
 # ── 1. Сводка ──
 ws = wb.active; ws.title = 'Сводка'
 sheet(ws, 'Эффективность: август → сентябрь 2026', 'Ключевые показатели')
-header(ws, 4, ['Показатель', 'Август', 'Сентябрь (27 дн)', 'Δ', 'Комментарий'], [44, 15, 17, 13, 52])
+header(ws, 4, ['Показатель', 'Август', 'Сентябрь', 'Δ', 'Комментарий'], [44, 15, 17, 13, 52])
 r = 5
 def row(name, a, s, fmt='#,##0.0', good_up=True, comment='', eps=0):
     global r
@@ -62,17 +62,17 @@ def row(name, a, s, fmt='#,##0.0', good_up=True, comment='', eps=0):
 
 wfA, wfS = A['waterfall'], Sp['waterfall']
 veA, veS = A['driversPark']['ve'], Sp['driversPark']['ve']
-row('Выручка бНДС, млн ₽', A['park']['rev']/1e6, Sp['park']['rev']/1e6, '#,##0.0', True, 'сентябрь ещё не закончен — см. /сутки')
-row('Выручка бНДС, млн ₽/сутки', A['park']['rev']/1e6/31, Sp['park']['rev']/1e6/27, '#,##0.00', True, 'главная строка: темп вырос')
-row('Прогноз сентября (темп × 30), млн ₽', None, Sp['park']['rev']/1e6/27*30, '#,##0.0', True, 'план 165')
+row('Выручка бНДС, млн ₽', A['park']['rev']/1e6, Sp['park']['rev']/1e6, '#,##0.0', True, 'канон выгрузок — перепишет patch')
+row('Выручка бНДС, млн ₽/сутки', A['park']['rev']/1e6/31, Sp['park']['rev']/1e6/30, '#,##0.00', True, 'главная строка: темп')
+row('Выручка с НДС, млн ₽ (сверка с 1С)', None, None, '#,##0.0', True, 'заполнит patch по канону')
 row('Рейсов закрыто', A['park']['trips'], Sp['park']['trips'], '#,##0', True, '')
-row('Рейсов в сутки', A['park']['trips']/31, Sp['park']['trips']/27, '#,##0.1', True, '')
+row('Рейсов в сутки', A['park']['trips']/31, Sp['park']['trips']/30, '#,##0.1', True, '')
 row('Средний чек бНДС, ₽', A['park']['rev']/max(1,A['park']['trips']), Sp['park']['rev']/max(1,Sp['park']['trips']), '#,##0', True, '')
 row('На линии среднесуточно, машин', A['avgOnline'], Sp['avgOnline'], '#,##0.0', True, 'живой ряд (рейсы+перегоны)')
 row('КТГ, % (по закрытым)', A['park']['ktg'], Sp['park']['ktg'], '#,##0.0', True, '')
 row('КВЛ, %', A['park']['kvl'], Sp['park']['kvl'], '#,##0.0', True, '')
 row('КИП, %', A['park']['kip'], Sp['park']['kip'], '#,##0.0', True, 'доля времени линии под грузом')
-row('Выручка на сцепку в сутки, ₽ (по линии)', A['park']['rev']/31/max(1,A['avgOnline']), Sp['park']['rev']/24/max(1,Sp['avgOnline']), '#,##0', True, '')
+row('Выручка на сцепку в сутки, ₽ (по линии)', A['park']['rev']/31/max(1,A['avgOnline']), Sp['park']['rev']/30/max(1,Sp['avgOnline']), '#,##0', True, '')
 row('Скорость рейса Vэ, км/ч (медиана водителей)', veA, veS, '#,##0.1', True, '')
 row('Дорожная скорость, км/ч (чистые цепочки)', wfA['km']/wfA['roadH'], wfS['km']/wfS['roadH'], '#,##0.1', True, 'убыл с погрузки → прибыл на выгрузку')
 row('Ворота выгрузки, ч/рейс (средние)', wfA['unloadH']/wfA['n'], wfS['unloadH']/wfS['n'], '#,##0.1', False, 'цель руководителя 6 ч')

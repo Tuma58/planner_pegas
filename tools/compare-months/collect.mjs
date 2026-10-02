@@ -12,7 +12,7 @@ const api = async path => {
   if (!r.ok) throw new Error(path + ' → ' + r.status);
   return r.json();
 };
-const P = { aug: ['2026-08-01', '2026-09-01'], sep: ['2026-09-01', '2026-09-28'] };
+const P = { aug: ['2026-08-01', '2026-09-01'], sep: ['2026-09-01', '2026-10-01'] };
 const out = { periods: P };
 for (const [key, [from, to]] of Object.entries(P)) {
   const park = await api(`/api/park-report?from=${from}&to=${to}`);

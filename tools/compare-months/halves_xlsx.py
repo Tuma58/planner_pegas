@@ -15,9 +15,9 @@ F = lambda **kw: Font(name='Arial', **kw)
 GOOD = Font(name='Arial', color='006300', bold=True)
 BAD = Font(name='Arial', color='B8352A', bold=True)
 ws['A1'] = 'Сентябрь: первая ↔ вторая половина'; ws['A1'].font = F(bold=True, size=14)
-ws['A2'] = 'Окна: 01–13.09 (13 дн) и 14–27.09 (14 дн) включительно · выручка по дате выполнения, без НДС'
+ws['A2'] = 'Окна: 01–15.09 и 16–30.09 (по 15 дн) · выручка по канону выгрузок, без НДС по ставкам настроек'
 ws['A2'].font = F(size=9, color='666666')
-cols = ['Показатель', '01–13.09', '14–27.09', 'Δ', 'Комментарий']
+cols = ['Показатель', '01–15.09', '16–30.09', 'Δ', 'Комментарий']
 for i, name in enumerate(cols, 1):
     c = ws.cell(row=4, column=i, value=name)
     c.font = F(bold=True); c.fill = PatternFill('solid', fgColor='EFEFEA')
@@ -39,10 +39,10 @@ def row(name, a, b, fmt='#,##0.1', good_up=True, comment='', eps=0):
     r += 1
 
 w1, w2 = H1['waterfall'], H2['waterfall']
-row('Выручка бНДС, млн ₽ (по выполнению)', H1['byEnds']['s']/1e6, H2['byEnds']['s']/1e6, '#,##0.1', True, 'вторая половина без последней недели месяца')
-row('Выручка, млн ₽/сутки', H1['byEnds']['s']/1e6/13, H2['byEnds']['s']/1e6/14, '#,##0.00', True, '')
-row('Рейсов', H1['byEnds']['n'], H2['byEnds']['n'], '#,##0', True, '')
-row('Средний чек бНДС, ₽', H1['byEnds']['s']/max(1,H1['byEnds']['n']), H2['byEnds']['s']/max(1,H2['byEnds']['n']), '#,##0', True, '')
+row('Выручка бНДС, млн ₽ (канон выгрузок)', H1['byCanon']['s']/1e6, H2['byCanon']['s']/1e6, '#,##0.1', True, '')
+row('Выручка, млн ₽/сутки', H1['byCanon']['s']/1e6/15, H2['byCanon']['s']/1e6/15, '#,##0.00', True, '')
+row('Рейсов', H1['byCanon']['n'], H2['byCanon']['n'], '#,##0', True, '')
+row('Средний чек бНДС, ₽', H1['byCanon']['s']/max(1,H1['byCanon']['n']), H2['byCanon']['s']/max(1,H2['byCanon']['n']), '#,##0', True, '')
 row('На линии среднесуточно, машин', H1['avgOnline'], H2['avgOnline'], '#,##0.1', True, 'живой ряд')
 row('КТГ, %', H1['park']['ktg'], H2['park']['ktg'], '#,##0.1', True, '')
 row('КВЛ, %', H1['park']['kvl'], H2['park']['kvl'], '#,##0.1', True, '')
