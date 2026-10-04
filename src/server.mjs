@@ -29,7 +29,7 @@ import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, chainAutoClose, checkStuckUnloading, controlSnapshot,
-  ensureTripStops, gpsAutoMarks,
+  ensureTripStops, gpsAutoMarks, syncTrailerTrackerLinks,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
@@ -2140,6 +2140,12 @@ function normalizePlate(value) {
 // позиция каждой сцепки; свежесть — fixed_at из unixtimestamp трекера.
 async function runMonitoringPoll() {
   try {
+    // Привязки прицепных трекеров следуют за фактическими сцепками
+    // (06.10): перецепка/обмен/ручная правка — связка переезжает сама.
+    try {
+      const relinked = syncTrailerTrackerLinks(db);
+      if (relinked) console.log(`телематика: привязок прицепных трекеров выправлено ${relinked}`);
+    } catch (error) { console.error('телематика: сверка привязок', error.message); }
     const trackers = db.prepare(`SELECT vehicle_id, imei, trailer_imei FROM vehicle_trackers`).all();
     if (!trackers.length) return;
     // Каждый IMEI знает свою сцепку и роль: тягач несёт позицию и CAN,

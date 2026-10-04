@@ -3638,3 +3638,32 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.equal(closed.status, 'unloaded');
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
 });
+
+test('телематика: привязка прицепного трекера следует за перецепкой', async t => {
+  const { syncTrailerTrackerLinks } = await import('../src/trip-control.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-tt-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2] = db.prepare('SELECT id, plate FROM vehicles LIMIT 2').all();
+  db.prepare(`UPDATE vehicles SET trailer_plate='ЯЯ 0001 99' WHERE id=?`).run(v1.id);
+  db.prepare(`UPDATE vehicles SET trailer_plate='' WHERE id=?`).run(v2.id);
+  // Трекер прицепа привязан к ЧУЖОЙ сцепке (латиница вперемешку) + датчики там же.
+  db.prepare(`INSERT INTO trailer_positions(imei,number,vehicle_id,latitude,longitude)
+    VALUES('tt-1','ЯЯ0001 99',?,55,37)`).run(v2.id);
+  db.prepare(`INSERT INTO vehicle_positions(vehicle_id,trailer_sensors_json) VALUES(?, '[{"x":1}]')
+    ON CONFLICT(vehicle_id) DO UPDATE SET trailer_sensors_json=excluded.trailer_sensors_json`).run(v2.id);
+  const moved = syncTrailerTrackerLinks(db);
+  assert.equal(moved, 1, 'привязка выправлена');
+  assert.equal(db.prepare(`SELECT vehicle_id FROM trailer_positions WHERE imei='tt-1'`).get().vehicle_id, v1.id);
+  assert.equal(db.prepare(`SELECT trailer_sensors_json FROM vehicle_positions WHERE vehicle_id=?`).get(v2.id)?.trailer_sensors_json ?? null, null,
+    'датчики прежней сцепки очищены');
+  // Повтор идемпотентен.
+  assert.equal(syncTrailerTrackerLinks(db), 0);
+  // Прицеп отцепили в свободные — привязка снимается.
+  db.prepare(`UPDATE vehicles SET trailer_plate='' WHERE id=?`).run(v1.id);
+  assert.equal(syncTrailerTrackerLinks(db), 1);
+  assert.equal(db.prepare(`SELECT vehicle_id FROM trailer_positions WHERE imei='tt-1'`).get().vehicle_id, null);
+});

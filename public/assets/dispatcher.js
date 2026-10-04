@@ -1167,13 +1167,15 @@ export async function renderDispatcher(container, context, options = {}) {
       if (event.at <= 0) {
         rows.push({ ...base, kind: 'alarm', at: Date.now() + event.at, kindLabel: '🚨', kindHint: 'вмешаться' });
       } else if (String(event.label).startsWith('🛣')) {
-        rows.push({ ...base, kind: 'arrive', at: event.at, kindLabel: '🅿', kindHint: 'контроль прибытия' });
-        // Промежуточный: дальняя дорога — звонок каждые N часов от
-        // последнего касания, пока не настало время контроля прибытия.
+        // ОДНА строка на рейс (разбор руководителя 06.10 «вижу дубль»):
+        // пока до контроля прибытия далеко, рейс живёт в очереди
+        // промежуточным звонком; ближе срока — контролем прибытия.
         const midAt = lastTouchMs(trip) + MID_CONTROL_MS;
         if (event.at - Date.now() > MID_CONTROL_MS && midAt < event.at) {
           rows.push({ ...base, kind: 'mid', at: midAt, kindLabel: '📞', kindHint: 'промежуточный контроль',
             key: `${trip.id}|mid|${Math.round(midAt / 600_000)}` });
+        } else {
+          rows.push({ ...base, kind: 'arrive', at: event.at, kindLabel: '🅿', kindHint: 'контроль прибытия' });
         }
       } else {
         rows.push({ ...base, kind: 'depart', at: event.at, kindLabel: '🚚', kindHint: 'контроль убытия' });
@@ -1188,7 +1190,9 @@ export async function renderDispatcher(container, context, options = {}) {
     const overdue = row.at < Date.now();
     const trip = row.trip;
     const waitLabel = overdue
-      ? `просрочен ${Math.max(1, Math.floor((Date.now() - row.at) / 3_600_000))} ч`
+      ? (row.kind === 'mid'
+        ? `пора · без связи ${Math.max(1, Math.floor((Date.now() - row.at + MID_CONTROL_MS) / 3_600_000))} ч`
+        : `просрочен ${Math.max(1, Math.floor((Date.now() - row.at) / 3_600_000))} ч`)
       : formatDateTime(new Date(row.at).toISOString());
     return `<div class="cq-row ${overdue ? 'overdue' : ''} ${row.kind === 'alarm' ? 'alarm' : ''}">
       <span class="cq-time" title="${overdue ? 'Контроль просрочен — разобрать первым' : 'Когда диспетчер должен проверить'}">${waitLabel}</span>

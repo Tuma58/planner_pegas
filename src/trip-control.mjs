@@ -554,3 +554,45 @@ export function chainAutoClose(db, nowMs = Date.now()) {
   }
   return report;
 }
+
+// Номер в телематике: кириллица/латиница вперемешку, с пробелами — к
+// нашему виду (копия серверной normalizePlate, сюда — ради тестов).
+export function normalizePlateText(value) {
+  const latin = 'ABEKMHOPCTYXabekmhopctyx';
+  const cyr = 'АВЕКМНОРСТУХавекмнорстух';
+  return String(value || '').replace(/\s+/g, '').toLowerCase()
+    .replace(/[a-z]/gi, ch => { const i = latin.indexOf(ch); return i >= 0 ? cyr[i] : ch; })
+    .toLowerCase();
+}
+
+// Связка «прицепной трекер → сцепка» следует за vehicles.trailer_plate
+// (решение руководителя 06.10: при перецепке трекер прицепа должен
+// переезжать; ревизия нашла ~40 устаревших привязок — из-за них
+// кросс-проверка сцепки блокировала авто-факты). Идемпотентно, зовётся
+// каждый прогон поллера телематики: покрывает перецепку, обмен,
+// ручную правку сцепки и плановые перецепки разом.
+export function syncTrailerTrackerLinks(db) {
+  const vehicles = db.prepare(`SELECT id, trailer_plate FROM vehicles
+    WHERE COALESCE(trailer_plate,'')<>''`).all();
+  const byPlate = new Map(vehicles.map(v => [normalizePlateText(v.trailer_plate), v.id]));
+  let moved = 0;
+  for (const tracker of db.prepare(`SELECT imei, number, vehicle_id FROM trailer_positions`).all()) {
+    const want = byPlate.get(normalizePlateText(tracker.number)) || null;
+    if ((want || null) === (tracker.vehicle_id || null)) continue;
+    db.prepare(`UPDATE trailer_positions SET vehicle_id=? WHERE imei=?`).run(want, tracker.imei);
+    // Датчики прицепа у прежней сцепки больше не её: чистим, свежие
+    // приедут к новой сцепке следующим опросом.
+    if (tracker.vehicle_id) {
+      db.prepare(`UPDATE vehicle_positions SET trailer_sensors_json=NULL
+        WHERE vehicle_id=?`).run(tracker.vehicle_id);
+    }
+    moved += 1;
+  }
+  if (moved) {
+    // Зеркало для попапов сцепки: imei/номер прицепа на карточке тягача.
+    db.prepare(`UPDATE vehicle_trackers SET
+      trailer_imei=(SELECT tp.imei FROM trailer_positions tp WHERE tp.vehicle_id=vehicle_trackers.vehicle_id),
+      trailer_number=(SELECT tp.number FROM trailer_positions tp WHERE tp.vehicle_id=vehicle_trackers.vehicle_id)`).run();
+  }
+  return moved;
+}
