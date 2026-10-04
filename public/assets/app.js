@@ -789,6 +789,13 @@ function renderMain() {
   // месяца, фильтры и правая панель относятся к гантам — при Графике
   // они прячутся, страница графика несёт свои контролы сама.
   if (isResource && !state.resourceView) state.resourceView = 'schedule';
+  // Отпечаток дифф-рендера живёт на #timeline: при смене вкладки его
+  // надо сбросить, иначе возврат на вкладку с неизменными данными
+  // оставил бы на экране разметку предыдущей (гант пишет напрямую).
+  if (state.renderedView !== state.view + '/' + (state.resourceView || '')) {
+    delete byId('timeline').dataset.render;
+    state.renderedView = state.view + '/' + (state.resourceView || '');
+  }
   const isResourceGantt = isResource && state.resourceView === 'gantt';
   const timelineView = isGantt || isResourceGantt;
   ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'].forEach(id =>
@@ -839,11 +846,17 @@ function renderMain() {
       openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload, { autoConfirm: can('trips:write') })
     });
   } else if (state.view === 'delivery') {
-    byId('timeline').innerHTML = '<div class="empty-state">Загружаю план вывоза…</div>';
+    // Прелоадер — только на пустом контейнере: тихий тик не мигает
+    // «Загружаю…» поверх живой сетки (разбор мерцания 05.10).
+    if (!byId('timeline').querySelector('.plan-grid:not(.fleet-plan)')) {
+      byId('timeline').innerHTML = '<div class="empty-state">Загружаю план вывоза…</div>';
+    }
     deliveryPlanDialog({ state, can, showModal, closeModal, onReload: reload, planTarget: byId('timeline') },
       state.deliveryMonth || '', state.deliveryFlt || {});
   } else if (state.view === 'fleetplan') {
-    byId('timeline').innerHTML = '<div class="empty-state">Загружаю план парка…</div>';
+    if (!byId('timeline').querySelector('.fleet-plan')) {
+      byId('timeline').innerHTML = '<div class="empty-state">Загружаю план парка…</div>';
+    }
     fleetPlanDialog({ state, can, showModal, closeModal, onReload: reload, openTrip,
       planTarget: byId('timeline') }, state.fleetMonth || '', state.fleetFlt || {});
   } else if (state.view === 'routes') {
@@ -910,10 +923,19 @@ async function resolveAndRefresh(action, successMessage) {
   try {
     await action();
     toast(successMessage);
+    // Позиция прокрутки реестра переживает перерисовку (жалоба 05.10:
+    // «подтвердил — перекинуло в начало, снова прокручивать»): человек
+    // разбирает список сверху вниз и продолжает с того же места.
+    const keepScroll = document.querySelector('#modalRoot .modal')?.scrollTop || 0;
     await reload();
     await refreshExceptions();
-    if (state.exceptions?.count > 0 || (state.exceptions?.unavailableVehicles || []).length) openExceptions();
-    else closeModal();
+    if (state.exceptions?.count > 0 || (state.exceptions?.unavailableVehicles || []).length) {
+      openExceptions();
+      requestAnimationFrame(() => {
+        const box = document.querySelector('#modalRoot .modal');
+        if (box) box.scrollTop = keepScroll;
+      });
+    } else closeModal();
   } catch (error) { toast(error.message, 'error'); }
 }
 
@@ -2257,6 +2279,9 @@ async function autoRefreshTick(force = false) {
     if (mouseHeld) return;
     const tag = document.activeElement?.tagName;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+    // Раскрытое меню «⋯ Инструменты» (и любой открытый дроп-details без
+    // памяти) перерисовка захлопнула бы посреди выбора — тик ждёт.
+    if (document.querySelector('details.tb-menu[open], details.tools[open]')) return;
   }
   // Не дёргаем экран, пока сотрудник читает: если он только что прокручивал
   // или водил мышью по списку, обновление ждёт следующего тика.

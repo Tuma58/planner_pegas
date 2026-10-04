@@ -3,7 +3,7 @@
 // в каждую зону, чтобы закрыть потребности клиентов. Источники: заявки
 // (потребность логиста), сетка плана вывоза (потребность продаж — заявки,
 // которых ещё нет), рейсы и текущее состояние сцепок (ресурс).
-import { api, driverRatingBadge, driverRatingOf, escapeHtml, money, rangePickerHtml, wireRangePicker, toast } from './api.js';
+import { api, driverRatingBadge, driverRatingOf, escapeHtml, money, rangePickerHtml, wireRangePicker, toast, renderInto } from './api.js';
 import { vehicleZoneAt, vehicleFreeAt } from './transfer.js';
 import { customerCardDialog } from './customer-card.js';
 import { orderStage } from './pipeline.js';
@@ -354,13 +354,17 @@ export async function renderFlows(container, context) {
     state.flowsFrom = dayIso(Date.now());
     state.flowsTo = dayIso(Date.now() + 2 * DAY);
   }
-  container.innerHTML = '<div class="empty-state">Считаю потоки…</div>';
+  // Прелоадер — только на пустом контейнере: тихий тик не мигает
+  // «Считаю потоки…» поверх живой доски (разбор мерцания 05.10).
+  if (!container.querySelector('.salesfilter')) {
+    container.innerHTML = '<div class="empty-state">Считаю потоки…</div>';
+  }
   const plans = await loadPlans(state.flowsFrom, state.flowsTo);
   const tiles = zoneFlows(data, plans, state.flowsFrom, state.flowsTo);
   const deficit = tiles.filter(tile => tile.balance < 0);
   const surplus = tiles.filter(tile => tile.balance > 0);
 
-  container.innerHTML = `<div class="salesfilter" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
+  const sameMarkup = !renderInto(container, `<div class="salesfilter" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <b style="margin-right:4px">🔀 Потоки</b>
       ${rangePickerHtml('flowsFrom', 'flowsTo', state.flowsFrom, state.flowsTo, 'период')}
       <button type="button" class="button ghost small" data-flow-preset="0">Сегодня</button>
@@ -373,7 +377,8 @@ export async function renderFlows(container, context) {
     </div>
     <div class="flow-grid" style="--flow-cols:${Math.max(2, Math.ceil(tiles.length / 2))}">${
       tiles.map(tile => tileHtml(tile)).join('')
-      || '<p class="muted">В выбранном периоде нет ни потребностей, ни движения парка.</p>'}</div>`;
+      || '<p class="muted">В выбранном периоде нет ни потребностей, ни движения парка.</p>'}</div>`);
+  if (sameMarkup) return; // тихий тик: разметка не менялась
 
   wireRangePicker(container, 'flowsFrom', 'flowsTo', (from, to) => {
     state.flowsFrom = from;

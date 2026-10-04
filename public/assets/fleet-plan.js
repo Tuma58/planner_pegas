@@ -4,7 +4,7 @@
 // по дням: занято/свободно. Цель — покрыть сетку минимальным числом машин
 // и УВИДЕТЬ высвобождаемый ресурс под новых клиентов, а не искать его по
 // Ганту глазами.
-import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops, renderInto } from './api.js';
 import { ROUND_TEMPLATES, roundByKey } from './rounds.js';
 
 const KIND_LABEL = { repair: '🔧 Ремонт', no_driver: '👤 Без водителя', shift: '🔁 Пересменка',
@@ -307,8 +307,10 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
     context.state.fleetMonth = plan.month;
     context.state.fleetFlt = flt;
   }
+  // Дифф-рендер вкладки (05.10): без изменений — без мерцания.
+  let canvasSame = false;
   const renderCanvas = html => context.planTarget
-    ? (context.planTarget.innerHTML = html)
+    ? (canvasSame = !renderInto(context.planTarget, html))
     : context.showModal(html, 'fullscreen');
   // Паттерн инфо-строки (04.10): во вкладке без дублирующего заголовка,
   // сводка чипами, легенда под «ⓘ», сетке — весь остаток экрана.
@@ -367,6 +369,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
     </table></div>
     ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
 
+  if (canvasSame) return; // тихий тик: данные и разметка не менялись
   syncPlanStickyTops();
 
   const rerender = (newMonth = plan.month) => fleetPlanDialog(context, newMonth, {

@@ -4,7 +4,7 @@
 // выгружено). Итоги по дням: рейсы план/факт, машин занято (оценка по
 // циклам плеч), выручка. «Заполнить из истории» строит сетку из регулярных
 // плеч за 60 суток; дальше её правят продажи под договорённости.
-import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops, apiConfirmable } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, syncPlanStickyTops, apiConfirmable, renderInto } from './api.js';
 
 const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
@@ -414,8 +414,13 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     context.state.deliveryMonth = plan.month;
     context.state.deliveryFlt = flt;
   }
+  // Вкладка рендерится диффом (05.10, разбор руководителя «мерцание при
+  // автообновлении»): разметка не изменилась — DOM не трогается, тик
+  // не мигает и не сбрасывает прокрутку сетки; изменилась — обработчики
+  // ниже перевешиваются как раньше. Модалка из ролей — как была.
+  let canvasSame = false;
   const renderCanvas = html => context.planTarget
-    ? (context.planTarget.innerHTML = html)
+    ? (canvasSame = !renderInto(context.planTarget, html))
     : context.showModal(html, 'fullscreen');
   // Паттерн инфо-строки (04.10, разбор руководителя «шапка съедает рабочее
   // поле»): во вкладке заголовок не дублируется, сводка — чипами с
@@ -472,6 +477,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     </table></div>
     ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
 
+  if (canvasSame) return; // тихий тик: данные и разметка не менялись
   syncPlanStickyTops();
 
   const rerender = (newMonth = plan.month) => deliveryPlanDialog(context, newMonth, {
