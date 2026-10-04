@@ -819,12 +819,12 @@ function assignQualityLine(dayIso, todayIso) {
 // оформления, км» (цель руководителя; 0 — осознанно выключено).
 // Пары внахлёст (старт следующего до отметки выгрузки) не считаются —
 // это отдельный тип конфликта, он уже в реестре.
-function transferGapsReport() {
+function transferGapsReport(daysBack = 3) {
   const gapKm = Number(plannerSettings().calculation.transferGapKm ?? 100);
   if (!gapKm) return [];
   const ms = value => Date.parse(String(value).replace(' ', 'T'));
-  const sinceIso = new Date(Date.now() - 12 * 86_400_000).toISOString();
-  const fromMs = Date.now() - 3 * 86_400_000;
+  const sinceIso = new Date(Date.now() - (daysBack + 9) * 86_400_000).toISOString();
+  const fromMs = Date.now() - daysBack * 86_400_000;
   const toMs = Date.now() + 7 * 86_400_000;
   const rows = db.prepare(`SELECT t.id, t.vehicle_id, v.plate, t.customer_name,
       t.starts_at, t.ends_at, t.unloaded_at, t.from_point, t.to_point
@@ -874,6 +874,62 @@ function transferGapsReport() {
 }
 
 
+// ── Авто-запись свершившихся перегонов (решение руководителя 05.10) ──
+// Пара из реестра, у которой следующий рейс фактически пошёл (машина
+// была на его погрузке — этот факт поставили люди отметками рейса) и с
+// погрузки прошло больше суток (окно ручной правки кривого адреса),
+// записывается перегоном задним числом сама — как кнопка «✓ Да,
+// переехала», с пометкой «авто». Будущие переезды автоматика не
+// создаёт: это живое задание диспетчеру и водителю.
+function runPastTransferWatch() {
+  try {
+    // Окно 7 дней: оперативный контур чистится сам, а в ЗАКРЫТЫЕ месяцы
+    // автоматика не лезет — порожний пробег сданной отчётности не
+    // переписывается задним числом (риск вскрыт на прогоне по копии).
+    const gaps = transferGapsReport(7);
+    if (!gaps.length) return;
+    const lagMs = 24 * 3_600_000; // сутки на ручную правку — окно процесса
+    let made = 0;
+    for (const gap of gaps) {
+      if (made >= 200) break; // предохранитель первого прогона
+      if (!gap.past || !gap.to_address_id) continue;
+      if (Date.parse(gap.must_by) > Date.now() - lagMs) continue;
+      const next = db.prepare(`SELECT status, on_line_at, arrived_at FROM trips WHERE id=?`)
+        .get(gap.trip_id);
+      const started = next && (['run', 'unloaded', 'done', 'paid'].includes(next.status) ||
+        next.on_line_at || next.arrived_at);
+      if (!started) continue;
+      // Гонка с ручным оформлением: свежая проверка покрытия перед записью.
+      const covered = db.prepare(`SELECT 1 FROM vehicle_dispositions WHERE kind='transfer'
+          AND vehicle_id=? AND datetime(starts_at) >= datetime(?, '-12 hours')
+          AND datetime(starts_at) <= datetime(?, '+12 hours') LIMIT 1`)
+        .get(gap.vehicle_id, gap.free_at, gap.must_by);
+      if (covered) continue;
+      const target = db.prepare('SELECT id,name,latitude,longitude FROM addresses WHERE id=?')
+        .get(gap.to_address_id);
+      if (!target) continue;
+      const origin = vehiclePositionBefore(gap.vehicle_id, gap.free_at);
+      const km = origin && Number.isFinite(target.latitude)
+        ? roadKm(origin.latitude, origin.longitude, target.latitude, target.longitude) : null;
+      const fromLabel = String(vehiclePlaceText(gap.vehicle_id, gap.free_at)
+        || gap.from_point || '').slice(0, 120);
+      const id = randomUUID();
+      db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note,
+          address_id,from_label,purpose,empty_km,departed_at,arrived_at)
+        VALUES(?,?,'transfer',?,?,?,?,?,?,?,?,?)`).run(
+        id, gap.vehicle_id, gap.free_at, gap.must_by,
+        'авто: подтверждён фактом следующего рейса', target.id, fromLabel, 'под погрузку',
+        Number.isFinite(km) ? Math.round(km) : 0, gap.free_at, gap.must_by);
+      audit(db, null, 'create', 'transfer', id,
+        { auto: true, vehicleId: gap.vehicle_id, km: Number.isFinite(km) ? Math.round(km) : null }, '');
+      made += 1;
+    }
+    if (made) console.log(`перегоны: авто-записано свершившихся ${made}`);
+  } catch (error) { console.error('авто-перегоны:', error.message); }
+}
+setInterval(runPastTransferWatch, 60 * 60_000);
+setTimeout(runPastTransferWatch, 70_000);
+
 // Строка «🚚 перегоны» в Отчёте дня (решение руководителя 04.10:
 // «строку в утренних сводках, наблюдаем неделю»): сколько пар в реестре
 // сейчас против вчерашнего замера и сколько перегонов оформлено за
@@ -887,12 +943,15 @@ function transferGapsLine() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(gaps.length));
     const made = db.prepare(`SELECT COUNT(*) n FROM vehicle_dispositions
       WHERE kind='transfer' AND created_at >= datetime('now','-1 day')`).get().n;
+    const auto = db.prepare(`SELECT COUNT(*) n FROM vehicle_dispositions
+      WHERE kind='transfer' AND created_at >= datetime('now','-1 day')
+        AND note LIKE 'авто:%'`).get().n;
+    const madeNote = made ? `, оформлено за сутки ${made}${auto ? ` (из них авто ${auto})` : ''}` : '';
     if (!gaps.length) {
-      return made ? ` · 🚚 перегоны: реестр чист, оформлено за сутки ${made}` : ' · 🚚 перегоны: реестр чист';
+      return ` · 🚚 перегоны: реестр чист${madeNote}`;
     }
     return ` · 🚚 перегоны не оформлены: ${gaps.length}` +
-      (prev != null ? ` (вчера ${prev})` : '') +
-      (made ? `, оформлено за сутки ${made}` : '');
+      (prev != null ? ` (вчера ${prev})` : '') + madeNote;
   } catch (error) {
     console.error('строка перегонов в отчёте дня:', error.message);
     return '';
