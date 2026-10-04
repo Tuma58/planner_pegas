@@ -1165,18 +1165,18 @@ export async function renderDispatcher(container, context, options = {}) {
       const snoozedUntil = state.dispSnooze.get(key) || 0;
       const base = { trip, event, key, worked, snoozedUntil };
       if (event.at <= 0) {
-        rows.push({ ...base, kind: 'alarm', at: Date.now() + event.at, kindLabel: '🚨 вмешаться' });
+        rows.push({ ...base, kind: 'alarm', at: Date.now() + event.at, kindLabel: '🚨', kindHint: 'вмешаться' });
       } else if (String(event.label).startsWith('🛣')) {
-        rows.push({ ...base, kind: 'arrive', at: event.at, kindLabel: '🅿 прибытие' });
+        rows.push({ ...base, kind: 'arrive', at: event.at, kindLabel: '🅿', kindHint: 'контроль прибытия' });
         // Промежуточный: дальняя дорога — звонок каждые N часов от
         // последнего касания, пока не настало время контроля прибытия.
         const midAt = lastTouchMs(trip) + MID_CONTROL_MS;
         if (event.at - Date.now() > MID_CONTROL_MS && midAt < event.at) {
-          rows.push({ ...base, kind: 'mid', at: midAt, kindLabel: '📞 промежуточный',
+          rows.push({ ...base, kind: 'mid', at: midAt, kindLabel: '📞', kindHint: 'промежуточный контроль',
             key: `${trip.id}|mid|${Math.round(midAt / 600_000)}` });
         }
       } else {
-        rows.push({ ...base, kind: 'depart', at: event.at, kindLabel: '🚚 убытие' });
+        rows.push({ ...base, kind: 'depart', at: event.at, kindLabel: '🚚', kindHint: 'контроль убытия' });
       }
     }
     const active = rows.filter(row => !row.worked && row.snoozedUntil < Date.now());
@@ -1192,7 +1192,7 @@ export async function renderDispatcher(container, context, options = {}) {
       : formatDateTime(new Date(row.at).toISOString());
     return `<div class="cq-row ${overdue ? 'overdue' : ''} ${row.kind === 'alarm' ? 'alarm' : ''}">
       <span class="cq-time" title="${overdue ? 'Контроль просрочен — разобрать первым' : 'Когда диспетчер должен проверить'}">${waitLabel}</span>
-      <span class="cq-kind">${row.kindLabel}</span>
+      <span class="cq-kind" title="${escapeHtml(row.kindHint || '')}">${row.kindLabel}</span>
       <b class="mono cq-plate">${escapeHtml(trip.vehicle_plate || '')}</b>
       <span class="cq-driver muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
       <span class="cq-what" title="${escapeHtml(row.event.label)}">${escapeHtml(row.event.label)}</span>
@@ -1207,7 +1207,7 @@ export async function renderDispatcher(container, context, options = {}) {
         ${canAct ? `<button class="button ghost small" data-cq-snooze="${escapeHtml(row.key)}"
           title="Отложить контроль на час (макет: откладывание живёт до перезагрузки страницы)">⏰ +1 ч</button>` : ''}
         <button class="button ghost small" data-cq-card="${trip.id}"
-          title="Паспорт рейса: лента точек, отклонения, заметки">Карточка</button>
+          title="Карточка этого рейса: маршрут, этапы, отклонения">🗂</button>
       </span>
     </div>`;
   };
@@ -1344,7 +1344,7 @@ export async function renderDispatcher(container, context, options = {}) {
         </div>
         ${state.dispatcherCtrlView === 'queue' ? (() => {
     const queue = buildControlQueue();
-    return `<div class="cq-head"><span>Время</span><span>Контроль</span><span>Борт</span><span>Водитель</span><span>Что проверяем</span><span></span></div>
+    return `<div class="cq-head"><span>Время</span><span title="Вид контроля: 🅿 прибытие · 🚚 убытие · 📞 промежуточный · 🚨 вмешаться">Вид</span><span>Борт</span><span>Водитель · что проверяем</span><span></span></div>
       <div class="list">${queue.active.map(queueRow).join('') || '<p class="muted">Очередь пуста — все контроли отработаны.</p>'}</div>
       <div class="geohint">Отработано: ${queue.done} · отложено: ${queue.snoozed} · «✓ Успевает» пишет ту же отметку, что «✓ Отработано» в карточках — виды согласованы. Промежуточный контроль — каждые ${Math.round(MID_CONTROL_MS / 3_600_000)} ч дальней дороги.</div>`;
   })() : `<div class="list">${onlineCards}</div>`}
@@ -1855,13 +1855,12 @@ export async function renderDispatcher(container, context, options = {}) {
       state.dispSnooze.set(button.dataset.cqSnooze, Date.now() + 3_600_000);
       renderDispatcher(container, context);
     }));
+  // «🗂» открывает карточку ИМЕННО этого рейса (замечание руководителя
+  // 05.10: не перебрасывать в общее поле карточек).
   container.querySelectorAll('[data-cq-card]').forEach(button =>
     button.addEventListener('click', () => {
-      state.dispatcherCtrlView = 'cards';
-      state.dispOpenQuiet = state.dispOpenQuiet || new Set();
-      state.dispOpenQuiet.add(button.dataset.cqCard);
-      renderDispatcher(container, context);
-      setTimeout(() => container.querySelector(`[data-quiet-close="${button.dataset.cqCard}"], .card`)?.scrollIntoView({ block: 'center' }), 150);
+      const trip = data.trips.find(item => item.id === button.dataset.cqCard);
+      if (trip && context.openTrip) context.openTrip(trip);
     }));
   // Тихая строка ↔ полная карточка (память на Set — переживает тики).
   container.querySelectorAll('[data-quiet-open]').forEach(row =>

@@ -862,7 +862,7 @@ function renderMain() {
   } else if (state.view === 'routes') {
     renderRoutes(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'dispatcher') {
-    renderDispatcher(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+    renderDispatcher(byId('timeline'), { state, can, showModal, closeModal, onReload: reload, openTrip });
   } else if (state.view === 'logist') {
     renderLogist(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip, openNewTrip,
