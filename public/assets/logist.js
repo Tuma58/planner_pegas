@@ -696,6 +696,9 @@ export async function renderLogist(container, context) {
         title="Показать только рейсы на подтверждении — приоритет №1">
         <span class="skl">На подтверждении</span><span class="skv">${needConfirm}</span>
         <small class="skm">${money(confirmSum)} · диспетчер ждёт</small></div>` : ''}
+      ${(state.exceptions?.transferGaps || []).length ? `<div class="skpi clickable skpi-warn" data-kpi="transfer-gaps"
+        title="Следующая погрузка дальше норматива от точки выгрузки, а порожний перегон не оформлен — гант и подбор видят машину не там, где она есть. Клик — реестр с кнопкой «Оформить»">
+        <span class="skl">🚚 Перегон не оформлен</span><span class="skv">${state.exceptions.transferGaps.length}</span></div>` : ''}
       <div class="skpi clickable ${focus === 'plan' ? 'open' : ''}" data-kpi="plan"
         title="Показать только рейсы в плане">
         <span class="skl">В плане</span><span class="skv">${confirmedTrips.filter(trip => trip.status === 'plan').length}</span>
@@ -850,6 +853,8 @@ export async function renderLogist(container, context) {
   container.querySelectorAll('[data-kpi]').forEach(badge =>
     badge.addEventListener('click', () => {
       const key = badge.dataset.kpi;
+      // Чип перегонов — не фильтр ленты, а вход в реестр «Требует решения».
+      if (key === 'transfer-gaps') { context.openExceptions?.(); return; }
       state.logistFocus = state.logistFocus === key ? null : key;
       rerender();
     }));

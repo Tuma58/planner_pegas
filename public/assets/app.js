@@ -853,6 +853,7 @@ function renderMain() {
   } else if (state.view === 'logist') {
     renderLogist(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip, openNewTrip,
+      openExceptions,
       // Логист назначает сам — его подтверждение проходит автоматически.
       openAssign: order => assignDialog(order, state.data, showModal, closeModal, reload, { autoConfirm: true })
     });
@@ -962,6 +963,22 @@ function openExceptions() {
   const returnedOrderActions = () => `<button class="button ghost small" data-ex-to-sales
     title="Перейти в продажи и назначить ТС заново">В продажи</button>`;
 
+  // Неоформленные порожние перегоны (04.10): пока перегон не оформлен,
+  // гант, подбор и стыковка считают машину не там, где она есть.
+  const transferGapsSection = (data.transferGaps || []).length
+    ? `<h3>🚚 Порожний перегон не оформлен (${data.transferGaps.length})</h3><div class="list">${data.transferGaps.map((gap, index) => `<div class="list-item exrow">
+        <span style="flex:1;min-width:0">
+          <strong class="mono">${escapeHtml(gap.plate)}</strong> · ~${gap.km} км
+          <small class="muted" style="display:block">выгрузка ${formatDateTime(gap.free_at)}: ${escapeHtml((gap.from_point || '').slice(0, 44))}
+            → погрузка ${formatDateTime(gap.must_by)} (${escapeHtml(gap.customer_name || '')}): ${escapeHtml((gap.to_point || '').slice(0, 44))}</small>
+        </span>
+        <span class="exactions"><span class="badge warn">перегон?</span>
+          ${can('fleet:write') ? `<button class="button ghost small" data-ex-transfer="${index}"
+            title="Оформить порожний перегон: откуда и машина уже подставлены">🚚 Оформить</button>` : ''}
+          <button class="button ghost small" data-ex-open="${escapeHtml(gap.trip_id)}" title="Открыть следующий рейс пары">Рейс</button></span>
+      </div>`).join('')}
+      <div class="geohint">Пара рейсов дальше норматива без перегона между ними. Порог — «Настройки → Перегон требует оформления, км».</div></div>`
+    : '';
   const unavailable = (data.unavailableVehicles || []).length
     ? `<h3>ТС вне работы</h3><div class="list">${data.unavailableVehicles.map(row =>
         `<div class="list-item"><span>${{ repair: 'В ремонте', no_driver: 'Без водителя', out: 'Выведены' }[row.status] || row.status}</span>
@@ -974,6 +991,7 @@ function openExceptions() {
     ${section('Критичный', data.critical, 'bad', criticalActions)}
     ${section('Конфликт', data.conflicts, 'warn', conflictActions)}
     ${orderSection('Вернулась из плана', data.returnedOrders || [], 'warn', 'причина возврата', returnedOrderActions)}
+    ${transferGapsSection}
     ${unavailable}
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
 
@@ -982,6 +1000,18 @@ function openExceptions() {
     button.addEventListener('click', () => {
       const trip = tripById(button.dataset.exOpen);
       if (trip) { closeModal(); openTrip(trip); }
+    }));
+  // Оформление порожнего перегона прямо из реестра: машина и «откуда»
+  // уже подставлены формой (она сама считает место и освобождение).
+  document.querySelectorAll('[data-ex-transfer]').forEach(button =>
+    button.addEventListener('click', () => {
+      const gap = (data.transferGaps || [])[Number(button.dataset.exTransfer)];
+      const vehicle = (state.data.vehicles || []).find(item => item.id === gap?.vehicle_id);
+      if (!vehicle) { toast('Сцепка не найдена', 'error'); return; }
+      transferDialog(vehicle, state.data, {
+        state, can, showModal, closeModal,
+        onReload: async () => { await reload(); await refreshExceptions(); }
+      }, { fromLabel: gap.from_point });
     }));
   // Критичный: перенос рейса за конец пересекающего интервала недоступности.
   document.querySelectorAll('[data-ex-shift]').forEach(button =>

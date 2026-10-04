@@ -9304,6 +9304,58 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
 
+  // Неоформленные порожние перегоны (инструмент 04.10, разбор
+  // руководителя: «для логистов это отклонение»): машина выгрузилась в
+  // точке А, следующая погрузка — в Б дальше норматива, а перегона между
+  // ними нет. Пока перегон не оформлен, гант, подбор и стыковка считают
+  // машину не там, где она есть. Порог — настройка «Перегон требует
+  // оформления, км» (цель руководителя; 0 — осознанно выключено).
+  // Пары внахлёст (старт следующего до отметки выгрузки) не считаются —
+  // это отдельный тип конфликта, он уже в реестре.
+  function transferGapsReport() {
+    const gapKm = Number(plannerSettings().calculation.transferGapKm ?? 100);
+    if (!gapKm) return [];
+    const ms = value => Date.parse(String(value).replace(' ', 'T'));
+    const sinceIso = new Date(Date.now() - 12 * 86_400_000).toISOString();
+    const fromMs = Date.now() - 3 * 86_400_000;
+    const toMs = Date.now() + 7 * 86_400_000;
+    const rows = db.prepare(`SELECT t.id, t.vehicle_id, v.plate, t.customer_name,
+        t.starts_at, t.ends_at, t.unloaded_at, t.from_point, t.to_point
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      WHERE t.status<>'rejected' AND t.ends_at >= ?
+      ORDER BY t.vehicle_id, t.starts_at`).all(sinceIso);
+    const transfers = db.prepare(`SELECT vehicle_id, starts_at FROM vehicle_dispositions
+      WHERE kind='transfer' AND ends_at >= ?`).all(sinceIso);
+    const gaps = [];
+    let prev = null;
+    for (const trip of rows) {
+      const pair = prev && prev.vehicle_id === trip.vehicle_id ? prev : null;
+      prev = trip;
+      if (!pair) continue;
+      const freeMs = ms(pair.unloaded_at || pair.ends_at);
+      const startMs = ms(trip.starts_at);
+      if (startMs < fromMs || startMs > toMs) continue;
+      if (startMs < freeMs) continue;
+      // Координаты — только канонным поиском по тексту точки: фолбэк на
+      // центр широкой геозоны давал тысячи километров ошибки (ревизия).
+      const a = addressPointByText(pair.to_point);
+      const b = addressPointByText(trip.from_point);
+      if (!a || !b) continue;
+      const km = Math.round(roadKm(a.latitude, a.longitude, b.latitude, b.longitude));
+      if (km < gapKm) continue;
+      const covered = transfers.some(item => item.vehicle_id === trip.vehicle_id &&
+        ms(item.starts_at) >= freeMs - 12 * 3_600_000 &&
+        ms(item.starts_at) <= startMs + 12 * 3_600_000);
+      if (covered) continue;
+      gaps.push({ vehicle_id: trip.vehicle_id, plate: trip.plate, km,
+        from_point: pair.to_point, to_point: trip.from_point,
+        free_at: pair.unloaded_at || pair.ends_at, must_by: trip.starts_at,
+        trip_id: trip.id, customer_name: trip.customer_name });
+    }
+    gaps.sort((a, b) => ms(a.must_by) - ms(b.must_by));
+    return gaps;
+  }
+
   if (request.method === 'GET' && pathname === '/api/exceptions') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
@@ -9351,10 +9403,12 @@ async function api(request, response, url) {
       FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
       WHERE o.status='new' AND o.returned_at IS NOT NULL AND o.window_to>=?
       ORDER BY o.returned_at DESC`).all(nowIso);
+    const transferGaps = transferGapsReport();
     return json(response, 200, {
       count: critical.length + rejected.length + conflictItems.length +
-        rejectedOrders.length + returnedOrders.length + delayed.length,
+        rejectedOrders.length + returnedOrders.length + delayed.length + transferGaps.length,
       critical, rejected, conflicts: conflictItems, rejectedOrders, returnedOrders, delayed,
+      transferGaps,
       unavailableVehicles: db.prepare(`SELECT status,COUNT(*) count FROM vehicles
         WHERE status<>'work' GROUP BY status`).all()
     });
