@@ -310,11 +310,15 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
   const renderCanvas = html => context.planTarget
     ? (context.planTarget.innerHTML = html)
     : context.showModal(html, 'fullscreen');
-  renderCanvas(`<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>
-    <div class="console" style="margin:8px 0">
+  // Паттерн инфо-строки (04.10): во вкладке без дублирующего заголовка,
+  // сводка чипами, легенда под «ⓘ», сетке — весь остаток экрана.
+  const isTab = !!context.planTarget;
+  renderCanvas(`${isTab ? '' : `<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>`}
+    <div class="console" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
       <button type="button" class="button ghost small" id="fpPrev">←</button>
-      <button type="button" class="button ghost small" id="fpToday" title="Вернуться к текущему месяцу">Сегодня</button>
+      <strong style="font-size:var(--fs-sm);text-transform:capitalize;min-width:104px;text-align:center">${isTab ? `${MONTHS[monthNum - 1]} ${year}` : ''}</strong>
       <button type="button" class="button ghost small" id="fpNext">→</button>
+      <button type="button" class="button ghost small" id="fpToday" title="Вернуться к текущему месяцу">Сегодня</button>
       <input id="fpQuery" class="block-search" placeholder="🔍 номер, водитель, тип" value="${escapeHtml(flt.query)}"
         style="width:170px" autocomplete="off">
       <select id="fpRound" title="Фильтр по назначенному кругу">
@@ -322,17 +326,12 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
         <option value="none" ${flt.round === 'none' ? 'selected' : ''}>без круга</option>
         ${ROUND_TEMPLATES.map(item => `<option value="${item.key}" ${flt.round === item.key ? 'selected' : ''}>${escapeHtml(item.name.split(' · ')[0])}</option>`).join('')}
       </select>
-      <label class="checkline" style="margin:0"><input type="checkbox" id="fpFreeOnly"
-        ${flt.freeOnly ? 'checked' : ''}> 🟢 только резерв</label>
-      <span class="filter-sum" style="margin-left:auto">машин ${rowsData.length}${rowsData.length !== allRowsData.length ? ` / ${allRowsData.length}` : ''}
-        · 🟢 резерв под новых клиентов: <b>${freeTotal}</b> (10+ свободных дней без круга)</span>
+      <span class="mchip">машин <b>${rowsData.length}${rowsData.length !== allRowsData.length ? ` / ${allRowsData.length}` : ''}</b></span>
+      ${freeTotal > 0 ? `<span class="mchip warn ${flt.freeOnly ? 'act' : ''}" data-act="free" role="button"
+        title="Резерв под новых клиентов: машины с 10+ свободными днями без круга. Клик — показать только их">🟢 резерв <b>${freeTotal}</b></span>` : ''}
+      <span class="legend-tip" style="margin-left:auto" title="Ячейка: синяя — рейс в плане, зелёная — в пути, тёмная — выгружен, серая — диспозиция, точка — прогноз по назначенному кругу, жёлтая — свободный день (ресурс под новых клиентов). Колонка «Круг» — типовой цикл машины: по нему считается прогноз и утренняя стыковка. Машины отсортированы по свободным дням — резерв сверху.">ⓘ легенда</span>
     </div>
-    <p class="muted" style="margin:0 0 8px">Ячейка: синяя — рейс в плане, зелёная — в пути,
-      тёмная — выгружен, серая — диспозиция, точка — прогноз по назначенному кругу,
-      <b>жёлтая — свободный день</b> (ресурс под новых клиентов). Колонка «Круг» —
-      типовой цикл машины: по нему считается прогноз и утренняя стыковка.
-      Машины отсортированы по свободным дням — резерв сверху.</p>
-    <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid">
+    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:90px">ТС</th><th class="plan-fix2" style="left:90px;min-width:120px">Круг</th><th title="Свободных дней до конца месяца">🟢</th>${dayHead}</tr>
       ${needByDay ? `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="Сколько машин требует сетка Плана вывоза в этот день: рейсы слотов × цикл плеча (транзит + 8 ч) / 24 — та же строка, что «Машин занято (оценка)» в Плане вывоза">Нужно по сетке</td>${needByDay.map(need =>
@@ -391,7 +390,12 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
     }, 350);
   });
   document.getElementById('fpRound').addEventListener('change', () => rerender());
-  document.getElementById('fpFreeOnly').addEventListener('change', () => rerender());
+  // Чип «🟢 резерв» — и показатель, и фильтр: клик оставляет только резерв.
+  document.querySelector('[data-act="free"]')?.addEventListener('click', () =>
+    fleetPlanDialog(context, plan.month, { ...flt,
+      query: document.getElementById('fpQuery')?.value ?? flt.query,
+      round: document.getElementById('fpRound')?.value ?? flt.round,
+      freeOnly: !flt.freeOnly }, plan));
   document.querySelectorAll('[data-fp-round]').forEach(select =>
     select.addEventListener('change', async () => {
       try {

@@ -371,11 +371,17 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
   const renderCanvas = html => context.planTarget
     ? (context.planTarget.innerHTML = html)
     : context.showModal(html, 'fullscreen');
-  renderCanvas(`<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>
-    <div class="console" style="margin:8px 0">
+  // Паттерн инфо-строки (04.10, разбор руководителя «шапка съедает рабочее
+  // поле»): во вкладке заголовок не дублируется, сводка — чипами с
+  // действием, легенды под «ⓘ», сервис-кнопки в «⋯ Инструменты», сетке —
+  // весь остаток экрана.
+  const isTab = !!context.planTarget;
+  renderCanvas(`${isTab ? '' : `<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>`}
+    <div class="console" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
       <button type="button" class="button ghost small" id="dplPrev">←</button>
-      <button type="button" class="button ghost small" id="dplToday" title="Вернуться к текущему месяцу">Сегодня</button>
+      <strong style="font-size:var(--fs-sm);text-transform:capitalize;min-width:104px;text-align:center">${isTab ? `${MONTHS[monthNum - 1]} ${year}` : ''}</strong>
       <button type="button" class="button ghost small" id="dplNext">→</button>
+      <button type="button" class="button ghost small" id="dplToday" title="Вернуться к текущему месяцу">Сегодня</button>
       <input id="dplQuery" class="block-search" placeholder="🔍 клиент" value="${escapeHtml(flt.query)}"
         style="width:150px" autocomplete="off">
       <select id="dplZone" title="Плечи, где зона участвует в маршруте">
@@ -383,27 +389,24 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
         ${[...new Set(slots.flatMap(slot => [slot.from_name, slot.to_name]))].sort()
     .map(name => `<option ${flt.zone === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
       </select>
-      <label class="checkline" style="margin:0"><input type="checkbox" id="dplGapsOnly"
-        ${flt.gapsOnly ? 'checked' : ''}> только с дырами</label>
-      ${canEdit ? `<button type="button" class="button small" id="dplBookWeek"
-        title="Пакетно создать заявки по незакрытым слотам будущих дней — для регулярной сетки, подтверждённой клиентом">📋 Забронировать неделю</button>
-      <button type="button" class="button small" id="dplSeed"
-        title="Построить/обновить сетку слотов из регулярных плеч за 60 суток (клиент+направление ≥1 рейса в неделю)">⚙ Заполнить из истории</button>` : ''}
-      <span class="filter-sum" style="margin-left:auto">плеч ${shownRows.length}${shownRows.length !== allRows.length ? ` / ${allRows.length}` : ''}
-        · план ${Math.round(monthPlanN)} рейсов · ${money(Math.round(monthPlanRv))}
-        · факт ${monthFactN} заявок · ${money(Math.round(monthFactRv))}${gridAgeDays != null && gridAgeDays > 10
-    ? ` · <span style="color:var(--warn,#c99a2e)" title="Сетка слотов давно не обновлялась из истории — «⚙ Заполнить из истории» (ручные плечи не тронет); пересев также идёт сам в ночь на понедельник">⚙ сетке ${gridAgeDays} дн</span>` : ''}</span>
+      <span class="mchip">плеч <b>${shownRows.length}${shownRows.length !== allRows.length ? ` / ${allRows.length}` : ''}</b></span>
+      <span class="mchip" title="Сетка слотов на месяц: рейсы и выручка по ставкам, с НДС">план <b>${Math.round(monthPlanN)}</b> · ${money(Math.round(monthPlanRv))}${targetVat ? ` · ${Math.round(monthPlanRv / targetVat * 100)}% цели` : ''}</span>
+      <span class="mchip" title="Заявки, уже внесённые на этот месяц">факт <b>${monthFactN}</b> · ${money(Math.round(monthFactRv))}</span>
+      ${gapN > 0 ? `<span class="mchip bad ${flt.gapsOnly ? 'act' : ''}" data-act="gaps" role="button"
+        title="Не закрыто до конца месяца (будущие дни)${targetVat ? `; сетка целиком даёт ${money(Math.round(monthPlanRv))} из цели ${money(Math.round(targetVat))}${monthPlanRv < targetVat ? ' — даже полная сетка цель не закрывает: нужны новые клиенты или плечи' : ''}` : ''}. Клик — показать только плечи с дырами; пунктирные ячейки — список «кому звонить», клик по ячейке открывает заявку">🕳 <b>${gapN}</b> ≈ ${money(Math.round(gapRv))}</span>` : ''}
+      ${gridAgeDays != null && gridAgeDays > 10 ? `<span class="mchip warn" ${canEdit ? 'data-act="seed" role="button"' : ''}
+        title="Сетка слотов давно не обновлялась из истории${canEdit ? ' — клик запустит «Заполнить из истории» (ручные плечи не тронет)' : ''}; пересев также идёт сам в ночь на понедельник">⚙ сетке <b>${gridAgeDays}</b> дн</span>` : ''}
+      <span class="legend-tip" style="margin-left:auto" title="Ячейка: жёлтая — слот без заявки (задача продаж), синяя — заявка внесена, зелёная — ТС назначено, тёмная — выгружено, пунктирная — незакрытый слот будущего дня (клик — заявка с заполненными клиентом, плечом, днём и ставкой). Число — факт заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.">ⓘ легенда</span>
+      ${canEdit ? `<details class="tb-menu" id="dplTools">
+        <summary class="button ghost small">⋯ Инструменты</summary>
+        <div class="tb-menu-list">
+          <button type="button" class="button small" id="dplBookWeek"
+            title="Пакетно создать заявки по незакрытым слотам будущих дней — для регулярной сетки, подтверждённой клиентом">📋 Забронировать неделю</button>
+          <button type="button" class="button small" id="dplSeed"
+            title="Построить/обновить сетку слотов из регулярных плеч за 60 суток (клиент+направление ≥1 рейса в неделю)">⚙ Заполнить из истории</button>
+        </div></details>` : ''}
     </div>
-    ${gapN > 0 ? `<p style="margin:0 0 6px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb, #c99a2e 14%, var(--card,#fff));border:1px solid #c99a2e">
-      🕳 <b>Не закрыто до конца месяца: ${gapN} рейсов ≈ ${money(Math.round(gapRv))}</b>${targetVat
-    ? ` · сетка целиком даёт ${money(Math.round(monthPlanRv))} из цели ${money(Math.round(targetVat))} с НДС (${Math.round(monthPlanRv / targetVat * 100)}%)${monthPlanRv < targetVat
-      ? ' — даже полная сетка цель не закрывает: нужны новые клиенты или плечи' : ''}` : ''}
-      <br><small class="muted">Пунктирные ячейки — незакрытые слоты будущих дней: клик открывает
-      заявку с заполненными клиентом, плечом, днём и ставкой. Это и есть список «кому звонить».</small></p>` : ''}
-    <p class="muted" style="margin:0 0 8px">Ячейка: жёлтая — слот без заявки (задача продаж),
-      синяя — заявка внесена, зелёная — ТС назначено, тёмная — выгружено. Число в ячейке — факт
-      заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.</p>
-    <div class="table-wrap" style="max-height:62vh;overflow:auto"><table style="font-size:11px" class="plan-grid">
+    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="plan-grid">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:150px">Клиент</th><th class="plan-fix2" style="left:150px">Плечо</th><th>Ставка</th>${dayHead}</tr>
       ${totalRow('Рейсов план', d => d.planN, undefined,
         'Сколько рейсов в этот день обещает сетка слотов (сумма по всем плечам)')}
@@ -446,7 +449,23 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     }, 350);
   });
   document.getElementById('dplZone').addEventListener('change', () => rerender());
-  document.getElementById('dplGapsOnly').addEventListener('change', () => rerender());
+  // Чип «🕳 дыра» — и показатель, и фильтр: клик оставляет плечи с дырами.
+  document.querySelector('[data-act="gaps"]')?.addEventListener('click', () =>
+    deliveryPlanDialog(context, plan.month, { ...flt,
+      query: document.getElementById('dplQuery')?.value ?? flt.query,
+      zone: document.getElementById('dplZone')?.value ?? flt.zone,
+      gapsOnly: !flt.gapsOnly }, plan));
+  document.querySelector('[data-act="seed"]')?.addEventListener('click', () =>
+    document.getElementById('dplSeed')?.click());
+  // Меню «⋯ Инструменты»: закрытие по клику мимо и после выбора.
+  { const menu = document.getElementById('dplTools');
+    if (menu) {
+      document.addEventListener('click', event => {
+        if (menu.open && !menu.contains(event.target)) menu.open = false;
+      }, { once: false });
+      menu.querySelectorAll('button').forEach(button =>
+        button.addEventListener('click', () => { menu.open = false; }));
+    } }
   // Клик по ячейке — диалог дня: взятые рейсы и потенциал; по имени
   // клиента — его плечи с суммами и правкой слотов.
   document.querySelectorAll('[data-dpl-cell]').forEach(cell =>
