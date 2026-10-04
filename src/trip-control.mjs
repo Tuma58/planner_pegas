@@ -391,3 +391,166 @@ export function controlSnapshot(db, fromIso, toIso, nowMs = Date.now()) {
     return { ...trip, stops, delay_ms: tripDelayMs(stops) };
   });
 }
+
+// ── Авто-факты (решение руководителя 05.10: «несвоевременные отметки
+// ломают планирование — автоматизируй, но проверяй координаты всей
+// сцепки»). GPS СТАВИТ промежуточные факты сам — это смягчение
+// принципа 07.09 «GPS только подсказывает», принятое руководителем
+// после ревизии просрочек (12 машин «уехали без отметки», 45% отметок
+// задним числом). Финальную выгрузку (деньги) по-прежнему ставит
+// человек — по последней точке GPS лишь зовёт диспетчера.
+const AUTO_FRESH_MS = 2 * 3_600_000;      // GPS старше — не доверяем
+const CREW_AGREE_KM = 5;                   // тягач и прицеп «вместе»
+const ARRIVE_KM = 2;                       // радиус «у точки»
+const ARRIVE_STRICT_KM = 1;                //  … когда прицеп не подтверждает
+const ARRIVE_HOLD_MS = 15 * 60_000;        // стоит у точки столько, не меньше
+const DEPART_KM = 7;                       // «уже не там»
+const DEPART_STRICT_KM = 15;
+const havKm = (a, b, c, d) => {
+  const rad = x => x * Math.PI / 180;
+  const s = Math.sin(rad(c - a) / 2) ** 2 +
+    Math.cos(rad(a)) * Math.cos(rad(c)) * Math.sin(rad(d - b) / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(s));
+};
+const toMs = value => value ? Date.parse(String(value).replace(' ', 'T') +
+  (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
+
+// nearState: Map('tripId|stopId' → firstSeenMs) — живёт между прогонами
+// в процессе сервера; рестарт лишь отложит авто-прибытие на один круг.
+export function gpsAutoMarks(db, pointOf, nearState, nowMs = Date.now()) {
+  const report = { arrivals: 0, departures: 0, crewMismatch: [], leftUnload: [], details: [] };
+  const trips = db.prepare(`SELECT t.id, t.vehicle_id, v.plate FROM trips t
+    JOIN vehicles v ON v.id=t.vehicle_id WHERE t.status='run'`).all();
+  const touch = db.prepare(`UPDATE trip_stops SET updated_at=CURRENT_TIMESTAMP, auto_source='gps'
+    WHERE id=?`);
+  for (const trip of trips) {
+    const truck = db.prepare(`SELECT latitude, longitude, speed, fixed_at
+      FROM vehicle_positions WHERE vehicle_id=? AND latitude IS NOT NULL`).get(trip.vehicle_id);
+    if (!truck || nowMs - toMs(truck.fixed_at) > AUTO_FRESH_MS) continue;
+    const trailer = db.prepare(`SELECT latitude, longitude, fixed_at FROM trailer_positions
+      WHERE vehicle_id=? AND latitude IS NOT NULL`).get(trip.vehicle_id);
+    const trailerFresh = trailer && nowMs - toMs(trailer.fixed_at) <= AUTO_FRESH_MS;
+    let strict = !trailerFresh; // прицеп молчит/нет — жёстче пороги
+    if (trailerFresh) {
+      const crewKm = havKm(truck.latitude, truck.longitude, trailer.latitude, trailer.longitude);
+      if (crewKm > CREW_AGREE_KM) {
+        // Трекеры сцепки расходятся: кто-то сбоит или прицеп отцеплен —
+        // фактов не ставим, расхождение отдаём наверх (проверка руководителя).
+        report.crewMismatch.push({ plate: trip.plate, km: Math.round(crewKm) });
+        continue;
+      }
+    }
+    const stops = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(trip.id);
+    if (!stops.length) continue;
+    const next = stops.find(stop => !stop.actual_departure);
+    if (!next) continue;
+    const isLast = next.id === stops[stops.length - 1].id;
+    const point = pointOf(next.point);
+    if (!point) continue;
+    const distKm = havKm(truck.latitude, truck.longitude, point.latitude, point.longitude);
+    const stamp = new Date(toMs(truck.fixed_at)).toISOString();
+    if (!next.actual_arrival) {
+      const nearKey = `${trip.id}|${next.id}`;
+      const slowEnough = !Number.isFinite(truck.speed) || truck.speed <= 5;
+      if (distKm <= (strict ? ARRIVE_STRICT_KM : ARRIVE_KM) && slowEnough) {
+        const firstSeen = nearState.get(nearKey) || nowMs;
+        if (!nearState.has(nearKey)) nearState.set(nearKey, nowMs);
+        if (nowMs - firstSeen >= ARRIVE_HOLD_MS) {
+          const at = new Date(firstSeen).toISOString();
+          db.prepare(`UPDATE trip_stops SET actual_arrival=?,
+            work_started_at=COALESCE(work_started_at, ?) WHERE id=?`).run(at, at, next.id);
+          touch.run(next.id);
+          nearState.delete(nearKey);
+          report.arrivals += 1;
+          report.details.push(`${trip.plate}: прибытие «${String(next.point || '').slice(0, 30)}» по GPS`);
+        }
+      } else nearState.delete(nearKey);
+    } else if (distKm >= (strict ? DEPART_STRICT_KM : DEPART_KM)) {
+      if (isLast) {
+        // Выгрузка — деньги: факт ставит человек. Один раз зовём диспетчера.
+        const flagged = db.prepare(`SELECT gps_left_alert_at FROM trips WHERE id=?`).get(trip.id);
+        if (!flagged?.gps_left_alert_at) {
+          db.prepare(`UPDATE trips SET gps_left_alert_at=? WHERE id=?`).run(stamp, trip.id);
+          report.leftUnload.push({ plate: trip.plate, tripId: trip.id, km: Math.round(distKm) });
+        }
+      } else {
+        const arriveMs = toMs(next.actual_arrival);
+        const departIso = toMs(truck.fixed_at) > arriveMs ? stamp
+          : new Date(arriveMs + 60_000).toISOString();
+        db.prepare(`UPDATE trip_stops SET actual_departure=?,
+          work_finished_at=COALESCE(work_finished_at, ?) WHERE id=?`).run(departIso, departIso, next.id);
+        touch.run(next.id);
+        report.departures += 1;
+        report.details.push(`${trip.plate}: убытие «${String(next.point || '').slice(0, 30)}» по GPS (${Math.round(distKm)} км от точки)`);
+      }
+    }
+  }
+  return report;
+}
+
+// Подчистка хвостов по факту ниже по цепочке (идея руководителя 05.10:
+// «если совершена следующая погрузка — хвосты закрываются сами»):
+// человеческий факт следующей точки/рейса доказывает, что предыдущие
+// события состоялись — закрываем их его временем («не позже»).
+export function chainAutoClose(db, nowMs = Date.now()) {
+  const report = { stopsClosed: 0, tripsUnloaded: 0, details: [] };
+  const runTrips = db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, v.plate FROM trips t
+    JOIN vehicles v ON v.id=t.vehicle_id WHERE t.status='run' ORDER BY t.vehicle_id, t.starts_at`).all();
+  for (const trip of runTrips) {
+    const stops = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq`).all(trip.id);
+    // Внутри рейса: точка без убытия, а на следующей уже есть прибытие.
+    for (let i = 0; i + 1 < stops.length; i += 1) {
+      const current = stops[i];
+      const nextArr = toMs(stops[i + 1].actual_arrival);
+      if (!Number.isFinite(nextArr)) continue;
+      if (current.actual_departure) continue;
+      const arriveMs = toMs(current.actual_arrival);
+      if (Number.isFinite(arriveMs) && arriveMs >= nextArr) continue; // грязь — не трогаем
+      const at = new Date(nextArr).toISOString();
+      db.prepare(`UPDATE trip_stops SET
+          actual_arrival=COALESCE(actual_arrival, ?),
+          work_started_at=COALESCE(work_started_at, actual_arrival, ?),
+          work_finished_at=COALESCE(work_finished_at, ?),
+          actual_departure=?,
+          updated_at=CURRENT_TIMESTAMP, auto_source='chain'
+        WHERE id=?`).run(at, at, at, at, current.id);
+      report.stopsClosed += 1;
+      report.details.push(`${trip.plate}: «${String(current.point || '').slice(0, 30)}» закрыта фактом следующей точки`);
+    }
+  }
+  // Между рейсами: рейс не выгружен, а следующая погрузка уже совершилась.
+  const open = db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.ends_at, v.plate FROM trips t
+    JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE t.status='run' AND t.unloaded_at IS NULL`).all();
+  let unloadLimit = 50;
+  for (const trip of open) {
+    if (unloadLimit <= 0) break;
+    const nextTrip = db.prepare(`SELECT t.id, t.starts_at, t.on_line_at,
+        (SELECT s.actual_arrival FROM trip_stops s WHERE s.trip_id=t.id ORDER BY s.seq LIMIT 1) first_arrival
+      FROM trips t WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.starts_at > ?
+      ORDER BY t.starts_at LIMIT 1`).get(trip.vehicle_id, trip.starts_at);
+    const proofMs = Math.min(...[toMs(nextTrip?.first_arrival), toMs(nextTrip?.on_line_at)]
+      .filter(Number.isFinite));
+    if (!Number.isFinite(proofMs) || proofMs > nowMs) continue;
+    const last = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq DESC LIMIT 1`)
+      .get(trip.id);
+    const at = new Date(proofMs).toISOString();
+    if (last) {
+      const arriveMs = toMs(last.actual_arrival);
+      if (Number.isFinite(arriveMs) && arriveMs >= proofMs) continue; // грязь
+      db.prepare(`UPDATE trip_stops SET
+          actual_arrival=COALESCE(actual_arrival, ?),
+          work_started_at=COALESCE(work_started_at, actual_arrival, ?),
+          work_finished_at=COALESCE(work_finished_at, ?),
+          actual_departure=COALESCE(actual_departure, ?),
+          updated_at=CURRENT_TIMESTAMP, auto_source='chain'
+        WHERE id=?`).run(at, at, at, at, last.id);
+    }
+    db.prepare(`UPDATE trips SET status='unloaded', unloaded_at=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(at, trip.id);
+    report.tripsUnloaded += 1;
+    unloadLimit -= 1;
+    report.details.push(`${trip.plate}: рейс закрыт выгрузкой «не позже» следующей погрузки`);
+  }
+  return report;
+}

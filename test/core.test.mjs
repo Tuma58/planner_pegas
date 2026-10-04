@@ -3571,3 +3571,70 @@ test('этап 3: карта держателей — доступность д�
   applyScheduleSync(db, { since: 1, crews: {}, log: [{ t: new Date().toISOString(), a: 'т', what: 'тик' }] });
   assert.notEqual(scheduleHolderMap(db), map, 'правка графика сбрасывает кэш');
 });
+
+test('авто-факты: GPS ставит промежуточные, цепочка подчищает хвосты, выгрузка — человеку', async t => {
+  const { gpsAutoMarks, chainAutoClose, ensureTripStops } = await import('../src/trip-control.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-af-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  const zones = db.prepare('SELECT id FROM zones LIMIT 2').all();
+  const mkTrip = (id, startOff, endOff) => db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,
+      from_zone_id,to_zone_id,starts_at,ends_at,status,revenue_vat,distance_km,from_point,to_point)
+    VALUES(?,?,?,?,?,?,?,'run',100,500,?,?)`)
+    .run(id, vehicle.id, 'Т', zones[0].id, zones[1].id,
+      new Date(Date.now() + startOff).toISOString(), new Date(Date.now() + endOff).toISOString(),
+      'Точка А', 'Точка Б');
+  mkTrip('af-1', -30 * 3_600_000, -4 * 3_600_000);
+  ensureTripStops(db, 'af-1');
+  const stops = db.prepare(`SELECT * FROM trip_stops WHERE trip_id='af-1' ORDER BY seq`).all();
+  assert.ok(stops.length >= 2);
+  // GPS: машина у первой точки, прицеп рядом — через выдержку ставится прибытие.
+  const pointOf = () => ({ latitude: 53.2, longitude: 45.0 });
+  db.prepare(`INSERT INTO vehicle_positions(vehicle_id,latitude,longitude,speed,fixed_at)
+    VALUES(?,?,?,0,?) ON CONFLICT(vehicle_id) DO UPDATE SET latitude=excluded.latitude,
+    longitude=excluded.longitude, speed=excluded.speed, fixed_at=excluded.fixed_at`)
+    .run(vehicle.id, 53.201, 45.001, new Date().toISOString());
+  db.prepare(`INSERT INTO trailer_positions(imei,vehicle_id,latitude,longitude,fixed_at)
+    VALUES('ti-1',?,?,?,?)`).run(vehicle.id, 53.203, 45.002, new Date().toISOString());
+  const nearState = new Map();
+  const first = gpsAutoMarks(db, pointOf, nearState, Date.now());
+  assert.equal(first.arrivals, 0, 'первый прогон только запоминает «у точки»');
+  const second = gpsAutoMarks(db, pointOf, nearState, Date.now() + 16 * 60_000);
+  assert.equal(second.arrivals, 1, 'после выдержки прибытие ставится');
+  const s1 = db.prepare(`SELECT actual_arrival, auto_source FROM trip_stops WHERE id=?`).get(stops[0].id);
+  assert.ok(s1.actual_arrival && s1.auto_source === 'gps');
+  // Трекеры сцепки разошлись — фактов не ставим.
+  db.prepare(`UPDATE trailer_positions SET latitude=55.9 WHERE vehicle_id=?`).run(vehicle.id);
+  db.prepare(`UPDATE vehicle_positions SET latitude=53.9, longitude=45.9 WHERE vehicle_id=?`).run(vehicle.id);
+  const mism = gpsAutoMarks(db, pointOf, new Map(), Date.now());
+  assert.equal(mism.departures, 0, 'расхождение сцепки блокирует авто-факт');
+  assert.ok(mism.crewMismatch.length === 1);
+  // Согласованно уехали — убытие с промежуточной точки ставится само.
+  db.prepare(`UPDATE trailer_positions SET latitude=53.901, longitude=45.901 WHERE vehicle_id=?`).run(vehicle.id);
+  const dep = gpsAutoMarks(db, pointOf, new Map(), Date.now());
+  assert.equal(dep.departures, 1, 'убытие с погрузки ставится по согласованной сцепке');
+  // Последняя точка: выгрузку не ставим — только зов диспетчера.
+  db.prepare(`UPDATE trip_stops SET actual_arrival=datetime('now','-3 hours'),
+    actual_departure=CASE WHEN seq<(SELECT MAX(seq) FROM trip_stops WHERE trip_id='af-1')
+      THEN datetime('now','-2 hours') ELSE NULL END WHERE trip_id='af-1'`).run();
+  const leave = gpsAutoMarks(db, pointOf, new Map(), Date.now());
+  assert.equal(leave.leftUnload.length, 1, 'зов диспетчера по выгрузке');
+  assert.equal(db.prepare(`SELECT status FROM trips WHERE id='af-1'`).get().status, 'run',
+    'выгрузку GPS не ставит');
+  // Цепочка между рейсами: следующая погрузка совершена → рейс закрывается.
+  db.prepare(`UPDATE trip_stops SET actual_departure=NULL,
+    work_finished_at=NULL WHERE trip_id='af-1' AND seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id='af-1')`).run();
+  mkTrip('af-2', -3 * 3_600_000, 20 * 3_600_000);
+  ensureTripStops(db, 'af-2');
+  db.prepare(`UPDATE trip_stops SET actual_arrival=datetime('now','-2 hours')
+    WHERE trip_id='af-2' AND seq=(SELECT MIN(seq) FROM trip_stops WHERE trip_id='af-2')`).run();
+  const chain = chainAutoClose(db);
+  assert.equal(chain.tripsUnloaded, 1, 'рейс закрыт фактом следующей погрузки');
+  const closed = db.prepare(`SELECT status, unloaded_at FROM trips WHERE id='af-1'`).get();
+  assert.equal(closed.status, 'unloaded');
+  assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
+});

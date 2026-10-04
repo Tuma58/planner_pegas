@@ -28,7 +28,8 @@ import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.m
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
 import {
-  DISPATCH_STEPS, applyDispatchStep, checkStuckUnloading, controlSnapshot, ensureTripStops,
+  DISPATCH_STEPS, applyDispatchStep, chainAutoClose, checkStuckUnloading, controlSnapshot,
+  ensureTripStops, gpsAutoMarks,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
@@ -930,6 +931,19 @@ function runPastTransferWatch() {
 setInterval(runPastTransferWatch, 60 * 60_000);
 setTimeout(runPastTransferWatch, 70_000);
 
+// Строка «🤖 авто-факты» в Отчёте дня (05.10): сколько отметок за сутки
+// поставила автоматика — GPS (сцепка согласована) и цепочка фактов.
+function autoFactsLine() {
+  try {
+    const gpsN = db.prepare(`SELECT COUNT(*) n FROM trip_stops
+      WHERE auto_source='gps' AND updated_at >= datetime('now','-1 day')`).get().n;
+    const chainN = db.prepare(`SELECT COUNT(*) n FROM trip_stops
+      WHERE auto_source='chain' AND updated_at >= datetime('now','-1 day')`).get().n;
+    if (!gpsN && !chainN) return '';
+    return ` · 🤖 авто-факты за сутки: GPS ${gpsN}, по цепочке ${chainN}`;
+  } catch { return ''; }
+}
+
 // Строка «🚚 перегоны» в Отчёте дня (решение руководителя 04.10:
 // «строку в утренних сводках, наблюдаем неделю»): сколько пар в реестре
 // сейчас против вчерашнего замера и сколько перегонов оформлено за
@@ -1050,7 +1064,7 @@ function runDailyFleetReport() {
           : ' · явка за день не велась';
       })() +
       cdSegmentLine(dayIso, todayIso) + assignQualityLine(dayIso, todayIso) + demurrageBacklogLine() +
-      transferGapsLine() +
+      transferGapsLine() + autoFactsLine() +
       (() => {
         // Норматив стыковки (23.09) + целевой стык (24.09). Семидневное
         // окно — дневные выборки слишком малы и дёргаются.
@@ -2178,6 +2192,29 @@ async function runMonitoringPoll() {
 }
 setInterval(runMonitoringPoll, 60_000);
 setTimeout(runMonitoringPoll, 45_000);
+
+// ── Авто-факты (решение руководителя 05.10): GPS ставит промежуточные
+// факты при согласованной сцепке (тягач и прицеп рядом), цепочка
+// фактов подчищает хвосты; финальная выгрузка — за человеком.
+const gpsNearState = new Map();
+function runAutoFactsWatch() {
+  try {
+    const gps = gpsAutoMarks(db, addressPointByText, gpsNearState);
+    const chain = chainAutoClose(db);
+    for (const left of gps.leftUnload) {
+      notify('dispatcher', `📡 ${left.plate}: GPS уже в ${left.km} км от точки выгрузки, а рейс не закрыт — подтвердите выгрузку в контроле`, 'trip', left.tripId, { category: 'gps' });
+    }
+    const total = gps.arrivals + gps.departures + chain.stopsClosed + chain.tripsUnloaded;
+    if (total || gps.crewMismatch.length) {
+      console.log(`авто-факты: GPS прибытий ${gps.arrivals}, убытий ${gps.departures}; ` +
+        `цепочкой точек ${chain.stopsClosed}, рейсов выгружено ${chain.tripsUnloaded}` +
+        (gps.crewMismatch.length ? `; трекеры сцепки расходятся: ${gps.crewMismatch.map(x => `${x.plate} ${x.km} км`).join(', ')}` : ''));
+      for (const line of [...gps.details, ...chain.details].slice(0, 20)) console.log('  · ' + line);
+    }
+  } catch (error) { console.error('авто-факты:', error.message); }
+}
+setInterval(runAutoFactsWatch, 10 * 60_000);
+setTimeout(runAutoFactsWatch, 80_000);
 
 // ── GPS-контроль рейсов (этап 3 мониторинга) ──
 // Принципы (утверждены руководителем 07.09): GPS никогда не пишет факты

@@ -466,6 +466,8 @@ function migrateColumns(db) {
   // Прогноз водителя: «буду на выгрузке к…» из бота — показывается в
   // контроле и двигает расчёт следующего события.
   ensure('trip_stops', 'driver_eta', 'TEXT');
+  // Кто поставил факт точки автоматически: 'gps' или 'chain' (05.10).
+  ensure('trip_stops', 'auto_source', 'TEXT');
   // Мониторинг Pilot-GPS: сопоставление сцепки с трекером и последняя
   // известная позиция (история — следующим этапом, чтобы БД не пухла).
   db.exec(`CREATE TABLE IF NOT EXISTS vehicle_trackers (
@@ -537,6 +539,9 @@ function migrateColumns(db) {
   ensure('orders', 'stage', 'INTEGER NOT NULL DEFAULT 0');
   ensure('orders', 'assigned_vehicle_id', 'TEXT REFERENCES vehicles(id)');
   ensure('orders', 'trip_id', 'TEXT REFERENCES trips(id)');
+  // Авто-факты по GPS (05.10): «GPS уехал от выгрузки» — диспетчера зовут
+  // один раз, отметка-дедуп здесь.
+  ensure('trips', 'gps_left_alert_at', 'TEXT');
   ensure('trips', 'temperature_mode', "TEXT NOT NULL DEFAULT ''");
   ensure('trips', 'body_type', "TEXT NOT NULL DEFAULT ''");
   ensure('trips', 'actual_distance_km', 'REAL');
