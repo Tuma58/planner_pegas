@@ -317,7 +317,8 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
       ? fact.stage >= 3 ? 'background:#20624f;color:#fff'
         : fact.stage >= 2 ? 'background:#2e7d6b;color:#fff'
           : 'background:#3b6ea5;color:#fff'
-      : p ? 'background:#fff3cd' : '';
+      : '';
+    const planCls = !fact && p ? ' class="cell-plan"' : '';
     // План в ячейке — математическое округление (0,5 → 1); редкие слоты
     // (<0,5 рейса в день) остаются жёлтыми без цифры, точное значение —
     // в подсказке при наведении.
@@ -329,7 +330,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     const hint = `${row.customer} · ${row.leg} · ${day}.${plan.month.slice(5, 7)}: план ${p ? Math.round(p * 100) / 100 : 0}` +
       (fact ? `, заявок ${fact.n} (${['', 'внесена', 'ТС назначено', 'выгружено'][fact.stage]}) на ${money(Math.round(fact.rv))}` : ', заявок нет') +
       (clickable ? ' — клик: взятые рейсы и потенциал дня' : '');
-    return `<td style="text-align:center;${stageClass}${clickable ? ';cursor:pointer' : ''}${canEdit && gap > 0 ? ';outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
+    return `<td${planCls} style="text-align:center;${stageClass}${clickable ? ';cursor:pointer' : ''}${canEdit && gap > 0 ? ';outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
       ${clickable ? `data-dpl-cell="${rowIndex}|${day}"` : ''} title="${escapeHtml(hint)}">${text}</td>`;
   };
 
@@ -361,10 +362,11 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     }
     const stageClass = factN
       ? stage >= 3 ? 'background:#20624f;color:#fff' : stage >= 2 ? 'background:#2e7d6b;color:#fff' : 'background:#3b6ea5;color:#fff'
-      : p ? 'background:#fff3cd' : '';
+      : '';
+    const planCls = !factN && p ? ' class="cell-plan"' : '';
     const hint = `${group.customer} · ${group.legs.length} плеч · ${day}.${plan.month.slice(5, 7)}: план ${Math.round(p * 100) / 100}` +
       (factN ? `, заявок ${factN} на ${money(Math.round(factRv))}` : ', заявок нет') + ' — клик: развернуть плечи';
-    return `<td style="text-align:center;${stageClass}${canEdit && gap > 0 ? ';outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
+    return `<td${planCls} style="text-align:center;${stageClass}${canEdit && gap > 0 ? ';outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
       title="${escapeHtml(hint)}">${factN || (Math.round(p) || '')}</td>`;
   };
   const cardBtn = customer => `<small data-dpl-card="${escapeHtml(customer)}" style="cursor:pointer;opacity:.75"

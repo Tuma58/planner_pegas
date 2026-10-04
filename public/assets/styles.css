@@ -17,6 +17,7 @@
   --gridwe: #e9ecf0;
   --hover: #f5f7f9;
   --inp: #ffffff;
+  --panel2: #f2f7f7;
   --shadow: 0 1px 2px rgb(30 45 60 / 6%), 0 1px 1px rgb(30 45 60 / 4%);
   /* Шкалы отступов и типографики ТК 21 */
   --sp1: 4px; --sp2: 8px; --sp3: 12px; --sp4: 16px; --sp5: 24px;
@@ -37,6 +38,7 @@
   --gridwe: #151d26;
   --hover: #212b35;
   --inp: #1f2933;
+  --panel2: #222d38;
   --shadow: 0 1px 3px rgb(0 0 0 / 35%), 0 1px 2px rgb(0 0 0 / 25%);
   color-scheme: dark;
 }
@@ -510,6 +512,12 @@ input.warn-border { border-color: #c99a2e; }
 .fleet-plan .fp-disp { background: #5a6672; color: #fff; }
 .fleet-plan .fp-fore { color: var(--muted); background: color-mix(in srgb, #3b6ea5 12%, transparent); }
 .fleet-plan .fp-free { background: #fff3cd; }
+/* Контрасты тёмной темы (04.10, разбор руководителя «цифры плохо
+   различимы»): жёлтый «слот/свободный день» приглушается, текст —
+   явной тёмной/светлой краской, а не наследованием темы. */
+.plan-grid td.cell-plan { background: #fff3cd; color: #6b5518; }
+[data-theme="dark"] .plan-grid td.cell-plan { background: #44391a; color: #ffe9a8; }
+[data-theme="dark"] .fleet-plan .fp-free { background: #44391a; }
 
 /* Объявление админа на табло: одна крупная плашка поверх дашборда.
    Несколько объявлений сменяют друг друга — на экране всегда одно. */
