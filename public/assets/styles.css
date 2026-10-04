@@ -157,9 +157,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .ctrl-sec-head.warn { color: #8a6a1c; }
 .ctrl-quiet-row { display: flex; align-items: center; gap: 9px; padding: 6px 11px;
   margin-bottom: 5px; border: 1px solid var(--line); border-radius: 10px;
-  background: var(--card); font-size: var(--fs-sm); cursor: pointer; }
+  background: var(--card); font-size: var(--fs-sm); cursor: pointer; min-width: 0; }
 .ctrl-quiet-row:hover { border-color: var(--navy); }
-.ctrl-quiet-ev { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctrl-quiet-row > b, .ctrl-quiet-row > .muted { flex: 0 0 auto; }
+/* Длинный адрес события обязан ужиматься, а не распирать поле вширь
+   (урок тулбара: min-width:auto у flex-элемента с nowrap = гарантированный
+   горизонтальный скролл всей вкладки). */
+.ctrl-quiet-ev { flex: 1 1 auto; min-width: 0; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctrl-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .ctrl-dot.ok { background: var(--ok); }
 /* Компакт-чипы метрик планов (паттерн инфо-строки, 04.10): подпись·число
