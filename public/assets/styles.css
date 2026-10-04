@@ -147,6 +147,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
    уносит её на отдельную строку), внутри не переносится. */
 .tb-zone.toolbar-end { display: flex; align-items: center; flex-wrap: nowrap; margin-left: auto; }
 .tb-zone.hidden { display: none; }
+/* Вид «График» вкладки Ресурс (04.10): рамка страницы графика на всю
+   рабочую область, узкая строка переключателя видов над ней. */
+.schedwrap { display: flex; flex-direction: column; height: calc(100vh - 118px); }
+.schedhead { display: flex; align-items: center; gap: 12px; padding: 7px 12px; flex: 0 0 auto; }
+.schedhint { font-size: var(--fs-xs); }
+.schedframe { flex: 1 1 auto; width: 100%; border: 0; background: var(--card); }
 .chip-alert {
   min-width: 36px; height: 28px; padding: 0 10px; border-radius: 14px;
   border: 1px solid var(--line); background: var(--card); color: var(--muted);

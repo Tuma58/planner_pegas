@@ -825,7 +825,7 @@ async function loadResourceSchedule(container, context) {
 // классификацией причин невыхода — каждый невыход обязан иметь причину.
 // Табель за период на основе эффективной явки: строки — водители,
 // колонки — дни, в ячейках коды (Я/РВ/В/ОТ/Б/ПР/С/П/·), итоги по кодам.
-async function timesheetDialog(context) {
+export async function timesheetDialog(context) {
   const now = new Date();
   let fromIso = `${now.toISOString().slice(0, 8)}01`;
   let toIso = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
@@ -872,7 +872,7 @@ async function timesheetDialog(context) {
   await render();
 }
 
-async function attendanceDialog(context) {
+export async function attendanceDialog(context) {
   let day = new Date().toISOString().slice(0, 10);
   const render = async () => {
     let payload;
@@ -1289,14 +1289,51 @@ function renderResourceTasks(container, context, refDay, withState) {
     }));
 }
 
+// Вид «График» — главный вид вкладки Ресурс (решение руководителя
+// 04.10: «Ресурс = График главным видом», шаг 1 варианта В): страница
+// графика встраивается рамкой в рабочую область планера (embed-режим
+// прячет её шапку, тему проставляет планер). Шаг 2 — перенос кода
+// внутрь планера модулем — после стабилизации, заходами.
+function renderScheduleFrame(container, context) {
+  const { state } = context;
+  const html = `<div class="resboard schedwrap">
+    <div class="schedhead">
+      <span class="resctl-group">
+        <button class="button small" id="resViewSchedule">📋 График</button>
+        <button class="button small ghost" id="resViewGantt"
+          title="Классический гант ресурса: рейсы, диспозиции, сервисные инструменты (перегон, перецепка, явка, табель)">Гант</button>
+      </span>
+      <span class="muted schedhint">экипажи · план/факт · пересменки · сверхвахта к доплате — главный инструмент планирования людей</span>
+    </div>
+    <iframe class="schedframe" id="schedFrame" src="/schedule?embed=1" title="График работы"></iframe>
+  </div>`;
+  // Разметка стабильна: тики автообновления планера iframe не трогают.
+  if (renderInto(container, html)) {
+    container.querySelector('#resViewGantt').onclick = () => {
+      state.resourceView = 'gantt';
+      (context.rerenderMain || (() => renderResource(container, context)))();
+    };
+    const frame = container.querySelector('#schedFrame');
+    frame.addEventListener('load', () => {
+      try {
+        frame.contentDocument.documentElement.dataset.theme =
+          document.documentElement.dataset.theme || 'dark';
+      } catch { /* чужой origin невозможен (same-origin), но на всякий */ }
+    });
+  }
+  if (context.taskContainer) context.taskContainer.innerHTML = '';
+}
+
 export async function renderResource(container, context) {
   const { state } = context;
   const data = state.data;
-  // Этап 4 перестройки (команда руководителя 04.10): старая сетка
-  // закреплений «По ТС/По водителям» выведена — план людей живёт в
-  // «📋 Графике», закрепления создаёт мост. Вкладка показывает гант;
-  // код сетки остаётся в файле страховкой до стабилизации.
-  state.resourceView = 'gantt';
+  // Этап 4 перестройки (04.10): старая сетка «По ТС/По водителям»
+  // выведена; главный вид вкладки — «📋 График», гант — вторым видом.
+  // Код сетки остаётся в файле страховкой до стабилизации.
+  if (!state.resourceView || !['gantt', 'schedule'].includes(state.resourceView)) {
+    state.resourceView = 'schedule';
+  }
+  if (state.resourceView === 'schedule') return renderScheduleFrame(container, context);
   // Разметка и метрики главного ганта: та же ширина дня, sticky-шапка и колонка,
   // выходные и маркер «сегодня» — ресурс выглядит и ведёт себя как гант.
   const dayWidth = Number(data.settings.general.plannerCellWidth || 44);
@@ -1566,7 +1603,10 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resourceTransfer').onclick = () => transferPickVehicleDialog(context);
   container.querySelector('#resourceTrailerMove').onclick = () => trailerMoveDialog(context);
   container.querySelector('#resourcePeriod').onclick = () => periodAssignDialog(context);
-  container.querySelector('#resourceSchedulePage').onclick = () => window.open('/schedule', '_blank');
+  container.querySelector('#resourceSchedulePage').onclick = () => {
+    state.resourceView = 'schedule';
+    (context.rerenderMain || (() => renderResource(container, context)))();
+  };
   if (state.resourceView !== 'gantt') loadResourceSchedule(container, context);
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {

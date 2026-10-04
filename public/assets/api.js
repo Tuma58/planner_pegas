@@ -456,6 +456,11 @@ export function routeZones(item) {
 export function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem('pl_theme', theme);
+  // Встроенная рамка графика (вкладка Ресурс) живёт своей страницей —
+  // тему ей проставляет планер (same-origin).
+  document.querySelectorAll('iframe.schedframe').forEach(frame => {
+    try { frame.contentDocument.documentElement.dataset.theme = theme; } catch { /* ещё грузится */ }
+  });
 }
 
 // Подключает кнопку #themeToggle и синхронизирует тему с сервером:

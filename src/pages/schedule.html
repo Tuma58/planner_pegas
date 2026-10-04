@@ -173,6 +173,11 @@
   .modal-box h2{margin:0 0 10px;font-size:15px}
   .modal-box p{margin:0 0 10px;max-width:68ch}
   .modal-box b{font-weight:600}
+  /* Встроенный режим (рамка во вкладке «Ресурс» планера): заголовок
+     дублирует вкладку — прячем, сетке отдаём освободившуюся высоту. */
+  .embed h1{display:none}
+  .embed header{padding-top:6px}
+  .embed .wrap{max-height:calc(100vh - 175px)}
   @media print{
     header,.bar,.msg{display:none} .wrap{max-height:none;overflow:visible}
     body{background:#fff} td.day{width:auto}

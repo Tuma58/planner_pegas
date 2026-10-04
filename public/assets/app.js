@@ -14,7 +14,7 @@ import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sal
 import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
-import { DISP_KINDS, renderResource } from './resource.js';
+import { attendanceDialog, DISP_KINDS, renderResource, timesheetDialog } from './resource.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -785,18 +785,23 @@ function renderMain() {
   // Ресурс — тоже гант: ему нужны навигация по месяцу и прокрутка, но его
   // канва скроллится внутри .resscroll (шапка фильтров закреплена), поэтому
   // класс .canvas (ширина по контенту) — только у Ганта.
-  const timelineView = isGantt || isResource;
+  // Главный вид Ресурса — встроенный «📋 График» (04.10): навигация
+  // месяца, фильтры и правая панель относятся к гантам — при Графике
+  // они прячутся, страница графика несёт свои контролы сама.
+  if (isResource && !state.resourceView) state.resourceView = 'schedule';
+  const isResourceGantt = isResource && state.resourceView === 'gantt';
+  const timelineView = isGantt || isResourceGantt;
   ['periodPrev', 'periodLabel', 'periodNext', 'scrollNav'].forEach(id =>
     byId(id).classList.toggle('hidden', !timelineView));
   byId('tbContext')?.classList.toggle('hidden', !timelineView);
   byId('typeFilter').classList.toggle('hidden', !isGantt);
   byId('rangeTabs').classList.toggle('hidden', !isGantt);
   byId('legend').classList.toggle('hidden', !isGantt);
-  // Правая панель осталась только у «Ресурса» (задания сотрудника):
-  // Гант — информационное пространство на всю ширину, оперативная
-  // сводка переехала на доску продаж.
-  byId('sidepanel').classList.toggle('hidden', !isResource);
-  document.querySelector('.planner-layout').classList.toggle('full', !isResource);
+  // Правая панель осталась только у гант-вида «Ресурса» (задания
+  // сотрудника): Гант — информационное пространство на всю ширину,
+  // оперативная сводка переехала на доску продаж.
+  byId('sidepanel').classList.toggle('hidden', !isResourceGantt);
+  document.querySelector('.planner-layout').classList.toggle('full', !isResourceGantt);
   // Канва тянется по контенту (месяц дней), доски — по ширине окна.
   byId('timeline').classList.toggle('canvas', isGantt);
   if (isGantt) {
@@ -818,7 +823,7 @@ function renderMain() {
     renderResource(byId('timeline'), {
       state, can, openDisposition, openFleet: openFleetDirectory,
       openDrivers: openDriversDirectory, openStats: openResourceStats,
-      showModal, closeModal,
+      showModal, closeModal, rerenderMain: renderMain,
       onReload: reload, taskContainer: byId('sidepanel')
     });
   } else if (state.view === 'remzona') {
@@ -2424,16 +2429,25 @@ try {
     activeView: () => state.view,
     showModal
   });
-  // Прямые ссылки со страницы графика (этап 3, 04.10): /planner?open=
-  // attendance|timesheet открывает Ресурс и сразу нужный диалог — явка
-  // и табель остаются одними экранами, доступными из обоих мест.
+  // Явка и табель из графика (этап 3/В, 04.10): диалоги зовутся
+  // напрямую — и по ссылке /planner?open=attendance|timesheet, и по
+  // postMessage из встроенной рамки графика (кнопки «Явка»/«Табель»).
+  const dialogContext = { state, can, showModal, closeModal, onReload: reload };
+  const openStaffDialog = what => {
+    if (what === 'attendance') attendanceDialog(dialogContext);
+    if (what === 'timesheet') timesheetDialog(dialogContext);
+  };
   const openParam = new URLSearchParams(location.search).get('open');
   if (openParam === 'attendance' || openParam === 'timesheet') {
     state.view = 'resource';
     renderViewTabs();
     renderMain();
-    setTimeout(() => byId(openParam === 'attendance' ? 'resourceAttendance' : 'resourceTimesheet')?.click(), 600);
+    setTimeout(() => openStaffDialog(openParam), 400);
   }
+  window.addEventListener('message', event => {
+    if (event.origin !== location.origin) return;
+    if (event.data && event.data.pegas === 'openDialog') openStaffDialog(event.data.what);
+  });
 } catch (error) {
   if (!error.message.includes('Требуется вход')) toast(error.message, 'error');
 }
