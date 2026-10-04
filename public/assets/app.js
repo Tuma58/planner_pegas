@@ -963,21 +963,31 @@ function openExceptions() {
   const returnedOrderActions = () => `<button class="button ghost small" data-ex-to-sales
     title="Перейти в продажи и назначить ТС заново">В продажи</button>`;
 
-  // Неоформленные порожние перегоны (04.10): пока перегон не оформлен,
-  // гант, подбор и стыковка считают машину не там, где она есть.
+  // Неоформленные порожние перегоны (04.10; подача переработана 05.10 —
+  // «надо идти в сторону интуитивного инструмента»): строка говорит,
+  // ЧТО случилось и ЧТО нажать. Прошлые переезды подтверждаются одним
+  // кликом, будущие — планируются формой.
   const transferGapsSection = (data.transferGaps || []).length
-    ? `<h3>🚚 Порожний перегон не оформлен (${data.transferGaps.length})</h3><div class="list">${data.transferGaps.map((gap, index) => `<div class="list-item exrow">
+    ? `<h3>🚚 Машина переехала — перегона в системе нет (${data.transferGaps.length})</h3>
+      <div class="geohint" style="margin:0 0 6px">Между выгрузкой и следующей погрузкой — большое плечо,
+        а порожнего перегона в системе нет. Пока его нет, планер держит машину в старой точке: подбор ТС,
+        стыковка и порожний пробег в экономике — врут. Прошлый переезд подтверждается одной кнопкой.</div>
+      <div class="list">${data.transferGaps.map((gap, index) => `<div class="list-item exrow">
         <span style="flex:1;min-width:0">
-          <strong class="mono">${escapeHtml(gap.plate)}</strong> · ~${gap.km} км
-          <small class="muted" style="display:block">выгрузка ${formatDateTime(gap.free_at)}: ${escapeHtml((gap.from_point || '').slice(0, 44))}
-            → погрузка ${formatDateTime(gap.must_by)} (${escapeHtml(gap.customer_name || '')}): ${escapeHtml((gap.to_point || '').slice(0, 44))}</small>
+          <strong class="mono">${escapeHtml(gap.plate)}</strong> ${gap.past
+    ? `— переехала ~${gap.km} км, перегон не оформлен`
+    : `— предстоит переезд ~${gap.km} км к погрузке`}
+          <small class="muted" style="display:block">выгрузка ${formatDateTime(gap.free_at)} — ${escapeHtml((gap.from_point || '').slice(0, 40))}
+            · погрузка ${formatDateTime(gap.must_by)} (${escapeHtml((gap.customer_name || '').slice(0, 24))}) — ${escapeHtml((gap.to_point || '').slice(0, 40))}</small>
         </span>
-        <span class="exactions"><span class="badge warn">перегон?</span>
+        <span class="exactions">
+          ${gap.past && gap.to_address_id && can('fleet:write') ? `<button class="button small" data-ex-confirm="${index}"
+            title="Подтвердить факт одним нажатием: перегон запишется задним числом — от точки выгрузки к точке погрузки, с порожним километражем; задание диспетчеру не создаётся">✓ Да, переехала — записать</button>` : ''}
           ${can('fleet:write') ? `<button class="button ghost small" data-ex-transfer="${index}"
-            title="Оформить порожний перегон: откуда и машина уже подставлены">🚚 Оформить</button>` : ''}
+            title="${gap.past ? 'Если машина ехала не так — оформить перегон вручную' : 'Спланировать перегон: диспетчер и водитель получат задание'}">${gap.past ? '✎ Иначе' : '🚚 Спланировать'}</button>` : ''}
           <button class="button ghost small" data-ex-open="${escapeHtml(gap.trip_id)}" title="Открыть следующий рейс пары">Рейс</button></span>
       </div>`).join('')}
-      <div class="geohint">Пара рейсов дальше норматива без перегона между ними. Порог — «Настройки → Перегон требует оформления, км».</div></div>`
+      <div class="geohint">Порог — «Настройки → Перегон требует оформления, км». Если точка указана с ошибкой и машина никуда не ездила — откройте «Рейс» и поправьте адрес.</div></div>`
     : '';
   const unavailable = (data.unavailableVehicles || []).length
     ? `<h3>ТС вне работы</h3><div class="list">${data.unavailableVehicles.map(row =>
@@ -1000,6 +1010,18 @@ function openExceptions() {
     button.addEventListener('click', () => {
       const trip = tripById(button.dataset.exOpen);
       if (trip) { closeModal(); openTrip(trip); }
+    }));
+  // Подтверждение прошлого переезда одним нажатием: перегон задним
+  // числом от выгрузки к погрузке, этапы закрыты, диспетчеру не шумим.
+  document.querySelectorAll('[data-ex-confirm]').forEach(button =>
+    button.addEventListener('click', () => {
+      const gap = (data.transferGaps || [])[Number(button.dataset.exConfirm)];
+      if (!gap) return;
+      resolveAndRefresh(() => api('/api/transfers', { method: 'POST', body: JSON.stringify({
+        vehicleId: gap.vehicle_id, addressId: gap.to_address_id,
+        startsAt: gap.free_at, endsAt: gap.must_by, purpose: 'под погрузку',
+        note: 'факт подтверждён из реестра «перегон не оформлен»', pastFact: true
+      }) }), `Перегон ${gap.plate} записан задним числом: ~${gap.km} км порожним`);
     }));
   // Оформление порожнего перегона прямо из реестра: машина и «откуда»
   // уже подставлены формой (она сама считает место и освобождение).

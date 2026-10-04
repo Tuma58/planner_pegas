@@ -854,10 +854,20 @@ function transferGapsReport() {
       ms(item.starts_at) >= freeMs - 12 * 3_600_000 &&
       ms(item.starts_at) <= startMs + 12 * 3_600_000);
     if (covered) continue;
+    // Адрес погрузки для подтверждения в один клик (тот же каскад, что
+    // addressPointByText): нашёлся — кнопка «Да, переехала» доступна.
+    const needle = String(trip.from_point || '').trim();
+    const toAddressId = needle.length >= 2
+      ? (db.prepare(`SELECT id FROM addresses WHERE name=? COLLATE NOCASE AND latitude IS NOT NULL LIMIT 1`).get(needle)?.id
+        || db.prepare(`SELECT id FROM addresses WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`${needle}%`)?.id
+        || db.prepare(`SELECT id FROM addresses WHERE name LIKE ? AND latitude IS NOT NULL LIMIT 1`).get(`%${needle}%`)?.id
+        || null)
+      : null;
     gaps.push({ vehicle_id: trip.vehicle_id, plate: trip.plate, km,
       from_point: pair.to_point, to_point: trip.from_point,
-      free_at: pair.unloaded_at || pair.ends_at, must_by: trip.starts_at,
-      trip_id: trip.id, customer_name: trip.customer_name });
+      free_at: new Date(freeMs).toISOString(), must_by: new Date(startMs).toISOString(),
+      trip_id: trip.id, customer_name: trip.customer_name,
+      to_address_id: toAddressId, past: startMs <= Date.now() });
   }
   gaps.sort((a, b) => ms(a.must_by) - ms(b.must_by));
   return gaps;
@@ -8729,8 +8739,17 @@ async function api(request, response, url) {
       String(body.note || '').slice(0, 300), target.id, fromLabel, purpose,
       Number.isFinite(km) ? Math.round(km) : 0, user.id, user.id);
     const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(body.vehicleId)?.plate || '';
-    notify('dispatcher', `🚚 Перегон порожним ${plate}: ${fromLabel || '—'} → ${target.name} ` +
-      `(${purpose}). Передайте задание водителю и отметьте выезд`, 'vehicle', body.vehicleId);
+    // Подтверждение факта задним числом (реестр «перегон не оформлен»,
+    // 05.10): машина уже переехала — этапы закрываются сразу, задание
+    // диспетчеру не создаётся (передавать водителю нечего).
+    const pastFact = body.pastFact === true && endsAt.getTime() <= Date.now();
+    if (pastFact) {
+      db.prepare(`UPDATE vehicle_dispositions SET departed_at=?, arrived_at=? WHERE id=?`)
+        .run(startsAt.toISOString(), endsAt.toISOString(), id);
+    } else {
+      notify('dispatcher', `🚚 Перегон порожним ${plate}: ${fromLabel || '—'} → ${target.name} ` +
+        `(${purpose}). Передайте задание водителю и отметьте выезд`, 'vehicle', body.vehicleId);
+    }
     invalidateDraftsForVehicle(body.vehicleId);
     audit(db, user, 'create', 'transfer', id, { vehicleId: body.vehicleId, to: target.name, purpose },
       requestIp(request));
