@@ -336,23 +336,65 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     return false;
   };
   const shownRows = flt.gapsOnly ? rowList.filter(rowHasGap) : rowList;
-  const bodyRows = shownRows.map((row, shownIndex) => { const index = rowList.indexOf(row);
-    // Имя клиента — только в первой строке его группы плеч: остальные
-    // строки помечаются «↳ ещё плечо», чтобы повторы не читались дублями.
-    const firstOfGroup = shownIndex === 0 || shownRows[shownIndex - 1].customer !== row.customer;
-    const legsOfCustomer = shownRows.filter(item => item.customer === row.customer).length;
-    return `<tr${firstOfGroup && shownIndex > 0 ? ' style="border-top:2px solid var(--border,#b9c2cc)"' : ''}>
+  // Группировка по клиенту (просьба руководителя 04.10): многоплечевой
+  // клиент по умолчанию свёрнут в одну агрегатную строку (суммы по дням
+  // всех его плеч), клик по имени разворачивает плечи. Раскрытые живут
+  // в state — тихое обновление и фильтры их не сбрасывают.
+  const openSet = context.state
+    ? (context.state.deliveryOpen ||= new Set())
+    : (deliveryPlanDialog._open ||= new Set());
+  const groups = [];
+  { const byName = new Map();
+    for (const row of shownRows) {
+      if (!byName.has(row.customer)) { const g = { customer: row.customer, legs: [] }; byName.set(row.customer, g); groups.push(g); }
+      byName.get(row.customer).legs.push(row);
+    } }
+  const custCellHtml = (group, day) => {
+    let p = 0; let factN = 0; let factRv = 0; let stage = 0; let gap = 0;
+    for (const row of group.legs) {
+      p += planOf(row, day) || 0;
+      const fact = factOf(row, day);
+      if (fact) { factN += fact.n; factRv += fact.rv; stage = Math.max(stage, fact.stage); }
+      gap += gapOf(row, day) || 0;
+    }
+    const stageClass = factN
+      ? stage >= 3 ? 'background:#20624f;color:#fff' : stage >= 2 ? 'background:#2e7d6b;color:#fff' : 'background:#3b6ea5;color:#fff'
+      : p ? 'background:#fff3cd' : '';
+    const hint = `${group.customer} · ${group.legs.length} плеч · ${day}.${plan.month.slice(5, 7)}: план ${Math.round(p * 100) / 100}` +
+      (factN ? `, заявок ${factN} на ${money(Math.round(factRv))}` : ', заявок нет') + ' — клик: развернуть плечи';
+    return `<td style="text-align:center;${stageClass}${canEdit && gap > 0 ? ';outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
+      title="${escapeHtml(hint)}">${factN || (Math.round(p) || '')}</td>`;
+  };
+  const cardBtn = customer => `<small data-dpl-card="${escapeHtml(customer)}" style="cursor:pointer;opacity:.75"
+    title="Карточка плеч клиента: план, взято, суммы — с правкой слотов">ⓘ</small>`;
+  const bodyRows = groups.map((group, groupIndex) => {
+    const multi = group.legs.length > 1;
+    const open = !multi || openSet.has(group.customer);
+    const topLine = groupIndex > 0 ? ' style="border-top:2px solid var(--border,#b9c2cc)"' : '';
+    if (!open) {
+      return `<tr${topLine}>
+    <td class="plan-fix" style="white-space:nowrap;max-width:150px;min-width:150px;overflow:hidden;text-overflow:ellipsis">
+      <b data-dpl-toggle="${escapeHtml(group.customer)}" style="cursor:pointer"
+        title="Развернуть плечи клиента">▸ ${escapeHtml(group.customer)}</b>${segBadge(plan, group.customer)} ${cardBtn(group.customer)}</td>
+    <td class="plan-fix2 muted" data-dpl-toggle="${escapeHtml(group.customer)}" style="white-space:nowrap;left:150px;cursor:pointer">${group.legs.length} ${(n => n % 10 === 1 && n % 100 !== 11 ? 'плечо' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'плеча' : 'плеч')(group.legs.length)} ▸</td>
+    <td></td>
+    ${Array.from({ length: daysInMonth }, (_, i) => custCellHtml(group, i + 1)).join('')}
+  </tr>`;
+    }
+    return group.legs.map((row, legIndex) => { const index = rowList.indexOf(row);
+      const firstOfGroup = legIndex === 0;
+      return `<tr${firstOfGroup ? topLine : ''}>
     <td class="plan-fix" style="white-space:nowrap;max-width:150px;min-width:150px;overflow:hidden;text-overflow:ellipsis">
       ${firstOfGroup
-    ? `<b data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer"
-        title="Плечи клиента: план, взято, суммы — с правкой слотов">${escapeHtml(row.customer)}</b>${segBadge(plan, row.customer)}${legsOfCustomer > 1
-      ? ` <small class="muted" title="Направлений клиента в сетке">×${legsOfCustomer}</small>` : ''}`
-    : `<span class="muted" data-dpl-cust="${escapeHtml(row.customer)}" style="cursor:pointer;opacity:.6"
-        title="Ещё одно плечо клиента ${escapeHtml(row.customer)}">↳ ещё плечо</span>`}</td>
+    ? `<b ${multi ? `data-dpl-toggle="${escapeHtml(row.customer)}" style="cursor:pointer" title="Свернуть плечи клиента"` : `title="${escapeHtml(row.customer)}"`}>${multi ? '▾ ' : ''}${escapeHtml(row.customer)}</b>${segBadge(plan, row.customer)}${multi
+      ? ` <small class="muted" title="Направлений клиента в сетке">×${group.legs.length}</small>` : ''} ${cardBtn(row.customer)}`
+    : `<span class="muted" data-dpl-toggle="${escapeHtml(row.customer)}" style="cursor:pointer;opacity:.6"
+        title="Ещё одно плечо клиента ${escapeHtml(row.customer)} — клик сворачивает группу">↳ ещё плечо</span>`}</td>
     <td class="plan-fix2" style="white-space:nowrap;left:150px">${legLabelHtml(context, plan, row)}</td>
     <td style="white-space:nowrap">${money(row.rate)}${canEdit ? ` <button class="button ghost small" data-slot-edit="${index}" title="Слоты недели и ставка">✎</button>` : ''}</td>
     ${Array.from({ length: daysInMonth }, (_, i) => cellHtml(row, index, i + 1)).join('')}
   </tr>`; }).join('');
+  }).join('');
 
   const [year, monthNum] = plan.month.split('-').map(Number);
   const shiftMonth = delta => {
@@ -485,10 +527,23 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
       const [rowIndex, day] = cell.dataset.dplCell.split('|');
       dayCellDialog(context, plan, rowList[Number(rowIndex)], Number(day), flt);
     }));
-  document.querySelectorAll('[data-dpl-cust]').forEach(cell =>
-    cell.addEventListener('click', () =>
-      customerLegsDialog(context, plan, cell.dataset.dplCust, rowList,
-        { planOf, factOf, gapOf, daysInMonth }, flt)));
+  // Клик по имени — развернуть/свернуть плечи клиента; карточка — «ⓘ».
+  document.querySelectorAll('[data-dpl-toggle]').forEach(cell =>
+    cell.addEventListener('click', () => {
+      const name = cell.dataset.dplToggle;
+      if (openSet.has(name)) openSet.delete(name); else openSet.add(name);
+      deliveryPlanDialog(context, plan.month, {
+        query: document.getElementById('dplQuery')?.value ?? flt.query,
+        zone: document.getElementById('dplZone')?.value ?? flt.zone,
+        gapsOnly: flt.gapsOnly
+      }, plan);
+    }));
+  document.querySelectorAll('[data-dpl-card]').forEach(cell =>
+    cell.addEventListener('click', event => {
+      event.stopPropagation();
+      customerLegsDialog(context, plan, cell.dataset.dplCard, rowList,
+        { planOf, factOf, gapOf, daysInMonth }, flt);
+    }));
   if (canEdit) {
     document.getElementById('dplBookWeek')?.addEventListener('click', () =>
       bookWeekDialog(context, plan, flt));
