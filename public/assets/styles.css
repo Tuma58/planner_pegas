@@ -919,6 +919,17 @@ input.warn-border { border-color: #c99a2e; }
    ПОВЕРХ левого края закреплённой шапки («левый край сползает»). Фон — как
    у всей строки итога, чтобы строка читалась целой. */
 .plan-grid tr.plan-totals td.plan-fix { z-index: 3; background: var(--panel2, #f2f7f7); }
+/* Компакт планов (04.10, второй заход: «ещё оптимизировать верхние
+   поля»): плотные ячейки — выше сетки видно больше строк данных. */
+.plan-grid th, .plan-grid td { padding: 2px 5px; line-height: 1.2; }
+.plan-grid tr.plan-sticky-head th { padding: 3px 4px; }
+/* Сводные строки по умолчанию свёрнуты до ключевой (🕳 Дыра / ⚖ Баланс):
+   остальные раскрывает чип «∑ сводка» в консоли, выбор запоминается. */
+.plan-grid.totals-folded tr.plan-totals:not(.total-key) { display: none; }
+/* Узкая консоль рабочих полей: той же высоты, что строка фильтров. */
+.console.compact { padding: 5px 12px; }
+.console.compact input, .console.compact select { min-height: 26px; padding: 3px 8px; }
+.console.compact .button { min-height: 26px; padding: 3px 10px; }
 
 
 /* Инструкции сотрудников: памятка по блокам из кнопки «?» */

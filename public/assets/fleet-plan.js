@@ -313,8 +313,10 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
   // Паттерн инфо-строки (04.10): во вкладке без дублирующего заголовка,
   // сводка чипами, легенда под «ⓘ», сетке — весь остаток экрана.
   const isTab = !!context.planTarget;
+  let totalsOpen = false;
+  try { totalsOpen = localStorage.getItem('plFpTotals') === 'open'; } catch { /* приватный режим */ }
   renderCanvas(`${isTab ? '' : `<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>`}
-    <div class="console" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
+    <div class="console compact" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
       <button type="button" class="button ghost small" id="fpPrev">←</button>
       <strong style="font-size:var(--fs-sm);text-transform:capitalize;min-width:104px;text-align:center">${isTab ? `${MONTHS[monthNum - 1]} ${year}` : ''}</strong>
       <button type="button" class="button ghost small" id="fpNext">→</button>
@@ -329,9 +331,11 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
       <span class="mchip">машин <b>${rowsData.length}${rowsData.length !== allRowsData.length ? ` / ${allRowsData.length}` : ''}</b></span>
       ${freeTotal > 0 ? `<span class="mchip warn ${flt.freeOnly ? 'act' : ''}" data-act="free" role="button"
         title="Резерв под новых клиентов: машины с 10+ свободными днями без круга. Клик — показать только их">🟢 резерв <b>${freeTotal}</b></span>` : ''}
+      <span class="mchip ${totalsOpen ? 'act' : ''}" data-act="totals" role="button"
+        title="Показать/спрятать сводные строки (нужно по сетке, занято, недоступны, свободно) — строка «⚖ Баланс к сетке» видна всегда">∑ сводка</span>
       <span class="legend-tip" style="margin-left:auto" title="Ячейка: синяя — рейс в плане, зелёная — в пути, тёмная — выгружен, серая — диспозиция, точка — прогноз по назначенному кругу, жёлтая — свободный день (ресурс под новых клиентов). Колонка «Круг» — типовой цикл машины: по нему считается прогноз и утренняя стыковка. Машины отсортированы по свободным дням — резерв сверху.">ⓘ легенда</span>
     </div>
-    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid">
+    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid${totalsOpen ? '' : ' totals-folded'}">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:90px">ТС</th><th class="plan-fix2" style="left:90px;min-width:120px">Круг</th><th title="Свободных дней до конца месяца">🟢</th>${dayHead}</tr>
       ${needByDay ? `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="Сколько машин требует сетка Плана вывоза в этот день: рейсы слотов × цикл плеча (транзит + 8 ч) / 24 — та же строка, что «Машин занято (оценка)» в Плане вывоза">Нужно по сетке</td>${needByDay.map(need =>
@@ -342,10 +346,10 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
       <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="Машины в диспозициях: ремонт, без водителя, пересменка, резерв, перегон">Недоступны</td>${totals.map(t =>
     `<td style="text-align:center;${t.unavail ? 'color:var(--muted)' : ''}">${t.unavail || ''}</td>`).join('')}</tr>
-      <tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
+      <tr class="plan-totals${needByDay ? '' : ' total-key'}" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="Свободные будущие дни — ресурс под новых клиентов">🟢 Свободно</td>${totals.map(t =>
     `<td style="text-align:center;${t.free ? 'color:#c99a2e' : ''}">${t.free || ''}</td>`).join('')}</tr>
-      ${needByDay ? `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
+      ${needByDay ? `<tr class="plan-totals total-key" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="(Занято рейсами + Свободно) − Нужно по сетке: плюс — парка хватает и остаётся резерв, минус — день сеткой не вывозится имеющимся парком. Клик по ячейке дня — регулятор баланса: рычаги и задания. При включённых фильтрах считается по отфильтрованным машинам">⚖ Баланс к сетке</td>${needByDay.map((need, i) =>
     { const balance = totals[i].trips + totals[i].free - need;
       return `<td data-fp-bal="${i + 1}" style="text-align:center;cursor:pointer;${balance < -0.5 ? 'color:var(--bad,#c0392b)' : 'color:var(--ok,#20624f)'}"
@@ -390,6 +394,14 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
     }, 350);
   });
   document.getElementById('fpRound').addEventListener('change', () => rerender());
+  // Чип «∑ сводка»: раскрыть/спрятать сводные строки, выбор запоминается.
+  document.querySelector('[data-act="totals"]')?.addEventListener('click', event => {
+    const grid = document.querySelector('.plan-grid');
+    const open = grid.classList.toggle('totals-folded') === false;
+    event.currentTarget.classList.toggle('act', open);
+    try { localStorage.setItem('plFpTotals', open ? 'open' : 'folded'); } catch { /* ignore */ }
+    syncPlanStickyTops();
+  });
   // Чип «🟢 резерв» — и показатель, и фильтр: клик оставляет только резерв.
   document.querySelector('[data-act="free"]')?.addEventListener('click', () =>
     fleetPlanDialog(context, plan.month, { ...flt,

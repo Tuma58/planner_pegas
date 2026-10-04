@@ -299,10 +299,10 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
   }).join('');
 
   let totalRowIndex = 0;
-  const totalRow = (label, pick, fmt = v => v ? Math.round(v) : '', hint = '') => {
+  const totalRow = (label, pick, fmt = v => v ? Math.round(v) : '', hint = '', key = false) => {
     const top = 34 + totalRowIndex * 24;
     totalRowIndex += 1;
-    return `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:${top}px"
+    return `<tr class="plan-totals${key ? ' total-key' : ''}" style="font-weight:700"><td colspan="3" class="plan-fix" style="top:${top}px"
       ${hint ? `title="${escapeHtml(hint)}"` : ''}>${label}</td>${dayTotals.map(d =>
       `<td style="text-align:center;top:${top}px">${fmt(pick(d))}</td>`).join('')}</tr>`;
   };
@@ -376,8 +376,10 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
   // действием, легенды под «ⓘ», сервис-кнопки в «⋯ Инструменты», сетке —
   // весь остаток экрана.
   const isTab = !!context.planTarget;
+  let totalsOpen = false;
+  try { totalsOpen = localStorage.getItem('plDplTotals') === 'open'; } catch { /* приватный режим */ }
   renderCanvas(`${isTab ? '' : `<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>`}
-    <div class="console" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
+    <div class="console compact" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
       <button type="button" class="button ghost small" id="dplPrev">←</button>
       <strong style="font-size:var(--fs-sm);text-transform:capitalize;min-width:104px;text-align:center">${isTab ? `${MONTHS[monthNum - 1]} ${year}` : ''}</strong>
       <button type="button" class="button ghost small" id="dplNext">→</button>
@@ -396,6 +398,8 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
         title="Не закрыто до конца месяца (будущие дни)${targetVat ? `; сетка целиком даёт ${money(Math.round(monthPlanRv))} из цели ${money(Math.round(targetVat))}${monthPlanRv < targetVat ? ' — даже полная сетка цель не закрывает: нужны новые клиенты или плечи' : ''}` : ''}. Клик — показать только плечи с дырами; пунктирные ячейки — список «кому звонить», клик по ячейке открывает заявку">🕳 <b>${gapN}</b> ≈ ${money(Math.round(gapRv))}</span>` : ''}
       ${gridAgeDays != null && gridAgeDays > 10 ? `<span class="mchip warn" ${canEdit ? 'data-act="seed" role="button"' : ''}
         title="Сетка слотов давно не обновлялась из истории${canEdit ? ' — клик запустит «Заполнить из истории» (ручные плечи не тронет)' : ''}; пересев также идёт сам в ночь на понедельник">⚙ сетке <b>${gridAgeDays}</b> дн</span>` : ''}
+      <span class="mchip ${totalsOpen ? 'act' : ''}" data-act="totals" role="button"
+        title="Показать/спрятать сводные строки месяца (рейсов план, заявок факт, машин занято, выручка) — строка «🕳 Дыра» видна всегда">∑ сводка</span>
       <span class="legend-tip" style="margin-left:auto" title="Ячейка: жёлтая — слот без заявки (задача продаж), синяя — заявка внесена, зелёная — ТС назначено, тёмная — выгружено, пунктирная — незакрытый слот будущего дня (клик — заявка с заполненными клиентом, плечом, днём и ставкой). Число — факт заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.">ⓘ легенда</span>
       ${canEdit ? `<details class="tb-menu" id="dplTools">
         <summary class="button ghost small">⋯ Инструменты</summary>
@@ -406,7 +410,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
             title="Построить/обновить сетку слотов из регулярных плеч за 60 суток (клиент+направление ≥1 рейса в неделю)">⚙ Заполнить из истории</button>
         </div></details>` : ''}
     </div>
-    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="plan-grid">
+    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="plan-grid${totalsOpen ? '' : ' totals-folded'}">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:150px">Клиент</th><th class="plan-fix2" style="left:150px">Плечо</th><th>Ставка</th>${dayHead}</tr>
       ${totalRow('Рейсов план', d => d.planN, undefined,
         'Сколько рейсов в этот день обещает сетка слотов (сумма по всем плечам)')}
@@ -417,7 +421,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
       ${totalRow('Выручка план, т₽', d => d.planRv / 1000, undefined,
         'План выручки дня по ставкам сетки, тысяч рублей с НДС')}
       ${totalRow('🕳 Дыра (не закрыто)', d => d.gapN, v => v || '',
-        'План минус внесённые заявки по БУДУЩИМ дням: сколько рейсов ещё не законтрактовано — задача продаж «кому звонить». Прошедшие дни не считаются — их уже не закрыть')}
+        'План минус внесённые заявки по БУДУЩИМ дням: сколько рейсов ещё не законтрактовано — задача продаж «кому звонить». Прошедшие дни не считаются — их уже не закрыть', true)}
       ${bodyRows || `<tr><td colspan="${daysInMonth + 3}" class="muted">Сетка пуста — нажмите «⚙ Заполнить из истории».</td></tr>`}
     </table></div>
     ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
@@ -457,6 +461,14 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
       gapsOnly: !flt.gapsOnly }, plan));
   document.querySelector('[data-act="seed"]')?.addEventListener('click', () =>
     document.getElementById('dplSeed')?.click());
+  // Чип «∑ сводка»: раскрыть/спрятать сводные строки, выбор запоминается.
+  document.querySelector('[data-act="totals"]')?.addEventListener('click', event => {
+    const grid = document.querySelector('.plan-grid');
+    const open = grid.classList.toggle('totals-folded') === false;
+    event.currentTarget.classList.toggle('act', open);
+    try { localStorage.setItem('plDplTotals', open ? 'open' : 'folded'); } catch { /* ignore */ }
+    syncPlanStickyTops();
+  });
   // Меню «⋯ Инструменты»: закрытие по клику мимо и после выбора.
   { const menu = document.getElementById('dplTools');
     if (menu) {
