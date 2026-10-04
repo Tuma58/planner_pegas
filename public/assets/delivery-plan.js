@@ -35,10 +35,12 @@ function legRegions(context, plan, row) {
   return (from || to) ? `${from || row.leg.split('→')[0]} → ${to || row.leg.split('→')[1]}` : '';
 }
 
+// Плечо — одной строкой (04.10, «разнокалиберные ячейки режут глаз»):
+// зоны ушли в подсказку, все строки сетки одной высоты.
 const legLabelHtml = (context, plan, row) => {
   const regions = legRegions(context, plan, row);
   return regions
-    ? `${escapeHtml(regions)}<small class="muted" style="display:block;font-weight:400;opacity:.75">зоны: ${escapeHtml(row.leg)}</small>`
+    ? `<span title="зоны: ${escapeHtml(row.leg)}">${escapeHtml(regions)}</span>`
     : escapeHtml(row.leg);
 };
 
