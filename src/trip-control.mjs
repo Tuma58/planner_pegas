@@ -343,14 +343,24 @@ export const UNLOAD_STUCK_MS = 6 * 3_600_000;
 
 export function checkStuckUnloading(db, nowMs = Date.now()) {
   const events = [];
+  // Устойчивость к рассинхрону отметок (кейс т947ук58 05.10: «прибыл на
+  // выгрузку» ткнули ДО погрузки — счётчик врал «не выгружают 123 ч» при
+  // плановой выгрузке через сутки): прибытие на выгрузку подтверждается
+  // фактом ПОСЛЕДНЕЙ точки; рейсы без каркаса точек — по-старому.
   const trips = db.prepare(`SELECT t.*,v.plate vehicle_plate,
-    f.name from_name,z.name to_name FROM trips t
+    f.name from_name,z.name to_name,
+    (SELECT s.actual_arrival FROM trip_stops s WHERE s.trip_id=t.id
+       AND s.seq=(SELECT MAX(s2.seq) FROM trip_stops s2 WHERE s2.trip_id=t.id)) last_stop_arrival,
+    (SELECT COUNT(*) FROM trip_stops s WHERE s.trip_id=t.id) stops_n
+    FROM trips t
     JOIN vehicles v ON v.id=t.vehicle_id
     JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
     WHERE t.status='run' AND t.arrived_at IS NOT NULL`).all();
   const stamp = new Date(nowMs).toISOString();
   for (const trip of trips) {
-    const waitedMs = nowMs - Date.parse(trip.arrived_at);
+    const arrivedAt = trip.stops_n ? trip.last_stop_arrival : trip.arrived_at;
+    if (!arrivedAt) continue; // точка выгрузки не подтверждена — машина ещё в пути
+    const waitedMs = nowMs - Date.parse(arrivedAt);
     if (waitedMs < UNLOAD_STUCK_MS) continue;
     if (!trip.unload_alert_at) {
       db.prepare(`UPDATE trips SET unload_alert_at=?,unload_ping_at=?,

@@ -338,7 +338,25 @@ export async function renderDispatcher(container, context, options = {}) {
   const nowMs = Date.now();
   // Выгрузка и простой отсчитываются только от ФАКТА прибытия (arrived_at):
   // рейс без него — «в пути», даже если план прибытия прошёл (это опоздание).
-  const stuckMsOf = trip => trip.arrived_at ? nowMs - Date.parse(trip.arrived_at) : 0;
+  // Прибытие на выгрузку — по факту ПОСЛЕДНЕЙ точки (устойчивость к
+  // рассинхрону, кейс т947ук58: «прибыл» ткнули до погрузки и счётчик
+  // врал «не выгружают 123 ч»); рейсы без каркаса точек — по-старому.
+  const unloadArrivedMs = trip => {
+    const stops = controlByTrip.get(trip.id)?.stops || [];
+    if (stops.length) {
+      const last = stops[stops.length - 1];
+      return last.actual_arrival ? Date.parse(last.actual_arrival) : NaN;
+    }
+    return trip.arrived_at ? Date.parse(trip.arrived_at) : NaN;
+  };
+  const arrivedDesync = trip => {
+    const stops = controlByTrip.get(trip.id)?.stops || [];
+    return Boolean(trip.arrived_at && stops.length && !stops[stops.length - 1].actual_arrival);
+  };
+  const stuckMsOf = trip => {
+    const at = unloadArrivedMs(trip);
+    return Number.isFinite(at) ? nowMs - at : 0;
+  };
   const isStuck = trip => trip.status === 'run' && stuckMsOf(trip) > UNLOAD_STUCK_MS;
   // Особый контроль (не выгружают) — наверху списка линии.
   // Контроль заканчивается фактом выгрузки: этап «документы получены»
@@ -943,7 +961,7 @@ export async function renderDispatcher(container, context, options = {}) {
     const gps = (state.gpsControl || []).find(row => row.trip_id === trip.id);
     const gpsBad = gps && ((gps.silentMin != null && gps.silentMin > 60) || gps.mismatchKm != null);
     const hot = !workedOf(trip) && event.at - Date.now() <= 2 * 3_600_000;
-    if (late || hot || touchStale(trip) || recheckOf(trip) || gpsBad ||
+    if (late || hot || touchStale(trip) || recheckOf(trip) || gpsBad || arrivedDesync(trip) ||
         (trip.deferred_1c_at && !trip.entered_1c_at) || trip.needs_1c_update_at) return 'attention';
     return 'quiet';
   };
@@ -998,8 +1016,10 @@ export async function renderDispatcher(container, context, options = {}) {
           ? `<span class="badge warn" title="Простой добавлен к выручке рейса">простой выставлен: ${money(trip.demurrage_vat)}</span>`
           : (canAct ? `<button class="button small danger" data-demurrage="${trip.id}"
               title="Выставить клиенту простой на выгрузке (часы × ставка)">Выставить простой</button>` : '')}`;
-    } else if (trip.arrived_at) {
-      statusBlock = `<span class="badge ok" title="Факт прибытия отмечен — через 6 часов без выгрузки включится особый контроль">на выгрузке с ${formatDateTime(trip.arrived_at)}</span>
+    } else if (arrivedDesync(trip)) {
+      statusBlock = `<span class="badge warn" title="У рейса стоит отметка «прибыл на выгрузку» (${formatDateTime(trip.arrived_at)}), но на точке выгрузки факта прибытия нет — этапы ткнуты не по порядку. Откройте «⋯ → 🧭 Точки» и поправьте факты; счётчик «не выгружают» на такой рассинхрон не реагирует">⚠ отметки не по порядку — поправьте точки</span>`;
+    } else if (trip.arrived_at && Number.isFinite(unloadArrivedMs(trip))) {
+      statusBlock = `<span class="badge ok" title="Факт прибытия отмечен — через 6 часов без выгрузки включится особый контроль">на выгрузке с ${formatDateTime(new Date(unloadArrivedMs(trip)).toISOString())}</span>
         ${Number(trip.demurrage_vat) > 0
           ? `<span class="badge warn">простой выставлен: ${money(trip.demurrage_vat)}</span>` : ''}`;
     } else if (late) {
