@@ -2424,6 +2424,16 @@ try {
     activeView: () => state.view,
     showModal
   });
+  // Прямые ссылки со страницы графика (этап 3, 04.10): /planner?open=
+  // attendance|timesheet открывает Ресурс и сразу нужный диалог — явка
+  // и табель остаются одними экранами, доступными из обоих мест.
+  const openParam = new URLSearchParams(location.search).get('open');
+  if (openParam === 'attendance' || openParam === 'timesheet') {
+    state.view = 'resource';
+    renderViewTabs();
+    renderMain();
+    setTimeout(() => byId(openParam === 'attendance' ? 'resourceAttendance' : 'resourceTimesheet')?.click(), 600);
+  }
 } catch (error) {
   if (!error.message.includes('Требуется вход')) toast(error.message, 'error');
 }

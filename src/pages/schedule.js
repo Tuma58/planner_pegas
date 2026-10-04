@@ -1333,6 +1333,10 @@ document.getElementById('kpis').addEventListener('click',e=>{
   const cb=document.getElementById(chip.dataset.f); if(!cb) return;
   cb.checked=!cb.checked; renderGrid();
 });
+/* Явка и табель — единые экраны планера, питаются факт-слоем ЭТОГО
+   графика (этап 3): кнопки открывают планер сразу на нужном диалоге. */
+document.getElementById('btnAttendance').onclick=()=>window.open('/planner?open=attendance','_blank');
+document.getElementById('btnTimesheet').onclick=()=>window.open('/planner?open=timesheet','_blank');
 /* Меню «⋯ Инструменты»: закрывается по клику мимо и после выбора кнопки. */
 { const tm=document.getElementById('toolsMenu');
   if(tm){

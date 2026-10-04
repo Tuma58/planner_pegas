@@ -3536,3 +3536,38 @@ test('этап 4-lite: план графика создаёт закреплен
     WHERE note LIKE 'из графика%'`).get();
   assert.equal(again.n, mine.length, 'повтор без дублей');
 });
+
+test('этап 3: карта держателей — доступность для подбора, кэш по rev', async t => {
+  const { applyScheduleSync, scheduleHolderMap } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-hold-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [v1, v2] = db.prepare('SELECT id, plate FROM vehicles LIMIT 2').all();
+  const d1 = db.prepare("SELECT id, full_name FROM drivers WHERE status<>'fired' LIMIT 1").get();
+  const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  const day = off => new Date(todayMs + off * 86_400_000).toISOString().slice(0, 10);
+  // План: «в» сегодня и послезавтра, завтра — ПУСТО (межвахта).
+  const lanes = {};
+  for (const off of [0, 2]) {
+    const mk = day(off).slice(0, 7);
+    if (!lanes[mk]) lanes[mk] = Array(new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate()).fill('');
+    lanes[mk][Number(day(off).slice(8, 10)) - 1] = 'в';
+  }
+  applyScheduleSync(db, { since: 0, crews: { H1: { id: 'H1',
+    ts: [{ id: 'T1', tyagach: v1.plate, pricep: '', tip: '', filial: 'Пенза', crew: 'H1' }],
+    drv: [{ id: 'D1', fio: d1.full_name, tel: '', crew: 'H1', filial: 'Пенза', ts: 'T1',
+      rezhim: '', logist: '', vac: false, plan: lanes, fact: {} }] } }, log: [] });
+  const map = scheduleHolderMap(db);
+  assert.ok(map.scheduledVids.has(v1.id), 'машина ведётся в графике');
+  assert.ok(!map.scheduledVids.has(v2.id), 'нерасписанная машина — вне графика (фолбэк)');
+  assert.ok(map.holder.has(v1.id + '|' + day(0)), 'держатель сегодня есть');
+  assert.ok(!map.holder.has(v1.id + '|' + day(1)), 'завтра пусто — «без водителя по графику»');
+  assert.ok(map.holder.has(v1.id + '|' + day(2)), 'послезавтра держатель есть');
+  // Кэш: без правок графика возвращается тот же объект, после правки — новый.
+  assert.equal(scheduleHolderMap(db), map, 'кэш по rev работает');
+  applyScheduleSync(db, { since: 1, crews: {}, log: [{ t: new Date().toISOString(), a: 'т', what: 'тик' }] });
+  assert.notEqual(scheduleHolderMap(db), map, 'правка графика сбрасывает кэш');
+});

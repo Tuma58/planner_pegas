@@ -204,11 +204,19 @@ export function pushAttendanceToSchedule(db, fio, iso, status, reason, author = 
 // (двое на борту — день пропускаем), ручные закрепления и дни клэшей
 // с ними неприкосновенны, свои записи (note «из графика») полностью
 // пересобираются — правка плана сразу отражается. Идемпотентно.
-export function syncAssignBridge(db, userId = null, horizonDays = 35) {
+// Карта держателей бортов по дням из ПЛАН-слоя графика — общая основа
+// моста закреплений (этап 4-lite) и потребителей доступности (этап 3:
+// подбор ТС). Кэш по schedule_rev: график не менялся — карта та же.
+const MANY = Symbol('двое на борту');
+const holderCaches = new WeakMap(); // по db: в тестах баз несколько
+export function scheduleHolderMap(db, horizonDays = 35) {
+  const rev = Number(metaGet(db, 'schedule_rev') || 0);
+  const today = new Date().toISOString().slice(0, 10);
+  const cached = holderCaches.get(db);
+  if (cached && cached.rev === rev && cached.today === today &&
+      cached.horizonDays === horizonDays) return cached;
   const crews = loadCrews(db);
-  if (!crews.size) return { made: 0, days: 0 };
-  const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
-  const today = dayIso(todayMs, 0);
+  const todayMs = Date.parse(today + 'T00:00:00Z');
   const horizon = [...Array(horizonDays)].map((_, i) => dayIso(todayMs, i));
   // ФИО графика → водитель планера (однозначные; дубль ФИО не сличаем).
   const idByFio = new Map();
@@ -230,7 +238,6 @@ export function syncAssignBridge(db, userId = null, horizonDays = 35) {
     }
   }
   // Держатель каждого борта по дням: сначала свои, замещения NNN поверх.
-  const MANY = Symbol('many');
   const holder = new Map();
   const put = (vid, day, drvId) => {
     const key = vid + '|' + day;
@@ -261,6 +268,21 @@ export function syncAssignBridge(db, userId = null, horizonDays = 35) {
       }
     }
   }
+  // Машины, которые вообще ведутся в графике (есть держатель хоть в один
+  // день горизонта): только для них пустой день = осознанное «без водителя».
+  const scheduledVids = new Set([...holder.keys()].map(key => key.split('|')[0]));
+  const horizonSet = new Set(horizon);
+  const built = { rev, today, horizonDays, crewCount: crews.size,
+    holder, MANY, idByFio, horizon, horizonSet, scheduledVids };
+  holderCaches.set(db, built);
+  return built;
+}
+
+export function syncAssignBridge(db, userId = null, horizonDays = 35) {
+  const map = scheduleHolderMap(db, horizonDays);
+  if (!map.crewCount) return { made: 0, days: 0 };
+  const { holder, idByFio, horizon } = map;
+  const today = horizon[0];
   // Дни, занятые ручными закреплениями (или клэшем водителя на другом
   // борту руками), вычитаем из своих.
   const manualVeh = new Set();

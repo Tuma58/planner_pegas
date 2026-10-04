@@ -1292,6 +1292,11 @@ function renderResourceTasks(container, context, refDay, withState) {
 export async function renderResource(container, context) {
   const { state } = context;
   const data = state.data;
+  // Этап 4 перестройки (команда руководителя 04.10): старая сетка
+  // закреплений «По ТС/По водителям» выведена — план людей живёт в
+  // «📋 Графике», закрепления создаёт мост. Вкладка показывает гант;
+  // код сетки остаётся в файле страховкой до стабилизации.
+  state.resourceView = 'gantt';
   // Разметка и метрики главного ганта: та же ширина дня, sticky-шапка и колонка,
   // выходные и маркер «сегодня» — ресурс выглядит и ведёт себя как гант.
   const dayWidth = Number(data.settings.general.plannerCellWidth || 44);
@@ -1471,14 +1476,6 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
           ${filter || query ? `<span class="muted" style="font-size:var(--fs-xs)">показано ${visible.length} из ${withState.length}</span>` : ''}
         </span>
         <span class="resctl-group">
-          <button class="button small ${state.resourceView !== 'gantt' && state.resourceView !== 'drivers' ? '' : 'ghost'}"
-            id="resViewTs" title="График работы: строка — сцепка, в ячейках водитель по дням">📅 По ТС</button>
-          <button class="button small ${state.resourceView === 'drivers' ? '' : 'ghost'}"
-            id="resViewDrivers" title="График работы: строка — водитель, в ячейках сцепка по дням">👤 По водителям</button>
-          <button class="button small ${state.resourceView === 'gantt' ? '' : 'ghost'}"
-            id="resViewGantt" title="Классический гант ресурса: рейсы и интервалы недоступности">Гант</button>
-        </span>
-        <span class="resctl-group">
           ${context.openStats ? '<button class="button ghost small" id="resourceStats" title="Машино-дни, КТГ и выручка по каждой сцепке за месяц">Аналитика</button>' : ''}
           ${context.openDrivers ? '<button class="button ghost small" id="resourceDrivers" title="Справочник водителей: закрепление, отпуска, кто без машины">Водители</button>' : ''}
           <button class="button ghost small" id="resourceAttendance"
@@ -1498,7 +1495,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
           <button class="button ghost small" id="resourcePeriod"
             title="Периодные закрепления водителей за ТС: подмены на межвахту, командировки">📌 На период</button>
           <button class="button small" id="resourceSchedulePage"
-            title="Новый график работы и закрепления: экипажи, план/факт, вахтовые режимы, сверхвахта к доплате. Этап 1 перестройки — работает параллельно с этой вкладкой">📋 График (бета)</button>
+            title="График работы и закрепления — главный инструмент планирования людей: экипажи, план/факт, вахтовые режимы, сверхвахта к доплате; явка, табель и закрепления питаются отсюда">📋 График</button>
           ${context.openFleet ? '<button class="button ghost small" id="resourceFleet" title="Весь парк: карточки, замена водителя и прицепа, планирование">Справочник ТС</button>' : ''}
           <button class="button small" id="resourceAdd">+ диспозиция</button>
         </span>
@@ -1570,11 +1567,6 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   container.querySelector('#resourceTrailerMove').onclick = () => trailerMoveDialog(context);
   container.querySelector('#resourcePeriod').onclick = () => periodAssignDialog(context);
   container.querySelector('#resourceSchedulePage').onclick = () => window.open('/schedule', '_blank');
-  const setView = view => { state.resourceView = view; renderResource(container, context); };
-  container.querySelector('#resViewTs').onclick = () => setView('ts');
-  container.querySelector('#resViewDrivers').onclick = () => setView('drivers');
-  container.querySelector('#resViewGantt').onclick = () => setView('gantt');
-
   if (state.resourceView !== 'gantt') loadResourceSchedule(container, context);
   if (context.openFleet) container.querySelector('#resourceFleet').onclick = () => context.openFleet();
   container.querySelector('#resourceAdd').onclick = () => context.openDisposition(null, {

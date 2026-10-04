@@ -23,7 +23,7 @@ import {
   gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
 import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
@@ -1495,10 +1495,29 @@ function pickVehicleFor(order) {
   // адреса на каждую заявку.
   const target = addressPointById(order.from_address_id) || addressPointByText(order.from_point);
   if (!target) return null;
+  // Доступность по графику (этап 3, 04.10): у машины, которая ведётся в
+  // графике, пустой план на дни окна погрузки = осознанное «без водителя»
+  // (межвахта, отпуск, вакансия) — такую не рекомендуем. Машины вне
+  // графика не наказываем (пофрагментный фолбэк на старое поведение).
+  const sched = (() => { try { return scheduleHolderMap(db); } catch { return null; } })();
+  const mskDayOf = iso => new Date(Date.parse(iso) + 3 * 3600e3).toISOString().slice(0, 10);
+  const loadDays = (() => {
+    if (!sched) return [];
+    const list = [];
+    for (let day = mskDayOf(windowFrom); day <= mskDayOf(windowTo) && list.length < 7;
+      day = new Date(Date.parse(day + 'T00:00:00Z') + 86_400_000).toISOString().slice(0, 10)) {
+      if (sched.horizonSet.has(day)) list.push(day);
+    }
+    return list;
+  })();
+  const noDriverBySchedule = vid => sched && loadDays.length &&
+    sched.scheduledVids.has(vid) &&
+    loadDays.every(day => !sched.holder.has(vid + '|' + day));
   let best = null;
   let bestDominant = null;
   for (const vehicle of candidates) {
     if (!bodyTypeMatches(order.body_type, vehicle.type_name)) continue;
+    if (noDriverBySchedule(vehicle.id)) continue;
     // Тип, которого нет в истории клиента (10+ рейсов), — не предлагаем.
     if (histTotal >= 10 && histOf(vehicle.type_name) === 0) continue;
     const origin = vehiclePositionBefore(vehicle.id, windowFrom);
