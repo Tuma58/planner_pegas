@@ -931,6 +931,39 @@ export async function renderDispatcher(container, context, options = {}) {
     };
   };
 
+  // Уровень внимания карточки (05.10, разбор руководителя «глаз
+  // замыливается»): alarm — вмешаться сейчас (стоит/не выгружают),
+  // attention — событие близко/просрочено, сигнал или долг,
+  // quiet — едет по плану: сворачивается в одну строку.
+  const levelOf = trip => {
+    const event = nextControlEvent(trip);
+    if (event.at <= 0 || isStuck(trip)) return 'alarm';
+    const delay = delayByTrip.get(trip.id) || 0;
+    const late = !trip.arrived_at && delay > LATE_MS;
+    const gps = (state.gpsControl || []).find(row => row.trip_id === trip.id);
+    const gpsBad = gps && ((gps.silentMin != null && gps.silentMin > 60) || gps.mismatchKm != null);
+    const hot = !workedOf(trip) && event.at - Date.now() <= 2 * 3_600_000;
+    if (late || hot || touchStale(trip) || recheckOf(trip) || gpsBad ||
+        (trip.deferred_1c_at && !trip.entered_1c_at) || trip.needs_1c_update_at) return 'attention';
+    return 'quiet';
+  };
+  // Тихий рейс одной строкой: светофор · борт · водитель · событие.
+  // Клик раскрывает полную карточку (память — на время смены вкладки).
+  state.dispOpenQuiet = state.dispOpenQuiet || new Set();
+  const quietRow = trip => {
+    const event = nextControlEvent(trip);
+    const worked = workedOf(trip);
+    return `<div class="ctrl-quiet-row" data-quiet-open="${trip.id}"
+      title="Развернуть карточку: лента точек, заметки, действия">
+      <span class="ctrl-dot ok"></span>
+      <b class="mono">${escapeHtml(trip.vehicle_plate || '')}</b>
+      <span class="muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
+      <span class="ctrl-quiet-ev">${escapeHtml(event.label)}${Number.isFinite(event.at) && event.at > 0
+        ? ` · ${formatDateTime(new Date(event.at).toISOString())}` : ''}</span>
+      ${worked ? `<span class="ctrl-worked-note" title="${escapeHtml(worked.note || '')}">✓ ${escapeHtml(worked.done_by || '')}</span>` : ''}
+      <span class="muted" style="margin-left:auto">⌄</span>
+    </div>`;
+  };
   const ctrlCard = trip => {
     const delay = delayByTrip.get(trip.id) || 0;
     const stuck = isStuck(trip);
@@ -1009,8 +1042,6 @@ export async function renderDispatcher(container, context, options = {}) {
     return note?.note ? `<span class="ctrl-last-note" title="${escapeHtml(note.note)}">💬 заметка
       · ${escapeHtml(note.done_by || '')} · ${markTime(note)} — «${escapeHtml(String(note.note).slice(0, 60))}»</span>` : '';
   })()}
-      ${canAct ? `<button class="button ghost small ctrl-worked-btn" data-prepnote="${trip.id}"
-        title="Комментарий по рейсу: виден всей смене и в карточке звонка водителя">💬 Заметка</button>` : ''}
       ${canAct && nextEvent.stopId && !worked ? `<button class="button small ctrl-quick"
         data-quick-stop="${nextEvent.stopId}" data-quick-field="${nextEvent.stepFields}"
         data-quick-label="${escapeHtml(nextEvent.stepLabel)}"
@@ -1027,11 +1058,20 @@ export async function renderDispatcher(container, context, options = {}) {
       <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
         ${statusBlock} ${recheckBlock} ${debtBlock}
         <span style="display:flex;gap:5px">
-          <button class="button ghost small" data-stops-toggle="${trip.id}"
-            title="Лента контрольных точек: прибытие, работы, убытие, простой">🧭 Точки${stopsCount ? ` (${stopsCount})` : ''}</button>
-          <button class="button ghost small" data-question-new="${trip.id}"
-            title="Водитель позвонил с вопросом — зафиксировать (норматив ответа 10 минут)">📞 Вопрос</button>
-          <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
+          ${state.dispOpenQuiet.has(trip.id) ? `<button class="button ghost small" data-quiet-close="${trip.id}"
+            title="Свернуть карточку обратно в строку">⌃ Свернуть</button>` : ''}
+          <details class="tb-menu">
+            <summary class="button ghost small" title="Лента точек, вопрос водителя, внештатная, заметка">⋯</summary>
+            <div class="tb-menu-list">
+              <button class="button ghost small" data-stops-toggle="${trip.id}"
+                title="Лента контрольных точек: прибытие, работы, убытие, простой">🧭 Точки${stopsCount ? ` (${stopsCount})` : ''}</button>
+              <button class="button ghost small" data-question-new="${trip.id}"
+                title="Водитель позвонил с вопросом — зафиксировать (норматив ответа 10 минут)">📞 Вопрос</button>
+              <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
+              <button class="button ghost small" data-prepnote="${trip.id}"
+                title="Комментарий по рейсу: виден всей смене и в карточке звонка водителя">💬 Заметка</button>
+            </div>
+          </details>
         </span>
       </span>
       </div>
@@ -1088,8 +1128,20 @@ export async function renderDispatcher(container, context, options = {}) {
     </div>`;
   };
   const inWork = state.dispatcherStaleOnly ? online.filter(touchStale) : online;
-  const onlineCards = inWork.map(ctrlCard).join('')
-    || '<p class="muted">На линии никого нет.</p>';
+  // Секции по уровню внимания; порядок внутри — прежняя сортировка
+  // срочности. Тихие свёрнуты в строки (решение руководителя 05.10):
+  // тишина = норма, раскрытие кликом.
+  const byLevel = { alarm: [], attention: [], quiet: [] };
+  inWork.forEach(trip => byLevel[levelOf(trip)].push(trip));
+  const section = (title, cls, items, render) => items.length
+    ? `<div class="ctrl-sec-head ${cls}">${title} (${items.length})</div>` + items.map(render).join('')
+    : '';
+  const onlineCards = (
+    section('🚨 Вмешаться', 'bad', byLevel.alarm, ctrlCard) +
+    section('⏳ Требуют внимания', 'warn', byLevel.attention, ctrlCard) +
+    section('🛣 Едут по плану', '', byLevel.quiet,
+      trip => state.dispOpenQuiet.has(trip.id) ? ctrlCard(trip) : quietRow(trip))
+  ) || '<p class="muted">На линии никого нет.</p>';
   // Перегоны порожним: машина едет пустой туда, где нужна. Этапы короче
   // рейса — задание водителю, выезд, прибытие; по прибытии сцепка числится
   // в точке назначения и уходит с контроля.
@@ -1697,6 +1749,29 @@ export async function renderDispatcher(container, context, options = {}) {
         toast(error.message, 'error');
       }
     }));
+  // Тихая строка ↔ полная карточка (память на Set — переживает тики).
+  container.querySelectorAll('[data-quiet-open]').forEach(row =>
+    row.addEventListener('click', () => {
+      state.dispOpenQuiet.add(row.dataset.quietOpen);
+      renderDispatcher(container, context);
+    }));
+  container.querySelectorAll('[data-quiet-close]').forEach(button =>
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      state.dispOpenQuiet.delete(button.dataset.quietClose);
+      renderDispatcher(container, context);
+    }));
+  // Меню «⋯» карточек: закрытие по клику мимо и после выбора действия.
+  if (!container.dataset.ctrlMenuWired) {
+    container.dataset.ctrlMenuWired = '1';
+    document.addEventListener('click', event => {
+      container.querySelectorAll('details.tb-menu[open]').forEach(menu => {
+        if (!menu.contains(event.target)) menu.open = false;
+      });
+    });
+  }
+  container.querySelectorAll('details.tb-menu .tb-menu-list button').forEach(button =>
+    button.addEventListener('click', () => { button.closest('details').open = false; }));
   container.querySelectorAll('[data-stops-toggle]').forEach(button =>
     button.addEventListener('click', () => {
       const tripId = button.dataset.stopsToggle;

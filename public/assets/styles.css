@@ -149,6 +149,19 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
    уносит её на отдельную строку), внутри не переносится. */
 .tb-zone.toolbar-end { display: flex; align-items: center; flex-wrap: nowrap; margin-left: auto; }
 .tb-zone.hidden { display: none; }
+/* Контроль на линии (05.10): секции по уровню внимания, тихие рейсы —
+   однострочники (тишина = норма), раскрытие кликом. */
+.ctrl-sec-head { margin: 12px 0 6px; font-size: var(--fs-xs); font-weight: 800;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.ctrl-sec-head.bad { color: #a4321f; }
+.ctrl-sec-head.warn { color: #8a6a1c; }
+.ctrl-quiet-row { display: flex; align-items: center; gap: 9px; padding: 6px 11px;
+  margin-bottom: 5px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); font-size: var(--fs-sm); cursor: pointer; }
+.ctrl-quiet-row:hover { border-color: var(--navy); }
+.ctrl-quiet-ev { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctrl-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.ctrl-dot.ok { background: var(--ok); }
 /* Компакт-чипы метрик планов (паттерн инфо-строки, 04.10): подпись·число
    одной строкой, нулевые скрыты, чип с data-act кликабелен. */
 .mchip { display: inline-flex; align-items: baseline; gap: 5px; border: 1px solid var(--line);
