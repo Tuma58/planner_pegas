@@ -186,20 +186,37 @@ export function orderNet(order, data) {
   return (Number(order.rate_vat) || 0) / (1 + vat);
 }
 
-// Живой пересчёт «Без НДС» в форме: от ставки, галочки наличных и заказчика
-// (ИП — 7%). Показ — по мере ввода, сохранять нечего: поле считаемое.
+// Пара «с НДС ↔ без НДС» (просьба руководителя 05.10: продажам иногда
+// известна именно сумма без НДС): ввод в любое из полей пересчитывает
+// второе по ставке клиента (наличные — суммы равны, ИП — 7%, остальные
+// — ставка из настроек). Хранится по-прежнему только ставка с НДС —
+// формат данных и сервер не меняются.
 function wireNetField(form, netInput, data) {
-  const update = () => {
-    const rate = parseMoney(form.elements.rateVat?.value);
-    netInput.value = rate ? money(orderNet({
-      rate_vat: rate,
-      cash: form.elements.cash?.checked ? 1 : 0,
-      customer_name: form.elements.customerName?.value || ''
-    }, data)) : '—';
+  const calc = data.settings.calculation;
+  const gross = form.elements.rateVat;
+  const vatOf = () => (form.elements.cash?.checked ? 0
+    : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(form.elements.customerName?.value || '')
+      ? Number(calc.individualEntrepreneurVatRate ?? 0.07)
+      : Number(calc.vatRate ?? 0.22));
+  const fromGross = () => {
+    const rate = parseMoney(gross?.value);
+    netInput.value = rate ? String(Math.round(rate / (1 + vatOf()))) : '';
   };
-  form.addEventListener('input', update);
-  form.addEventListener('change', update);
-  update();
+  const fromNet = () => {
+    const net = parseMoney(netInput.value);
+    if (gross) gross.value = net ? String(Math.round(net * (1 + vatOf()))) : '';
+  };
+  netInput.addEventListener('input', fromNet);
+  gross?.addEventListener('input', fromGross);
+  // Смена клиента или галочки наличных меняет ставку НДС: пересчёт от
+  // того поля, в котором человек работает (иначе — от хранимой «с НДС»).
+  const onOther = event => {
+    if (event.target === netInput || event.target === gross) return;
+    if (document.activeElement === netInput) fromNet(); else fromGross();
+  };
+  form.addEventListener('input', onOther);
+  form.addEventListener('change', onOther);
+  fromGross();
 }
 
 // ── Задание продажам на дату ──────────────────────────────────────────────
@@ -1183,7 +1200,9 @@ export async function renderSales(container, context) {
             <label class="field">Ставка с НДС, ₽ (пусто = рыночная)<input name="rateVat" id="salesRate"
               type="text" inputmode="numeric" autocomplete="off"
               placeholder="можно вставить «95 000» или «95000,50»"></label>
-            <label class="field">Без НДС, ₽ (авто)<input id="salesRateNet" readonly tabindex="-1"></label>
+            <label class="field">Без НДС, ₽<input id="salesRateNet" type="text" inputmode="numeric"
+              autocomplete="off" placeholder="введите, если знаете её"
+              title="Знаете сумму именно без НДС — вводите сюда: «с НДС» посчитается сама (наличные — суммы равны, ИП — 7%)"></label>
           </div>
           <label class="checkline"><input type="checkbox" name="cash"> Перевозка за наличные —
             водитель забирает оплату после выгрузки</label>
@@ -1796,7 +1815,8 @@ export function editOrderDialog(order, data, context) {
     <div class="form-grid">
       <label class="field">Ставка с НДС, ₽<input name="rateVat" type="text" inputmode="numeric"
         autocomplete="off" value="${Number(order.rate_vat) || 0}"></label>
-      <label class="field">Без НДС, ₽ (авто)<input id="editRateNet" readonly tabindex="-1"></label>
+      <label class="field">Без НДС, ₽<input id="editRateNet" type="text" inputmode="numeric"
+        autocomplete="off" title="Знаете сумму именно без НДС — вводите сюда: «с НДС» посчитается сама"></label>
     </div>
     <label class="checkline"><input type="checkbox" name="cash" ${Number(order.cash) ? 'checked' : ''}>
       Перевозка за наличные — водитель забирает оплату после выгрузки</label>
