@@ -1147,6 +1147,70 @@ export async function renderDispatcher(container, context, options = {}) {
       ${opened ? `<div class="stops-inline">${stopsBlock(trip)}</div>` : ''}
     </div>`;
   };
+  // ── МАКЕТ «Очередь контролей» (решение руководителя 05.10: контроль
+  // концептуально — временнАя очередь задач, как АРМ его учётной
+  // системы: Успевает / Отложить; прибытие · убытие · промежуточный).
+  // Очередь строится из тех же событий, что карточки; «✓ Успевает»
+  // пишет ту же отметку, что «✓ Отработано» — виды согласованы.
+  // «Отложить +1 ч» в макете локальное (на сессию), в полной версии
+  // станет общей отметкой смены.
+  const MID_CONTROL_MS = Number(data.settings.calculation.midControlHours ?? 4) * 3_600_000;
+  state.dispSnooze = state.dispSnooze || new Map();
+  const buildControlQueue = () => {
+    const rows = [];
+    for (const trip of online) {
+      const event = nextControlEvent(trip);
+      const worked = workedOf(trip);
+      const key = eventKeyOf(trip);
+      const snoozedUntil = state.dispSnooze.get(key) || 0;
+      const base = { trip, event, key, worked, snoozedUntil };
+      if (event.at <= 0) {
+        rows.push({ ...base, kind: 'alarm', at: Date.now() + event.at, kindLabel: '🚨 вмешаться' });
+      } else if (String(event.label).startsWith('🛣')) {
+        rows.push({ ...base, kind: 'arrive', at: event.at, kindLabel: '🅿 прибытие' });
+        // Промежуточный: дальняя дорога — звонок каждые N часов от
+        // последнего касания, пока не настало время контроля прибытия.
+        const midAt = lastTouchMs(trip) + MID_CONTROL_MS;
+        if (event.at - Date.now() > MID_CONTROL_MS && midAt < event.at) {
+          rows.push({ ...base, kind: 'mid', at: midAt, kindLabel: '📞 промежуточный',
+            key: `${trip.id}|mid|${Math.round(midAt / 600_000)}` });
+        }
+      } else {
+        rows.push({ ...base, kind: 'depart', at: event.at, kindLabel: '🚚 убытие' });
+      }
+    }
+    const active = rows.filter(row => !row.worked && row.snoozedUntil < Date.now());
+    const done = rows.filter(row => row.worked);
+    active.sort((a, b) => a.at - b.at);
+    return { active, done: done.length, snoozed: rows.length - active.length - done.length };
+  };
+  const queueRow = row => {
+    const overdue = row.at < Date.now();
+    const trip = row.trip;
+    const waitLabel = overdue
+      ? `просрочен ${Math.max(1, Math.floor((Date.now() - row.at) / 3_600_000))} ч`
+      : formatDateTime(new Date(row.at).toISOString());
+    return `<div class="cq-row ${overdue ? 'overdue' : ''} ${row.kind === 'alarm' ? 'alarm' : ''}">
+      <span class="cq-time" title="${overdue ? 'Контроль просрочен — разобрать первым' : 'Когда диспетчер должен проверить'}">${waitLabel}</span>
+      <span class="cq-kind">${row.kindLabel}</span>
+      <b class="mono cq-plate">${escapeHtml(trip.vehicle_plate || '')}</b>
+      <span class="cq-driver muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
+      <span class="cq-what" title="${escapeHtml(row.event.label)}">${escapeHtml(row.event.label)}</span>
+      <span class="cq-actions">
+        ${canAct && row.event.stopId && row.kind !== 'mid' ? `<button class="button small ctrl-quick"
+          data-quick-stop="${row.event.stopId}" data-quick-field="${row.event.stepFields}"
+          data-quick-label="${escapeHtml(row.event.stepLabel)}"
+          title="Факт подтверждён: «${escapeHtml(row.event.stepLabel)}»">✔ ${escapeHtml(row.event.stepLabel)}</button>` : ''}
+        ${canAct ? `<button class="button ghost small" data-worked="${escapeHtml(row.key)}"
+          data-worked-label="${escapeHtml(row.event.label)}" data-worked-trip="${trip.id}"
+          title="Связались, едет по плану — следующий контроль назначится сам">✓ Успевает</button>` : ''}
+        ${canAct ? `<button class="button ghost small" data-cq-snooze="${escapeHtml(row.key)}"
+          title="Отложить контроль на час (макет: откладывание живёт до перезагрузки страницы)">⏰ +1 ч</button>` : ''}
+        <button class="button ghost small" data-cq-card="${trip.id}"
+          title="Паспорт рейса: лента точек, отклонения, заметки">Карточка</button>
+      </span>
+    </div>`;
+  };
   const inWork = state.dispatcherStaleOnly ? online.filter(touchStale) : online;
   // Секции по уровню внимания; порядок внутри — прежняя сортировка
   // срочности. Тихие свёрнуты в строки (решение руководителя 05.10):
@@ -1273,7 +1337,17 @@ export async function renderDispatcher(container, context, options = {}) {
           <div class="list">${transferCards}</div>
           <div class="scolh" style="margin-top:12px">Контроль на линии <span>${inWork.length}</span>${staleCount ? `<button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" style="margin-left:8px" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button>` : ''}</div>`
     : `<div class="scolh">Контроль на линии <span>${inWork.length}</span>${staleCount ? `<button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" style="margin-left:8px" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button>` : ''}</div>`}
-        <div class="list">${onlineCards}</div>
+        <div class="cq-switch">
+          <button class="button small ${state.dispatcherCtrlView === 'queue' ? '' : 'ghost'}" id="ctrlViewQueue"
+            title="МАКЕТ нового контроля: очередь задач по времени — что проверить и к какому часу">📋 Очередь (макет)</button>
+          <button class="button small ${state.dispatcherCtrlView === 'queue' ? 'ghost' : ''}" id="ctrlViewCards">Карточки</button>
+        </div>
+        ${state.dispatcherCtrlView === 'queue' ? (() => {
+    const queue = buildControlQueue();
+    return `<div class="cq-head"><span>Время</span><span>Контроль</span><span>Борт</span><span>Водитель</span><span>Что проверяем</span><span></span></div>
+      <div class="list">${queue.active.map(queueRow).join('') || '<p class="muted">Очередь пуста — все контроли отработаны.</p>'}</div>
+      <div class="geohint">Отработано: ${queue.done} · отложено: ${queue.snoozed} · «✓ Успевает» пишет ту же отметку, что «✓ Отработано» в карточках — виды согласованы. Промежуточный контроль — каждые ${Math.round(MID_CONTROL_MS / 3_600_000)} ч дальней дороги.</div>`;
+  })() : `<div class="list">${onlineCards}</div>`}
         <div class="geohint">Внештатная ситуация: поломка (ремонт + пересадка или снятие),
           отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в продажи.</div>
       </div>
@@ -1768,6 +1842,26 @@ export async function renderDispatcher(container, context, options = {}) {
         button.disabled = false;
         toast(error.message, 'error');
       }
+    }));
+  // Переключатель вида контроля: очередь (макет) ↔ карточки.
+  container.querySelector('#ctrlViewQueue')?.addEventListener('click', () => {
+    state.dispatcherCtrlView = 'queue'; renderDispatcher(container, context);
+  });
+  container.querySelector('#ctrlViewCards')?.addEventListener('click', () => {
+    state.dispatcherCtrlView = 'cards'; renderDispatcher(container, context);
+  });
+  container.querySelectorAll('[data-cq-snooze]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.dispSnooze.set(button.dataset.cqSnooze, Date.now() + 3_600_000);
+      renderDispatcher(container, context);
+    }));
+  container.querySelectorAll('[data-cq-card]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.dispatcherCtrlView = 'cards';
+      state.dispOpenQuiet = state.dispOpenQuiet || new Set();
+      state.dispOpenQuiet.add(button.dataset.cqCard);
+      renderDispatcher(container, context);
+      setTimeout(() => container.querySelector(`[data-quiet-close="${button.dataset.cqCard}"], .card`)?.scrollIntoView({ block: 'center' }), 150);
     }));
   // Тихая строка ↔ полная карточка (память на Set — переживает тики).
   container.querySelectorAll('[data-quiet-open]').forEach(row =>

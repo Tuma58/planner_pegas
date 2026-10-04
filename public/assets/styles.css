@@ -149,6 +149,32 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
    уносит её на отдельную строку), внутри не переносится. */
 .tb-zone.toolbar-end { display: flex; align-items: center; flex-wrap: nowrap; margin-left: auto; }
 .tb-zone.hidden { display: none; }
+/* Очередь контролей (макет 05.10): строгая таблица задач по времени —
+   как АРМ учётной системы руководителя: Успевает / Отложить. */
+.cq-switch { display: flex; gap: 6px; margin: 6px 0 8px; }
+.cq-head, .cq-row { display: grid; align-items: center; gap: 3px 8px;
+  grid-template-columns: 100px 112px 86px minmax(0, 1fr) auto; }
+.cq-head { padding: 4px 10px; font-size: var(--fs-xs); font-weight: 800;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.cq-head span:last-child { display: none; }
+.cq-row { padding: 5px 10px; margin-bottom: 4px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--card); font-size: var(--fs-sm); min-width: 0; }
+/* Два этажа: сверху время · вид · борт · водитель · кнопки, снизу —
+   «что проверяем» на всю ширину (иначе узкая колонка съедала текст). */
+.cq-actions { grid-row: 1 / span 2; grid-column: 5; display: flex; gap: 5px;
+  white-space: nowrap; align-self: center; }
+.cq-what { grid-row: 2; grid-column: 1 / 5; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-xs); }
+.cq-row.overdue { border-color: #c99a2e; }
+.cq-row.overdue .cq-time { color: #a4321f; font-weight: 800; }
+.cq-row.alarm { background: #fbe9e7; border-color: #e5b3a8; }
+[data-theme="dark"] .cq-row.alarm { background: #3a2320; border-color: #7a4035; }
+.cq-time { font-weight: 700; white-space: nowrap; }
+.cq-kind, .cq-driver { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+@media (max-width: 1100px) { .cq-head { display: none; }
+  .cq-row { grid-template-columns: 100px 86px minmax(0, 1fr); }
+  .cq-what { grid-column: 1 / -1; }
+  .cq-actions { grid-row: auto; grid-column: 1 / -1; } }
 /* Контроль на линии (05.10): секции по уровню внимания, тихие рейсы —
    однострочники (тишина = норма), раскрытие кликом. */
 .ctrl-sec-head { margin: 12px 0 6px; font-size: var(--fs-xs); font-weight: 800;
