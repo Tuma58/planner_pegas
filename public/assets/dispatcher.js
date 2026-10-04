@@ -1167,12 +1167,15 @@ export async function renderDispatcher(container, context, options = {}) {
       if (event.at <= 0) {
         rows.push({ ...base, kind: 'alarm', at: Date.now() + event.at, kindLabel: '🚨', kindHint: 'вмешаться' });
       } else if (String(event.label).startsWith('🛣')) {
+        // (ранги приоритета проставляются после сборки — см. sort ниже)
         // ОДНА строка на рейс (разбор руководителя 06.10 «вижу дубль»):
         // пока до контроля прибытия далеко, рейс живёт в очереди
         // промежуточным звонком; ближе срока — контролем прибытия.
-        const midAt = lastTouchMs(trip) + MID_CONTROL_MS;
+        const touchedMs = lastTouchMs(trip);
+        const midAt = touchedMs + MID_CONTROL_MS;
         if (event.at - Date.now() > MID_CONTROL_MS && midAt < event.at) {
           rows.push({ ...base, kind: 'mid', at: midAt, kindLabel: '📞', kindHint: 'промежуточный контроль',
+            silenceH: Math.max(1, Math.floor((Date.now() - touchedMs) / 3_600_000)),
             key: `${trip.id}|mid|${Math.round(midAt / 600_000)}` });
         } else {
           rows.push({ ...base, kind: 'arrive', at: event.at, kindLabel: '🅿', kindHint: 'контроль прибытия' });
@@ -1183,23 +1186,30 @@ export async function renderDispatcher(container, context, options = {}) {
     }
     const active = rows.filter(row => !row.worked && row.snoozedUntil < Date.now());
     const done = rows.filter(row => row.worked);
-    active.sort((a, b) => a.at - b.at);
+    // Приоритет подъёма (разбор руководителя 06.10): сначала аварии,
+    // затем ПРОСРОЧЕННЫЕ события рейса (прибытие/убытие — там машина и
+    // деньги), затем «пора позвонить» по давности связи, затем будущее
+    // по времени. Давно молчащий телефон не должен заслонять
+    // просроченную выгрузку.
+    const rankOf = row => row.kind === 'alarm' ? 0
+      : row.kind !== 'mid' && row.at < Date.now() ? 1
+      : row.kind === 'mid' ? 2 : 3;
+    active.sort((a, b) => rankOf(a) - rankOf(b) || a.at - b.at);
     return { active, done: done.length, snoozed: rows.length - active.length - done.length };
   };
   const queueRow = row => {
     const overdue = row.at < Date.now();
     const trip = row.trip;
     const waitLabel = overdue
-      ? (row.kind === 'mid'
-        ? `пора · без связи ${Math.max(1, Math.floor((Date.now() - row.at + MID_CONTROL_MS) / 3_600_000))} ч`
-        : `просрочен ${Math.max(1, Math.floor((Date.now() - row.at) / 3_600_000))} ч`)
+      ? (row.kind === 'mid' ? 'пора' : `просрочен ${Math.max(1, Math.floor((Date.now() - row.at) / 3_600_000))} ч`)
       : formatDateTime(new Date(row.at).toISOString());
     return `<div class="cq-row ${overdue ? 'overdue' : ''} ${row.kind === 'alarm' ? 'alarm' : ''}">
       <span class="cq-time" title="${overdue ? 'Контроль просрочен — разобрать первым' : 'Когда диспетчер должен проверить'}">${waitLabel}</span>
       <span class="cq-kind" title="${escapeHtml(row.kindHint || '')}">${row.kindLabel}</span>
       <b class="mono cq-plate">${escapeHtml(trip.vehicle_plate || '')}</b>
       <span class="cq-driver muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
-      <span class="cq-what" title="${escapeHtml(row.event.label)}">${escapeHtml(row.event.label)}</span>
+      <span class="cq-what" title="${escapeHtml(row.event.label)}">${row.silenceH
+    ? `<b class="cq-silence" title="Сколько часов с последнего касания рейса (отметки, заметки, контроль)">📵 ${row.silenceH} ч без связи</b> · ` : ''}${escapeHtml(row.event.label)}</span>
       <span class="cq-actions">
         ${canAct && row.event.stopId && row.kind !== 'mid' ? `<button class="button small ctrl-quick"
           data-quick-stop="${row.event.stopId}" data-quick-field="${row.event.stepFields}"

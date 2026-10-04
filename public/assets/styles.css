@@ -156,7 +156,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
    прокрутка): вид контроля — иконкой, кнопки переносятся внутри
    ячейки, фиксированные колонки минимальны. */
 .cq-head, .cq-row { display: grid; align-items: center; gap: 3px 8px;
-  grid-template-columns: 92px 30px 82px minmax(0, 1fr) auto; }
+  grid-template-columns: 112px 30px 82px minmax(0, 1fr) auto; }
 .cq-head { padding: 4px 10px; font-size: var(--fs-xs); font-weight: 800;
   letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .cq-head span:last-child { display: none; }
@@ -170,6 +170,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .cq-actions .button { padding: 2px 8px; min-height: 24px; }
 .cq-what { grid-row: 2; grid-column: 1 / 5; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-xs); }
+.cq-silence { color: #a4321f; font-weight: 700; }
+[data-theme="dark"] .cq-silence { color: #ef9a8c; }
+/* Время не вылезает под соседнюю колонку (жалоба «трубка закрывает время»). */
+.cq-time { overflow: hidden; text-overflow: ellipsis; }
 .cq-row.overdue { border-color: #c99a2e; }
 .cq-row.overdue .cq-time { color: #a4321f; font-weight: 800; }
 .cq-row.alarm { background: #fbe9e7; border-color: #e5b3a8; }
