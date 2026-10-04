@@ -811,6 +811,84 @@ function assignQualityLine(dayIso, todayIso) {
   return total ? ` · подбор ТС: принято ${accepted} из ${total} (${Math.round(accepted / total * 100)}%)` : '';
 }
 
+// Неоформленные порожние перегоны (инструмент 04.10, разбор
+// руководителя: «для логистов это отклонение»): машина выгрузилась в
+// точке А, следующая погрузка — в Б дальше норматива, а перегона между
+// ними нет. Пока перегон не оформлен, гант, подбор и стыковка считают
+// машину не там, где она есть. Порог — настройка «Перегон требует
+// оформления, км» (цель руководителя; 0 — осознанно выключено).
+// Пары внахлёст (старт следующего до отметки выгрузки) не считаются —
+// это отдельный тип конфликта, он уже в реестре.
+function transferGapsReport() {
+  const gapKm = Number(plannerSettings().calculation.transferGapKm ?? 100);
+  if (!gapKm) return [];
+  const ms = value => Date.parse(String(value).replace(' ', 'T'));
+  const sinceIso = new Date(Date.now() - 12 * 86_400_000).toISOString();
+  const fromMs = Date.now() - 3 * 86_400_000;
+  const toMs = Date.now() + 7 * 86_400_000;
+  const rows = db.prepare(`SELECT t.id, t.vehicle_id, v.plate, t.customer_name,
+      t.starts_at, t.ends_at, t.unloaded_at, t.from_point, t.to_point
+    FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE t.status<>'rejected' AND t.ends_at >= ?
+    ORDER BY t.vehicle_id, t.starts_at`).all(sinceIso);
+  const transfers = db.prepare(`SELECT vehicle_id, starts_at FROM vehicle_dispositions
+    WHERE kind='transfer' AND ends_at >= ?`).all(sinceIso);
+  const gaps = [];
+  let prev = null;
+  for (const trip of rows) {
+    const pair = prev && prev.vehicle_id === trip.vehicle_id ? prev : null;
+    prev = trip;
+    if (!pair) continue;
+    const freeMs = ms(pair.unloaded_at || pair.ends_at);
+    const startMs = ms(trip.starts_at);
+    if (startMs < fromMs || startMs > toMs) continue;
+    if (startMs < freeMs) continue;
+    // Координаты — только канонным поиском по тексту точки: фолбэк на
+    // центр широкой геозоны давал тысячи километров ошибки (ревизия).
+    const a = addressPointByText(pair.to_point);
+    const b = addressPointByText(trip.from_point);
+    if (!a || !b) continue;
+    const km = Math.round(roadKm(a.latitude, a.longitude, b.latitude, b.longitude));
+    if (km < gapKm) continue;
+    const covered = transfers.some(item => item.vehicle_id === trip.vehicle_id &&
+      ms(item.starts_at) >= freeMs - 12 * 3_600_000 &&
+      ms(item.starts_at) <= startMs + 12 * 3_600_000);
+    if (covered) continue;
+    gaps.push({ vehicle_id: trip.vehicle_id, plate: trip.plate, km,
+      from_point: pair.to_point, to_point: trip.from_point,
+      free_at: pair.unloaded_at || pair.ends_at, must_by: trip.starts_at,
+      trip_id: trip.id, customer_name: trip.customer_name });
+  }
+  gaps.sort((a, b) => ms(a.must_by) - ms(b.must_by));
+  return gaps;
+}
+
+
+// Строка «🚚 перегоны» в Отчёте дня (решение руководителя 04.10:
+// «строку в утренних сводках, наблюдаем неделю»): сколько пар в реестре
+// сейчас против вчерашнего замера и сколько перегонов оформлено за
+// сутки — динамика дисциплины логистов видна без открытия реестра.
+function transferGapsLine() {
+  try {
+    const gaps = transferGapsReport();
+    const prevRaw = db.prepare(`SELECT value FROM app_meta WHERE key='transfer_gaps_last'`).get()?.value;
+    const prev = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : null;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('transfer_gaps_last',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(gaps.length));
+    const made = db.prepare(`SELECT COUNT(*) n FROM vehicle_dispositions
+      WHERE kind='transfer' AND created_at >= datetime('now','-1 day')`).get().n;
+    if (!gaps.length) {
+      return made ? ` · 🚚 перегоны: реестр чист, оформлено за сутки ${made}` : ' · 🚚 перегоны: реестр чист';
+    }
+    return ` · 🚚 перегоны не оформлены: ${gaps.length}` +
+      (prev != null ? ` (вчера ${prev})` : '') +
+      (made ? `, оформлено за сутки ${made}` : '');
+  } catch (error) {
+    console.error('строка перегонов в отчёте дня:', error.message);
+    return '';
+  }
+}
+
 // ── Ежедневный отчёт по автопарку: каждое утро после 07:00 МСК сводка
 // за вчера уходит в чат руководителю (роль manager; чат видят все).
 // Флаг в app_meta защищает от дублей при перезапусках контейнера.
@@ -903,6 +981,7 @@ function runDailyFleetReport() {
           : ' · явка за день не велась';
       })() +
       cdSegmentLine(dayIso, todayIso) + assignQualityLine(dayIso, todayIso) + demurrageBacklogLine() +
+      transferGapsLine() +
       (() => {
         // Норматив стыковки (23.09) + целевой стык (24.09). Семидневное
         // окно — дневные выборки слишком малы и дёргаются.
@@ -9302,58 +9381,6 @@ async function api(request, response, url) {
       db.prepare('UPDATE trip_stops SET seq=? WHERE id=?').run(index + 1, stop.id));
     audit(db, user, 'delete', 'trip_stop', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
-  }
-
-  // Неоформленные порожние перегоны (инструмент 04.10, разбор
-  // руководителя: «для логистов это отклонение»): машина выгрузилась в
-  // точке А, следующая погрузка — в Б дальше норматива, а перегона между
-  // ними нет. Пока перегон не оформлен, гант, подбор и стыковка считают
-  // машину не там, где она есть. Порог — настройка «Перегон требует
-  // оформления, км» (цель руководителя; 0 — осознанно выключено).
-  // Пары внахлёст (старт следующего до отметки выгрузки) не считаются —
-  // это отдельный тип конфликта, он уже в реестре.
-  function transferGapsReport() {
-    const gapKm = Number(plannerSettings().calculation.transferGapKm ?? 100);
-    if (!gapKm) return [];
-    const ms = value => Date.parse(String(value).replace(' ', 'T'));
-    const sinceIso = new Date(Date.now() - 12 * 86_400_000).toISOString();
-    const fromMs = Date.now() - 3 * 86_400_000;
-    const toMs = Date.now() + 7 * 86_400_000;
-    const rows = db.prepare(`SELECT t.id, t.vehicle_id, v.plate, t.customer_name,
-        t.starts_at, t.ends_at, t.unloaded_at, t.from_point, t.to_point
-      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
-      WHERE t.status<>'rejected' AND t.ends_at >= ?
-      ORDER BY t.vehicle_id, t.starts_at`).all(sinceIso);
-    const transfers = db.prepare(`SELECT vehicle_id, starts_at FROM vehicle_dispositions
-      WHERE kind='transfer' AND ends_at >= ?`).all(sinceIso);
-    const gaps = [];
-    let prev = null;
-    for (const trip of rows) {
-      const pair = prev && prev.vehicle_id === trip.vehicle_id ? prev : null;
-      prev = trip;
-      if (!pair) continue;
-      const freeMs = ms(pair.unloaded_at || pair.ends_at);
-      const startMs = ms(trip.starts_at);
-      if (startMs < fromMs || startMs > toMs) continue;
-      if (startMs < freeMs) continue;
-      // Координаты — только канонным поиском по тексту точки: фолбэк на
-      // центр широкой геозоны давал тысячи километров ошибки (ревизия).
-      const a = addressPointByText(pair.to_point);
-      const b = addressPointByText(trip.from_point);
-      if (!a || !b) continue;
-      const km = Math.round(roadKm(a.latitude, a.longitude, b.latitude, b.longitude));
-      if (km < gapKm) continue;
-      const covered = transfers.some(item => item.vehicle_id === trip.vehicle_id &&
-        ms(item.starts_at) >= freeMs - 12 * 3_600_000 &&
-        ms(item.starts_at) <= startMs + 12 * 3_600_000);
-      if (covered) continue;
-      gaps.push({ vehicle_id: trip.vehicle_id, plate: trip.plate, km,
-        from_point: pair.to_point, to_point: trip.from_point,
-        free_at: pair.unloaded_at || pair.ends_at, must_by: trip.starts_at,
-        trip_id: trip.id, customer_name: trip.customer_name });
-    }
-    gaps.sort((a, b) => ms(a.must_by) - ms(b.must_by));
-    return gaps;
   }
 
   if (request.method === 'GET' && pathname === '/api/exceptions') {
