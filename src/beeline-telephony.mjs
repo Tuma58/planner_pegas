@@ -132,7 +132,7 @@ export function saveSubscriptionsMeta(db, meta) {
 }
 
 // Создаёт одну подписку через портал. Возвращает {subscriptionId, expiresMs}.
-async function createSubscription({ token, baseUrl, fetchImpl, pattern, callbackUrl }) {
+async function createSubscription({ token, baseUrl = BEELINE_BASE_URL, fetchImpl, pattern, callbackUrl }) {
   const doFetch = fetchImpl || fetch;
   const response = await doFetch(`${baseUrl}/subscription`, {
     method: 'PUT',
