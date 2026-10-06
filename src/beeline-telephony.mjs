@@ -19,7 +19,7 @@
 // Аутентификация: заголовок X-MPBX-API-AUTH-TOKEN (токен .secrets/
 // beeline_ats_token → config.beelineAtsToken).
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { phoneDigits } from './telephony.mjs';
 
 export const BEELINE_BASE_URL = 'https://cloudpbx.beeline.ru/apis/portal';
@@ -95,10 +95,10 @@ export async function syncBeelineJournal(db, { token, baseUrl, fetchImpl, nowMs 
   if (!Array.isArray(rows)) return { added: 0, skipped: 0, latest: null };
   const horizon = nowMs - 24 * 3_600_000;
   const insert = db.prepare(`INSERT OR IGNORE INTO call_events(
-      provider,external_id,direction,from_phone,to_phone,from_digits,
+      id,provider,external_id,direction,from_phone,to_phone,from_digits,
       matched_kind,matched_id,matched_name,vehicle_id,target_user_id,
       started_at,status,duration_ms,employee_phone,handled_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   let added = 0;
   let skipped = 0;
   let latest = null;
@@ -108,7 +108,7 @@ export async function syncBeelineJournal(db, { token, baseUrl, fetchImpl, nowMs 
     const started = row.started_at || new Date().toISOString();
     if (!latest || started > latest) latest = started;
     const result = insert.run(
-      row.provider, row.external_id, row.direction, row.from_phone, row.to_phone, row.from_digits,
+      randomUUID(), row.provider, row.external_id, row.direction, row.from_phone, row.to_phone, row.from_digits,
       row.matched_kind, row.matched_id, row.matched_name, row.vehicle_id, row.target_user_id,
       started, row.status, row.duration_ms, row.employee_phone, row.handled_at);
     if (result.changes > 0) added += 1; else skipped += 1;
