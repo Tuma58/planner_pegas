@@ -8216,10 +8216,10 @@ async function api(request, response, url) {
     const externalId = event.callId ? `xsi:${event.callId}` : `xsi:${phoneDigits(event.from)}:${Date.now()}`;
     try {
       db.prepare(`INSERT OR IGNORE INTO call_events(
-          provider,external_id,direction,from_phone,to_phone,from_digits,
+          id,provider,external_id,direction,from_phone,to_phone,from_digits,
           matched_kind,matched_id,matched_name,vehicle_id,target_user_id,started_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run('beeline', externalId, event.direction, event.from, event.to, event.digits[0],
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(), 'beeline', externalId, event.direction, event.from, event.to, event.digits[0],
           caller.kind, caller.id, caller.name, caller.vehicleId, target,
           new Date().toISOString());
     } catch (error) {
