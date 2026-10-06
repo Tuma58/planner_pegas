@@ -3639,6 +3639,75 @@ setTimeout(() => {
   } catch (error) { console.error('ревизия транзита:', error.message); }
 }, 400_000);
 
+// Разовая ревизия 06.10: автозакрытие цепочкой принимало «вывод на
+// линию» следующего рейса за доказательство совершённой погрузки и
+// закрывало действующие рейсы преждевременно (жалобы диспетчеров:
+// «при выводе на линию следующей заявки действующие пропадают»).
+// Код исправлен — доказательство теперь только факт прибытия на
+// следующую погрузку; здесь лечим уже пострадавшие рейсы: есть факт
+// прибытия на следующую погрузку — перештамповываем выгрузку на него
+// («не позже» честным временем), факта нет — возвращаем рейс в работу,
+// диспетчер снова видит его в контроле. Идемпотентно по метке.
+setTimeout(() => {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='chain_online_revert_2026_10_06'`).get()) return;
+    const parseTs = v => v ? Date.parse(String(v).includes('T') ? v
+      : String(v).replace(' ', 'T') + 'Z') : NaN;
+    const victims = db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.unloaded_at FROM trips t
+      WHERE t.status='unloaded' AND t.unloaded_at >= '2026-10-05'
+        AND (SELECT s.auto_source FROM trip_stops s WHERE s.trip_id=t.id
+             ORDER BY s.seq DESC LIMIT 1)='chain'`).all();
+    let restamped = 0, reopened = 0;
+    for (const trip of victims) {
+      const next = db.prepare(`SELECT t.on_line_at,
+          (SELECT s.actual_arrival FROM trip_stops s WHERE s.trip_id=t.id ORDER BY s.seq LIMIT 1) first_arrival
+        FROM trips t WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.starts_at > ?
+        ORDER BY t.starts_at LIMIT 1`).get(trip.vehicle_id, trip.starts_at);
+      const unloadedMs = parseTs(trip.unloaded_at);
+      const onLineMs = parseTs(next?.on_line_at);
+      // Пострадавший — тот, чей штамп выгрузки совпал с «на линию»
+      // следующего рейса; закрытые честным фактом не трогаем.
+      if (!Number.isFinite(onLineMs) || Math.abs(onLineMs - unloadedMs) > 2000) continue;
+      const firstArrMs = parseTs(next?.first_arrival);
+      const last = db.prepare(`SELECT id FROM trip_stops WHERE trip_id=?
+        ORDER BY seq DESC LIMIT 1`).get(trip.id);
+      if (Number.isFinite(firstArrMs) && firstArrMs > unloadedMs) {
+        // Выгрузка доказана более поздним фактом — переносим штампы.
+        const at = new Date(firstArrMs).toISOString();
+        if (last) db.prepare(`UPDATE trip_stops SET
+            actual_arrival=CASE WHEN actual_arrival=?2 THEN ?1 ELSE actual_arrival END,
+            work_started_at=CASE WHEN work_started_at=?2 THEN ?1 ELSE work_started_at END,
+            work_finished_at=CASE WHEN work_finished_at=?2 THEN ?1 ELSE work_finished_at END,
+            actual_departure=CASE WHEN actual_departure=?2 THEN ?1 ELSE actual_departure END,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?3`).run(at, trip.unloaded_at, last.id);
+        db.prepare(`UPDATE trips SET unloaded_at=?, updated_at=CURRENT_TIMESTAMP
+          WHERE id=?`).run(at, trip.id);
+        restamped += 1;
+      } else {
+        // Доказательства нет — рейс всё ещё в работе: снимаем только
+        // наши автоштампы (точное совпадение строки), статус назад.
+        if (last) db.prepare(`UPDATE trip_stops SET
+            actual_arrival=NULLIF(actual_arrival, ?1),
+            work_started_at=NULLIF(work_started_at, ?1),
+            work_finished_at=NULLIF(work_finished_at, ?1),
+            actual_departure=NULLIF(actual_departure, ?1),
+            auto_source=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?2`)
+          .run(trip.unloaded_at, last.id);
+        db.prepare(`UPDATE trips SET status='run', unloaded_at=NULL,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(trip.id);
+        reopened += 1;
+      }
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('chain_online_revert_2026_10_06','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+    if (restamped || reopened) notify('dispatcher',
+      `🤖 Ревизия автозакрытий: ${reopened} рейсов возвращены в контроль `
+      + `(закрылись преждевременно при выводе следующего на линию — исправлено), `
+      + `у ${restamped} время выгрузки уточнено фактом следующей погрузки.`);
+    console.log(`ревизия chain-закрытий: перештамповано ${restamped}, возвращено в работу ${reopened}`);
+  } catch (error) { console.error('ревизия chain-закрытий:', error.message); }
+}, 25_000);
+
 // Разовое задание продажам по кругам (решение руководителя 15.09):
 // три потерянных источника объёма — возврат лучшего цикла парка,
 // возврат клиента в восточный круг, расширение лучшей маржи.

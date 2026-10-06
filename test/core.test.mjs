@@ -3630,6 +3630,12 @@ test('авто-факты: GPS ставит промежуточные, цепо
     work_finished_at=NULL WHERE trip_id='af-1' AND seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id='af-1')`).run();
   mkTrip('af-2', -3 * 3_600_000, 20 * 3_600_000);
   ensureTripStops(db, 'af-2');
+  // Вывод следующего на линию — НЕ доказательство погрузки: у сцепки
+  // штатно два рейса в пути, действующий закрывать нельзя (урок 06.10).
+  db.prepare(`UPDATE trips SET on_line_at=datetime('now','-2 hours') WHERE id='af-2'`).run();
+  const early = chainAutoClose(db);
+  assert.equal(early.tripsUnloaded, 0, 'вывод на линию не закрывает предыдущий рейс');
+  assert.equal(db.prepare(`SELECT status FROM trips WHERE id='af-1'`).get().status, 'run');
   db.prepare(`UPDATE trip_stops SET actual_arrival=datetime('now','-2 hours')
     WHERE trip_id='af-2' AND seq=(SELECT MIN(seq) FROM trip_stops WHERE trip_id='af-2')`).run();
   const chain = chainAutoClose(db);

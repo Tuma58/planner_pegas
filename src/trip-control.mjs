@@ -525,12 +525,16 @@ export function chainAutoClose(db, nowMs = Date.now()) {
   let unloadLimit = 50;
   for (const trip of open) {
     if (unloadLimit <= 0) break;
-    const nextTrip = db.prepare(`SELECT t.id, t.starts_at, t.on_line_at,
+    const nextTrip = db.prepare(`SELECT t.id, t.starts_at,
         (SELECT s.actual_arrival FROM trip_stops s WHERE s.trip_id=t.id ORDER BY s.seq LIMIT 1) first_arrival
       FROM trips t WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.starts_at > ?
       ORDER BY t.starts_at LIMIT 1`).get(trip.vehicle_id, trip.starts_at);
-    const proofMs = Math.min(...[toMs(nextTrip?.first_arrival), toMs(nextTrip?.on_line_at)]
-      .filter(Number.isFinite));
+    // Доказательство — ТОЛЬКО факт прибытия на следующую погрузку.
+    // «Вывод на линию» следующего рейса — административный шаг, его
+    // жмут заранее, пока текущий рейс ещё везёт груз (у сцепки штатно
+    // два рейса в пути); урок 06.10 — 33 действующих рейса закрылись
+    // преждевременно и пропали у диспетчеров из контроля.
+    const proofMs = toMs(nextTrip?.first_arrival);
     if (!Number.isFinite(proofMs) || proofMs > nowMs) continue;
     const last = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq DESC LIMIT 1`)
       .get(trip.id);
