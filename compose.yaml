@@ -20,6 +20,8 @@ services:
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       APP_SECRET_FILE: "/run/secrets/app_secret"
       ADMIN_PASSWORD_FILE: "/run/secrets/admin_password"
+      # Токен API Облачной АТС Билайн (журнал звонков + Xsi-Events).
+      BEELINE_ATS_TOKEN_FILE: "/run/secrets/beeline_ats_token"
       SYNC_WORKER_EMBEDDED: "false"
       # IPv6-маршрута у LXC нет, а резолвер отдаёт AAAA первым — Node
       # должен предпочитать IPv4 (телеграм и любые будущие интеграции).
@@ -30,6 +32,7 @@ services:
     secrets:
       - app_secret
       - admin_password
+      - beeline_ats_token
     volumes:
       - ./data:/app/data
     read_only: true
@@ -86,3 +89,5 @@ secrets:
     file: ./.secrets/app_secret
   admin_password:
     file: ./.secrets/admin_password
+  beeline_ats_token:
+    file: ./.secrets/beeline_ats_token
