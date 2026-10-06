@@ -6,6 +6,19 @@
 
 ## 2026-10-06
 
+- Телефония Билайн: починка всплытия карточек на проде (разбор «почему у
+  диспетчеров не всплывало»). Три бага: (1) callback Xsi-Events писал
+  started_at через CURRENT_TIMESTAMP (формат с пробелом), а
+  /api/telephony/incoming сравнивает с ISO «…T…Z» — строковое сравнение
+  ломается, свежие входящие не возвращались; (2) callback не задавал id
+  (PRIMARY KEY NULL) — фронтовый seen по call.id и «обработано» ломались;
+  (3) syncBeelineJournal тоже писал без id. Исправлено: ISO-время и
+  randomUUID в обеих точках; исторические NULL-id забекаплены на проде.
+  Проверено end-to-end: тестовое Xsi-событие → incoming отдаёт с uuid и
+  ISO → handled проставляется. Реальные входящие матчатся (57+ водителей).
+  Диспетчерам, загрузившим страницу до включения телефонии, нужен один
+  F5. — aeda482, 916aad2, 6db3812.
+
 - Телефония Билайн: деплой на прод и дозакрытие. Деплой через git bundle →
   scp (DNS github.com на VPS не работает): compose.yaml получил Docker-секрет
   beeline_ats_token (BEELINE_ATS_TOKEN_FILE=/run/secrets/beeline_ats_token,
