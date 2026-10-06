@@ -738,11 +738,23 @@ async function renderTelephony() {
       <label class="check"><input type="checkbox" name="popup" ${config.popup ? 'checked' : ''}>
         Поднимать карточку автоматически при входящем звонке</label>
       <label class="field">Провайдер (для себя)<input name="provider" value="${escapeHtml(config.provider || '')}"
-        placeholder="например: Mango, Билайн Облачная АТС, Asterisk"></label>
+        placeholder="например: Билайн Облачная АТС"></label>
       <label class="field">Токен вебхука<input name="token" value="${escapeHtml(config.token || '')}"
         placeholder="придумайте длинную строку и укажите её в АТС"></label>
+      <label class="field">Публичный адрес приложения (для событий Билайна в реальном времени)
+        <input name="publicBase" value="${escapeHtml(config.publicBase || '')}"
+        placeholder="https://planner.pegasavto.ru"></label>
+      <label class="field">Номер слежения для событий Билайна<input name="beelinePattern"
+        value="${escapeHtml(config.beelinePattern || '')}" placeholder="добавочный или номер, например 202"></label>
       <button class="button">Сохранить</button>
     </form>
+    <div class="hint" style="margin-top:10px">
+      <b>Облачная АТС Билайн.</b> Токен API АТС хранится на сервере
+      (<code>.secrets/beeline_ats_token</code>) и в этом окне не показывается
+      ${config.beeline?.tokenSet ? '— <b>токен на месте ✓</b>' : '— <b>токен не задан</b>'}.
+      Журнал звонков подтягивается автоматически раз в минуту. Поля «публичный адрес» и
+      «номер слежения» включают события в реальном времени (подписка Xsi-Events).
+    </div>
     <div class="hint" style="margin-top:10px">
       <b>Что передать в АТС.</b> Адрес: <code>POST https://ваш-адрес/api/telephony/webhook</code>,
       заголовок <code>X-Telephony-Token: ваш токен</code>, тело JSON:
@@ -836,7 +848,9 @@ async function renderTelephony() {
       await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
         telephony: {
           enabled: form.elements.enabled.checked, popup: form.elements.popup.checked,
-          provider: form.elements.provider.value.trim(), token: form.elements.token.value.trim()
+          provider: form.elements.provider.value.trim(), token: form.elements.token.value.trim(),
+          publicBase: form.elements.publicBase.value.trim(),
+          beelinePattern: form.elements.beelinePattern.value.trim()
         }
       }) });
       toast('Настройки телефонии сохранены');

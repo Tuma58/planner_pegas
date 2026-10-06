@@ -2185,7 +2185,11 @@ test('пять этапов рейса: два клика на точку, пр�
   const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
   const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
   const admin = db.prepare('SELECT id FROM users LIMIT 1').get().id;
-  const iso = shift => new Date(Date.now() + shift).toISOString();
+  // Фиксируем «сейчас»: живой Date.now() в iso() добавлял к простою дробные
+  // миллисекунды между вызовами, из-за чего paidHours (из полной точности) и
+  // Math.ceil(округлённого idleHours − 4) расходились на единицу (флаки-тест).
+  const now = Date.now();
+  const iso = shift => new Date(now + shift).toISOString();
   const HOUR = 3_600_000;
   // Заявка с окнами и рейс на линии: погрузка «с» — 30 ч назад, выгрузка «по» — 15 ч назад.
   db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,rate_vat,
@@ -2344,6 +2348,81 @@ test('телефония: определение звонящего, темы в
   assert.equal(poa.closed, 1);
   assert.equal(poa.slaPct, 0, 'решение за 20 минут в норматив не попало');
   assert.equal(poa.owner, 'Диспетчер', 'у темы есть ответственный процесс');
+});
+
+test('билайн: строка статистики → событие звонка, дедуп и разбор XML', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-beeline-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const {
+    callExternalId, mapBeelineCall, parseXsiEvent, syncBeelineCalls, findUserByPhone
+  } = await import('../src/beeline-telephony.mjs');
+
+  const nowMs = Date.now();
+  const inbound = {
+    startDate: nowMs, direction: 'INBOUND', status: 'MISSED', duration: 0,
+    phone: '+79875105921',
+    abonent: { userId: '9630995009@ip.beeline.ru', phone: '+79630995009', extension: '391' }
+  };
+  // Водитель по телефону: заведём водителя на сцепку и проверим связку.
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO drivers(id,full_name,phone,status,vehicle_id)
+    VALUES('dr-bee','Водитель Билайн','+7 (987) 510-59-21','active',?)`).run(vehicle.id);
+  const identify = phone => ({ kind: 'driver', id: 'dr-bee', name: 'Водитель Билайн', vehicleId: vehicle.id });
+
+  // Направление: входящий — звонит внешний, принимает наш сотрудник.
+  const mappedIn = mapBeelineCall(inbound, { identify, findUser: phone => findUserByPhone(db, phone) });
+  assert.equal(mappedIn.direction, 'in');
+  assert.equal(mappedIn.from_phone, '+79875105921', 'звонит внешний номер');
+  assert.equal(mappedIn.to_phone, '+79630995009', 'принимает наш сотрудник');
+  assert.equal(mappedIn.status, 'MISSED');
+  assert.equal(mappedIn.matched_kind, 'driver', 'водитель опознан по номеру');
+  assert.equal(mappedIn.vehicle_id, vehicle.id, 'водитель приводит к своей сцепке');
+  assert.equal(mappedIn.employee_phone, '+79630995009');
+
+  // Исходящий — наоборот.
+  const outbound = { ...inbound, direction: 'OUTBOUND', status: 'PLACED', phone: '+79875105921' };
+  const mappedOut = mapBeelineCall(outbound, { identify, findUser: phone => findUserByPhone(db, phone) });
+  assert.equal(mappedOut.direction, 'out');
+  assert.equal(mappedOut.from_phone, '+79630995009', 'звоним мы');
+  assert.equal(mappedOut.to_phone, '+79875105921', 'звоним внешнему');
+
+  // Дедуп: один и тот же звонок — один ключ; разные — разные ключи.
+  assert.equal(callExternalId(inbound), callExternalId(inbound));
+  assert.notEqual(callExternalId(inbound), callExternalId({ ...inbound, startDate: nowMs + 1000 }));
+
+  // Синхронизация журнала: mock fetch отдаёт один звонок, повторный опрос не дублирует.
+  const rows = [inbound];
+  const fetchOk = () => ({ ok: true, status: 200, json: async () => rows, text: async () => '' });
+  const first = await syncBeelineCalls(db, { token: 't', fetchImpl: fetchOk, identify, nowMs });
+  assert.equal(first.added, 1, 'первый опрос заводит звонок');
+  const again = await syncBeelineCalls(db, { token: 't', fetchImpl: fetchOk, identify, nowMs });
+  assert.equal(again.added, 0, 'повторный опрос не дублирует');
+  assert.equal(again.skipped, 1, 'дубль учтён как пропущенный');
+  const stored = db.prepare(`SELECT * FROM call_events WHERE provider='beeline'`).get();
+  assert.ok(stored, 'событие попало в call_events');
+  assert.equal(stored.status, 'MISSED');
+  assert.equal(stored.duration_ms, 0);
+  assert.equal(stored.employee_phone, '+79630995009');
+
+  // Разбор Xsi-Events (BroadWorks XML): входящий звонок опознаётся по callId и номеру.
+  const xml = `<?xml version="1.0"?>
+    <xsi:Event xmlns:xsi="http://schema.broadsoft.com/xsi" type="xsi:SubscriptionEvent">
+      <xsi:eventData type="xsi:CallReceivedEvent">
+        <xsi:call><xsi:callId>callhalf-10201:0</xsi:callId>
+          <xsi:remoteParty><xsi:address><xsi:addressOfRecord>tel:+79875105921</xsi:addressOfRecord></xsi:address></xsi:remoteParty>
+        </xsi:call>
+      </xsi:eventData>
+    </xsi:Event>`;
+  const event = parseXsiEvent(xml);
+  assert.equal(event.eventType, 'received');
+  assert.equal(event.callId, 'callhalf-10201:0');
+  assert.equal(event.direction, 'in');
+  assert.ok(event.digits.includes('9875105921'), 'номер звонящего извлечён');
+  assert.equal(parseXsiEvent('not xml at all'), null, 'мусор не ломает разбор');
 });
 
 test('состояние сцепки: рейс главнее интервала недоступности', async () => {

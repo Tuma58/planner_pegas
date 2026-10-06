@@ -12,6 +12,7 @@ import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, 
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, checkQuestionSla, identifyCaller, listDriverQuestions,
   phoneDigits, phonePretty, questionStats } from './telephony.mjs';
+import { ensureBeelineSubscription, findUserByPhone, parseXsiEvent, syncBeelineCalls } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
@@ -1525,6 +1526,32 @@ function runQuestionSlaWatch() {
 }
 setInterval(runQuestionSlaWatch, 60_000);
 setTimeout(runQuestionSlaWatch, 40_000);
+
+// ── Телефония Билайн: журнал звонков и подписка на события ──
+// Опрашивает статистику АТС раз в минуту и переносит новые звонки в
+// call_events — пропущенные входящие поднимают карточку у сотрудника
+// (механика та же, что у вебхука). Подписка Xsi-Events включается, когда
+// в настройках телефонии задан публичный адрес приложения и номер слежения.
+function runBeelineWatch() {
+  const token = config.beelineAtsToken;
+  if (!token) return;
+  const telephony = settingsObject(db).telephony || {};
+  syncBeelineCalls(db, { token, identify: phone => identifyCaller(db, phone) })
+    .then(result => {
+      if (result.added) console.log(`билайн: +${result.added} звонков (дублей ${result.skipped})`);
+    })
+    .catch(error => console.error('Сторож телефонии Билайн:', error.message));
+  if (telephony.publicBase && telephony.beelinePattern) {
+    ensureBeelineSubscription(db, { token, publicBase: telephony.publicBase, pattern: telephony.beelinePattern })
+      .then(meta => {
+        if (meta) console.log(`билайн: подписка на события ${meta.subscriptionId} до ${new Date(meta.expires).toISOString()}`);
+      })
+      .catch(error => console.error('Подписка Билайн:', error.message));
+  }
+}
+
+setInterval(runBeelineWatch, 60_000);
+setTimeout(runBeelineWatch, 20_000);
 
 // ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
 // Раз в день после 08:00 МСК: продажам в чат — кого поздравить (ДР контакта
@@ -8167,8 +8194,37 @@ async function api(request, response, url) {
     return json(response, 200, {
       enabled: Boolean(telephony.enabled), provider: telephony.provider || '',
       token: telephony.token || '', popup: telephony.popup !== false,
-      webhookUrl: '/api/telephony/webhook'
+      publicBase: telephony.publicBase || '', beelinePattern: telephony.beelinePattern || '',
+      webhookUrl: '/api/telephony/webhook',
+      beeline: { tokenSet: Boolean(config.beelineAtsToken) }
     });
+  }
+
+  // ── Телефония Билайн: callback Xsi-Events ──
+  // Билайн шлёт сюда XML-события звонков в реальном времени (подписка
+  // BASIC_CALL). Первое событие звонка (received/originated) заводит запись в
+  // call_events — входящий поднимает карточку у сотрудника; дальнейшие
+  // состояния того же звонка дедуплицируются по callId.
+  if (request.method === 'POST' && pathname === '/api/telephony/beeline/events') {
+    const raw = await readRaw(request, 256 * 1024).then(buffer => buffer.toString('utf8'));
+    const event = parseXsiEvent(raw);
+    if (!event || !event.digits.length) return json(response, 200, { ok: true });
+    const caller = identifyCaller(db, event.from || event.digits[0]);
+    const target = event.direction === 'in' && event.to ? findUserByPhone(db, event.to) : null;
+    const externalId = event.callId ? `xsi:${event.callId}` : `xsi:${phoneDigits(event.from)}:${Date.now()}`;
+    try {
+      db.prepare(`INSERT OR IGNORE INTO call_events(
+          provider,external_id,direction,from_phone,to_phone,from_digits,
+          matched_kind,matched_id,matched_name,vehicle_id,target_user_id,started_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+        .run('beeline', externalId, event.direction, event.from, event.to, event.digits[0],
+          caller.kind, caller.id, caller.name, caller.vehicleId, target);
+    } catch (error) {
+      if (!String(error.message).includes('UNIQUE')) {
+        console.error('Callback Билайн:', error.message);
+      }
+    }
+    return json(response, 200, { ok: true });
   }
 
   // ── Телефония: вебхук АТС и карточка звонящего ──

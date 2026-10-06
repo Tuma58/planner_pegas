@@ -974,8 +974,15 @@ function migrateColumns(db) {
     matched_name TEXT NOT NULL DEFAULT '', vehicle_id TEXT REFERENCES vehicles(id),
     target_user_id TEXT REFERENCES users(id),
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL DEFAULT '', duration_ms INTEGER,
+    employee_phone TEXT NOT NULL DEFAULT '',
     handled_by TEXT REFERENCES users(id), handled_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+  // Билайн: статус завершения (MISSED/RECIEVED/PLACED), длительность и наш
+  // сотрудник-абонент — для журнала звонков.
+  ensure('call_events', 'status', "TEXT NOT NULL DEFAULT ''");
+  ensure('call_events', 'duration_ms', 'INTEGER');
+  ensure('call_events', 'employee_phone', "TEXT NOT NULL DEFAULT ''");
   db.exec(`CREATE INDEX IF NOT EXISTS idx_call_events_time ON call_events(started_at)`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_call_events_external
     ON call_events(provider,external_id) WHERE external_id IS NOT NULL`);
