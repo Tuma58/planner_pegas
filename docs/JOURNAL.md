@@ -8,19 +8,20 @@
 
 - Телефония Билайн: реализован адаптер (src/beeline-telephony.mjs + сторож в
   server.mjs). Endpoint'ы портала проверены токеном: GET /statistics?page&pageSize
-  (журнал звонков, новые сверху: направление, вторая сторона, MISSED/RECIEVED/
-  PLACED, длительность, наш abonent), GET /abonents (справочник сотрудников),
-  PUT /subscription (Xsi-Events BASIC_CALL, события XML'ом на callback).
-  Журнал опрашивается раз в минуту и пишется в call_events (новые колонки
-  status/duration_ms/employee_phone), дедуп по provider+external_id (хэш
-  события — своего id в statistics нет); входящий опознаётся identifyCaller,
-  target_user_id — наш сотрудник по abonent.phone, пропущенный звонок
-  поднимает карточку. Xsi-Events: callback POST /api/telephony/beeline/events
-  разбирает XML (parseXsiEvent) и заводит событие в момент звонка; подписка
-  создаётся/продлевается при заданных в настройках «Публичный адрес» и
-  «Номер слежения» (автопродление по expires). Настройки телефонии расширены
-  полями publicBase/beelinePattern. Тест сквозной; флаки-тест «пять этапов
-  рейса» стабилизирован (фиксация now в iso). — d5b80f0.
+  (журнал звонков, новые сверху: направление, статус MISSED/RECIEVED/PLACED,
+  длительность, наш abonent), GET /abonents (справочник сотрудников),
+  PUT/GET/DELETE /subscription?subscriptionId= (Xsi-Events BASIC_CALL, события
+  XML'ом на callback; подписка — на каждого сотрудника АТС). ВАЖНО: поле
+  `phone` в statistics равно FMC-мобильному НАШЕГО сотрудника, а не второй
+  стороне — номер звонящего статистика не несёт. Поэтому: журнал (раз в
+  минуту, новые колонки status/duration_ms/employee_phone, дедуп по
+  provider+external_id, handled_at — запись не всплывает) — из statistics;
+  номер звонящего и всплытие карточки — ТОЛЬКО Xsi-Events: callback POST
+  /api/telephony/beeline/events разбирает XML (parseXsiEvent) и заводит
+  событие в момент звонка, подписки создаются/продлеваются при заданном в
+  настройках «Публичный адрес». Настройки телефонии расширены полем
+  publicBase. Тест сквозной; флаки-тест «пять этапов рейса» стабилизирован
+  (фиксация now в iso). — d5b80f0.
 
 - Телефония Билайн: изучена документация API Облачной АТС
   (cloudpbx.beeline.ru, «Настройки → API → Интеграция по API» → «Создать

@@ -744,16 +744,15 @@ async function renderTelephony() {
       <label class="field">Публичный адрес приложения (для событий Билайна в реальном времени)
         <input name="publicBase" value="${escapeHtml(config.publicBase || '')}"
         placeholder="https://planner.pegasavto.ru"></label>
-      <label class="field">Номер слежения для событий Билайна<input name="beelinePattern"
-        value="${escapeHtml(config.beelinePattern || '')}" placeholder="добавочный или номер, например 202"></label>
       <button class="button">Сохранить</button>
     </form>
     <div class="hint" style="margin-top:10px">
       <b>Облачная АТС Билайн.</b> Токен API АТС хранится на сервере
       (<code>.secrets/beeline_ats_token</code>) и в этом окне не показывается
       ${config.beeline?.tokenSet ? '— <b>токен на месте ✓</b>' : '— <b>токен не задан</b>'}.
-      Журнал звонков подтягивается автоматически раз в минуту. Поля «публичный адрес» и
-      «номер слежения» включают события в реальном времени (подписка Xsi-Events).
+      Журнал звонков подтягивается автоматически раз в минуту. Публичный адрес включает
+      события в реальном времени: система сама подпишется на звонки всех сотрудников АТС
+      (Xsi-Events) и будет поднимать карточку по номеру звонящего в момент вызова.
     </div>
     <div class="hint" style="margin-top:10px">
       <b>Что передать в АТС.</b> Адрес: <code>POST https://ваш-адрес/api/telephony/webhook</code>,
@@ -849,8 +848,7 @@ async function renderTelephony() {
         telephony: {
           enabled: form.elements.enabled.checked, popup: form.elements.popup.checked,
           provider: form.elements.provider.value.trim(), token: form.elements.token.value.trim(),
-          publicBase: form.elements.publicBase.value.trim(),
-          beelinePattern: form.elements.beelinePattern.value.trim()
+          publicBase: form.elements.publicBase.value.trim()
         }
       }) });
       toast('Настройки телефонии сохранены');

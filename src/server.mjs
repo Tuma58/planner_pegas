@@ -12,7 +12,7 @@ import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, 
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, checkQuestionSla, identifyCaller, listDriverQuestions,
   phoneDigits, phonePretty, questionStats } from './telephony.mjs';
-import { ensureBeelineSubscription, findUserByPhone, parseXsiEvent, syncBeelineCalls } from './beeline-telephony.mjs';
+import { ensureBeelineSubscriptions, findUserByPhone, parseXsiEvent, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
@@ -1528,23 +1528,25 @@ setInterval(runQuestionSlaWatch, 60_000);
 setTimeout(runQuestionSlaWatch, 40_000);
 
 // ── Телефония Билайн: журнал звонков и подписка на события ──
-// Опрашивает статистику АТС раз в минуту и переносит новые звонки в
-// call_events — пропущенные входящие поднимают карточку у сотрудника
-// (механика та же, что у вебхука). Подписка Xsi-Events включается, когда
-// в настройках телефонии задан публичный адрес приложения и номер слежения.
+// Журнал: раз в минуту опрос статистики АТС — новые звонки (кто/когда/
+// пропущен/длительность) в call_events, номер звонящего статистика не несёт.
+// Подписка Xsi-Events (номер звонящего и всплытие карточки в момент звонка)
+// включается публичным адресом приложения в настройках.
 function runBeelineWatch() {
   const token = config.beelineAtsToken;
   if (!token) return;
   const telephony = settingsObject(db).telephony || {};
-  syncBeelineCalls(db, { token, identify: phone => identifyCaller(db, phone) })
+  syncBeelineJournal(db, { token })
     .then(result => {
-      if (result.added) console.log(`билайн: +${result.added} звонков (дублей ${result.skipped})`);
+      if (result.added) console.log(`билайн: +${result.added} звонков в журнал (дублей ${result.skipped})`);
     })
-    .catch(error => console.error('Сторож телефонии Билайн:', error.message));
-  if (telephony.publicBase && telephony.beelinePattern) {
-    ensureBeelineSubscription(db, { token, publicBase: telephony.publicBase, pattern: telephony.beelinePattern })
-      .then(meta => {
-        if (meta) console.log(`билайн: подписка на события ${meta.subscriptionId} до ${new Date(meta.expires).toISOString()}`);
+    .catch(error => console.error('Журнал Билайн:', error.message));
+  if (telephony.publicBase) {
+    ensureBeelineSubscriptions(db, { token, publicBase: telephony.publicBase })
+      .then(result => {
+        if (result.created || result.renewed) {
+          console.log(`билайн: подписки на события — создано ${result.created}, продлено ${result.renewed}, активно ${result.active}`);
+        }
       })
       .catch(error => console.error('Подписка Билайн:', error.message));
   }
@@ -8194,7 +8196,7 @@ async function api(request, response, url) {
     return json(response, 200, {
       enabled: Boolean(telephony.enabled), provider: telephony.provider || '',
       token: telephony.token || '', popup: telephony.popup !== false,
-      publicBase: telephony.publicBase || '', beelinePattern: telephony.beelinePattern || '',
+      publicBase: telephony.publicBase || '',
       webhookUrl: '/api/telephony/webhook',
       beeline: { tokenSet: Boolean(config.beelineAtsToken) }
     });

@@ -87,11 +87,12 @@ API и подтверждённым интеграциям описание.
 
 | Метод | Путь | Что отдаёт |
 |---|---|---|
-| GET | `/statistics?page=N&pageSize=M` | журнал звонков (M от 10 до 100), новые сверху: `startDate` (мс), `direction` INBOUND/OUTBOUND, `phone` (вторая сторона), `status` MISSED/RECIEVED/PLACED, `duration` (мс), `abonent` (наш сотрудник: `userId`, `phone`, `extension`, `department`) |
+| GET | `/statistics?page=N&pageSize=M` | журнал звонков (M от 10 до 100), новые сверху: `startDate` (мс), `direction` INBOUND/OUTBOUND, `status` MISSED/RECIEVED/PLACED, `duration` (мс), `abonent` (наш сотрудник: `userId`, `phone` = FMC-мобильный, `extension`, `department`). **Номера второй стороны нет** — `phone` равен мобильному нашего сотрудника |
 | GET | `/abonents` | справочник сотрудников АТС (33 записи: `userId`, `phone`, `lastName`, `extension`) |
-| GET | `/records` | записи разговоров (с `fileSize`), первые 100, старые сверху |
-| PUT | `/subscription` | подписка Xsi-Events: тело `{"pattern","expires","subscriptionType":"BASIC_CALL","url"}`, ответ `{"subscriptionId","expires"}` |
-| GET | `/subscription/{id}` | состояние подписки |
+| GET | `/records` | записи разговоров (с `fileSize` и номером второй стороны), первые 100, старые сверху |
+| PUT | `/subscription` | подписка Xsi-Events: тело `{"pattern","expires","subscriptionType":"BASIC_CALL","url"}`, ответ `{"subscriptionId","expires"}`; `pattern` = добавочный/номер сотрудника |
+| GET | `/subscription?subscriptionId=` | состояние подписки |
+| DELETE | `/subscription?subscriptionId=` | отмена подписки |
 
 ## Как реализован адаптер
 
@@ -100,18 +101,19 @@ API и подтверждённым интеграциям описание.
 1. **Журнал звонков** — раз в минуту опрос `/statistics?page=1&pageSize=100`,
    дедупликация по внешнему ключу (`provider=beeline` + хэш события), запись в
    `call_events` с колонками `status`, `duration_ms`, `employee_phone`.
-   Входящий опознаётся `identifyCaller` (водитель → сотрудник → контакт
-   клиента); `target_user_id` — наш сотрудник по `abonent.phone`, поэтому
-   пропущенный звонок поднимает карточку именно у него.
-2. **Xsi-Events real-time** — при заданных в настройках «Публичный адрес» и
-   «Номер слежения» создаётся/продлевается подписка `BASIC_CALL`; события
-   приходят XML'ом на `POST /api/telephony/beeline/events`, разбираются
-   `parseXsiEvent` (callId, направление, номер звонящего) и заводят событие
-   в момент звонка (карточка поднимается ещё на вызове, а не после).
+   `target_user_id` — наш сотрудник по FMC-мобильному `abonent.phone`.
+   Запись помечается разобранной (`handled_at`): она не поднимает карточку,
+   потому что номера звонящего статистика не несёт.
+2. **Xsi-Events real-time** — при заданном в настройках «Публичный адрес»
+   создаются/продлеваются подписки `BASIC_CALL` на **всех** сотрудников АТС
+   (`/abonents`). События приходят XML'ом на `POST /api/telephony/beeline/events`,
+   разбираются `parseXsiEvent` (callId, направление, номер звонящего) и заводят
+   событие в момент звонка: входящий номер опознаётся `identifyCaller` и
+   карточка поднимается ещё на вызове.
 
 Ограничения: у `statistics` нет своего id — ключ дедупликации вычисляется из
-содержимого; событие Xsi-Events приходит на публичный адрес, поэтому без
-внешнего HTTPS подписка не сработает (тест — только на проде).
+содержимого; номер звонящего даёт ТОЛЬКО Xsi-Events, а он требует публичный
+HTTPS-адрес, поэтому реальная доставка проверяется на проде.
 
 ## Ссылки
 
