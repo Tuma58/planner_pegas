@@ -6,6 +6,22 @@
 
 ## 2026-10-06
 
+- Телефония Билайн: реализован адаптер (src/beeline-telephony.mjs + сторож в
+  server.mjs). Endpoint'ы портала проверены токеном: GET /statistics?page&pageSize
+  (журнал звонков, новые сверху: направление, вторая сторона, MISSED/RECIEVED/
+  PLACED, длительность, наш abonent), GET /abonents (справочник сотрудников),
+  PUT /subscription (Xsi-Events BASIC_CALL, события XML'ом на callback).
+  Журнал опрашивается раз в минуту и пишется в call_events (новые колонки
+  status/duration_ms/employee_phone), дедуп по provider+external_id (хэш
+  события — своего id в statistics нет); входящий опознаётся identifyCaller,
+  target_user_id — наш сотрудник по abonent.phone, пропущенный звонок
+  поднимает карточку. Xsi-Events: callback POST /api/telephony/beeline/events
+  разбирает XML (parseXsiEvent) и заводит событие в момент звонка; подписка
+  создаётся/продлевается при заданных в настройках «Публичный адрес» и
+  «Номер слежения» (автопродление по expires). Настройки телефонии расширены
+  полями publicBase/beelinePattern. Тест сквозной; флаки-тест «пять этапов
+  рейса» стабилизирован (фиксация now в iso). — d5b80f0.
+
 - Телефония Билайн: изучена документация API Облачной АТС
   (cloudpbx.beeline.ru, «Настройки → API → Интеграция по API» → «Создать
   токен», услуга платная). Зафиксировано в docs/telephony-beeline.md:
