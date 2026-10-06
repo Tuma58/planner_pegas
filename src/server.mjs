@@ -8218,9 +8218,10 @@ async function api(request, response, url) {
       db.prepare(`INSERT OR IGNORE INTO call_events(
           provider,external_id,direction,from_phone,to_phone,from_digits,
           matched_kind,matched_id,matched_name,vehicle_id,target_user_id,started_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run('beeline', externalId, event.direction, event.from, event.to, event.digits[0],
-          caller.kind, caller.id, caller.name, caller.vehicleId, target);
+          caller.kind, caller.id, caller.name, caller.vehicleId, target,
+          new Date().toISOString());
     } catch (error) {
       if (!String(error.message).includes('UNIQUE')) {
         console.error('Callback Билайн:', error.message);
