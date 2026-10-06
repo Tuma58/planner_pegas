@@ -32,6 +32,9 @@ export const config = {
   embeddedSyncWorker: process.env.SYNC_WORKER_EMBEDDED !== 'false',
   initialAllowedSubnets: String(process.env.INITIAL_ALLOWED_SUBNETS || '0.0.0.0/0,::/0')
     .split(',').map(item => item.trim()).filter(Boolean),
+  // Токен API Облачной АТС Билайн («Интеграция по API» → «Создать токен»).
+  // Файл .secrets/beeline_ats_token или BEELINE_ATS_TOKEN — см. docs/telephony-beeline.md.
+  beelineAtsToken: secret('BEELINE_ATS_TOKEN', ''),
   admin: {
     username: process.env.ADMIN_USERNAME || 'admin',
     password: secret('ADMIN_PASSWORD', 'ChangeMe-2026!'),

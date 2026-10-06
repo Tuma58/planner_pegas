@@ -9,6 +9,7 @@ local_secret_dir="$project_root/.secrets"
 local_database="${LOCAL_DATABASE_PATH:-$local_data_dir/planner.db}"
 local_app_secret="$local_secret_dir/local_app_secret"
 local_admin_password="$local_secret_dir/local_admin_password"
+local_beeline_ats_token="$local_secret_dir/beeline_ats_token"
 
 [[ "$local_port" =~ ^[0-9]{1,5}$ ]] && ((local_port >= 1024 && local_port <= 65535)) || {
   echo "LOCAL_PORT должен быть в диапазоне 1024–65535" >&2
@@ -33,7 +34,12 @@ fi
 if [[ ! -s "$local_admin_password" ]]; then
   node -e "process.stdout.write(require('node:crypto').randomBytes(16).toString('hex'))" > "$local_admin_password"
 fi
-chmod 0600 "$local_app_secret" "$local_admin_password"
+# Токен АТС Билайн не генерируется — его выдают в кабинете (Настройки → API).
+# Файл создаём пустым, чтобы его можно было заполнить вручную.
+if [[ ! -e "$local_beeline_ats_token" ]]; then
+  : > "$local_beeline_ats_token"
+fi
+chmod 0600 "$local_app_secret" "$local_admin_password" "$local_beeline_ats_token"
 
 echo "Локальный режим: http://127.0.0.1:$local_port"
 echo "Логин первого запуска: admin"
@@ -48,6 +54,7 @@ export PORT="$local_port"
 export DATABASE_PATH="$local_database"
 export APP_SECRET_FILE="$local_app_secret"
 export ADMIN_PASSWORD_FILE="$local_admin_password"
+export BEELINE_ATS_TOKEN_FILE="$local_beeline_ats_token"
 export ADMIN_USERNAME="admin"
 export ADMIN_NAME="Администратор"
 export NODE_ENV="development"
