@@ -6,6 +6,19 @@
 
 ## 2026-10-06
 
+- Телефония Билайн: деплой на прод и дозакрытие. Деплой через git bundle →
+  scp (DNS github.com на VPS не работает): compose.yaml получил Docker-секрет
+  beeline_ats_token (BEELINE_ATS_TOKEN_FILE=/run/secrets/beeline_ats_token,
+  файл .secrets/beeline_ats_token, права 400:1000 под USER node) — без него
+  config.mjs не видел токен. Фикс createSubscription: дефолт baseUrl
+  (BEELINE_BASE_URL) — подписки падали на undefined/subscription. На проде:
+  журнал тянется (+100 звонков сразу, дальше дельты), подписки Xsi-Events
+  созданы на всех 33 сотрудников и лежат в app_meta beeline_subscriptions,
+  callback /api/telephony/beeline/events проверен тестовым событием (номер →
+  identifyCaller → call_events), в настройках включены «Телефония подключена»
+  и publicBase https://planner.pegasavto.ru. Контейнеры Up+healthy.
+  Прод: planer5, git b5e6fff. — e778d58, b5e6fff.
+
 - Телефония Билайн: реализован адаптер (src/beeline-telephony.mjs + сторож в
   server.mjs). Endpoint'ы портала проверены токеном: GET /statistics?page&pageSize
   (журнал звонков, новые сверху: направление, статус MISSED/RECIEVED/PLACED,
