@@ -15,7 +15,7 @@ import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
 import { attendanceDialog, DISP_KINDS, renderResource, timesheetDialog } from './resource.js';
-import { renderStaff } from './staff.js';
+import { fireReasonDialog, renderStaff } from './staff.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -1524,15 +1524,15 @@ function openDriversDirectory() {
   document.querySelectorAll('[data-drv-edit]').forEach(button =>
     button.onclick = () => driverEditDialog(byDriver(button.dataset.drvEdit), back));
   document.querySelectorAll('[data-drv-fire]').forEach(button =>
-    button.onclick = async () => {
+    button.onclick = () => {
       const driver = byDriver(button.dataset.drvFire);
-      if (!confirm(`Уволить водителя «${driver.full_name}»? Сцепка будет откреплена.`)) return;
-      try {
-        await api(`/api/drivers/${driver.id}`, { method: 'DELETE' });
-        toast('Водитель уволен');
-        await reload();
-        back();
-      } catch (error) { toast(error.message, 'error'); }
+      fireReasonDialog({ showModal, closeModal }, driver.full_name,
+        'Сцепка будет откреплена, история сохранится.', async reason => {
+          await api(`/api/drivers/${driver.id}`, { method: 'DELETE', body: JSON.stringify({ reason }) });
+          toast('Водитель уволен');
+          await reload();
+          back();
+        });
     });
 }
 
@@ -1561,6 +1561,7 @@ async function driverCardDialog(driver, after) {
       const details = JSON.parse(item.details_json);
       if (item.action === 'attendance') extra = details.status === 'present' ? '— вышел'
         : `— невыход (${card.reasons[details.reason] || details.reason})`;
+      else if (item.action === 'delete' && details.reason) extra = `— ${details.reason}`;
       else if ('vehicleId' in (details || {})) extra = details.vehicleId ? '— перезакрепление сцепки' : '— откреплён от сцепки';
     } catch { /* детали не критичны */ }
     return `<div class="vinfo-note"><b>${formatDateTime(String(item.created_at).replace(' ', 'T') + 'Z')}</b>
@@ -1603,8 +1604,19 @@ async function driverCardDialog(driver, after) {
       <button type="button" class="button ghost small" id="dcEdit">✎ Изменить</button>
       <button type="button" class="button ghost small" id="dcAbsent">Отсутствие</button>
       <button type="button" class="button ghost small" id="dcPeriod">📌 На период</button>
+      ${can('fleet:write') || state.data.user?.staffAccess
+        ? '<button type="button" class="button ghost small danger" id="dcFire" title="Мягкое увольнение: сцепка открепится, история сохранится; вернуть можно через «Водители → Уволенные»">✕ Уволить</button>' : ''}
       <button type="button" class="button ghost" data-close>Закрыть</button>
     </div>`, 'wide');
+  const dcFire = byId('dcFire');
+  if (dcFire) dcFire.onclick = () => fireReasonDialog({ showModal, closeModal }, d.full_name,
+    'Сцепка будет откреплена, история сохранится; вернуть можно через «Водители → Уволенные».',
+    async reason => {
+      await api(`/api/drivers/${d.id}`, { method: 'DELETE', body: JSON.stringify({ reason }) });
+      toast('Водитель уволен');
+      await reload();
+      after?.();
+    });
   // Календарь месяца в стиле карточки сотрудника (решение 07.10): вахта и
   // отсутствия ОТОБРАЖАЮТСЯ из живых моделей (вторую истину не плодим),
   // протяжка по дням предзаполняет штатный диалог «Отсутствие».

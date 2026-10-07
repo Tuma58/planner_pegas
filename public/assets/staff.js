@@ -6,6 +6,39 @@
 // «полный доступ» — сервер отдаёт готовый флаг user.staffAccess.
 import { api, escapeHtml, renderInto, toast } from './api.js';
 
+// Увольнение — всегда с причиной (решение руководителя 07.10): типовой
+// классификатор + комментарий; собранная строка уходит в журнал и видна
+// в истории карточки. Диалог общий для офисных и водителей.
+export const FIRE_REASONS = ['По собственному желанию', 'Дисциплина (прогулы, нарушения)',
+  'Не прошёл испытательный срок', 'Сокращение / реорганизация', 'Перевод', 'Иное'];
+
+export function fireReasonDialog({ showModal, closeModal }, fullName, note, onConfirm) {
+  showModal(`<form id="fireForm"><h2>Увольнение · ${escapeHtml(fullName)}</h2>
+    ${note ? `<p class="muted">${escapeHtml(note)}</p>` : ''}
+    <label class="field">Причина<select name="reason">${FIRE_REASONS.map(reason =>
+    `<option>${reason}</option>`).join('')}</select></label>
+    <label class="field">Комментарий <small class="muted">(обязателен при «Иное»)</small>
+      <input name="comment" autocomplete="off"></label>
+    <div class="form-error" id="fireFormError"></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button danger">✕ Уволить</button></div></form>`);
+  document.querySelector('#fireForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const reason = String(values.get('reason'));
+    const comment = String(values.get('comment') || '').trim();
+    const error = document.querySelector('#fireFormError');
+    if (reason === 'Иное' && !comment) {
+      error.textContent = 'При причине «Иное» комментарий обязателен';
+      return;
+    }
+    try {
+      await onConfirm(comment ? `${reason} — ${comment}` : reason);
+      closeModal();
+    } catch (exception) { error.textContent = exception.message; }
+  });
+}
+
 const KIND_LABEL = { day: 'Д', night: 'Н', vacation: 'ОТ', sick: 'Б' };
 const KIND_TITLE = { day: 'дневная смена', night: 'ночная смена', vacation: 'отпуск', sick: 'больничный' };
 
@@ -119,7 +152,7 @@ export async function staffCardDialog(context, id, after) {
       const details = JSON.parse(item.details_json || '{}');
       if (details.workPhone) note = ` · телефон смены ${details.workPhone}`;
       if (details.month) note = ` · ${details.month}: смен ${(details.day || 0) + (details.night || 0)}`;
-      if (details.fullName && item.action === 'fire') note = '';
+      if (details.reason && item.action === 'fire') note = ` · ${details.reason}`;
     } catch { /* детали не обязательны */ }
     const labels = {
       login: 'вход в планер', create: 'принят(а), создана учётка', update: 'данные изменены',
@@ -251,14 +284,13 @@ export async function staffCardDialog(context, id, after) {
   document.querySelector('#scEdit').onclick = () => staffEditDialog(context, person, reopen);
   document.querySelector('#scClose').onclick = () => { closeModal(); after?.(); };
   const fire = document.querySelector('#scFire');
-  if (fire) fire.onclick = async () => {
-    if (!confirm(`Уволить «${person.fullName}»? Учётка будет отключена, телефоны смены сняты; история сохранится.`)) return;
-    try {
-      await api(`/api/staff/users/${id}/fire`, { method: 'POST' });
+  if (fire) fire.onclick = () => fireReasonDialog(context, person.fullName,
+    'Учётка будет отключена, телефоны смены сняты; история сохранится.',
+    async reason => {
+      await api(`/api/staff/users/${id}/fire`, { method: 'POST', body: JSON.stringify({ reason }) });
       toast('Сотрудник уволен');
-      closeModal(); after?.();
-    } catch (error) { toast(error.message); }
-  };
+      after?.();
+    });
   const restore = document.querySelector('#scRestore');
   if (restore) restore.onclick = async () => {
     try {

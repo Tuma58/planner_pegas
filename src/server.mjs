@@ -7796,6 +7796,19 @@ async function api(request, response, url) {
   }
 
   // ── Справочник водителей: закрепление за сцепками, отпуска/болезни ──
+  // Водительский CRUD доступен Ресурсу (fleet:write) и кадровику
+  // (справочник «Сотрудники», решение руководителя 07.10: Ресурсу — по
+  // водителям, Никулиной — по всем): увольнение/приём водителя — тоже
+  // кадровое действие.
+  const requireDriversWrite = () => {
+    const writer = requireUser(request, response);
+    if (!writer) return null;
+    if (!hasPermission(writer, 'fleet:write') && !staffAccess(writer, settingsObject(db))) {
+      errorJson(response, 403, 'Нужно право Ресурса или доступ к справочнику сотрудников');
+      return null;
+    }
+    return writer;
+  };
   if (request.method === 'GET' && pathname === '/api/drivers') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
@@ -7806,7 +7819,7 @@ async function api(request, response, url) {
     });
   }
   if (request.method === 'POST' && pathname === '/api/drivers') {
-    const user = requirePermission(request, response, 'fleet:write');
+    const user = requireDriversWrite();
     if (!user) return;
     const body = await readJson(request);
     const name = String(body.fullName || '').trim();
@@ -7836,7 +7849,7 @@ async function api(request, response, url) {
   }
   match = route(/^\/api\/drivers\/([^/]+)\/restore$/, pathname);
   if (match && request.method === 'POST') {
-    const user = requirePermission(request, response, 'fleet:write');
+    const user = requireDriversWrite();
     if (!user) return;
     const driver = db.prepare(`SELECT * FROM drivers WHERE id=? AND status='fired'`).get(match[0]);
     if (!driver) return errorJson(response, 404, 'Уволенный водитель не найден');
@@ -7867,7 +7880,7 @@ async function api(request, response, url) {
   }
   match = route(/^\/api\/drivers\/([^/]+)$/, pathname);
   if (match && request.method === 'PATCH') {
-    const user = requirePermission(request, response, 'fleet:write');
+    const user = requireDriversWrite();
     if (!user) return;
     const body = await readJson(request);
     const current = db.prepare('SELECT * FROM drivers WHERE id=?').get(match[0]);
@@ -7934,11 +7947,16 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
   if (match && request.method === 'DELETE') {
-    const user = requirePermission(request, response, 'fleet:write');
+    const user = requireDriversWrite();
     if (!user) return;
     const current = db.prepare('SELECT * FROM drivers WHERE id=?').get(match[0]);
     if (!current) return errorJson(response, 404, 'Водитель не найден');
-    // Мягко: увольнение, а не удаление — история сохраняется.
+    // Мягко: увольнение, а не удаление — история сохраняется. Причина
+    // обязательна (решение руководителя 07.10) — живёт в журнале и
+    // показывается в истории карточки.
+    const body = await readJson(request).catch(() => ({}));
+    const reason = String(body.reason || '').trim();
+    if (reason.length < 3) return errorJson(response, 422, 'Укажите причину увольнения');
     db.exec('BEGIN IMMEDIATE');
     try {
       if (current.vehicle_id) {
@@ -7952,7 +7970,7 @@ async function api(request, response, url) {
       db.exec('ROLLBACK');
       throw error;
     }
-    audit(db, user, 'delete', 'driver', match[0], { soft: true }, requestIp(request));
+    audit(db, user, 'delete', 'driver', match[0], { soft: true, reason }, requestIp(request));
     return json(response, 200, { ok: true });
   }
 
@@ -10815,9 +10833,15 @@ async function api(request, response, url) {
     if (target && rolesOf(target).includes('admin') && !hasPermission(user, 'users:write')) {
       return errorJson(response, 403, 'Учётку администратора меняет только администратор');
     }
+    // Причина обязательна (решение руководителя 07.10): живёт в журнале,
+    // история карточки её показывает.
+    const body = await readJson(request).catch(() => ({}));
+    const reason = String(body.reason || '').trim();
+    if (reason.length < 3) return errorJson(response, 422, 'Укажите причину увольнения');
     const result = fireStaffUser(db, match[0]);
     if (!result.ok) return errorJson(response, 422, result.error);
-    audit(db, user, 'fire', 'staff', match[0], { fullName: result.fullName }, requestIp(request));
+    audit(db, user, 'fire', 'staff', match[0],
+      { fullName: result.fullName, reason }, requestIp(request));
     return json(response, 200, result);
   }
   match = route(/^\/api\/staff\/users\/([^/]+)\/restore$/, pathname);
