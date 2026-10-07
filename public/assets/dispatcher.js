@@ -1304,10 +1304,20 @@ export async function renderDispatcher(container, context, options = {}) {
           title="Карточка по звонку">📞</button>` : ''}` : ''}
     </div>`;
   };
-  const lateQuestions = questions.filter(question =>
-    Date.now() - Date.parse(String(question.opened_at).replace(' ', 'T') +
-      (String(question.opened_at).includes('Z') ? '' : 'Z')) > QUESTION_SLA_MS).length;
-  const questionCards = questions.map(questionRow).join('');
+  const questionAgeMs = question => Date.now() - Date.parse(String(question.opened_at)
+    .replace(' ', 'T') + (String(question.opened_at).includes('Z') ? '' : 'Z'));
+  const lateQuestions = questions.filter(question => questionAgeMs(question) > QUESTION_SLA_MS).length;
+  // Просроченные — наверх, дальше по возрасту: при открытии свёртки
+  // первым виден тот, кто ждёт дольше норматива.
+  const questionCards = [...questions]
+    .sort((a, b) => (questionAgeMs(b) > QUESTION_SLA_MS) - (questionAgeMs(a) > QUESTION_SLA_MS)
+      || questionAgeMs(b) - questionAgeMs(a))
+    .map(questionRow).join('');
+  // Свёрнуто по умолчанию (жалоба 08.10: вопросы скрыли весь экран);
+  // открытое состояние — выбор рабочего места, живёт в localStorage.
+  let questionsOpen = false;
+  try { questionsOpen = state.dispQuestionsOpen ?? localStorage.getItem('dispQOpen') === '1'; }
+  catch { questionsOpen = Boolean(state.dispQuestionsOpen); }
 
   const savedScrolls = captureScrolls(container);
   const html = `<div class="saleswrap">
@@ -1327,7 +1337,7 @@ export async function renderDispatcher(container, context, options = {}) {
       </div>
     </div>
     ${questionCards ? `<details class="questions-strip compact" data-disp-questions
-      ${state.dispQuestionsOpen ?? true ? 'open' : ''}>
+      ${questionsOpen ? 'open' : ''}>
       <summary>📞 Вопросы водителей <span class="scount ${lateQuestions ? 'late' : ''}">${questions.length}</span>
         ${lateQuestions ? `<span class="q-late">⏱ просрочено ${lateQuestions}</span>` : ''}
         <small class="muted">— строка на вопрос, норматив 10 минут; ✓ — отработано</small></summary>
@@ -1378,6 +1388,7 @@ export async function renderDispatcher(container, context, options = {}) {
 
   container.querySelector('[data-disp-questions]')?.addEventListener('toggle', event => {
     state.dispQuestionsOpen = event.currentTarget.open;
+    try { localStorage.setItem('dispQOpen', event.currentTarget.open ? '1' : '0'); } catch { /* ок */ }
   });
   wireDemurrageChip(container, context);
   // Уточнение суммы: подтвердить текущую или внести точную из заявки клиента.

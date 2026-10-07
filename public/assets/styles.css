@@ -1589,6 +1589,9 @@ details.sales-rings[open] summary::after { content: ' ▴'; }
 .questions-strip.compact > summary { cursor: pointer; padding: 7px 10px; list-style: none;
   display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: var(--fs-sm); }
 .questions-strip.compact > summary::-webkit-details-marker { display: none; }
+/* Открытый список вопросов не съедает экран: прокрутка внутри свёртки
+   (жалоба 08.10 — 10+ авто-вопросов вытеснили рабочие колонки). */
+.questions-strip.compact .list { max-height: 38vh; overflow: auto; }
 .questions-strip.compact > summary::before { content: '▸'; color: var(--muted); }
 .questions-strip.compact[open] > summary::before { content: '▾'; }
 .questions-strip.compact > summary small { font-weight: 400; }
