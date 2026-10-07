@@ -3814,6 +3814,9 @@ test('телефония: рабочий телефон смены — пере�
   assert.equal(findUserByPhone(db, '202'), 'u-disp1');
   assert.equal(findUserByPhone(db, '102'), null, 'чужой добавочный не матчится');
   assert.equal(findUserByPhone(db, '+7 987 111-22-02'), 'u-disp2', 'личный номер — фолбэк');
+  // Добавочный АТС из карточки сотрудника тоже находит адресата.
+  db.prepare(`UPDATE users SET ext_phone='417' WHERE id='u-disp2'`).run();
+  assert.equal(findUserByPhone(db, '417'), 'u-disp2', 'добавочный из карточки');
   // Трубку передали по смене: номер переезжает ко второму, у первого снят.
   const handover = applyWorkPhone(db, 'u-disp2', '202');
   assert.equal(handover.released, 1, 'прежний владелец освобождён');

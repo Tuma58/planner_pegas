@@ -55,10 +55,11 @@ export function findUserByPhone(db, phone) {
   const digits = phoneDigits(phone);
   if (digits.length < 2) return null;
   const norm = column => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${column},'+',''),'-',''),' ',''),'(',''),')','')`;
-  // Рабочий телефон текущей смены главнее личного: дежурная трубка
+  // Рабочий телефон текущей смены главнее постоянных: дежурная трубка
   // переезжает между сотрудниками, и карточка должна всплыть у того,
-  // кто внёс её номер при входе сегодня.
-  for (const column of ['work_phone', 'phone']) {
+  // кто внёс её номер при входе сегодня. Затем добавочный АТС из
+  // карточки сотрудника, затем личный мобильный.
+  for (const column of ['work_phone', 'ext_phone', 'phone']) {
     // Короткий добавочный (меньше 7 цифр) — только точное совпадение:
     // хвостовой LIKE ловил бы чужие номера с тем же окончанием.
     const row = digits.length < 7
