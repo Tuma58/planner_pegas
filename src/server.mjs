@@ -1648,8 +1648,28 @@ function runDriverNameSync() {
         + `${blind.slice(0, 15).join(', ')}${blind.length > 15 ? '…' : ''} — закройте периоды `
         + 'закрепления, иначе задания и карточки идут мимо сменившегося водителя.');
       if (tails.length) notify('resource', `⚠ В парке есть борта с одинаковыми тремя цифрами: `
-        + `${tails.join(', ')} — замещение таким кодом в графике не распознаётся. `
-        + 'Ставьте подмену на эти борта периодом закрепления (клик по ячейке), а не кодом.');
+        + `${tails.join(', ')} — замещение тремя цифрами для них не распознаётся. `
+        + 'Выбирайте тягач в списке замещения — код запишется полным номером.');
+      // Дрейф «план графика ↔ фактические закрепления» на сегодня:
+      // ручные периоды законно переопределяют план (факт главнее), но
+      // ресурсник должен видеть, где график разошёлся с жизнью.
+      const map = scheduleHolderMap(db);
+      const fioById = new Map(db.prepare(`SELECT id, full_name FROM drivers`).all()
+        .map(row => [row.id, row.full_name]));
+      const drift = [];
+      for (const vid of map.scheduledVids) {
+        const planned = map.holder.get(`${vid}|${today}`);
+        if (planned === undefined || planned === map.MANY) continue;
+        const actual = activeDriverFor(db, vid);
+        if (actual.source !== 'period') continue;
+        if ((actual.driverId || null) !== planned) {
+          const plate = db.prepare(`SELECT plate FROM vehicles WHERE id=?`).get(vid)?.plate || vid;
+          drift.push(`${plate}: план ${fioById.get(planned) || '?'} ↔ факт ${actual.empty ? 'без водителя' : actual.name}`);
+        }
+      }
+      if (drift.length) notify('resource', `📋 График разошёлся с фактом на ${drift.length} маш.: `
+        + `${drift.slice(0, 8).join('; ')}${drift.length > 8 ? '…' : ''} — поправьте план `
+        + 'или снимите ручное закрепление, чтобы график снова был правдой.');
     }
   } catch (error) { console.error('Синхронизация водителей:', error.message); }
 }

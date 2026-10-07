@@ -251,9 +251,11 @@ export function scheduleHolderMap(db, horizonDays = 35) {
     const key = vid + '|' + day;
     if (holder.get(key) === drvId) holder.delete(key);
   };
+  // Замещение: три цифры борта ИЛИ полный госномер — полный номер
+  // обязателен, когда в парке борта-тёзки по хвосту (мина «964»).
   const passes = [
     codes => ['в', 'П', 'РП', 'Р'].includes(codes.code),
-    codes => /^\d{3}$/.test(codes.code)
+    codes => /^\d{3}$/.test(codes.code) || vehByPlate.has(canonPlate(codes.code))
   ];
   for (const pass of [0, 1]) {
     for (const crew of crews.values()) {
@@ -267,7 +269,8 @@ export function scheduleHolderMap(db, horizonDays = 35) {
           if (!code) continue;
           if (pass === 0 && passes[0]({ code }) && own) put(own, day, drvId);
           if (pass === 1 && passes[1]({ code })) {
-            const sub = byTail.get(code);
+            const sub = /^\d{3}$/.test(code) ? byTail.get(code)
+              : vehByPlate.get(canonPlate(code));
             if (own) drop(own, day, drvId);
             if (sub && sub !== 'many') put(sub, day, drvId);
           }

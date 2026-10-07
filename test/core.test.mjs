@@ -3774,6 +3774,19 @@ test('график: замещение не стирает второго сво
   assert.equal(map.holder.get(`${vehB.id}|${today}`), 'h-ost',
     'родная машина остаётся за вторым своим водителем');
   assert.equal(map.holder.get(`${vehA.id}|${today}`), 'h-sub', 'замещение встало на чужой борт');
+  // Полный госномер в коде замещения — для бортов-тёзок по трём цифрам.
+  const planFull = { [month]: Array(daysInMonth).fill('') };
+  for (let d = todayD; d <= daysInMonth; d += 1) planFull[month][d - 1] = String(vehA.plate).replace(/\s+/g, '');
+  db.prepare(`UPDATE schedule_crews SET body=? WHERE id='TEST1'`).run(JSON.stringify({ id: 'TEST1',
+    ts: [{ id: 'TA', tyagach: vehA.plate }, { id: 'TB', tyagach: vehB.plate }],
+    drv: [
+      { id: 'D1', fio: 'Остающийся О', ts: 'TB', vac: false, plan },
+      { id: 'D2', fio: 'Уходящий У', ts: 'TB', vac: false, plan: planFull }
+    ] }));
+  db.prepare(`UPDATE app_meta SET value='8' WHERE key='schedule_rev'`).run();
+  const map2 = scheduleHolderMap(db);
+  assert.equal(map2.holder.get(`${vehA.id}|${today}`), 'h-sub', 'полный номер распознан как замещение');
+  assert.equal(map2.holder.get(`${vehB.id}|${today}`), 'h-ost');
   // Мост доносит это до периодов закрепления.
   syncAssignBridge(db);
   const period = db.prepare(`SELECT d.full_name FROM driver_assignments a

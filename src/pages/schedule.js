@@ -1026,7 +1026,12 @@ function codeFor(codeRaw){
   if(codeRaw!=='ЗАМ') return codeRaw;
   const id=document.getElementById('zamTs').value;
   if(!id){ document.getElementById('msg').innerHTML='<b>Выберите тягач замещения</b> в списке рядом с кодами.'; return null; }
-  return tail(tsById(id).tyagach);
+  const t=tsById(id);
+  const t3=tail(t.tyagach);
+  // Борта-тёзки по трём цифрам (964!): пишем полный номер — иначе
+  // планер не поймёт, какой борт замещают, и подмена потеряется.
+  const twins=S.ts.filter(x=>tail(x.tyagach)===t3);
+  return twins.length>1 ? String(t.tyagach).replace(/\s+/g,'') : t3;
 }
 // paint() упразднена: применение кодов — applyCode() по выделению.
 // Массовая заливка «галки + с/по» делается кликом по коду (applyCode).
