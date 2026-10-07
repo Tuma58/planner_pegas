@@ -430,6 +430,55 @@ export function driverCardData(db, driverId) {
   };
 }
 
+// ── КАНОН «кто за рулём» (решение руководителя 08.10) ──
+// Единственный источник правды о водителе машины на дату: действующее
+// ПЕРИОДНОЕ закрепление из графика (включая осознанную пустоту) →
+// иначе постоянное закрепление из справочника. Кейс т726/с964:
+// пересменка сместилась, график это знал, а карточка ТС и задание
+// водителю смотрели мимо — 35 машин из 128 были в слепой зоне.
+export function activeDriverFor(db, vehicleId, at = new Date().toISOString()) {
+  const day = String(at).slice(0, 10);
+  const period = db.prepare(`SELECT a.driver_id, d.full_name, d.phone, d.telegram_chat_id,
+      d.status driver_status
+    FROM driver_assignments a LEFT JOIN drivers d ON d.id=a.driver_id
+    WHERE a.vehicle_id=? AND a.starts_at<=? AND a.ends_at>?
+    ORDER BY a.created_at DESC LIMIT 1`).get(vehicleId, day, day);
+  if (period) {
+    return { source: 'period', empty: !period.driver_id,
+      driverId: period.driver_id || null, name: period.full_name || '',
+      phone: period.phone || '', telegramChatId: period.telegram_chat_id || null };
+  }
+  const permanent = db.prepare(`SELECT id, full_name, phone, telegram_chat_id FROM drivers
+    WHERE vehicle_id=? AND status<>'fired' LIMIT 1`).get(vehicleId);
+  if (permanent) {
+    return { source: 'permanent', empty: false, driverId: permanent.id,
+      name: permanent.full_name, phone: permanent.phone || '',
+      telegramChatId: permanent.telegram_chat_id || null };
+  }
+  const card = String(db.prepare(`SELECT driver_name FROM vehicles WHERE id=?`)
+    .get(vehicleId)?.driver_name || '').trim();
+  return { source: 'card', empty: !card, driverId: null, name: card, phone: '', telegramChatId: null };
+}
+
+// Материализация канона в старую витрину: карточка ТС (vehicles.
+// driver_name) следует за действующим периодом — гант, подбор и формы,
+// читающие строку, показывают того, кто реально за рулём. Возвращает
+// список изменённых бортов для лога/уведомления.
+export function syncVehicleDriverNames(db) {
+  const changed = [];
+  for (const vehicle of db.prepare(`SELECT id, plate, driver_name FROM vehicles
+      WHERE status='work'`).all()) {
+    const active = activeDriverFor(db, vehicle.id);
+    if (active.source === 'card') continue; // синхронизировать не с чем
+    const want = active.empty ? '' : active.name;
+    if (String(vehicle.driver_name || '').trim() === want) continue;
+    db.prepare(`UPDATE vehicles SET driver_name=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).run(want, vehicle.id);
+    changed.push({ plate: vehicle.plate, from: String(vehicle.driver_name || '').trim(), to: want });
+  }
+  return changed;
+}
+
 // Периодное закрепление водителя за ТС (подмена на межвахту, командировка):
 // поверх постоянного закрепления, на интервал дат. Один водитель не может
 // быть закреплён на два ТС внахлёст — пересечение отклоняется.

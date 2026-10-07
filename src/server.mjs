@@ -22,7 +22,7 @@ import {
 } from './security.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
-  ABSENCE_REASONS, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
+  ABSENCE_REASONS, activeDriverFor, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, syncVehicleDriverNames, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
   gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
@@ -1608,6 +1608,42 @@ function runMissedCallWatch() {
 }
 setInterval(runMissedCallWatch, 2 * 60_000);
 
+// Карточка ТС следует за графиком (решение руководителя 08.10, кейс
+// т726/с964: пересменка сместилась — гант и назначение рейсов видели
+// прежнего водителя, 35 машин из 128 в слепой зоне). Ежечасно (и при
+// старте — разовая синхронизация парка) карточка ТС приводится к
+// действующему периоду; машины с активными рейсами, у которых водитель
+// по графику не определён, раз в сутки уходят сигналом ресурснику.
+function runDriverNameSync() {
+  try {
+    const changed = syncVehicleDriverNames(db);
+    if (changed.length) {
+      console.log(`синхронизация водителей с графиком: обновлено ${changed.length} — `
+        + changed.slice(0, 10).map(item => `${item.plate} «${item.from || '—'}»→«${item.to || 'без водителя'}»`).join('; '));
+    }
+    // Рейс есть, водитель по графику не определён — слепая зона: сигнал.
+    const nowIso = new Date().toISOString();
+    const blind = [];
+    for (const trip of db.prepare(`SELECT DISTINCT t.vehicle_id, v.plate FROM trips t
+        JOIN vehicles v ON v.id=t.vehicle_id
+        WHERE t.status IN ('plan','run') AND t.ends_at>=?`).all(nowIso)) {
+      const active = activeDriverFor(db, trip.vehicle_id);
+      if (active.empty) blind.push(trip.plate);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const marker = db.prepare(`SELECT value FROM app_meta WHERE key='driver_blind_notified'`).get()?.value;
+    if (blind.length && marker !== today) {
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('driver_blind_notified',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(today);
+      notify('resource', `⚠ Рейсы на машинах без водителя по графику (${blind.length}): `
+        + `${blind.slice(0, 15).join(', ')}${blind.length > 15 ? '…' : ''} — закройте периоды `
+        + 'закрепления, иначе задания и карточки идут мимо сменившегося водителя.');
+    }
+  } catch (error) { console.error('Синхронизация водителей:', error.message); }
+}
+setInterval(runDriverNameSync, 60 * 60_000);
+setTimeout(runDriverNameSync, 30_000);
+
 // ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
 // Раз в день после 08:00 МСК: продажам в чат — кого поздравить (ДР контакта
 // сегодня/завтра/через 3 дня, праздник за N дней и в день), и с кем пора
@@ -2044,6 +2080,15 @@ function driverAssignmentText(trip) {
 }
 
 function driverForTrip(trip) {
+  // КАНОН (08.10): сперва действующий период из графика — задание в бот
+  // должно уйти тому, кто реально за рулём, а не прежнему по справочнику.
+  const active = activeDriverFor(db, trip.vehicle_id, trip.starts_at || undefined);
+  if (active.source === 'period') {
+    if (active.empty || !active.driverId) return null; // водитель не определён — не слать никому
+    const byPeriod = db.prepare(`SELECT d.* FROM drivers d WHERE d.id=? AND d.status<>'fired'
+      AND d.telegram_chat_id IS NOT NULL`).get(active.driverId);
+    if (byPeriod) return byPeriod;
+  }
   const byLink = db.prepare(`SELECT d.* FROM drivers d
     WHERE d.vehicle_id=? AND d.telegram_chat_id IS NOT NULL
       AND d.status<>'fired' LIMIT 1`).get(trip.vehicle_id);
@@ -8473,8 +8518,14 @@ async function api(request, response, url) {
     const dispositionNow = db.prepare(`SELECT * FROM vehicle_dispositions
       WHERE vehicle_id=? AND starts_at<=? AND ends_at>? ORDER BY starts_at DESC LIMIT 1`)
       .get(vehicle.id, nowIso, nowIso);
-    const driver = db.prepare(`SELECT * FROM drivers WHERE vehicle_id=? AND status<>'fired' LIMIT 1`)
-      .get(vehicle.id);
+    // Водитель — по канону графика (08.10): карточка звонка должна
+    // называть того, кто реально за рулём сегодня.
+    const activeNow = activeDriverFor(db, vehicle.id);
+    const driver = activeNow.driverId
+      ? db.prepare(`SELECT * FROM drivers WHERE id=?`).get(activeNow.driverId)
+      : (activeNow.empty ? null
+        : db.prepare(`SELECT * FROM drivers WHERE vehicle_id=? AND status<>'fired' LIMIT 1`)
+          .get(vehicle.id));
     const nextShift = db.prepare(`SELECT * FROM vehicle_dispositions
       WHERE vehicle_id=? AND kind='shift' AND ends_at>? ORDER BY starts_at LIMIT 1`)
       .get(vehicle.id, nowIso);
@@ -10681,6 +10732,8 @@ async function api(request, response, url) {
       { vehicleId: row.vehicle_id, startsAt: row.starts_at, endsAt: row.ends_at,
         ...(row.trims?.length ? { trims: row.trims.map(trim => trim.label) } : {}) },
       requestIp(request));
+    // Карточки ТС сразу следуют за графиком — без ожидания часового сторожа.
+    syncVehicleDriverNames(db);
     return json(response, 201, { item: row });
   }
   match = route(/^\/api\/driver-assignments\/([\w-]+)$/, pathname);
@@ -10692,6 +10745,7 @@ async function api(request, response, url) {
     db.prepare('DELETE FROM driver_assignments WHERE id=?').run(match[0]);
     audit(db, user, 'unassign-period', 'driver', row.driver_id,
       { vehicleId: row.vehicle_id, startsAt: row.starts_at, endsAt: row.ends_at }, requestIp(request));
+    syncVehicleDriverNames(db);
     return json(response, 200, { ok: true });
   }
 

@@ -3738,6 +3738,48 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
 });
 
+test('канон «кто за рулём»: период главнее справочника, синк карточки ТС', async t => {
+  const { activeDriverFor, createDriverAssignment, syncVehicleDriverNames } =
+    await import('../src/planner-service.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-adr-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare(`SELECT id FROM vehicles WHERE status='work' LIMIT 1`).get();
+  db.prepare(`UPDATE drivers SET vehicle_id=NULL WHERE vehicle_id=?`).run(vehicle.id);
+  db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id,status) VALUES('adr-perm','Постоянный П',?, 'active')`)
+    .run(vehicle.id);
+  db.prepare(`INSERT INTO drivers(id,full_name,status,telegram_chat_id)
+    VALUES('adr-sub','Подменный С','active','tg-sub')`).run();
+  db.prepare(`UPDATE vehicles SET driver_name='Постоянный П' WHERE id=?`).run(vehicle.id);
+  // Без периода — постоянный из справочника.
+  assert.equal(activeDriverFor(db, vehicle.id).name, 'Постоянный П');
+  // Период на подменного — канон его и называет.
+  const day = new Date().toISOString().slice(0, 10);
+  const until = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+  createDriverAssignment(db, { driverId: 'adr-sub', vehicleId: vehicle.id,
+    startsAt: day, endsAt: until });
+  const active = activeDriverFor(db, vehicle.id);
+  assert.equal(active.source, 'period');
+  assert.equal(active.name, 'Подменный С');
+  assert.equal(active.telegramChatId, 'tg-sub', 'задание в бот уйдёт подменному');
+  // Синк приводит карточку ТС к графику (кейс т726: гант показывал прежнего).
+  const changed = syncVehicleDriverNames(db);
+  assert.ok(changed.some(item => item.to === 'Подменный С'));
+  assert.equal(db.prepare(`SELECT driver_name FROM vehicles WHERE id=?`).get(vehicle.id).driver_name,
+    'Подменный С');
+  // Осознанная пустота: карточка пустеет — «без водителя» видно всем.
+  createDriverAssignment(db, { driverId: null, vehicleId: vehicle.id,
+    startsAt: day, endsAt: until });
+  assert.equal(activeDriverFor(db, vehicle.id).empty, true);
+  syncVehicleDriverNames(db);
+  assert.equal(db.prepare(`SELECT driver_name FROM vehicles WHERE id=?`).get(vehicle.id).driver_name, '');
+  // Повтор идемпотентен.
+  assert.equal(syncVehicleDriverNames(db).length, 0);
+});
+
 test('сотрудники: доступ, приём/увольнение, график смен', async t => {
   const { staffAccess, staffList, createStaffUser, updateStaffUser, fireStaffUser,
     restoreStaffUser, setStaffShifts, staffShifts } = await import('../src/staff.mjs');
