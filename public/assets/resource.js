@@ -1303,6 +1303,8 @@ function renderScheduleFrame(container, context) {
         <button class="button small ghost" id="resViewGantt"
           title="Классический гант ресурса: рейсы, диспозиции, сервисные инструменты (перегон, перецепка, явка, табель)">Гант</button>
       </span>
+      ${context.openDrivers ? `<button class="button ghost small" id="schedDrivers"
+        title="Справочник водителей: добавить и уволить, отпуска и больничные, закрепление за сцепками">Водители</button>` : ''}
       <span class="muted schedhint">экипажи · план/факт · пересменки · сверхвахта к доплате — главный инструмент планирования людей</span>
     </div>
     <iframe class="schedframe" id="schedFrame" src="/schedule?embed=1" title="График работы"></iframe>
@@ -1313,6 +1315,8 @@ function renderScheduleFrame(container, context) {
       state.resourceView = 'gantt';
       (context.rerenderMain || (() => renderResource(container, context)))();
     };
+    const driversButton = container.querySelector('#schedDrivers');
+    if (driversButton) driversButton.onclick = () => context.openDrivers();
     const frame = container.querySelector('#schedFrame');
     frame.addEventListener('load', () => {
       try {
