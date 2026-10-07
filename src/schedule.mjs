@@ -243,7 +243,14 @@ export function scheduleHolderMap(db, horizonDays = 35) {
     const key = vid + '|' + day;
     holder.set(key, holder.has(key) && holder.get(key) !== drvId ? MANY : drvId);
   };
-  const drop = (vid, day) => holder.delete(vid + '|' + day);
+  // Уходя замещать чужой борт, водитель снимает с родной машины ТОЛЬКО
+  // СЕБЯ: у экипажа бывает два своих водителя, и второй остаётся
+  // держателем (баг 08.10: «726» Котельникова стирал Горшкова с с964 —
+  // машина две недели числилась без водителя при заполненном графике).
+  const drop = (vid, day, drvId) => {
+    const key = vid + '|' + day;
+    if (holder.get(key) === drvId) holder.delete(key);
+  };
   const passes = [
     codes => ['в', 'П', 'РП', 'Р'].includes(codes.code),
     codes => /^\d{3}$/.test(codes.code)
@@ -261,7 +268,7 @@ export function scheduleHolderMap(db, horizonDays = 35) {
           if (pass === 0 && passes[0]({ code }) && own) put(own, day, drvId);
           if (pass === 1 && passes[1]({ code })) {
             const sub = byTail.get(code);
-            if (own) drop(own, day);
+            if (own) drop(own, day, drvId);
             if (sub && sub !== 'many') put(sub, day, drvId);
           }
         }
@@ -272,8 +279,12 @@ export function scheduleHolderMap(db, horizonDays = 35) {
   // день горизонта): только для них пустой день = осознанное «без водителя».
   const scheduledVids = new Set([...holder.keys()].map(key => key.split('|')[0]));
   const horizonSet = new Set(horizon);
+  // Неоднозначные трёхзначные хвосты бортов: замещение таким кодом
+  // игнорируется молча — пусть об этом знает сторож (мина «964»:
+  // с964рв58 и р964нт58 в одном парке).
+  const tailConflicts = [...byTail.entries()].filter(([, v]) => v === 'many').map(([t]) => t);
   const built = { rev, today, horizonDays, crewCount: crews.size,
-    holder, MANY, idByFio, horizon, horizonSet, scheduledVids };
+    holder, MANY, idByFio, horizon, horizonSet, scheduledVids, tailConflicts };
   holderCaches.set(db, built);
   return built;
 }

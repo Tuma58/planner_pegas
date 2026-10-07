@@ -1632,12 +1632,18 @@ function runDriverNameSync() {
     }
     const today = new Date().toISOString().slice(0, 10);
     const marker = db.prepare(`SELECT value FROM app_meta WHERE key='driver_blind_notified'`).get()?.value;
-    if (blind.length && marker !== today) {
+    // Неоднозначные хвосты бортов: замещение «по трём цифрам» в графике
+    // для них игнорируется — ресурсник должен это знать (кейс 964).
+    const tails = (scheduleHolderMap(db).tailConflicts || []);
+    if ((blind.length || tails.length) && marker !== today) {
       db.prepare(`INSERT INTO app_meta(key,value) VALUES('driver_blind_notified',?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(today);
-      notify('resource', `⚠ Рейсы на машинах без водителя по графику (${blind.length}): `
+      if (blind.length) notify('resource', `⚠ Рейсы на машинах без водителя по графику (${blind.length}): `
         + `${blind.slice(0, 15).join(', ')}${blind.length > 15 ? '…' : ''} — закройте периоды `
         + 'закрепления, иначе задания и карточки идут мимо сменившегося водителя.');
+      if (tails.length) notify('resource', `⚠ В парке есть борта с одинаковыми тремя цифрами: `
+        + `${tails.join(', ')} — замещение таким кодом в графике не распознаётся. `
+        + 'Ставьте подмену на эти борта периодом закрепления (клик по ячейке), а не кодом.');
     }
   } catch (error) { console.error('Синхронизация водителей:', error.message); }
 }

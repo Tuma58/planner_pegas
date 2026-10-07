@@ -3738,6 +3738,50 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
 });
 
+test('график: замещение не стирает второго своего водителя (кейс с964)', async t => {
+  const { scheduleHolderMap, syncAssignBridge } = await import('../src/schedule.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-hold-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [vehA, vehB] = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' LIMIT 2`).all();
+  db.prepare(`UPDATE drivers SET vehicle_id=NULL WHERE vehicle_id IN (?,?)`).run(vehA.id, vehB.id);
+  db.prepare(`INSERT INTO drivers(id,full_name,status) VALUES
+    ('h-ost','Остающийся О','active'),('h-sub','Уходящий У','active')`).run();
+  const tailA = (String(vehA.plate).match(/\d{3}/) || [''])[0];
+  const month = new Date().toISOString().slice(0, 7);
+  const daysInMonth = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+  const plan = { [month]: Array(daysInMonth).fill('') };
+  const planSub = { [month]: Array(daysInMonth).fill('') };
+  const todayD = Number(new Date().toISOString().slice(8, 10));
+  for (let d = todayD; d <= daysInMonth; d += 1) {
+    plan[month][d - 1] = 'в';        // остающийся работает на родной B
+    planSub[month][d - 1] = tailA;   // второй свой уходит замещать A
+  }
+  db.prepare(`INSERT INTO schedule_crews(id,body,rev,updated_at) VALUES('TEST1',?,1,CURRENT_TIMESTAMP)`)
+    .run(JSON.stringify({ id: 'TEST1',
+      ts: [{ id: 'TA', tyagach: vehA.plate }, { id: 'TB', tyagach: vehB.plate }],
+      drv: [
+        { id: 'D1', fio: 'Остающийся О', ts: 'TB', vac: false, plan },
+        { id: 'D2', fio: 'Уходящий У', ts: 'TB', vac: false, plan: planSub }
+      ] }));
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('schedule_rev','7')
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+  const map = scheduleHolderMap(db);
+  const today = new Date().toISOString().slice(0, 10);
+  assert.equal(map.holder.get(`${vehB.id}|${today}`), 'h-ost',
+    'родная машина остаётся за вторым своим водителем');
+  assert.equal(map.holder.get(`${vehA.id}|${today}`), 'h-sub', 'замещение встало на чужой борт');
+  // Мост доносит это до периодов закрепления.
+  syncAssignBridge(db);
+  const period = db.prepare(`SELECT d.full_name FROM driver_assignments a
+    JOIN drivers d ON d.id=a.driver_id
+    WHERE a.vehicle_id=? AND a.starts_at<=? AND a.ends_at>?`).get(vehB.id, today, today);
+  assert.equal(period.full_name, 'Остающийся О');
+});
+
 test('канон «кто за рулём»: период главнее справочника, синк карточки ТС', async t => {
   const { activeDriverFor, createDriverAssignment, syncVehicleDriverNames } =
     await import('../src/planner-service.mjs');
