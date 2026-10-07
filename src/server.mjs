@@ -1588,12 +1588,19 @@ function runMissedCallWatch() {
       const id = randomUUID();
       const plate = call.vehicle_id
         ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(call.vehicle_id)?.plate || '' : '';
+      // Кому звонил — пофамильно (решение руководителя 08.10: видно,
+      // кто проигнорировал и не перезвонил); фолбэк — добавочный.
+      const targetName = call.target_user_id
+        ? db.prepare('SELECT full_name FROM users WHERE id=?').get(call.target_user_id)?.full_name || ''
+        : '';
+      const toLabel = targetName || (call.to_phone ? `доб. ${call.to_phone}` : '');
       db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,phone,topic,note,call_id)
         VALUES(?,?,?,?,?,?,?)`).run(id, call.vehicle_id, call.matched_name || '',
         phonePretty(call.from_phone), 'missed_call',
-        `Автоматически: входящий без ответа и перезвона ${waitMin}+ минут`, call.id);
+        `Звонил${toLabel ? `: ${toLabel}` : ''} — без ответа и перезвона ${waitMin}+ минут`, call.id);
       notify('dispatcher', `📵 Пропущенный звонок водителя ${call.matched_name}`
-        + `${plate ? ` (${plate})` : ''} — перезвоните. Норматив ответа — 10 минут`,
+        + `${plate ? ` (${plate})` : ''}${toLabel ? ` → ${toLabel}` : ''}`
+        + ' — перезвоните. Норматив ответа — 10 минут',
       'question', id);
     }
     if (calls.length) console.log(`пропущенные → вопросы: создано ${calls.length}`);
@@ -8409,10 +8416,19 @@ async function api(request, response, url) {
           WHERE v.id=?`).get(vehicleId) : null;
     if (!vehicle) {
       // Водитель без сцепки (отпуск, межвахта, резерв) — карточке всё
-      // равно есть что ответить: статус и следующий выход (07.10).
+      // равно есть что ответить: статус и следующий выход (07.10),
+      // прошлые обращения с резолюциями (08.10).
       const driverStatus = caller?.kind === 'driver'
         ? driverServiceStatus(db, caller.id) : null;
-      return json(response, 200, { caller, vehicle: null, driverStatus, contacts: employeeContacts() });
+      const digitsOnly = phoneDigits(phone);
+      const norm = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(q.phone,'+',''),'-',''),' ',''),'(',''),')','')`;
+      const recentQuestions = digitsOnly ? db.prepare(`SELECT q.topic, q.note, q.resolution,
+          q.closed_at, u.full_name closed_by_name
+        FROM driver_questions q LEFT JOIN users u ON u.id=q.closed_by
+        WHERE q.closed_at IS NOT NULL AND ${norm} LIKE '%'||?
+        ORDER BY q.closed_at DESC LIMIT 3`).all(digitsOnly) : [];
+      return json(response, 200, { caller, vehicle: null, driverStatus, recentQuestions,
+        contacts: employeeContacts() });
     }
     const nowIso = new Date().toISOString();
     const active = db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
@@ -8461,6 +8477,16 @@ async function api(request, response, url) {
       .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9)).slice(0, 6);
     const openQuestions = db.prepare(`SELECT * FROM driver_questions
       WHERE vehicle_id=? AND closed_at IS NULL ORDER BY opened_at`).all(vehicle.id);
+    // Прошлые обращения с резолюциями (решение руководителя 08.10):
+    // при следующем звонке сразу видно, о чём говорили и что ответили.
+    const phoneNorm = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(q.phone,'+',''),'-',''),' ',''),'(',''),')','')`;
+    const callerDigits = phoneDigits(phone);
+    const recentQuestions = db.prepare(`SELECT q.topic, q.note, q.resolution, q.closed_at,
+        u.full_name closed_by_name
+      FROM driver_questions q LEFT JOIN users u ON u.id=q.closed_by
+      WHERE q.closed_at IS NOT NULL AND (q.vehicle_id=?
+        OR (?<>'' AND ${phoneNorm} LIKE '%'||?))
+      ORDER BY q.closed_at DESC LIMIT 3`).all(vehicle.id, callerDigits, callerDigits);
     // Комментарии смены по рейсу: заметка по рейсу и отметки контроля с
     // текстом. Те же записи видит диспетчер в карточке контроля — комментарий
     // ходит в обе стороны, кто бы его ни оставил.
@@ -8471,7 +8497,7 @@ async function api(request, response, url) {
         new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10)) : [];
     return json(response, 200, {
       caller, vehicle, driver, active, next, order, stops, transfer, dispositionNow,
-      nextShift, customerContacts, services, openQuestions, notes,
+      nextShift, customerContacts, services, openQuestions, recentQuestions, notes,
       driverStatus: driver ? driverServiceStatus(db, driver.id) : null,
       placeText: vehiclePlaceText(vehicle.id), contacts: employeeContacts()
     });

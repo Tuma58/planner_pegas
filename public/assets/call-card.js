@@ -44,6 +44,21 @@ function tripStageText(card) {
 // (решение руководителя 07.10: отпускник звонит «когда выходить» — ответ
 // должен быть в карточке одним взглядом).
 const dayLabel = iso => iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : '';
+
+// Прошлые обращения с резолюциями: что спрашивал и что ответили —
+// контекст следующего звонка (решение руководителя 08.10).
+function recentQuestionsBody(items) {
+  return (items || []).length
+    ? items.map(item => `<div class="call-note">
+        <b>${escapeHtml(topicLabel(item.topic))}</b>
+        <small class="muted">· ${fmt(String(item.closed_at).replace(' ', 'T') +
+          (String(item.closed_at).includes('Z') ? '' : 'Z'))}
+          ${item.closed_by_name ? ` · ${escapeHtml(item.closed_by_name)}` : ''}</small><br>
+        ${item.resolution ? `✓ ${escapeHtml(item.resolution)}` : ''}
+        ${item.note ? `<small class="muted" style="display:block">вопрос: ${escapeHtml(item.note)}</small>` : ''}
+      </div>`).join('')
+    : '';
+}
 function serviceLine(ds) {
   if (!ds) return '';
   const label = ds.state === 'vacation' ? `🌴 Отпуск до ${dayLabel(ds.absentTo)}`
@@ -73,6 +88,9 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
         <p><b>${escapeHtml(ds.fullName)}</b>${ds.phone ? ` · ${phoneLink(ds.phone)}` : ''}</p>
         <div class="call-open-q" style="margin:8px 0">${serviceLine(ds)
           || 'в строю, сцепка не закреплена — вопрос ресурснику'}</div>
+        ${recentQuestionsBody(card.recentQuestions)
+          ? `<div style="margin:8px 0"><b>📜 Прошлые обращения</b>
+             ${recentQuestionsBody(card.recentQuestions)}</div>` : ''}
         <p class="muted">Полная картина — в карточке сотрудника
           (вкладка «Сотрудники» или «Ресурс → Водители»).</p>
         <div class="modal-actions">
@@ -252,6 +270,8 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
         <button class="button ghost small" id="callNoteBtn" style="float:right;min-height:20px;padding:0 7px"
           title="Комментарий увидит вся смена — он же появится в карточке контроля">✎</button>` : ''}`,
     notesBody, trip ? 'комментариев по рейсу пока нет' : 'рейса нет — комментировать нечего')}
+      ${tile('📜 Прошлые обращения', recentQuestionsBody(card.recentQuestions),
+    'обращений ещё не было — первый разговор')}
     </div>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Закрыть</button>
