@@ -94,10 +94,13 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
         <p class="muted">Полная картина — в карточке сотрудника
           (вкладка «Сотрудники» или «Ресурс → Водители»).</p>
         <div class="modal-actions">
+          <button type="button" class="button ghost small" id="noVehNote">📝 Итог звонка</button>
           <button type="button" class="button ghost small" id="noVehQuestion">📞 Вопрос</button>
           <button type="button" class="button ghost" data-close>Закрыть</button>
         </div>`);
       document.getElementById('noVehQuestion').onclick = () => questionDialog(context, {
+        driverName: ds.fullName, phone: ds.phone || phone, callId });
+      document.getElementById('noVehNote').onclick = () => callNoteDialog(context, {
         driverName: ds.fullName, phone: ds.phone || phone, callId });
       return;
     }
@@ -275,8 +278,13 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
     </div>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Закрыть</button>
+      <button type="button" class="button ghost" id="callNoteResult"
+        title="Необязательно: одна строка о разговоре — попадёт в «Прошлые обращения»">📝 Итог звонка</button>
       <button type="button" class="button" id="callQuestion">📞 Поступил вопрос</button>
     </div>`);
+  document.getElementById('callNoteResult').onclick = () => callNoteDialog(context, {
+    vehicleId: vehicle.id, driverName: card.driver?.full_name || vehicle.driver_name || '',
+    phone: driverPhone || phone, callId });
 
   // Комментарий пишется в общие отметки смены (ключ заметки по рейсу) —
   // ровно туда, откуда его читает карточка контроля у диспетчера.
@@ -312,6 +320,36 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
     driverName: card.driver?.full_name || vehicle.driver_name || '',
     phone: driverPhone || phone, callId
   });
+}
+
+// «📝 Итог звонка» (08.10): необязательная строка — рождается сразу
+// закрытой записью и попадает в «📜 Прошлые обращения» этого водителя.
+export function callNoteDialog(context, payload) {
+  context.showModal(`<form id="callNoteForm">
+    <h2>📝 Итог звонка</h2>
+    <p class="muted">${escapeHtml(payload.driverName || '')}
+      ${payload.phone ? ` · ${escapeHtml(payload.phone)}` : ''} — одна строка о разговоре;
+      увидит любой, кому он позвонит в следующий раз.</p>
+    <label class="field">Что обсудили / что ответили
+      <input name="resolution" maxlength="500" required
+        placeholder="например: подтвердил выход 21.10, напомнил про путевой лист"></label>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Сохранить</button>
+    </div></form>`);
+  document.getElementById('callNoteForm').onsubmit = async event => {
+    event.preventDefault();
+    const resolution = String(new FormData(event.currentTarget).get('resolution') || '').trim();
+    try {
+      await api('/api/driver-questions', { method: 'POST', body: JSON.stringify({
+        topic: 'call_note', vehicleId: payload.vehicleId || null,
+        driverName: payload.driverName || '', phone: payload.phone || '',
+        callId: payload.callId || null, resolution
+      }) });
+      context.closeModal();
+      toast('Итог сохранён — виден в «Прошлых обращениях»');
+    } catch (error) { toast(error.message, 'error'); }
+  };
 }
 
 export function topicLabel(key) {
@@ -505,6 +543,43 @@ export function callSearchDialog(context, data) {
 
 // Всплытие карточки по входящему звонку: пока телефония выключена, опрос не
 // идёт вовсе — лишних запросов нет.
+// Уголок-подсказка по ИСХОДЯЩЕМУ (08.10): сотрудник сам набрал номер и
+// знает, кому звонит, — модалка не нужна, но карточка в один клик под
+// рукой. Чекбокс «сразу карточку» — выбор рабочего места (localStorage).
+function outgoingCallPop(context, call) {
+  let instant = false;
+  try { instant = localStorage.getItem('outCallCard') === '1'; } catch { /* ок */ }
+  const open = () => callCardDialog(context, { vehicleId: call.vehicle_id || '',
+    phone: call.from_digits || call.to_phone, callId: call.id });
+  if (instant) { open(); return; }
+  document.getElementById('outCallPop')?.remove();
+  const pop = document.createElement('div');
+  pop.id = 'outCallPop';
+  pop.className = 'out-call-pop';
+  pop.innerHTML = `<span>📞 Исходящий: <b>${escapeHtml(call.matched_name
+    || phonePrettyLocal(call.to_phone) || 'номер не найден')}</b>
+    ${call.vehicle_plate ? ` · <span class="mono">${escapeHtml(call.vehicle_plate)}</span>` : ''}</span>
+    <button class="button small" data-pop-card>Карточка</button>
+    <label class="muted" style="font-size:11px;display:inline-flex;gap:3px;align-items:center">
+      <input type="checkbox" data-pop-instant> сразу карточку</label>
+    <button class="button ghost small" data-pop-close>✕</button>`;
+  document.body.appendChild(pop);
+  const close = () => pop.remove();
+  pop.querySelector('[data-pop-card]').onclick = () => { close(); open(); };
+  pop.querySelector('[data-pop-close]').onclick = close;
+  pop.querySelector('[data-pop-instant]').onchange = event => {
+    try { localStorage.setItem('outCallCard', event.currentTarget.checked ? '1' : '0'); } catch { /* ок */ }
+  };
+  setTimeout(() => { if (pop.isConnected) pop.remove(); }, 12_000);
+}
+
+const phonePrettyLocal = value => {
+  const digits = String(value || '').replace(/\D+/g, '').slice(-10);
+  return digits.length === 10
+    ? `+7 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 8)}-${digits.slice(8)}`
+    : String(value || '');
+};
+
 export function watchIncomingCalls(context) {
   const settings = context.state.data.settings || {};
   if (!settings.telephony?.enabled || settings.telephony?.popup === false) return null;
@@ -516,6 +591,11 @@ export function watchIncomingCalls(context) {
         if (seen.has(call.id)) continue;
         seen.add(call.id);
         await api(`/api/telephony/calls/${call.id}/handled`, { method: 'POST' }).catch(() => {});
+        // Исходящий самого сотрудника: тихий уголок с карточкой в клик.
+        if (call.direction === 'out') {
+          outgoingCallPop(context, call);
+          continue;
+        }
         // Внутренний звонок: карточка не нужна — тихий тост «кто звонит»
         // (решение руководителя 07.10), журнал запись сохраняет.
         if (call.matched_kind === 'employee') {

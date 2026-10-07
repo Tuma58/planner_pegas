@@ -2428,6 +2428,11 @@ test('билайн: журнал из статистики, дедуп и раз
   db.prepare(`INSERT INTO app_meta(key,value) VALUES('beeline_abonents',?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
     .run(JSON.stringify({ 391: { phone: '+79630995009', userId: 'u@b' } }));
+  // Внешняя сторона исходящего: номер абонента подписки выкидывается.
+  const { externalPartyDigits } = await import('../src/beeline-telephony.mjs');
+  assert.equal(externalPartyDigits(['9630995009', '9875105921'], '+79630995009'), '9875105921');
+  assert.equal(externalPartyDigits(['391', '9875105921'], ''), '9875105921', 'добавочный не внешняя сторона');
+  assert.equal(externalPartyDigits(['9630995009'], '+79630995009'), '', 'кроме своего номера никого');
   const resolved = resolveSubscriptionTarget(db, 'sub-391');
   assert.equal(resolved.pattern, '391');
   assert.equal(resolved.phone, '+79630995009', 'мобильный абонента из карты АТС');

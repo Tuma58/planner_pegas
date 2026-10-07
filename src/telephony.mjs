@@ -94,6 +94,9 @@ export const QUESTION_TOPICS = [
   { key: 'mechanic', label: 'Как связаться с механиком', owner: 'Ресурс' },
   { key: 'customer_phone', label: 'Нужен телефон клиента', owner: 'Продажи' },
   { key: 'missed_call', label: 'Пропущенный звонок — перезвоните', owner: 'Диспетчер' },
+  // Итог звонка рождается сразу закрытым — след разговора для «📜 Прошлых
+  // обращений», не задача смене.
+  { key: 'call_note', label: 'Итог звонка', owner: '' },
   { key: 'other', label: 'Другое', owner: '' }
 ];
 

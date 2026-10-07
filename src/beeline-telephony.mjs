@@ -238,6 +238,15 @@ export function parseXsiEvent(raw) {
     from: digits[0] || '', to: digits[1] || '', digits };
 }
 
+// Внешняя сторона звонка: из номеров события убираем номер самого
+// абонента подписки и короткие добавочные — остаётся тот, с кем
+// говорят. Нужен исходящим (кому звонит сотрудник) и как страховка
+// входящим (кто звонит).
+export function externalPartyDigits(digits, ownPhone) {
+  const own = phoneDigits(ownPhone || '');
+  return (digits || []).find(d => d.length >= 7 && d !== own) || '';
+}
+
 // Карта абонентов АТС (extension/номер подписки → FMC-мобильный):
 // обновляется каждым прогоном ensureBeelineSubscriptions, читается при
 // событии, чтобы найти сотрудника-адресата по его мобильному.

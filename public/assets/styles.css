@@ -1789,3 +1789,9 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .staff-grid .dash-row b { text-align: right; font-weight: 600; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 760px) { #staffCard .staff-grid { grid-template-columns: 1fr !important; } }
+
+/* Уголок исходящего звонка (08.10): подсказка, не модалка. */
+.out-call-pop { position: fixed; right: 16px; bottom: 16px; z-index: 90;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 420px;
+  padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); box-shadow: 0 8px 30px rgb(0 0 0 / 25%); font-size: 13px; }

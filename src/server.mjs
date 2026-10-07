@@ -14,7 +14,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
-import { ensureBeelineSubscriptions, findUserByPhone, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
+import { ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
@@ -8307,29 +8307,40 @@ async function api(request, response, url) {
     const raw = await readRaw(request, 256 * 1024).then(buffer => buffer.toString('utf8'));
     const event = parseXsiEvent(raw);
     if (!event || !event.digits.length) return json(response, 200, { ok: true });
-    const caller = identifyCaller(db, event.from || event.digits[0]);
-    // Кому звонят: Билайн своего номера «to» в событии почти не шлёт
-    // (447/451 пустых, разбор 07.10) — адресата даёт ПОДПИСКА: она
-    // оформлена на конкретного абонента. Добавочный подписки → сотрудник
-    // (рабочий телефон смены / добавочный в карточке / FMC-мобильный
-    // абонента из справочника АТС).
+    // Кому звонят / кто звонит из наших: Билайн своего номера «to» в
+    // событии почти не шлёт (447/451 пустых, разбор 07.10) — абонента
+    // даёт ПОДПИСКА: она оформлена на конкретного сотрудника. Для
+    // входящего это адресат карточки; для ИСХОДЯЩЕГО (08.10) — звонящий
+    // сотрудник: ему уйдёт тихая подсказка с карточкой того, кому звонит.
     const sub = resolveSubscriptionTarget(db, event.subscriptionId);
+    const subscriber = sub
+      ? (findUserByPhone(db, sub.pattern) || (sub.phone ? findUserByPhone(db, sub.phone) : null))
+      : null;
+    // Внешняя сторона: для out это тот, КОМУ звонят, — номер абонента
+    // подписки из списка выкидываем, иначе карточка узнавала бы самого
+    // звонящего сотрудника.
+    const external = event.direction === 'out'
+      ? externalPartyDigits(event.digits, sub?.phone)
+      : (event.from || event.digits[0]);
+    const caller = identifyCaller(db, external);
     let target = null;
     if (event.direction === 'in') {
-      if (sub) {
-        target = findUserByPhone(db, sub.pattern)
-          || (sub.phone ? findUserByPhone(db, sub.phone) : null);
-      }
+      target = subscriber;
       if (!target && event.to) target = findUserByPhone(db, event.to);
+    } else {
+      target = subscriber; // исходящий: подсказка — самому звонящему
     }
-    const toPhone = event.to || (sub ? sub.pattern : '');
+    const toPhone = event.direction === 'out'
+      ? external
+      : (event.to || (sub ? sub.pattern : ''));
     const externalId = event.callId ? `xsi:${event.callId}` : `xsi:${phoneDigits(event.from)}:${Date.now()}`;
     try {
       db.prepare(`INSERT OR IGNORE INTO call_events(
           id,provider,external_id,direction,from_phone,to_phone,from_digits,
           matched_kind,matched_id,matched_name,vehicle_id,target_user_id,started_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(randomUUID(), 'beeline', externalId, event.direction, event.from, toPhone, event.digits[0],
+        .run(randomUUID(), 'beeline', externalId, event.direction, event.from, toPhone,
+          event.direction === 'out' ? external : event.digits[0],
           caller.kind, caller.id, caller.name, caller.vehicleId, target,
           new Date().toISOString());
     } catch (error) {
@@ -8387,10 +8398,12 @@ async function api(request, response, url) {
     const user = requireUser(request, response);
     if (!user) return;
     const since = new Date(Date.now() - 5 * 60_000).toISOString();
+    // Входящие — карточка адресату; исходящие (08.10) — тихая подсказка
+    // самому звонящему сотруднику с той же карточкой под рукой.
     const items = db.prepare(`SELECT c.*, v.plate vehicle_plate FROM call_events c
       LEFT JOIN vehicles v ON v.id=c.vehicle_id
-      WHERE c.direction='in' AND c.handled_at IS NULL AND c.started_at>=?
-        AND c.target_user_id=?
+      WHERE c.direction IN ('in','out') AND c.status='' AND c.handled_at IS NULL
+        AND c.started_at>=? AND c.target_user_id=?
       ORDER BY c.started_at DESC LIMIT 5`).all(since, user.id);
     return json(response, 200, { items });
   }
@@ -8806,18 +8819,28 @@ async function api(request, response, url) {
       return errorJson(response, 422, 'Выберите тему вопроса');
     }
     const id = randomUUID();
+    // «Итог звонка» (08.10): запись с готовой резолюцией рождается сразу
+    // закрытой — это не задача смене, а след разговора для «📜 Прошлых
+    // обращений»; уведомление не шлётся.
+    const resolution = String(body.resolution || '').trim().slice(0, 500);
     db.prepare(`INSERT INTO driver_questions(id,vehicle_id,trip_id,driver_name,phone,topic,note,
-        opened_by,call_id) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+        opened_by,call_id,resolution,closed_by,closed_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, body.vehicleId || null, body.tripId || null,
       String(body.driverName || '').slice(0, 120), phonePretty(body.phone || ''),
-      body.topic, String(body.note || '').slice(0, 500), user.id, body.callId || null);
+      body.topic, String(body.note || '').slice(0, 500), user.id, body.callId || null,
+      resolution, resolution ? user.id : null,
+      resolution ? new Date().toISOString() : null);
     const topic = QUESTION_TOPICS.find(item => item.key === body.topic);
     const plate = body.vehicleId
       ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(body.vehicleId)?.plate || '' : '';
-    notify('dispatcher', `📞 Вопрос водителя${plate ? ` (${plate})` : ''}: ${topic.label}` +
-      `${body.note ? ` — ${String(body.note).slice(0, 120)}` : ''}. Норматив ответа — 10 минут`,
-    'question', id);
-    audit(db, user, 'create', 'driver_question', id, { topic: body.topic, plate }, requestIp(request));
+    if (!resolution) {
+      notify('dispatcher', `📞 Вопрос водителя${plate ? ` (${plate})` : ''}: ${topic.label}` +
+        `${body.note ? ` — ${String(body.note).slice(0, 120)}` : ''}. Норматив ответа — 10 минут`,
+      'question', id);
+    }
+    audit(db, user, 'create', 'driver_question', id,
+      { topic: body.topic, plate, closed: Boolean(resolution) }, requestIp(request));
     return json(response, 201, { id });
   }
   match = route(/^\/api\/driver-questions\/([^/]+)\/close$/, pathname);
