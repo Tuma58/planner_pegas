@@ -169,6 +169,18 @@ export async function ensureBeelineSubscriptions(db, { token, baseUrl, fetchImpl
   const current = subscriptionsMeta(db);
   let created = 0;
   let renewed = 0;
+  // Карта «подписка → мобильный абонента» для адресации входящих.
+  const abonMap = {};
+  for (const abonent of abonents) {
+    const key = String(abonent.extension || abonent.phone || '');
+    if (key) abonMap[key] = { phone: String(abonent.phone || ''), userId: String(abonent.userId || '') };
+  }
+  const prevAbon = db.prepare(`SELECT value FROM app_meta WHERE key='beeline_abonents'`).get()?.value;
+  const nextAbon = JSON.stringify(abonMap);
+  if (prevAbon !== nextAbon) {
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('beeline_abonents',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(nextAbon);
+  }
   for (const abonent of abonents) {
     const pattern = String(abonent.extension || abonent.phone || '');
     if (!pattern) continue;
@@ -206,6 +218,12 @@ export function parseXsiEvent(raw) {
     return match ? match[1].trim() : '';
   };
   const callId = grab(/<xsi:callid>([^<]+)<\/xsi:callid>/i) || grab(/<callid>([^<]+)<\/callid>/i);
+  // Конверт события несёт id подписки — а подписка оформлена на
+  // КОНКРЕТНОГО абонента: это единственный надёжный способ понять, кому
+  // звонят (своего номера «to» Билайн в событии почти никогда не шлёт —
+  // разбор 07.10: 447 из 451 событий с пустым to).
+  const subscriptionId = grab(/<xsi:subscriptionid>([^<]+)<\/xsi:subscriptionid>/i)
+    || grab(/<subscriptionid>([^<]+)<\/subscriptionid>/i);
   const numbers = new Set();
   for (const match of text.matchAll(/<xsi:addressofrecord>([^<]+)<\/xsi:addressofrecord>/gi)) {
     numbers.add(match[1]);
@@ -215,5 +233,26 @@ export function parseXsiEvent(raw) {
   }
   const digits = [...numbers].map(phoneDigits).filter(d => d.length >= 6);
   const direction = eventType === 'originated' ? 'out' : 'in';
-  return { eventType, callId, direction, from: digits[0] || '', to: digits[1] || '', digits };
+  return { eventType, callId, direction, subscriptionId,
+    from: digits[0] || '', to: digits[1] || '', digits };
+}
+
+// Карта абонентов АТС (extension/номер подписки → FMC-мобильный):
+// обновляется каждым прогоном ensureBeelineSubscriptions, читается при
+// событии, чтобы найти сотрудника-адресата по его мобильному.
+export function abonentsMeta(db) {
+  const row = db.prepare(`SELECT value FROM app_meta WHERE key='beeline_abonents'`).get();
+  if (!row) return {};
+  try { return JSON.parse(row.value); } catch { return {}; }
+}
+
+// Адресат события по id подписки: добавочный (pattern) + мобильный
+// абонента из карты. Сопоставление с сотрудником делает вызывающий.
+export function resolveSubscriptionTarget(db, subscriptionId) {
+  if (!subscriptionId) return null;
+  const subs = subscriptionsMeta(db);
+  const pattern = Object.keys(subs)
+    .find(key => subs[key]?.subscriptionId === subscriptionId);
+  if (!pattern) return null;
+  return { pattern, phone: abonentsMeta(db)[pattern]?.phone || '' };
 }

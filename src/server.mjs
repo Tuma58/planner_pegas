@@ -14,7 +14,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, identifyCaller, list
   phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
-import { ensureBeelineSubscriptions, findUserByPhone, parseXsiEvent, syncBeelineJournal } from './beeline-telephony.mjs';
+import { ensureBeelineSubscriptions, findUserByPhone, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
@@ -8255,14 +8255,28 @@ async function api(request, response, url) {
     const event = parseXsiEvent(raw);
     if (!event || !event.digits.length) return json(response, 200, { ok: true });
     const caller = identifyCaller(db, event.from || event.digits[0]);
-    const target = event.direction === 'in' && event.to ? findUserByPhone(db, event.to) : null;
+    // Кому звонят: Билайн своего номера «to» в событии почти не шлёт
+    // (447/451 пустых, разбор 07.10) — адресата даёт ПОДПИСКА: она
+    // оформлена на конкретного абонента. Добавочный подписки → сотрудник
+    // (рабочий телефон смены / добавочный в карточке / FMC-мобильный
+    // абонента из справочника АТС).
+    const sub = resolveSubscriptionTarget(db, event.subscriptionId);
+    let target = null;
+    if (event.direction === 'in') {
+      if (sub) {
+        target = findUserByPhone(db, sub.pattern)
+          || (sub.phone ? findUserByPhone(db, sub.phone) : null);
+      }
+      if (!target && event.to) target = findUserByPhone(db, event.to);
+    }
+    const toPhone = event.to || (sub ? sub.pattern : '');
     const externalId = event.callId ? `xsi:${event.callId}` : `xsi:${phoneDigits(event.from)}:${Date.now()}`;
     try {
       db.prepare(`INSERT OR IGNORE INTO call_events(
           id,provider,external_id,direction,from_phone,to_phone,from_digits,
           matched_kind,matched_id,matched_name,vehicle_id,target_user_id,started_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(randomUUID(), 'beeline', externalId, event.direction, event.from, event.to, event.digits[0],
+        .run(randomUUID(), 'beeline', externalId, event.direction, event.from, toPhone, event.digits[0],
           caller.kind, caller.id, caller.name, caller.vehicleId, target,
           new Date().toISOString());
     } catch (error) {

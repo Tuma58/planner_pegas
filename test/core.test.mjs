@@ -2417,6 +2417,21 @@ test('билайн: журнал из статистики, дедуп и раз
   assert.equal(event.direction, 'in');
   assert.ok(event.digits.includes('9875105921'), 'номер звонящего извлечён');
   assert.equal(parseXsiEvent('not xml at all'), null, 'мусор не ломает разбор');
+
+  // Адресат по подписке (фикс 07.10: Билайн почти не шлёт «to» в событии,
+  // кому звонят — определяет подписка, оформленная на абонента).
+  const { resolveSubscriptionTarget, saveSubscriptionsMeta } = await import('../src/beeline-telephony.mjs');
+  const withSub = parseXsiEvent(xml.replace('<xsi:eventData',
+    '<xsi:subscriptionId>sub-391</xsi:subscriptionId><xsi:eventData'));
+  assert.equal(withSub.subscriptionId, 'sub-391', 'id подписки извлечён из конверта');
+  saveSubscriptionsMeta(db, { 391: { subscriptionId: 'sub-391', expires: Date.now() + 3_600_000 } });
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('beeline_abonents',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+    .run(JSON.stringify({ 391: { phone: '+79630995009', userId: 'u@b' } }));
+  const resolved = resolveSubscriptionTarget(db, 'sub-391');
+  assert.equal(resolved.pattern, '391');
+  assert.equal(resolved.phone, '+79630995009', 'мобильный абонента из карты АТС');
+  assert.equal(resolveSubscriptionTarget(db, 'sub-unknown'), null);
 });
 
 test('состояние сцепки: рейс главнее интервала недоступности', async () => {
