@@ -32,6 +32,12 @@ export async function renderStaff(container, context) {
   const users = payload.users.filter(matches);
   const drivers = payload.drivers.filter(matches);
   const fired = users.filter(person => !person.active);
+  // Секции-сегменты: офис и водители не теснят друг друга (замечание
+  // руководителя 07.10); при живом поиске показываются обе — человека
+  // ищут, не зная секции.
+  const section = state.staffSection || 'office';
+  const showOffice = query ? users.length > 0 : section === 'office';
+  const showDrivers = query ? drivers.length > 0 : section === 'drivers';
 
   const userRow = person => `<tr class="${person.active ? '' : 'staff-fired'}">
     <td><span class="vlink" data-staff-card="${person.id}">${escapeHtml(person.fullName)}</span>
@@ -52,26 +58,35 @@ export async function renderStaff(container, context) {
   </tr>`;
 
   const html = `<div class="resboard" id="staffBoard">
-    <div class="section-head" style="align-items:center;gap:10px">
+    <div class="section-head" style="align-items:center;gap:10px;flex-wrap:wrap">
       <h1 style="margin:0">Сотрудники</h1>
-      <input id="staffSearch" class="block-search" placeholder="Поиск: ФИО, должность, телефон, сцепка"
+      <span class="staff-seg">
+        <button data-staff-sec="office" class="${section === 'office' ? 'active' : ''}">Офис · ${payload.users.filter(person => person.active).length}</button>
+        <button data-staff-sec="drivers" class="${section === 'drivers' ? 'active' : ''}">Водители · ${payload.drivers.length}</button>
+      </span>
+      <input id="staffSearch" class="block-search" placeholder="Поиск по всем: ФИО, должность, телефон, сцепка"
         value="${escapeHtml(state.staffQuery || '')}" style="flex:1;min-width:180px;max-width:360px">
-      <span class="muted">${users.length + drivers.length} чел.</span>
       <button class="button small" id="staffAddUser">+ Сотрудник</button>
       <button class="button small ghost" id="staffAddDriver" title="Водители заводятся в справочнике «Водители» — там же сцепка и вахта">+ Водитель</button>
     </div>
-    <h3 style="margin:14px 0 6px">Офис · ${users.filter(person => person.active).length}</h3>
-    <div style="overflow:auto"><table class="rtable"><thead><tr>
+    ${query && !users.length && !drivers.length ? '<p class="muted" style="margin-top:14px">Никого не найдено.</p>' : ''}
+    ${showOffice ? `${query ? `<h3 style="margin:14px 0 6px">Офис · найдено ${users.length}</h3>` : ''}
+    <div style="overflow:auto;margin-top:${query ? 0 : 12}px"><table class="rtable"><thead><tr>
       <th>Сотрудник</th><th>Должность</th><th>Телефоны</th><th>TG</th><th>Статус</th>
     </tr></thead><tbody>${users.map(userRow).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>
-    ${fired.length ? `<p class="muted" style="font-size:12px">Уволенные остаются в списке серыми — карточка и история доступны, восстановление из карточки.</p>` : ''}
-    <h3 style="margin:14px 0 6px">Водители · ${drivers.length}</h3>
-    <div style="overflow:auto"><table class="rtable"><thead><tr>
+    ${fired.length ? `<p class="muted" style="font-size:12px">Уволенные остаются в списке серыми — карточка и история доступны, восстановление из карточки.</p>` : ''}` : ''}
+    ${showDrivers ? `${query ? `<h3 style="margin:14px 0 6px">Водители · найдено ${drivers.length}</h3>` : ''}
+    <div style="overflow:auto;margin-top:${query ? 0 : 12}px"><table class="rtable"><thead><tr>
       <th>Водитель</th><th>Должность</th><th>Телефон</th><th>Сцепка</th><th>Статус</th>
-    </tr></thead><tbody>${drivers.map(driverRow).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>
+    </tr></thead><tbody>${drivers.map(driverRow).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>` : ''}
   </div>`;
   if (!renderInto(container, html)) return;
 
+  container.querySelectorAll('[data-staff-sec]').forEach(button =>
+    button.onclick = () => {
+      state.staffSection = button.dataset.staffSec;
+      renderStaff(container, context);
+    });
   const search = container.querySelector('#staffSearch');
   search.addEventListener('input', () => {
     state.staffQuery = search.value;
@@ -173,7 +188,7 @@ export async function staffCardDialog(context, id, after) {
         : '<button class="button ghost" id="scRestore">↩ Восстановить</button>'}
       <button class="button ghost" id="scClose" style="margin-left:auto">Закрыть</button>
     </div>
-  </div>`);
+  </div>`, 'staffcard');
 
   // Календарь: произвольное заполнение выбранным пером, клик и протяжка.
   const days = { ...card.shifts };

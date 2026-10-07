@@ -1752,9 +1752,16 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 
 /* ── Вкладка «Сотрудники»: карточка и календарь графика (07.10) ── */
 .staff-fired td { opacity: .55; }
-.staff-cal { display: grid; grid-template-columns: repeat(16, minmax(30px, 1fr));
-  gap: 3px; margin-top: 8px; }
-@media (max-width: 900px) { .staff-cal { grid-template-columns: repeat(8, 1fr); } }
+.staff-cal { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+  gap: 3px; margin-top: 8px; max-width: 740px; min-width: 0; }
+.modal.staffcard { width: min(820px, 96vw); }
+#staffCard { min-width: 0; }
+#staffCard .staff-grid > * { min-width: 0; }
+.staff-seg { display: inline-flex; gap: 0; border: 1px solid var(--line, #d6e0e4);
+  border-radius: 8px; overflow: hidden; }
+.staff-seg button { border: 0; background: transparent; padding: 7px 14px; cursor: pointer;
+  font-size: 13px; color: inherit; }
+.staff-seg button.active { background: var(--navy, #16324a); color: #fff; }
 .staff-day { aspect-ratio: 1; border-radius: 6px; border: 1px solid var(--line, #d6e0e4);
   background: var(--panel, #fff); color: inherit; display: flex; flex-direction: column;
   align-items: center; justify-content: center; font-size: 11px; cursor: pointer;
