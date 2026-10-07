@@ -775,6 +775,11 @@ async function renderTelephony() {
       <label class="field">Публичный адрес приложения (для событий Билайна в реальном времени)
         <input name="publicBase" value="${escapeHtml(config.publicBase || '')}"
         placeholder="https://planner.pegasavto.ru"></label>
+      <label class="field">Пропущенный звонок водителя → «Вопрос водителя» через, минут
+        <input name="missedToQuestionMin" type="number" min="0" step="1"
+          value="${config.missedToQuestionMin ?? 10}">
+        <small class="muted">Входящий от водителя без карточки и перезвона за это время
+          становится вопросом с нормативом ответа. 0 — выключить.</small></label>
       <button class="button">Сохранить</button>
     </form>
     <div class="hint" style="margin-top:10px">
@@ -879,7 +884,8 @@ async function renderTelephony() {
         telephony: {
           enabled: form.elements.enabled.checked, popup: form.elements.popup.checked,
           provider: form.elements.provider.value.trim(), token: form.elements.token.value.trim(),
-          publicBase: form.elements.publicBase.value.trim()
+          publicBase: form.elements.publicBase.value.trim(),
+          missedToQuestionMin: Math.max(0, Number(form.elements.missedToQuestionMin.value) || 0)
         }
       }) });
       toast('Настройки телефонии сохранены');

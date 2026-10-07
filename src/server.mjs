@@ -10,8 +10,8 @@ import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
-import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, identifyCaller, listDriverQuestions,
-  phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
+import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
+  listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { ensureBeelineSubscriptions, findUserByPhone, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
@@ -1559,6 +1559,47 @@ function runBeelineWatch() {
 
 setInterval(runBeelineWatch, 60_000);
 setTimeout(runBeelineWatch, 20_000);
+
+// Пропущенный звонок водителя → автоматический «Вопрос водителя»
+// (решение руководителя 07.10, «каждый получает ответ»): входящий от
+// водителя, на который N минут не было ни карточки, ни перезвона,
+// становится вопросом с SLA — перезвон превращается из доброй воли в
+// регламент. Порог — настройка телефонии (0 = выключено).
+function runMissedCallWatch() {
+  try {
+    const telephony = settingsObject(db).telephony || {};
+    if (!telephony.enabled) return;
+    const waitMin = Number(telephony.missedToQuestionMin ?? 10);
+    if (!waitMin) return; // ноль — осознанное «выключено»
+    const since = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const deadline = new Date(Date.now() - waitMin * 60_000).toISOString();
+    const calls = db.prepare(`SELECT c.* FROM call_events c
+      WHERE c.direction='in' AND c.status='' AND c.matched_kind='driver'
+        AND c.from_digits<>'' AND c.started_at>=? AND c.started_at<=?
+        AND c.handled_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM driver_questions q WHERE q.call_id=c.id)
+        AND NOT EXISTS (SELECT 1 FROM driver_questions q2 WHERE q2.closed_at IS NULL
+          AND q2.topic='missed_call' AND q2.vehicle_id IS c.vehicle_id)
+        AND NOT EXISTS (SELECT 1 FROM call_events o WHERE o.direction='out'
+          AND o.started_at>c.started_at
+          AND (o.to_phone LIKE '%'||c.from_digits OR o.from_phone LIKE '%'||c.from_digits))
+      ORDER BY c.started_at LIMIT 10`).all(since, deadline);
+    for (const call of calls) {
+      const id = randomUUID();
+      const plate = call.vehicle_id
+        ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(call.vehicle_id)?.plate || '' : '';
+      db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,phone,topic,note,call_id)
+        VALUES(?,?,?,?,?,?,?)`).run(id, call.vehicle_id, call.matched_name || '',
+        phonePretty(call.from_phone), 'missed_call',
+        `Автоматически: входящий без ответа и перезвона ${waitMin}+ минут`, call.id);
+      notify('dispatcher', `📵 Пропущенный звонок водителя ${call.matched_name}`
+        + `${plate ? ` (${plate})` : ''} — перезвоните. Норматив ответа — 10 минут`,
+      'question', id);
+    }
+    if (calls.length) console.log(`пропущенные → вопросы: создано ${calls.length}`);
+  } catch (error) { console.error('Сторож пропущенных:', error.message); }
+}
+setInterval(runMissedCallWatch, 2 * 60_000);
 
 // ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
 // Раз в день после 08:00 МСК: продажам в чат — кого поздравить (ДР контакта
@@ -5782,8 +5823,13 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true });
   }
   if (request.method === 'POST' && pathname === '/api/customers/contacts') {
-    const user = requirePermission(request, response, 'orders:write');
+    // Контакт заводят продажи — и диспетчер прямо из карточки звонка
+    // «номер не найден» (07.10): каждый звонок пополняет справочник.
+    const user = requireUser(request, response);
     if (!user) return;
+    if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trip-status:write')) {
+      return errorJson(response, 403, 'Нужны права продаж или диспетчера');
+    }
     const body = await readJson(request);
     const name = String(body.customerName || '').trim();
     const fullName = String(body.fullName || '').trim();
@@ -8362,7 +8408,11 @@ async function api(request, response, url) {
           JOIN vehicle_types vt ON vt.id=v.type_id LEFT JOIN zones z ON z.id=v.zone_id
           WHERE v.id=?`).get(vehicleId) : null;
     if (!vehicle) {
-      return json(response, 200, { caller, vehicle: null, contacts: employeeContacts() });
+      // Водитель без сцепки (отпуск, межвахта, резерв) — карточке всё
+      // равно есть что ответить: статус и следующий выход (07.10).
+      const driverStatus = caller?.kind === 'driver'
+        ? driverServiceStatus(db, caller.id) : null;
+      return json(response, 200, { caller, vehicle: null, driverStatus, contacts: employeeContacts() });
     }
     const nowIso = new Date().toISOString();
     const active = db.prepare(`SELECT t.*, f.name from_name, d.name to_name FROM trips t
@@ -8422,6 +8472,7 @@ async function api(request, response, url) {
     return json(response, 200, {
       caller, vehicle, driver, active, next, order, stops, transfer, dispositionNow,
       nextShift, customerContacts, services, openQuestions, notes,
+      driverStatus: driver ? driverServiceStatus(db, driver.id) : null,
       placeText: vehiclePlaceText(vehicle.id), contacts: employeeContacts()
     });
   }

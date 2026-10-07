@@ -3824,6 +3824,28 @@ test('телефония: рабочий телефон смены — пере�
   assert.equal(db.prepare(`SELECT work_phone FROM users WHERE id='u-disp1'`).get().work_phone, '');
   // Мусор не принимается.
   assert.equal(applyWorkPhone(db, 'u-disp1', 'нет').ok, false);
+
+  // Сервисный статус водителя для карточки звонка (07.10): отпуск и
+  // следующий выход считаются из живых моделей — отсутствие + вахта.
+  const { driverServiceStatus } = await import('../src/telephony.mjs');
+  const DAY = 86_400_000;
+  const iso = offsetDays => new Date(Date.now() + offsetDays * DAY).toISOString().slice(0, 10);
+  db.prepare(`INSERT INTO drivers(id,full_name,phone,shift_on,shift_off,shift_anchor,
+      absent_from,absent_to,status)
+    VALUES('drv-vac','Отпускник О','+79990001122',15,15,?,?,?,'vacation')`)
+    .run(iso(-30), iso(-5), iso(4));
+  const vac = driverServiceStatus(db, 'drv-vac');
+  assert.equal(vac.state, 'vacation');
+  assert.equal(vac.absentTo, iso(4));
+  // Выход: первый РАБОЧИЙ день цикла после отпуска (якорь 30 дней назад,
+  // 15/15 → дни 30..44 от якоря рабочие, т.е. день +5 уже рабочий).
+  assert.equal(vac.nextOut, iso(5), 'следующий выход — день после отпуска, рабочая фаза');
+  // Межвахта без отсутствия: якорь 20 дней назад, 15/15 → сейчас отдых.
+  db.prepare(`INSERT INTO drivers(id,full_name,shift_on,shift_off,shift_anchor,status)
+    VALUES('drv-rest','Вахтовик В',15,15,?,'active')`).run(iso(-20));
+  const rest = driverServiceStatus(db, 'drv-rest');
+  assert.equal(rest.state, 'rest');
+  assert.equal(rest.nextOut, iso(10), 'выход — начало следующего цикла');
 });
 
 test('телематика: привязка прицепного трекера следует за перецепкой', async t => {

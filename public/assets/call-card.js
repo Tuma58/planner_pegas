@@ -40,6 +40,21 @@ function tripStageText(card) {
   return isFirst ? '📦 на погрузке' : isLast ? '📥 на выгрузке' : '⏸ на промежуточной точке';
 }
 
+// Строка сервисного статуса водителя: отпуск/межвахта и СЛЕДУЮЩИЙ ВЫХОД
+// (решение руководителя 07.10: отпускник звонит «когда выходить» — ответ
+// должен быть в карточке одним взглядом).
+const dayLabel = iso => iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : '';
+function serviceLine(ds) {
+  if (!ds) return '';
+  const label = ds.state === 'vacation' ? `🌴 Отпуск до ${dayLabel(ds.absentTo)}`
+    : ds.state === 'sick' ? `🤒 Больничный до ${dayLabel(ds.absentTo)}`
+    : ds.state === 'rest' ? '🌙 Межвахта' : '';
+  if (!label) return '';
+  return `${label}${ds.nextOut ? ` · <b>следующий выход — ${dayLabel(ds.nextOut)}</b>` : ''}`
+    + `${ds.shift ? ` · вахта ${ds.shift}` : ''}`
+    + `${ds.vehiclePlate ? ` · сцепка <span class="mono">${escapeHtml(ds.vehiclePlate)}</span>` : ''}`;
+}
+
 export async function callCardDialog(context, { vehicleId = '', phone = '', callId = '' } = {}) {
   const query = new URLSearchParams();
   if (vehicleId) query.set('vehicleId', vehicleId);
@@ -51,11 +66,86 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
 
   const vehicle = card.vehicle;
   if (!vehicle) {
+    // Водитель без сцепки (отпуск, межвахта, резерв): сервисный ответ.
+    if (card.driverStatus) {
+      const ds = card.driverStatus;
+      context.showModal(`<h2>📞 Звонит водитель</h2>
+        <p><b>${escapeHtml(ds.fullName)}</b>${ds.phone ? ` · ${phoneLink(ds.phone)}` : ''}</p>
+        <div class="call-open-q" style="margin:8px 0">${serviceLine(ds)
+          || 'в строю, сцепка не закреплена — вопрос ресурснику'}</div>
+        <p class="muted">Полная картина — в карточке сотрудника
+          (вкладка «Сотрудники» или «Ресурс → Водители»).</p>
+        <div class="modal-actions">
+          <button type="button" class="button ghost small" id="noVehQuestion">📞 Вопрос</button>
+          <button type="button" class="button ghost" data-close>Закрыть</button>
+        </div>`);
+      document.getElementById('noVehQuestion').onclick = () => questionDialog(context, {
+        driverName: ds.fullName, phone: ds.phone || phone, callId });
+      return;
+    }
+    // Сотрудник: карточка не нужна — достаточно сказать, кто это.
+    if (card.caller?.kind === 'employee') {
+      context.showModal(`<h2>📞 Внутренний звонок</h2>
+        <p><b>${escapeHtml(card.caller.name)}</b>
+          ${card.caller.role ? ` · ${escapeHtml(card.caller.role)}` : ''}</p>
+        <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+      return;
+    }
+    // Неизвестный номер: звонок должен оставить след — пополнить
+    // справочник или родить вопрос (решение руководителя 07.10).
+    const customers = (context.state?.data?.customers || []).map(item => item.name).filter(Boolean);
+    const drivers = (context.state?.data?.drivers || []).filter(item => item.status !== 'fired');
     context.showModal(`<h2>📞 Звонок</h2>
       <p class="muted">Номер ${escapeHtml(phone || '—')} в системе не найден: ни водитель,
-        ни сотрудник, ни контакт клиента.</p>
-      <p>Спросите номер ТС или фамилию водителя и найдите карточку поиском.</p>
-      <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+        ни сотрудник, ни контакт клиента. Спросите, кто это, и привяжите номер —
+        следующий звонок карточка узнает сама.</p>
+      <form id="unkContactForm" style="border-top:1px solid var(--line,#d6e0e4);padding-top:8px">
+        <b>➕ Это контакт клиента</b>
+        <div class="form-grid">
+          <label class="field">Клиент<input name="customerName" list="unkCustomers" required
+            placeholder="начните вводить"><datalist id="unkCustomers">${customers.slice(0, 400)
+      .map(name => `<option value="${escapeHtml(name)}">`).join('')}</datalist></label>
+          <label class="field">ФИО контакта<input name="fullName" required></label>
+        </div>
+        <label class="field">Должность<input name="position" placeholder="логист, кладовщик…"></label>
+        <button class="button small">Сохранить контакт</button>
+      </form>
+      <form id="unkDriverForm" style="border-top:1px solid var(--line,#d6e0e4);margin-top:10px;padding-top:8px">
+        <b>👤 Это водитель</b> <small class="muted">(новый/второй номер — заменит номер в справочнике)</small>
+        <label class="field">Водитель<input name="driverName" list="unkDrivers" required
+          placeholder="фамилия"><datalist id="unkDrivers">${drivers.slice(0, 400)
+      .map(item => `<option value="${escapeHtml(item.full_name)}">`).join('')}</datalist></label>
+        <button class="button small">Привязать номер</button>
+      </form>
+      <div class="form-error" id="unkError"></div>
+      <div class="modal-actions">
+        <button type="button" class="button ghost small" id="unkQuestion">📞 Оформить вопрос</button>
+        <button type="button" class="button ghost" data-close>Закрыть</button>
+      </div>`);
+    const unkError = document.getElementById('unkError');
+    document.getElementById('unkContactForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const values = new FormData(event.currentTarget);
+      try {
+        await api('/api/customers/contacts', { method: 'POST', body: JSON.stringify({
+          customerName: values.get('customerName'), fullName: values.get('fullName'),
+          position: values.get('position'), phone }) });
+        toast('Контакт сохранён — следующий звонок узнается');
+        context.closeModal();
+      } catch (error) { unkError.textContent = error.message; }
+    });
+    document.getElementById('unkDriverForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const name = String(new FormData(event.currentTarget).get('driverName') || '').trim().toLowerCase();
+      const driver = drivers.find(item => item.full_name.toLowerCase() === name);
+      if (!driver) { unkError.textContent = 'Выберите водителя из списка'; return; }
+      try {
+        await api(`/api/drivers/${driver.id}`, { method: 'PATCH', body: JSON.stringify({ phone }) });
+        toast(`Номер привязан к водителю: ${driver.full_name}`);
+        context.closeModal();
+      } catch (error) { unkError.textContent = error.message; }
+    });
+    document.getElementById('unkQuestion').onclick = () => questionDialog(context, { phone, callId });
     return;
   }
 
@@ -111,12 +201,14 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
         — ${phoneLink(person.phone)}</div>`).join('')
     : '';
 
-  const shiftBody = card.nextShift
-    ? `Пересменка ${fmt(card.nextShift.starts_at)} — ${fmt(card.nextShift.ends_at)}
+  const statusLine = serviceLine(card.driverStatus);
+  const shiftBody = [statusLine,
+    card.nextShift
+      ? `Пересменка ${fmt(card.nextShift.starts_at)} — ${fmt(card.nextShift.ends_at)}
        ${card.nextShift.note ? `<small class="muted" style="display:block">${escapeHtml(card.nextShift.note)}</small>` : ''}`
-    : (card.driver?.shift_on && card.driver?.shift_off
-      ? `Вахта ${card.driver.shift_on}/${card.driver.shift_off}`
-      : '');
+      : (!statusLine && card.driver?.shift_on && card.driver?.shift_off
+        ? `Вахта ${card.driver.shift_on}/${card.driver.shift_off}`
+        : '')].filter(Boolean).join('<br>');
 
   const servicesBody = (card.services || []).length
     ? card.services.map(point => `<div>${escapeHtml(point.name)}
@@ -404,6 +496,12 @@ export function watchIncomingCalls(context) {
         if (seen.has(call.id)) continue;
         seen.add(call.id);
         await api(`/api/telephony/calls/${call.id}/handled`, { method: 'POST' }).catch(() => {});
+        // Внутренний звонок: карточка не нужна — тихий тост «кто звонит»
+        // (решение руководителя 07.10), журнал запись сохраняет.
+        if (call.matched_kind === 'employee') {
+          toast(`📞 Звонит ${call.matched_name || 'сотрудник'}`);
+          continue;
+        }
         callCardDialog(context, { vehicleId: call.vehicle_id || '',
           phone: call.from_phone, callId: call.id });
         break;

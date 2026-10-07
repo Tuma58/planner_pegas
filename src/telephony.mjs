@@ -93,8 +93,53 @@ export const QUESTION_TOPICS = [
   { key: 'shift', label: 'Когда пересменка', owner: 'Ресурс' },
   { key: 'mechanic', label: 'Как связаться с механиком', owner: 'Ресурс' },
   { key: 'customer_phone', label: 'Нужен телефон клиента', owner: 'Продажи' },
+  { key: 'missed_call', label: 'Пропущенный звонок — перезвоните', owner: 'Диспетчер' },
   { key: 'other', label: 'Другое', owner: '' }
 ];
+
+// Сервисный статус водителя для карточки звонка (решение руководителя
+// 07.10: отпускник звонит «когда выходить» — ответ должен быть в карточке
+// одним взглядом). Считается из живых моделей: отсутствие, вахтовый цикл,
+// закрепление; вторых истин не плодим.
+export function driverServiceStatus(db, driverId, nowMs = Date.now()) {
+  const driver = db.prepare(`SELECT d.*, v.plate vehicle_plate FROM drivers d
+    LEFT JOIN vehicles v ON v.id=d.vehicle_id WHERE d.id=?`).get(driverId);
+  if (!driver) return null;
+  const DAY = 86_400_000;
+  const todayIso = new Date(nowMs).toISOString().slice(0, 10);
+  const absFrom = driver.absent_from ? String(driver.absent_from).slice(0, 10) : null;
+  const absTo = driver.absent_to ? String(driver.absent_to).slice(0, 10) : null;
+  const absentNow = absFrom && todayIso >= absFrom && todayIso <= (absTo || absFrom);
+  const cycleOn = Number(driver.shift_on || 0);
+  const cycleOff = Number(driver.shift_off || 0);
+  const anchorMs = driver.shift_anchor ? Date.parse(String(driver.shift_anchor).slice(0, 10)) : NaN;
+  const workDay = iso => {
+    if (!cycleOn || !cycleOff || !Number.isFinite(anchorMs)) return true;
+    const offset = Math.floor((Date.parse(iso) - anchorMs) / DAY);
+    if (offset < 0) return false;
+    return offset % (cycleOn + cycleOff) < cycleOn;
+  };
+  // Следующий выход: первый рабочий день цикла после сегодня и после
+  // конца отсутствия; горизонт поиска — два цикла или 60 дней.
+  const fromMs = Math.max(Date.parse(todayIso) + DAY,
+    absTo ? Date.parse(absTo) + DAY : 0);
+  let nextOut = null;
+  for (let ts = fromMs; ts <= fromMs + 60 * DAY; ts += DAY) {
+    const iso = new Date(ts).toISOString().slice(0, 10);
+    if (workDay(iso)) { nextOut = iso; break; }
+  }
+  const restNow = !absentNow && cycleOn && cycleOff
+    && Number.isFinite(anchorMs) && !workDay(todayIso);
+  return {
+    state: absentNow ? (driver.status === 'sick' ? 'sick' : 'vacation')
+      : restNow ? 'rest' : 'active',
+    absentTo: absentNow ? (absTo || absFrom) : null,
+    nextOut,
+    shift: cycleOn ? `${cycleOn}/${cycleOff}` : '',
+    vehiclePlate: driver.vehicle_plate || '',
+    fullName: driver.full_name, phone: driver.phone || ''
+  };
+}
 
 // Норматив решения вопроса водителя: десять минут. Дальше вопрос считается
 // просроченным — карточка краснеет и уходит сигнал смене.
