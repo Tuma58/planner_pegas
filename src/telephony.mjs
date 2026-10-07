@@ -52,6 +52,34 @@ export function identifyCaller(db, phone) {
   return { kind: 'unknown', id: null, name: '', vehicleId: null };
 }
 
+// ── Рабочий телефон смены (решение руководителя 07.10) ──
+// Карточка входящего всплывает только у того, кому звонят, поэтому при
+// входе сотрудник обязан указать телефон, по которому он сейчас отвечает:
+// добавочный, мобильный или номер дежурной трубки. Роли, которые отвечают
+// на звонки, без телефона в планер не входят.
+export const WORK_PHONE_ROLES = ['dispatcher', 'logist', 'sales', 'resource'];
+
+export function workPhoneRequired(roles) {
+  return (roles || []).some(role => WORK_PHONE_ROLES.includes(role));
+}
+
+// Записывает рабочий телефон сотрудника и «перевозит» дежурный номер:
+// тот же номер у другого активного сотрудника снимается — трубку передали
+// по смене, и звонок должен всплывать у нового владельца.
+export function applyWorkPhone(db, userId, rawPhone) {
+  const value = String(rawPhone || '').trim().slice(0, 30);
+  const digits = phoneDigits(value);
+  if (!digits || digits.length < 2) return { ok: false };
+  const norm = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(work_phone,'+',''),'-',''),' ',''),'(',''),')','')`;
+  const released = digits.length < 7
+    ? db.prepare(`UPDATE users SET work_phone='' WHERE id<>? AND work_phone<>'' AND ${norm}=?`)
+      .run(userId, digits)
+    : db.prepare(`UPDATE users SET work_phone='' WHERE id<>? AND work_phone<>'' AND ${norm} LIKE ?`)
+      .run(userId, `%${digits}`);
+  db.prepare(`UPDATE users SET work_phone=? WHERE id=?`).run(value, userId);
+  return { ok: true, phone: value, released: Number(released.changes || 0) };
+}
+
 // Темы вопросов — фиксированный список: по нему считается статистика и
 // видно, какой шаг подготовки рейса пропущен. «Другое» — на крайний случай,
 // его доля должна оставаться маленькой.

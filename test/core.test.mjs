@@ -3718,6 +3718,39 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
 });
 
+test('телефония: рабочий телефон смены — переезд трубки и адресация звонка', async t => {
+  const { applyWorkPhone, workPhoneRequired } = await import('../src/telephony.mjs');
+  const { findUserByPhone } = await import('../src/beeline-telephony.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-wp-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  db.prepare(`INSERT INTO users(id,username,full_name,password_hash,role,active)
+    VALUES('u-disp1','smena1','Диспетчер 1','H','dispatcher',1)`).run();
+  db.prepare(`INSERT INTO users(id,username,full_name,password_hash,role,active,phone)
+    VALUES('u-disp2','smena2','Диспетчер 2','H','dispatcher',1,'+7 987 111-22-02')`).run();
+  // Роли: диспетчер обязан указать телефон, руководитель — нет.
+  assert.equal(workPhoneRequired(['dispatcher']), true);
+  assert.equal(workPhoneRequired(['manager']), false);
+  // Первая смена вносит дежурную трубку.
+  assert.equal(applyWorkPhone(db, 'u-disp1', '8 (900) 555-66-77').ok, true);
+  assert.equal(findUserByPhone(db, '+79005556677'), 'u-disp1');
+  // Короткий добавочный: точное совпадение, хвост чужого номера не ловится.
+  applyWorkPhone(db, 'u-disp1', '202');
+  assert.equal(findUserByPhone(db, '202'), 'u-disp1');
+  assert.equal(findUserByPhone(db, '102'), null, 'чужой добавочный не матчится');
+  assert.equal(findUserByPhone(db, '+7 987 111-22-02'), 'u-disp2', 'личный номер — фолбэк');
+  // Трубку передали по смене: номер переезжает ко второму, у первого снят.
+  const handover = applyWorkPhone(db, 'u-disp2', '202');
+  assert.equal(handover.released, 1, 'прежний владелец освобождён');
+  assert.equal(findUserByPhone(db, '202'), 'u-disp2');
+  assert.equal(db.prepare(`SELECT work_phone FROM users WHERE id='u-disp1'`).get().work_phone, '');
+  // Мусор не принимается.
+  assert.equal(applyWorkPhone(db, 'u-disp1', 'нет').ok, false);
+});
+
 test('телематика: привязка прицепного трекера следует за перецепкой', async t => {
   const { syncTrailerTrackerLinks } = await import('../src/trip-control.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-tt-test-'));

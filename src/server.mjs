@@ -10,8 +10,8 @@ import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
-import { QUESTION_TOPICS, checkQuestionSla, identifyCaller, listDriverQuestions,
-  phoneDigits, phonePretty, questionStats } from './telephony.mjs';
+import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, identifyCaller, listDriverQuestions,
+  phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { ensureBeelineSubscriptions, findUserByPhone, parseXsiEvent, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
@@ -5558,11 +5558,31 @@ async function api(request, response, url) {
     }
     loginAttempts.delete(attemptKey);
     loginAttempts.delete(ipKey);
+    // Рабочий телефон смены: роли, отвечающие на звонки, обязаны указать,
+    // по какому номеру они сейчас на связи (добавочный/мобильный/дежурная
+    // трубка) — по нему всплывает карточка входящего. Дежурный номер при
+    // этом переезжает от прежнего владельца (решение руководителя 07.10).
+    const workPhoneRaw = String(body.workPhone || '').trim();
+    const phoneMandatory = workPhoneRequired(rolesOf(user));
+    if (phoneMandatory && !workPhoneRaw) {
+      return errorJson(response, 422,
+        'Укажите рабочий телефон: добавочный, мобильный или номер дежурной трубки');
+    }
+    let workPhoneApplied = null;
+    if (workPhoneRaw) {
+      const applied = applyWorkPhone(db, user.id, workPhoneRaw);
+      if (!applied.ok) {
+        return errorJson(response, 422, 'Не разобрал рабочий телефон — введите цифрами');
+      }
+      workPhoneApplied = applied;
+    }
     const token = newSessionToken();
     const expires = new Date(Date.now() + config.sessionTtlMs).toISOString();
     db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
       .run(tokenHash(token), user.id, expires);
-    audit(db, user, 'login', 'session', null, {}, requestIp(request));
+    audit(db, user, 'login', 'session', null,
+      workPhoneApplied ? { workPhone: workPhoneApplied.phone, released: workPhoneApplied.released } : {},
+      requestIp(request));
     return json(response, 200, { user: publicUser(user) }, {
       'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}${config.secureCookies ? '; Secure' : ''}`
     });
@@ -8247,11 +8267,9 @@ async function api(request, response, url) {
     const digits = phoneDigits(fromPhone);
     if (!digits) return errorJson(response, 422, 'В событии нет номера звонящего');
     const caller = identifyCaller(db, fromPhone);
-    const targetUser = body.to
-      ? db.prepare(`SELECT id FROM users WHERE deleted_at IS NULL AND phone<>'' AND
-          REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') LIKE ?
-          LIMIT 1`).get(`%${phoneDigits(body.to)}`)?.id || null
-      : null;
+    // Адресат — по рабочему телефону смены, затем по личному (та же
+    // логика, что у событий Билайна): карточка всплывёт только у него.
+    const targetUser = body.to ? findUserByPhone(db, body.to) : null;
     const id = randomUUID();
     try {
       db.prepare(`INSERT INTO call_events(id,provider,external_id,direction,from_phone,to_phone,
@@ -8271,7 +8289,10 @@ async function api(request, response, url) {
     return json(response, 201, { id, caller: caller.kind, name: caller.name });
   }
   // Свежие входящие: интерфейс опрашивает раз в несколько секунд и поднимает
-  // карточку. Отдаём только неразобранные звонки за последние 5 минут.
+  // карточку. Отдаём только неразобранные звонки за последние 5 минут и
+  // ТОЛЬКО адресату: звонят одному сотруднику — карточка всплывает у него
+  // (решение руководителя 07.10; раньше неопознанный адресат всплывал у
+  // всех). Кому звонят — определяет рабочий телефон, введённый при входе.
   if (request.method === 'GET' && pathname === '/api/telephony/incoming') {
     const user = requireUser(request, response);
     if (!user) return;
@@ -8279,7 +8300,7 @@ async function api(request, response, url) {
     const items = db.prepare(`SELECT c.*, v.plate vehicle_plate FROM call_events c
       LEFT JOIN vehicles v ON v.id=c.vehicle_id
       WHERE c.direction='in' AND c.handled_at IS NULL AND c.started_at>=?
-        AND (c.target_user_id IS NULL OR c.target_user_id=?)
+        AND c.target_user_id=?
       ORDER BY c.started_at DESC LIMIT 5`).all(since, user.id);
     return json(response, 200, { items });
   }

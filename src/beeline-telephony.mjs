@@ -53,11 +53,22 @@ export function callExternalId(item) {
 // цифрам — тот же приём, что в вебхуке АТС.
 export function findUserByPhone(db, phone) {
   const digits = phoneDigits(phone);
-  if (digits.length < 6) return null;
-  return db.prepare(`SELECT id FROM users
-    WHERE deleted_at IS NULL AND phone<>'' AND
-      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') LIKE ?
-    LIMIT 1`).get(`%${digits}`)?.id || null;
+  if (digits.length < 2) return null;
+  const norm = column => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${column},'+',''),'-',''),' ',''),'(',''),')','')`;
+  // Рабочий телефон текущей смены главнее личного: дежурная трубка
+  // переезжает между сотрудниками, и карточка должна всплыть у того,
+  // кто внёс её номер при входе сегодня.
+  for (const column of ['work_phone', 'phone']) {
+    // Короткий добавочный (меньше 7 цифр) — только точное совпадение:
+    // хвостовой LIKE ловил бы чужие номера с тем же окончанием.
+    const row = digits.length < 7
+      ? db.prepare(`SELECT id FROM users WHERE deleted_at IS NULL AND active=1
+          AND ${column}<>'' AND ${norm(column)}=? LIMIT 1`).get(digits)
+      : db.prepare(`SELECT id FROM users WHERE deleted_at IS NULL AND active=1
+          AND ${column}<>'' AND ${norm(column)} LIKE ? LIMIT 1`).get(`%${digits}`);
+    if (row) return row.id;
+  }
+  return null;
 }
 
 // Строка статистики → запись журнала call_events. Номера второй стороны нет,

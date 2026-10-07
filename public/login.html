@@ -29,6 +29,12 @@
       <label class="field">Пароль
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
+      <label class="field">Рабочий телефон
+        <input name="workPhone" inputmode="tel" autocomplete="off"
+          placeholder="добавочный, мобильный или дежурная трубка">
+        <small class="muted">По этому номеру к вам будет всплывать карточка
+          входящего звонка. Приняли дежурную трубку — внесите её номер.</small>
+      </label>
       <div class="form-error" id="formError" role="alert"></div>
       <button class="button full" type="submit">Войти</button>
     </form>
