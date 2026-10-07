@@ -650,7 +650,13 @@ function runScheduleFactWatch() {
   try {
     const result = runScheduleAutoFact(db);
     // Этап 4-lite: держатели из плана → закрепления (догон горизонта).
-    try { syncAssignBridge(db); } catch (error) { console.error('график → закрепления:', error.message); }
+    try {
+      syncAssignBridge(db);
+      // Карточки ТС — сразу за мостом, иначе они отставали бы на час
+      // (ежечасные прогоны синка и моста сдвинуты на минуту).
+      const renamed = syncVehicleDriverNames(db);
+      if (renamed.length) console.log(`карточки ТС за мостом: обновлено ${renamed.length}`);
+    } catch (error) { console.error('график → закрепления:', error.message); }
     // Жизненный цикл парка: ежечасная достройка графика из справочника —
     // купленные борта всплывают сами, выведенные помечаются датой.
     try {
@@ -10019,6 +10025,7 @@ async function api(request, response, url) {
       // Этап 4-lite (28.09): держатели бортов из плана → закрепления.
       try {
         const asg = syncAssignBridge(db, user.id);
+        syncVehicleDriverNames(db);
         if (asg.made) console.log(`график → закрепления: периодов ${asg.made} (${asg.days} машино-дней)`);
       } catch (error) { console.error('график → закрепления:', error.message); }
     }
