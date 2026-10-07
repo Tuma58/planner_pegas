@@ -1749,3 +1749,33 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   border-radius: 8px; padding: 7px 12px; font-size: 13px; margin-bottom: 8px; }
 #opsFrame { width: 100%; border: 1px solid var(--line); border-radius: 10px;
   background: #fff; }
+
+/* ── Вкладка «Сотрудники»: карточка и календарь графика (07.10) ── */
+.staff-fired td { opacity: .55; }
+.staff-cal { display: grid; grid-template-columns: repeat(16, minmax(30px, 1fr));
+  gap: 3px; margin-top: 8px; }
+@media (max-width: 900px) { .staff-cal { grid-template-columns: repeat(8, 1fr); } }
+.staff-day { aspect-ratio: 1; border-radius: 6px; border: 1px solid var(--line, #d6e0e4);
+  background: var(--panel, #fff); color: inherit; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; font-size: 11px; cursor: pointer;
+  padding: 0; line-height: 1.15; min-width: 0; }
+.staff-day small { font-size: 8.5px; color: var(--muted, #5b7083); }
+.staff-day.we { background: color-mix(in srgb, var(--muted, #5b7083) 7%, var(--panel, #fff)); }
+.staff-day.k-day { background: #e8f3f0; border-color: #2e7d6b; color: #2e7d6b; font-weight: 700; }
+.staff-day.k-day small, .staff-day.k-night small, .staff-day.k-vacation small,
+.staff-day.k-sick small { color: inherit; font-weight: 700; }
+.staff-day.k-night { background: #e3e7fa; border-color: #3b4a8f; color: #3b4a8f; font-weight: 700; }
+.staff-day.k-vacation { background: #faf0d7; border-color: #9a6b00; color: #9a6b00; font-weight: 700; }
+.staff-day.k-sick { background: #fae3dd; border-color: #a4321f; color: #a4321f; font-weight: 700; }
+.staff-day.today { outline: 2px solid var(--ink, #16324a); }
+[data-theme="dark"] .staff-day.k-day { background: #1f3833; border-color: #5bbba4; color: #5bbba4; }
+[data-theme="dark"] .staff-day.k-night { background: #272f52; border-color: #9fb0f0; color: #9fb0f0; }
+[data-theme="dark"] .staff-day.k-vacation { background: #3a3018; border-color: #e0b25c; color: #e0b25c; }
+[data-theme="dark"] .staff-day.k-sick { background: #3c221d; border-color: #ef9a8c; color: #ef9a8c; }
+[data-theme="dark"] .staff-day.today { outline-color: #e8eef2; }
+.staff-pen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.staff-pen .button.active { background: var(--accent, #2e7d6b); color: #fff; border-color: transparent; }
+.staff-grid .dash-row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; }
+.staff-grid .dash-row b { text-align: right; font-weight: 600; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 760px) { #staffCard .staff-grid { grid-template-columns: 1fr !important; } }

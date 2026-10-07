@@ -15,6 +15,7 @@ import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
 import { attendanceDialog, DISP_KINDS, renderResource, timesheetDialog } from './resource.js';
+import { renderStaff } from './staff.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -760,6 +761,9 @@ const MAIN_VIEWS = [
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') },
+  // Справочник сотрудников: staff:write (руководитель, админ) или логин
+  // из настройки «полный доступ» — сервер считает флаг staffAccess сам.
+  { id: 'staff', title: 'Сотрудники', show: () => Boolean(state.data?.user?.staffAccess) },
   { id: 'dashboard', title: 'Дашборд', show: () => true }
 ];
 
@@ -832,6 +836,18 @@ function renderMain() {
       openDrivers: openDriversDirectory, openStats: openResourceStats,
       showModal, closeModal, rerenderMain: renderMain,
       onReload: reload, taskContainer: byId('sidepanel')
+    });
+  } else if (state.view === 'staff') {
+    renderStaff(byId('timeline'), {
+      state, can, showModal, closeModal, onReload: reload,
+      openDrivers: openDriversDirectory,
+      openDriverCard: driverId => {
+        const driver = (state.data.drivers || []).find(item => item.id === driverId);
+        if (driver) driverCardDialog(driver, () => renderStaff(byId('timeline'), {
+          state, can, showModal, closeModal, onReload: reload, openDrivers: openDriversDirectory
+        }));
+        else openDriversDirectory();
+      }
     });
   } else if (state.view === 'remzona') {
     byId('timeline').innerHTML = '<div class="empty-state">Загружаю ремзону…</div>';
@@ -1571,6 +1587,16 @@ async function driverCardDialog(driver, after) {
       <div class="task-kpi"><b>${card.trips30.count}</b><span>рейсов сцепки за 30 дн</span></div>
       <div class="task-kpi"><b>${Math.round(card.trips30.km).toLocaleString('ru-RU')}</b><span>км · выручка ${money(card.trips30.revenue)}</span></div>
     </div>
+    <div style="background:var(--panel2,#f2f7f7);border-radius:10px;padding:10px 12px;margin:8px 0">
+      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">📅 МЕСЯЦ —
+        <button type="button" class="button ghost small" id="dcMPrev">◀</button>
+        <b id="dcMonthLabel"></b>
+        <button type="button" class="button ghost small" id="dcMNext">▶</button>
+        <small class="muted" style="font-weight:400;margin-left:8px">Д — вахтовый рабочий день,
+        🌙 — межвахта; протяните по дням, чтобы оформить отпуск/больничный</small>
+      </h3>
+      <div class="staff-cal" id="dcCal"></div>
+    </div>
     <details><summary><b>История событий (журнал)</b></summary>
       <div style="max-height:26vh;overflow:auto;margin-top:6px">${historyRows}</div></details>
     <div class="modal-actions">
@@ -1579,6 +1605,56 @@ async function driverCardDialog(driver, after) {
       <button type="button" class="button ghost small" id="dcPeriod">📌 На период</button>
       <button type="button" class="button ghost" data-close>Закрыть</button>
     </div>`, 'wide');
+  // Календарь месяца в стиле карточки сотрудника (решение 07.10): вахта и
+  // отсутствия ОТОБРАЖАЮТСЯ из живых моделей (вторую истину не плодим),
+  // протяжка по дням предзаполняет штатный диалог «Отсутствие».
+  {
+    const month = state.drvCardMonth || new Date().toISOString().slice(0, 7);
+    const [calYear, calMon] = month.split('-').map(Number);
+    const daysTotal = new Date(Date.UTC(calYear, calMon, 0)).getUTCDate();
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const cycleOn = Number(d.shift_on || 0), cycleOff = Number(d.shift_off || 0);
+    const anchorMs = d.shift_anchor ? Date.parse(String(d.shift_anchor).slice(0, 10)) : NaN;
+    const absFrom = d.absent_from ? String(d.absent_from).slice(0, 10) : null;
+    const absTo = d.absent_to ? String(d.absent_to).slice(0, 10) : null;
+    const absKind = d.status === 'sick' ? ['k-sick', 'Б'] : ['k-vacation', 'ОТ'];
+    const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+    byId('dcMonthLabel').textContent = month;
+    byId('dcCal').innerHTML = Array.from({ length: daysTotal }, (_, index) => {
+      const iso = `${month}-${String(index + 1).padStart(2, '0')}`;
+      const weekday = new Date(Date.UTC(calYear, calMon - 1, index + 1)).getUTCDay();
+      let cls = 'k-off', mark = WD[weekday], hint = 'график закреплений';
+      if (cycleOn && cycleOff && Number.isFinite(anchorMs)) {
+        const offset = Math.floor((Date.parse(iso) - anchorMs) / 86_400_000);
+        const inCycle = ((offset % (cycleOn + cycleOff)) + (cycleOn + cycleOff)) % (cycleOn + cycleOff);
+        if (offset >= 0 && inCycle < cycleOn) { cls = 'k-day'; mark = 'Д'; hint = 'вахтовый рабочий день'; }
+        else if (offset >= 0) { mark = '🌙'; hint = 'межвахта'; }
+      }
+      if (absFrom && iso >= absFrom && iso <= (absTo || absFrom)) {
+        [cls, mark] = absKind; hint = absKind[1] === 'Б' ? 'больничный' : 'отпуск';
+      }
+      return `<button type="button" class="staff-day ${cls} ${iso === todayIso ? 'today' : ''} ${[0, 6].includes(weekday) ? 'we' : ''}"
+        data-dc-day="${iso}" title="${hint}"><b>${index + 1}</b><small>${mark}</small></button>`;
+    }).join('');
+    byId('dcMPrev').onclick = () => { state.drvCardMonth =
+      new Date(Date.UTC(calYear, calMon - 2, 1)).toISOString().slice(0, 7); driverCardDialog(driver, after); };
+    byId('dcMNext').onclick = () => { state.drvCardMonth =
+      new Date(Date.UTC(calYear, calMon, 1)).toISOString().slice(0, 7); driverCardDialog(driver, after); };
+    let dragFrom = null;
+    const calBox = byId('dcCal');
+    calBox.addEventListener('mousedown', event => {
+      const cell = event.target.closest('[data-dc-day]');
+      if (cell) { dragFrom = cell.dataset.dcDay; event.preventDefault(); }
+    });
+    calBox.addEventListener('mouseup', event => {
+      const cell = event.target.closest('[data-dc-day]');
+      if (!dragFrom) return;
+      const from = dragFrom, to = cell ? cell.dataset.dcDay : dragFrom;
+      dragFrom = null;
+      driverAbsentDialog(d, () => driverCardDialog(driver, after),
+        { from: from <= to ? from : to, to: from <= to ? to : from });
+    });
+  }
   byId('dcEdit').onclick = () => driverEditDialog(driver, () => driverCardDialog(driver, after));
   byId('dcAbsent').onclick = () => driverAbsentDialog(driver, () => driverCardDialog(driver, after));
   byId('dcPeriod').onclick = () => periodAssignDialog({ state, showModal, closeModal, onReload: reload },
@@ -1619,7 +1695,10 @@ function driverEditDialog(driver, after) {
 // Отсутствие водителя: отпуск/болезнь с датами. На закреплённую сцепку
 // автоматически ставится интервал «без водителя» — календарь и потребность
 // сразу видят недоступность.
-function driverAbsentDialog(driver, after) {
+function driverAbsentDialog(driver, after, preset = {}) {
+  // preset.from/preset.to — дни, протянутые в календаре карточки (07.10).
+  const presetFrom = preset.from ? `${preset.from}T08:00` : null;
+  const presetTo = preset.to ? `${preset.to}T20:00` : null;
   showModal(`<form id="absentForm"><h2>Отсутствие · ${escapeHtml(driver.full_name)}</h2>
     ${driver.vehicle_plate ? `<p class="muted">Сцепка <span class="mono">${escapeHtml(driver.vehicle_plate)}</span>
       получит интервал «без водителя» на эти даты.</p>` : '<p class="muted">Водитель не закреплён за сцепкой.</p>'}
@@ -1629,8 +1708,8 @@ function driverAbsentDialog(driver, after) {
       <option value="active">Вернулся в строй</option>
     </select></label>
     <div class="form-grid">
-      <label class="field">С<input name="absentFrom" type="datetime-local" value="${toLocalInput(driver.absent_from) || ''}"></label>
-      <label class="field">По<input name="absentTo" type="datetime-local" value="${toLocalInput(driver.absent_to) || ''}"></label>
+      <label class="field">С<input name="absentFrom" type="datetime-local" value="${presetFrom || toLocalInput(driver.absent_from) || ''}"></label>
+      <label class="field">По<input name="absentTo" type="datetime-local" value="${presetTo || toLocalInput(driver.absent_to) || ''}"></label>
     </div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сохранить</button></div></form>`);

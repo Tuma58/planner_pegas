@@ -383,6 +383,7 @@ async function ensureUsers() {
 
 async function renderUsers() {
   await ensureUsers();
+  if (!state.admin) await loadAdmin();
   content.innerHTML = `<section>
     <div class="section-head"><div><h1>Пользователи</h1>
       <p>Создание учетных записей, изменение ролей и блокировка доступа.</p></div>
@@ -400,7 +401,37 @@ async function renderUsers() {
           <button class="button ghost small danger" data-delete-user="${user.id}"
             title="Удалить пользователя: учётка без истории удаляется совсем, с историей — скрывается с сохранением всех записей и отчётов">✕</button></td>
       </tr>`).join('')}</tbody></table></div></div>
+    <h2 style="margin-top:18px">Справочник «Сотрудники»</h2>
+    <p class="muted">Карточки, приём/увольнение и графики смен живут во вкладке
+      «Сотрудники» планера. Здесь — кто имеет к ней полный доступ помимо
+      руководителя и администратора, и часы смен для графиков.</p>
+    <form id="staffSettingsForm" class="fields">
+      <label class="field">Полный доступ к справочнику (логины через запятую)
+        <input name="fullAccess" value="${escapeHtml(state.admin?.settings?.staff?.fullAccess || '')}"
+          placeholder="например: nikulina"></label>
+      <div class="form-grid">
+        <label class="field">Дневная смена<input name="dayHours"
+          value="${escapeHtml(state.admin?.settings?.staff?.dayHours || '08:00–20:00')}"></label>
+        <label class="field">Ночная смена<input name="nightHours"
+          value="${escapeHtml(state.admin?.settings?.staff?.nightHours || '20:00–08:00')}"></label>
+      </div>
+      <button class="button">Сохранить</button>
+    </form>
   </section>`;
+  byId('staffSettingsForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
+        staff: {
+          fullAccess: form.elements.fullAccess.value.trim(),
+          dayHours: form.elements.dayHours.value.trim(),
+          nightHours: form.elements.nightHours.value.trim()
+        }
+      }) });
+      toast('Настройки справочника сохранены');
+    } catch (error) { toast(error.message, 'error'); }
+  };
   byId('newUser').onclick = () => editUser();
   document.querySelectorAll('[data-edit-user]').forEach(button =>
     button.onclick = () => editUser(state.users.items.find(user => user.id === button.dataset.editUser)));

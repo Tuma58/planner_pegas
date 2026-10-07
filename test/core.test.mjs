@@ -3718,6 +3718,63 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
 });
 
+test('сотрудники: доступ, приём/увольнение, график смен', async t => {
+  const { staffAccess, staffList, createStaffUser, updateStaffUser, fireStaffUser,
+    restoreStaffUser, setStaffShifts, staffShifts } = await import('../src/staff.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-staff-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  // Доступ: право staff:write (manager) или логин из настройки.
+  assert.equal(staffAccess({ role: 'manager', active: 1 }, {}), true);
+  assert.equal(staffAccess({ role: 'dispatcher', username: 'nikulina', active: 1 },
+    { staff: { fullAccess: 'nikulina, ivanov' } }), true);
+  assert.equal(staffAccess({ role: 'dispatcher', username: 'petrov', active: 1 },
+    { staff: { fullAccess: 'nikulina' } }), false);
+  // Приём: роль admin без allowAdmin не раздаётся; телефоны и должность пишутся.
+  const hash = value => `H:${value}`;
+  assert.match(createStaffUser(db, { username: 'x', fullName: 'Х', roles: ['admin'],
+    password: '1234567890' }, { allowAdmin: false, hashPassword: hash }).error, /Администратор/);
+  const created = createStaffUser(db, { username: 'nikulina', fullName: 'Никулина Н.',
+    roles: ['dispatcher'], password: '1234567890', jobRole: 'Старший диспетчер',
+    extPhone: '213', phone: '+7 900 000-11-22' }, { allowAdmin: false, hashPassword: hash });
+  assert.ok(created.ok);
+  const listed = staffList(db).users.find(person => person.username === 'nikulina');
+  assert.equal(listed.jobRole, 'Старший диспетчер');
+  assert.equal(listed.extPhone, '213');
+  // Правка admin-учётки без allowAdmin запрещена.
+  const admin = db.prepare(`SELECT id FROM users WHERE username='root-admin'`).get();
+  assert.match(updateStaffUser(db, admin.id, { jobRole: 'x' }, { allowAdmin: false }).error,
+    /администратор/i);
+  // График: полная замена месяца, мусор отвергается, пустые дни не хранятся.
+  assert.match(setStaffShifts(db, created.id, '2026-10', { '2026-11-01': 'day' }).error, /вне месяца/);
+  assert.match(setStaffShifts(db, created.id, '2026-10', { '2026-10-01': 'party' }).error, /Неизвестный вид/);
+  const saved = setStaffShifts(db, created.id, '2026-10',
+    { '2026-10-01': 'day', '2026-10-02': 'night', '2026-10-05': 'vacation' });
+  assert.equal(saved.total, 3);
+  assert.deepEqual(staffShifts(db, created.id, '2026-10'),
+    { '2026-10-01': 'day', '2026-10-02': 'night', '2026-10-05': 'vacation' });
+  setStaffShifts(db, created.id, '2026-10', { '2026-10-03': 'day' });
+  assert.deepEqual(staffShifts(db, created.id, '2026-10'), { '2026-10-03': 'day' },
+    'замена месяца очищает прежние дни');
+  // Увольнение: учётка гаснет, телефон смены снят, сессии разорваны; восстановление возвращает.
+  db.prepare(`UPDATE users SET work_phone='213' WHERE id=?`).run(created.id);
+  db.prepare(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES('th-1',?,datetime('now','+1 day'))`)
+    .run(created.id);
+  assert.ok(fireStaffUser(db, created.id).ok);
+  const fired = db.prepare(`SELECT active, fired_at, work_phone FROM users WHERE id=?`).get(created.id);
+  assert.equal(fired.active, 0);
+  assert.ok(fired.fired_at);
+  assert.equal(fired.work_phone, '');
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM sessions WHERE user_id=?`).get(created.id).n, 0);
+  assert.ok(restoreStaffUser(db, created.id).ok);
+  assert.equal(db.prepare(`SELECT active FROM users WHERE id=?`).get(created.id).active, 1);
+  // Последнего активного администратора уволить нельзя.
+  assert.match(fireStaffUser(db, admin.id).error, /администратор/i);
+});
+
 test('телефония: рабочий телефон смены — переезд трубки и адресация звонка', async t => {
   const { applyWorkPhone, workPhoneRequired } = await import('../src/telephony.mjs');
   const { findUserByPhone } = await import('../src/beeline-telephony.mjs');

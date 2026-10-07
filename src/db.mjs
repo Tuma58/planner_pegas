@@ -333,7 +333,7 @@ CREATE TABLE IF NOT EXISTS delivery_slots (
 );
 CREATE TABLE IF NOT EXISTS staff_shifts (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  day TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('day','night')),
+  day TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('day','night','vacation','sick')),
   created_by TEXT REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(user_id, day, kind)
@@ -827,6 +827,12 @@ function migrateColumns(db) {
   // входящего звонка. Дежурный номер переезжает между сотрудниками —
   // при входе нового владельца у прежнего снимается (решение 07.10).
   ensure('users', 'work_phone', "TEXT NOT NULL DEFAULT ''");
+  // Справочник сотрудников (вкладка «Сотрудники», решение 07.10):
+  // кадровые даты и постоянный добавочный АТС — в отличие от
+  // work_phone, который живёт одну смену.
+  ensure('users', 'hired_at', 'TEXT');
+  ensure('users', 'fired_at', 'TEXT');
+  ensure('users', 'ext_phone', "TEXT NOT NULL DEFAULT ''");
   ensure('messages', 'recipient_id', 'TEXT');
   ensure('messages', 'chat_id', 'TEXT');
   ensure('chats', 'deleted_at', 'TEXT');
@@ -991,6 +997,29 @@ function migrateColumns(db) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_call_events_time ON call_events(started_at)`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_call_events_external
     ON call_events(provider,external_id) WHERE external_id IS NOT NULL`);
+
+  // График смен офисных сотрудников: таблица staff_shifts существовала
+  // (день/ночь, отчёт смены) — вкладка «Сотрудники» (07.10) пишет в НЕЁ ЖЕ
+  // (канон един), добавляя виды «отпуск» и «больничный». CHECK расширяется
+  // пересозданием таблицы (ALTER CHECK в SQLite нет), разово и идемпотентно.
+  const shiftsCheck = db.prepare(`SELECT sql FROM sqlite_master
+    WHERE type='table' AND name='staff_shifts'`).get()?.sql || '';
+  if (shiftsCheck && !shiftsCheck.includes('vacation')) {
+    db.exec(`PRAGMA foreign_keys=OFF;
+      BEGIN IMMEDIATE;
+      CREATE TABLE staff_shifts_new (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('day','night','vacation','sick')),
+        created_by TEXT REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, day, kind)
+      );
+      INSERT INTO staff_shifts_new SELECT * FROM staff_shifts;
+      DROP TABLE staff_shifts;
+      ALTER TABLE staff_shifts_new RENAME TO staff_shifts;
+      COMMIT;
+      PRAGMA foreign_keys=ON;`);
+  }
 
   // ── Внутренний проект «160 млн» (27.08.2026) ──
   // Инициативы развития продукта с ожидаемым и фактическим эффектом:

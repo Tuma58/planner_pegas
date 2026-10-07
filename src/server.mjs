@@ -12,6 +12,8 @@ import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, 
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, identifyCaller, listDriverQuestions,
   phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
+import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
+  staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { ensureBeelineSubscriptions, findUserByPhone, parseXsiEvent, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
@@ -147,7 +149,10 @@ function publicUser(user) {
     id: user.id, username: user.username, fullName: user.full_name, email: user.email || '',
     role: user.role, roles, roleLabel: roleLabelsFor(roles), active: Boolean(user.active),
     guest: Boolean(Number(user.guest)),
-    permissions: effectivePermissions(user)
+    permissions: effectivePermissions(user),
+    // Вкладка «Сотрудники»: право staff:write или логин из настройки
+    // «полный доступ» (решение руководителя 07.10).
+    staffAccess: staffAccess(user, settingsObject(db))
   };
 }
 
@@ -10747,6 +10752,95 @@ async function api(request, response, url) {
         .map(item => ({ ...item, roles: rolesOf(item) }))
     });
   }
+  // ── Справочник сотрудников «Сотрудники» (решение руководителя 07.10) ──
+  // Доступ: staff:write (руководитель, админ) или логин из настройки
+  // «полный доступ» (Никулина). Отдельно от /api/admin/users: приём и
+  // увольнение из справочника не раздают роль admin и не трогают
+  // admin-учётки — полный доступ к кадрам ≠ администратор системы.
+  const requireStaffAccess = (request, response) => {
+    const user = requireUser(request, response);
+    if (!user) return null;
+    if (!staffAccess(user, settingsObject(db))) {
+      errorJson(response, 403, 'Нет доступа к справочнику сотрудников');
+      return null;
+    }
+    return user;
+  };
+  if (request.method === 'GET' && pathname === '/api/staff') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    return json(response, 200, staffList(db));
+  }
+  if (request.method === 'POST' && pathname === '/api/staff/users') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = createStaffUser(db, body,
+      { allowAdmin: hasPermission(user, 'users:write'), hashPassword });
+    if (!result.ok) return errorJson(response, 422, result.error);
+    audit(db, user, 'create', 'staff', result.id, { ...body, password: undefined }, requestIp(request));
+    return json(response, 201, { id: result.id });
+  }
+  match = route(/^\/api\/staff\/users\/([^/]+)\/card$/, pathname);
+  if (match && request.method === 'GET') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const card = staffUserCard(db, match[0], url.searchParams.get('month'));
+    if (!card) return errorJson(response, 404, 'Сотрудник не найден');
+    return json(response, 200, card);
+  }
+  match = route(/^\/api\/staff\/users\/([^/]+)\/shifts$/, pathname);
+  if (match && request.method === 'GET') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const month = url.searchParams.get('month');
+    return json(response, 200, { month, days: staffShifts(db, match[0], month) });
+  }
+  if (match && request.method === 'PUT') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = setStaffShifts(db, match[0], body.month, body.days, user.id);
+    if (!result.ok) return errorJson(response, 422, result.error);
+    audit(db, user, 'staff_shifts', 'staff', match[0],
+      { month: body.month, ...result.counts }, requestIp(request));
+    return json(response, 200, result);
+  }
+  match = route(/^\/api\/staff\/users\/([^/]+)\/fire$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    if (match[0] === user.id) return errorJson(response, 422, 'Нельзя уволить самого себя');
+    const target = db.prepare(`SELECT * FROM users WHERE id=?`).get(match[0]);
+    if (target && rolesOf(target).includes('admin') && !hasPermission(user, 'users:write')) {
+      return errorJson(response, 403, 'Учётку администратора меняет только администратор');
+    }
+    const result = fireStaffUser(db, match[0]);
+    if (!result.ok) return errorJson(response, 422, result.error);
+    audit(db, user, 'fire', 'staff', match[0], { fullName: result.fullName }, requestIp(request));
+    return json(response, 200, result);
+  }
+  match = route(/^\/api\/staff\/users\/([^/]+)\/restore$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const result = restoreStaffUser(db, match[0]);
+    if (!result.ok) return errorJson(response, 422, result.error);
+    audit(db, user, 'restore', 'staff', match[0], { fullName: result.fullName }, requestIp(request));
+    return json(response, 200, result);
+  }
+  match = route(/^\/api\/staff\/users\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = updateStaffUser(db, match[0], body,
+      { allowAdmin: hasPermission(user, 'users:write') });
+    if (!result.ok) return errorJson(response, 422, result.error);
+    audit(db, user, 'update', 'staff', match[0], body, requestIp(request));
+    return json(response, 200, result);
+  }
+
   // Роли из тела запроса: массив roles (мульти-роли) либо legacy-строка role.
   // Возвращает null при некорректном наборе.
   const parseRoles = body => {
@@ -10889,7 +10983,7 @@ async function api(request, response, url) {
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
       'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules',
-      'monitoring', 'bodyCompat']) {
+      'monitoring', 'bodyCompat', 'staff']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));
