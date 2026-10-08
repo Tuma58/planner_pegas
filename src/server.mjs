@@ -1024,7 +1024,7 @@ function runForecastSnapshot() {
       }
       if (parts.length) notify('manager',
         `✍ Выгрузки дооформлены задним числом (${diff > 0 ? '+' : ''}${(diff / 1e6).toFixed(2)} млн): `
-        + `${parts.join(' · ')} — из-за этого «прыгали» факт и прогноз; норматив отметки — 30 минут.`);
+        + `${parts.join(' · ')} — поздние отметки искажают факт в отчётах; норматив отметки — 30 минут.`);
     }
   } catch (error) { console.error('Снимок прогноза:', error.message); }
 }

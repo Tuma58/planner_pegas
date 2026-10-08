@@ -94,39 +94,43 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // прогнозируется субботами, а не средним темпом), но не меньше уже
   // назначенного на этот день. Медиана дня клампится к среднему темпу
   // ×0,5…×1,5 — защита от вырожденной истории; истории нет — средний темп.
-  const factByDay = new Map();
-  for (const trip of data.trips || []) {
-    if (!doneStatuses.has(trip.status)) continue;
-    const ts = Date.parse(trip.unloaded_at || trip.ends_at);
-    if (!(ts >= dayStart - 35 * DAY_MS && ts < dayStart)) continue;
-    const key = Math.floor(ts / DAY_MS);
-    factByDay.set(key, (factByDay.get(key) || 0) + tripNet(trip, calc));
+  // ПЕРЕСМОТР 08.10 (решение руководителя): прогноз — по ПЛАНОВЫМ
+  // датам выгрузки. Отметки диспетчеров ставятся с опозданием, выручка
+  // переезжала между днями задним числом и цифра скакала; расчётная
+  // ends_at стабильна, факт на прогноз больше не влияет.
+  const plannedByDay = new Map();
+  for (const trip of activeTrips) {
+    const ends = Date.parse(trip.ends_at);
+    if (!(ends >= dayStart - 35 * DAY_MS && ends < monthEnd)) continue;
+    const key = Math.floor(ends / DAY_MS);
+    plannedByDay.set(key, (plannedByDay.get(key) || 0) + tripNet(trip, calc));
   }
-  const avgHistDay = factByDay.size
-    ? [...factByDay.values()].reduce((a, b) => a + b, 0) / factByDay.size : 0;
+  const histDays = [...plannedByDay.keys()].filter(key => key * DAY_MS < dayStart);
+  const avgHistDay = histDays.length
+    ? histDays.reduce((sum, key) => sum + plannedByDay.get(key), 0) / histDays.length : 0;
   const weekdayMedian = dow => {
-    const list = [...factByDay.entries()]
-      .filter(([key]) => new Date(key * DAY_MS).getUTCDay() === dow)
-      .map(([, value]) => value).sort((a, b) => a - b);
+    const list = histDays
+      .filter(key => new Date(key * DAY_MS).getUTCDay() === dow)
+      .map(key => plannedByDay.get(key)).sort((a, b) => a - b);
     if (!list.length) return avgHistDay;
     const median = list[Math.floor(list.length / 2)];
     return Math.min(avgHistDay * 1.5, Math.max(avgHistDay * 0.5, median));
   };
-  // Минимум образцов для медианного метода — 14 дней с выгрузками:
-  // на короткой истории медиана одного дня-гиганта раздувает месяц.
-  // Мало истории — прежний линейный темп прошедших полных дней.
+  // Минимум образцов для медианного метода — 14 дней истории: на
+  // короткой истории медиана одного дня-гиганта раздувает месяц.
+  // Мало истории — линейный темп прошедших плановых дней.
+  const plannedPast = [...plannedByDay.entries()]
+    .filter(([key]) => key * DAY_MS >= monthStart && key * DAY_MS < dayStart)
+    .reduce((sum, [, value]) => sum + value, 0);
   let forecast;
-  if (factByDay.size >= 14) {
-    forecast = factPast;
+  if (histDays.length >= 14) {
+    forecast = plannedPast;
     for (let ts = dayStart; ts < monthEnd; ts += DAY_MS) {
-      const bookedDay = activeTrips.filter(trip => {
-        const ends = Date.parse(trip.ends_at);
-        return ends >= ts && ends < ts + DAY_MS;
-      }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-      forecast += Math.max(bookedDay, weekdayMedian(new Date(ts).getUTCDay()));
+      forecast += Math.max(plannedByDay.get(Math.floor(ts / DAY_MS)) || 0,
+        weekdayMedian(new Date(ts).getUTCDay()));
     }
   } else {
-    forecast = dayOfMonth > 1 ? factPast / (dayOfMonth - 1) * daysInMonth : monthFact;
+    forecast = dayOfMonth > 1 ? plannedPast / (dayOfMonth - 1) * daysInMonth : monthFact;
   }
   // Урок августа: прогноз «129» опирался на забитое, из которого 116 рейсов
   // отклонили, а 100 выгрузились уже в сентябре — итог 110. Раскладываем
@@ -598,21 +602,9 @@ export async function renderDashboard(container, context) {
         <b title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">${money(Math.round(metrics.monthFact))}</b>
         <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%
           · <span class="dash-done" title="Фактически выгружено с начала месяца (статус «выгружен» и далее)">выгружено <b>${money(Math.round(metrics.monthDone))}</b></span></span>
-        ${(() => {
-    // Устойчивый прогноз (08.10): главная цифра — утренний снимок
-    // 07:00, он не дышит от поздних отметок выгрузки; живой пересчёт
-    // показывается мелко, только если заметно разошёлся.
-    const snap = state.data.forecastSnapshot;
-    const monthKey = new Date().toISOString().slice(0, 7);
-    const snapFresh = snap && String(snap.date || '').slice(0, 7) === monthKey;
-    const shown = snapFresh ? snap.forecast : metrics.forecast;
-    const shownPct = metrics.monthPlan ? Math.round(shown / metrics.monthPlan * 100) : 0;
-    const drift = snapFresh && Math.abs(metrics.forecast - snap.forecast) > snap.forecast * 0.01
-      ? ` <small class="muted" title="Живой пересчёт прямо сейчас — дышит от поздних отметок выгрузки, утром зафиксируется">(пересчёт: ${shortMln(metrics.forecast)})</small>` : '';
-    return `<span class="dash-month-side" title="Прогноз фиксируется утренним снимком в 07:00 и не меняется в течение дня — поздние отметки выгрузки его не дёргают. Формула: факт прошедших дней + каждый оставшийся день по медиане выгрузок того же дня недели за 5 недель, но не меньше уже назначенного на день">Прогноз <small class="muted">(без НДС${snapFresh ? ', на 07:00' : ''})</small>: <b class="${shownPct >= 100 ? 'good' : shownPct >= 90 ? 'warn' : 'bad'}">
-          ${shortMln(shown)} (${shownPct}%)</b>${drift} · осталось дней: <b>${metrics.remainingDays}</b>
-          · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>`;
-  })()}
+        <span class="dash-month-side" title="Прогноз по ПЛАНОВЫМ датам выгрузки (08.10): прошедшие дни месяца — что должно было выгрузиться по расчёту, оставшиеся — не меньше забитого и не меньше медианы того же дня недели за 5 недель. Отметки выгрузки на цифру не влияют — поздние отметки её не дёргают">Прогноз <small class="muted">(без НДС, по плановым датам)</small>: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
+          ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
+          · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
       </div>
       <div class="dash-pace" title="Гарантированная база месяца, НЕ прогноз: выгружено + уже назначенное доедет (минус риск отклонений по доле последних 14 дней). Заявки вносятся на 1–3 дня вперёд, поэтому в середине месяца эта цифра всегда сильно меньше прогноза — вторая половина месяца ещё не внесена">
         💼 Уже в кармане: <b>${shortMln(metrics.forecastHonest)}</b> = выгружено ${shortMln(metrics.monthDone)}

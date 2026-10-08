@@ -29,14 +29,15 @@ export function tripNet(trip, calc = {}) {
 export const doneDayOf = trip =>
   String(trip.unloaded_at || trip.ends_at || '').slice(0, 10);
 
-// ── Прогноз месяца — серверный порт формулы дашборда ──
-// Та же логика, что dashboardMetrics (реализм 14.09): факт прошедших
-// дней + каждый оставшийся день по медиане выгрузок того же дня недели
-// за 5 недель (кламп ×0,5…×1,5 к среднему темпу), но не меньше уже
-// назначенного на день. Нужен для УТРЕННЕГО СНИМКА (решение
-// руководителя 08.10): живой прогноз дышит от поздних отметок
-// диспетчеров — руководителю показывается цифра, зафиксированная в
-// 07:00, и она не меняется в течение дня.
+// ── Прогноз месяца — ПО ПЛАНОВЫМ ДАТАМ выгрузки ──
+// Решение руководителя 08.10: прогноз не должен зависеть от фактов
+// выгрузки (диспетчеры ставят отметки с опозданием, выручка переезжала
+// между днями и цифра скакала). День рейса = расчётная дата ends_at,
+// статус не важен (кроме отклонённых): прошедшие дни месяца — что
+// должно было выгрузиться, будущие — не меньше забитого и не меньше
+// медианы того же дня недели за 5 недель (кламп ×0,5…×1,5 к среднему).
+// recentDays — ФАКТОВАЯ выручка последних дней: она здесь только для
+// контроля «дооформлено задним числом» (дисциплина отметок).
 export function forecastMonth(db, nowMs = Date.now()) {
   const DAY = 86_400_000;
   const now = new Date(nowMs);
@@ -46,57 +47,55 @@ export function forecastMonth(db, nowMs = Date.now()) {
   const calc = calcSettings(db);
   const trips = db.prepare(`SELECT status, cash, customer_name, revenue_vat,
     unloaded_at, ends_at FROM trips WHERE status<>'rejected'`).all();
-  const doneTs = trip => Date.parse(trip.unloaded_at || trip.ends_at);
-  let factPast = 0;
+  // Плановый день: расчётная дата выгрузки — отметки её не двигают.
+  let plannedPast = 0;
+  const plannedByDay = new Map();
   const factByDay = new Map();
   for (const trip of trips) {
-    if (!DONE_STATUSES.has(trip.status)) continue;
-    const ts = doneTs(trip);
-    if (ts >= monthStart && ts < dayStart) factPast += tripNet(trip, calc);
-    if (ts >= dayStart - 35 * DAY && ts < dayStart) {
-      const key = Math.floor(ts / DAY);
-      factByDay.set(key, (factByDay.get(key) || 0) + tripNet(trip, calc));
+    const ends = Date.parse(trip.ends_at);
+    if (Number.isFinite(ends) && ends >= dayStart - 35 * DAY && ends < monthEnd) {
+      const key = Math.floor(ends / DAY);
+      plannedByDay.set(key, (plannedByDay.get(key) || 0) + tripNet(trip, calc));
+      if (ends >= monthStart && ends < dayStart) plannedPast += tripNet(trip, calc);
+    }
+    // Фактовый слой — только для recentDays (контроль поздних отметок).
+    if (DONE_STATUSES.has(trip.status)) {
+      const ts = Date.parse(trip.unloaded_at || trip.ends_at);
+      if (ts >= dayStart - 35 * DAY && ts < dayStart) {
+        const key = Math.floor(ts / DAY);
+        factByDay.set(key, (factByDay.get(key) || 0) + tripNet(trip, calc));
+      }
     }
   }
-  const bookedByDay = new Map();
-  for (const trip of trips) {
-    const ends = Date.parse(trip.ends_at);
-    if (!(ends >= dayStart && ends < monthEnd)) continue;
-    const key = Math.floor(ends / DAY);
-    bookedByDay.set(key, (bookedByDay.get(key) || 0) + tripNet(trip, calc));
-  }
-  const avgHistDay = factByDay.size
-    ? [...factByDay.values()].reduce((a, b) => a + b, 0) / factByDay.size : 0;
+  const histDays = [...plannedByDay.keys()].filter(key => key * DAY < dayStart);
+  const avgHistDay = histDays.length
+    ? histDays.reduce((sum, key) => sum + plannedByDay.get(key), 0) / histDays.length : 0;
   const weekdayMedian = dow => {
-    const list = [...factByDay.entries()]
-      .filter(([key]) => new Date(key * DAY).getUTCDay() === dow)
-      .map(([, value]) => value).sort((a, b) => a - b);
+    const list = histDays
+      .filter(key => new Date(key * DAY).getUTCDay() === dow)
+      .map(key => plannedByDay.get(key)).sort((a, b) => a - b);
     if (!list.length) return avgHistDay;
     const median = list[Math.floor(list.length / 2)];
     return Math.min(avgHistDay * 1.5, Math.max(avgHistDay * 0.5, median));
   };
   let forecast;
   const dayOfMonth = now.getUTCDate();
-  if (factByDay.size >= 14) {
-    forecast = factPast;
+  if (histDays.length >= 14) {
+    forecast = plannedPast;
     for (let ts = dayStart; ts < monthEnd; ts += DAY) {
-      forecast += Math.max(bookedByDay.get(Math.floor(ts / DAY)) || 0,
+      forecast += Math.max(plannedByDay.get(Math.floor(ts / DAY)) || 0,
         weekdayMedian(new Date(ts).getUTCDay()));
     }
   } else {
-    forecast = dayOfMonth > 1 ? factPast / (dayOfMonth - 1)
-      * Math.round((monthEnd - monthStart) / DAY) : factPast;
+    forecast = dayOfMonth > 1 ? plannedPast / (dayOfMonth - 1)
+      * Math.round((monthEnd - monthStart) / DAY) : plannedPast;
   }
-  // Выручка последних трёх закрытых дней — для контроля «дооформлено
-  // задним числом»: завтра те же дни пересчитаются, разница = поздние
-  // отметки диспетчеров.
   const recentDays = {};
   for (let offset = 1; offset <= 3; offset += 1) {
     const ts = dayStart - offset * DAY;
-    if (ts < monthStart - 3 * DAY) break;
     recentDays[new Date(ts).toISOString().slice(0, 10)] =
       Math.round(factByDay.get(Math.floor(ts / DAY)) || 0);
   }
   return { date: new Date(dayStart).toISOString().slice(0, 10),
-    forecast: Math.round(forecast), factPast: Math.round(factPast), recentDays };
+    forecast: Math.round(forecast), plannedPast: Math.round(plannedPast), recentDays };
 }

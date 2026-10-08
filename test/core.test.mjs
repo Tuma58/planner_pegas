@@ -3779,14 +3779,22 @@ test('прогноз месяца: серверный порт формулы д
   assert.ok(result.forecast > 0, 'прогноз посчитан');
   assert.ok(Object.keys(result.recentDays).length >= 1, 'последние дни зафиксированы');
   // Медианный метод включился (история ≥14 дней): каждый оставшийся
-  // день месяца ~1 млн — прогноз не меньше факта прошедших дней.
-  assert.ok(result.forecast >= result.factPast);
-  // Поздняя отметка меняет живой пересчёт — для того и снимок.
+  // день месяца ~1 млн — прогноз не меньше плановых прошедших дней.
+  assert.ok(result.forecast >= result.plannedPast);
+  // ГЛАВНОЕ (пересмотр 08.10): поздняя ОТМЕТКА выгрузки прогноз не
+  // трогает — день рейса определяет плановая ends_at, не факт.
+  db.prepare(`UPDATE trips SET unloaded_at=? WHERE id='fc-2'`)
+    .run(new Date(Date.now() - 10 * 3_600_000).toISOString());
+  const afterMark = forecastMonth(db);
+  assert.equal(afterMark.forecast, result.forecast, 'отметка задним числом не дёргает прогноз');
+  assert.notDeepEqual(afterMark.recentDays, result.recentDays,
+    'фактовый слой для контроля «задним числом» отметку видит');
+  // Новая реальная работа (рейс с плановой выгрузкой) прогноз меняет.
   const iso2 = new Date(Date.now() - 2 * DAY).toISOString();
   insert.run('fc-late', vehicle.id, 'Клиент', zones[0].id, zones[1].id,
-    iso2, iso2, iso2, 'unloaded', 2_440_000);
+    iso2, iso2, null, 'run', 2_440_000);
   const after = forecastMonth(db);
-  assert.ok(after.forecast !== result.forecast, 'живой прогноз сдвинулся от поздней отметки');
+  assert.ok(after.forecast > result.forecast, 'новый рейс в плане поднимает прогноз');
 });
 
 test('график: замещение не стирает второго своего водителя (кейс с964)', async t => {
