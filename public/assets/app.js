@@ -2336,6 +2336,18 @@ async function reload(prefetched = null) {
     state.callWatchStarted = true;
     api('/api/driver-questions?open=1').then(payload => setTopics(payload.topics)).catch(() => {});
     watchIncomingCalls(callContext());
+    // Подсказка дежурства (этап 3, 08.10): по графику сегодня смена —
+    // тихий тост раз в сутки на рабочем месте.
+    const shift = state.data.user?.todayShift;
+    if (shift) {
+      const today = new Date().toISOString().slice(0, 10);
+      let shown = null;
+      try { shown = localStorage.getItem('pl_shift_toast'); } catch { /* ок */ }
+      if (shown !== today) {
+        try { localStorage.setItem('pl_shift_toast', today); } catch { /* ок */ }
+        toast(`📅 По графику сегодня ваша ${shift.kind === 'day' ? 'дневная' : 'ночная'} смена (${shift.hours})`);
+      }
+    }
   }
 }
 

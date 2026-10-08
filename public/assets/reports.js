@@ -252,6 +252,21 @@ export async function buildReport(kind, from, to, data) {
       <div class="staff-roles-grid">${staff.items.map(row =>
         `<label class="staff-role-row"><span>${escapeHtml(row.name)}</span>${roleSelect(row)}</label>`).join('')}</div>
     </details>` : '';
+    // План-факт смен офиса (этап 3 «Сотрудников», 08.10): график из
+    // карточек против входов в планер.
+    const officePanel = (staff.officeShifts || []).length ? `<h4>📅 Смены офиса (по графику из карточек)</h4>
+      <p class="geohint">План — график смен в карточке сотрудника («Сотрудники»),
+        факт — вход в планер в день смены (ночная засчитывается и входом
+        следующим утром). Пропуск ≠ прогул: сначала проверьте, вёлся ли график.</p>
+      <table class="rtable"><thead><tr><th>Сотрудник</th><th>Должность</th>
+        <th class="num">Смен (Д/Н)</th><th class="num">Подтверждено входом</th><th>Пропуски</th></tr></thead>
+      <tbody>${staff.officeShifts.map(row => {
+    const pct = row.planned ? Math.round(row.confirmed / row.planned * 100) : 0;
+    return `<tr><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.jobRole || '—')}</td>
+        <td class="num">${row.planned} <small class="muted">(${row.day}/${row.night})</small></td>
+        <td class="num"><span class="badge ${pct >= 90 ? 'ok' : pct >= 60 ? 'warn' : 'bad'}">${row.confirmed} · ${pct}%</span></td>
+        <td>${row.missedDays.length ? row.missedDays.map(day => `${day.slice(8)}.${day.slice(5, 7)}`).join(', ') : '<span class="muted">—</span>'}</td></tr>`;
+  }).join('')}</tbody></table>` : '';
     const freshRows = staff.items.filter(row => row.factMarks);
     const freshPanel = freshRows.length ? `<h4>🕐 Свежесть отметок контроля</h4>
       <p class="geohint">Разница между временем факта и моментом его внесения в планер.
@@ -309,7 +324,7 @@ export async function buildReport(kind, from, to, data) {
           «создал через N часов после выгрузки» среди опоздавших. Сигнал «🔎 Освобождаются
           без груза» приходит заранее — разбирать его нужно в день получения, не утром после.</p>`
       : '';
-    body = `${freshPanel}${logistPanel}${assignersPanel}${overworkPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
+    body = `${officePanel}${freshPanel}${logistPanel}${assignersPanel}${overworkPanel}${rolesPanel}<div class="geohint">План/факт по каждому сотруднику: план = норматив на активный день
         × активные дни в периоде (нормативы по должностям — базовые, скажите руководителю
         планера, если нужно их подстроить). Должность назначается администратором прямо здесь
         и не влияет на права доступа. «Дней» — активные дни в системе.</div>

@@ -154,7 +154,21 @@ function publicUser(user) {
     permissions: effectivePermissions(user),
     // Вкладка «Сотрудники»: право staff:write или логин из настройки
     // «полный доступ» (решение руководителя 07.10).
-    staffAccess: staffAccess(user, settingsObject(db))
+    staffAccess: staffAccess(user, settingsObject(db)),
+    // Подсказка дежурства (этап 3, 08.10): «по графику сегодня ваша
+    // смена» — фронт показывает тост раз в сутки на рабочем месте.
+    todayShift: (() => {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const shift = db.prepare(`SELECT kind FROM staff_shifts
+          WHERE user_id=? AND day=? AND kind IN ('day','night') LIMIT 1`).get(user.id, today);
+        if (!shift) return null;
+        const staff = settingsObject(db).staff || {};
+        return { kind: shift.kind,
+          hours: shift.kind === 'day' ? (staff.dayHours || '08:00–20:00')
+            : (staff.nightHours || '20:00–08:00') };
+      } catch { return null; }
+    })()
   };
 }
 

@@ -3966,6 +3966,19 @@ test('сотрудники: доступ, приём/увольнение, гр�
   assert.equal(db.prepare(`SELECT active FROM users WHERE id=?`).get(created.id).active, 1);
   // Последнего активного администратора уволить нельзя.
   assert.match(fireStaffUser(db, admin.id).error, /администратор/i);
+  // План-факт смен офиса (этап 3): график против входов в планер.
+  const { staffReport } = await import('../src/planner-service.mjs');
+  setStaffShifts(db, created.id, '2026-10', { '2026-10-03': 'day', '2026-10-04': 'night' });
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,created_at)
+    VALUES('al-1',?,'login','session','2026-10-03 08:05:00')`).run(created.id);
+  // Ночная подтверждается входом следующим утром.
+  db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,created_at)
+    VALUES('al-2',?,'login','session','2026-10-05 07:40:00')`).run(created.id);
+  const report = staffReport(db, '2026-10-01', '2026-11-01');
+  const office = report.officeShifts.find(row => row.name === 'Никулина Н.');
+  assert.equal(office.planned, 2);
+  assert.equal(office.confirmed, 2, 'день по входу в день, ночь — входом наутро');
+  assert.equal(office.missedDays.length, 0);
 });
 
 test('телефония: рабочий телефон смены — переезд трубки и адресация звонка', async t => {

@@ -342,7 +342,42 @@ export function staffReport(db, fromDay, toDay) {
   try {
     nextAssigners = nextAssignersReport(db, `${fromDay}T00:00:00.000Z`, `${toDay}T00:00:00.000Z`);
   } catch { /* секция просто пустая */ }
-  return { plans: STAFF_PLANS, overworkDrivers, nextAssigners, items: [...byId.values()]
+  // ── План-факт смен офиса (этап 3 «Сотрудников», 08.10) ──
+  // План — график из карточки сотрудника (staff_shifts), факт — вход
+  // в планер в день смены (ночная засчитывается и входом следующим
+  // утром: смена 20–08 переходит через полночь).
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const loginDays = new Map();
+  for (const row of db.prepare(`SELECT user_id, date(created_at) d FROM audit_log
+      WHERE action='login' AND created_at >= ? AND created_at < datetime(?, '+1 day')
+      GROUP BY user_id, d`).all(fromTs, toEx)) {
+    if (!loginDays.has(row.user_id)) loginDays.set(row.user_id, new Set());
+    loginDays.get(row.user_id).add(row.d);
+  }
+  const officeAgg = new Map();
+  for (const row of db.prepare(`SELECT s.user_id, s.day, s.kind, u.full_name, u.job_role
+      FROM staff_shifts s JOIN users u ON u.id=s.user_id
+      WHERE s.day >= ? AND s.day < ? AND s.kind IN ('day','night')
+        AND u.deleted_at IS NULL`).all(fromDay, toDay)) {
+    const agg = officeAgg.get(row.user_id) || { name: row.full_name,
+      jobRole: row.job_role || '', planned: 0, day: 0, night: 0, confirmed: 0, missedDays: [] };
+    officeAgg.set(row.user_id, agg);
+    agg.planned += 1;
+    agg[row.kind] += 1;
+    const logins = loginDays.get(row.user_id);
+    const nextDay = new Date(Date.parse(`${row.day}T00:00:00Z`) + 86_400_000)
+      .toISOString().slice(0, 10);
+    if (logins?.has(row.day) || (row.kind === 'night' && logins?.has(nextDay))) {
+      agg.confirmed += 1;
+    } else if (row.day < todayIso) {
+      agg.missedDays.push(row.day);
+    }
+  }
+  const officeShifts = [...officeAgg.values()]
+    .map(agg => ({ ...agg, missedDays: agg.missedDays.slice(0, 6) }))
+    .sort((a, b) => b.planned - a.planned);
+
+  return { plans: STAFF_PLANS, officeShifts, overworkDrivers, nextAssigners, items: [...byId.values()]
     .map(item => ({ ...item,
       jobRole: jobRoles.get(item.name)?.jobRole || '',
       userId: jobRoles.get(item.name)?.userId || null,
