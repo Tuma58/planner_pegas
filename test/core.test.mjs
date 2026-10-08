@@ -2437,6 +2437,21 @@ test('билайн: журнал из статистики, дедуп и раз
   assert.equal(resolved.pattern, '391');
   assert.equal(resolved.phone, '+79630995009', 'мобильный абонента из карты АТС');
   assert.equal(resolveSubscriptionTarget(db, 'sub-unknown'), null);
+
+  // Сверка АТС↔сотрудники (этап 2, 08.10): совпавший мобильный даёт
+  // сопоставление и автозаполняет пустой «Добавочный АТС».
+  const { matchAtsAbonents, autoFillExtensions } = await import('../src/beeline-telephony.mjs');
+  // Владелец FMC-номера в этой базе — admin (его телефон задан выше).
+  const atsRows = matchAtsAbonents(db);
+  const row391 = atsRows.find(item => String(item.ext) === '391');
+  assert.equal(row391.userId, admin, 'сопоставлен владелец FMC-мобильного');
+  assert.equal(row391.source, 'fmc');
+  const filled = autoFillExtensions(db);
+  assert.ok(filled.some(item => String(item.ext) === '391'));
+  assert.equal(db.prepare(`SELECT ext_phone FROM users WHERE id=?`).get(admin).ext_phone, '391');
+  // Повтор идемпотентен, источник становится «из карточки».
+  assert.equal(autoFillExtensions(db).length, 0);
+  assert.equal(matchAtsAbonents(db).find(item => String(item.ext) === '391').source, 'ext');
 });
 
 test('состояние сцепки: рейс главнее интервала недоступности', async () => {

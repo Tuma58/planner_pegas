@@ -99,6 +99,8 @@ export async function renderStaff(container, context) {
       </span>
       <input id="staffSearch" class="block-search" placeholder="Поиск по всем: ФИО, должность, телефон, сцепка"
         value="${escapeHtml(state.staffQuery || '')}" style="flex:1;min-width:180px;max-width:360px">
+      <button class="button small ghost" id="staffAts"
+        title="Абоненты АТС Билайн: кто из сотрудников на каком добавочном; несопоставленные номера — привязать или оставить незадействованными">☎ Сверка с АТС</button>
       <button class="button small" id="staffAddUser">+ Сотрудник</button>
       <button class="button small ghost" id="staffAddDriver" title="Водители заводятся в справочнике «Водители» — там же сцепка и вахта">+ Водитель</button>
     </div>
@@ -127,12 +129,66 @@ export async function renderStaff(container, context) {
   });
   container.querySelector('#staffAddUser').onclick = () => staffEditDialog(context, null,
     () => renderStaff(container, context));
+  container.querySelector('#staffAts').onclick = () => staffAtsDialog(context,
+    () => renderStaff(container, context));
   container.querySelector('#staffAddDriver').onclick = () => context.openDrivers?.();
   container.querySelectorAll('[data-staff-card]').forEach(element =>
     element.onclick = () => staffCardDialog(context, element.dataset.staffCard,
       () => renderStaff(container, context)));
   container.querySelectorAll('[data-staff-driver]').forEach(element =>
     element.onclick = () => context.openDriverCard?.(element.dataset.staffDriver));
+}
+
+// ── Сверка абонентов АТС со справочником (этап 2, 08.10) ──
+// Экран для кадровика: добавочный · корпоративный мобильный · кто из
+// сотрудников на нём. Несопоставленный номер привязывается выбором
+// сотрудника; совпавшие по мобильному заполняются автоматически.
+export async function staffAtsDialog(context, after) {
+  const { showModal, closeModal } = context;
+  let payload;
+  try { payload = await api('/api/staff/ats'); } catch (error) { toast(error.message); return; }
+  const items = payload.items || [];
+  if (!items.length) {
+    toast('Справочник АТС пуст — проверьте токен Билайна в настройках телефонии');
+    return;
+  }
+  const mapped = items.filter(item => item.userId).length;
+  const options = (context.state.data.user ? await api('/api/staff') : { users: [] }).users
+    .filter(person => person.active)
+    .map(person => `<option value="${person.id}">${escapeHtml(person.fullName)}${person.jobRole ? ` — ${escapeHtml(person.jobRole)}` : ''}</option>`)
+    .join('');
+  showModal(`<div>
+    <h2>☎ Сверка с АТС Билайн</h2>
+    <p class="muted" style="font-size:12.5px">Абонентов в АТС: ${items.length} ·
+      сопоставлено с сотрудниками: <b>${mapped}</b> · незадействованных: ${items.length - mapped}.
+      По сопоставленным карточка звонка всплывает адресату; в настройках телефонии
+      можно включить «подписки только на сопоставленных».</p>
+    <div style="overflow:auto;max-height:56vh"><table class="rtable"><thead><tr>
+      <th>Добавочный</th><th>Моб. АТС</th><th>Сотрудник</th><th></th>
+    </tr></thead><tbody>
+      ${items.map(item => `<tr>
+        <td class="mono"><b>${escapeHtml(String(item.ext))}</b></td>
+        <td class="mono">${escapeHtml(item.phone || '—')}</td>
+        <td>${item.userId
+    ? `${escapeHtml(item.userName)} <small class="muted">${item.source === 'ext' ? '· из карточки' : '· по мобильному'}</small>`
+    : '<span class="muted">не задействован</span>'}</td>
+        <td>${item.userId ? '' : `<select data-ats-bind="${escapeHtml(String(item.ext))}" class="inline">
+            <option value="">— привязать… —</option>${options}</select>`}</td>
+      </tr>`).join('')}
+    </tbody></table></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>
+  </div>`, 'staffcard');
+  document.querySelectorAll('[data-ats-bind]').forEach(select =>
+    select.onchange = async () => {
+      if (!select.value) return;
+      try {
+        await api('/api/staff/ats/bind', { method: 'POST', body: JSON.stringify({
+          ext: select.dataset.atsBind, userId: select.value }) });
+        toast(`Добавочный ${select.dataset.atsBind} привязан`);
+        closeModal();
+        staffAtsDialog(context, after);
+      } catch (error) { toast(error.message); }
+    });
 }
 
 // ── Карточка офисного сотрудника (макет утверждён 07.10) ──

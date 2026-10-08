@@ -15,7 +15,8 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
-import { ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
+import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
+  matchAtsAbonents, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
@@ -1597,10 +1598,20 @@ function runBeelineWatch() {
     })
     .catch(error => console.error('Журнал Билайн:', error.message));
   if (telephony.publicBase) {
-    ensureBeelineSubscriptions(db, { token, publicBase: telephony.publicBase })
+    ensureBeelineSubscriptions(db, { token, publicBase: telephony.publicBase,
+      subscribeMapped: Boolean(telephony.subscribeMapped) })
       .then(result => {
         if (result.created || result.renewed) {
           console.log(`билайн: подписки на события — создано ${result.created}, продлено ${result.renewed}, активно ${result.active}`);
+        }
+        // Автопроставление добавочных по совпавшим мобильным (этап 2):
+        // достоверное совпадение заполняет пустое поле карточки само.
+        const filled = autoFillExtensions(db);
+        if (filled.length) {
+          console.log(`добавочные АТС проставлены автоматически: ${filled.length}`);
+          notify('manager', `☎ Добавочные АТС подставлены по совпавшим мобильным: `
+            + filled.map(item => `${item.ext} → ${item.name}`).join('; ')
+            + '. Остальные — в «Сотрудники → ☎ Сверка с АТС».');
         }
       })
       .catch(error => console.error('Подписка Билайн:', error.message));
@@ -11063,6 +11074,26 @@ async function api(request, response, url) {
     if (!result.ok) return errorJson(response, 422, result.error);
     audit(db, user, 'create', 'staff', result.id, { ...body, password: undefined }, requestIp(request));
     return json(response, 201, { id: result.id });
+  }
+  if (request.method === 'GET' && pathname === '/api/staff/ats') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    return json(response, 200, { items: matchAtsAbonents(db) });
+  }
+  if (request.method === 'POST' && pathname === '/api/staff/ats/bind') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const ext = String(body.ext || '').trim();
+    const target = db.prepare(`SELECT id, full_name FROM users
+      WHERE id=? AND deleted_at IS NULL AND active=1`).get(String(body.userId || ''));
+    if (!ext || !target) return errorJson(response, 422, 'Нужны добавочный и сотрудник');
+    // Один добавочный — один сотрудник: у прежнего владельца снимается.
+    db.prepare(`UPDATE users SET ext_phone='' WHERE ext_phone=? AND id<>?`).run(ext, target.id);
+    db.prepare(`UPDATE users SET ext_phone=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(ext, target.id);
+    audit(db, user, 'ats-bind', 'staff', target.id, { ext }, requestIp(request));
+    return json(response, 200, { ok: true });
   }
   match = route(/^\/api\/staff\/users\/([^/]+)\/card$/, pathname);
   if (match && request.method === 'GET') {

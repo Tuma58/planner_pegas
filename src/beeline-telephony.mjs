@@ -162,7 +162,8 @@ async function createSubscription({ token, baseUrl = BEELINE_BASE_URL, fetchImpl
 
 // Обеспечивает подписки на всех сотрудников АТС: создаёт отсутствующие,
 // продлевает истекающие. Требует публичный адрес приложения.
-export async function ensureBeelineSubscriptions(db, { token, baseUrl, fetchImpl, publicBase, nowMs = Date.now() } = {}) {
+export async function ensureBeelineSubscriptions(db, { token, baseUrl, fetchImpl, publicBase,
+  subscribeMapped = false, nowMs = Date.now() } = {}) {
   if (!publicBase || !token) return { created: 0, renewed: 0, active: 0 };
   const abonents = await beelineGet('/abonents', { token, baseUrl, fetchImpl });
   if (!Array.isArray(abonents)) return { created: 0, renewed: 0, active: 0 };
@@ -182,9 +183,15 @@ export async function ensureBeelineSubscriptions(db, { token, baseUrl, fetchImpl
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('beeline_abonents',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(nextAbon);
   }
+  // «Подписки только на задействованные» (настройка телефонии, 08.10):
+  // в АТС много номеров не в работе — события с них лишь шумят журнал.
+  const mapped = subscribeMapped
+    ? new Set(matchAtsAbonents(db).filter(row => row.userId).map(row => String(row.ext)))
+    : null;
   for (const abonent of abonents) {
     const pattern = String(abonent.extension || abonent.phone || '');
     if (!pattern) continue;
+    if (mapped && !mapped.has(pattern)) continue;
     const existing = current[pattern];
     if (existing && Number(existing.expires) > nowMs + 10 * 60_000) continue;
     try {
@@ -245,6 +252,52 @@ export function parseXsiEvent(raw) {
 export function externalPartyDigits(digits, ownPhone) {
   const own = phoneDigits(ownPhone || '');
   return (digits || []).find(d => d.length >= 7 && d !== own) || '';
+}
+
+// ── Сверка абонентов АТС со справочником сотрудников (этап 2, 08.10) ──
+// Сопоставление: добавочный уже в карточке (ext_phone) → телефон смены →
+// личный мобильный, совпавший с FMC-номером абонента. Возвращает строки
+// для экрана сверки и для фильтра подписок.
+export function matchAtsAbonents(db) {
+  const users = db.prepare(`SELECT id, full_name, job_role, role, phone, work_phone, ext_phone
+    FROM users WHERE deleted_at IS NULL AND active=1`).all();
+  const byExt = new Map();
+  const byDigits = new Map();
+  for (const user of users) {
+    if (user.ext_phone) byExt.set(phoneDigits(user.ext_phone) || String(user.ext_phone).trim(), user);
+    for (const value of [user.work_phone, user.phone]) {
+      const digits = phoneDigits(value);
+      if (digits.length >= 7 && !byDigits.has(digits)) byDigits.set(digits, user);
+    }
+  }
+  const rows = [];
+  for (const [ext, meta] of Object.entries(abonentsMeta(db))) {
+    const extKey = phoneDigits(ext) || ext;
+    const fmc = phoneDigits(meta.phone);
+    const user = byExt.get(extKey) || byExt.get(ext) || (fmc ? byDigits.get(fmc) : null) || null;
+    rows.push({ ext, phone: meta.phone || '', userId: user?.id || null,
+      userName: user?.full_name || '', jobRole: user?.job_role || user?.role || '',
+      source: !user ? '' : (byExt.has(extKey) || byExt.has(ext)) ? 'ext' : 'fmc' });
+  }
+  return rows.sort((a, b) => String(a.ext).localeCompare(String(b.ext), 'ru', { numeric: true }));
+}
+
+// Автопроставление добавочного: мобильный сотрудника совпал с FMC
+// абонента, а поле «Добавочный АТС» пусто — заполняем сами (достоверное
+// совпадение; «автоматика рекомендует» здесь не нужна — номер и есть
+// факт). Возвращает список для уведомления.
+export function autoFillExtensions(db) {
+  const filled = [];
+  for (const row of matchAtsAbonents(db)) {
+    if (!row.userId || row.source !== 'fmc') continue;
+    const user = db.prepare(`SELECT ext_phone FROM users WHERE id=?`).get(row.userId);
+    if (user && !String(user.ext_phone || '').trim()) {
+      db.prepare(`UPDATE users SET ext_phone=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(String(row.ext), row.userId);
+      filled.push({ ext: row.ext, name: row.userName });
+    }
+  }
+  return filled;
 }
 
 // Карта абонентов АТС (extension/номер подписки → FMC-мобильный):
