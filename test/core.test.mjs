@@ -3738,6 +3738,23 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
 });
 
+test('канон денег: одна формула для всех поверхностей', async () => {
+  const { tripNet, doneDayOf, DONE_STATUSES } = await import('../src/money.mjs');
+  const calc = { vatRate: 0.22, individualEntrepreneurVatRate: 0.07 };
+  // Обычный клиент — основная ставка.
+  assert.equal(Math.round(tripNet({ revenue_vat: 122000, customer_name: 'Черкизово' }, calc)), 100000);
+  // «ИП» словом — льготная; внутри фамилии — НЕ ИП (ШИПУНОВ).
+  assert.equal(Math.round(tripNet({ revenue_vat: 107000, customer_name: 'ИП Иванов' }, calc)), 100000);
+  assert.equal(Math.round(tripNet({ revenue_vat: 122000, customer_name: 'ШИПУНОВ ООО' }, calc)), 100000);
+  // Наличные — без НДС; ставки из настроек, не зашиты.
+  assert.equal(tripNet({ revenue_vat: 50000, cash: 1, customer_name: 'ИП Иванов' }, calc), 50000);
+  assert.equal(Math.round(tripNet({ revenue_vat: 110000, customer_name: 'X' }, { vatRate: 0.10 })), 100000);
+  // Дата выгрузки: факт, затем расчётная.
+  assert.equal(doneDayOf({ unloaded_at: '2026-10-07T10:00:00Z', ends_at: '2026-10-06T10:00:00Z' }), '2026-10-07');
+  assert.equal(doneDayOf({ unloaded_at: null, ends_at: '2026-10-06T10:00:00Z' }), '2026-10-06');
+  assert.ok(DONE_STATUSES.has('unloaded') && !DONE_STATUSES.has('run'));
+});
+
 test('график: замещение не стирает второго своего водителя (кейс с964)', async t => {
   const { scheduleHolderMap, syncAssignBridge } = await import('../src/schedule.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-hold-test-'));

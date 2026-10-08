@@ -12,6 +12,7 @@ import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, 
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
+import { DONE_STATUSES, calcSettings, tripNet as tripNetCanon } from './money.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
@@ -5113,11 +5114,16 @@ function runNormsDigest() {
     if (!norms) return;
     // Факт недели: ₽/км без НДС по закрытым рейсам, техскорость по GPS,
     // ворота (прибыл→выгружен) — три опоры «выручка/себестоимость/транзит».
-    const week = db.prepare(`SELECT COALESCE(SUM(revenue_vat),0) rv,
-        COALESCE(SUM(COALESCE(actual_distance_km,distance_km)),0) km
+    const weekTrips = db.prepare(`SELECT cash, customer_name, revenue_vat,
+        COALESCE(actual_distance_km,distance_km) km
       FROM trips WHERE status IN ('unloaded','done','paid')
-        AND unloaded_at >= datetime('now','-7 day')`).get();
-    const rubKm = week.km ? Math.round(week.rv / 1.22 / week.km) : 0;
+        AND unloaded_at >= datetime('now','-7 day')`).all();
+    const weekCalc = calcSettings(db);
+    const week = {
+      rvNet: weekTrips.reduce((sum, t) => sum + tripNetCanon(t, weekCalc), 0),
+      km: weekTrips.reduce((sum, t) => sum + Number(t.km || 0), 0)
+    };
+    const rubKm = week.km ? Math.round(week.rvNet / week.km) : 0;
     const runs = db.prepare(`SELECT COALESCE(SUM(COALESCE(can_km,km)),0) km,
         COALESCE(SUM(move_hours),0) h FROM vehicle_daily_runs
       WHERE day >= date('now','-7 day')`).get();
@@ -5554,20 +5560,23 @@ let bootstrapCache = { at: 0, shared: '', rev: '' };
 // Канон эксплуатации за период — вынесен из /api/park-report, чтобы теми же
 // цифрами жили отчёт руководителя /ops-report и ежедневная сводка в ТГ.
 function parkReportData(from, to) {
-    const fleet = db.prepare(`SELECT COUNT(*) c FROM vehicles WHERE status='work'`).get().c;
-  const netExpr = `CASE WHEN t.cash THEN t.revenue_vat
-    WHEN t.customer_name LIKE '%ИП%' THEN t.revenue_vat/1.07 ELSE t.revenue_vat/1.22 END`;
+  const fleet = db.prepare(`SELECT COUNT(*) c FROM vehicles WHERE status='work'`).get().c;
+  // КАНОН денег (money.mjs, сведение 08.10): ставки из настроек, «ИП»
+  // по слову целиком — раньше тут были зашитые 1.22/1.07 и LIKE '%ИП%',
+  // ловивший «ИП» внутри фамилий; отчёты расходились с дашбордом.
+  const moneyCalc = calcSettings(db);
   const clampH = (a, b, lo, hi) => Math.max(0,
     (Math.min(Date.parse(b), Date.parse(hi)) - Math.max(Date.parse(a), Date.parse(lo))) / 3.6e6);
   const period = (a, b) => {
     const days = Math.round((Date.parse(b) - Date.parse(a)) / 864e5);
     const adi = fleet * 24 * days;
     const trips = db.prepare(`SELECT t.vehicle_id, t.on_line_at, t.arrived_at, t.unloaded_at,
-        t.starts_at, t.ends_at, ${netExpr} net,
+        t.starts_at, t.ends_at, t.status, t.cash, t.customer_name, t.revenue_vat,
         (SELECT MIN(s.actual_departure) FROM trip_stops s
           WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
       FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
-        AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(b, a);
+        AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(b, a)
+      .map(t => ({ ...t, net: tripNetCanon(t, moneyCalc) }));
     // Часы линии/груза — ОБЪЕДИНЕНИЕ интервалов по машине, не сумма по
     // рейсам (разбор «КВЛ 100%» 28.09: плотная стыковка легально даёт
     // старт следующего рейса раньше отметки выгрузки предыдущего —
@@ -5608,7 +5617,12 @@ function parkReportData(from, to) {
       push(lineIv, trip.vehicle_id, clampMs(online, fin));
       if (trip.dep) push(prodIv, trip.vehicle_id, clampMs(trip.dep, trip.arrived_at || fin));
       if (trip.arrived_at && trip.unloaded_at) cust += clampH(trip.arrived_at, fin, a, b);
-      if (trip.unloaded_at && trip.unloaded_at >= a && trip.unloaded_at < b) { rev += trip.net; n += 1; }
+      // Выгрузка — как на дашборде: статус после выгрузки, дата = факт
+      // с фолбэком на расчётную (закрытые без отметки не выпадают).
+      if (DONE_STATUSES.has(trip.status)) {
+        const doneAt = String(trip.unloaded_at || trip.ends_at);
+        if (doneAt >= a && doneAt < b) { rev += trip.net; n += 1; }
+      }
     }
     for (const move of db.prepare(`SELECT vehicle_id, COALESCE(departed_at, starts_at) s,
         COALESCE(arrived_at, ends_at) e FROM vehicle_dispositions

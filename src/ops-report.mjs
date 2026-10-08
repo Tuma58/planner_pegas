@@ -6,8 +6,7 @@
 // Потребители: страница /ops-report, JSON /api/ops-report, ежедневная
 // сводка в Telegram и ленту руководителя.
 
-const NET = `CASE WHEN t.cash THEN t.revenue_vat
-  WHEN t.customer_name LIKE '%ИП%' THEN t.revenue_vat/1.07 ELSE t.revenue_vat/1.22 END`;
+import { DONE_STATUSES, calcSettings, doneDayOf, tripNet } from './money.mjs';
 
 const dayList = (from, to) => {
   const out = [];
@@ -27,12 +26,22 @@ export function opsReportData(db, from, to, parkFn) {
   const days = dayList(from, to);
   const T = park.total;
 
-  // Ряды по дням: выручка без НДС и рейсы (по выгрузкам).
-  const byDay = new Map(db.prepare(`SELECT substr(COALESCE(t.unloaded_at,t.ends_at),1,10) d,
-      COUNT(*) n, SUM(${NET}) net FROM trips t WHERE t.status<>'rejected'
+  // Ряды по дням: выручка без НДС и рейсы — КАНОН денег (money.mjs):
+  // только фактически выгруженные (раньше в день попадало забитое
+  // невыгруженное — графики расходились с итогом и дашбордом).
+  const calc = calcSettings(db);
+  const byDay = new Map();
+  for (const t of db.prepare(`SELECT status, cash, customer_name, revenue_vat,
+      unloaded_at, ends_at FROM trips t WHERE t.status<>'rejected'
       AND substr(COALESCE(t.unloaded_at,t.ends_at),1,10) >= ?
-      AND substr(COALESCE(t.unloaded_at,t.ends_at),1,10) < ?
-      GROUP BY d`).all(from, to).map(r => [r.d, r]));
+      AND substr(COALESCE(t.unloaded_at,t.ends_at),1,10) < ?`).all(from, to)) {
+    if (!DONE_STATUSES.has(t.status)) continue;
+    const d = doneDayOf(t);
+    const row = byDay.get(d) || { n: 0, net: 0 };
+    row.n += 1;
+    row.net += tripNet(t, calc);
+    byDay.set(d, row);
+  }
   const revDays = days.map(d => +((byDay.get(d)?.net || 0) / 1e6).toFixed(2));
   const tripDays = days.map(d => byDay.get(d)?.n || 0);
 
