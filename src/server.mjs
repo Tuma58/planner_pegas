@@ -12,7 +12,7 @@ import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, 
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
-import { DONE_STATUSES, calcSettings, tripNet as tripNetCanon } from './money.mjs';
+import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
@@ -988,6 +988,49 @@ function transferGapsLine() {
 // ── Ежедневный отчёт по автопарку: каждое утро после 07:00 МСК сводка
 // за вчера уходит в чат руководителю (роль manager; чат видят все).
 // Флаг в app_meta защищает от дублей при перезапусках контейнера.
+// Утренний СНИМОК прогноза месяца (решение руководителя 08.10): живой
+// прогноз дышит от поздних отметок выгрузки — руководителю на дашборде
+// показывается цифра, зафиксированная в 07:00 МСК, неизменная весь
+// день. Заодно меряем «дооформлено задним числом»: вчерашние дни в
+// новом снимке против тех же дней в старом — зеркало дисциплины
+// отметок, при заметной разнице руководителю уходит сообщение.
+function runForecastSnapshot() {
+  try {
+    const mskNow = new Date(Date.now() + 3 * 3_600_000);
+    if (mskNow.getUTCHours() < 7) return; // до 07:00 живёт вчерашний снимок
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const prevRaw = db.prepare(`SELECT value FROM app_meta WHERE key='dashboard_forecast'`).get()?.value;
+    let prev = null;
+    try { prev = prevRaw ? JSON.parse(prevRaw) : null; } catch { prev = null; }
+    if (prev?.date === todayIso) return;
+    const snapshot = forecastMonth(db);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('dashboard_forecast',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(snapshot));
+    bootstrapCache.at = 0; // снимок едет в bootstrap — сбросить кэш
+    console.log(`снимок прогноза ${snapshot.date}: ${(snapshot.forecast / 1e6).toFixed(1)} млн`);
+    if (prev?.recentDays) {
+      // Те же дни сейчас: разница = отметки, поставленные задним числом.
+      const current = forecastMonth(db, Date.parse(`${prev.date}T00:00:00Z`));
+      let diff = 0;
+      const parts = [];
+      for (const [day, was] of Object.entries(prev.recentDays)) {
+        const nowVal = current.recentDays[day];
+        if (nowVal === undefined) continue;
+        const delta = nowVal - was;
+        if (Math.abs(delta) >= 100_000) {
+          diff += delta;
+          parts.push(`${day.slice(8)}.${day.slice(5, 7)}: ${delta > 0 ? '+' : ''}${(delta / 1e6).toFixed(2)} млн`);
+        }
+      }
+      if (parts.length) notify('manager',
+        `✍ Выгрузки дооформлены задним числом (${diff > 0 ? '+' : ''}${(diff / 1e6).toFixed(2)} млн): `
+        + `${parts.join(' · ')} — из-за этого «прыгали» факт и прогноз; норматив отметки — 30 минут.`);
+    }
+  } catch (error) { console.error('Снимок прогноза:', error.message); }
+}
+setInterval(runForecastSnapshot, 5 * 60_000);
+setTimeout(runForecastSnapshot, 45_000);
+
 function runDailyFleetReport() {
   try {
     const mskNow = new Date(Date.now() + 3 * 3_600_000);
@@ -5789,6 +5832,13 @@ async function api(request, response, url) {
         LEFT JOIN vehicles v ON v.id=d.vehicle_id
         WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
       revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
+      // Утренний снимок прогноза (07:00 МСК) — устойчивая цифра дашборда.
+      forecastSnapshot: (() => {
+        try {
+          const row = db.prepare(`SELECT value FROM app_meta WHERE key='dashboard_forecast'`).get();
+          return row ? JSON.parse(row.value) : null;
+        } catch { return null; }
+      })(),
       driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
         FROM driver_assignments a
         LEFT JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id

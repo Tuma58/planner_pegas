@@ -3755,6 +3755,40 @@ test('канон денег: одна формула для всех повер�
   assert.ok(DONE_STATUSES.has('unloaded') && !DONE_STATUSES.has('run'));
 });
 
+test('прогноз месяца: серверный порт формулы дашборда', async t => {
+  const { forecastMonth } = await import('../src/money.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-fc-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare(`SELECT id FROM vehicles LIMIT 1`).get();
+  const zones = db.prepare(`SELECT id FROM zones LIMIT 2`).all();
+  const DAY = 86_400_000;
+  const insert = db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,
+    to_zone_id,starts_at,ends_at,unloaded_at,status,revenue_vat,distance_km,from_point,to_point)
+    VALUES(?,?,?,?,?,?,?,?,?,?,500,'А','Б')`);
+  // 20 закрытых дней истории по 1,22 млн с НДС (1 млн бНДС при 22%).
+  for (let offset = 1; offset <= 20; offset += 1) {
+    const iso = new Date(Date.now() - offset * DAY).toISOString();
+    insert.run(`fc-${offset}`, vehicle.id, 'Клиент', zones[0].id, zones[1].id,
+      iso, iso, iso, 'unloaded', 1_220_000);
+  }
+  const result = forecastMonth(db);
+  assert.ok(result.forecast > 0, 'прогноз посчитан');
+  assert.ok(Object.keys(result.recentDays).length >= 1, 'последние дни зафиксированы');
+  // Медианный метод включился (история ≥14 дней): каждый оставшийся
+  // день месяца ~1 млн — прогноз не меньше факта прошедших дней.
+  assert.ok(result.forecast >= result.factPast);
+  // Поздняя отметка меняет живой пересчёт — для того и снимок.
+  const iso2 = new Date(Date.now() - 2 * DAY).toISOString();
+  insert.run('fc-late', vehicle.id, 'Клиент', zones[0].id, zones[1].id,
+    iso2, iso2, iso2, 'unloaded', 2_440_000);
+  const after = forecastMonth(db);
+  assert.ok(after.forecast !== result.forecast, 'живой прогноз сдвинулся от поздней отметки');
+});
+
 test('график: замещение не стирает второго своего водителя (кейс с964)', async t => {
   const { scheduleHolderMap, syncAssignBridge } = await import('../src/schedule.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-hold-test-'));

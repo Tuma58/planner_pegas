@@ -598,9 +598,21 @@ export async function renderDashboard(container, context) {
         <b title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">${money(Math.round(metrics.monthFact))}</b>
         <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%
           · <span class="dash-done" title="Фактически выгружено с начала месяца (статус «выгружен» и далее)">выгружено <b>${money(Math.round(metrics.monthDone))}</b></span></span>
-        <span class="dash-month-side" title="Реалистичный прогноз: факт прошедших дней + каждый оставшийся день по медиане выгрузок того же дня недели за 5 недель (суббота считается субботами), но не меньше уже назначенного на день">Прогноз <small class="muted">(без НДС)</small>: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
-          ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
-          · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
+        ${(() => {
+    // Устойчивый прогноз (08.10): главная цифра — утренний снимок
+    // 07:00, он не дышит от поздних отметок выгрузки; живой пересчёт
+    // показывается мелко, только если заметно разошёлся.
+    const snap = state.data.forecastSnapshot;
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const snapFresh = snap && String(snap.date || '').slice(0, 7) === monthKey;
+    const shown = snapFresh ? snap.forecast : metrics.forecast;
+    const shownPct = metrics.monthPlan ? Math.round(shown / metrics.monthPlan * 100) : 0;
+    const drift = snapFresh && Math.abs(metrics.forecast - snap.forecast) > snap.forecast * 0.01
+      ? ` <small class="muted" title="Живой пересчёт прямо сейчас — дышит от поздних отметок выгрузки, утром зафиксируется">(пересчёт: ${shortMln(metrics.forecast)})</small>` : '';
+    return `<span class="dash-month-side" title="Прогноз фиксируется утренним снимком в 07:00 и не меняется в течение дня — поздние отметки выгрузки его не дёргают. Формула: факт прошедших дней + каждый оставшийся день по медиане выгрузок того же дня недели за 5 недель, но не меньше уже назначенного на день">Прогноз <small class="muted">(без НДС${snapFresh ? ', на 07:00' : ''})</small>: <b class="${shownPct >= 100 ? 'good' : shownPct >= 90 ? 'warn' : 'bad'}">
+          ${shortMln(shown)} (${shownPct}%)</b>${drift} · осталось дней: <b>${metrics.remainingDays}</b>
+          · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>`;
+  })()}
       </div>
       <div class="dash-pace" title="Гарантированная база месяца, НЕ прогноз: выгружено + уже назначенное доедет (минус риск отклонений по доле последних 14 дней). Заявки вносятся на 1–3 дня вперёд, поэтому в середине месяца эта цифра всегда сильно меньше прогноза — вторая половина месяца ещё не внесена">
         💼 Уже в кармане: <b>${shortMln(metrics.forecastHonest)}</b> = выгружено ${shortMln(metrics.monthDone)}
