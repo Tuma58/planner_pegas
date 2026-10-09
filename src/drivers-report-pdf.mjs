@@ -27,7 +27,7 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
   y += 16;
   pdf.text(ML, y, `Период ${fmtDay(from)} — ${fmtDay(to)} (конец не включается) · ПегасЛогистик, планер`, { size: 8.5, color: C.sec });
   y += 12;
-  pdf.text(ML, y, `Медианы парка: рейс целиком ${park.ve ?? '—'} км/ч · в движении ${park.vt ?? '—'} км/ч · ворота выгрузки ${park.gateUnloadH ?? '—'} ч`, { size: 8.5, color: C.sec });
+  pdf.text(ML, y, `Медианы парка: рейс целиком ${park.ve ?? '—'} км/ч · в движении ${park.vt ?? '—'} км/ч · ворота выгрузки ${park.gateUnloadH ?? '—'} ч · КИП ${park.kip ?? '—'}%`, { size: 8.5, color: C.sec });
   y += 12;
   pdf.text(ML, y, 'Оценка: 100 − отставание скорости от парка (до 40) − опоздания П (до 30) − опоздания В (до 15) − рваные отметки (до 15).', { size: 8, color: C.mut });
   y += 10;
@@ -43,11 +43,12 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
   // Колонки: маркер+балл · водитель · рейсы · км · Vэ · Vт · оп.П · оп.В · ворота · отметки
   const cols = [
     { w: 34, label: 'Балл', align: 'left' },
-    { w: 148, label: 'Водитель', align: 'left' },
+    { w: 130, label: 'Водитель', align: 'left' },
     { w: 34, label: 'Рейсы', align: 'right' },
     { w: 46, label: 'км', align: 'right' },
     { w: 40, label: 'Vэ, км/ч', align: 'right' },
     { w: 40, label: 'Vт, км/ч', align: 'right' },
+    { w: 38, label: 'КИП', align: 'right' },
     { w: 40, label: 'Оп. П', align: 'right' },
     { w: 40, label: 'Оп. В', align: 'right' },
     { w: 45, label: 'Ворота, ч', align: 'right' },
@@ -76,6 +77,7 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
     const cells = [
       String(d.trips), d.km.toLocaleString('ru-RU'),
       d.ve == null ? '—' : d.ve.toFixed(1), d.vt == null ? '—' : d.vt.toFixed(1),
+      d.kip == null ? '—' : `${d.kip}%`,
       d.loadFacts ? `${d.lateLoad}/${d.loadFacts}` : '—',
       d.unloadFacts ? `${d.lateUnload}/${d.unloadFacts}` : '—',
       d.gateUnloadH == null ? '—' : d.gateUnloadH.toFixed(1),
@@ -84,8 +86,9 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
     cells.forEach((value, i) => {
       const idx = i + 2;
       const alert = (idx === 4 && d.ve != null && park.ve && d.ve < park.ve * 0.8) ||
-        (idx === 6 && d.loadFacts && d.lateLoad / d.loadFacts > 0.3) ||
-        (idx === 9 && d.cleanPct != null && d.cleanPct < 70);
+        (idx === 6 && d.kip != null && park.kip && d.kip < park.kip * 0.8) ||
+        (idx === 7 && d.loadFacts && d.lateLoad / d.loadFacts > 0.3) ||
+        (idx === 10 && d.cleanPct != null && d.cleanPct < 70);
       pdf.text(cellX(idx), y, value, { size: 8, align: 'right', color: alert ? C.red : C.ink });
     });
     y += 4;
@@ -97,6 +100,8 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
   y += 4;
   pdf.text(ML, y, 'Как читать: Vэ ниже парковой на 20%+ (красным) — водитель много стоит; если Vт нормальная — вопрос к организации,', { size: 7.5, color: C.mut });
   y += 9;
-  pdf.text(ML, y, 'не к манере езды. Ворота выгрузки — время клиента, в балл не входят. Отметки — доля рейсов с чистой цепочкой фактов.', { size: 7.5, color: C.mut });
+  pdf.text(ML, y, 'не к манере езды. КИП — работа в рейсах (дорога + норматив ворот) от нормы рабочего времени, канон отчёта парка.', { size: 7.5, color: C.mut });
+  y += 9;
+  pdf.text(ML, y, 'Ворота выгрузки — время клиента, в балл не входят. Отметки — доля рейсов с чистой цепочкой фактов.', { size: 7.5, color: C.mut });
   return pdf.build();
 }

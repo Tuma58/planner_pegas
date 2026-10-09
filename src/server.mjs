@@ -14,7 +14,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
-import { intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
+import { crewNorms, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -5696,18 +5696,9 @@ let bootstrapCache = { at: 0, shared: '', rev: '' };
 // цифрами жили отчёт руководителя /ops-report и ежедневная сводка в ТГ.
 function parkReportData(from, to) {
   const fleet = db.prepare(`SELECT COUNT(*) c FROM vehicles WHERE status='work'`).get().c;
-  // Живая техскорость парка (CAN, 60 дней) — для «чистой дороги» в КИП.
-  const vtRuns = db.prepare(`SELECT COALESCE(SUM(COALESCE(can_km,km)),0) km,
-    COALESCE(SUM(move_hours),0) h FROM vehicle_daily_runs WHERE day >= date('now','-60 day')`).get();
-  const vtech = Math.min(75, Math.max(40, vtRuns.h ? vtRuns.km / vtRuns.h : 60));
-  // Норматив ворот — из живого пакета транзита (gate_facts → speed_norms:
-  // медианные ворота погрузки/выгрузки), фолбэк 2 ч на операцию — тот же,
-  // что в транзитной формуле. Решение руководителя 09.10: в работу идёт
-  // ЗАКЛАДКА на операцию, всё стояние на точке сверх неё — отдых.
-  const speedNormsRaw = JSON.parse(db.prepare(`SELECT value FROM app_meta
-    WHERE key='speed_norms'`).get()?.value || 'null');
-  const gateNormH = Number(speedNormsRaw?.live?.gateH) > 0
-    ? Number(speedNormsRaw.live.gateH) : 2;
+  // Живые нормативы работы экипажа (crew-fund.mjs): Vтех по CAN и
+  // закладка ворот из транзита — общая точка с профилем водителей.
+  const { vtech, gateNormH } = crewNorms(db);
   // КАНОН денег (money.mjs, сведение 08.10): ставки из настроек, «ИП»
   // по слову целиком — раньше тут были зашитые 1.22/1.07 и LIKE '%ИП%',
   // ловивший «ИП» внутри фамилий; отчёты расходились с дашбордом.

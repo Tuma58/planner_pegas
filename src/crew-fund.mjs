@@ -105,3 +105,18 @@ export function intervalOverlapH(listA, listB) {
   }
   return total / 3.6e6;
 }
+
+// Живые нормативы работы экипажа — одна точка для всех поверхностей
+// (отчёт парка, профиль водителей): Vтех по CAN за 60 дней (кламп
+// 40–75, фолбэк 60) и норматив ворот из пакета транзита (gate_facts →
+// speed_norms.live.gateH, фолбэк 2 ч — как в транзитной формуле).
+export function crewNorms(db) {
+  const runs = db.prepare(`SELECT COALESCE(SUM(COALESCE(can_km,km)),0) km,
+    COALESCE(SUM(move_hours),0) h FROM vehicle_daily_runs
+    WHERE day >= date('now','-60 day')`).get();
+  const vtech = Math.min(75, Math.max(40, runs.h ? runs.km / runs.h : 60));
+  const raw = JSON.parse(db.prepare(`SELECT value FROM app_meta
+    WHERE key='speed_norms'`).get()?.value || 'null');
+  const gateNormH = Number(raw?.live?.gateH) > 0 ? Number(raw.live.gateH) : 2;
+  return { vtech, gateNormH };
+}

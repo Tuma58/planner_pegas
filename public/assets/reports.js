@@ -623,6 +623,7 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Медиана парка: рейс целиком <b>${P.ve ?? '—'} км/ч</b></span>
         <span class="rsum">в движении <b>${P.vt ?? '—'} км/ч</b></span>
         <span class="rsum">ворота выгрузки <b>${P.gateUnloadH ?? '—'} ч</b></span>
+        <span class="rsum">КИП <b>${P.kip ?? '—'}%</b></span>
         <button type="button" class="button small" id="drvPdf" data-from="${from}" data-to="${to}"
           title="Скачать этот отчёт файлом PDF на компьютер">💾 Сохранить в PDF</button></div>
       <p class="geohint">Оценка = 100 − отставание скорости рейса от парковой медианы (до 40) −
@@ -633,22 +634,27 @@ export async function buildReport(kind, from, to, data) {
         водитель много стоит; смотрите «В движении»: если и она низкая — вопрос к машине
         или стилю езды, если нормальная — к организации (ворота, стыки). <b>«Ворота
         выгрузки»</b> — справочная колонка: это время клиента, водителя им не винят.
+        <b>«КИП»</b> — работа в рейсах (дорога по км/живой техскорости + норматив
+        ворот на каждую операцию) от времени его рейсов, относительно нормы
+        ${P.kipCeiling ?? 67}% рабочего времени — тот же канон, что в отчёте парка; межрейсовые
+        ожидания водителю не вменяются.
         <b>«Отметки»</b> — доля рейсов с чистой цепочкой прибыл→убыл→прибыл→выгружен:
         низкая доля значит, что фактам по этим рейсам верить нельзя. Водитель рейса —
         по закреплению на момент старта; «В движении» считается по машино-дням
         закреплений — у водителя без закрепления в «Ресурсе» там прочерк.</p>
       <table class="rtable"><thead><tr><th>Оценка</th><th>Водитель</th><th class="num">Рейсов</th>
         <th class="num">км (с порожним)</th><th class="num">Рейс целиком, км/ч</th>
-        <th class="num">В движении, км/ч</th><th class="num">Опозд. П</th>
+        <th class="num">В движении, км/ч</th><th class="num">КИП</th><th class="num">Опозд. П</th>
         <th class="num">Опозд. В</th><th class="num">Ворота В, ч</th><th class="num">Отметки</th></tr></thead>
       <tbody>${dr.drivers.map(d => `<tr><td>${LIGHT[d.light] || '⚪'} <b>${d.score ?? '—'}</b></td>
         <td>${escapeHtml(d.name.slice(0, 30))}${d.vehicles > 1 ? ` <small class="muted">×${d.vehicles} ТС</small>` : ''}</td>
         <td class="num">${d.trips}</td><td class="num">${d.km.toLocaleString('ru-RU')}</td>
         <td class="num"><b>${cellVe(d)}</b></td><td class="num">${d.vt ?? '—'}</td>
+        <td class="num">${d.kip == null ? '—' : `<span class="${P.kip && d.kip < P.kip * 0.8 ? 'bad' : ''}">${d.kip}%</span>`}</td>
         <td class="num">${cellLate(d.lateLoad, d.loadFacts)}</td>
         <td class="num">${cellLate(d.lateUnload, d.unloadFacts)}</td>
         <td class="num">${d.gateUnloadH ?? '—'}</td><td class="num">${cellClean(d)}</td></tr>`).join('')
-        || '<tr><td colspan=10>Рейсов за период нет</td></tr>'}</tbody></table>
+        || '<tr><td colspan=11>Рейсов за период нет</td></tr>'}</tbody></table>
       <p class="muted" style="margin-top:6px">Сверхвахта и доплаты появятся здесь после
         этапа 3 перестройки Ресурса (явка ↔ факт графика).</p>`;
   } else if (kind === 'speed') {

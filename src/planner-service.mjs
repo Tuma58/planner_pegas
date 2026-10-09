@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { calcSettings, tripNet } from './money.mjs';
 import { scheduleAttendanceFor } from './schedule.mjs';
 import { settingsObject } from './db.mjs';
+import { crewNorms, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 
 export const TRIP_STATUS = {
   plan: 'plan', run: 'run', unl: 'unloaded', unloaded: 'unloaded',
@@ -1544,18 +1545,38 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
     if (!byDriver.has(name)) {
       byDriver.set(name, { name, trips: 0, km: 0, veList: [], lateLoad: 0, loadFacts: 0,
         lateUnload: 0, unloadFacts: 0, gates: [], clean: 0, chainTotal: 0,
-        vehicles: new Set(), vtKm: 0, vtH: 0 });
+        vehicles: new Set(), vtKm: 0, vtH: 0, kipWork: 0, kipTotal: 0 });
     }
     return byDriver.get(name);
   };
-  for (const trip of db.prepare(`SELECT id, vehicle_id, starts_at, arrived_at, unloaded_at, ends_at,
-      distance_km, empty_km FROM trips
+  // КИП водителя — тем же каноном работы экипажа (crew-fund.mjs), что
+  // отчёт парка: работа = дорога (км/Vтех) + норматив ворот на каждую
+  // операцию; база — время ЕГО рейсов (межрейсовые ожидания водителю
+  // не вменяются — это ожидание заказа). Потолок — из настроек.
+  const norms = crewNorms(db);
+  const ceiling = Number(settingsObject(db).calculation?.kipCeilingPct ?? 67) / 100;
+  const fundOpts = { ...norms, fromMs: Date.parse(fromIso), toMs: Date.parse(toIso) };
+  const periodTrips = db.prepare(`SELECT id, vehicle_id, starts_at, on_line_at, arrived_at,
+      unloaded_at, ends_at, distance_km, empty_km,
+      COALESCE(actual_distance_km, distance_km) loaded_km,
+      (SELECT COUNT(*) FROM trip_stops s2 WHERE s2.trip_id=trips.id) stops_n,
+      (SELECT MIN(s.actual_departure) FROM trip_stops s
+        WHERE s.trip_id=trips.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
+      FROM trips
       WHERE status IN ('unloaded','done','paid')
         AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?`)
-    .all(fromIso, toIso)) {
+    .all(fromIso, toIso)
+    .map(trip => ({ ...trip, vehicleId: trip.vehicle_id,
+      online: trip.on_line_at || trip.starts_at, arrived: trip.arrived_at,
+      fin: trip.unloaded_at || trip.ends_at, km: trip.loaded_km, stopsN: trip.stops_n }));
+  markOverlapCuts(periodTrips);
+  for (const trip of periodTrips) {
     const name = driverOf(trip.vehicle_id, trip.starts_at);
     if (!name) continue;
     const item = box(name);
+    const fund = tripFundBreakdown(trip, fundOpts);
+    item.kipWork += fund.work;
+    item.kipTotal += fund.work + fund.restRoad + fund.loadOver + fund.unloadOver;
     item.trips += 1;
     item.km += Number(trip.distance_km || 0) + Number(trip.empty_km || 0);
     item.vehicles.add(trip.vehicle_id);
@@ -1608,7 +1629,9 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
     lateLoad: item.lateLoad, loadFacts: item.loadFacts,
     lateUnload: item.lateUnload, unloadFacts: item.unloadFacts,
     gateUnloadH: round1(median(item.gates)),
-    cleanPct: item.chainTotal ? Math.round(item.clean / item.chainTotal * 100) : null
+    cleanPct: item.chainTotal ? Math.round(item.clean / item.chainTotal * 100) : null,
+    kip: item.kipTotal > 4 ? Math.min(100, Math.round(item.kipWork / item.kipTotal
+      / (ceiling > 0 ? ceiling : 1) * 100)) : null
   })).sort((a, b) => b.trips - a.trips);
   // Строка «не оформлено» в парковые медианы и светофор не входит —
   // это дыра оформления, а не водитель.
@@ -1616,7 +1639,9 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
   const park = {
     ve: round1(median(real.map(d => d.ve).filter(v => v != null))),
     vt: round1(median(real.map(d => d.vt).filter(v => v != null))),
-    gateUnloadH: round1(median(real.map(d => d.gateUnloadH).filter(v => v != null)))
+    gateUnloadH: round1(median(real.map(d => d.gateUnloadH).filter(v => v != null))),
+    kip: round1(median(real.map(d => d.kip).filter(v => v != null))),
+    kipCeiling: Math.round((ceiling > 0 ? ceiling : 1) * 100)
   };
   // Светофор эффективности (заказ руководителя 25.09): балл 0–100 по
   // той же оценочной шкале, что рейтинг водителей при назначении.
