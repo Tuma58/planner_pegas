@@ -361,7 +361,7 @@ export function renderOpsReportHtml(data, theme = '') {
     const F = T.fundWaterfall;
     if (!F || !T.fundH) return '';
     const rows = [
-      ['Работа: дорога + ворота по нормативу + перегоны', F.work, 'var(--s1)'],
+      ['Работа: дорога + ворота по нормативу', F.work, 'var(--s1)'],
       ['Отдых/стояния в пути (ночёвки внутри рейса)', F.restRoad, 'var(--s3)'],
       ['Подгон и погрузка сверх закладки', F.loadOver, 'var(--s2)'],
       ['Выгрузка сверх норматива', F.unloadOver, 'var(--s2)'],
