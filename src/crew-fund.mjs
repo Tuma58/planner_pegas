@@ -16,6 +16,20 @@
 
 const parseTs = v => Date.parse(String(v).replace(' ', 'T'));
 
+// Честное прибытие на выгрузку: trips.arrived_at, если оно ПОЗЖЕ убытия
+// с погрузки; иначе — отметка точки выгрузки; иначе null (кусок C пуст,
+// дорога считается до конца). Разбор Иванова 09.10: битый arrived_at
+// (раньше убытия) обнулял кусок «под грузом» — 78 ч дороги Барнаул→Лобня
+// не засчитывались, КИП водителя падал до 34% на ровном месте.
+export function effectiveArrival(dep, arrived, stopArrival) {
+  if (!dep) return arrived || null;
+  const depMs = parseTs(dep);
+  for (const candidate of [arrived, stopArrival]) {
+    if (candidate && parseTs(candidate) > depMs) return candidate;
+  }
+  return null;
+}
+
 // trip: { online, dep, arrived, fin, km, stopsN, cutMs? }
 //   cutMs — обрезка хвоста при стыковке внахлёст (старт следующего
 //   рейса машины раньше отметки выгрузки: машина не живёт дважды).
@@ -32,7 +46,8 @@ export function tripFundBreakdown(trip, opts) {
   // держат порядок точек даже на кривых данных.
   const depMs = trip.dep
     ? Math.min(Math.max(parseTs(trip.dep), onlineMs), finMs) : finMs;
-  const arrMs = trip.arrived && trip.dep
+  const arrValid = trip.arrived && trip.dep && parseTs(trip.arrived) > depMs;
+  const arrMs = arrValid
     ? Math.min(Math.max(parseTs(trip.arrived), depMs), finMs) : finMs;
   const hours = (s, e) => (e - s) / 3.6e6;
   const aH = hours(onlineMs, depMs);

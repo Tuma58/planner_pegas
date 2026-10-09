@@ -16,7 +16,7 @@ import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
-import { intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
+import { effectiveArrival, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
   const password = 'Very-strong-password-2026';
@@ -4224,4 +4224,26 @@ test('фонд экипажа: пересечение отрезков с union 
   assert.equal(intervalOverlapH(line, downs), 6); // (2–6)=4 + (8–10)=2
   assert.equal(intervalOverlapH([], downs), 0);
   assert.equal(intervalOverlapH(line, [[20 * H, 30 * H]]), 0);
+});
+
+test('фонд экипажа: битая отметка прибытия не съедает дорогу (кейс Иванова)', () => {
+  // trips.arrived_at РАНЬШЕ убытия с погрузки → прибытие берётся из
+  // отметки точки выгрузки; без неё — кусок C пуст, дорога считается.
+  assert.equal(effectiveArrival('2026-09-30T11:33:00Z', '2026-09-29T14:27:00Z', '2026-10-04T16:20:00Z'),
+    '2026-10-04T16:20:00Z', 'фолбэк на отметку точки выгрузки');
+  assert.equal(effectiveArrival('2026-09-30T11:33:00Z', '2026-09-29T14:27:00Z', null),
+    null, 'оба кандидата битые → null');
+  assert.equal(effectiveArrival('2026-09-30T11:33:00Z', '2026-10-01T10:00:00Z', '2026-10-04T16:20:00Z'),
+    '2026-10-01T10:00:00Z', 'валидный arrived_at главнее');
+  // Даже если битый arrived просочился в раскладку — дорога не теряется:
+  // кусок C обнуляется, «под грузом» тянется до выгрузки.
+  const opts = { vtech: 50, gateNormH: 4,
+    fromMs: Date.parse('2026-10-01T00:00:00'), toMs: Date.parse('2026-10-20T00:00:00') };
+  const d = tripFundBreakdown({
+    online: '2026-10-02T00:00:00', dep: '2026-10-02T04:00:00',
+    arrived: '2026-10-01T10:00:00', // раньше dep — битая
+    fin: '2026-10-03T10:00:00', km: 500, stopsN: 2
+  }, opts);
+  assert.equal(Math.round(d.work), 14, 'погрузка 4 + дорога 10; выгрузку не знаем');
+  assert.equal(Math.round(d.unloadOver), 0, 'битое прибытие не создаёт мнимую выгрузку');
 });

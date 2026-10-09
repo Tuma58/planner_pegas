@@ -14,7 +14,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
-import { crewNorms, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
+import { crewNorms, effectiveArrival, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -5713,10 +5713,13 @@ function parkReportData(from, to) {
         COALESCE(t.actual_distance_km, t.distance_km) loaded_km,
         (SELECT COUNT(*) FROM trip_stops s2 WHERE s2.trip_id=t.id) stops_n,
         (SELECT MIN(s.actual_departure) FROM trip_stops s
-          WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
+          WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
+        (SELECT MAX(s.actual_arrival) FROM trip_stops s
+          WHERE s.trip_id=t.id AND s.kind='D' AND s.actual_arrival IS NOT NULL) arr_d
       FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
         AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(b, a)
-      .map(t => ({ ...t, net: tripNetCanon(t, moneyCalc) }));
+      .map(t => ({ ...t, net: tripNetCanon(t, moneyCalc),
+        eff_arrived: effectiveArrival(t.dep, t.arrived_at, t.arr_d) }));
     // Часы линии/груза — ОБЪЕДИНЕНИЕ интервалов по машине, не сумма по
     // рейсам (разбор «КВЛ 100%» 28.09: плотная стыковка легально даёт
     // старт следующего рейса раньше отметки выгрузки предыдущего —
@@ -5760,7 +5763,7 @@ function parkReportData(from, to) {
     const fundTrips = trips.map(trip => ({
       vehicleId: trip.vehicle_id,
       online: trip.on_line_at || trip.starts_at,
-      dep: trip.dep, arrived: trip.arrived_at,
+      dep: trip.dep, arrived: trip.eff_arrived,
       fin: trip.unloaded_at || trip.ends_at,
       km: trip.loaded_km, stopsN: trip.stops_n
     }));
@@ -5777,8 +5780,8 @@ function parkReportData(from, to) {
       const fin = String(trip.unloaded_at || trip.ends_at).replace(' ', 'T');
       push(lineIv, trip.vehicle_id, clampMs(online, fin));
       push(lineTripsIv, trip.vehicle_id, clampMs(online, fin));
-      if (trip.dep) push(prodIv, trip.vehicle_id, clampMs(trip.dep, trip.arrived_at || fin));
-      if (trip.arrived_at && trip.unloaded_at) cust += clampH(trip.arrived_at, fin, a, b);
+      if (trip.dep) push(prodIv, trip.vehicle_id, clampMs(trip.dep, trip.eff_arrived || fin));
+      if (trip.eff_arrived && trip.unloaded_at) cust += clampH(trip.eff_arrived, fin, a, b);
       // Выгрузка — как на дашборде: статус после выгрузки, дата = факт
       // с фолбэком на расчётную (закрытые без отметки не выпадают).
       if (DONE_STATUSES.has(trip.status)) {

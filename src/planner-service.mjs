@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { calcSettings, tripNet } from './money.mjs';
 import { scheduleAttendanceFor } from './schedule.mjs';
 import { settingsObject } from './db.mjs';
-import { crewNorms, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
+import { crewNorms, effectiveArrival, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 
 export const TRIP_STATUS = {
   plan: 'plan', run: 'run', unl: 'unloaded', unloaded: 'unloaded',
@@ -1561,13 +1561,16 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
       COALESCE(actual_distance_km, distance_km) loaded_km,
       (SELECT COUNT(*) FROM trip_stops s2 WHERE s2.trip_id=trips.id) stops_n,
       (SELECT MIN(s.actual_departure) FROM trip_stops s
-        WHERE s.trip_id=trips.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
+        WHERE s.trip_id=trips.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
+      (SELECT MAX(s.actual_arrival) FROM trip_stops s
+        WHERE s.trip_id=trips.id AND s.kind='D' AND s.actual_arrival IS NOT NULL) arr_d
       FROM trips
       WHERE status IN ('unloaded','done','paid')
         AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?`)
     .all(fromIso, toIso)
     .map(trip => ({ ...trip, vehicleId: trip.vehicle_id,
-      online: trip.on_line_at || trip.starts_at, arrived: trip.arrived_at,
+      online: trip.on_line_at || trip.starts_at,
+      arrived: effectiveArrival(trip.dep, trip.arrived_at, trip.arr_d),
       fin: trip.unloaded_at || trip.ends_at, km: trip.loaded_km, stopsN: trip.stops_n }));
   markOverlapCuts(periodTrips);
   for (const trip of periodTrips) {
@@ -1594,7 +1597,7 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
       item.unloadFacts += 1;
       if (ts(unload.actual_arrival) - ts(unload.planned_arrival) > 3.6e6) item.lateUnload += 1;
     }
-    const gate = (ts(trip.unloaded_at) - ts(trip.arrived_at)) / 3.6e6;
+    const gate = (ts(trip.unloaded_at) - ts(trip.arrived)) / 3.6e6;
     if (gate > 0.2 && gate < 72) item.gates.push(gate);
     // Дисциплина отметок — чистая цепочка фактов (без планового старта).
     const parr = ts(load?.actual_arrival);
