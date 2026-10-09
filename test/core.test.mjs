@@ -16,6 +16,7 @@ import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
+import { intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
   const password = 'Very-strong-password-2026';
@@ -4115,4 +4116,102 @@ test('телематика: привязка прицепного трекера
   db.prepare(`UPDATE vehicles SET trailer_plate='' WHERE id=?`).run(v1.id);
   assert.equal(syncTrailerTrackerLinks(db), 1);
   assert.equal(db.prepare(`SELECT vehicle_id FROM trailer_positions WHERE imei='tt-1'`).get().vehicle_id, null);
+});
+
+test('фонд экипажа: работа нормативами, сверхзакладки — потери своих кусков', () => {
+  // Рейс: вышел 00:00, убыл с погрузки 04:00 (ровно закладка), прибыл на
+  // выгрузку через 30 ч пути (дорога 500 км при Vтех 50 = 10 ч → ночёвки
+  // 20 ч), выгружался 12 ч при закладке 4 → сверхнорматив 8.
+  const opts = { vtech: 50, gateNormH: 4,
+    fromMs: Date.parse('2026-10-01T00:00:00'), toMs: Date.parse('2026-10-10T00:00:00') };
+  const d = tripFundBreakdown({
+    online: '2026-10-02T00:00:00', dep: '2026-10-02T04:00:00',
+    arrived: '2026-10-03T10:00:00', fin: '2026-10-03T22:00:00',
+    km: 500, stopsN: 2
+  }, opts);
+  assert.equal(Math.round(d.work), 18);        // 4 погрузка + 10 дорога + 4 выгрузка
+  assert.equal(Math.round(d.restRoad), 20);    // ночёвки в пути
+  assert.equal(Math.round(d.loadOver), 0);     // погрузка в закладку
+  assert.equal(Math.round(d.unloadOver), 8);   // выгрузка 12 ч при нормативе 4
+  // Инвариант: сумма компонентов = вся длительность рейса (46 ч).
+  const total = d.work + d.restRoad + d.loadOver + d.unloadOver;
+  assert.equal(Math.round(total), 46);
+});
+
+test('фонд экипажа: быстрее закладки — засчитан факт, не норматив', () => {
+  const opts = { vtech: 50, gateNormH: 4,
+    fromMs: Date.parse('2026-10-01T00:00:00'), toMs: Date.parse('2026-10-10T00:00:00') };
+  // Погрузка 1 ч (быстрее закладки 4), дорога 100 км за ровно 2 ч,
+  // выгрузка 2 ч: работа = 1 + 2 + 2 = 5, потерь нет.
+  const d = tripFundBreakdown({
+    online: '2026-10-02T00:00:00', dep: '2026-10-02T01:00:00',
+    arrived: '2026-10-02T03:00:00', fin: '2026-10-02T05:00:00',
+    km: 100, stopsN: 2
+  }, opts);
+  assert.equal(Math.round(d.work), 5);
+  assert.equal(Math.round(d.restRoad + d.loadOver + d.unloadOver), 0);
+});
+
+test('фонд экипажа: промежуточные ворота — нормативом на stops_n−2', () => {
+  const opts = { vtech: 50, gateNormH: 4,
+    fromMs: Date.parse('2026-10-01T00:00:00'), toMs: Date.parse('2026-10-10T00:00:00') };
+  // 4 точки (2 промежуточные), под грузом 30 ч, дорога 10 ч:
+  // работа B = 10 + 2×4 = 18, отдых в пути = 12.
+  const d = tripFundBreakdown({
+    online: '2026-10-02T00:00:00', dep: '2026-10-02T04:00:00',
+    arrived: '2026-10-03T10:00:00', fin: '2026-10-03T14:00:00',
+    km: 500, stopsN: 4
+  }, opts);
+  assert.equal(Math.round(d.restRoad), 12);
+});
+
+test('фонд экипажа: кламп периода берёт долю куска, без dep — всё в погрузку', () => {
+  // Период накрывает ровно половину куска «под грузом» → вклад половинный.
+  const optsHalf = { vtech: 50, gateNormH: 4,
+    fromMs: Date.parse('2026-10-02T04:00:00'), toMs: Date.parse('2026-10-02T19:00:00') };
+  const half = tripFundBreakdown({
+    online: '2026-10-02T04:00:00', dep: '2026-10-02T04:00:00',
+    arrived: '2026-10-03T10:00:00', fin: '2026-10-03T10:00:00',
+    km: 500, stopsN: 2
+  }, optsHalf); // кусок B = 30 ч, в период попало 15 ч (половина)
+  assert.equal(Math.round(half.work), 5);      // половина дороги 10 ч
+  assert.equal(Math.round(half.restRoad), 10); // половина ночёвок 20 ч
+  // Рейс без отметки убытия: весь интервал — «подгон+погрузка»,
+  // работа = закладка ворот, остальное — сверх закладки.
+  const optsFull = { vtech: 50, gateNormH: 4,
+    fromMs: Date.parse('2026-10-01T00:00:00'), toMs: Date.parse('2026-10-10T00:00:00') };
+  const noDep = tripFundBreakdown({
+    online: '2026-10-02T00:00:00', dep: null, arrived: null,
+    fin: '2026-10-02T10:00:00', km: 300, stopsN: 2
+  }, optsFull);
+  assert.equal(Math.round(noDep.work), 4);
+  assert.equal(Math.round(noDep.loadOver), 6);
+});
+
+test('фонд экипажа: стыковка внахлёст обрезает хвост предыдущего рейса', () => {
+  const trips = [
+    { vehicleId: 7, online: '2026-10-02T00:00:00', fin: '2026-10-03T12:00:00' },
+    { vehicleId: 7, online: '2026-10-03T00:00:00', fin: '2026-10-04T00:00:00' },
+    { vehicleId: 8, online: '2026-10-02T00:00:00', fin: '2026-10-02T12:00:00' }
+  ];
+  markOverlapCuts(trips);
+  assert.equal(trips[0].cutMs, Date.parse('2026-10-03T00:00:00')); // обрезан
+  assert.equal(trips[1].cutMs, undefined);
+  assert.equal(trips[2].cutMs, undefined); // другая машина не задета
+  // Обрезка действует в раскладке: хвост после старта следующего не считается.
+  const opts = { vtech: 50, gateNormH: 4,
+    fromMs: Date.parse('2026-10-01T00:00:00'), toMs: Date.parse('2026-10-10T00:00:00') };
+  const d = tripFundBreakdown({ ...trips[0], dep: null, km: 0, stopsN: 2 }, opts);
+  const total = d.work + d.restRoad + d.loadOver + d.unloadOver;
+  assert.equal(Math.round(total), 24); // 00:00→00:00 следующего, не 36 ч
+});
+
+test('фонд экипажа: пересечение отрезков с union — дубли диспозиций не двоят', () => {
+  const H = 3.6e6;
+  // Рейс 0–10 ч; «ремонт» 2–5 и его дубль 3–6 (union → 2–6), пересменка 8–12.
+  const line = [[0, 10 * H]];
+  const downs = [[2 * H, 5 * H], [3 * H, 6 * H], [8 * H, 12 * H]];
+  assert.equal(intervalOverlapH(line, downs), 6); // (2–6)=4 + (8–10)=2
+  assert.equal(intervalOverlapH([], downs), 0);
+  assert.equal(intervalOverlapH(line, [[20 * H, 30 * H]]), 0);
 });

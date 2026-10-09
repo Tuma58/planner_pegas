@@ -356,6 +356,30 @@ export function renderOpsReportHtml(data, theme = '') {
   const granSeg = key => `<span class="seg" data-tgl="${key}">` +
     `<button type="button" class="on" data-mode="day">По дням</button>` +
     `<button type="button" data-mode="week">По неделям</button></span>`;
+  // Водопад фонда экипажа: работа и потери в машино-днях и % фонда.
+  const fundBars = () => {
+    const F = T.fundWaterfall;
+    if (!F || !T.fundH) return '';
+    const rows = [
+      ['Работа: дорога + ворота по нормативу + перегоны', F.work, 'var(--s1)'],
+      ['Отдых/стояния в пути (ночёвки внутри рейса)', F.restRoad, 'var(--s3)'],
+      ['Подгон и погрузка сверх закладки', F.loadOver, 'var(--s2)'],
+      ['Выгрузка сверх норматива', F.unloadOver, 'var(--s2)'],
+      ['Перегоны без груза (факт)', F.transfers || 0, 'var(--s3)'],
+      ['Ожидание заказа и прочее', F.wait, 'var(--s4, #999)']
+    ];
+    const rh = 26;
+    let out = '';
+    rows.forEach(([label, h, color], i) => {
+      const pct = T.fundH ? h / T.fundH * 100 : 0;
+      const w = Math.max(3, (W - 330) * pct / 100);
+      const y = i * rh + 4;
+      out += `<text x="300" y="${y + 15}" text-anchor="end" class="val">${label}</text>` +
+        `<rect x="308" y="${y + 3}" width="${w.toFixed(0)}" height="16" rx="4" fill="${color}" data-tip="${label}: ${Math.round(h / 24)} м-д · ${pct.toFixed(1)}% фонда"/>` +
+        `<text x="${(312 + w).toFixed(0)}" y="${y + 15}">${Math.round(h / 24)} м-д · ${pct.toFixed(1)}%</text>`;
+    });
+    return `<svg viewBox="0 0 ${W} ${rows.length * rh + 8}" width="100%">${out}</svg>`;
+  };
   const hbars = (items, color) => {
     if (!items.length) return '<p class="note">опозданий не зафиксировано</p>';
     const rh = 26;
@@ -462,7 +486,7 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <div class="tile"><span>Выручка без НДС</span><b>${(T.rev / 1e6).toFixed(1)} млн</b><small>${T.trips} рейсов за ${T.days} дн</small></div>
 <div class="tile"><span>Техготовность · КТГ</span><b>${(T.fleet - data.downtime.repair.avg).toFixed(1)} маш</b><small>КТГ ${T.ktg}% из ${T.fleet} списочных</small></div>
 <div class="tile"><span>На линии среднесуточно</span><b>${data.avgOnline} маш</b><small>машино-часы линии / 24 · КВЛ ${T.kvl}%</small></div>
-<div class="tile"><span>В работе · КИП</span><b>${(data.avgOnline * (T.kipRaw ?? T.kip) / 100).toFixed(1)} маш</b><small>КИП ${T.kip}% — работа экипажа (дорога + норматив ворот) от фонда, потолок ${T.kipCeiling ?? 67}%=100%${T.restH != null ? ` · отдых/стояния в пути ≈ ${(T.restH / 24 / Math.max(1, T.days)).toFixed(1)} маш` : ''}</small></div>
+<div class="tile"><span>В работе · КИП</span><b>${(data.avgOnline * (T.kipRaw ?? T.kip) / 100).toFixed(1)} маш</b><small>КИП ${T.kip}% — работа экипажа (дорога + ворота по нормативу) от фонда, потолок ${T.kipCeiling ?? 67}%=100%${T.restH != null ? ` · отдых/стояния в пути ≈ ${(T.restH / 24 / Math.max(1, T.days)).toFixed(1)} маш` : ''}</small></div>
 <div class="tile"><span>Прибытия на погрузку вовремя</span><b>${onP}%</b><small>${late.P.late1} опозд. &gt;1 ч из ${late.P.n}</small></div>
 <div class="tile"><span>Прибытия на выгрузку вовремя</span><b>${onD}%</b><small>${late.D.late1} опозд. &gt;1 ч из ${late.D.n}</small></div>
 </div>
@@ -472,13 +496,19 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 ${granPair('kkk',
     linesSvg([D.ktg, D.kvl, D.kip], ['КТГ', 'КВЛ', 'КИП'], D.labels, D.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100),
     linesSvg([WK.ktg, WK.kvl, WK.kip], ['КТГ', 'КВЛ', 'КИП'], WK.labels, WK.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100, 1))}
-<p class="note">техготовность и линия — среднесуточно (ремонт/выведенные из диспозиций, линия — живой ряд рейсов и перегонов), КИП — по закрытым рейсам; недели — пн–вс внутри периода.</p>
+<p class="note">техготовность и линия — среднесуточно (ремонт/выведенные из диспозиций, линия — живой ряд рейсов и перегонов); КИП в динамике — грубый ряд «под грузом/линия» по дням, итоговый КИП периода — по канону работы от фонда экипажа (плитка и водопад); недели — пн–вс внутри периода.</p>
 
 <h2>Простой парка по причинам — среднесуточно машин</h2>
 <div class="tiles">${dtRow}</div>
 <details><summary>кто в простое прямо сейчас (${idleNow.length})</summary>
 <table><thead><tr><th>Машина</th><th>Водитель</th><th>Причина</th><th>Где</th><th>Свободна с</th></tr></thead>
 <tbody>${idleRows}</tbody></table></details>
+
+${T.fundWaterfall ? `<h2>Куда уходит фонд экипажа</h2>
+<div class="chart">${fundBars()}</div>
+<p class="note">фонд экипажа = ${Math.round(T.fundH / 24)} м-д (время с водителем, минус ремонты/пересменки/выведенные);
+ работа = дорога (км рейса / живая Vтех ${T.vtech} км/ч по CAN) + норматив ворот ${T.gateNormH} ч на операцию (живой из транзита, первая погрузка и финальная выгрузка включены); перегоны без груза не мерятся нормативом и в работу не входят;
+ КИП = работа / фонд, потолок ${T.kipCeiling ?? 67}% = 100%; закладка на отдых ${100 - (T.kipCeiling ?? 67)}% = ${Math.round(T.fundH * (100 - (T.kipCeiling ?? 67)) / 100 / 24)} м-д.${T.fundOverlapH > 24 ? ` ⚠ ${Math.round(T.fundOverlapH / 24)} м-д рейсов шли поверх закрытых ремонтов/пересменок — время возвращено в фонд, диспозиции стоит подчистить.` : ''}</p>` : ''}
 
 <h2>Выручка, млн ₽ без НДС</h2>
 <div class="crow"><div class="legend"><span><i style="background:var(--s1)"></i>по дате выгрузки</span></div>${granSeg('rev')}</div>

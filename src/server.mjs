@@ -14,6 +14,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
+import { intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -5738,6 +5739,7 @@ function parkReportData(from, to) {
       return e > s ? [s, e] : null;
     };
     const lineIv = new Map();
+    const lineTripsIv = new Map(); // линия без перегонов — для водопада
     const prodIv = new Map();
     const push = (map, vid, span) => {
       if (!span) return;
@@ -5759,27 +5761,32 @@ function parkReportData(from, to) {
       return total / 3.6e6;
     };
     let cust = 0, rev = 0, n = 0;
-    let workMs = 0; // работа экипажа: дорога (км/Vтех) + норматив ворот
+    // Водопад фонда экипажа (crew-fund.mjs, решение руководителя 09.10):
+    // работа = дорога (км/Vтех) + норматив ворот на КАЖДУЮ операцию,
+    // включая первую погрузку и финальную выгрузку; факт сверх закладок —
+    // потери своих кусков. Стыковки внахлёст обрезаются (машина не
+    // живёт дважды — тот же принцип, что union линии).
+    const fundTrips = trips.map(trip => ({
+      vehicleId: trip.vehicle_id,
+      online: trip.on_line_at || trip.starts_at,
+      dep: trip.dep, arrived: trip.arrived_at,
+      fin: trip.unloaded_at || trip.ends_at,
+      km: trip.loaded_km, stopsN: trip.stops_n
+    }));
+    markOverlapCuts(fundTrips);
+    const fund = { work: 0, restRoad: 0, loadOver: 0, unloadOver: 0 };
+    const fundOpts = { vtech, gateNormH, fromMs: aMs, toMs: bMs };
+    for (const ft of fundTrips) {
+      const d = tripFundBreakdown(ft, fundOpts);
+      fund.work += d.work; fund.restRoad += d.restRoad;
+      fund.loadOver += d.loadOver; fund.unloadOver += d.unloadOver;
+    }
     for (const trip of trips) {
       const online = trip.on_line_at || trip.starts_at;
       const fin = String(trip.unloaded_at || trip.ends_at).replace(' ', 'T');
       push(lineIv, trip.vehicle_id, clampMs(online, fin));
-      if (trip.dep) {
-        const span = clampMs(trip.dep, trip.arrived_at || fin);
-        push(prodIv, trip.vehicle_id, span);
-        if (span) {
-          const depMs = Date.parse(String(trip.dep).replace(' ', 'T'));
-          const prodEndMs = Date.parse(String(trip.arrived_at || fin).replace(' ', 'T'));
-          const totalMs = prodEndMs - depMs;
-          // Ворота ПРОМЕЖУТОЧНЫХ точек (первая погрузка до dep и финальная
-          // выгрузка после прибытия — вне интервала): норматив на операцию,
-          // стояние сверх закладки — отдых.
-          const gateMs = Math.max(0, (trip.stops_n || 0) - 2) * gateNormH * 3.6e6;
-          const busyMs = Math.min(totalMs,
-            Number(trip.loaded_km || 0) / vtech * 3.6e6 + gateMs);
-          if (totalMs > 0) workMs += (span[1] - span[0]) * (busyMs / totalMs);
-        }
-      }
+      push(lineTripsIv, trip.vehicle_id, clampMs(online, fin));
+      if (trip.dep) push(prodIv, trip.vehicle_id, clampMs(trip.dep, trip.arrived_at || fin));
       if (trip.arrived_at && trip.unloaded_at) cust += clampH(trip.arrived_at, fin, a, b);
       // Выгрузка — как на дашборде: статус после выгрузки, дата = факт
       // с фолбэком на расчётную (закрытые без отметки не выпадают).
@@ -5794,6 +5801,11 @@ function parkReportData(from, to) {
       push(lineIv, move.vehicle_id, clampMs(move.s, move.e));
     }
     const line = unionH(lineIv);
+    // Перегоны без груза — чистая добавка к линии поверх рейсов. В числитель
+    // КИП НЕ входят: км у перегона нет, норматива дороги нет, а факт
+    // многодневных перегонов несёт в себе отдых — считать его работой
+    // значило бы вернуть отдых в числитель. В водопаде — своей строкой.
+    const transferNetH = Math.max(0, line - unionH(lineTripsIv));
     const prod = unionH(prodIv);
     const rem = db.prepare(`SELECT COALESCE(SUM((julianday(MIN(ends_at, ?)) -
         julianday(MAX(starts_at, ?))) * 24), 0) h
@@ -5804,22 +5816,39 @@ function parkReportData(from, to) {
     const outH = db.prepare(`SELECT COALESCE(SUM((julianday(MIN(ends_at, ?)) -
         julianday(MAX(starts_at, ?))) * 24), 0) h
       FROM vehicle_dispositions WHERE kind='out' AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
+    // Рейсы поверх закрытых «недоступностей» (ремонт/пересменка/без
+    // водителя/выведена одновременно с документированным рейсом) —
+    // грязь диспозиций: машина фактически была с водителем и работала.
+    // Это время возвращается в фонд, иначе водопад не сходится, а КИП
+    // завышается заниженным знаменателем.
+    const downIv = new Map();
+    for (const d of db.prepare(`SELECT vehicle_id vid, starts_at s, ends_at e
+        FROM vehicle_dispositions WHERE kind IN ('repair','no_driver','shift','out')
+          AND starts_at < ? AND ends_at > ?`).all(b, a)) {
+      push(downIv, d.vid, clampMs(d.s, d.e));
+    }
+    let ghostH = 0;
+    for (const [vid, downs] of downIv) {
+      const line = lineTripsIv.get(vid);
+      if (line) ghostH += intervalOverlapH(line, downs);
+    }
     const ktg = Math.max(0, 1 - rem / adi);
     const kvl = Math.min(1, line / Math.max(1, adi - rem));
     // КИП — определение руководителя (09.10, уточнено): база — ФОНД
     // ЭКИПАЖА: время, пока машина укомплектована водителем (от выхода
     // на линию до пересменки), минус ТОЛЬКО ремонты; через диспозиции:
     // календарь − «без водителя» − «пересменка» − «выведена» − ремонт.
-    const crewFund = Math.max(1, adi - rem - noDrv - outH);
-    // Числитель — РАБОТА ЭКИПАЖА (уточнение руководителя 09.10):
-    // в 67% входят вождение, погрузки/выгрузки, перегоны и прочие
-    // трудозатраты, 33% — только отдых. Работа = дорога (км/Vтех)
-    // + НОРМАТИВ ворот на промежуточные операции (живой gateH из
-    // транзита); остаток «под грузом» (ночёвки РТО, стояния сверх
-    // закладки ворот) — строкой restH, из КИП исключён (иначе отдых
-    // считался бы дважды: тут и в 33% потолка).
-    const workH = workMs / 3.6e6;
+    const crewFund = Math.max(1, adi - rem - noDrv - outH + ghostH);
+    // Числитель — РАБОТА ЭКИПАЖА (уточнение руководителя 09.10,
+    // вариант «последовательно определению»): в 67% входят вождение,
+    // погрузки/выгрузки (включая крайние — нормативом), перегоны;
+    // 33% — только отдых. Сверхнормативы ворот и ночёвки в пути — в
+    // водопаде фонда, из КИП исключены (иначе отдых считался бы
+    // дважды: тут и в 33% потолка).
+    const workH = fund.work;
     const kipRaw = Math.min(1, workH / crewFund);
+    const fundWait = Math.max(0, crewFund - fund.work - fund.restRoad
+      - fund.loadOver - fund.unloadOver - transferNetH);
     // КИП — от ПОТОЛКА (решение руководителя 09.10): физический максимум
     // «под грузом» ~67% времени линии (погрузки/выгрузки/подгоны съедают
     // треть) — берём его за 100%. Потолок — настройка калькуляции
@@ -5830,7 +5859,18 @@ function parkReportData(from, to) {
       rev: Math.round(rev), trips: n,
       lineH: Math.round(line), prodH: Math.round(prod), custH: Math.round(cust),
       remH: Math.round(rem), noDrvH: Math.round(noDrv),
-      workH: Math.round(workH), restH: Math.round(Math.max(0, prod - workH)),
+      workH: Math.round(workH), restH: Math.round(fund.restRoad),
+      fundH: Math.round(crewFund),
+      fundWaterfall: {
+        work: Math.round(fund.work),
+        restRoad: Math.round(fund.restRoad),
+        loadOver: Math.round(fund.loadOver),
+        unloadOver: Math.round(fund.unloadOver),
+        transfers: Math.round(transferNetH),
+        wait: Math.round(fundWait)
+      },
+      fundOverlapH: Math.round(ghostH),
+      gateNormH: +gateNormH.toFixed(1),
       vtech: +vtech.toFixed(1),
       ktg: +(ktg * 100).toFixed(1), kvl: +(kvl * 100).toFixed(1),
       kip: +(kip * 100).toFixed(1), kipRaw: +(kipRaw * 100).toFixed(1),
@@ -5866,7 +5906,7 @@ function parkReportData(from, to) {
     .map(row => ({ ...row, rev: Math.round(row.rev) }))
     .sort((a, b) => b.rev - a.rev).slice(0, 12);
   return { total, weeks, clients,
-    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; КИП = работа экипажа (дорога км/Vтех + норматив ворот) / фонд экипажа (время с водителем минус ремонты), потолок 67% = 100%; отдых/стояния в пути — отдельной строкой' };
+    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; КИП = работа экипажа (дорога км/Vтех + норматив ворот на каждую операцию вкл. крайние) / фонд экипажа (время с водителем минус ремонты), потолок 67% = 100%; сверхнормативы ворот, отдых в пути и перегоны — строками водопада фонда' };
 }
 
 async function api(request, response, url) {
