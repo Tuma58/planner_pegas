@@ -73,16 +73,28 @@ function bossTabs(state, active) {
     ${tab('classic', '⋯ Отчёты и инструменты')}
   </div>`;
 }
+// Память вида между обновлениями страницы (жалоба руководителя 09.10:
+// F5 сбрасывал на «Сегодня») — наш паттерн свёрток с localStorage.
+const BOSS_VIEW_KEY = 'pl_boss_view';
+const savedBossView = () => {
+  try {
+    const value = localStorage.getItem(BOSS_VIEW_KEY);
+    return ['ops', 'eff', 'month', 'classic'].includes(value) ? value : null;
+  } catch { return null; }
+};
+const rememberBossView = view => { try { localStorage.setItem(BOSS_VIEW_KEY, view); } catch {} };
 function wireBossTabs(container, context) {
   container.querySelectorAll('[data-boss-tab]').forEach(button =>
     button.onclick = () => {
       context.state.bossView = button.dataset.bossTab;
+      rememberBossView(button.dataset.bossTab);
       renderBoss(container, context);
     });
 }
 
 export async function renderBoss(container, context) {
   const { state } = context;
+  if (!state.bossView) state.bossView = savedBossView() || 'ops';
   // Вид «Неделя»: живая презентация эффективности (пт 08:00 — автосборка).
   if (state.bossView === 'eff' || state.bossView === 'month') {
     const isMonth = state.bossView === 'month';
@@ -686,6 +698,7 @@ export async function renderBoss(container, context) {
   wireBossTabs(container, context);
   container.querySelector('#bossViewOpsBack').onclick = () => {
     state.bossView = 'ops';
+    rememberBossView('ops');
     renderBoss(container, context);
   };
   container.querySelector('#bossParkPlanner').onclick = () => plannerParkDialog(context);
