@@ -13,6 +13,7 @@ import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
+import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -1744,6 +1745,57 @@ function runDriverNameSync() {
 }
 setInterval(runDriverNameSync, 60 * 60_000);
 setTimeout(runDriverNameSync, 30_000);
+
+// Автовыпуски «Повышения эффективности» (решение руководителя 09.10):
+// пятница 08:00 МСК — неделя (пт–чт, база — тот же отрезок месяцем
+// раньше), 23:55+ последнего дня месяца (или догоном 1-го числа) —
+// месяц. План нового недельного выпуска наследует незакрытые пункты
+// прошлого; руководителю уходит уведомление.
+function runEfficiencyIssues() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    // Неделя: pt 08:00+, период [пт прошлой недели … чт] = 7 дней до сегодня.
+    if (msk.getUTCDay() === 5 && msk.getUTCHours() >= 8) {
+      const to = todayIso; // эксклюзивно: по вчера-четверг включительно
+      const from = new Date(Date.parse(todayIso) - 7 * 864e5).toISOString().slice(0, 10);
+      const exists = db.prepare(`SELECT 1 FROM eff_issues WHERE kind='week' AND period_start=?`).get(from);
+      if (!exists) {
+        const prev = db.prepare(`SELECT plan_json FROM eff_issues WHERE kind='week'
+          ORDER BY period_start DESC LIMIT 1`).get();
+        const carry = prev ? JSON.parse(prev.plan_json || '[]').filter(item => !item.done) : [];
+        const issue = createIssue(db, { kind: 'week', from, to,
+          ...defaultBase(from, to), plan: carry }, parkReportData);
+        notify('manager', `📊 Недельный выпуск «Эффективности» готов (${from.slice(8)}.${from.slice(5, 7)}–${new Date(Date.parse(to) - 864e5).toISOString().slice(8, 10)}.${to.slice(5, 7)}): `
+          + `Руководитель → Неделя. ${carry.length ? `Перенесено незакрытых пунктов плана: ${carry.length}.` : ''} Заполните план следующей недели.`);
+        console.log(`эффективность: недельный выпуск ${from}→${to} (${issue.id})`);
+      }
+    }
+    // Месяц: с 23:55 последнего дня, догон — первые сутки нового месяца.
+    const monthStart = `${todayIso.slice(0, 7)}-01`;
+    const lastDayIso = new Date(Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth() + 1, 0))
+      .toISOString().slice(0, 10);
+    const isLateLastDay = todayIso === lastDayIso && msk.getUTCHours() === 23 && msk.getUTCMinutes() >= 55;
+    const prevMonthStart = new Date(Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth() - 1, 1))
+      .toISOString().slice(0, 10);
+    const target = isLateLastDay ? monthStart : prevMonthStart;
+    const targetEnd = isLateLastDay
+      ? new Date(Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth() + 1, 1)).toISOString().slice(0, 10)
+      : monthStart;
+    if ((isLateLastDay || todayIso !== target) &&
+        !db.prepare(`SELECT 1 FROM eff_issues WHERE kind='month' AND period_start=?`).get(target)) {
+      // Догоном формируем только за прошедший месяц, не за будущее.
+      if (Date.parse(targetEnd) <= Date.now() + 864e5) {
+        const issue = createIssue(db, { kind: 'month', from: target, to: targetEnd,
+          ...defaultBase(target, targetEnd), plan: [] }, parkReportData);
+        notify('manager', `📅 Месячный выпуск «Эффективности» за ${target.slice(0, 7)} готов: Руководитель → Месяц.`);
+        console.log(`эффективность: месячный выпуск ${target} (${issue.id})`);
+      }
+    }
+  } catch (error) { console.error('Автовыпуск эффективности:', error.message); }
+}
+setInterval(runEfficiencyIssues, 5 * 60_000);
+setTimeout(runEfficiencyIssues, 70_000);
 
 // ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
 // Раз в день после 08:00 МСК: продажам в чат — кого поздравить (ДР контакта
@@ -11200,6 +11252,69 @@ async function api(request, response, url) {
     if (!result.ok) return errorJson(response, 422, result.error);
     audit(db, user, 'update', 'staff', match[0], body, requestIp(request));
     return json(response, 200, result);
+  }
+
+  // ── «Повышение эффективности»: данные за период и выпуски ──
+  if (request.method === 'GET' && pathname === '/api/efficiency') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+      return errorJson(response, 422, 'Нужны from и to (ГГГГ-ММ-ДД)');
+    }
+    let baseFrom = String(url.searchParams.get('baseFrom') || '').slice(0, 10);
+    let baseTo = String(url.searchParams.get('baseTo') || '').slice(0, 10);
+    const baseKind = url.searchParams.get('base') || 'samePrevMonth';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(baseFrom)) {
+      if (baseKind === 'prev') {
+        const len = Date.parse(to) - Date.parse(from);
+        baseTo = from;
+        baseFrom = new Date(Date.parse(from) - len).toISOString().slice(0, 10);
+      } else {
+        ({ baseFrom, baseTo } = defaultBase(from, to));
+      }
+    }
+    return json(response, 200, { from, to, baseFrom, baseTo,
+      ...effReport(db, { from, to, baseFrom, baseTo }, parkReportData) });
+  }
+  if (request.method === 'GET' && pathname === '/api/efficiency/issues') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    return json(response, 200, { items: listIssues(db) });
+  }
+  if (request.method === 'POST' && pathname === '/api/efficiency/issues') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const body = await readJson(request);
+    const from = String(body.from || '').slice(0, 10);
+    const to = String(body.to || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || to <= from) {
+      return errorJson(response, 422, 'Нужны from и to');
+    }
+    const base = body.baseFrom ? { baseFrom: body.baseFrom, baseTo: body.baseTo }
+      : defaultBase(from, to);
+    const issue = createIssue(db, { kind: ['week', 'month'].includes(body.kind) ? body.kind : 'custom',
+      from, to, ...base, plan: body.plan || [], userId: user.id }, parkReportData);
+    audit(db, user, 'create', 'eff_issue', issue.id, { from, to }, requestIp(request));
+    return json(response, 201, { id: issue.id });
+  }
+  match = route(/^\/api\/efficiency\/issues\/([\w-]+)$/, pathname);
+  if (match && request.method === 'GET') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const issue = getIssue(db, match[0]);
+    if (!issue) return errorJson(response, 404, 'Выпуск не найден');
+    return json(response, 200, issue);
+  }
+  match = route(/^\/api\/efficiency\/issues\/([\w-]+)\/plan$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const body = await readJson(request);
+    if (!updateIssuePlan(db, match[0], body.plan)) return errorJson(response, 404, 'Выпуск не найден');
+    audit(db, user, 'update', 'eff_issue', match[0], { plan: (body.plan || []).length }, requestIp(request));
+    return json(response, 200, { ok: true });
   }
 
   // Роли из тела запроса: массив roles (мульти-роли) либо legacy-строка role.

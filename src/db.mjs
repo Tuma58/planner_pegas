@@ -1035,6 +1035,20 @@ function migrateColumns(db) {
     PRIMARY KEY(driver_id, day))`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_driver_plan_days_day ON driver_plan_days(day)`);
 
+  // Выпуски «Повышения эффективности» (09.10): недельные (пт 08:00),
+  // месячные (23:59 последнего дня) и ручные за период — снимок данных,
+  // план следующей недели и сверка с планом прошлого выпуска.
+  db.exec(`CREATE TABLE IF NOT EXISTS eff_issues (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('week','month','custom')),
+    period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+    base_start TEXT, base_end TEXT,
+    data_json TEXT NOT NULL, plan_json TEXT NOT NULL DEFAULT '[]',
+    review_json TEXT,
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_eff_issues_period ON eff_issues(kind, period_start)`);
+
   // ── Внутренний проект «160 млн» (27.08.2026) ──
   // Инициативы развития продукта с ожидаемым и фактическим эффектом:
   // каждое изменение должно быть привязано к метрике, а не к ощущению.

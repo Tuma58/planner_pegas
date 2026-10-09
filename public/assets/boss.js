@@ -1,3 +1,4 @@
+import { renderEfficiency } from './efficiency.js';
 // Блок руководителя — операционный отчёт АТП (по образцу отчёта
 // «Пегас-Авто» за период): секции с якорной навигацией, KPI-полоса
 // с планами и отклонениями, каскад-воронка КТГ→КВЛ→КИП с потерями по
@@ -58,27 +59,74 @@ function cumChart(fact, plan, labels) {
 const tripNet = (trip, calc) => trip.revenue_vat / (1 + (trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
   ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22)));
 
+// Шапка трёх горизонтов (проект «Повышение эффективности», 09.10):
+// Сегодня (эксплуатация + «прямо сейчас») · Неделя (презентация) ·
+// Месяц (выпуски месяцев) · «⋯» — классическая консоль отчётов,
+// в ней ничего не потеряно.
+function bossTabs(state, active) {
+  const tab = (key, label) => `<button class="button small ${active === key ? '' : 'ghost'}"
+    data-boss-tab="${key}">${label}</button>`;
+  return `<div class="boss-viewbar">
+    ${tab('ops', '📍 Сегодня')}
+    ${tab('eff', '📊 Неделя')}
+    ${tab('month', '📅 Месяц')}
+    ${tab('classic', '⋯ Отчёты и инструменты')}
+  </div>`;
+}
+function wireBossTabs(container, context) {
+  container.querySelectorAll('[data-boss-tab]').forEach(button =>
+    button.onclick = () => {
+      context.state.bossView = button.dataset.bossTab;
+      renderBoss(container, context);
+    });
+}
+
 export async function renderBoss(container, context) {
   const { state } = context;
+  // Вид «Неделя»: живая презентация эффективности (пт 08:00 — автосборка).
+  if (state.bossView === 'eff' || state.bossView === 'month') {
+    const isMonth = state.bossView === 'month';
+    if (!container.querySelector('#effHost') || container.dataset.bossTab !== state.bossView) {
+      container.dataset.bossTab = state.bossView;
+      container.innerHTML = `${bossTabs(state, state.bossView)}<div id="effHost"></div>`;
+      wireBossTabs(container, context);
+      const host = container.querySelector('#effHost');
+      if (isMonth) {
+        // Месяц: последний месячный выпуск (или живой расчёт месяца к дате).
+        const issues = (await api('/api/efficiency/issues').catch(() => ({ items: [] }))).items;
+        state.effIssues = issues;
+        const monthIssue = issues.find(item => item.kind === 'month');
+        if (monthIssue) renderEfficiency(host, context, { issueId: monthIssue.id });
+        else {
+          const today = new Date().toISOString().slice(0, 10);
+          state.effFrom = `${today.slice(0, 7)}-01`;
+          state.effTo = today;
+          renderEfficiency(host, context, {});
+        }
+      } else {
+        const issues = (await api('/api/efficiency/issues').catch(() => ({ items: [] }))).items;
+        state.effIssues = issues;
+        const weekIssue = issues.find(item => item.kind === 'week');
+        if (weekIssue) renderEfficiency(host, context, { issueId: weekIssue.id });
+        else renderEfficiency(host, context, {});
+      }
+    }
+    return;
+  }
   // Главная руководителя (конструкция утверждена 21.09): первый экран —
   // «Эксплуатация» (строка «прямо сейчас» + отчёт за период), прежние
-  // показатели периода целиком живут во втором виде, ничего не потеряно.
+  // показатели периода целиком живут в «⋯», ничего не потеряно.
   if ((state.bossView || 'ops') === 'ops') {
     // Щит iframe (жалоба руководителя 22.09): тик автообновления звал
     // renderBoss заново, iframe пересоздавался — слетали выбранные внутри
     // отчёта период и тема. Вид уже живёт — не трогаем DOM вовсе (даже
     // перенос узла iframe перезагружает его содержимое).
     if (container.querySelector('#opsFrame')) return;
-    container.innerHTML = `<div class="boss-viewbar">
-        <button class="button small" id="bossViewOps">📊 Эксплуатация</button>
-        <button class="button ghost small" id="bossViewClassic">📈 Показатели периода</button>
-      </div>
+    container.dataset.bossTab = 'ops';
+    container.innerHTML = `${bossTabs(state, 'ops')}
       <div class="ops-now" id="opsNow">⏳ прямо сейчас: считаю…</div>
       <iframe id="opsFrame" title="Отчёт эксплуатации"></iframe>`;
-    container.querySelector('#bossViewClassic').onclick = () => {
-      state.bossView = 'classic';
-      renderBoss(container, context);
-    };
+    wireBossTabs(container, context);
     const frame = container.querySelector('#opsFrame');
     const appTheme = document.documentElement.dataset.theme ||
       (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -382,7 +430,8 @@ export async function renderBoss(container, context) {
 
   // ── Сборка ──
   const savedScrolls = captureScrolls(container);
-  container.innerHTML = `<div class="bosswrap brep">
+  container.dataset.bossTab = 'classic';
+  container.innerHTML = `${bossTabs(state, 'classic')}<div class="bosswrap brep">
     <div class="brep-title"><h2>PegasLogistic · операционный отчёт</h2>
       <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · парк ${u.vehicles} сцепок
         · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
@@ -634,6 +683,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossRingLoad').onclick = () => ringLoadDialog(context);
   container.querySelector('#bossSelfTuning').onclick = () => selfTuningDialog(context);
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
+  wireBossTabs(container, context);
   container.querySelector('#bossViewOpsBack').onclick = () => {
     state.bossView = 'ops';
     renderBoss(container, context);
