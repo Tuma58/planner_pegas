@@ -5699,6 +5699,14 @@ function parkReportData(from, to) {
   const vtRuns = db.prepare(`SELECT COALESCE(SUM(COALESCE(can_km,km)),0) km,
     COALESCE(SUM(move_hours),0) h FROM vehicle_daily_runs WHERE day >= date('now','-60 day')`).get();
   const vtech = Math.min(75, Math.max(40, vtRuns.h ? vtRuns.km / vtRuns.h : 60));
+  // Норматив ворот — из живого пакета транзита (gate_facts → speed_norms:
+  // медианные ворота погрузки/выгрузки), фолбэк 2 ч на операцию — тот же,
+  // что в транзитной формуле. Решение руководителя 09.10: в работу идёт
+  // ЗАКЛАДКА на операцию, всё стояние на точке сверх неё — отдых.
+  const speedNormsRaw = JSON.parse(db.prepare(`SELECT value FROM app_meta
+    WHERE key='speed_norms'`).get()?.value || 'null');
+  const gateNormH = Number(speedNormsRaw?.live?.gateH) > 0
+    ? Number(speedNormsRaw.live.gateH) : 2;
   // КАНОН денег (money.mjs, сведение 08.10): ставки из настроек, «ИП»
   // по слову целиком — раньше тут были зашитые 1.22/1.07 и LIKE '%ИП%',
   // ловивший «ИП» внутри фамилий; отчёты расходились с дашбордом.
@@ -5711,22 +5719,12 @@ function parkReportData(from, to) {
     const trips = db.prepare(`SELECT t.id, t.vehicle_id, t.on_line_at, t.arrived_at, t.unloaded_at,
         t.starts_at, t.ends_at, t.status, t.cash, t.customer_name, t.revenue_vat,
         COALESCE(t.actual_distance_km, t.distance_km) loaded_km,
+        (SELECT COUNT(*) FROM trip_stops s2 WHERE s2.trip_id=t.id) stops_n,
         (SELECT MIN(s.actual_departure) FROM trip_stops s
           WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
       FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
         AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(b, a)
       .map(t => ({ ...t, net: tripNetCanon(t, moneyCalc) }));
-    // Отметки «прибыл/убыл» на точках: стояние на воротах — РАБОТА
-    // водителя (уточнение руководителя 09.10), в КИП остаётся.
-    const stopsByTrip = new Map();
-    for (const st of db.prepare(`SELECT s.trip_id tid, s.actual_arrival arr, s.actual_departure dpt
-        FROM trip_stops s JOIN trips t ON t.id=s.trip_id
-        WHERE t.status IN ('unloaded','done','paid','run')
-          AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?
-          AND s.actual_arrival IS NOT NULL AND s.actual_departure IS NOT NULL`).all(b, a)) {
-      if (!stopsByTrip.has(st.tid)) stopsByTrip.set(st.tid, []);
-      stopsByTrip.get(st.tid).push(st);
-    }
     // Часы линии/груза — ОБЪЕДИНЕНИЕ интервалов по машине, не сумма по
     // рейсам (разбор «КВЛ 100%» 28.09: плотная стыковка легально даёт
     // старт следующего рейса раньше отметки выгрузки предыдущего —
@@ -5761,7 +5759,7 @@ function parkReportData(from, to) {
       return total / 3.6e6;
     };
     let cust = 0, rev = 0, n = 0;
-    let workMs = 0; // работа экипажа: дорога (км/Vтех) + ворота по отметкам
+    let workMs = 0; // работа экипажа: дорога (км/Vтех) + норматив ворот
     for (const trip of trips) {
       const online = trip.on_line_at || trip.starts_at;
       const fin = String(trip.unloaded_at || trip.ends_at).replace(' ', 'T');
@@ -5773,14 +5771,10 @@ function parkReportData(from, to) {
           const depMs = Date.parse(String(trip.dep).replace(' ', 'T'));
           const prodEndMs = Date.parse(String(trip.arrived_at || fin).replace(' ', 'T'));
           const totalMs = prodEndMs - depMs;
-          // Ворота промежуточных точек внутри «под грузом»: первый
-          // выезд и финальное прибытие в клампе дают ноль сами собой.
-          let gateMs = 0;
-          for (const st of stopsByTrip.get(trip.id) || []) {
-            const s0 = Math.max(depMs, Date.parse(String(st.arr).replace(' ', 'T')));
-            const e0 = Math.min(prodEndMs, Date.parse(String(st.dpt).replace(' ', 'T')));
-            if (e0 > s0) gateMs += e0 - s0;
-          }
+          // Ворота ПРОМЕЖУТОЧНЫХ точек (первая погрузка до dep и финальная
+          // выгрузка после прибытия — вне интервала): норматив на операцию,
+          // стояние сверх закладки — отдых.
+          const gateMs = Math.max(0, (trip.stops_n || 0) - 2) * gateNormH * 3.6e6;
           const busyMs = Math.min(totalMs,
             Number(trip.loaded_km || 0) / vtech * 3.6e6 + gateMs);
           if (totalMs > 0) workMs += (span[1] - span[0]) * (busyMs / totalMs);
@@ -5820,9 +5814,10 @@ function parkReportData(from, to) {
     // Числитель — РАБОТА ЭКИПАЖА (уточнение руководителя 09.10):
     // в 67% входят вождение, погрузки/выгрузки, перегоны и прочие
     // трудозатраты, 33% — только отдых. Работа = дорога (км/Vтех)
-    // + ворота по отметкам «прибыл/убыл»; недокументированный остаток
-    // «под грузом» (ночёвки РТО, стояния) — строкой restH, из КИП
-    // исключён (иначе отдых считался бы дважды: тут и в 33% потолка).
+    // + НОРМАТИВ ворот на промежуточные операции (живой gateH из
+    // транзита); остаток «под грузом» (ночёвки РТО, стояния сверх
+    // закладки ворот) — строкой restH, из КИП исключён (иначе отдых
+    // считался бы дважды: тут и в 33% потолка).
     const workH = workMs / 3.6e6;
     const kipRaw = Math.min(1, workH / crewFund);
     // КИП — от ПОТОЛКА (решение руководителя 09.10): физический максимум
@@ -5871,7 +5866,7 @@ function parkReportData(from, to) {
     .map(row => ({ ...row, rev: Math.round(row.rev) }))
     .sort((a, b) => b.rev - a.rev).slice(0, 12);
   return { total, weeks, clients,
-    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; КИП = работа экипажа (дорога км/Vтех + ворота по отметкам) / фонд экипажа (время с водителем минус ремонты), потолок 67% = 100%; отдых/стояния в пути — отдельной строкой' };
+    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; КИП = работа экипажа (дорога км/Vтех + норматив ворот) / фонд экипажа (время с водителем минус ремонты), потолок 67% = 100%; отдых/стояния в пути — отдельной строкой' };
 }
 
 async function api(request, response, url) {
