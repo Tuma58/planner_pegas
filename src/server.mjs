@@ -8657,13 +8657,14 @@ async function api(request, response, url) {
     const subscriber = sub
       ? (findUserByPhone(db, sub.pattern) || (sub.phone ? findUserByPhone(db, sub.phone) : null))
       : null;
-    // Внешняя сторона: для out это тот, КОМУ звонят, — номер абонента
-    // подписки из списка выкидываем, иначе карточка узнавала бы самого
-    // звонящего сотрудника.
-    const external = event.direction === 'out'
-      ? externalPartyDigits(event.digits, sub?.phone)
-      : (event.from || event.digits[0]);
-    const caller = identifyCaller(db, external);
+    // Внешняя сторона: номер абонента подписки из списка выкидываем (и для
+    // in, и для out) — иначе from/to может стать FMC сотрудника, а во
+    // всплывашке покажутся «голые» 10 цифр без +7 или вовсе чужой номер.
+    const external = externalPartyDigits(event.digits, sub?.phone)
+      || (event.direction === 'in' ? (event.from || event.digits[0] || '') : '');
+    const partyDigits = phoneDigits(external);
+    const partyPretty = partyDigits ? phonePretty(partyDigits) : '';
+    const caller = identifyCaller(db, partyDigits || external);
     let target = null;
     if (event.direction === 'in') {
       target = subscriber;
@@ -8672,16 +8673,18 @@ async function api(request, response, url) {
       target = subscriber; // исходящий: подсказка — самому звонящему
     }
     const toPhone = event.direction === 'out'
-      ? external
+      ? (partyPretty || partyDigits)
       : (event.to || (sub ? sub.pattern : ''));
-    const externalId = event.callId ? `xsi:${event.callId}` : `xsi:${phoneDigits(event.from)}:${Date.now()}`;
+    const fromPhone = partyPretty || partyDigits;
+    const externalId = event.callId ? `xsi:${event.callId}`
+      : `xsi:${partyDigits || phoneDigits(event.from)}:${Date.now()}`;
     try {
       db.prepare(`INSERT OR IGNORE INTO call_events(
           id,provider,external_id,direction,from_phone,to_phone,from_digits,
           matched_kind,matched_id,matched_name,vehicle_id,target_user_id,started_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(randomUUID(), 'beeline', externalId, event.direction, event.from, toPhone,
-          event.direction === 'out' ? external : event.digits[0],
+        .run(randomUUID(), 'beeline', externalId, event.direction, fromPhone, toPhone,
+          partyDigits,
           caller.kind, caller.id, caller.name, caller.vehicleId, target,
           new Date().toISOString());
     } catch (error) {

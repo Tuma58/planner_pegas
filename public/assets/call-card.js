@@ -23,8 +23,27 @@ const tile = (title, body, hint) => `<div class="callt ${body ? '' : 'empty'}">
   <div class="callt-b">${body || `<span class="muted">${hint || 'данных нет'}</span>`}</div>
 </div>`;
 
-const phoneLink = phone => clean(phone)
-  ? `<a href="tel:${escapeHtml(String(phone).replace(/[^\d+]/g, ''))}">${escapeHtml(phone)}</a>` : '';
+// Как на сервере (phonePretty): 10 цифр → «+7 (987) 510-59-21». Иначе во
+// всплывашке Xsi показывались «голые» 9674483480 без кода страны.
+const phonePrettyLocal = value => {
+  let digits = String(value || '').replace(/\D+/g, '');
+  if (!digits) return '';
+  if (digits.length === 11 && (digits[0] === '8' || digits[0] === '7')) {
+    digits = digits.slice(1);
+  } else {
+    digits = digits.slice(-10);
+  }
+  return digits.length === 10
+    ? `+7 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 8)}-${digits.slice(8)}`
+    : String(value || '').trim();
+};
+
+const phoneLink = phone => {
+  const pretty = phonePrettyLocal(phone) || clean(phone);
+  return pretty
+    ? `<a href="tel:${escapeHtml(String(pretty).replace(/[^\d+]/g, ''))}">${escapeHtml(pretty)}</a>`
+    : '';
+};
 
 // Этап рейса словами — тот же язык, что в контроле на линии.
 function tripStageText(card) {
@@ -117,7 +136,7 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
     const customers = (context.state?.data?.customers || []).map(item => item.name).filter(Boolean);
     const drivers = (context.state?.data?.drivers || []).filter(item => item.status !== 'fired');
     context.showModal(`<h2>📞 Звонок</h2>
-      <p class="muted">Номер ${escapeHtml(phone || '—')} в системе не найден: ни водитель,
+      <p class="muted">Номер ${escapeHtml(phonePrettyLocal(phone) || phone || '—')} в системе не найден: ни водитель,
         ни сотрудник, ни контакт клиента. Спросите, кто это, и привяжите номер —
         следующий звонок карточка узнает сама.</p>
       <form id="unkContactForm" style="border-top:1px solid var(--line,#d6e0e4);padding-top:8px">
@@ -572,13 +591,6 @@ function outgoingCallPop(context, call) {
   };
   setTimeout(() => { if (pop.isConnected) pop.remove(); }, 12_000);
 }
-
-const phonePrettyLocal = value => {
-  const digits = String(value || '').replace(/\D+/g, '').slice(-10);
-  return digits.length === 10
-    ? `+7 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 8)}-${digits.slice(8)}`
-    : String(value || '');
-};
 
 export function watchIncomingCalls(context) {
   const settings = context.state.data.settings || {};

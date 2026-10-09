@@ -2417,7 +2417,13 @@ test('билайн: журнал из статистики, дедуп и раз
   assert.equal(event.callId, 'callhalf-10201:0');
   assert.equal(event.direction, 'in');
   assert.ok(event.digits.includes('9875105921'), 'номер звонящего извлечён');
+  assert.equal(event.from, '9875105921', 'from = remoteParty, не чужой AOR');
   assert.equal(parseXsiEvent('not xml at all'), null, 'мусор не ломает разбор');
+  // Если в XML есть и наш FMC, и remoteParty — from всё равно собеседник
+  // (иначе во всплывашке показывали «голые» 10 цифр своего номера).
+  const xmlBoth = xml.replace('</xsi:call>',
+    `<xsi:endpoint><xsi:addressOfRecord>tel:+79630995009</xsi:addressOfRecord></xsi:endpoint></xsi:call>`);
+  assert.equal(parseXsiEvent(xmlBoth).from, '9875105921', 'remoteParty важнее локального AOR');
 
   // Адресат по подписке (фикс 07.10: Билайн почти не шлёт «to» в событии,
   // кому звонят — определяет подписка, оформленная на абонента).

@@ -232,7 +232,19 @@ export function parseXsiEvent(raw) {
   // разбор 07.10: 447 из 451 событий с пустым to).
   const subscriptionId = grab(/<xsi:subscriptionid>([^<]+)<\/xsi:subscriptionid>/i)
     || grab(/<subscriptionid>([^<]+)<\/subscriptionid>/i);
+  // remoteParty — вторая сторона звонка (кто звонит / кому звонят).
+  // Берём его первым: иначе в Set первым может попасть наш AOR/FMC и
+  // from окажется «своим» номером, а во всплывашке покажется ерунда.
+  const remoteBlock = text.match(/<xsi:remoteparty\b[\s\S]*?<\/xsi:remoteparty>/i)
+    || text.match(/<remoteparty\b[\s\S]*?<\/remoteparty>/i);
+  let remoteRaw = '';
+  if (remoteBlock) {
+    remoteRaw = (remoteBlock[0].match(/addressofrecord>([^<]+)/i) || [])[1]
+      || (remoteBlock[0].match(/tel:([+0-9]{6,})/i) || [])[1]
+      || '';
+  }
   const numbers = new Set();
+  if (remoteRaw) numbers.add(remoteRaw);
   for (const match of text.matchAll(/<xsi:addressofrecord>([^<]+)<\/xsi:addressofrecord>/gi)) {
     numbers.add(match[1]);
   }
@@ -240,9 +252,12 @@ export function parseXsiEvent(raw) {
     numbers.add(match[1]);
   }
   const digits = [...numbers].map(phoneDigits).filter(d => d.length >= 6);
+  const remoteDigits = phoneDigits(remoteRaw);
   const direction = eventType === 'originated' ? 'out' : 'in';
   return { eventType, callId, direction, subscriptionId,
-    from: digits[0] || '', to: digits[1] || '', digits };
+    from: (remoteDigits.length >= 6 ? remoteDigits : digits[0]) || '',
+    to: digits.find(d => d !== remoteDigits) || '',
+    digits };
 }
 
 // Внешняя сторона звонка: из номеров события убираем номер самого
