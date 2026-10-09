@@ -462,7 +462,7 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <div class="tile"><span>Выручка без НДС</span><b>${(T.rev / 1e6).toFixed(1)} млн</b><small>${T.trips} рейсов за ${T.days} дн</small></div>
 <div class="tile"><span>Техготовность · КТГ</span><b>${(T.fleet - data.downtime.repair.avg).toFixed(1)} маш</b><small>КТГ ${T.ktg}% из ${T.fleet} списочных</small></div>
 <div class="tile"><span>На линии среднесуточно</span><b>${data.avgOnline} маш</b><small>машино-часы линии / 24 · КВЛ ${T.kvl}%</small></div>
-<div class="tile"><span>Под грузом · КИП</span><b>${(data.avgOnline * (T.kipRaw ?? T.kip) / 100).toFixed(1)} маш</b><small>КИП ${T.kip}% от потолка ${T.kipCeiling ?? 67}% (сырой ${T.kipRaw ?? T.kip}%)</small></div>
+<div class="tile"><span>Под грузом · КИП</span><b>${(data.avgOnline * (T.kipRaw ?? T.kip) / 100).toFixed(1)} маш</b><small>КИП ${T.kip}% — от фонда экипажа, потолок ${T.kipCeiling ?? 67}%=100% (сырой ${T.kipRaw ?? T.kip}%)</small></div>
 <div class="tile"><span>Прибытия на погрузку вовремя</span><b>${onP}%</b><small>${late.P.late1} опозд. &gt;1 ч из ${late.P.n}</small></div>
 <div class="tile"><span>Прибытия на выгрузку вовремя</span><b>${onD}%</b><small>${late.D.late1} опозд. &gt;1 ч из ${late.D.n}</small></div>
 </div>

@@ -5771,9 +5771,17 @@ function parkReportData(from, to) {
     const noDrv = db.prepare(`SELECT COALESCE(SUM((julianday(MIN(ends_at, ?)) -
         julianday(MAX(starts_at, ?))) * 24), 0) h
       FROM vehicle_dispositions WHERE kind IN ('no_driver','shift') AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
+    const outH = db.prepare(`SELECT COALESCE(SUM((julianday(MIN(ends_at, ?)) -
+        julianday(MAX(starts_at, ?))) * 24), 0) h
+      FROM vehicle_dispositions WHERE kind='out' AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
     const ktg = Math.max(0, 1 - rem / adi);
     const kvl = Math.min(1, line / Math.max(1, adi - rem));
-    const kipRaw = Math.min(1, prod / Math.max(1, line));
+    // КИП — определение руководителя (09.10, уточнено): база — ФОНД
+    // ЭКИПАЖА: время, пока машина укомплектована водителем (от выхода
+    // на линию до пересменки), минус ТОЛЬКО ремонты; через диспозиции:
+    // календарь − «без водителя» − «пересменка» − «выведена» − ремонт.
+    const crewFund = Math.max(1, adi - rem - noDrv - outH);
+    const kipRaw = Math.min(1, prod / crewFund);
     // КИП — от ПОТОЛКА (решение руководителя 09.10): физический максимум
     // «под грузом» ~67% времени линии (погрузки/выгрузки/подгоны съедают
     // треть) — берём его за 100%. Потолок — настройка калькуляции
@@ -5818,7 +5826,7 @@ function parkReportData(from, to) {
     .map(row => ({ ...row, rev: Math.round(row.rev) }))
     .sort((a, b) => b.rev - a.rev).slice(0, 12);
   return { total, weeks, clients,
-    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; стоянка у клиента — потеря КИП' };
+    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; КИП = под грузом / фонд экипажа (время с водителем минус ремонты), потолок 67% = 100%' };
 }
 
 async function api(request, response, url) {
