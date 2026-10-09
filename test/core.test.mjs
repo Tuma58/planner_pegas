@@ -3866,6 +3866,21 @@ test('график: замещение не стирает второго сво
   const map2 = scheduleHolderMap(db);
   assert.equal(map2.holder.get(`${vehA.id}|${today}`), 'h-sub', 'полный номер распознан как замещение');
   assert.equal(map2.holder.get(`${vehB.id}|${today}`), 'h-ost');
+
+  // Сессия 3: сетка читает план из ТАБЛИЦЫ — правка таблицы видна в
+  // отдаче, даже если JSON-план говорит другое.
+  const { overlayPlanFromTable } = await import('../src/schedule.mjs');
+  db.prepare(`UPDATE driver_plan_days SET code='отп' WHERE driver_id='h-ost' AND day=?`).run(today);
+  const crewOut = { TEST1: JSON.parse(db.prepare(`SELECT body FROM schedule_crews WHERE id='TEST1'`).get().body) };
+  overlayPlanFromTable(db, crewOut);
+  const ostRow = crewOut.TEST1.drv.find(d => d.fio === 'Остающийся О');
+  const dayIndex = Number(today.slice(8, 10)) - 1;
+  assert.equal(ostRow.plan[month][dayIndex], 'отп', 'план в отдаче — из таблицы');
+  // Пустая ячейка таблицы затирает JSON-код внутри окна.
+  db.prepare(`DELETE FROM driver_plan_days WHERE driver_id='h-ost' AND day=?`).run(today);
+  overlayPlanFromTable(db, crewOut);
+  assert.equal(crewOut.TEST1.drv.find(d => d.fio === 'Остающийся О').plan[month][dayIndex], '',
+    'снятый в таблице день пуст и в отдаче');
   // Мост доносит это до периодов закрепления.
   syncAssignBridge(db);
   const period = db.prepare(`SELECT d.full_name FROM driver_assignments a

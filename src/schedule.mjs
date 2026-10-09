@@ -69,6 +69,9 @@ export function applyScheduleSync(db, body = {}, userId = null) {
   for (const row of db.prepare('SELECT id, body FROM schedule_crews WHERE rev > ?').all(since)) {
     try { outCrews[row.id] = JSON.parse(row.body); } catch { /* битый блок не отдаём */ }
   }
+  // Сессия 3 (09.10): живой план клиенту — из канон-таблицы.
+  try { overlayPlanFromTable(db, outCrews); }
+  catch (error) { console.error('план из таблицы:', error.message); }
   const outLog = db.prepare(`SELECT t, author a, what, who FROM schedule_log
     WHERE rev > ? ORDER BY id DESC LIMIT 400`).all(since);
   return { rev, crews: outCrews, log: outLog };
@@ -137,6 +140,59 @@ export function projectPlanToTable(db, crewIds = null) {
     throw error;
   }
   return { drivers, cells };
+}
+
+// Сессия 3 (09.10): ЧТЕНИЕ плана — из таблицы. При отдаче экипажей
+// клиенту план-слой сопоставленных водителей подменяется данными
+// driver_plan_days в её окне (−35 дней … конец следующего месяца);
+// старые месяцы и строки-вакансии остаются из JSON. Так таблица —
+// единственный источник живого плана: что бы её ни поменяло, сетка
+// покажет это при следующем обмене.
+export function overlayPlanFromTable(db, crewsObj) {
+  const idByFio = new Map();
+  for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
+    const key = canonFio(row.full_name);
+    idByFio.set(key, idByFio.has(key) ? null : row.id);
+  }
+  const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  const fromDay = dayIso(todayMs, -35);
+  const end = new Date(todayMs);
+  end.setUTCMonth(end.getUTCMonth() + 2, 1);
+  const toDay = end.toISOString().slice(0, 10);
+  const byDriver = new Map();
+  for (const row of db.prepare(`SELECT driver_id, day, code FROM driver_plan_days
+      WHERE day>=? AND day<?`).all(fromDay, toDay)) {
+    if (!byDriver.has(row.driver_id)) byDriver.set(row.driver_id, new Map());
+    byDriver.get(row.driver_id).set(row.day, row.code);
+  }
+  const months = new Set();
+  for (let ms = Date.parse(fromDay); ms < Date.parse(toDay); ms += 86_400_000 * 20) {
+    months.add(new Date(ms).toISOString().slice(0, 7));
+  }
+  for (const crew of Object.values(crewsObj || {})) {
+    for (const drv of crew.drv || []) {
+      if (drv.vac) continue;
+      const driverId = idByFio.get(canonFio(drv.fio));
+      if (!driverId) continue;
+      const cells = byDriver.get(driverId) || new Map();
+      drv.plan = drv.plan || {};
+      for (const mk of months) {
+        const daysInMonth = new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate();
+        const arr = Array(daysInMonth).fill('');
+        for (let dayNo = 1; dayNo <= daysInMonth; dayNo += 1) {
+          const iso = `${mk}-${String(dayNo).padStart(2, '0')}`;
+          if (iso < fromDay || iso >= toDay) {
+            // Край окна: дни вне таблицы берём из прежнего JSON-плана.
+            arr[dayNo - 1] = String((drv.plan[mk] || [])[dayNo - 1] || '');
+          } else {
+            arr[dayNo - 1] = cells.get(iso) || '';
+          }
+        }
+        drv.plan[mk] = arr;
+      }
+    }
+  }
+  return crewsObj;
 }
 
 // ── Этап 2 перестройки: мосты график ↔ оперативный планер ──────────
