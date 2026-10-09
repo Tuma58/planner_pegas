@@ -3843,6 +3843,10 @@ test('график: замещение не стирает второго сво
       ] }));
   db.prepare(`INSERT INTO app_meta(key,value) VALUES('schedule_rev','7')
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+  // Сессия 2 (09.10): канонный путь — план в таблице driver_plan_days.
+  const { projectPlanToTable } = await import('../src/schedule.mjs');
+  const projected = projectPlanToTable(db);
+  assert.ok(projected.cells > 0, 'план-слой спроецирован в таблицу');
   const map = scheduleHolderMap(db);
   const today = new Date().toISOString().slice(0, 10);
   assert.equal(map.holder.get(`${vehB.id}|${today}`), 'h-ost',
@@ -3858,6 +3862,7 @@ test('график: замещение не стирает второго сво
       { id: 'D2', fio: 'Уходящий У', ts: 'TB', vac: false, plan: planFull }
     ] }));
   db.prepare(`UPDATE app_meta SET value='8' WHERE key='schedule_rev'`).run();
+  projectPlanToTable(db);
   const map2 = scheduleHolderMap(db);
   assert.equal(map2.holder.get(`${vehA.id}|${today}`), 'h-sub', 'полный номер распознан как замещение');
   assert.equal(map2.holder.get(`${vehB.id}|${today}`), 'h-ost');

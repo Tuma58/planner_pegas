@@ -1021,6 +1021,20 @@ function migrateColumns(db) {
       PRAGMA foreign_keys=ON;`);
   }
 
+  // КАНОН план-слоя графика (сессия 2 «график — часть планера», 09.10):
+  // коды дней водителей из JSON-блоков графика проецируются в таблицу —
+  // планер (карта держателей, мосты) читает ЕЁ, а не парсит JSON.
+  // Пишется проекцией при каждом сохранении графика; вакансии и
+  // несопоставленные ФИО остаются только в JSON (они не водители).
+  db.exec(`CREATE TABLE IF NOT EXISTS driver_plan_days (
+    driver_id TEXT NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    code TEXT NOT NULL,
+    vehicle_id TEXT REFERENCES vehicles(id),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(driver_id, day))`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_driver_plan_days_day ON driver_plan_days(day)`);
+
   // ── Внутренний проект «160 млн» (27.08.2026) ──
   // Инициативы развития продукта с ожидаемым и фактическим эффектом:
   // каждое изменение должно быть привязано к метрике, а не к ощущению.

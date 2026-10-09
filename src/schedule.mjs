@@ -58,6 +58,13 @@ export function applyScheduleSync(db, body = {}, userId = null) {
     db.exec('ROLLBACK');
     throw error;
   }
+  // КАНОН план-слоя (сессия 2, 09.10): изменённые экипажи сразу
+  // проецируются в driver_plan_days; удаление экипажа — полная
+  // проекция (строки его водителей надо перезаписать).
+  try {
+    if (remove.length) projectPlanToTable(db);
+    else if (Object.keys(crews).length) projectPlanToTable(db, Object.keys(crews));
+  } catch (error) { console.error('проекция плана графика:', error.message); }
   const outCrews = {};
   for (const row of db.prepare('SELECT id, body FROM schedule_crews WHERE rev > ?').all(since)) {
     try { outCrews[row.id] = JSON.parse(row.body); } catch { /* битый блок не отдаём */ }
@@ -65,6 +72,71 @@ export function applyScheduleSync(db, body = {}, userId = null) {
   const outLog = db.prepare(`SELECT t, author a, what, who FROM schedule_log
     WHERE rev > ? ORDER BY id DESC LIMIT 400`).all(since);
   return { rev, crews: outCrews, log: outLog };
+}
+
+// ── КАНОН план-слоя: проекция JSON-графика в driver_plan_days ──────
+// Сессия 2 «график — часть планера» (09.10): таблица — первичный
+// источник для планера; JSON остаётся носителем UI до переноса
+// страницы. Проецируются только сопоставленные водители (однозначное
+// ФИО) без строк-вакансий; окно — 35 дней назад (медианы/история)
+// и до конца следующего месяца.
+export function projectPlanToTable(db, crewIds = null) {
+  const crews = loadCrews(db, crewIds);
+  if (!crews.size) return { drivers: 0, cells: 0 };
+  const idByFio = new Map();
+  for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
+    const key = canonFio(row.full_name);
+    idByFio.set(key, idByFio.has(key) ? null : row.id);
+  }
+  const vehByPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+    .map(v => [canonPlate(v.plate), v.id]));
+  const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  const fromDay = dayIso(todayMs, -35);
+  const end = new Date(todayMs);
+  end.setUTCMonth(end.getUTCMonth() + 2, 1);
+  const toDay = end.toISOString().slice(0, 10);
+  const months = new Set();
+  for (let ms = Date.parse(fromDay); ms < Date.parse(toDay); ms += 86_400_000 * 20) {
+    months.add(new Date(ms).toISOString().slice(0, 7));
+  }
+  const del = db.prepare(`DELETE FROM driver_plan_days WHERE driver_id=? AND day>=? AND day<?`);
+  const put = db.prepare(`INSERT INTO driver_plan_days(driver_id, day, code, vehicle_id)
+    VALUES(?,?,?,?) ON CONFLICT(driver_id, day) DO UPDATE SET
+    code=excluded.code, vehicle_id=excluded.vehicle_id, updated_at=CURRENT_TIMESTAMP`);
+  let drivers = 0;
+  let cells = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const crew of crews.values()) {
+      const ownOf = new Map((crew.ts || []).map(ts =>
+        [ts.id, vehByPlate.get(canonPlate(ts.tyagach)) || null]));
+      for (const drv of crew.drv || []) {
+        if (drv.vac) continue;
+        const driverId = idByFio.get(canonFio(drv.fio));
+        if (!driverId) continue;
+        drivers += 1;
+        del.run(driverId, fromDay, toDay);
+        const own = ownOf.get(drv.ts) || null;
+        for (const mk of months) {
+          const arr = (drv.plan || {})[mk];
+          if (!arr) continue;
+          for (let index = 0; index < arr.length; index += 1) {
+            const code = String(arr[index] || '').trim();
+            if (!code) continue;
+            const day = `${mk}-${String(index + 1).padStart(2, '0')}`;
+            if (day < fromDay || day >= toDay) continue;
+            put.run(driverId, day, code, own);
+            cells += 1;
+          }
+        }
+      }
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return { drivers, cells };
 }
 
 // ── Этап 2 перестройки: мосты график ↔ оперативный планер ──────────
@@ -82,6 +154,7 @@ const fioWords = value => String(value || '').toLowerCase()
 export const canonFio = value => fioWords(value).join(' ');
 const canonPlate = value => String(value || '').toLowerCase().replace(/\s+/g, '');
 const tail3 = plate => (String(plate).match(/\d{3}/) || [''])[0];
+const crews0 = db => db.prepare('SELECT COUNT(*) c FROM schedule_crews').get().c;
 
 function loadCrews(db, ids = null) {
   const rows = ids
@@ -215,9 +288,57 @@ export function scheduleHolderMap(db, horizonDays = 35) {
   const cached = holderCaches.get(db);
   if (cached && cached.rev === rev && cached.today === today &&
       cached.horizonDays === horizonDays) return cached;
-  const crews = loadCrews(db);
   const todayMs = Date.parse(today + 'T00:00:00Z');
   const horizon = [...Array(horizonDays)].map((_, i) => dayIso(todayMs, i));
+  // КАНОН (сессия 2, 09.10): план-слой читается из driver_plan_days;
+  // JSON парсится только пока таблица пуста (до разовой миграции).
+  const tableCells = db.prepare(`SELECT COUNT(*) c FROM driver_plan_days
+    WHERE day>=? AND day<?`).get(horizon[0], dayIso(todayMs, horizonDays)).c;
+  if (tableCells > 0) {
+    const idByFio = new Map();
+    for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
+      const key = canonFio(row.full_name);
+      idByFio.set(key, idByFio.has(key) ? null : row.id);
+    }
+    const workVehicles = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work'`).all();
+    const vehByPlate = new Map(workVehicles.map(v => [canonPlate(v.plate), v.id]));
+    const byTail = new Map();
+    for (const v of workVehicles) {
+      const t3 = tail3(v.plate);
+      if (t3) byTail.set(t3, byTail.has(t3) ? 'many' : v.id);
+    }
+    const holder = new Map();
+    const put = (vid, day, drvId) => {
+      const key = vid + '|' + day;
+      holder.set(key, holder.has(key) && holder.get(key) !== drvId ? MANY : drvId);
+    };
+    const drop = (vid, day, drvId) => {
+      const key = vid + '|' + day;
+      if (holder.get(key) === drvId) holder.delete(key);
+    };
+    const rows = db.prepare(`SELECT driver_id, day, code, vehicle_id FROM driver_plan_days
+      WHERE day>=? AND day<?`).all(horizon[0], dayIso(todayMs, horizonDays));
+    for (const pass of [0, 1]) {
+      for (const row of rows) {
+        const code = row.code;
+        if (pass === 0 && ['в', 'П', 'РП', 'Р'].includes(code) && row.vehicle_id) {
+          put(row.vehicle_id, row.day, row.driver_id);
+        }
+        if (pass === 1 && (/^\d{3}$/.test(code) || vehByPlate.has(canonPlate(code)))) {
+          const sub = /^\d{3}$/.test(code) ? byTail.get(code) : vehByPlate.get(canonPlate(code));
+          if (row.vehicle_id) drop(row.vehicle_id, row.day, row.driver_id);
+          if (sub && sub !== 'many') put(sub, row.day, row.driver_id);
+        }
+      }
+    }
+    const scheduledVids = new Set([...holder.keys()].map(key => key.split('|')[0]));
+    const tailConflicts = [...byTail.entries()].filter(([, v]) => v === 'many').map(([t]) => t);
+    const built = { rev, today, horizonDays, crewCount: crews0(db), holder, MANY, idByFio,
+      horizon, horizonSet: new Set(horizon), scheduledVids, tailConflicts };
+    holderCaches.set(db, built);
+    return built;
+  }
+  const crews = loadCrews(db);
   // ФИО графика → водитель планера (однозначные; дубль ФИО не сличаем).
   const idByFio = new Map();
   for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {

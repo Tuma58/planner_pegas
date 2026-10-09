@@ -28,7 +28,7 @@ import {
   gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
 import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
@@ -3840,6 +3840,20 @@ function recalcSeptemberKm() {
 }
 setInterval(rebuildLegFacts, 24 * 3_600_000);
 setTimeout(rebuildLegFacts, 200_000);
+// Разовая миграция 09.10 (сессия 2 «график — часть планера»): весь
+// план-слой JSON-графика проецируется в driver_plan_days — дальше
+// карта держателей читает таблицу, проекция идёт при каждом
+// сохранении графика. Идемпотентно по метке.
+setTimeout(() => {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='plan_table_v1'`).get()) return;
+    const result = projectPlanToTable(db);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('plan_table_v1','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+    console.log(`план-слой графика → таблица: водителей ${result.drivers}, ячеек ${result.cells}`);
+  } catch (error) { console.error('миграция план-слоя:', error.message); }
+}, 5_000);
+
 // Разовая миграция 12.09 («тонкая суббота»): ворота получили кламп —
 // пересобрать gate_facts и сжать раздутые обещания активных рейсов
 // сразу, не дожидаясь ночного цикла. Идемпотентно по метке.
