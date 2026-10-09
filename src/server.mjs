@@ -5773,13 +5773,21 @@ function parkReportData(from, to) {
       FROM vehicle_dispositions WHERE kind IN ('no_driver','shift') AND starts_at < ? AND ends_at > ?`).get(b, a, b, a).h;
     const ktg = Math.max(0, 1 - rem / adi);
     const kvl = Math.min(1, line / Math.max(1, adi - rem));
-    const kip = Math.min(1, prod / Math.max(1, line));
+    const kipRaw = Math.min(1, prod / Math.max(1, line));
+    // КИП — от ПОТОЛКА (решение руководителя 09.10): физический максимум
+    // «под грузом» ~67% времени линии (погрузки/выгрузки/подгоны съедают
+    // треть) — берём его за 100%. Потолок — настройка калькуляции
+    // (kipCeilingPct, 0/пусто = без нормировки), не зашивка.
+    const ceiling = Number(settingsObject(db).calculation?.kipCeilingPct ?? 67) / 100;
+    const kip = ceiling > 0 ? Math.min(1, kipRaw / ceiling) : kipRaw;
     return { from: a, to: b, days, fleet, adi,
       rev: Math.round(rev), trips: n,
       lineH: Math.round(line), prodH: Math.round(prod), custH: Math.round(cust),
       remH: Math.round(rem), noDrvH: Math.round(noDrv),
       ktg: +(ktg * 100).toFixed(1), kvl: +(kvl * 100).toFixed(1),
-      kip: +(kip * 100).toFixed(1), koef: +(ktg * kvl * kip * 100).toFixed(1) };
+      kip: +(kip * 100).toFixed(1), kipRaw: +(kipRaw * 100).toFixed(1),
+      kipCeiling: Math.round(ceiling * 100),
+      koef: +(ktg * kvl * kip * 100).toFixed(1) };
   };
   const total = period(from, to);
   // Недели внутри периода (по понедельникам) — динамика каскада.

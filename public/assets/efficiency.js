@@ -112,7 +112,7 @@ export async function renderEfficiency(container, context, { issueId = null } = 
       <table class="rtable"><thead><tr><th></th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
         <tr><td>КТГ — техготовность</td><td class="num"><b>${P.ktg ?? '—'}%</b></td><td class="num">${B?.ktg ?? '—'}%</td><td class="num">${delta(P.ktg, B?.ktg, { pp: true })}</td></tr>
         <tr><td>КВЛ — выход на линию</td><td class="num"><b>${P.kvl ?? '—'}%</b></td><td class="num">${B?.kvl ?? '—'}%</td><td class="num">${delta(P.kvl, B?.kvl, { pp: true })}</td></tr>
-        <tr><td>КИП — под грузом</td><td class="num"><b>${P.kip ?? '—'}%</b></td><td class="num">${B?.kip ?? '—'}%</td><td class="num">${delta(P.kip, B?.kip, { pp: true })}</td></tr>
+        <tr><td>КИП — под грузом <small class="muted">(от потолка)</small></td><td class="num"><b>${P.kip ?? '—'}%</b></td><td class="num">${B?.kip ?? '—'}%</td><td class="num">${delta(P.kip, B?.kip, { pp: true })}</td></tr>
       </tbody></table>
       <div style="margin-top:10px">
         ${downKinds.map(([key, label, invert]) => `<div class="bar"><span class="lbl">${label}</span>

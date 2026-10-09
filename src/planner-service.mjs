@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { calcSettings, tripNet } from './money.mjs';
 import { scheduleAttendanceFor } from './schedule.mjs';
 import { settingsObject } from './db.mjs';
 
@@ -445,12 +446,20 @@ export function driverCardData(db, driverId) {
     if (row.status === 'present') att.present += row.c;
     else { att.absent += row.c; att.byReason[row.reason] = (att.byReason[row.reason] || 0) + row.c; }
   }
-  const trips30 = driver.vehicle_id ? db.prepare(`SELECT COUNT(*) count,
-      COALESCE(SUM(distance_km + COALESCE(empty_km, 0)), 0) km,
-      COALESCE(SUM(revenue_vat), 0) revenue
-    FROM trips WHERE vehicle_id=? AND status<>'rejected'
-      AND datetime(ends_at) >= datetime('now','-30 days') AND datetime(ends_at) <= datetime('now')`)
-    .get(driver.vehicle_id) : { count: 0, km: 0, revenue: 0 };
+  // Выручка сцепки — КАНОН бНДС (ревизия 09.10: тут была сумма С НДС,
+  // карточка расходилась со всеми отчётами).
+  const trips30 = (() => {
+    if (!driver.vehicle_id) return { count: 0, km: 0, revenue: 0 };
+    const calc = calcSettings(db);
+    const rows = db.prepare(`SELECT cash, customer_name, revenue_vat,
+        distance_km + COALESCE(empty_km, 0) km
+      FROM trips WHERE vehicle_id=? AND status<>'rejected'
+        AND datetime(ends_at) >= datetime('now','-30 days') AND datetime(ends_at) <= datetime('now')`)
+      .all(driver.vehicle_id);
+    return { count: rows.length,
+      km: rows.reduce((sum, row) => sum + Number(row.km || 0), 0),
+      revenue: rows.reduce((sum, row) => sum + tripNet(row, calc), 0) };
+  })();
   return {
     driver,
     attendance30: att,
