@@ -5695,6 +5695,10 @@ let bootstrapCache = { at: 0, shared: '', rev: '' };
 // цифрами жили отчёт руководителя /ops-report и ежедневная сводка в ТГ.
 function parkReportData(from, to) {
   const fleet = db.prepare(`SELECT COUNT(*) c FROM vehicles WHERE status='work'`).get().c;
+  // Живая техскорость парка (CAN, 60 дней) — для «чистой дороги» в КИП.
+  const vtRuns = db.prepare(`SELECT COALESCE(SUM(COALESCE(can_km,km)),0) km,
+    COALESCE(SUM(move_hours),0) h FROM vehicle_daily_runs WHERE day >= date('now','-60 day')`).get();
+  const vtech = Math.min(75, Math.max(40, vtRuns.h ? vtRuns.km / vtRuns.h : 60));
   // КАНОН денег (money.mjs, сведение 08.10): ставки из настроек, «ИП»
   // по слову целиком — раньше тут были зашитые 1.22/1.07 и LIKE '%ИП%',
   // ловивший «ИП» внутри фамилий; отчёты расходились с дашбордом.
@@ -5704,13 +5708,25 @@ function parkReportData(from, to) {
   const period = (a, b) => {
     const days = Math.round((Date.parse(b) - Date.parse(a)) / 864e5);
     const adi = fleet * 24 * days;
-    const trips = db.prepare(`SELECT t.vehicle_id, t.on_line_at, t.arrived_at, t.unloaded_at,
+    const trips = db.prepare(`SELECT t.id, t.vehicle_id, t.on_line_at, t.arrived_at, t.unloaded_at,
         t.starts_at, t.ends_at, t.status, t.cash, t.customer_name, t.revenue_vat,
+        COALESCE(t.actual_distance_km, t.distance_km) loaded_km,
         (SELECT MIN(s.actual_departure) FROM trip_stops s
           WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep
       FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
         AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(b, a)
       .map(t => ({ ...t, net: tripNetCanon(t, moneyCalc) }));
+    // Отметки «прибыл/убыл» на точках: стояние на воротах — РАБОТА
+    // водителя (уточнение руководителя 09.10), в КИП остаётся.
+    const stopsByTrip = new Map();
+    for (const st of db.prepare(`SELECT s.trip_id tid, s.actual_arrival arr, s.actual_departure dpt
+        FROM trip_stops s JOIN trips t ON t.id=s.trip_id
+        WHERE t.status IN ('unloaded','done','paid','run')
+          AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?
+          AND s.actual_arrival IS NOT NULL AND s.actual_departure IS NOT NULL`).all(b, a)) {
+      if (!stopsByTrip.has(st.tid)) stopsByTrip.set(st.tid, []);
+      stopsByTrip.get(st.tid).push(st);
+    }
     // Часы линии/груза — ОБЪЕДИНЕНИЕ интервалов по машине, не сумма по
     // рейсам (разбор «КВЛ 100%» 28.09: плотная стыковка легально даёт
     // старт следующего рейса раньше отметки выгрузки предыдущего —
@@ -5745,11 +5761,31 @@ function parkReportData(from, to) {
       return total / 3.6e6;
     };
     let cust = 0, rev = 0, n = 0;
+    let workMs = 0; // работа экипажа: дорога (км/Vтех) + ворота по отметкам
     for (const trip of trips) {
       const online = trip.on_line_at || trip.starts_at;
       const fin = String(trip.unloaded_at || trip.ends_at).replace(' ', 'T');
       push(lineIv, trip.vehicle_id, clampMs(online, fin));
-      if (trip.dep) push(prodIv, trip.vehicle_id, clampMs(trip.dep, trip.arrived_at || fin));
+      if (trip.dep) {
+        const span = clampMs(trip.dep, trip.arrived_at || fin);
+        push(prodIv, trip.vehicle_id, span);
+        if (span) {
+          const depMs = Date.parse(String(trip.dep).replace(' ', 'T'));
+          const prodEndMs = Date.parse(String(trip.arrived_at || fin).replace(' ', 'T'));
+          const totalMs = prodEndMs - depMs;
+          // Ворота промежуточных точек внутри «под грузом»: первый
+          // выезд и финальное прибытие в клампе дают ноль сами собой.
+          let gateMs = 0;
+          for (const st of stopsByTrip.get(trip.id) || []) {
+            const s0 = Math.max(depMs, Date.parse(String(st.arr).replace(' ', 'T')));
+            const e0 = Math.min(prodEndMs, Date.parse(String(st.dpt).replace(' ', 'T')));
+            if (e0 > s0) gateMs += e0 - s0;
+          }
+          const busyMs = Math.min(totalMs,
+            Number(trip.loaded_km || 0) / vtech * 3.6e6 + gateMs);
+          if (totalMs > 0) workMs += (span[1] - span[0]) * (busyMs / totalMs);
+        }
+      }
       if (trip.arrived_at && trip.unloaded_at) cust += clampH(trip.arrived_at, fin, a, b);
       // Выгрузка — как на дашборде: статус после выгрузки, дата = факт
       // с фолбэком на расчётную (закрытые без отметки не выпадают).
@@ -5781,7 +5817,14 @@ function parkReportData(from, to) {
     // на линию до пересменки), минус ТОЛЬКО ремонты; через диспозиции:
     // календарь − «без водителя» − «пересменка» − «выведена» − ремонт.
     const crewFund = Math.max(1, adi - rem - noDrv - outH);
-    const kipRaw = Math.min(1, prod / crewFund);
+    // Числитель — РАБОТА ЭКИПАЖА (уточнение руководителя 09.10):
+    // в 67% входят вождение, погрузки/выгрузки, перегоны и прочие
+    // трудозатраты, 33% — только отдых. Работа = дорога (км/Vтех)
+    // + ворота по отметкам «прибыл/убыл»; недокументированный остаток
+    // «под грузом» (ночёвки РТО, стояния) — строкой restH, из КИП
+    // исключён (иначе отдых считался бы дважды: тут и в 33% потолка).
+    const workH = workMs / 3.6e6;
+    const kipRaw = Math.min(1, workH / crewFund);
     // КИП — от ПОТОЛКА (решение руководителя 09.10): физический максимум
     // «под грузом» ~67% времени линии (погрузки/выгрузки/подгоны съедают
     // треть) — берём его за 100%. Потолок — настройка калькуляции
@@ -5792,6 +5835,8 @@ function parkReportData(from, to) {
       rev: Math.round(rev), trips: n,
       lineH: Math.round(line), prodH: Math.round(prod), custH: Math.round(cust),
       remH: Math.round(rem), noDrvH: Math.round(noDrv),
+      workH: Math.round(workH), restH: Math.round(Math.max(0, prod - workH)),
+      vtech: +vtech.toFixed(1),
       ktg: +(ktg * 100).toFixed(1), kvl: +(kvl * 100).toFixed(1),
       kip: +(kip * 100).toFixed(1), kipRaw: +(kipRaw * 100).toFixed(1),
       kipCeiling: Math.round(ceiling * 100),
@@ -5826,7 +5871,7 @@ function parkReportData(from, to) {
     .map(row => ({ ...row, rev: Math.round(row.rev) }))
     .sort((a, b) => b.rev - a.rev).slice(0, 12);
   return { total, weeks, clients,
-    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; КИП = под грузом / фонд экипажа (время с водителем минус ремонты), потолок 67% = 100%' };
+    canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; КИП = работа экипажа (дорога км/Vтех + ворота по отметкам) / фонд экипажа (время с водителем минус ремонты), потолок 67% = 100%; отдых/стояния в пути — отдельной строкой' };
 }
 
 async function api(request, response, url) {

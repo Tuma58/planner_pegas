@@ -54,6 +54,7 @@ export function effPeriodData(db, from, to, parkFn) {
     weekendAvg: weDays ? Math.round((byDow[0] + byDow[6]) / weDays) : 0,
     downtime,
     ktg: park?.ktg ?? null, kvl: park?.kvl ?? null, kip: park?.kip ?? null, koef: park?.koef ?? null,
+    restDayAvg: park?.restH != null ? +(park.restH / 24 / days).toFixed(1) : null,
     clients: [...clientAgg.values()].map(c => ({ ...c, rev: Math.round(c.rev) }))
       .sort((a, b) => b.rev - a.rev).slice(0, 8)
   };

@@ -265,7 +265,7 @@ export function dailyOpsText(db, parkFn) {
     (() => {
       const ktgCars = T.fleet - day.downtime.repair.avg;
       const kvlDay = ktgCars ? Math.round(day.avgOnline / ktgCars * 100) : 0;
-      return `Парк ${T.fleet}: техготовность ${ktgCars.toFixed(0)} маш (КТГ ${Math.round(ktgCars / T.fleet * 100)}%) · на линии ${day.avgOnline} маш (КВЛ ${kvlDay}%) · под грузом ~${(day.avgOnline * M.kip / 100).toFixed(0)} маш (КИП мес ${M.kip}% от потолка)`;
+      return `Парк ${T.fleet}: техготовность ${ktgCars.toFixed(0)} маш (КТГ ${Math.round(ktgCars / T.fleet * 100)}%) · на линии ${day.avgOnline} маш (КВЛ ${kvlDay}%) · в работе ~${(day.avgOnline * (M.kipRaw ?? M.kip) / 100).toFixed(0)} маш (КИП мес ${M.kip}% от потолка)`;
     })(),
     `Простой: ремонт ${day.downtime.repair.avg} · без водителя ${day.downtime.no_driver.avg} · пересменка ${day.downtime.shift.avg} · без причины ${day.downtime.no_reason.avg} маш/сут`,
     `Опоздания >1ч: погрузка ${day.late.P.late1}/${day.late.P.n} · выгрузка ${day.late.D.late1}/${day.late.D.n}` +
@@ -462,7 +462,7 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <div class="tile"><span>Выручка без НДС</span><b>${(T.rev / 1e6).toFixed(1)} млн</b><small>${T.trips} рейсов за ${T.days} дн</small></div>
 <div class="tile"><span>Техготовность · КТГ</span><b>${(T.fleet - data.downtime.repair.avg).toFixed(1)} маш</b><small>КТГ ${T.ktg}% из ${T.fleet} списочных</small></div>
 <div class="tile"><span>На линии среднесуточно</span><b>${data.avgOnline} маш</b><small>машино-часы линии / 24 · КВЛ ${T.kvl}%</small></div>
-<div class="tile"><span>Под грузом · КИП</span><b>${(data.avgOnline * (T.kipRaw ?? T.kip) / 100).toFixed(1)} маш</b><small>КИП ${T.kip}% — от фонда экипажа, потолок ${T.kipCeiling ?? 67}%=100% (сырой ${T.kipRaw ?? T.kip}%)</small></div>
+<div class="tile"><span>В работе · КИП</span><b>${(data.avgOnline * (T.kipRaw ?? T.kip) / 100).toFixed(1)} маш</b><small>КИП ${T.kip}% — работа экипажа (дорога + ворота) от фонда, потолок ${T.kipCeiling ?? 67}%=100%${T.restH != null ? ` · отдых/стояния в пути ≈ ${(T.restH / 24 / Math.max(1, T.days)).toFixed(1)} маш` : ''}</small></div>
 <div class="tile"><span>Прибытия на погрузку вовремя</span><b>${onP}%</b><small>${late.P.late1} опозд. &gt;1 ч из ${late.P.n}</small></div>
 <div class="tile"><span>Прибытия на выгрузку вовремя</span><b>${onD}%</b><small>${late.D.late1} опозд. &gt;1 ч из ${late.D.n}</small></div>
 </div>
