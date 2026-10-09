@@ -229,6 +229,29 @@ export async function staffCardDialog(context, id, after) {
     <p class="muted" style="margin:4px 0 12px;font-size:12.5px">
       в компании с ${fmtDate(person.hiredAt)} · учётка ${escapeHtml(person.username)}
       · последний вход ${fmtDateTime(person.lastLoginAt)}</p>
+    ${(() => {
+    // Чек-лист приёма (этап 4, 09.10): виден первые 30 дней, пока не
+    // закрыты все пункты — ничего не забыть при вводе человека в строй.
+    const hiredMs = Date.parse(String(person.hiredAt || '').slice(0, 10));
+    const fresh = Number.isFinite(hiredMs) && Date.now() - hiredMs < 30 * 86_400_000;
+    const items = [
+      ['Учётка', true, ''],
+      ['Личный телефон', Boolean(person.phone), '«✎ Данные» → личный мобильный'],
+      ['Добавочный АТС', Boolean(person.extPhone), '«☎ Сверка с АТС» или «✎ Данные» — без него карточка звонка не найдёт адресата'],
+      ['Telegram', Boolean(person.telegram), 'сотрудник привязывает бота сам — инструкция в «?» раздел «Общее»'],
+      ['Инструкции', Boolean(person.guideAckAt), 'сотрудник читает «?» и жмёт «✍ Подтвердить ознакомление»'],
+      ['График месяца', Object.keys(card.shifts || {}).length > 0, 'заполните смены пером ниже'],
+      ['Первый вход', Boolean(person.lastLoginAt), 'выдайте логин и пароль — при входе укажет рабочий телефон']
+    ];
+    const open = items.filter(([, done]) => !done);
+    if (!fresh || !open.length || !person.active) return '';
+    return `<div style="background:var(--panel2,#f2f7f7);border-radius:10px;padding:10px 12px;margin-bottom:10px">
+      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">🚀 ЧЕК-ЛИСТ ПРИЁМА · выполнено ${items.length - open.length}/${items.length}</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${items.map(([label, done, hint]) =>
+    `<span class="badge ${done ? 'ok' : 'warn'}" title="${escapeHtml(hint)}">${done ? '✓' : '✗'} ${label}</span>`).join('')}</div>
+      ${open.length ? `<div class="muted" style="font-size:11.5px;margin-top:5px">${open.map(([label, , hint]) => `<b>${label}</b>: ${escapeHtml(hint)}`).join(' · ')}</div>` : ''}
+    </div>`;
+  })()}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px" class="staff-grid">
       <div class="sec" style="background:var(--panel2);border-radius:10px;padding:10px 12px">
         <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">📞 СВЯЗЬ</h3>
@@ -343,8 +366,13 @@ export async function staffCardDialog(context, id, after) {
   if (fire) fire.onclick = () => fireReasonDialog(context, person.fullName,
     'Учётка будет отключена, телефоны смены сняты; история сохранится.',
     async reason => {
-      await api(`/api/staff/users/${id}/fire`, { method: 'POST', body: JSON.stringify({ reason }) });
-      toast('Сотрудник уволен');
+      const result = await api(`/api/staff/users/${id}/fire`, { method: 'POST', body: JSON.stringify({ reason }) });
+      const cleared = ['учётка отключена', 'телефон смены снят',
+        result.cleared?.ext ? 'добавочный освобождён' : '',
+        result.cleared?.telegram ? 'Telegram отвязан' : '',
+        result.cleared?.futureShifts ? `смен снято: ${result.cleared.futureShifts}` : '']
+        .filter(Boolean).join(', ');
+      toast(`Сотрудник уволен (${cleared})`);
       after?.();
     });
   const restore = document.querySelector('#scRestore');

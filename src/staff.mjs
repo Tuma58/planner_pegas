@@ -124,9 +124,12 @@ export function setStaffShifts(db, userId, month, days, editorId = null) {
   return { ok: true, total: entries.length, counts };
 }
 
-// Увольнение офисного: мягкое — учётка гаснет, сессии рвутся, телефоны
-// смены и добавочный снимаются (карточки звонков не всплывут уволенному),
-// история и ФИО остаются. Восстановление возвращает доступ.
+// Увольнение офисного — ЧЕК-ЛИСТ одним действием (этап 4, 09.10):
+// учётка гаснет, сессии рвутся, телефон смены и добавочный АТС
+// освобождаются (карточки звонков не всплывут уволенному и сверка с
+// АТС не держит номер за ним), Telegram отвязывается (боты молчат),
+// будущие смены из графика снимаются. История и ФИО остаются,
+// восстановление возвращает доступ.
 export function fireStaffUser(db, id) {
   const user = db.prepare(`SELECT * FROM users WHERE id=? AND deleted_at IS NULL`).get(id);
   if (!user) return { ok: false, error: 'Сотрудник не найден' };
@@ -136,10 +139,18 @@ export function fireStaffUser(db, id) {
         AND users.id<>?`).get(id).count;
     if (!others) return { ok: false, error: 'Должен остаться хотя бы один активный администратор' };
   }
+  const cleared = {
+    ext: Boolean(String(user.ext_phone || '').trim()),
+    telegram: Boolean(user.telegram_chat_id)
+  };
   db.prepare(`UPDATE users SET active=0, fired_at=COALESCE(fired_at, CURRENT_TIMESTAMP),
-    work_phone='', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
+    work_phone='', ext_phone='', telegram_chat_id=NULL,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
   db.prepare(`DELETE FROM sessions WHERE user_id=?`).run(id);
-  return { ok: true, fullName: user.full_name };
+  const today = new Date().toISOString().slice(0, 10);
+  cleared.futureShifts = db.prepare(`DELETE FROM staff_shifts
+    WHERE user_id=? AND day>?`).run(id, today).changes;
+  return { ok: true, fullName: user.full_name, cleared };
 }
 
 export function restoreStaffUser(db, id) {

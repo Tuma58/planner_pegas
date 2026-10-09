@@ -3956,11 +3956,22 @@ test('сотрудники: доступ, приём/увольнение, гр�
   db.prepare(`UPDATE users SET work_phone='213' WHERE id=?`).run(created.id);
   db.prepare(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES('th-1',?,datetime('now','+1 day'))`)
     .run(created.id);
-  assert.ok(fireStaffUser(db, created.id).ok);
-  const fired = db.prepare(`SELECT active, fired_at, work_phone FROM users WHERE id=?`).get(created.id);
+  // Чек-лист увольнения (этап 4): добавочный, Telegram и будущие
+  // смены снимаются одним действием.
+  db.prepare(`UPDATE users SET telegram_chat_id='tg-1' WHERE id=?`).run(created.id);
+  const future = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+  setStaffShifts(db, created.id, future.slice(0, 7), { [future]: 'day' });
+  const firedResult = fireStaffUser(db, created.id);
+  assert.ok(firedResult.ok);
+  assert.equal(firedResult.cleared.telegram, true);
+  assert.ok(firedResult.cleared.futureShifts >= 1, 'будущие смены сняты');
+  const fired = db.prepare(`SELECT active, fired_at, work_phone, ext_phone, telegram_chat_id
+    FROM users WHERE id=?`).get(created.id);
   assert.equal(fired.active, 0);
   assert.ok(fired.fired_at);
   assert.equal(fired.work_phone, '');
+  assert.equal(fired.ext_phone, '');
+  assert.equal(fired.telegram_chat_id, null);
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM sessions WHERE user_id=?`).get(created.id).n, 0);
   assert.ok(restoreStaffUser(db, created.id).ok);
   assert.equal(db.prepare(`SELECT active FROM users WHERE id=?`).get(created.id).active, 1);

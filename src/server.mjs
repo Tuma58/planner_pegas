@@ -8182,8 +8182,10 @@ async function api(request, response, url) {
         db.prepare(`UPDATE vehicles SET driver_name='',updated_at=CURRENT_TIMESTAMP
           WHERE id=? AND driver_name=?`).run(current.vehicle_id, current.full_name);
       }
-      db.prepare(`UPDATE drivers SET status='fired',vehicle_id=NULL,updated_at=CURRENT_TIMESTAMP
-        WHERE id=?`).run(match[0]);
+      // Чек-лист увольнения (этап 4, 09.10): бот отвязывается — задания
+      // и пинги не уйдут уволенному; сцепка откреплена выше.
+      db.prepare(`UPDATE drivers SET status='fired',vehicle_id=NULL,telegram_chat_id=NULL,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(match[0]);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
