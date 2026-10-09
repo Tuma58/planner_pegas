@@ -3753,6 +3753,24 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
 });
 
+test('на линии среднесуточно: машино-часы/24, не «касание дня»', async () => {
+  const { onlineDayAvg } = await import('../src/ops-report.mjs');
+  const day = '2026-10-05';
+  const t0 = Date.parse(day + 'T00:00:00Z');
+  // Машина была на линии 2 часа — это 0.1 машины, не целая (кейс «107»).
+  assert.equal(onlineDayAvg([{ v: 'a', a: t0, b: t0 + 2 * 3.6e6 }], day), 0.1);
+  // Полные сутки — ровно 1; стык двух рейсов не двоит (union).
+  assert.equal(onlineDayAvg([
+    { v: 'b', a: t0 - 3.6e6, b: t0 + 12 * 3.6e6 },
+    { v: 'b', a: t0 + 10 * 3.6e6, b: t0 + 86_400_000 + 3.6e6 }
+  ], day), 1);
+  // Две машины по полдня = 1.0 суммарно.
+  assert.equal(onlineDayAvg([
+    { v: 'c', a: t0, b: t0 + 12 * 3.6e6 },
+    { v: 'd', a: t0 + 12 * 3.6e6, b: t0 + 24 * 3.6e6 }
+  ], day), 1);
+});
+
 test('канон денег: одна формула для всех поверхностей', async () => {
   const { tripNet, doneDayOf, DONE_STATUSES } = await import('../src/money.mjs');
   const calc = { vatRate: 0.22, individualEntrepreneurVatRate: 0.07 };

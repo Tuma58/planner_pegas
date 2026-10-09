@@ -8,6 +8,35 @@
 
 import { DONE_STATUSES, calcSettings, doneDayOf, tripNet } from './money.mjs';
 
+// Среднесуточно на линии = машино-часы линии в дне / 24 (интервалы по
+// машине объединяются — стыки не двоят). До 09.10 считалось «машин,
+// коснувшихся дня хоть минутой» — завышало (107 при честных 100,
+// замечание руководителя) и занижало «без причины» (он остаток).
+export function onlineDayAvg(spans, day) {
+  const d0 = Date.parse(`${day}T00:00:00Z`);
+  const d1 = d0 + 86_400_000;
+  const perVehicle = new Map();
+  for (const span of spans) {
+    if (span.a >= d1 || span.b <= d0) continue;
+    const a = Math.max(span.a, d0);
+    const b = Math.min(span.b, d1);
+    if (!perVehicle.has(span.v)) perVehicle.set(span.v, []);
+    perVehicle.get(span.v).push([a, b]);
+  }
+  let ms = 0;
+  for (const list of perVehicle.values()) {
+    list.sort((x, y) => x[0] - y[0]);
+    let [cs, ce] = list[0];
+    for (let i = 1; i < list.length; i += 1) {
+      const [ns, ne] = list[i];
+      if (ns <= ce) ce = Math.max(ce, ne);
+      else { ms += ce - cs; [cs, ce] = [ns, ne]; }
+    }
+    ms += ce - cs;
+  }
+  return +(ms / 3.6e6 / 24).toFixed(1);
+}
+
 const dayList = (from, to) => {
   const out = [];
   for (let ms = Date.parse(`${from}T00:00:00Z`); ms < Date.parse(`${to}T00:00:00Z`); ms += 86_400_000) {
@@ -59,10 +88,7 @@ export function opsReportData(db, from, to, parkFn) {
       WHERE kind='transfer' AND starts_at < ? AND ends_at > ?`).all(to, from)) {
     spans.push({ v: d.vehicle_id, a: Date.parse(d.starts_at), b: Date.parse(d.ends_at) });
   }
-  const online = days.map(d => {
-    const d0 = Date.parse(`${d}T00:00:00Z`);
-    return new Set(spans.filter(s => s.a < d0 + 86_400_000 && s.b > d0).map(s => s.v)).size;
-  });
+  const online = days.map(d => onlineDayAvg(spans, d));
 
   // Простой по причинам, машино-часы за период → среднесуточно машин.
   const clamp = `SUM((julianday(MIN(ends_at, :b)) - julianday(MAX(starts_at, :a))) * 24)`;
@@ -435,7 +461,7 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <div class="tiles">
 <div class="tile"><span>Выручка без НДС</span><b>${(T.rev / 1e6).toFixed(1)} млн</b><small>${T.trips} рейсов за ${T.days} дн</small></div>
 <div class="tile"><span>Техготовность · КТГ</span><b>${(T.fleet - data.downtime.repair.avg).toFixed(1)} маш</b><small>КТГ ${T.ktg}% из ${T.fleet} списочных</small></div>
-<div class="tile"><span>На линии среднесуточно</span><b>${data.avgOnline} маш</b><small>КВЛ ${T.kvl}% по закрытым рейсам</small></div>
+<div class="tile"><span>На линии среднесуточно</span><b>${data.avgOnline} маш</b><small>машино-часы линии / 24 · КВЛ ${T.kvl}%</small></div>
 <div class="tile"><span>Под грузом · КИП</span><b>${(data.avgOnline * T.kip / 100).toFixed(1)} маш</b><small>КИП ${T.kip}% времени линии</small></div>
 <div class="tile"><span>Прибытия на погрузку вовремя</span><b>${onP}%</b><small>${late.P.late1} опозд. &gt;1 ч из ${late.P.n}</small></div>
 <div class="tile"><span>Прибытия на выгрузку вовремя</span><b>${onD}%</b><small>${late.D.late1} опозд. &gt;1 ч из ${late.D.n}</small></div>
