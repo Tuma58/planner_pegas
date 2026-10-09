@@ -5741,11 +5741,22 @@ function parkReportData(from, to) {
     if (wb <= from) continue;
     weeks.push(period(wa < from ? from : wa, wb > to ? to : wb));
   }
-  const clients = db.prepare(`SELECT t.customer_name name, COUNT(*) n,
-      ROUND(SUM(${netExpr})) rev
-    FROM trips t WHERE t.status IN ('unloaded','done','paid')
-      AND t.unloaded_at >= ? AND t.unloaded_at < ?
-    GROUP BY t.customer_name ORDER BY rev DESC LIMIT 12`).all(from, to);
+  // Клиенты — тем же каноном денег (ставки из настроек, «ИП» словом,
+  // дата выгрузки с фолбэком): хвост вчерашней канонизации — здесь
+  // оставался netExpr и ронял отчёт «Эксплуатация» (баг 09.10).
+  const clientAgg = new Map();
+  for (const t of db.prepare(`SELECT t.customer_name, t.cash, t.revenue_vat FROM trips t
+      WHERE t.status IN ('unloaded','done','paid')
+        AND COALESCE(t.unloaded_at, t.ends_at) >= ? AND COALESCE(t.unloaded_at, t.ends_at) < ?`)
+    .all(from, to)) {
+    const row = clientAgg.get(t.customer_name) || { name: t.customer_name, n: 0, rev: 0 };
+    row.n += 1;
+    row.rev += tripNetCanon(t, moneyCalc);
+    clientAgg.set(t.customer_name, row);
+  }
+  const clients = [...clientAgg.values()]
+    .map(row => ({ ...row, rev: Math.round(row.rev) }))
+    .sort((a, b) => b.rev - a.rev).slice(0, 12);
   return { total, weeks, clients,
     canon: 'на линии = «на линию»→выгрузка (+перегоны); под грузом = убытие с погрузки→прибытие на выгрузку; стоянка у клиента — потеря КИП' };
 }
