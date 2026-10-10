@@ -16,7 +16,7 @@ import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
-import { effectiveArrival, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
+import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
   const password = 'Very-strong-password-2026';
@@ -4246,4 +4246,19 @@ test('фонд экипажа: битая отметка прибытия не �
   }, opts);
   assert.equal(Math.round(d.work), 14, 'погрузка 4 + дорога 10; выгрузку не знаем');
   assert.equal(Math.round(d.unloadOver), 0, 'битое прибытие не создаёт мнимую выгрузку');
+});
+
+test('фонд экипажа: «выгружен задним числом» не растягивает рейс (кейс Фадеева)', () => {
+  // Убыл с точки 01.10 15:02, «выгружен» проставили 02.10 11:58 —
+  // конец рейса = убытие с точки, 21 час не висит «выгрузкой сверх».
+  assert.equal(effectiveFinish('2026-10-01T09:03:00Z', '2026-10-02T11:58:00Z', '2026-10-01T15:02:00Z'),
+    '2026-10-01T15:02:00Z', 'дооформленный хвост отрезан');
+  // «Выгружен» в пределах 2 ч после убытия — норма, отметка главнее.
+  assert.equal(effectiveFinish('2026-10-01T09:03:00Z', '2026-10-01T16:30:00Z', '2026-10-01T15:02:00Z'),
+    '2026-10-01T16:30:00Z', 'люфт 2 ч не переквалифицируется');
+  // Убытие раньше якоря (битое) — не подменяет конец.
+  assert.equal(effectiveFinish('2026-10-01T09:03:00Z', '2026-10-02T11:58:00Z', '2026-10-01T08:00:00Z'),
+    '2026-10-02T11:58:00Z', 'битое убытие игнорируется');
+  assert.equal(effectiveFinish('2026-10-01T09:03:00Z', null, '2026-10-01T15:02:00Z'),
+    null, 'без отметки выгрузки конца нет');
 });

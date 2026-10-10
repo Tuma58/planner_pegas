@@ -94,6 +94,20 @@ export function markOverlapCuts(trips) {
   return trips;
 }
 
+// Честный конец рейса: отметка «выгружен», но если она проставлена
+// сильно ПОЗЖЕ убытия с последней точки (дооформили задним числом —
+// разбор Фадеева 09.10: убыл 01.10 15:02, «выгружен» 02.10 11:58),
+// рейс фактически закончился при убытии. Допуск 2 ч — технический
+// люфт рассинхрона отметок, не бизнес-порог.
+export function effectiveFinish(anchor, unloaded, lastDeparture) {
+  if (!unloaded || !lastDeparture) return unloaded || null;
+  const u = parseTs(unloaded);
+  const d = parseTs(lastDeparture);
+  if (!(u > d + 2 * 3.6e6)) return unloaded;
+  if (anchor && !(d > parseTs(anchor))) return unloaded;
+  return lastDeparture;
+}
+
 // Пересечение двух списков отрезков [startMs, endMs] в часах — union
 // внутри каждого списка, чтобы дубли диспозиций не двоили. Нужен фонду:
 // рейс поверх закрытой «недоступности» возвращает это время в фонд

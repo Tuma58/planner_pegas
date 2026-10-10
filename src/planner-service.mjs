@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { calcSettings, tripNet } from './money.mjs';
 import { scheduleAttendanceFor } from './schedule.mjs';
 import { settingsObject } from './db.mjs';
-import { crewNorms, effectiveArrival, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
+import { crewNorms, effectiveArrival, effectiveFinish, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 
 export const TRIP_STATUS = {
   plan: 'plan', run: 'run', unl: 'unloaded', unloaded: 'unloaded',
@@ -1563,15 +1563,21 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
       (SELECT MIN(s.actual_departure) FROM trip_stops s
         WHERE s.trip_id=trips.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
       (SELECT MAX(s.actual_arrival) FROM trip_stops s
-        WHERE s.trip_id=trips.id AND s.kind='D' AND s.actual_arrival IS NOT NULL) arr_d
+        WHERE s.trip_id=trips.id AND s.kind='D' AND s.actual_arrival IS NOT NULL) arr_d,
+      (SELECT MAX(s.actual_departure) FROM trip_stops s
+        WHERE s.trip_id=trips.id AND s.kind='D' AND s.actual_departure IS NOT NULL) dep_d
       FROM trips
       WHERE status IN ('unloaded','done','paid')
         AND COALESCE(unloaded_at, ends_at) >= ? AND COALESCE(unloaded_at, ends_at) < ?`)
     .all(fromIso, toIso)
-    .map(trip => ({ ...trip, vehicleId: trip.vehicle_id,
-      online: trip.on_line_at || trip.starts_at,
-      arrived: effectiveArrival(trip.dep, trip.arrived_at, trip.arr_d),
-      fin: trip.unloaded_at || trip.ends_at, km: trip.loaded_km, stopsN: trip.stops_n }));
+    .map(trip => {
+      const arrived = effectiveArrival(trip.dep, trip.arrived_at, trip.arr_d);
+      return { ...trip, vehicleId: trip.vehicle_id,
+        online: trip.on_line_at || trip.starts_at, arrived,
+        fin: effectiveFinish(arrived || trip.dep, trip.unloaded_at, trip.dep_d)
+          || trip.unloaded_at || trip.ends_at,
+        km: trip.loaded_km, stopsN: trip.stops_n };
+    });
   markOverlapCuts(periodTrips);
   for (const trip of periodTrips) {
     const name = driverOf(trip.vehicle_id, trip.starts_at);
@@ -1597,7 +1603,7 @@ export function driverPeriodMetrics(db, fromIso, toIso) {
       item.unloadFacts += 1;
       if (ts(unload.actual_arrival) - ts(unload.planned_arrival) > 3.6e6) item.lateUnload += 1;
     }
-    const gate = (ts(trip.unloaded_at) - ts(trip.arrived)) / 3.6e6;
+    const gate = (ts(trip.fin) - ts(trip.arrived)) / 3.6e6;
     if (gate > 0.2 && gate < 72) item.gates.push(gate);
     // Дисциплина отметок — чистая цепочка фактов (без планового старта).
     const parr = ts(load?.actual_arrival);
