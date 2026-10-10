@@ -10765,7 +10765,10 @@ async function api(request, response, url) {
           if (r.unloaded_at && r.dep_d) {
             const lagH = (Date.parse(String(r.unloaded_at).replace(' ', 'T')) -
               Date.parse(String(r.dep_d).replace(' ', 'T'))) / 3.6e6;
-            if (lagH > 2) issues.push(`«выгружен» на ${Math.round(lagH)} ч позже убытия с точки`);
+            // Порог полсуток — «оформили на другие сутки»: лагов >2 ч за
+            // месяц 489 (медиана 5 ч — рутинное дооформление, расчёты уже
+            // защищены фолбэком), >12 ч — 80, их и показываем людям.
+            if (lagH > 12) issues.push(`«выгружен» на ${Math.round(lagH)} ч позже убытия с точки`);
           }
           if (issues.length) {
             dirty.push({ label: `${r.plate || '—'} №${r.order_no || '—'}`, vehicleId: r.vehicle_id,
