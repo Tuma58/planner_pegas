@@ -35,6 +35,23 @@ export function ensureTripStops(db, tripId) {
   return trip;
 }
 
+// Канон «окно клиента неприкосновенно» (вариант А руководителя 10.10):
+// сдвиг рейса, УВЕЛИЧИВАЮЩИЙ выход за окно заявки, запрещён логисту —
+// окно меняют только продажи правкой заявки. Возврат в окно и сдвиги
+// внутри окна легальны; рейс, чей транзит изначально длиннее окна,
+// не блокируется, пока нарушение не растёт. Допуск 1 ч — стык
+// план/факт, не бизнес-порог.
+export function windowViolationMs(order, startsAt, endsAt, tolMs = 3_600_000) {
+  if (!order?.window_from || !order?.window_to) return 0;
+  const early = Math.max(0, Date.parse(order.window_from) - tolMs - Date.parse(startsAt));
+  const late = Math.max(0, Date.parse(endsAt) - Date.parse(order.window_to) - tolMs);
+  return early + late;
+}
+export function shiftWorsensWindow(order, before, after) {
+  return windowViolationMs(order, after.startsAt, after.endsAt) >
+    windowViolationMs(order, before.startsAt, before.endsAt);
+}
+
 // Перепланирование стоянок после сдвига рейса или правки заявки: плановые
 // времена и пункты пересчитываются ТОЛЬКО у стоянок без фактов (где машина
 // ещё не была); пройденные точки с отметками диспетчера не трогаются.
@@ -542,14 +559,13 @@ export function chainAutoClose(db, nowMs = Date.now()) {
     if (last) {
       const arriveMs = toMs(last.actual_arrival);
       if (Number.isFinite(arriveMs) && arriveMs >= proofMs) continue; // грязь
-      db.prepare(`UPDATE trip_stops SET
-          actual_arrival=COALESCE(actual_arrival, ?),
-          work_started_at=COALESCE(work_started_at, actual_arrival, ?),
-          work_finished_at=COALESCE(work_finished_at, ?),
-          actual_departure=COALESCE(actual_departure, ?),
-          updated_at=CURRENT_TIMESTAMP, auto_source='chain'
-        WHERE id=?`).run(at, at, at, at, last.id);
     }
+    // Ревизия 10.10 (жалобы диспетчеров «данные встают некорректно»):
+    // раньше на последнюю точку штамповались ЧЕТЫРЕ факта одним моментом
+    // (прибытие=работы=убытие=момент чужой погрузки) — 28 рейсов/нед
+    // с нулевой выгрузкой ломали Гант, КИП и ворота. Теперь закрывается
+    // только СТАТУС рейса; честные отметки точки — за человеком или GPS
+    // (сторож «GPS у выгрузки, а рейс не закрыт» продолжает звать).
     db.prepare(`UPDATE trips SET status='unloaded', unloaded_at=?,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(at, trip.id);
     report.tripsUnloaded += 1;

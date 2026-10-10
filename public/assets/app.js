@@ -974,7 +974,7 @@ function openExceptions() {
 
   const criticalActions = trip => `
     ${can('trips:write') ? `<button class="button ghost small" data-ex-shift="${trip.id}"
-      title="Перенести начало рейса на конец интервала недоступности">Сдвинуть после простоя</button>` : ''}
+      title="Перенести начало рейса на конец интервала недоступности. Сработает, только если рейс остаётся в окне клиента — окно меняют продажи правкой заявки; иначе смените ТС или верните заявку продажам">Сдвинуть после простоя</button>` : ''}
     <button class="button ghost small" data-ex-open="${trip.id}">Открыть</button>`;
   const conflictActions = trip => `
     <button class="button ghost small" data-ex-open="${trip.id}"

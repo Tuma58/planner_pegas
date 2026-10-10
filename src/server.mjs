@@ -37,7 +37,7 @@ import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
 import {
   DISPATCH_STEPS, applyDispatchStep, chainAutoClose, checkStuckUnloading, controlSnapshot,
   ensureTripStops, gpsAutoMarks, syncTrailerTrackerLinks,
-  listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, stampStopsFromStatus,
+  listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
 } from './trip-control.mjs';
@@ -6980,6 +6980,28 @@ async function api(request, response, url) {
     if (['plan', 'run'].includes(merged.status) &&
         ['unloaded', 'done', 'paid'].includes(current.status)) {
       db.prepare(`UPDATE trips SET unloaded_at=NULL, docs_checked_at=NULL WHERE id=?`).run(match[0]);
+    }
+    // ОКНО КЛИЕНТА НЕПРИКОСНОВЕННО (вариант А руководителя 10.10: за
+    // неделю 178 сдвигов, рейсы уезжали за окно из-за ремонтов и
+    // пересменок — это срыв договорённости продаж и планирования).
+    // Сдвиг, УВЕЛИЧИВАЮЩИЙ выход за окно заявки, блокируется; внутрь
+    // окна и возврат в окно — свободно; окно меняют продажи заявкой.
+    if (merged.startsAt !== current.starts_at || merged.endsAt !== current.ends_at) {
+      const windowOrder = (merged.orderId || current.order_id)
+        ? db.prepare('SELECT order_no, window_from, window_to FROM orders WHERE id=?')
+          .get(merged.orderId || current.order_id)
+        : null;
+      if (windowOrder && merged.status !== 'rejected' &&
+          shiftWorsensWindow(windowOrder,
+            { startsAt: current.starts_at, endsAt: current.ends_at },
+            { startsAt: merged.startsAt, endsAt: merged.endsAt })) {
+        return errorJson(response, 422, `Сдвиг выводит рейс за окно клиента ` +
+          `(заявка ${windowOrder.order_no ? `№${windowOrder.order_no}` : ''}: ` +
+          `${String(windowOrder.window_from).slice(0, 16).replace('T', ' ')} — ` +
+          `${String(windowOrder.window_to).slice(0, 16).replace('T', ' ')} UTC). ` +
+          `Окно — договорённость с клиентом, его меняют только продажи правкой заявки. ` +
+          `Смените ТС или верните заявку продажам на передоговорённость`);
+      }
     }
     db.prepare(`UPDATE trips SET vehicle_id=?,order_id=?,customer_name=?,from_zone_id=?,to_zone_id=?,
       from_point=?,to_point=?,starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,rejection_reason=?,

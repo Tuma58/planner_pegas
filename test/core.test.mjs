@@ -3762,6 +3762,37 @@ test('авто-факты: GPS ставит промежуточные, цепо
   const closed = db.prepare(`SELECT status, unloaded_at FROM trips WHERE id='af-1'`).get();
   assert.equal(closed.status, 'unloaded');
   assert.ok(closed.unloaded_at, 'выгрузка «не позже» следующей погрузки');
+  // Ревизия 10.10: ложные факты «в один момент» больше не штампуются —
+  // закрывается только статус, точка ждёт честной отметки.
+  const lastStop = db.prepare(`SELECT actual_departure, work_finished_at, auto_source
+    FROM trip_stops WHERE trip_id='af-1'
+    ORDER BY seq DESC LIMIT 1`).get();
+  assert.equal(lastStop.actual_departure, null, 'убытие с выгрузки не штампуется');
+  assert.equal(lastStop.work_finished_at, null, 'работы не штампуются');
+});
+
+test('окно клиента неприкосновенно: ухудшающий сдвиг ловится, легальные — нет', async () => {
+  const { windowViolationMs, shiftWorsensWindow } = await import('../src/trip-control.mjs');
+  const order = { window_from: '2026-10-10T08:00:00Z', window_to: '2026-10-11T20:00:00Z' };
+  // Внутри окна нарушения нет (допуск 1 ч).
+  assert.equal(windowViolationMs(order, '2026-10-10T08:00:00Z', '2026-10-11T20:30:00Z'), 0);
+  // Сдвиг за окно (после ремонта) — ухудшение: блокируется.
+  assert.equal(shiftWorsensWindow(order,
+    { startsAt: '2026-10-10T08:00:00Z', endsAt: '2026-10-11T18:00:00Z' },
+    { startsAt: '2026-10-11T17:00:00Z', endsAt: '2026-10-13T03:00:00Z' }), true);
+  // Рейс изначально длиннее окна (легальный транзит): сдвиг без роста
+  // нарушения — не блокируется.
+  assert.equal(shiftWorsensWindow(order,
+    { startsAt: '2026-10-10T08:00:00Z', endsAt: '2026-10-12T02:00:00Z' },
+    { startsAt: '2026-10-10T09:00:00Z', endsAt: '2026-10-12T02:00:00Z' }), false);
+  // Возврат в окно — улучшение, свободно.
+  assert.equal(shiftWorsensWindow(order,
+    { startsAt: '2026-10-12T00:00:00Z', endsAt: '2026-10-13T00:00:00Z' },
+    { startsAt: '2026-10-10T09:00:00Z', endsAt: '2026-10-11T19:00:00Z' }), false);
+  // Без окна (рейс из 1С) — ограничений нет.
+  assert.equal(shiftWorsensWindow({ window_from: null, window_to: null },
+    { startsAt: '2026-10-10T08:00:00Z', endsAt: '2026-10-11T18:00:00Z' },
+    { startsAt: '2026-10-20T08:00:00Z', endsAt: '2026-10-21T18:00:00Z' }), false);
 });
 
 test('на линии среднесуточно: машино-часы/24, не «касание дня»', async () => {
