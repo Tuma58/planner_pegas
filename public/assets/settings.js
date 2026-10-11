@@ -225,7 +225,11 @@ async function renderTrailerRegistry() {
     box.innerHTML = `<table><thead><tr><th>Прицеп</th><th>Тип</th><th>Где</th><th>Статус</th><th></th></tr></thead>
       <tbody>${rows.map(item => `<tr>
         <td class="mono"><strong>${escapeHtml(item.plate)}</strong></td>
-        <td>${escapeHtml(item.type_name || '—')}</td>
+        <td><select data-trailer-type="${escapeHtml(item.plate)}" title="Тип кузова живёт на прицепе: смена сразу выравнивает сцепку-держателя">
+          <option value="">—</option>
+          ${state.admin.reference.vehicleTypes.map(type =>
+            `<option value="${type.id}" ${item.type_name === type.name ? 'selected' : ''}>${escapeHtml(type.name)}</option>`).join('')}
+        </select></td>
         <td>${item.holder_plate ? 'на ' + escapeHtml(item.holder_plate) : '<span class="hint">свободен</span>'}</td>
         <td>${item.out_since
           ? `<span class="badge bad">Выведен</span> <span class="hint">с ${item.out_since.slice(8, 10)}.${item.out_since.slice(5, 7)}.${item.out_since.slice(0, 4)}</span>`
@@ -235,6 +239,15 @@ async function renderTrailerRegistry() {
           : `<button class="button ghost small" data-trailer-out="${escapeHtml(item.plate)}"
                ${item.holder_plate ? `title="прицеп висит на ${escapeHtml(item.holder_plate)} — сначала отцепите перецепкой" disabled` : 'title="продажа или списание — с датой, можно задним числом"'}>Вывести</button>`}</td>
       </tr>`).join('')}</tbody></table>`;
+    box.querySelectorAll('[data-trailer-type]').forEach(select => select.onchange = async () => {
+      if (!select.value) { renderTrailerRegistry(); return; }
+      try {
+        await api(`/api/trailers/${encodeURIComponent(select.dataset.trailerType)}`, {
+          method: 'PATCH', body: JSON.stringify({ typeId: select.value })
+        });
+        toast('Тип прицепа сохранён — сцепка выровнена'); renderTrailerRegistry();
+      } catch (error) { toast(error.message, 'error'); renderTrailerRegistry(); }
+    });
     box.querySelectorAll('[data-trailer-out]').forEach(button => button.onclick = async () => {
       const date = prompt(`Дата вывода прицепа ${button.dataset.trailerOut} (ГГГГ-ММ-ДД, пусто — сегодня)`,
         new Date().toISOString().slice(0, 10));

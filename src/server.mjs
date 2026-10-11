@@ -4744,11 +4744,22 @@ function canOdometerKm(vehicleId) {
 // Тип сцепки при смене прицепа: известный прицеп диктует тип; новый или
 // бестиповый — учится от типа этой сцепки (первая сцепка заполняет
 // справочник, дальше прицеп главный). Возвращает итоговый type_id.
-function trailerDrivenTypeId(rawTrailerPlate, chosenTypeId) {
+function trailerDrivenTypeId(rawTrailerPlate, chosenTypeId, { explicit = false } = {}) {
   const canon = canonTrailerPlate(rawTrailerPlate);
   if (!canon) return chosenTypeId;
   const known = db.prepare('SELECT type_id FROM trailers WHERE plate=?').get(canon);
-  if (known?.type_id) return known.type_id;
+  if (known?.type_id) {
+    // Явная смена типа человеком ПЕРЕУЧИВАЕТ прицеп (кейс 8495, 10.10:
+    // прицеп переоборудовали, а выбор «Тушевоз» в карточке молча
+    // съедался — тип был заморожен первой записью навсегда). Прицеп
+    // остаётся носителем типа — меняется именно он, сцепка следом.
+    if (explicit && chosenTypeId && chosenTypeId !== known.type_id) {
+      db.prepare(`UPDATE trailers SET type_id=?, updated_at=CURRENT_TIMESTAMP
+        WHERE plate=?`).run(chosenTypeId, canon);
+      return chosenTypeId;
+    }
+    return known.type_id;
+  }
   db.prepare(`INSERT INTO trailers(plate,type_id) VALUES(?,?)
     ON CONFLICT(plate) DO UPDATE SET
       type_id=COALESCE(trailers.type_id, excluded.type_id),
@@ -8454,7 +8465,8 @@ async function api(request, response, url) {
     // прицепа тип сцепки подтягивается из справочника; вручную выбранный
     // тип уважается только для нового/бестипового прицепа (и учит его).
     const patchTrailer = canonTrailerPlate(body.trailerPlate ?? current.trailer_plate);
-    const patchTypeId = trailerDrivenTypeId(patchTrailer, body.typeId ?? current.type_id);
+    const patchTypeId = trailerDrivenTypeId(patchTrailer, body.typeId ?? current.type_id,
+      { explicit: body.typeId !== undefined && body.typeId !== current.type_id });
     // Жизненный цикл: статус «Выведен» несёт дату вывода (можно задним
     // числом, по умолчанию сегодня); возврат в работу дату очищает.
     const patchStatus = body.status ?? current.status;
@@ -9043,6 +9055,16 @@ async function api(request, response, url) {
     const plate = decodeURIComponent(match[0]).trim();
     const trailer = db.prepare('SELECT plate, out_since FROM trailers WHERE plate=?').get(plate);
     if (!trailer) return errorJson(response, 404, 'Прицеп не найден в реестре');
+    if (body.typeId !== undefined) {
+      const typeRow = db.prepare('SELECT id, name FROM vehicle_types WHERE id=?').get(body.typeId);
+      if (!typeRow) return errorJson(response, 422, 'Неизвестный тип кузова');
+      db.prepare(`UPDATE trailers SET type_id=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+        .run(typeRow.id, plate);
+      // Сцепка-держатель выравнивается сразу, не ждёт ежечасный сторож.
+      db.prepare(`UPDATE vehicles SET type_id=?, updated_at=CURRENT_TIMESTAMP
+        WHERE TRIM(COALESCE(trailer_plate,''))=? AND status<>'out'`).run(typeRow.id, plate);
+      audit(db, user, 'update', 'trailer', plate, body, requestIp(request));
+    }
     if (body.outSince !== undefined) {
       if (body.outSince) {
         const holder = db.prepare(`SELECT plate FROM vehicles
