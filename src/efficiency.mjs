@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { DONE_STATUSES, calcSettings, tripNet } from './money.mjs';
+import { effectiveArrival, effectiveFinish } from './crew-fund.mjs';
 
 export function effPeriodData(db, from, to, parkFn) {
   const calc = calcSettings(db);
@@ -88,11 +89,79 @@ export function effServiceData(db, from, to) {
   };
 }
 
+// ── Метрики потока канбан-доски (этап 3а, 11.10) ────────────────────
+// Lead time колонок (медианы по закрытым рейсам, канон effectiveArrival/
+// Finish), дисциплина отметок в реальный момент (ручной факт внесён в
+// ≤30 мин от события), «выгружен позже убытия 12+ ч», участие смены и
+// выученные ёмкости — база «до/после» для оценки эффекта доски.
+export function effBoardData(db, from, to) {
+  const median = list => { const l = list.filter(Number.isFinite).sort((a, b) => a - b);
+    return l.length ? +(l[Math.floor(l.length / 2)]).toFixed(1) : null; };
+  const hours = (a, b) => a && b
+    ? (Date.parse(String(b).replace(' ', 'T')) - Date.parse(String(a).replace(' ', 'T'))) / 3.6e6 : null;
+  const rows = db.prepare(`SELECT t.logist_confirmed_at, t.on_line_at, t.arrived_at, t.unloaded_at,
+      (SELECT MIN(s.actual_departure) FROM trip_stops s
+        WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
+      (SELECT MAX(s.actual_arrival) FROM trip_stops s
+        WHERE s.trip_id=t.id AND s.kind='D' AND s.actual_arrival IS NOT NULL) arr_d,
+      (SELECT MAX(s.actual_departure) FROM trip_stops s
+        WHERE s.trip_id=t.id AND s.kind='D' AND s.actual_departure IS NOT NULL) dep_d
+    FROM trips t WHERE t.status IN ('unloaded','done','paid')
+      AND t.unloaded_at >= ? AND t.unloaded_at < ?`).all(from, to);
+  const lead = { prep: [], load: [], road: [], unload: [] };
+  let lateClose12 = 0;
+  for (const r of rows) {
+    const arrived = effectiveArrival(r.dep, r.arrived_at, r.arr_d);
+    const fin = effectiveFinish(arrived || r.dep, r.unloaded_at, r.dep_d) || r.unloaded_at;
+    lead.prep.push(hours(r.logist_confirmed_at, r.on_line_at));
+    lead.load.push(hours(r.on_line_at, r.dep));
+    lead.road.push(hours(r.dep, arrived));
+    lead.unload.push(hours(arrived, fin));
+    if (r.dep_d && r.unloaded_at
+      && Date.parse(String(r.unloaded_at).replace(' ', 'T')) -
+         Date.parse(String(r.dep_d).replace(' ', 'T')) > 12 * 3.6e6) lateClose12 += 1;
+  }
+  // Дисциплина: ручной факт точки внесён в ≤30 мин от самого события
+  // (updated_at против actual_*; GPS-автофакты не считаем — интересны люди).
+  const facts = db.prepare(`SELECT actual_arrival, actual_departure, updated_at
+    FROM trip_stops WHERE auto_source IS NULL AND updated_by IS NOT NULL
+      AND updated_at >= ? AND updated_at < ?
+      AND (actual_arrival IS NOT NULL OR actual_departure IS NOT NULL)`)
+    .all(`${from} 00:00:00`, `${to} 00:00:00`);
+  let realtime = 0;
+  for (const f of facts) {
+    const upd = Date.parse(String(f.updated_at).replace(' ', 'T') + 'Z');
+    const evs = [f.actual_arrival, f.actual_departure]
+      .filter(Boolean).map(v => Date.parse(String(v).replace(' ', 'T')));
+    if (evs.some(ev => Math.abs(upd - ev) <= 30 * 60_000)) realtime += 1;
+  }
+  const marks = db.prepare(`SELECT COUNT(*) n, COUNT(DISTINCT done_by) people,
+      COUNT(DISTINCT day) days FROM task_marks
+    WHERE kind='dispatcher' AND day >= ? AND day < ? AND item_key NOT LIKE 'claim|%'`)
+    .get(from, to);
+  let capacity = null;
+  try { capacity = JSON.parse(db.prepare(`SELECT value FROM app_meta
+    WHERE key='dispatcher_capacity'`).get()?.value || 'null'); } catch { capacity = null; }
+  return {
+    trips: rows.length,
+    leadPrepH: median(lead.prep), leadLoadH: median(lead.load),
+    leadRoadH: median(lead.road), leadUnloadH: median(lead.unload),
+    lateClose12,
+    factsManual: facts.length,
+    realtimeSharePct: facts.length ? Math.round(realtime / facts.length * 100) : null,
+    ctrlMarksPerDay: marks.days ? Math.round(marks.n / marks.days) : 0,
+    ctrlPeople: marks.people,
+    shiftCapacity: capacity ? { fallback: capacity.fallback, caps: capacity.caps } : null
+  };
+}
+
 export function effReport(db, { from, to, baseFrom, baseTo }, parkFn) {
   return {
     period: effPeriodData(db, from, to, parkFn),
     base: baseFrom ? effPeriodData(db, baseFrom, baseTo, parkFn) : null,
     service: effServiceData(db, from, to),
+    board: effBoardData(db, from, to),
+    boardBase: baseFrom ? effBoardData(db, baseFrom, baseTo) : null,
     initiatives: db.prepare(`SELECT id, title, area, target, result, status, effect_rub
       FROM project_initiatives WHERE status IN ('doing','done')
         AND updated_at >= ? ORDER BY status, updated_at DESC LIMIT 10`).all(`${from} 00:00:00`)

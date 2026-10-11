@@ -18,6 +18,7 @@ import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '.
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
 import { dispatcherShiftLoad, rebuildDispatcherCapacity } from '../src/dispatch-load.mjs';
+import { effBoardData } from '../src/efficiency.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
   const password = 'Very-strong-password-2026';
@@ -4347,4 +4348,34 @@ test('лимиты диспетчерской: ёмкость учится из 
   });
   const second = rebuildDispatcherCapacity(db);
   assert.equal(second.snapshot.caps['Стахановец К'], 60, 'кламп сверху 60');
+});
+
+test('метрики доски (3а): lead time колонок и дооформления', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-board-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zones = db.prepare('SELECT id FROM zones LIMIT 2').all();
+  // Рейс: подтверждён 00:00 → на линию 02:00 → убыл 06:00 → прибыл 16:00
+  // → выгружен 18:00 (валидно). Ожидания: prep 2, load 4, road 10, unload 2.
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+      status,starts_at,ends_at,logist_confirmed_at,on_line_at,arrived_at,unloaded_at,
+      distance_km,revenue_vat)
+    VALUES('bm-1',?, 'Т', ?, ?, 'unloaded','2026-10-05T02:00:00Z','2026-10-05T18:00:00Z',
+      '2026-10-05T00:00:00Z','2026-10-05T02:00:00Z','2026-10-05T16:00:00Z','2026-10-05T18:00:00Z',
+      500, 100000)`).run(vehicle, zones[0].id, zones[1].id);
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,actual_arrival,actual_departure)
+    VALUES('bm-s1','bm-1',1,'P','А','2026-10-05T04:00:00Z','2026-10-05T06:00:00Z')`).run();
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,actual_arrival,actual_departure)
+    VALUES('bm-s2','bm-1',2,'D','Б','2026-10-05T16:00:00Z','2026-10-05T17:30:00Z')`).run();
+  const out = effBoardData(db, '2026-10-05', '2026-10-06');
+  assert.equal(out.trips, 1);
+  assert.equal(out.leadPrepH, 2);
+  assert.equal(out.leadLoadH, 4);
+  assert.equal(out.leadRoadH, 10);
+  assert.equal(out.leadUnloadH, 2);
+  assert.equal(out.lateClose12, 0, '«выгружен» в пределах 12 ч от убытия');
 });

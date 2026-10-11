@@ -124,6 +124,16 @@ export async function renderEfficiency(container, context, { issueId = null } = 
 
     <section class="eff-slide">
       <h3>Люди и сервис</h3>
+      ${data.board ? `<table class="rtable"><thead><tr><th>🗂 Доска диспетчерской</th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
+        <tr><td>Подготовка: подтверждён → на линию, ч</td><td class="num"><b>${data.board.leadPrepH ?? '—'}</b></td><td class="num">${data.boardBase?.leadPrepH ?? '—'}</td><td class="num">${delta(data.board.leadPrepH, data.boardBase?.leadPrepH, { invert: true })}</td></tr>
+        <tr><td>Погрузка: на линии → убыл, ч</td><td class="num"><b>${data.board.leadLoadH ?? '—'}</b></td><td class="num">${data.boardBase?.leadLoadH ?? '—'}</td><td class="num">${delta(data.board.leadLoadH, data.boardBase?.leadLoadH, { invert: true })}</td></tr>
+        <tr><td>В пути: убыл → прибыл, ч</td><td class="num"><b>${data.board.leadRoadH ?? '—'}</b></td><td class="num">${data.boardBase?.leadRoadH ?? '—'}</td><td class="num">${delta(data.board.leadRoadH, data.boardBase?.leadRoadH, { invert: true })}</td></tr>
+        <tr><td>Выгрузка: прибыл → выгружен, ч</td><td class="num"><b>${data.board.leadUnloadH ?? '—'}</b></td><td class="num">${data.boardBase?.leadUnloadH ?? '—'}</td><td class="num">${delta(data.board.leadUnloadH, data.boardBase?.leadUnloadH, { invert: true })}</td></tr>
+        <tr><td>Отметки в реальный момент (≤30 мин)</td><td class="num"><b>${data.board.realtimeSharePct ?? '—'}%</b></td><td class="num">${data.boardBase?.realtimeSharePct ?? '—'}%</td><td class="num">${delta(data.board.realtimeSharePct, data.boardBase?.realtimeSharePct, { pp: true })}</td></tr>
+        <tr><td>«Выгружен» позже убытия 12+ ч</td><td class="num"><b>${data.board.lateClose12 ?? '—'}</b></td><td class="num">${data.boardBase?.lateClose12 ?? '—'}</td><td class="num">${delta(data.board.lateClose12, data.boardBase?.lateClose12, { invert: true })}</td></tr>
+        <tr><td>Контроль: отметок/день · людей</td><td class="num"><b>${data.board.ctrlMarksPerDay ?? 0} · ${data.board.ctrlPeople ?? 0}</b></td><td class="num">${data.boardBase ? `${data.boardBase.ctrlMarksPerDay} · ${data.boardBase.ctrlPeople}` : '—'}</td><td class="num"></td></tr>
+      </tbody></table>
+      ${data.board.shiftCapacity ? `<p class="muted" style="margin:4px 0 10px">Ёмкость смены (выучена из факта, видна только здесь и руководителю): ${Object.entries(data.board.shiftCapacity.caps || {}).map(([n, c]) => `${escapeHtml(n.split(' ').slice(0, 2).join(' '))} — ${c}`).join(' · ') || '—'} · фолбэк ${data.board.shiftCapacity.fallback}</p>` : ''}` : ''}
       <table class="rtable"><tbody>
         <tr><td>Адресность карточек звонка</td><td class="num"><b>${S.inTotal ? Math.round(S.inAddressed / S.inTotal * 100) + '%' : '—'}</b></td><td class="muted">цель > 60% · входящих ${num(S.inTotal || 0)}</td></tr>
         <tr><td>Перезвон по пропущенным, медиана</td><td class="num"><b>${S.callbackMedianMin ?? '—'} мин</b></td><td class="muted">норматив 10 мин</td></tr>

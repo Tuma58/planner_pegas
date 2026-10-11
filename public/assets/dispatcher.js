@@ -1434,7 +1434,13 @@ export async function renderDispatcher(container, context, options = {}) {
     const prepLimit = planned.filter(trip =>
       Date.parse(trip.starts_at) - Date.now() <= 24 * 3.6e6).length;
     const prepTotal = preparing.length + waitingLogist.length;
-    const shiftPeople = (state.shiftLoad?.people || []).slice(0, 8);
+    // Решение руководителя 11.10: сравнение темпа коллег — не для общего
+    // экрана (демотивация/несправедливость). Каждый видит ТОЛЬКО свой
+    // бар; полный разрез смены — у ролей с reports:read (руководитель)
+    // и в пятничном выпуске «Эффективности».
+    const shiftAll = state.shiftLoad?.people || [];
+    const shiftPeople = (can('reports:read') ? shiftAll
+      : shiftAll.filter(p => p.name === (state.data.user.fullName || ''))).slice(0, 8);
     const shiftBar = person => {
       const over = person.today > person.cap;
       const pct = Math.min(100, Math.round(person.today / Math.max(1, person.cap) * 100));
@@ -1466,7 +1472,7 @@ export async function renderDispatcher(container, context, options = {}) {
           value="${escapeHtml(state.dispatcherQuery || '')}">
       </div>
       ${shiftPeople.length ? `<div class="kb-shift">
-        <span class="kb-shift-t">Смена · ёмкость из факта (медиана за 14 дн, пересчёт ночью)</span>
+        <span class="kb-shift-t">${can('reports:read') ? 'Смена · ёмкость из факта (медиана за 14 дн, пересчёт ночью)' : 'Ваш темп сегодня · личная норма из вашего факта (14 дн)'}</span>
         <div class="kb-shift-row">${shiftPeople.map(shiftBar).join('')}</div>
       </div>` : ''}
       ${questionCards ? `<details class="questions-strip compact" data-disp-questions ${questionsOpen ? 'open' : ''}>
