@@ -1896,3 +1896,21 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .dsf-ok { background:rgba(63,138,120,.12); }
 .dsf-warn { background:rgba(189,143,66,.14); }
 .dsf-bad { background:rgba(180,95,82,.16); color:var(--bad); }
+
+/* 📅 Табель смен офиса */
+.ts-wrap { max-width:none; }
+.ts-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+.ts-scroll { overflow:auto; max-height:72vh; }
+.ts-table { border-collapse:collapse; font-size:12px; width:max-content; }
+.ts-table th, .ts-table td { border:1px solid var(--line); padding:2px 5px; text-align:center; min-width:24px; }
+.ts-table thead th { position:sticky; top:0; background:var(--panel2); z-index:2; }
+.ts-name { position:sticky; left:0; background:var(--card); text-align:left !important; white-space:nowrap; max-width:220px; overflow:hidden; text-overflow:ellipsis; z-index:1; }
+.ts-name small { display:block; }
+.ts-cell { cursor:pointer; user-select:none; }
+.ts-cell:hover { outline:2px solid var(--accent, #4a7); outline-offset:-2px; }
+.ts-d { background:rgba(63,138,120,.25); }
+.ts-n { background:rgba(74,120,200,.25); }
+.ts-o { background:rgba(255,212,121,.4); }
+.ts-b { background:rgba(150,150,150,.3); }
+.ts-we { box-shadow:inset 0 0 0 99px rgba(184,53,42,.06); }
+.ts-sum { white-space:nowrap; font-variant-numeric:tabular-nums; }

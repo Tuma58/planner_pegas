@@ -99,6 +99,8 @@ export async function renderStaff(container, context) {
       </span>
       <input id="staffSearch" class="block-search" placeholder="Поиск по всем: ФИО, должность, телефон, сцепка"
         value="${escapeHtml(state.staffQuery || '')}" style="flex:1;min-width:180px;max-width:360px">
+      <button class="button small ghost" id="staffTimesheet"
+        title="Общий план-график смен офиса на месяц: Д/Н/отпуск/болезнь, клик по клетке — цикл, печать">📅 Табель смен</button>
       <button class="button small ghost" id="staffAts"
         title="Абоненты АТС Билайн: кто из сотрудников на каком добавочном; несопоставленные номера — привязать или оставить незадействованными">☎ Сверка с АТС</button>
       <button class="button small" id="staffAddUser">+ Сотрудник</button>
@@ -129,6 +131,7 @@ export async function renderStaff(container, context) {
   });
   container.querySelector('#staffAddUser').onclick = () => staffEditDialog(context, null,
     () => renderStaff(container, context));
+  container.querySelector('#staffTimesheet').onclick = () => staffTimesheetDialog(context);
   container.querySelector('#staffAts').onclick = () => staffAtsDialog(context,
     () => renderStaff(container, context));
   container.querySelector('#staffAddDriver').onclick = () => context.openDrivers?.();
@@ -440,4 +443,122 @@ function staffEditDialog(context, person, after) {
       document.querySelector('#staffFormError').textContent = error.message;
     }
   });
+}
+
+
+// ── 📅 Табель смен офиса (заказ руководителя 11.10) ─────────────────
+// Общий план-график на месяц: строки — сотрудники, колонки — дни.
+// Клик по клетке — цикл «пусто → Д → Н → ОТ → Б → пусто» (точная
+// установка дня, API exclusive); листается на любой месяц; печать —
+// чистой страницей в альбомной ориентации.
+const TS_CYCLE = [null, 'day', 'night', 'vacation', 'sick'];
+const TS_LABEL = { day: 'Д', night: 'Н', vacation: 'ОТ', sick: 'Б' };
+const TS_CLASS = { day: 'ts-d', night: 'ts-n', vacation: 'ts-o', sick: 'ts-b' };
+
+export async function staffTimesheetDialog(context) {
+  const { state, showModal } = context;
+  state.tsMonth = state.tsMonth || new Date().toISOString().slice(0, 7);
+  const render = async () => {
+    const month = state.tsMonth;
+    const daysInMonth = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+    const from = `${month}-01`;
+    const to = `${month}-${String(daysInMonth).padStart(2, '0')}`;
+    let payload;
+    try { payload = await api(`/api/staff-shifts?from=${from}&to=${to}`); }
+    catch (error) { toast(error.message, 'error'); return; }
+    // Офисные: водителей в табеле нет (их график — в «Ресурсе»).
+    const staff = payload.staff.filter(person => person.role !== 'driver');
+    const byUser = new Map();
+    for (const item of payload.items) {
+      if (!byUser.has(item.user_id)) byUser.set(item.user_id, {});
+      byUser.get(item.user_id)[item.day] = item.kind;
+    }
+    const isWeekend = dayNo => [0, 6].includes(
+      new Date(Date.parse(`${month}-${String(dayNo).padStart(2, '0')}T00:00:00Z`)).getUTCDay());
+    const headDays = Array.from({ length: daysInMonth }, (_, i) =>
+      `<th class="${isWeekend(i + 1) ? 'ts-we' : ''}">${i + 1}</th>`).join('');
+    const rows = staff.map(person => {
+      const days = byUser.get(person.id) || {};
+      const counts = { day: 0, night: 0, vacation: 0, sick: 0 };
+      const cells = Array.from({ length: daysInMonth }, (_, i) => {
+        const iso = `${month}-${String(i + 1).padStart(2, '0')}`;
+        const kind = days[iso] || null;
+        if (kind && counts[kind] != null) counts[kind] += 1;
+        return `<td class="ts-cell ${kind ? TS_CLASS[kind] : ''} ${isWeekend(i + 1) ? 'ts-we' : ''}"
+          data-ts-cell="${person.id}|${iso}" data-ts-kind="${kind || ''}"
+          title="${escapeHtml(person.full_name)} · ${iso} — клик: пусто → Д → Н → ОТ → Б">${kind ? TS_LABEL[kind] : ''}</td>`;
+      }).join('');
+      return `<tr><td class="ts-name">${escapeHtml(person.full_name)}
+          <small class="muted">${escapeHtml(person.job_role || '')}</small></td>
+        ${cells}
+        <td class="ts-sum">${counts.day}/${counts.night}${counts.vacation ? ` · от ${counts.vacation}` : ''}${counts.sick ? ` · б ${counts.sick}` : ''}</td></tr>`;
+    }).join('');
+    const dayTotals = Array.from({ length: daysInMonth }, (_, i) => {
+      const iso = `${month}-${String(i + 1).padStart(2, '0')}`;
+      let n = 0;
+      for (const person of staff) {
+        const kind = (byUser.get(person.id) || {})[iso];
+        if (kind === 'day' || kind === 'night') n += 1;
+      }
+      return `<td class="${isWeekend(i + 1) ? 'ts-we' : ''}">${n || ''}</td>`;
+    }).join('');
+    showModal(`<div class="ts-wrap" id="tsWrap">
+      <div class="ts-bar">
+        <h2 style="margin:0">📅 Табель смен офиса</h2>
+        <span class="resctl-group">
+          <button class="button small ghost" id="tsPrev">◀</button>
+          <b style="padding:0 10px">${month}</b>
+          <button class="button small ghost" id="tsNext">▶</button>
+        </span>
+        <span class="muted">Д — дневная · Н — ночная · ОТ — отпуск · Б — больничный · клик по клетке меняет план</span>
+        <button class="button small" id="tsPrint">🖨 Печать</button>
+        <button class="button small ghost" data-close>Закрыть</button>
+      </div>
+      <div class="ts-scroll"><table class="ts-table" id="tsTable">
+        <thead><tr><th class="ts-name">Сотрудник</th>${headDays}<th class="ts-sum">Д/Н</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td class="ts-name">В смене (Д+Н)</td>${dayTotals}<td></td></tr></tfoot>
+      </table></div>
+    </div>`, { wide: true });
+    document.getElementById('tsPrev').onclick = () => { state.tsMonth = shiftMonth(month, -1); render(); };
+    document.getElementById('tsNext').onclick = () => { state.tsMonth = shiftMonth(month, 1); render(); };
+    document.getElementById('tsPrint').onclick = () => {
+      const win = window.open('', '_blank');
+      win.document.write(`<html><head><title>Табель смен · ${month}</title><style>
+        body{font:11px/1.3 "Segoe UI",Arial,sans-serif;margin:10mm}
+        h2{font-size:14px;margin:0 0 8px}
+        table{border-collapse:collapse;width:100%}
+        th,td{border:1px solid #999;padding:1px 3px;text-align:center;font-size:10px}
+        td:first-child,th:first-child{text-align:left;white-space:nowrap}
+        .ts-d{background:#cfe8d1}.ts-n{background:#cddff5}.ts-o{background:#ffe7ad}.ts-b{background:#e3e3e3}
+        .ts-we{background:#f6dede}
+        @page{size:landscape;margin:8mm}
+      </style></head><body>
+      <h2>Табель смен офиса · ${month}</h2>
+      ${document.getElementById('tsTable').outerHTML}
+      <p>Д — дневная · Н — ночная · ОТ — отпуск · Б — больничный. Сформировано ${new Date().toLocaleString('ru-RU')}.</p>
+      </body></html>`);
+      win.document.close();
+      win.focus();
+      win.print();
+    };
+    document.querySelectorAll('[data-ts-cell]').forEach(cell => cell.onclick = async () => {
+      const [userId, iso] = cell.dataset.tsCell.split('|');
+      const current = cell.dataset.tsKind || null;
+      const next = TS_CYCLE[(TS_CYCLE.indexOf(current) + 1) % TS_CYCLE.length];
+      try {
+        await api('/api/staff-shifts', { method: 'POST',
+          body: JSON.stringify({ exclusive: true, userId, day: iso, kind: next }) });
+        cell.dataset.tsKind = next || '';
+        cell.className = `ts-cell ${next ? TS_CLASS[next] : ''} ${cell.classList.contains('ts-we') ? 'ts-we' : ''}`;
+        cell.textContent = next ? TS_LABEL[next] : '';
+      } catch (error) { toast(error.message, 'error'); }
+    });
+  };
+  const shiftMonth = (month, delta) => {
+    const d = new Date(Date.parse(month + '-01T00:00:00Z'));
+    d.setUTCMonth(d.getUTCMonth() + delta);
+    return d.toISOString().slice(0, 7);
+  };
+  await render();
 }

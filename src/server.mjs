@@ -6708,6 +6708,24 @@ async function api(request, response, url) {
     const user = requirePermission(request, response, 'shifts:write');
     if (!user) return;
     const body = await readJson(request);
+    // Табель (заказ руководителя 11.10): точная установка дня — один вид
+    // на день (Д/Н/ОТ/Б) или очистка; прежний переключатель не тронут.
+    if (body.exclusive) {
+      const exDay = String(body.day || '').slice(0, 10);
+      const exKind = ['day', 'night', 'vacation', 'sick'].includes(body.kind) ? body.kind : null;
+      const exTarget = db.prepare(`SELECT id FROM users WHERE id=? AND active=1 AND deleted_at IS NULL`)
+        .get(String(body.userId || ''));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(exDay) || !exTarget) {
+        return errorJson(response, 422, 'Нужны userId и day (ГГГГ-ММ-ДД)');
+      }
+      db.prepare(`DELETE FROM staff_shifts WHERE user_id=? AND day=?`).run(exTarget.id, exDay);
+      if (exKind) {
+        db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind,created_by) VALUES(?,?,?,?,?)`)
+          .run(randomUUID(), exTarget.id, exDay, exKind, user.id);
+      }
+      audit(db, user, 'shift-set', 'user', exTarget.id, { day: exDay, kind: exKind || 'clear' }, requestIp(request));
+      return json(response, 200, { kind: exKind });
+    }
     const day = String(body.day || '').slice(0, 10);
     const kind = ['day', 'night'].includes(body.kind) ? body.kind : null;
     const target = db.prepare(`SELECT id FROM users WHERE id=? AND active=1 AND deleted_at IS NULL`)
