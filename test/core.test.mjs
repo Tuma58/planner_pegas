@@ -3771,6 +3771,22 @@ test('авто-факты: GPS ставит промежуточные, цепо
   assert.equal(lastStop.work_finished_at, null, 'работы не штампуются');
 });
 
+test('график: резолвер ФИО — суффиксы вахты, сокращения, тёзки', async () => {
+  const { canonFio, resolveFio } = await import('../src/schedule.mjs');
+  assert.equal(canonFio('Стрельников Виктор Борисович 30/15'), 'стрельников виктор борисович');
+  assert.equal(canonFio('Толмачёв Дмитрий'), 'толмачев дмитрий');
+  const index = { exact: new Map([['оськин дмитрий александрович', 'id-dm'],
+      ['оськин геннадий иванович', 'id-gen'], ['тёзкин иван иванович', null]]),
+    list: [{ key: 'оськин дмитрий александрович', id: 'id-dm' },
+      { key: 'оськин геннадий иванович', id: 'id-gen' },
+      { key: 'тюгаев ильяс равилевич', id: 'id-tyu' }] };
+  assert.equal(resolveFio(index, 'Оськин Дмитрий Александрович'), 'id-dm', 'точное ФИО');
+  assert.equal(resolveFio(index, 'Тёзкин Иван Иванович'), null, 'полный тёзка — пропуск');
+  assert.equal(resolveFio(index, 'Оськин Дмитрий 20/10'), 'id-dm', 'суффикс вахты отрезан, префикс однозначен');
+  assert.equal(resolveFio(index, 'Тюгаев И'), 'id-tyu', 'сокращение до инициала');
+  assert.equal(resolveFio(index, 'Оськин'), null, 'одна фамилия — не гадаем');
+});
+
 test('окно клиента неприкосновенно: ухудшающий сдвиг ловится, легальные — нет', async () => {
   const { windowViolationMs, shiftWorsensWindow } = await import('../src/trip-control.mjs');
   const order = { window_from: '2026-10-10T08:00:00Z', window_to: '2026-10-11T20:00:00Z' };

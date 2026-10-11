@@ -86,11 +86,7 @@ export function applyScheduleSync(db, body = {}, userId = null) {
 export function projectPlanToTable(db, crewIds = null) {
   const crews = loadCrews(db, crewIds);
   if (!crews.size) return { drivers: 0, cells: 0 };
-  const idByFio = new Map();
-  for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
-    const key = canonFio(row.full_name);
-    idByFio.set(key, idByFio.has(key) ? null : row.id);
-  }
+  const fioIndex = buildFioIndex(db);
   const vehByPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
     .map(v => [canonPlate(v.plate), v.id]));
   const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
@@ -108,30 +104,43 @@ export function projectPlanToTable(db, crewIds = null) {
     code=excluded.code, vehicle_id=excluded.vehicle_id, updated_at=CURRENT_TIMESTAMP`);
   let drivers = 0;
   let cells = 0;
+  // Мерж строк одного водителя (кейс Толмачёва/Семисотова 11.10: человек
+  // в двух строках графика — старой и новой, пустая строка затирала план
+  // через del+put «последний победил»). Сначала собирается объединённый
+  // план по водителю (непустой код побеждает пустоту, при двух непустых —
+  // поздняя строка), запись в таблицу — одним проходом.
+  const planByDriver = new Map();
+  for (const crew of crews.values()) {
+    const ownOf = new Map((crew.ts || []).map(ts =>
+      [ts.id, vehByPlate.get(canonPlate(ts.tyagach)) || null]));
+    for (const drv of crew.drv || []) {
+      if (drv.vac) continue;
+      const driverId = resolveFio(fioIndex, drv.fio);
+      if (!driverId) continue;
+      if (!planByDriver.has(driverId)) planByDriver.set(driverId, new Map());
+      const slot = planByDriver.get(driverId);
+      const own = ownOf.get(drv.ts) || null;
+      for (const mk of months) {
+        const arr = (drv.plan || {})[mk];
+        if (!arr) continue;
+        for (let index = 0; index < arr.length; index += 1) {
+          const code = String(arr[index] || '').trim();
+          if (!code) continue;
+          const day = `${mk}-${String(index + 1).padStart(2, '0')}`;
+          if (day < fromDay || day >= toDay) continue;
+          slot.set(day, { code, own });
+        }
+      }
+    }
+  }
   db.exec('BEGIN IMMEDIATE');
   try {
-    for (const crew of crews.values()) {
-      const ownOf = new Map((crew.ts || []).map(ts =>
-        [ts.id, vehByPlate.get(canonPlate(ts.tyagach)) || null]));
-      for (const drv of crew.drv || []) {
-        if (drv.vac) continue;
-        const driverId = idByFio.get(canonFio(drv.fio));
-        if (!driverId) continue;
-        drivers += 1;
-        del.run(driverId, fromDay, toDay);
-        const own = ownOf.get(drv.ts) || null;
-        for (const mk of months) {
-          const arr = (drv.plan || {})[mk];
-          if (!arr) continue;
-          for (let index = 0; index < arr.length; index += 1) {
-            const code = String(arr[index] || '').trim();
-            if (!code) continue;
-            const day = `${mk}-${String(index + 1).padStart(2, '0')}`;
-            if (day < fromDay || day >= toDay) continue;
-            put.run(driverId, day, code, own);
-            cells += 1;
-          }
-        }
+    for (const [driverId, slot] of planByDriver) {
+      drivers += 1;
+      del.run(driverId, fromDay, toDay);
+      for (const [day, cell] of slot) {
+        put.run(driverId, day, cell.code, cell.own);
+        cells += 1;
       }
     }
     db.exec('COMMIT');
@@ -149,11 +158,7 @@ export function projectPlanToTable(db, crewIds = null) {
 // единственный источник живого плана: что бы её ни поменяло, сетка
 // покажет это при следующем обмене.
 export function overlayPlanFromTable(db, crewsObj) {
-  const idByFio = new Map();
-  for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
-    const key = canonFio(row.full_name);
-    idByFio.set(key, idByFio.has(key) ? null : row.id);
-  }
+  const fioIndex = buildFioIndex(db);
   const todayMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
   const fromDay = dayIso(todayMs, -35);
   const end = new Date(todayMs);
@@ -172,7 +177,7 @@ export function overlayPlanFromTable(db, crewsObj) {
   for (const crew of Object.values(crewsObj || {})) {
     for (const drv of crew.drv || []) {
       if (drv.vac) continue;
-      const driverId = idByFio.get(canonFio(drv.fio));
+      const driverId = resolveFio(fioIndex, drv.fio);
       if (!driverId) continue;
       const cells = byDriver.get(driverId) || new Map();
       drv.plan = drv.plan || {};
@@ -206,8 +211,32 @@ const dayIso = (base, offset) =>
 // Каноническое ФИО для сличения график ↔ планер (то же правило, что в
 // достройке: скобки-пометки отбрасываются, регистр и пробелы неважны).
 const fioWords = value => String(value || '').toLowerCase().replace(/ё/g, 'е')
-  .replace(/\([^)]*\)/g, ' ').split(/\s+/).filter(Boolean);
+  .replace(/\([^)]*\)/g, ' ').split(/\s+/)
+  .filter(word => word && !/^\d+\/\d+$/.test(word)); // «20/10» — режим вахты, не имя
 export const canonFio = value => fioWords(value).join(' ');
+
+// Единый резолвер «ФИО графика → водитель справочника» (сессия 4-prep,
+// 11.10): точное каноническое ФИО (null при тёзках), а для сокращённых
+// записей графика («Тюгаев И», «Пупков Сергей») — префикс, если он
+// указывает РОВНО на одного активного водителя; неоднозначное — пропуск.
+export function buildFioIndex(db) {
+  const exact = new Map();
+  const list = [];
+  for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
+    const key = canonFio(row.full_name);
+    exact.set(key, exact.has(key) ? null : row.id);
+    list.push({ key, id: row.id });
+  }
+  return { exact, list };
+}
+export function resolveFio(index, fio) {
+  const key = canonFio(fio);
+  if (!key) return null;
+  if (index.exact.has(key)) return index.exact.get(key);
+  if (key.split(' ').length < 2) return null; // одна фамилия — не гадаем
+  const hits = index.list.filter(item => item.key.startsWith(key));
+  return hits.length === 1 ? hits[0].id : null;
+}
 const canonPlate = value => String(value || '').toLowerCase().replace(/\s+/g, '');
 const tail3 = plate => (String(plate).match(/\d{3}/) || [''])[0];
 const crews0 = db => db.prepare('SELECT COUNT(*) c FROM schedule_crews').get().c;
