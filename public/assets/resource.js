@@ -1289,12 +1289,57 @@ function renderResourceTasks(container, context, refDay, withState) {
     }));
 }
 
-// Вид «График» — главный вид вкладки Ресурс (решение руководителя
-// 04.10: «Ресурс = График главным видом», шаг 1 варианта В): страница
-// графика встраивается рамкой в рабочую область планера (embed-режим
-// прячет её шапку, тему проставляет планер). Шаг 2 — перенос кода
-// внутрь планера модулем — после стабилизации, заходами.
-function renderScheduleFrame(container, context) {
+// Вид «График» — главный вид вкладки Ресурс. Сессия 4 (11.10): график
+// живёт НАТИВНО в планере, без iframe. Узел с разметкой страницы
+// создаётся ОДИН раз и хранится в document.body (#schedKeeper, скрыт),
+// во вкладку лишь переставляется: schedule.js навешивает слушатели при
+// единственной загрузке, и переключения видов их не убивают. Страница
+// /schedule остаётся рабочей страховкой (тот же фрагмент и скрипт).
+let scheduleKeeperPromise = null;
+function ensureScheduleKeeper() {
+  if (scheduleKeeperPromise) return scheduleKeeperPromise;
+  scheduleKeeperPromise = (async () => {
+    if (!document.getElementById('schedCss')) {
+      const link = document.createElement('link');
+      link.id = 'schedCss';
+      link.rel = 'stylesheet';
+      link.href = '/schedule.css';
+      document.head.appendChild(link);
+    }
+    const keeper = document.createElement('div');
+    keeper.id = 'schedKeeper';
+    keeper.className = 'schedview embed';
+    keeper.dataset.native = '1';
+    keeper.hidden = true;
+    document.body.appendChild(keeper);
+    const res = await fetch('/schedule/fragment', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`График не загрузился (${res.status})`);
+    keeper.innerHTML = await res.text();
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '/schedule.js';
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('schedule.js не загрузился'));
+      document.body.appendChild(script);
+    });
+    return keeper;
+  })();
+  scheduleKeeperPromise.catch(() => {
+    document.getElementById('schedKeeper')?.remove();
+    scheduleKeeperPromise = null; // следующий заход попробует заново
+  });
+  return scheduleKeeperPromise;
+}
+// Парковка перед чужими перерисовками: узел возвращается в body скрытым,
+// иначе container.innerHTML соседнего вида снесёт живой график.
+export function parkScheduleKeeper() {
+  const keeper = document.getElementById('schedKeeper');
+  if (keeper) {
+    keeper.hidden = true;
+    if (keeper.parentElement !== document.body) document.body.appendChild(keeper);
+  }
+}
+function renderScheduleNative(container, context) {
   const { state } = context;
   const html = `<div class="resboard schedwrap">
     <div class="schedhead">
@@ -1307,22 +1352,28 @@ function renderScheduleFrame(container, context) {
         title="Справочник водителей: добавить и уволить, отпуска и больничные, закрепление за сцепками">Водители</button>` : ''}
       <span class="muted schedhint">экипажи · план/факт · пересменки · сверхвахта к доплате — главный инструмент планирования людей</span>
     </div>
-    <iframe class="schedframe" id="schedFrame" src="/schedule?embed=1" title="График работы"></iframe>
+    <div id="schedSlot"><div class="muted" id="schedLoad">⏳ График загружается…</div></div>
   </div>`;
-  // Разметка стабильна: тики автообновления планера iframe не трогают.
   if (renderInto(container, html)) {
     container.querySelector('#resViewGantt').onclick = () => {
+      parkScheduleKeeper();
       state.resourceView = 'gantt';
       (context.rerenderMain || (() => renderResource(container, context)))();
     };
     const driversButton = container.querySelector('#schedDrivers');
     if (driversButton) driversButton.onclick = () => context.openDrivers();
-    const frame = container.querySelector('#schedFrame');
-    frame.addEventListener('load', () => {
-      try {
-        frame.contentDocument.documentElement.dataset.theme =
-          document.documentElement.dataset.theme || 'dark';
-      } catch { /* чужой origin невозможен (same-origin), но на всякий */ }
+  }
+  const slot = container.querySelector('#schedSlot');
+  if (slot) {
+    ensureScheduleKeeper().then(keeper => {
+      // Пока грузились, пользователь мог уйти с вида — не вытаскиваем.
+      if (!document.body.contains(slot) || state.resourceView !== 'schedule') return;
+      container.querySelector('#schedLoad')?.remove();
+      if (keeper.parentElement !== slot) slot.appendChild(keeper);
+      keeper.hidden = false;
+    }).catch(error => {
+      const note = container.querySelector('#schedLoad');
+      if (note) note.textContent = `⚠ ${error.message} — обновите страницу или откройте /schedule`;
     });
   }
   if (context.taskContainer) context.taskContainer.innerHTML = '';
@@ -1337,7 +1388,8 @@ export async function renderResource(container, context) {
   if (!state.resourceView || !['gantt', 'schedule'].includes(state.resourceView)) {
     state.resourceView = 'schedule';
   }
-  if (state.resourceView === 'schedule') return renderScheduleFrame(container, context);
+  if (state.resourceView === 'schedule') return renderScheduleNative(container, context);
+  parkScheduleKeeper();
   // Разметка и метрики главного ганта: та же ширина дня, sticky-шапка и колонка,
   // выходные и маркер «сегодня» — ресурс выглядит и ведёт себя как гант.
   const dayWidth = Number(data.settings.general.plannerCellWidth || 44);

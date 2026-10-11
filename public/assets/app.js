@@ -14,7 +14,7 @@ import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sal
 import { renderLogist } from './logist.js';
 import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
-import { attendanceDialog, DISP_KINDS, renderResource, timesheetDialog } from './resource.js';
+import { attendanceDialog, DISP_KINDS, parkScheduleKeeper, renderResource, timesheetDialog } from './resource.js';
 import { fireReasonDialog, renderStaff } from './staff.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
@@ -786,6 +786,9 @@ function renderViewTabs() {
 function renderMain() {
   const isGantt = state.view === 'gantt';
   const isResource = state.view === 'resource';
+  // Нативный график (сессия 4): перед перерисовкой любого другого вида
+  // живой узел графика паркуется в body, иначе innerHTML его снесёт.
+  if (!(isResource && (state.resourceView || 'schedule') === 'schedule')) parkScheduleKeeper();
   // Ресурс — тоже гант: ему нужны навигация по месяцу и прокрутка, но его
   // канва скроллится внутри .resscroll (шапка фильтров закреплена), поэтому
   // класс .canvas (ширина по контенту) — только у Ганта.
@@ -2628,6 +2631,8 @@ try {
     if (event.origin !== location.origin) return;
     if (event.data && event.data.pegas === 'openDialog') openStaffDialog(event.data.what);
   });
+  // Нативная вкладка графика (сессия 4): те же диалоги — событием.
+  window.addEventListener('pegas:open-dialog', event => openStaffDialog(event.detail));
 } catch (error) {
   if (!error.message.includes('Требуется вход')) toast(error.message, 'error');
 }

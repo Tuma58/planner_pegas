@@ -11828,6 +11828,22 @@ const VERSIONED_ASSETS = /^\/assets\/v[a-z0-9]+\//;
 // public/ и отдаётся только вошедшим: в ней парк, ФИО и телефоны
 // водителей. Незалогиненного отправляем на вход.
 const PAGES_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'pages');
+// Страница графика собирается из каркаса и фрагмента разметки
+// (сессия 4, 11.10): фрагмент — единый источник для standalone-страницы
+// и нативной вкладки планера. Кэш по mtime обоих файлов.
+let schedulePageCache = { key: '', html: null };
+function scheduleAssembledPage() {
+  const shellPath = path.join(PAGES_PATH, 'schedule.html');
+  const bodyPath = path.join(PAGES_PATH, 'schedule-body.html');
+  const key = `${fs.statSync(shellPath).mtimeMs}:${fs.statSync(bodyPath).mtimeMs}`;
+  if (schedulePageCache.key !== key) {
+    const html = fs.readFileSync(shellPath, 'utf8')
+      .replace('<!--SCHEDULE-BODY-->', fs.readFileSync(bodyPath, 'utf8'));
+    schedulePageCache = { key, html: Buffer.from(html) };
+  }
+  return schedulePageCache.html;
+}
+
 function privatePage(request, response, filename) {
   const user = currentUser(request);
   if (!user) {
@@ -11948,8 +11964,17 @@ export const server = http.createServer(async (request, response) => {
         'Content-Disposition': `${disposition}; filename="ops-report_${from}_${to}.pdf"` });
       return response.end(pdf);
     }
-    else if (url.pathname === '/schedule') privatePage(request, response, 'schedule.html');
+    else if (url.pathname === '/schedule') {
+      const user = currentUser(request);
+      if (!user) { response.writeHead(302, { Location: '/' }); return response.end(); }
+      const page = scheduleAssembledPage();
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': page.length, 'Cache-Control': 'no-cache' });
+      return response.end(page);
+    }
     else if (url.pathname === '/schedule.js') privatePage(request, response, 'schedule.js');
+    else if (url.pathname === '/schedule.css') privatePage(request, response, 'schedule.css');
+    else if (url.pathname === '/schedule/fragment') privatePage(request, response, 'schedule-body.html');
     else staticFile(request, response, url);
   } catch (error) {
     const status = error.status || (String(error.message).includes('UNIQUE constraint') ? 409 : 500);
