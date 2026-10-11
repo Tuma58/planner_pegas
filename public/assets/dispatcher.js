@@ -1503,6 +1503,10 @@ export async function renderDispatcher(container, context, options = {}) {
       if (event.target.closest('button')) return;
       const trip = data.trips.find(item => item.id === card.dataset.kbOpen)
         || controlByTrip.get(card.dataset.kbOpen);
+      // Прыжок в полную карточку: запоминаем обратный путь (и поиск
+      // доски) — в классике появится «← На доску» (просьба руководителя
+      // 11.10: «проработал карточку — нужен удобный возврат»).
+      state.dispatcherReturnToBoard = { query: state.dispatcherQuery || '' };
       state.dispatcherLayout = 'classic'; // временный прыжок, память не трогаем
       state.dispatcherQuery = trip?.vehicle_plate || '';
       renderDispatcher(container, context);
@@ -1566,6 +1570,8 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:220px">
+        ${state.dispatcherReturnToBoard ? `<button class="button small" id="kbBackToBoard"
+          title="Вернуться на доску — фильтр по борту снимется, поиск доски восстановится">← На доску</button>` : ''}
         <button class="button small ghost" id="kbLayoutBoard2"
           title="Канбан-доска: 4 колонки потока, температура и контроль в пути, боль сверху">🗂 Доска</button>
         <button class="button ghost small" id="driverBroadcast"
@@ -2045,11 +2051,17 @@ export async function renderDispatcher(container, context, options = {}) {
       }
       runStep(button.dataset.trip, button.dataset.step, context.onReload);
     }));
-  container.querySelector('#kbLayoutBoard2')?.addEventListener('click', () => {
+  const backToBoard = () => {
     state.dispatcherLayout = 'board';
+    if (state.dispatcherReturnToBoard) {
+      state.dispatcherQuery = state.dispatcherReturnToBoard.query || '';
+      state.dispatcherReturnToBoard = null;
+    }
     try { localStorage.setItem('pl_disp_layout', 'board'); } catch { /* ок */ }
     renderDispatcher(container, context);
-  });
+  };
+  container.querySelector('#kbBackToBoard')?.addEventListener('click', backToBoard);
+  container.querySelector('#kbLayoutBoard2')?.addEventListener('click', backToBoard);
   container.querySelectorAll('[data-question-new]').forEach(button =>
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.questionNew);
