@@ -13,6 +13,7 @@ export const REPORT_TITLES = {
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
   drivers: 'Водители: профиль и дисциплина',
+  'dispatch-shift': 'Смена диспетчерской: план/факт',
   execution: 'Контроль выполнения рейсов',
   vehicles: 'Аналитика по сцепкам',
   conflicts: 'История конфликтов',
@@ -657,6 +658,44 @@ export async function buildReport(kind, from, to, data) {
         || '<tr><td colspan=11>Рейсов за период нет</td></tr>'}</tbody></table>
       <p class="muted" style="margin-top:6px">Сверхвахта и доплаты появятся здесь после
         этапа 3 перестройки Ресурса (явка ↔ факт графика).</p>`;
+  } else if (kind === 'dispatch-shift') {
+    // Авторазвод против факта (этап 3б): план часа — снимок балансировщика
+    // (объём карточек + профили наплывов по ёмкостям), факт — отметки
+    // контроля и шаги подготовки по людям. На расхождении учится система.
+    const day = from;
+    const ds = await api(`/api/reports/dispatch-shift?day=${day}`);
+    const names = ds.people;
+    const cell = (h, name) => {
+      const plan = h.plan?.[name];
+      const fc = h.factCtrl?.[name] || 0;
+      const fp = h.factPrep?.[name] || 0;
+      const fact = fc + fp;
+      if (plan == null && !fact) return '<td class="muted">·</td>';
+      const ratio = plan ? fact / plan : null;
+      const cls = plan == null ? '' : ratio >= 0.7 ? 'ok' : fact === 0 ? 'bad' : 'warn';
+      return `<td class="num dsf-${cls}" title="план ${plan ?? '—'} · контроль ${fc} · подготовка ${fp}">${plan != null ? plan : '—'} / <b>${fact}</b></td>`;
+    };
+    const rowsHtml = ds.hours.map(h => `<tr>
+      <td><b>${String(h.hour).padStart(2, '0')}</b></td>
+      <td class="muted">${h.load ? `${h.load.road}к ${h.load.prep}п ${h.load.unload}в ${h.load.questions}?` : '—'}</td>
+      ${names.map(n => cell(h, n)).join('')}</tr>`).join('');
+    const tot = name => {
+      let plan = 0, fact = 0;
+      for (const h of ds.hours) {
+        plan += Number(h.plan?.[name] || 0);
+        fact += (h.factCtrl?.[name] || 0) + (h.factPrep?.[name] || 0);
+      }
+      return `<td class="num"><b>${plan.toFixed(0)} / ${fact}</b></td>`;
+    };
+    body = `<p class="geohint">День = дата «с» в пикере периода. В ячейке: <b>план / факт</b> —
+      план часа снимает балансировщик авторазвода (объём карточек + выученные профили наплывов,
+      разложенные по личным ёмкостям), факт — отметки контроля и шаги подготовки человека.
+      Зелёное — факт ≥ 70% плана, жёлтое — частично, красное — план был, факта нет.
+      Расхождения кормят самообучение: ёмкости и профили пересчитываются ночью.</p>
+      <table class="rtable"><thead><tr><th>Час</th><th>нагрузка (к·п·в·?)</th>
+        ${names.map(n => `<th class="num">${escapeHtml(n.split(' ').slice(0, 2).join(' '))}</th>`).join('')}</tr></thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot><tr><td colspan="2"><b>Итог</b></td>${names.map(tot).join('')}</tr></tfoot></table>`;
   } else if (kind === 'speed') {
     const sp = await api(`/api/reports/speed?from=${from}&to=${to}`);
     const techSum = sp.techDays.reduce((a, d) => ({ km: a.km + d.km, h: a.h + d.h }), { km: 0, h: 0 });

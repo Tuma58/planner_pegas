@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS order_files (
   uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_order_files_order ON order_files(order_id);
+CREATE TABLE IF NOT EXISTS dispatch_assignments (
+  trip_id TEXT PRIMARY KEY REFERENCES trips(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'auto' CHECK(source IN ('auto','manual')),
+  assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS dispatch_plan_hours (
+  day TEXT NOT NULL, hour INTEGER NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY(day, hour)
+);
 CREATE TABLE IF NOT EXISTS task_marks (
   kind TEXT NOT NULL CHECK(kind IN ('sales','logist','dispatcher')),
   day TEXT NOT NULL, item_key TEXT NOT NULL,

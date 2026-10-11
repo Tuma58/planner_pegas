@@ -17,7 +17,7 @@ import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
-import { dispatcherShiftLoad, rebuildDispatcherCapacity } from '../src/dispatch-load.mjs';
+import { assignBoardCards, dispatcherShiftLoad, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
 import { effBoardData } from '../src/efficiency.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
@@ -4378,4 +4378,66 @@ test('метрики доски (3а): lead time колонок и доофор�
   assert.equal(out.leadRoadH, 10);
   assert.equal(out.leadUnloadH, 2);
   assert.equal(out.lateClose12, 0, '«выгружен» в пределах 12 ч от убытия');
+});
+
+test('авторазвод (3б): баланс по ёмкостям, липкость, manual неприкосновенен', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-ab-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const day = off => new Date(Date.now() - off * 864e5).toISOString().slice(0, 10);
+  const mark = db.prepare(`INSERT INTO task_marks(kind, day, item_key, done_by) VALUES('dispatcher',?,?,?)`);
+  // Два диспетчера с ёмкостями ~30 и ~10 (3:1).
+  const mkUser = db.prepare(`INSERT INTO users(id, username, full_name, password_hash, role)
+    VALUES(?,?,?,'x','dispatcher')`);
+  mkUser.run('u-big', 'big', 'Большой Диспетчер');
+  mkUser.run('u-small', 'small', 'Малый Диспетчер');
+  for (const off of [1, 2, 3]) {
+    for (let i = 0; i < 30; i += 1) mark.run(day(off), `b${off}-${i}`, 'Большой Диспетчер');
+    for (let i = 0; i < 10; i += 1) mark.run(day(off), `s${off}-${i}`, 'Малый Диспетчер');
+  }
+  // Сегодняшняя активность, чтобы оба были «в смене».
+  mark.run(day(0), 'b-t', 'Большой Диспетчер');
+  mark.run(day(0), 's-t', 'Малый Диспетчер');
+  rebuildDispatcherCapacity(db);
+  // 12 активных рейсов-карточек.
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zones = db.prepare('SELECT id FROM zones LIMIT 2').all();
+  const mkTrip = db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    status,starts_at,ends_at,revenue_vat,distance_km) VALUES(?,?,'Т',?,?,'plan',datetime('now','+2 hours'),datetime('now','+20 hours'),1000,100)`);
+  for (let i = 0; i < 12; i += 1) mkTrip.run(`ab-${i}`, vehicle, zones[0].id, zones[1].id);
+  const first = assignBoardCards(db);
+  assert.ok(first.assigned >= 12, `розданы все активные карточки, включая сидовые (${first.assigned})`);
+  assert.equal(first.assigned, first.total, 'ничьих не осталось');
+  const countOf = name => db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments WHERE name=?`).get(name).n;
+  const big = countOf('Большой Диспетчер');
+  const small = countOf('Малый Диспетчер');
+  assert.ok(big >= small * 2, `ёмкость 3:1 отражается в раздаче (${big} против ${small})`);
+  // Липкость: повторный прогон ничего не переназначает.
+  const second = assignBoardCards(db);
+  assert.equal(second.assigned, 0, 'назначения липкие');
+  // Manual: «Беру» малым — балансировщик не трогает.
+  db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source) VALUES('ab-0','Малый Диспетчер','manual')
+    ON CONFLICT(trip_id) DO UPDATE SET name=excluded.name, source='manual'`).run();
+  assignBoardCards(db);
+  const kept = db.prepare(`SELECT name, source FROM dispatch_assignments WHERE trip_id='ab-0'`).get();
+  assert.equal(kept.name, 'Малый Диспетчер');
+  assert.equal(kept.source, 'manual');
+  // Закрытый рейс уходит из назначений.
+  db.prepare(`UPDATE trips SET status='unloaded', unloaded_at=datetime('now') WHERE id='ab-1'`).run();
+  assignBoardCards(db);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments WHERE trip_id='ab-1'`).get().n, 0);
+  // План-снимок часа: рейсы «в пути» дают ровный поток контролей,
+  // план раскладывается по ёмкостям.
+  const mkRoad = db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    status,starts_at,ends_at,revenue_vat,distance_km)
+    VALUES(?,?,'Т',?,?,'run',datetime('now','-10 hours'),datetime('now','+10 hours'),1000,500)`);
+  const mkDep = db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,actual_departure)
+    VALUES(?,?,1,'P','А',datetime('now','-8 hours'))`);
+  for (let i = 0; i < 8; i += 1) { mkRoad.run(`rd-${i}`, vehicle, zones[0].id, zones[1].id); mkDep.run(`rds-${i}`, `rd-${i}`); }
+  const snap = snapshotPlanHour(db);
+  assert.ok(snap.load.road >= 2, `8 рейсов в пути → ≥2 контролей/час (${snap.load.road})`);
+  assert.ok(snap.plan['Большой Диспетчер'] > snap.plan['Малый Диспетчер'], 'план по ёмкостям');
 });

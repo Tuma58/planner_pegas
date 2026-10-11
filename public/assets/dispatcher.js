@@ -1371,13 +1371,31 @@ export async function renderDispatcher(container, context, options = {}) {
     const tempBadCount = online.filter(tempBad).length;
     const ctrlOverCount = roadCol.filter(ctrlOverdue).length;
     const kbMeta = (text, bad) => `<div class="kbr kb4 ${bad ? 'bad' : ''}">${text}</div>`;
-    const kbCard = (trip, cls, extraRows, button) => `<div class="kb-card ${cls}" data-kb-open="${trip.id}"
+    const assignments = state.shiftLoad?.assignments || {};
+    const myFull = state.data.user.fullName || '';
+    const ownerRow = trip => {
+      const a = assignments[trip.id];
+      if (!a) return '<div class="kbr kb-own none">👤 не назначена</div>';
+      const mine = a.name === myFull;
+      return `<div class="kbr kb-own ${mine ? 'mine' : ''}">👤 ${mine ? 'ВЫ'
+        : escapeHtml(a.name.split(' ').slice(0, 2).join(' '))}${a.source === 'manual' ? ' ✋' : ''}</div>`;
+    };
+    const takeBtn = trip => {
+      const a = assignments[trip.id];
+      if (canAct && (!a || a.name !== myFull)) {
+        return `<button class="button ghost small kb-take" data-kb-take="${trip.id}"
+          title="Взять карточку себе — балансировщик её больше не переназначит">🖐 Беру</button>`;
+      }
+      return '';
+    };
+    const kbCard = (trip, cls, extraRows, button) => `<div class="kb-card ${cls} ${assignments[trip.id]?.name === myFull ? 'mine' : ''}" data-kb-open="${trip.id}"
       title="Клик — полная карточка контроля (классический вид, фильтр по этому рейсу)">
       <div class="kbr kb1"><b class="mono">${escapeHtml(trip.vehicle_plate || '')}</b>
         <span class="kb-drv">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span></div>
+      ${ownerRow(trip)}
       <div class="kbr kb2">${escapeHtml((trip.customer_name || '').slice(0, 30))}</div>
       <div class="kbr kb3">${escapeHtml((trip.from_point || trip.from_name || '').slice(0, 22))} → ${escapeHtml((trip.to_point || trip.to_name || '').slice(0, 22))}</div>
-      ${extraRows}${button || ''}</div>`;
+      ${extraRows}${button || ''}${takeBtn(trip)}</div>`;
     const stepBtn = (trip, step, label) => canAct
       ? `<button class="button small kb-step" data-kb-step="${trip.id}" data-kb-step-name="${step}">${label}</button>` : '';
     const prepCardKb = trip => {
@@ -1571,6 +1589,16 @@ export async function renderDispatcher(container, context, options = {}) {
           await renderDispatcher(container, context);
         } catch (error) { toast(error.message, 'error'); }
       };
+    }));
+    container.querySelectorAll('[data-kb-take]').forEach(button => button.addEventListener('click', async event => {
+      event.stopPropagation();
+      button.disabled = true;
+      try {
+        await api(`/api/dispatcher/assign/${button.dataset.kbTake}`, { method: 'POST', body: '{}' });
+        toast('Карточка ваша');
+        state.shiftLoadAt = 0; // перечитать назначения
+        await renderDispatcher(container, context, { reuseNetwork: true });
+      } catch (error) { button.disabled = false; toast(error.message, 'error'); }
     }));
     container.querySelectorAll('[data-kb-return]').forEach(button => button.addEventListener('click', async () => {
       if (!confirm('Вернуть рейс в контроль? Отметка «Выгружен» снимется, машина снова займётся рейсом.')) return;

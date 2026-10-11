@@ -93,3 +93,173 @@ export function dispatcherShiftLoad(db, nowIso = new Date().toISOString()) {
     .sort((a, b) => b.today - a.today);
   return { people: list, fallback: snap.fallback, capAt: snap.at };
 }
+
+// ── Этап 3б: авторазвод смены (решение руководителя 11.10) ──────────
+// Профили нагрузки по часам МСК учатся из СОБЫТИЙ рейсов за 28 дней
+// (не из отметок — отметки били задним числом): подготовка наплывами,
+// выгрузки и вопросы волнами; контроль в пути считается от живых
+// карточек (ровный поток). Балансировщик непрерывно назначает карточки
+// доски конкретным людям (липко: взятое остаётся у владельца, manual
+// неприкосновенен), план часа снимается в dispatch_plan_hours — отчёт
+// «план/факт за смену» кормит самообучение.
+
+const MSK_MS = 3 * 3.6e6;
+const hourMsk = iso => {
+  const ms = Date.parse(String(iso).replace(' ', 'T') + (String(iso).includes('Z') || String(iso).includes('+') ? '' : 'Z'));
+  return Math.floor(((ms + MSK_MS) % 864e5) / 3.6e6);
+};
+
+export function rebuildDispatchProfiles(db, nowIso = new Date().toISOString()) {
+  const day = nowIso.slice(0, 10);
+  const since = new Date(Date.parse(day + 'T00:00:00Z') - 28 * 864e5).toISOString();
+  const byHourDay = () => Array.from({ length: 24 }, () => new Map());
+  const buckets = { prep: byHourDay(), unload: byHourDay(), questions: byHourDay() };
+  const bump = (kind, iso) => {
+    if (!iso) return;
+    const h = hourMsk(iso);
+    const d = String(iso).slice(0, 10);
+    const slot = buckets[kind][h];
+    slot.set(d, (slot.get(d) || 0) + 1);
+  };
+  for (const col of ['logist_confirmed_at', 'entered_1c_at', 'driver_notified_at', 'on_line_at']) {
+    for (const r of db.prepare(`SELECT ${col} t FROM trips WHERE ${col} >= ? AND ${col} < ?`)
+      .all(since, day)) bump('prep', r.t);
+  }
+  for (const r of db.prepare(`SELECT actual_arrival t FROM trip_stops
+      WHERE kind='D' AND actual_arrival >= ? AND actual_arrival < ?`).all(since, day)) {
+    bump('unload', r.t);
+  }
+  for (const r of db.prepare(`SELECT unloaded_at t FROM trips
+      WHERE unloaded_at >= ? AND unloaded_at < ?`).all(since, day)) bump('unload', r.t);
+  for (const r of db.prepare(`SELECT opened_at t FROM driver_questions
+      WHERE opened_at >= ? AND opened_at < ?`).all(since.replace('T', ' ').slice(0, 19),
+    day + ' 00:00:00')) bump('questions', r.t);
+  const median = list => { const l = [...list].sort((a, b) => a - b);
+    return l.length ? l[Math.floor(l.length / 2)] : 0; };
+  const profile = kind => buckets[kind].map(slot => median([...slot.values()]));
+  const snapshot = { at: nowIso,
+    prep: profile('prep'), unload: profile('unload'), questions: profile('questions') };
+  metaSet(db, 'dispatch_profiles', JSON.stringify(snapshot));
+  return snapshot;
+}
+
+// Активные карточки доски с колонкой — та же раскладка, что на экране.
+export function boardCards(db) {
+  const cards = [];
+  for (const t of db.prepare(`SELECT t.id, t.status, t.logist_confirmed_at, t.on_line_at,
+      (SELECT MIN(s.actual_departure) FROM trip_stops s
+        WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
+      (SELECT MAX(s.actual_arrival) FROM trip_stops s
+        WHERE s.trip_id=t.id AND s.kind='D' AND s.actual_arrival IS NOT NULL) arr_d
+    FROM trips t WHERE t.status IN ('plan','run')`).all()) {
+    const col = t.status === 'plan' ? 'prep'
+      : !t.dep ? 'load' : t.arr_d ? 'unload' : 'road';
+    cards.push({ tripId: t.id, col });
+  }
+  return cards;
+}
+
+export function assignBoardCards(db, nowIso = new Date().toISOString()) {
+  const { people } = dispatcherShiftLoad(db, nowIso);
+  const workers = people.filter(p => p.dispatcherRole);
+  const cards = boardCards(db);
+  const activeIds = new Set(cards.map(c => c.tripId));
+  // Чистка: назначения закрытых/снятых рейсов уходят.
+  for (const row of db.prepare(`SELECT trip_id FROM dispatch_assignments`).all()) {
+    if (!activeIds.has(row.trip_id)) {
+      db.prepare(`DELETE FROM dispatch_assignments WHERE trip_id=?`).run(row.trip_id);
+    }
+  }
+  if (!workers.length) return { assigned: 0, total: cards.length };
+  const current = new Map(db.prepare(`SELECT trip_id, name, source FROM dispatch_assignments`)
+    .all().map(r => [r.trip_id, r]));
+  const names = new Set(workers.map(w => w.name));
+  const loadOf = new Map(workers.map(w => [w.name, 0]));
+  for (const card of cards) {
+    const own = current.get(card.tripId);
+    if (own && (own.source === 'manual' || names.has(own.name))) {
+      loadOf.set(own.name, (loadOf.get(own.name) || 0) + 1);
+    }
+  }
+  const put = db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source)
+    VALUES(?,?, 'auto') ON CONFLICT(trip_id) DO UPDATE SET
+    name=excluded.name, source='auto', assigned_at=CURRENT_TIMESTAMP`);
+  let assigned = 0;
+  for (const card of cards) {
+    const own = current.get(card.tripId);
+    if (own && (own.source === 'manual' || names.has(own.name))) continue; // липкость
+    // Наименее загруженный относительно личной ёмкости.
+    const best = workers.reduce((a, b) =>
+      (loadOf.get(a.name) / a.cap) <= (loadOf.get(b.name) / b.cap) ? a : b);
+    put.run(card.tripId, best.name);
+    loadOf.set(best.name, loadOf.get(best.name) + 1);
+    assigned += 1;
+  }
+  return { assigned, total: cards.length };
+}
+
+// План часа: текущий объём карточек + прогноз наплывов из профилей,
+// разложенные по присутствующим пропорционально ёмкостям, — то, что
+// показывала симуляция, теперь снимается каждый час для «план/факт».
+export function snapshotPlanHour(db, nowIso = new Date().toISOString()) {
+  const day = nowIso.slice(0, 10);
+  const hour = hourMsk(nowIso);
+  let profiles = null;
+  try { profiles = JSON.parse(metaGet(db, 'dispatch_profiles') || 'null'); } catch { profiles = null; }
+  if (!profiles) profiles = rebuildDispatchProfiles(db, nowIso);
+  const { people } = dispatcherShiftLoad(db, nowIso);
+  const workers = people.filter(p => p.dispatcherRole);
+  const cards = boardCards(db);
+  const road = cards.filter(c => c.col === 'road').length;
+  const load = {
+    road: +(road / 4).toFixed(1), // контролей в час при нормативе 4 ч
+    prep: profiles.prep[hour] || 0,
+    unload: profiles.unload[hour] || 0,
+    questions: profiles.questions[hour] || 0
+  };
+  const capSum = workers.reduce((s, w) => s + w.cap, 0) || 1;
+  const plan = {};
+  for (const w of workers) {
+    plan[w.name] = +((load.road + load.prep + load.unload + load.questions) * w.cap / capSum).toFixed(1);
+  }
+  db.prepare(`INSERT INTO dispatch_plan_hours(day, hour, payload) VALUES(?,?,?)
+    ON CONFLICT(day, hour) DO UPDATE SET payload=excluded.payload`).run(
+    day, hour, JSON.stringify({ at: nowIso, load, plan, present: workers.map(w => w.name) }));
+  return { day, hour, load, plan };
+}
+
+// Отчёт «план/факт за смену»: план из почасовых снимков, факт — отметки
+// контроля (task_marks) и шаги подготовки (audit dispatch_step) по часам.
+export function shiftPlanFact(db, day) {
+  const hoursRows = db.prepare(`SELECT hour, payload FROM dispatch_plan_hours
+    WHERE day=? ORDER BY hour`).all(day);
+  const factCtrl = Array.from({ length: 24 }, () => new Map());
+  for (const r of db.prepare(`SELECT done_by name, done_at FROM task_marks
+      WHERE kind='dispatcher' AND day=? AND item_key NOT LIKE 'claim|%'`).all(day)) {
+    const slot = factCtrl[hourMsk(r.done_at + 'Z')];
+    slot.set(r.name, (slot.get(r.name) || 0) + 1);
+  }
+  const factPrep = Array.from({ length: 24 }, () => new Map());
+  const mskFrom = new Date(Date.parse(day + 'T00:00:00Z') - MSK_MS).toISOString().replace('T', ' ').slice(0, 19);
+  const mskTo = new Date(Date.parse(day + 'T00:00:00Z') - MSK_MS + 864e5).toISOString().replace('T', ' ').slice(0, 19);
+  for (const r of db.prepare(`SELECT u.full_name name, a.created_at FROM audit_log a
+      JOIN users u ON u.id=a.user_id
+      WHERE a.action='dispatch_step' AND a.created_at >= ? AND a.created_at < ?`)
+    .all(mskFrom, mskTo)) {
+    const slot = factPrep[hourMsk(r.created_at + 'Z')];
+    slot.set(r.name, (slot.get(r.name) || 0) + 1);
+  }
+  const names = new Set();
+  const hours = [];
+  for (let h = 0; h < 24; h += 1) {
+    let payload = null;
+    const row = hoursRows.find(r => r.hour === h);
+    try { payload = row ? JSON.parse(row.payload) : null; } catch { payload = null; }
+    for (const n of Object.keys(payload?.plan || {})) names.add(n);
+    for (const n of factCtrl[h].keys()) names.add(n);
+    for (const n of factPrep[h].keys()) names.add(n);
+    hours.push({ hour: h, plan: payload?.plan || null, load: payload?.load || null,
+      factCtrl: Object.fromEntries(factCtrl[h]), factPrep: Object.fromEntries(factPrep[h]) });
+  }
+  return { day, people: [...names].sort(), hours };
+}

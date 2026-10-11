@@ -15,7 +15,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
-import { dispatcherShiftLoad, rebuildDispatcherCapacity } from './dispatch-load.mjs';
+import { assignBoardCards, dispatcherShiftLoad, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -4782,6 +4782,30 @@ function runDispatchLoadWatch() {
 }
 setInterval(runDispatchLoadWatch, 3_600_000);
 setTimeout(runDispatchLoadWatch, 110_000);
+// ── Авторазвод (этап 3б): балансировщик назначает карточки каждые
+// 10 минут (липко, manual неприкосновенен), профили наплывов — раз в
+// сутки, план часа — снимком в dispatch_plan_hours для «план/факт».
+function runDispatchAssignWatch() {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const profDay = db.prepare(`SELECT value FROM app_meta WHERE key='dispatch_profiles_day'`)
+      .get()?.value;
+    if (profDay !== today) {
+      const prof = rebuildDispatchProfiles(db);
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('dispatch_profiles_day',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(today);
+      console.log(`профили нагрузки диспетчерской: пик подготовки ${Math.max(...prof.prep)}/ч (час ${prof.prep.indexOf(Math.max(...prof.prep))} МСК)`);
+    }
+    const result = assignBoardCards(db);
+    const hour = Math.floor(((Date.now() + 3 * 3.6e6) % 864e5) / 3.6e6);
+    const hasPlan = db.prepare(`SELECT 1 FROM dispatch_plan_hours WHERE day=? AND hour=?`)
+      .get(today, hour);
+    if (!hasPlan) snapshotPlanHour(db);
+    if (result.assigned) console.log(`авторазвод: назначено ${result.assigned} из ${result.total} карточек`);
+  } catch (error) { console.error('авторазвод:', error.message); }
+}
+setInterval(runDispatchAssignWatch, 10 * 60_000);
+setTimeout(runDispatchAssignWatch, 130_000);
 // Одометр борта — из датчика «пробег по CAN» последней позиции: репер
 // межсервисного пробега (диспозиции, заказ-наряды) и звеньев рейса.
 function canOdometerKm(vehicleId) {
@@ -7304,7 +7328,32 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/dispatcher/shift-load') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
-    return json(response, 200, dispatcherShiftLoad(db));
+    const assignments = Object.fromEntries(db.prepare(
+      `SELECT trip_id, name, source FROM dispatch_assignments`).all()
+      .map(r => [r.trip_id, { name: r.name, source: r.source }]));
+    return json(response, 200, { ...dispatcherShiftLoad(db), assignments });
+  }
+  // «Беру»: ручной перехват карточки (этап 3б) — manual-назначение
+  // неприкосновенно для балансировщика до закрытия рейса.
+  match = route(/^\/api\/dispatcher\/assign\/([^/]+)$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const trip = db.prepare(`SELECT id FROM trips WHERE id=? AND status IN ('plan','run')`)
+      .get(match[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден среди активных');
+    db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source) VALUES(?,?,'manual')
+      ON CONFLICT(trip_id) DO UPDATE SET name=excluded.name, source='manual',
+      assigned_at=CURRENT_TIMESTAMP`).run(trip.id, user.full_name || user.username);
+    audit(db, user, 'dispatch_take', 'trip', trip.id, {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  // Отчёт руководителю: план авторазвода против факта смены по часам.
+  if (request.method === 'GET' && pathname === '/api/reports/dispatch-shift') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const day = String(url.searchParams.get('day') || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    return json(response, 200, shiftPlanFact(db, day));
   }
   if (request.method === 'GET' && pathname === '/api/monitoring/control') {
     const user = requireUser(request, response);

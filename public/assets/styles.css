@@ -1886,3 +1886,13 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .kb-cap.red .bar i { background:var(--bad); }
 .kb-cap .val { font-size:12px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
 .kb-cap.red .val { color:var(--bad); font-weight:700; }
+
+/* Этап 3б: владелец карточки и «Беру» */
+.kb-own { font-size:11px; color:var(--muted); }
+.kb-own.mine { color:var(--ok); font-weight:700; }
+.kb-own.none { font-style:italic; }
+.kb-card.mine { box-shadow:inset 0 0 0 1px var(--ok); }
+.kb-take { width:100%; margin-top:4px; font-size:11px; padding:2px 6px; }
+.dsf-ok { background:rgba(63,138,120,.12); }
+.dsf-warn { background:rgba(189,143,66,.14); }
+.dsf-bad { background:rgba(180,95,82,.16); color:var(--bad); }
