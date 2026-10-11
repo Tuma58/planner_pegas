@@ -7266,7 +7266,9 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/monitoring/control') {
     const user = requireUser(request, response);
     if (!user) return;
-    return json(response, 200, { items: gpsControlSnapshot() });
+    // Живой норматив ворот — канбан-доске диспетчера (подсветка выгрузки).
+    return json(response, 200, { items: gpsControlSnapshot(),
+      gateNormH: +crewNorms(db).gateNormH.toFixed(1) });
   }
   if (request.method === 'GET' && pathname === '/api/monitoring/positions') {
     const user = requirePermission(request, response, 'planner:read');

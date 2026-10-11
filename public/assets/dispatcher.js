@@ -322,7 +322,9 @@ export async function renderDispatcher(container, context, options = {}) {
   // обновляется раз в минуту, GPS только помогает — фактов не пишет.
   if (!state.gpsControlAt || Date.now() - state.gpsControlAt > 55_000) {
     try {
-      state.gpsControl = (await api('/api/monitoring/control')).items || [];
+      const gpsPayload = await api('/api/monitoring/control');
+      state.gpsControl = gpsPayload.items || [];
+      state.gpsGateNormH = Number(gpsPayload.gateNormH) || state.gpsGateNormH || 4.5;
       state.gpsControlAt = Date.now();
     } catch { state.gpsControl = state.gpsControl || []; }
   }
@@ -1319,6 +1321,240 @@ export async function renderDispatcher(container, context, options = {}) {
   try { questionsOpen = state.dispQuestionsOpen ?? localStorage.getItem('dispQOpen') === '1'; }
   catch { questionsOpen = Boolean(state.dispQuestionsOpen); }
 
+  // ── 🗂 КАНБАН-ДОСКА (этап 1, заказ руководителя 11.10) ────────────
+  // Главный вид вкладки: 4 колонки потока с «болью сверху». Классика
+  // остаётся вторым видом (страховка и «полная карточка» по клику).
+  if (!state.dispatcherLayout) {
+    try { state.dispatcherLayout = localStorage.getItem('pl_disp_layout') || 'board'; }
+    catch { state.dispatcherLayout = 'board'; }
+  }
+  if (state.dispatcherLayout === 'board') {
+    const gpsByTrip = new Map((state.gpsControl || []).map(g => [g.trip_id, g]));
+    const gateNormH = Number(state.gpsGateNormH) || 4.5;
+    const midH = MID_CONTROL_MS / 3.6e6;
+    const hoursSince = iso => {
+      const ms = Date.parse(String(iso || '').replace(' ', 'T'));
+      return Number.isFinite(ms) ? (Date.now() - ms) / 3.6e6 : null;
+    };
+    const loadCol = [];
+    const roadCol = [];
+    const unloadCol = [];
+    for (const trip of online) {
+      const stops = controlByTrip.get(trip.id)?.stops || [];
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      if (!first || !first.actual_departure) loadCol.push(trip);
+      else if (last?.actual_arrival && !last.actual_departure) unloadCol.push(trip);
+      else if (last?.actual_departure) unloadCol.push(trip); // освободился, ждёт «Выгружен»
+      else roadCol.push(trip);
+    }
+    const tempOf = trip => gpsByTrip.get(trip.id)?.temp || null;
+    const tempBad = trip => { const t = tempOf(trip); return !!t && (t.stale || t.ok === false); };
+    const ctrlOverdue = trip => Date.now() - lastTouchMs(trip) > MID_CONTROL_MS;
+    const prepList = [...preparing].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+    loadCol.sort((a, b) => (hoursSince(b.on_line_at) || 0) - (hoursSince(a.on_line_at) || 0));
+    roadCol.sort((a, b) => (Number(tempBad(b)) * 2 + Number(ctrlOverdue(b)))
+      - (Number(tempBad(a)) * 2 + Number(ctrlOverdue(a))) || eventAt(a) - eventAt(b));
+    const unloadAge = trip => {
+      const stops = controlByTrip.get(trip.id)?.stops || [];
+      return hoursSince(stops[stops.length - 1]?.actual_arrival || trip.arrived_at) || 0;
+    };
+    unloadCol.sort((a, b) => unloadAge(b) - unloadAge(a));
+    const tempBadCount = online.filter(tempBad).length;
+    const ctrlOverCount = roadCol.filter(ctrlOverdue).length;
+    const kbMeta = (text, bad) => `<div class="kbr kb4 ${bad ? 'bad' : ''}">${text}</div>`;
+    const kbCard = (trip, cls, extraRows, button) => `<div class="kb-card ${cls}" data-kb-open="${trip.id}"
+      title="Клик — полная карточка контроля (классический вид, фильтр по этому рейсу)">
+      <div class="kbr kb1"><b class="mono">${escapeHtml(trip.vehicle_plate || '')}</b>
+        <span class="kb-drv">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span></div>
+      <div class="kbr kb2">${escapeHtml((trip.customer_name || '').slice(0, 30))}</div>
+      <div class="kbr kb3">${escapeHtml((trip.from_point || trip.from_name || '').slice(0, 22))} → ${escapeHtml((trip.to_point || trip.to_name || '').slice(0, 22))}</div>
+      ${extraRows}${button || ''}</div>`;
+    const stepBtn = (trip, step, label) => canAct
+      ? `<button class="button small kb-step" data-kb-step="${trip.id}" data-kb-step-name="${step}">${label}</button>` : '';
+    const prepCardKb = trip => {
+      const startIn = (Date.parse(trip.starts_at) - Date.now()) / 3.6e6;
+      const overdueStart = startIn < 0;
+      const [step, label] = !trip.entered_1c_at && !trip.deferred_1c_at ? ['entered_1c', '🧾 Внести в 1С']
+        : !trip.driver_notified_at ? ['driver_notified', '📨 Задание водителю']
+        : ['on_line', '🚦 Вывести на линию'];
+      return kbCard(trip, overdueStart ? 'over' : startIn <= 24 ? 'soon' : '',
+        kbMeta(overdueStart ? `выход просрочен на ${Math.abs(startIn).toFixed(0)} ч`
+          : `выход через ${startIn.toFixed(0)} ч`, overdueStart),
+        stepBtn(trip, step, label));
+    };
+    const waitCardKb = trip => kbCard(trip, '',
+      kbMeta('ждёт подтверждения логиста', false), '');
+    const loadCardKb = trip => {
+      const age = hoursSince(trip.on_line_at) || 0;
+      return kbCard(trip, age > 24 ? 'over' : '',
+        kbMeta(`на линии ${age.toFixed(0)} ч без убытия${age > 24 ? ' — ожидание окна: сигнал логисту' : ''}`, age > 24), '');
+    };
+    const roadCardKb = trip => {
+      const t = tempOf(trip);
+      const tRow = !t ? '<div class="kbr kbt muted">🌡 без датчика / не реф</div>'
+        : t.stale ? `<div class="kbr kbt bad">🌡 датчик молчит ${Math.round(t.silentMin / 60)} ч</div>`
+        : `<div class="kbr kbt ${t.ok ? '' : 'bad'}">🌡 ${Number(t.value).toFixed(1)}° <small>режим ${t.min}…${t.max}°</small>${t.ok ? ' ✓' : ' ⚠ ВНЕ РЕЖИМА'}</div>`;
+      const touched = (Date.now() - lastTouchMs(trip)) / 3.6e6;
+      const over = ctrlOverdue(trip);
+      const cRow = `<div class="kbr kbc ${over ? 'bad' : ''}">📞 контроль ${touched.toFixed(0)} ч назад <small>норматив ${midH.toFixed(0)} ч</small>${over ? ' — ПРОСРОЧЕН' : ''}</div>`;
+      const btn = canAct ? `<button class="button small kb-step ${over || tempBad(trip) ? 'alert' : ''}"
+        data-kb-ctrl="${trip.id}" data-kb-ctrl-label="${escapeHtml(nextControlEvent(trip).label).slice(0, 80)}">📞 Контроль пройден</button>` : '';
+      return kbCard(trip, tempBad(trip) || over ? 'over' : '', tRow + cRow, btn);
+    };
+    const unloadCardKb = trip => {
+      const age = unloadAge(trip);
+      const over = age > gateNormH;
+      return kbCard(trip, over ? 'over' : '',
+        kbMeta(`на выгрузке ${age.toFixed(1)} ч <small>норматив ворот ${gateNormH} ч</small>${over ? ' — кандидат в простой/претензию' : ''}`, over), '');
+    };
+    // Сошедшие с доски (ошибочная отметка): поиск находит свежевыгруженные
+    // с кнопкой возврата — отметка обратима тем же местом за секунды.
+    const goneCards = !query ? '' : [...controlByTrip.values()]
+      .filter(item => item.status === 'unloaded' && item.unloaded_at
+        && Date.now() - Date.parse(String(item.unloaded_at).replace(' ', 'T')) < 48 * 3.6e6)
+      .filter(item => `${item.vehicle_plate} ${item.driver_name || ''} ${item.customer_name || ''} ${item.order_no || ''}`
+        .toLowerCase().includes(query))
+      .slice(0, 6)
+      .map(item => `<div class="kb-card gone">
+        <div class="kbr kb1"><b class="mono">${escapeHtml(item.vehicle_plate || '')}</b>
+          <span class="kb-drv">${escapeHtml((item.driver_name || '').split(' ').slice(0, 2).join(' '))}</span></div>
+        <div class="kbr kb2">${escapeHtml((item.customer_name || '').slice(0, 30))}</div>
+        <div class="kbr kb4">выгружен ${formatDateTime(item.unloaded_at)} — сошёл с доски</div>
+        ${canAct ? `<button class="button small kb-step" data-kb-return="${item.id}">↩ Вернуть в контроль</button>` : ''}
+      </div>`).join('');
+    const kbCol = (title, cards, lim, over, note) => `<section class="kb-col">
+      <div class="kb-chead ${over ? 'bad' : ''}"><span>${title}</span><span class="kb-lim">${lim}</span></div>
+      <div class="kb-note">${note}</div>
+      <div class="kb-cards">${cards.join('') || '<p class="muted" style="padding:6px">пусто</p>'}</div>
+    </section>`;
+    const matchKb = trip => matches(trip);
+    const boardHtml = `<div class="saleswrap kb-wrap">
+      <div class="kb-top">
+        <span class="resctl-group">
+          <button class="button small" id="kbLayoutBoard">🗂 Доска</button>
+          <button class="button small ghost" id="kbLayoutClassic" title="Классический вид: полные карточки контроля, перегоны, массовые инструменты">📋 Классика</button>
+        </span>
+        <div class="kb-tiles">
+          <div class="kb-tile ${lateQuestions ? 'warn' : ''}"><span class="k">Вопросы водителей</span><b>${questions.length}</b><small>просрочено ${lateQuestions}</small></div>
+          <div class="kb-tile"><span class="k">Активных карточек</span><b>${preparing.length + waitingLogist.length + online.length}</b><small>подготовка · линия</small></div>
+          <div class="kb-tile ${tempBadCount ? 'warn' : ''}"><span class="k">🌡 вне режима / молчит</span><b>${tempBadCount}</b><small>холодовая цепь</small></div>
+          <div class="kb-tile ${ctrlOverCount ? 'warn' : ''}"><span class="k">📞 контроль просрочен</span><b>${ctrlOverCount}</b><small>норматив ${midH.toFixed(0)} ч</small></div>
+        </div>
+        <input id="dispatcherSearch" class="block-search" placeholder="Поиск: ТС, водитель, заказчик, № — найдёт и сошедшие с доски"
+          value="${escapeHtml(state.dispatcherQuery || '')}">
+      </div>
+      ${questionCards ? `<details class="questions-strip compact" data-disp-questions ${questionsOpen ? 'open' : ''}>
+        <summary>📞 Вопросы водителей <span class="scount ${lateQuestions ? 'late' : ''}">${questions.length}</span>
+          ${lateQuestions ? `<span class="q-late">⏱ просрочено ${lateQuestions}</span>` : ''}
+          <small class="muted">— норматив 10 минут; ✓ — отработано</small></summary>
+        <div class="list">${questionCards}</div>
+      </details>` : ''}
+      ${goneCards ? `<div class="kb-gone"><div class="kb-note">🔎 Сошли с доски за 48 ч (по вашему поиску) — ошибочную отметку можно откатить:</div><div class="kb-gone-row">${goneCards}</div></div>` : ''}
+      <div class="kb-board">
+        ${kbCol('🧰 Подготовка выхода', [...prepList.filter(matchKb).map(prepCardKb), ...waitingLogist.filter(matchKb).map(waitCardKb)],
+    `${preparing.length + waitingLogist.length}`, false,
+    'кнопка — следующий шаг; синяя кромка — выход в ближайшие сутки')}
+        ${kbCol('📦 Погрузка', loadCol.filter(matchKb).map(loadCardKb),
+    `${loadCol.length}`, loadCol.filter(t => (hoursSince(t.on_line_at) || 0) > 24).length > 10,
+    'на линии, убытия нет; красное — дольше суток (ожидание окна)')}
+        ${kbCol('🛣 В пути — контроль и холодовая цепь', roadCol.filter(matchKb).map(roadCardKb),
+    `${roadCol.length} · 🌡/📞: ${roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length}`,
+    roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length >= 5,
+    `температура против режима рейса и контроль каждые ${midH.toFixed(0)} ч; GPS — помощь, не замена`)}
+        ${kbCol('🏗 Выгрузка', unloadCol.filter(matchKb).map(unloadCardKb),
+    `${unloadCol.length} · сверх ворот: ${unloadCol.filter(t => unloadAge(t) > gateNormH).length}`,
+    unloadCol.filter(t => unloadAge(t) > gateNormH).length >= 5,
+    `красное — дольше живого норматива ворот (${gateNormH} ч); «Выгружен» ставится в карточке`)}
+      </div>
+    </div>`;
+    const savedKb = captureScrolls(container);
+    if (!renderInto(container, boardHtml)) { restoreScrolls(container, savedKb); return; }
+    restoreScrolls(container, savedKb);
+    container.querySelector('[data-disp-questions]')?.addEventListener('toggle', event => {
+      state.dispQuestionsOpen = event.currentTarget.open;
+      try { localStorage.setItem('dispQOpen', event.currentTarget.open ? '1' : '0'); } catch { /* ок */ }
+    });
+    container.querySelectorAll('[data-question-close]').forEach(button =>
+      button.addEventListener('click', () => {
+        const question = questions.find(item => item.id === button.dataset.questionClose);
+        if (question) closeQuestionDialog(context, question);
+      }));
+    container.querySelectorAll('[data-question-card]').forEach(button =>
+      button.addEventListener('click', () =>
+        callCardDialog(context, { vehicleId: button.dataset.questionCard })));
+    container.querySelectorAll('[data-question-reply]').forEach(button =>
+      button.addEventListener('click', async event => {
+        event.stopPropagation();
+        const text = prompt('Ответ водителю (уйдёт в Telegram-бот):');
+        if (!text || !text.trim()) return;
+        try {
+          await api(`/api/driver-questions/${button.dataset.questionReply}/reply`, {
+            method: 'POST', body: JSON.stringify({ text: text.trim() }) });
+          toast('Ответ отправлен водителю');
+        } catch (error) { toast(error.message, 'error'); }
+      }));
+    container.querySelector('#kbLayoutClassic').onclick = () => {
+      state.dispatcherLayout = 'classic';
+      try { localStorage.setItem('pl_disp_layout', 'classic'); } catch { /* ок */ }
+      renderDispatcher(container, context);
+    };
+    container.querySelectorAll('[data-kb-open]').forEach(card => card.addEventListener('click', event => {
+      if (event.target.closest('button')) return;
+      const trip = data.trips.find(item => item.id === card.dataset.kbOpen)
+        || controlByTrip.get(card.dataset.kbOpen);
+      state.dispatcherLayout = 'classic'; // временный прыжок, память не трогаем
+      state.dispatcherQuery = trip?.vehicle_plate || '';
+      renderDispatcher(container, context);
+    }));
+    container.querySelectorAll('[data-kb-step]').forEach(button => button.addEventListener('click', () =>
+      runStep(button.dataset.kbStep, button.dataset.kbStepName, () => context.onReload())));
+    container.querySelectorAll('[data-kb-ctrl]').forEach(button => button.addEventListener('click', () => {
+      const tripId = button.dataset.kbCtrl;
+      const trip = online.find(item => item.id === tripId);
+      if (!trip) return;
+      const key = eventKeyOf(trip);
+      context.showModal(`<form id="kbCtrlForm">
+        <h2>📞 Контроль пройден</h2>
+        <p class="muted">${escapeHtml(button.dataset.kbCtrlLabel || '')} — что выяснили?</p>
+        <label class="field">Комментарий (обязательно)
+          <textarea name="note" required minlength="5" maxlength="300" rows="3"
+            placeholder="например: едет по графику, реф −2°, будет к 14:00"></textarea></label>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close>Отмена</button>
+          <button class="button">Сохранить</button>
+        </div></form>`);
+      document.getElementById('kbCtrlForm').onsubmit = async event => {
+        event.preventDefault();
+        const note = String(new FormData(event.currentTarget).get('note') || '').trim();
+        if (note.length < 5) { toast('Комментарий обязателен (от 5 символов)', 'error'); return; }
+        try {
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key, note }) });
+          context.closeModal();
+          toast('Контроль отмечен');
+          await renderDispatcher(container, context);
+        } catch (error) { toast(error.message, 'error'); }
+      };
+    }));
+    container.querySelectorAll('[data-kb-return]').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm('Вернуть рейс в контроль? Отметка «Выгружен» снимется, машина снова займётся рейсом.')) return;
+      button.disabled = true;
+      try {
+        await api(`/api/trips/${button.dataset.kbReturn}`, { method: 'PATCH',
+          body: JSON.stringify({ status: 'run' }) });
+        toast('Рейс возвращён в контроль');
+        state.dispatcherNetCache = null;
+        await context.onReload();
+      } catch (error) { button.disabled = false; toast(error.message, 'error'); }
+    }));
+    attachSearch(container.querySelector('#dispatcherSearch'), async value => {
+      state.dispatcherQuery = value;
+      await renderDispatcher(container, context, { reuseNetwork: true });
+    });
+    return;
+  }
+
   const savedScrolls = captureScrolls(container);
   const html = `<div class="saleswrap">
     ${!canAct ? `<div class="view-only">👁 Режим просмотра: отметки контроля доступны роли «Диспетчер».
@@ -1330,6 +1566,8 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
       ${demurrageChipHtml(data)}
       <div class="salesfilter" style="flex:1;min-width:220px">
+        <button class="button small ghost" id="kbLayoutBoard2"
+          title="Канбан-доска: 4 колонки потока, температура и контроль в пути, боль сверху">🗂 Доска</button>
         <button class="button ghost small" id="driverBroadcast"
           title="Объявление всем водителям, привязанным к боту: собрание, изменение порядка, срочная информация">📣 Всем водителям</button>
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: маршрут, ТС, водитель, заказчик, № заявки"
@@ -1807,6 +2045,11 @@ export async function renderDispatcher(container, context, options = {}) {
       }
       runStep(button.dataset.trip, button.dataset.step, context.onReload);
     }));
+  container.querySelector('#kbLayoutBoard2')?.addEventListener('click', () => {
+    state.dispatcherLayout = 'board';
+    try { localStorage.setItem('pl_disp_layout', 'board'); } catch { /* ок */ }
+    renderDispatcher(container, context);
+  });
   container.querySelectorAll('[data-question-new]').forEach(button =>
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.questionNew);

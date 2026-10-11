@@ -1836,3 +1836,40 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   background: var(--card); color: inherit; min-width: 120px; }
 @media print { .effwrap .period, .eff-plan-add { display: none; }
   .eff-slide { page-break-inside: avoid; } }
+
+/* ── 🗂 Канбан-доска диспетчера (этап 1, 11.10) ───────────────────── */
+.kb-top { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+.kb-top .block-search { flex:1; min-width:220px; }
+.kb-tiles { display:grid; grid-template-columns:repeat(4, minmax(130px, 1fr)); gap:8px; flex:2; }
+.kb-tile { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+.kb-tile .k { display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.3px; }
+.kb-tile b { font-size:16px; }
+.kb-tile small { margin-left:6px; color:var(--muted); }
+.kb-tile.warn { border-color:var(--warn); }
+.kb-tile.warn b { color:var(--warn); }
+.kb-board { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; align-items:start; }
+@media (max-width: 1100px) { .kb-board { grid-template-columns:repeat(2, 1fr); } }
+.kb-col { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px; }
+.kb-chead { display:flex; justify-content:space-between; align-items:center; font-weight:700; padding:2px 4px 6px; gap:8px; }
+.kb-lim { font-weight:600; font-size:12px; color:var(--muted); background:var(--card); border:1px solid var(--line); border-radius:10px; padding:2px 10px; white-space:nowrap; }
+.kb-chead.bad .kb-lim { background:var(--bad); border-color:var(--bad); color:#fff; }
+.kb-note { font-size:11px; color:var(--muted); padding:0 4px 8px; min-height:30px; }
+.kb-cards { display:flex; flex-direction:column; gap:7px; max-height:64vh; overflow:auto; }
+.kb-card { background:var(--card); border:1px solid var(--line); border-radius:7px; padding:7px 9px; cursor:pointer; }
+.kb-card:hover { border-color:var(--accent, #4a7); }
+.kb-card.over { border-color:var(--bad); box-shadow:inset 3px 0 0 var(--bad); }
+.kb-card.soon { box-shadow:inset 3px 0 0 var(--ok); }
+.kb-card.gone { opacity:.75; border-style:dashed; cursor:default; }
+.kbr { min-height:17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.kb1 { display:flex; justify-content:space-between; gap:8px; }
+.kb-drv { color:var(--muted); font-size:12px; }
+.kb2 { font-size:12px; }
+.kb3 { font-size:11px; color:var(--muted); }
+.kb4 { font-size:11px; color:var(--muted); margin-top:2px; }
+.kb4.bad, .kbt.bad, .kbc.bad { color:var(--bad); font-weight:700; }
+.kbt, .kbc { font-size:12px; margin-top:2px; }
+.kbt small, .kbc small, .kb4 small { color:var(--muted); font-weight:400; }
+.kb-step { width:100%; margin-top:6px; }
+.kb-step.alert { background:var(--bad); border-color:var(--bad); color:#fff; }
+.kb-gone { margin:6px 0; }
+.kb-gone-row { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:8px; }
