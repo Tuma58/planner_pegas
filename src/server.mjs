@@ -15,6 +15,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
+import { dispatcherShiftLoad, rebuildDispatcherCapacity } from './dispatch-load.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -4744,6 +4745,43 @@ function runTrailerTypeSync() {
 }
 setInterval(runTrailerTypeSync, 3_600_000);
 setTimeout(runTrailerTypeSync, 90_000);
+// ── Живые лимиты диспетчерской (канбан, этап 2): суточный пересчёт
+// личной ёмкости (медиана отметок за смену, 14 дн) с логом дрейфа;
+// перегруз смены и «контроль ведёт не-диспетчер» — сигнал руководителю
+// не чаще раза в день (антиспам по метке дня).
+function runDispatchLoadWatch() {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const capDayKey = 'dispatcher_capacity_day';
+    const capDay = db.prepare(`SELECT value FROM app_meta WHERE key=?`).get(capDayKey)?.value;
+    if (capDay !== today) {
+      const { snapshot, drift } = rebuildDispatcherCapacity(db);
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES(?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(capDayKey, today);
+      console.log(`ёмкость смены диспетчеров: людей ${snapshot.samples.people}, выучено ${snapshot.samples.learned}, фолбэк ${snapshot.fallback}` +
+        (drift.length ? `; дрейф: ${drift.join(', ')}` : ''));
+    }
+    const alertKey = `disp_load_alert_${today}`;
+    if (db.prepare(`SELECT value FROM app_meta WHERE key=?`).get(alertKey)) return;
+    const { people } = dispatcherShiftLoad(db);
+    const overloaded = people.filter(p => p.dispatcherRole && p.today >= 10 && p.today > p.cap * 1.2);
+    const strangers = people.filter(p => !p.dispatcherRole && p.today >= 10);
+    if (!overloaded.length && !strangers.length) return;
+    const parts = [];
+    if (overloaded.length) parts.push('перегруз смены: ' + overloaded.map(p =>
+      `${p.name} ${p.today}/${p.cap}`).join(', '));
+    if (strangers.length) parts.push('контроль ведёт не-диспетчер: ' + strangers.map(p =>
+      `${p.name} (${p.today} отметок)`).join(', '));
+    notify('manager', `🗂 Доска диспетчерской: ${parts.join(' · ')} — проверьте состав смены`,
+      null, null, { category: 'other' });
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES(?, '1')
+      ON CONFLICT(key) DO UPDATE SET value='1'`).run(alertKey);
+    db.prepare(`DELETE FROM app_meta WHERE key LIKE 'disp_load_alert_%' AND key < ?`)
+      .run(`disp_load_alert_${new Date(Date.now() - 3 * 864e5).toISOString().slice(0, 10)}`);
+  } catch (error) { console.error('лимиты диспетчерской:', error.message); }
+}
+setInterval(runDispatchLoadWatch, 3_600_000);
+setTimeout(runDispatchLoadWatch, 110_000);
 // Одометр борта — из датчика «пробег по CAN» последней позиции: репер
 // межсервисного пробега (диспозиции, заказ-наряды) и звеньев рейса.
 function canOdometerKm(vehicleId) {
@@ -7263,6 +7301,11 @@ async function api(request, response, url) {
   }
   // Последние позиции парка (для вкладки и карточек).
   // GPS-статус активных рейсов для карточек контроля диспетчера.
+  if (request.method === 'GET' && pathname === '/api/dispatcher/shift-load') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, dispatcherShiftLoad(db));
+  }
   if (request.method === 'GET' && pathname === '/api/monitoring/control') {
     const user = requireUser(request, response);
     if (!user) return;

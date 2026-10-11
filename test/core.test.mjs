@@ -17,6 +17,7 @@ import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
+import { dispatcherShiftLoad, rebuildDispatcherCapacity } from '../src/dispatch-load.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
   const password = 'Very-strong-password-2026';
@@ -4308,4 +4309,42 @@ test('фонд экипажа: «выгружен задним числом» н
     '2026-10-02T11:58:00Z', 'битое убытие игнорируется');
   assert.equal(effectiveFinish('2026-10-01T09:03:00Z', null, '2026-10-01T15:02:00Z'),
     null, 'без отметки выгрузки конца нет');
+});
+
+test('лимиты диспетчерской: ёмкость учится из факта, кламп, фолбэк новичку', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-cap-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const day = off => new Date(Date.now() - off * 864e5).toISOString().slice(0, 10);
+  const put = db.prepare(`INSERT INTO task_marks(kind, day, item_key, done_by) VALUES('dispatcher',?,?,?)`);
+  // Опытный: 4 дня по 12/14/16/90 отметок → медиана ~15, 90 не ломает.
+  [[1, 12], [2, 14], [3, 16], [4, 90]].forEach(([off, n]) => {
+    for (let i = 0; i < n; i += 1) put.run(day(off), `e${off}-${i}`, 'Опытный Диспетчер');
+  });
+  // Claim-захваты в ёмкость не считаются.
+  put.run(day(1), 'claim|trip-1', 'Опытный Диспетчер');
+  // Новичок: только 2 дня — мало образцов, живёт на фолбэке.
+  [[1, 3], [2, 4]].forEach(([off, n]) => {
+    for (let i = 0; i < n; i += 1) put.run(day(off), `n${off}-${i}`, 'Новичок Смены');
+  });
+  const { snapshot } = rebuildDispatcherCapacity(db);
+  assert.equal(snapshot.caps['Опытный Диспетчер'], 16, 'медиана дней (12,14,16,90) = 16, выброс 90 не ломает');
+  assert.equal(snapshot.caps['Новичок Смены'], undefined, '2 дня — мало образцов');
+  assert.equal(snapshot.fallback, 16, 'фолбэк — медиана выученных');
+  // Сегодняшняя загрузка: отметки сегодня видны против ёмкости.
+  for (let i = 0; i < 7; i += 1) put.run(day(0), `t-${i}`, 'Опытный Диспетчер');
+  const load = dispatcherShiftLoad(db);
+  const me = load.people.find(p => p.name === 'Опытный Диспетчер');
+  assert.ok(me, 'человек с отметками виден');
+  assert.equal(me.today, 7);
+  assert.equal(me.cap, 16);
+  // Кламп: стахановец с медианой 200 не задирает ёмкость выше 60.
+  [[1, 200], [2, 210], [3, 205]].forEach(([off, n]) => {
+    for (let i = 0; i < n; i += 1) put.run(day(off), `s${off}-${i}`, 'Стахановец К');
+  });
+  const second = rebuildDispatcherCapacity(db);
+  assert.equal(second.snapshot.caps['Стахановец К'], 60, 'кламп сверху 60');
 });

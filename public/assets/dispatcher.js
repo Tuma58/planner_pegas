@@ -1329,6 +1329,14 @@ export async function renderDispatcher(container, context, options = {}) {
     catch { state.dispatcherLayout = 'board'; }
   }
   if (state.dispatcherLayout === 'board') {
+    // Этап 2: живые лимиты — личная ёмкость смены (p50 отметок за 14 дн,
+    // пересчёт сторожем) и лимит «Подготовки» = выходы ближайших суток.
+    if (!state.shiftLoadAt || Date.now() - state.shiftLoadAt > 5 * 60_000) {
+      try {
+        state.shiftLoad = await api('/api/dispatcher/shift-load');
+        state.shiftLoadAt = Date.now();
+      } catch { state.shiftLoad = state.shiftLoad || { people: [], fallback: 15 }; }
+    }
     const gpsByTrip = new Map((state.gpsControl || []).map(g => [g.trip_id, g]));
     const gateNormH = Number(state.gpsGateNormH) || 4.5;
     const midH = MID_CONTROL_MS / 3.6e6;
@@ -1423,6 +1431,19 @@ export async function renderDispatcher(container, context, options = {}) {
         <div class="kbr kb4">выгружен ${formatDateTime(item.unloaded_at)} — сошёл с доски</div>
         ${canAct ? `<button class="button small kb-step" data-kb-return="${item.id}">↩ Вернуть в контроль</button>` : ''}
       </div>`).join('');
+    const prepLimit = planned.filter(trip =>
+      Date.parse(trip.starts_at) - Date.now() <= 24 * 3.6e6).length;
+    const prepTotal = preparing.length + waitingLogist.length;
+    const shiftPeople = (state.shiftLoad?.people || []).slice(0, 8);
+    const shiftBar = person => {
+      const over = person.today > person.cap;
+      const pct = Math.min(100, Math.round(person.today / Math.max(1, person.cap) * 100));
+      return `<div class="kb-cap ${over ? 'red' : ''}" title="${person.onShift ? 'в смене по графику' : 'вне графика смен'}${person.dispatcherRole ? '' : ' · РОЛЬ НЕ ДИСПЕТЧЕР'}">
+        <span class="nm">${escapeHtml(person.name.split(' ').slice(0, 2).join(' '))}${person.dispatcherRole ? '' : ' <small class="bad">не диспетчер!</small>'}</span>
+        <span class="bar"><i style="--w:${pct}%"></i></span>
+        <span class="val">${person.today} / ${person.cap}</span>
+      </div>`;
+    };
     const kbCol = (title, cards, lim, over, note) => `<section class="kb-col">
       <div class="kb-chead ${over ? 'bad' : ''}"><span>${title}</span><span class="kb-lim">${lim}</span></div>
       <div class="kb-note">${note}</div>
@@ -1444,6 +1465,10 @@ export async function renderDispatcher(container, context, options = {}) {
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: ТС, водитель, заказчик, № — найдёт и сошедшие с доски"
           value="${escapeHtml(state.dispatcherQuery || '')}">
       </div>
+      ${shiftPeople.length ? `<div class="kb-shift">
+        <span class="kb-shift-t">Смена · ёмкость из факта (медиана за 14 дн, пересчёт ночью)</span>
+        <div class="kb-shift-row">${shiftPeople.map(shiftBar).join('')}</div>
+      </div>` : ''}
       ${questionCards ? `<details class="questions-strip compact" data-disp-questions ${questionsOpen ? 'open' : ''}>
         <summary>📞 Вопросы водителей <span class="scount ${lateQuestions ? 'late' : ''}">${questions.length}</span>
           ${lateQuestions ? `<span class="q-late">⏱ просрочено ${lateQuestions}</span>` : ''}
@@ -1453,8 +1478,8 @@ export async function renderDispatcher(container, context, options = {}) {
       ${goneCards ? `<div class="kb-gone"><div class="kb-note">🔎 Сошли с доски за 48 ч (по вашему поиску) — ошибочную отметку можно откатить:</div><div class="kb-gone-row">${goneCards}</div></div>` : ''}
       <div class="kb-board">
         ${kbCol('🧰 Подготовка выхода', [...prepList.filter(matchKb).map(prepCardKb), ...waitingLogist.filter(matchKb).map(waitCardKb)],
-    `${preparing.length + waitingLogist.length}`, false,
-    'кнопка — следующий шаг; синяя кромка — выход в ближайшие сутки')}
+    `${prepTotal} / ${prepLimit}`, prepTotal > prepLimit,
+    'лимит = выходы ближайших 24 ч по плану: готовим больше, чем выходит, — проверьте окна; кнопка — следующий шаг')}
         ${kbCol('📦 Погрузка', loadCol.filter(matchKb).map(loadCardKb),
     `${loadCol.length}`, loadCol.filter(t => (hoursSince(t.on_line_at) || 0) > 24).length > 10,
     'на линии, убытия нет; красное — дольше суток (ожидание окна)')}

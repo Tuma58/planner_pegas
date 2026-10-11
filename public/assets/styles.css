@@ -1873,3 +1873,16 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .kb-step.alert { background:var(--bad); border-color:var(--bad); color:#fff; }
 .kb-gone { margin:6px 0; }
 .kb-gone-row { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:8px; }
+
+/* Этап 2: полоса смены с личной ёмкостью */
+.kb-shift { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 12px; margin-bottom:8px; }
+.kb-shift-t { display:block; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.3px; margin-bottom:5px; }
+.kb-shift-row { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:6px 14px; }
+.kb-cap { display:grid; grid-template-columns:minmax(110px, 150px) 1fr 54px; align-items:center; gap:8px; }
+.kb-cap .nm { font-weight:600; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.kb-cap .nm small.bad { color:var(--bad); }
+.kb-cap .bar { height:7px; background:var(--line); border-radius:4px; position:relative; overflow:hidden; }
+.kb-cap .bar i { position:absolute; inset:0; width:var(--w); background:var(--accent, #4a7); border-radius:4px; }
+.kb-cap.red .bar i { background:var(--bad); }
+.kb-cap .val { font-size:12px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+.kb-cap.red .val { color:var(--bad); font-weight:700; }
