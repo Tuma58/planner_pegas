@@ -3907,6 +3907,20 @@ setTimeout(() => {
   } catch (error) { console.error('миграция план-слоя:', error.message); }
 }, 5_000);
 
+// Разовая миграция 11.10 (подготовка сессии 4): полная перепроекция
+// план-слоя после ё-нормализации ФИО (Королёв не матчился) и чистки
+// пяти пар дублей водителей (неоднозначное ФИО не проецировалось) —
+// сверка JSON↔таблица должна дать ноль. Идемпотентно по метке.
+setTimeout(() => {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='plan_table_v2'`).get()) return;
+    const result = projectPlanToTable(db);
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('plan_table_v2','done')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
+    console.log(`перепроекция план-слоя (v2): водителей ${result.drivers}, ячеек ${result.cells}`);
+  } catch (error) { console.error('миграция план-слоя v2:', error.message); }
+}, 7_000);
+
 // Разовая миграция 12.09 («тонкая суббота»): ворота получили кламп —
 // пересобрать gate_facts и сжать раздутые обещания активных рейсов
 // сразу, не дожидаясь ночного цикла. Идемпотентно по метке.

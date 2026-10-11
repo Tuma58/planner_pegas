@@ -205,7 +205,7 @@ const dayIso = (base, offset) =>
   new Date(base + offset * 86_400_000).toISOString().slice(0, 10);
 // Каноническое ФИО для сличения график ↔ планер (то же правило, что в
 // достройке: скобки-пометки отбрасываются, регистр и пробелы неважны).
-const fioWords = value => String(value || '').toLowerCase()
+const fioWords = value => String(value || '').toLowerCase().replace(/ё/g, 'е')
   .replace(/\([^)]*\)/g, ' ').split(/\s+/).filter(Boolean);
 export const canonFio = value => fioWords(value).join(' ');
 const canonPlate = value => String(value || '').toLowerCase().replace(/\s+/g, '');
