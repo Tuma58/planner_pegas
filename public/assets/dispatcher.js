@@ -1366,9 +1366,9 @@ export async function renderDispatcher(container, context, options = {}) {
       return Number.isFinite(ms) ? (Date.now() - ms) / 3.6e6 : null;
     };
     // Перегоны порожним — на доске (заказ руководителя 12.10): весь
-    // жизненный цикл «задание → выехал → прибыл» теми же колонками.
-    // Ответственного у перегона нет — в именных фильтрах они скрыты.
-    const kbTransfers = (ownerActive ? [] : openTransfers(data)).filter(item => !query ||
+    // жизненный цикл «задание → выехал → прибыл» теми же колонками;
+    // с 12.10 у перегона есть ответственный — фильтры работают как у рейсов.
+    const kbTransfers = openTransfers(data).filter(ownMatch).filter(item => !query ||
       `${item.vehicle_plate} ${item.driver_name || ''} ${item.to_name || ''} ${item.from_label || ''}`
         .toLowerCase().includes(query));
     const trPrep = kbTransfers.filter(t => transferStage(t).key !== 'run');
@@ -1505,9 +1505,10 @@ export async function renderDispatcher(container, context, options = {}) {
       const lateMs = stage.key === 'run' ? Date.now() - Date.parse(transfer.ends_at) : 0;
       const late = lateMs > 2 * 3.6e6;
       const departOverdue = stage.key !== 'run' && Date.parse(transfer.starts_at) < Date.now();
-      return `<div class="kb-card kb-transfer ${late || departOverdue ? 'over' : ''}">
+      return `<div class="kb-card kb-transfer ${late || departOverdue ? 'over' : ''} ${assignments[transfer.id]?.name === myFull ? 'mine' : ''}">
         <div class="kbr kb1"><b class="mono">${escapeHtml(transfer.vehicle_plate || '')}</b>
           <span class="kb-drv">${escapeHtml((transfer.driver_name || 'без водителя').split(' ').slice(0, 2).join(' '))}</span></div>
+        ${ownerRow(transfer)}
         <div class="kbr kb-own">🚚 порожним · ${escapeHtml(transfer.purpose || '')}</div>
         <div class="kbr kb3">${escapeHtml((transfer.from_label || '—').slice(0, 22))} → ${escapeHtml((transfer.to_name || '—').slice(0, 22))}${transfer.empty_km ? ` · ~${Math.round(transfer.empty_km)} км` : ''}</div>
         <div class="kbr kb4 ${late || departOverdue ? 'bad' : ''}">${stage.key === 'run'
@@ -1517,7 +1518,7 @@ export async function renderDispatcher(container, context, options = {}) {
           data-transfer-step="${transfer.id}" data-transfer-action="${escapeHtml(stage.step)}"
           data-transfer-label="${escapeHtml(stage.action)}">✔ ${escapeHtml(stage.action)}</button>
         <button class="button ghost small kb-take" data-transfer-copy="${transfer.id}"
-          title="Скопировать задание для водителя">📋 Задание</button>` : ''}
+          title="Скопировать задание для водителя">📋 Задание</button>` : ''}${takeBtn(transfer)}
       </div>`;
     };
     const kbCol = (title, cards, lim, over, note) => `<section class="kb-col">

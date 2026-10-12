@@ -4451,6 +4451,18 @@ test('авторазвод (3б): баланс по ёмкостям, липко
   db.prepare(`UPDATE trips SET status='unloaded', unloaded_at=datetime('now') WHERE id='ab-1'`).run();
   assignBoardCards(db);
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments WHERE trip_id='ab-1'`).get().n, 0);
+  // Перегон — такая же карточка с ответственным (заказ 12.10): раздаётся
+  // балансировщиком, по прибытии уходит из назначений.
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,purpose)
+    VALUES('tr-1',?,'transfer',datetime('now','-2 hours'),datetime('now','+6 hours'),'на погрузку')`)
+    .run(vehicle);
+  assignBoardCards(db);
+  const trOwn = db.prepare(`SELECT name, source FROM dispatch_assignments WHERE trip_id='tr-1'`).get();
+  assert.ok(trOwn && trOwn.source === 'auto', 'перегон получил ответственного');
+  db.prepare(`UPDATE vehicle_dispositions SET arrived_at=datetime('now') WHERE id='tr-1'`).run();
+  assignBoardCards(db);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments WHERE trip_id='tr-1'`).get().n,
+    0, 'прибывший перегон ушёл из назначений');
   // Только сменные по графику получают раздачу (уточнение 12.10):
   // Большой — в смене, Малый — активен в свой выходной → всё Большому.
   db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind) VALUES('sh-big','u-big',?,'day')`)

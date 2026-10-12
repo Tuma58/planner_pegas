@@ -164,12 +164,24 @@ export function boardCards(db) {
     FROM trips t WHERE t.status IN ('plan','run')`).all()) {
     const col = t.status === 'plan' ? 'prep'
       : !t.dep ? 'load' : t.arr_d ? 'unload' : 'road';
-    cards.push({ tripId: t.id, col, plate: t.plate || '',
+    cards.push({ tripId: t.id, col, kind: 'trip', plate: t.plate || '',
       enteredAt: col === 'prep'
         ? [t.driver_notified_at, t.entered_1c_at, t.logist_confirmed_at, t.created_at]
           .find(Boolean) || null
         : col === 'load' ? (t.on_line_at || t.starts_at)
           : col === 'road' ? t.dep : t.arr_d });
+  }
+  // Перегоны порожним — такие же карточки с ответственным (заказ
+  // руководителя 12.10: «там один шаг — позвонить и сообщить водителю»):
+  // до выезда — в «Подготовке», после — «В пути»; прибыл — ушла с доски.
+  for (const t of db.prepare(`SELECT d.id, d.starts_at, d.created_at,
+      d.driver_notified_at, d.departed_at,
+      (SELECT v.plate FROM vehicles v WHERE v.id=d.vehicle_id) plate
+    FROM vehicle_dispositions d
+    WHERE d.kind='transfer' AND d.arrived_at IS NULL`).all()) {
+    cards.push({ tripId: t.id, col: t.departed_at ? 'road' : 'prep',
+      kind: 'transfer', plate: t.plate || '',
+      enteredAt: t.departed_at || t.driver_notified_at || t.created_at || t.starts_at });
   }
   return cards;
 }
@@ -364,14 +376,15 @@ export function escalationStaff(db, nowIso = new Date().toISOString()) {
 }
 
 // Последнее движение по карточке: вход в колонку, свежая отметка контроля
-// (item_key начинается с id рейса) или шаг подготовки в аудите.
+// (item_key начинается с id рейса) или шаг в аудите (у перегона — свой).
 function lastActivityMs(db, card) {
   const stamps = [parseTsMs(card.enteredAt)];
   const mark = db.prepare(`SELECT MAX(done_at) t FROM task_marks
     WHERE kind='dispatcher' AND item_key LIKE ? || '|%'`).get(card.tripId)?.t;
   if (mark) stamps.push(parseTsMs(mark));
   const step = db.prepare(`SELECT MAX(created_at) t FROM audit_log
-    WHERE action='dispatch_step' AND entity_id=?`).get(card.tripId)?.t;
+    WHERE action=? AND entity_id=?`)
+    .get(card.kind === 'transfer' ? 'transfer_step' : 'dispatch_step', card.tripId)?.t;
   if (step) stamps.push(parseTsMs(step));
   const known = stamps.filter(Number.isFinite);
   return known.length ? Math.max(...known) : NaN;

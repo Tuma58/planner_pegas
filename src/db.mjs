@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS order_files (
 );
 CREATE INDEX IF NOT EXISTS idx_order_files_order ON order_files(order_id);
 CREATE TABLE IF NOT EXISTS dispatch_assignments (
-  trip_id TEXT PRIMARY KEY REFERENCES trips(id) ON DELETE CASCADE,
+  trip_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'auto' CHECK(source IN ('auto','manual','esc_senior','esc_head')),
   assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1185,19 +1185,22 @@ function migrateColumns(db) {
       COMMIT;
       PRAGMA foreign_keys=ON;`);
   }
-  // ── Эскалация просроченных карточек доски (3в, 12.10.2026) ──
-  // source получает два новых значения: esc_senior (старший смены) и
-  // esc_head (руководитель диспетчерской службы). CHECK расширяется
-  // пересозданием по живой схеме (паттерн driver_assignments выше).
+  // ── Эскалация и перегоны на доске (3в + заказ 12.10.2026) ──
+  // source получает esc_senior (старший смены) и esc_head (руководитель
+  // диспетчерской службы), а trip_id становится «id карточки» — рейса
+  // ИЛИ перегона (vehicle_dispositions), поэтому FK на trips уходит.
+  // Пересоздание по целевой схеме (паттерн driver_assignments выше).
   const dispatchSql = db.prepare(
     `SELECT sql FROM sqlite_master WHERE type='table' AND name='dispatch_assignments'`).get()?.sql || '';
-  if (dispatchSql && !dispatchSql.includes('esc_senior')) {
-    const rebuiltDispatch = dispatchSql
-      .replace(/CREATE TABLE\s+"?dispatch_assignments"?/i, 'CREATE TABLE dispatch_assignments_new')
-      .replace(/IN\s*\(\s*'auto'\s*,\s*'manual'\s*\)/i, "IN ('auto','manual','esc_senior','esc_head')");
+  if (dispatchSql && (!dispatchSql.includes('esc_senior') || /REFERENCES/i.test(dispatchSql))) {
     db.exec(`PRAGMA foreign_keys=OFF;
       BEGIN IMMEDIATE;
-      ${rebuiltDispatch};
+      CREATE TABLE dispatch_assignments_new (
+        trip_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'auto' CHECK(source IN ('auto','manual','esc_senior','esc_head')),
+        assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
       INSERT INTO dispatch_assignments_new SELECT * FROM dispatch_assignments;
       DROP TABLE dispatch_assignments;
       ALTER TABLE dispatch_assignments_new RENAME TO dispatch_assignments;

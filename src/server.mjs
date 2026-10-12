@@ -7400,13 +7400,17 @@ async function api(request, response, url) {
   if (match && request.method === 'POST') {
     const user = requirePermission(request, response, 'trip-status:write');
     if (!user) return;
+    // Карточка — рейс или перегон (у перегона тот же цикл владения).
     const trip = db.prepare(`SELECT id FROM trips WHERE id=? AND status IN ('plan','run')`)
       .get(match[0]);
-    if (!trip) return errorJson(response, 404, 'Рейс не найден среди активных');
+    const transfer = trip ? null : db.prepare(`SELECT id FROM vehicle_dispositions
+      WHERE id=? AND kind='transfer' AND arrived_at IS NULL`).get(match[0]);
+    if (!trip && !transfer) return errorJson(response, 404, 'Карточка не найдена среди активных');
+    const cardId = trip ? trip.id : transfer.id;
     db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source) VALUES(?,?,'manual')
       ON CONFLICT(trip_id) DO UPDATE SET name=excluded.name, source='manual',
-      assigned_at=CURRENT_TIMESTAMP`).run(trip.id, user.full_name || user.username);
-    audit(db, user, 'dispatch_take', 'trip', trip.id, {}, requestIp(request));
+      assigned_at=CURRENT_TIMESTAMP`).run(cardId, user.full_name || user.username);
+    audit(db, user, 'dispatch_take', trip ? 'trip' : 'transfer', cardId, {}, requestIp(request));
     return json(response, 200, { ok: true });
   }
   // Пересборка автораспределения (правка графиков/исключений задним
