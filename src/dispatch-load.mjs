@@ -1,3 +1,6 @@
+import { settingsObject } from './db.mjs';
+import { crewNorms } from './crew-fund.mjs';
+
 // Живые лимиты диспетчерской (канбан, этап 2, 11.10, заказ руководителя).
 // ЛИЧНАЯ ЁМКОСТЬ смены выучивается из факта: медиана отметок контроля
 // (task_marks kind='dispatcher', без claim-захватов) за рабочий день по
@@ -148,9 +151,12 @@ export function rebuildDispatchProfiles(db, nowIso = new Date().toISOString()) {
 }
 
 // Активные карточки доски с колонкой — та же раскладка, что на экране.
+// Времена шагов нужны эскалации (3в): от них считается «вход в колонку».
 export function boardCards(db) {
   const cards = [];
   for (const t of db.prepare(`SELECT t.id, t.status, t.logist_confirmed_at, t.on_line_at,
+      t.entered_1c_at, t.driver_notified_at, t.created_at, t.starts_at,
+      (SELECT v.plate FROM vehicles v WHERE v.id=t.vehicle_id) plate,
       (SELECT MIN(s.actual_departure) FROM trip_stops s
         WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
       (SELECT MAX(s.actual_arrival) FROM trip_stops s
@@ -158,7 +164,12 @@ export function boardCards(db) {
     FROM trips t WHERE t.status IN ('plan','run')`).all()) {
     const col = t.status === 'plan' ? 'prep'
       : !t.dep ? 'load' : t.arr_d ? 'unload' : 'road';
-    cards.push({ tripId: t.id, col });
+    cards.push({ tripId: t.id, col, plate: t.plate || '',
+      enteredAt: col === 'prep'
+        ? [t.driver_notified_at, t.entered_1c_at, t.logist_confirmed_at, t.created_at]
+          .find(Boolean) || null
+        : col === 'load' ? (t.on_line_at || t.starts_at)
+          : col === 'road' ? t.dep : t.arr_d });
   }
   return cards;
 }
@@ -195,13 +206,17 @@ export function assignBoardCards(db, nowIso = new Date().toISOString()) {
       loadOf.set(own.name, (loadOf.get(own.name) || 0) + 1);
     }
   }
+  // Эскалированные (3в) неприкосновенны, как manual: вернуть карточку
+  // в общий пул может только сама эскалация, когда движение пошло.
+  const sticky = own => own && (own.source === 'manual'
+    || own.source.startsWith('esc_') || names.has(own.name));
   const put = db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source)
     VALUES(?,?, 'auto') ON CONFLICT(trip_id) DO UPDATE SET
     name=excluded.name, source='auto', assigned_at=CURRENT_TIMESTAMP`);
   let assigned = 0;
   for (const card of cards) {
     const own = current.get(card.tripId);
-    if (own && (own.source === 'manual' || names.has(own.name))) continue; // липкость
+    if (sticky(own)) continue; // липкость
     // Наименее загруженный относительно личной ёмкости.
     const best = workers.reduce((a, b) =>
       (loadOf.get(a.name) / a.cap) <= (loadOf.get(b.name) / b.cap) ? a : b);
@@ -276,4 +291,134 @@ export function shiftPlanFact(db, day) {
       factCtrl: Object.fromEntries(factCtrl[h]), factPrep: Object.fromEntries(factPrep[h]) });
   }
   return { day, people: [...names].sort(), hours };
+}
+
+// ── Этап 3в: эскалация просроченных карточек (решение руководителя 12.10)
+// «На старшего смены объём не распределять — только сильно просроченные;
+// после старшего карточка уходит руководителю диспетчерской службы».
+// Карточка без движения дольше норматива колонки × множитель уходит
+// старшему смены, ещё N минут тишины — руководителю службы. Нормативы
+// живые: подготовка — медиана lead за 28 дней (кламп 2–48 ч, фолбэк 24),
+// погрузка/выгрузка — живые ворота gateNormH, «в пути» — интервал
+// промежуточного контроля из настроек. Множитель и минуты — настройки
+// (цели руководителя), ноль множителя — осознанное «выключено».
+
+const parseTsMs = value => {
+  if (!value) return NaN;
+  const s = String(value).replace(' ', 'T');
+  return Date.parse(s + (s.includes('Z') || s.includes('+') ? '' : 'Z'));
+};
+
+export function escalationSettings(db) {
+  const raw = settingsObject(db).dispatch || {};
+  return {
+    factor: raw.escalateFactor === 0 ? 0 : Number(raw.escalateFactor ?? 2),
+    headMin: raw.escalateHeadMin === 0 ? 0 : Number(raw.escalateHeadMin ?? 60)
+  };
+}
+
+// Нормативы шага по колонкам: подготовка учится из факта раз в сутки
+// (медиана logist_confirmed→on_line за 28 дней), остальные берутся из
+// уже живых контуров — воро́та gateNormH и интервал контроля в пути.
+export function boardStepNorms(db, nowIso = new Date().toISOString()) {
+  const day = nowIso.slice(0, 10);
+  let cached = null;
+  try { cached = JSON.parse(metaGet(db, 'dispatch_step_norms') || 'null'); } catch { cached = null; }
+  if (!cached || cached.day !== day) {
+    const since = new Date(Date.parse(day + 'T00:00:00Z') - 28 * 864e5).toISOString();
+    const hoursList = db.prepare(`SELECT logist_confirmed_at a, on_line_at b FROM trips
+        WHERE logist_confirmed_at IS NOT NULL AND on_line_at IS NOT NULL
+          AND on_line_at >= ? AND on_line_at < ?`).all(since, day)
+      .map(r => (parseTsMs(r.b) - parseTsMs(r.a)) / 3.6e6)
+      .filter(h => Number.isFinite(h) && h > 0);
+    const med = median(hoursList);
+    const prepH = med == null ? 24 : Math.min(48, Math.max(2, med));
+    const was = cached?.prepH;
+    cached = { day, prepH, samples: hoursList.length };
+    metaSet(db, 'dispatch_step_norms', JSON.stringify(cached));
+    if (was != null && Math.abs(was - prepH) >= 1) {
+      console.log(`норматив подготовки доски: ${was.toFixed(1)}→${prepH.toFixed(1)} ч (образцов ${hoursList.length})`);
+    }
+  }
+  const gateH = crewNorms(db).gateNormH;
+  const midH = Number(settingsObject(db).calculation?.midControlHours ?? 4) || 4;
+  return { prep: cached.prepH, load: gateH, road: midH, unload: gateH };
+}
+
+// Кто принимает эскалацию. Старший смены — сменный сотрудник с должностью
+// со словом «старший» (вне обычной раздачи — dispatch_exempt его и так
+// исключает); руководитель службы — должность «руководитель …
+// диспетчерской». LOWER кириллицы SQLite не умеет — фильтр в JS.
+export function escalationStaff(db, nowIso = new Date().toISOString()) {
+  const day = nowIso.slice(0, 10);
+  const lc = v => String(v || '').toLowerCase();
+  const onShift = db.prepare(`SELECT u.full_name name, COALESCE(u.job_role,'') job
+    FROM staff_shifts s JOIN users u ON u.id=s.user_id
+    WHERE s.day=? AND s.kind IN ('day','night') AND u.active=1`).all(day);
+  const senior = onShift.find(p => lc(p.job).includes('старш'))?.name || null;
+  const head = db.prepare(`SELECT full_name name, COALESCE(job_role,'') job FROM users
+      WHERE active=1 AND deleted_at IS NULL AND COALESCE(job_role,'')<>''`).all()
+    .find(p => lc(p.job).includes('руковод') && lc(p.job).includes('диспетчер'))?.name || null;
+  return { senior, head };
+}
+
+// Последнее движение по карточке: вход в колонку, свежая отметка контроля
+// (item_key начинается с id рейса) или шаг подготовки в аудите.
+function lastActivityMs(db, card) {
+  const stamps = [parseTsMs(card.enteredAt)];
+  const mark = db.prepare(`SELECT MAX(done_at) t FROM task_marks
+    WHERE kind='dispatcher' AND item_key LIKE ? || '|%'`).get(card.tripId)?.t;
+  if (mark) stamps.push(parseTsMs(mark));
+  const step = db.prepare(`SELECT MAX(created_at) t FROM audit_log
+    WHERE action='dispatch_step' AND entity_id=?`).get(card.tripId)?.t;
+  if (step) stamps.push(parseTsMs(step));
+  const known = stamps.filter(Number.isFinite);
+  return known.length ? Math.max(...known) : NaN;
+}
+
+export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
+  const cfg = escalationSettings(db);
+  if (!cfg.factor) return { escalated: [], released: [], senior: null, head: null };
+  const norms = boardStepNorms(db, nowIso);
+  const { senior, head } = escalationStaff(db, nowIso);
+  const nowMs = Date.parse(nowIso);
+  const current = new Map(db.prepare(`SELECT trip_id, name, source, assigned_at
+    FROM dispatch_assignments`).all().map(r => [r.trip_id, r]));
+  const put = db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source)
+    VALUES(?,?,?) ON CONFLICT(trip_id) DO UPDATE SET
+    name=excluded.name, source=excluded.source, assigned_at=CURRENT_TIMESTAMP`);
+  const escalated = [];
+  const released = [];
+  for (const card of boardCards(db)) {
+    const normH = norms[card.col];
+    if (!Number.isFinite(normH) || normH <= 0) continue;
+    const lastMs = lastActivityMs(db, card);
+    if (!Number.isFinite(lastMs)) continue; // времени нет — судить не по чему
+    const idleH = (nowMs - lastMs) / 3.6e6;
+    const overdue = idleH > normH * cfg.factor;
+    const own = current.get(card.tripId);
+    if (own && own.source.startsWith('esc_')) {
+      if (!overdue) {
+        // Движение пошло — карточка возвращается в общий пул смены.
+        put.run(card.tripId, own.name, 'auto');
+        released.push({ tripId: card.tripId, plate: card.plate });
+      } else if (own.source === 'esc_senior' && head && cfg.headMin
+        && nowMs - parseTsMs(own.assigned_at) > cfg.headMin * 60_000) {
+        put.run(card.tripId, head, 'esc_head');
+        escalated.push({ level: 2, tripId: card.tripId, plate: card.plate,
+          col: card.col, name: head, idleH, normH, from: own.name });
+      }
+      continue;
+    }
+    if (!overdue) continue;
+    // Нет старшего в смене — карточка уходит сразу руководителю службы.
+    const target = senior ? { name: senior, source: 'esc_senior' }
+      : head ? { name: head, source: 'esc_head' } : null;
+    if (!target || (own && own.name === target.name)) continue;
+    put.run(card.tripId, target.name, target.source);
+    escalated.push({ level: target.source === 'esc_senior' ? 1 : 2,
+      tripId: card.tripId, plate: card.plate, col: card.col,
+      name: target.name, idleH, normH, from: own?.name || '' });
+  }
+  return { escalated, released, senior, head };
 }

@@ -1389,8 +1389,13 @@ export async function renderDispatcher(container, context, options = {}) {
       const a = assignments[trip.id];
       if (!a) return '<div class="kbr kb-own none">👤 не назначена</div>';
       const mine = a.name === myFull;
-      return `<div class="kbr kb-own ${mine ? 'mine' : ''}">👤 ${mine ? 'ВЫ'
-        : escapeHtml(a.name.split(' ').slice(0, 2).join(' '))}${a.source === 'manual' ? ' ✋' : ''}</div>`;
+      // Эскалация (3в): карточка без движения ушла старшему смены или
+      // руководителю службы — видно всем, у кого она теперь.
+      const esc = a.source === 'esc_senior' || a.source === 'esc_head';
+      return `<div class="kbr kb-own ${mine ? 'mine' : ''} ${esc ? 'esc' : ''}"
+        ${esc ? `title="Эскалация: карточка долго без движения — передана ${a.source === 'esc_senior' ? 'старшему смены' : 'руководителю диспетчерской службы'}"` : ''}>
+        ${esc ? '⏰' : '👤'} ${mine ? 'ВЫ'
+        : escapeHtml(a.name.split(' ').slice(0, 2).join(' '))}${a.source === 'manual' ? ' ✋' : ''}${esc ? ' · эскалация' : ''}</div>`;
     };
     const takeBtn = trip => {
       const a = assignments[trip.id];

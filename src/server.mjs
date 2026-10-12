@@ -15,7 +15,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
-import { assignBoardCards, dispatcherShiftLoad, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
+import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, callOnTrackedNumber, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -538,6 +538,23 @@ function notifyEveryone(text, entity = null, entityId = null) {
     }
   } catch { /* не критично */ }
   return users.length;
+}
+
+// Адресное авто-сообщение одному сотруднику по ФИО (эскалации доски):
+// в его ленту «⚙ Конвейер» (recipient_id — тост и звук как адресованное),
+// дубль в Telegram — выбравшим режим «все уведомления».
+function notifyUserByName(fullName, text, entity = null, entityId = null) {
+  const user = db.prepare(`SELECT id, telegram_chat_id, telegram_mode FROM users
+    WHERE full_name=? AND active=1 AND deleted_at IS NULL`).get(fullName);
+  if (!user) return false;
+  db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
+    VALUES('Конвейер','auto',?,?,?,?)`).run(text, user.id, entity, entityId);
+  try {
+    if (user.telegram_chat_id && user.telegram_mode === 'all') {
+      sendTelegramTo([user.telegram_chat_id], text);
+    }
+  } catch { /* не критично */ }
+  return true;
 }
 
 // ── Объявления на табло ──
@@ -4809,6 +4826,25 @@ function runDispatchAssignWatch() {
       .get(today, hour);
     if (!hasPlan) snapshotPlanHour(db);
     if (result.assigned) console.log(`авторазвод: назначено ${result.assigned} из ${result.total} карточек`);
+    // Этап 3в: сильно просроченные — старшему смены, затем руководителю
+    // службы; задышавшие возвращаются в общий пул.
+    const esc = escalateOverdueCards(db);
+    const colName = { prep: 'Подготовка', load: 'Погрузка', road: 'В пути', unload: 'Выгрузка' };
+    for (const e of esc.escalated) {
+      const where = `${e.plate ? `${e.plate} · ` : ''}${colName[e.col] || e.col}`;
+      const age = `${e.idleH.toFixed(0)} ч без движения при нормативе ${e.normH.toFixed(1)} ч`;
+      notifyUserByName(e.name, (e.level === 1
+        ? `⏰ Эскалация старшему смены: карточка ${where} — ${age}`
+        : `⏰ Эскалация руководителю службы: карточка ${where} — ${age}`)
+        + `${e.from ? ` (была у: ${e.from})` : ''} — теперь на вас`, 'trip', e.tripId);
+    }
+    if (esc.escalated.length) {
+      console.log(`эскалация доски: ${esc.escalated.map(e =>
+        `${e.plate || e.tripId}→${e.name}`).join(', ')}`);
+    }
+    if (esc.released.length) {
+      console.log(`эскалация снята (движение пошло): ${esc.released.length} карточек`);
+    }
   } catch (error) { console.error('авторазвод:', error.message); }
 }
 setInterval(runDispatchAssignWatch, 10 * 60_000);
@@ -11814,7 +11850,7 @@ async function api(request, response, url) {
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
       'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules',
-      'monitoring', 'bodyCompat', 'staff']) {
+      'monitoring', 'bodyCompat', 'staff', 'dispatch']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));

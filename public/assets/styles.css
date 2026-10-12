@@ -1891,6 +1891,7 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .kb-own { font-size:11px; color:var(--muted); }
 .kb-own.mine { color:var(--ok); font-weight:700; }
 .kb-own.none { font-style:italic; }
+.kb-own.esc { color:var(--warn); font-weight:700; }
 .kb-card.mine { box-shadow:inset 0 0 0 1px var(--ok); }
 .kb-take { width:100%; margin-top:4px; font-size:11px; padding:2px 6px; }
 .dsf-ok { background:rgba(63,138,120,.12); }

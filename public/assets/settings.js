@@ -820,6 +820,22 @@ async function renderTelephony() {
       Система сама определит, кто звонит — водитель, сотрудник или контакт клиента, —
       и поднимет карточку. Повторная доставка того же callId не создаёт дубль.
     </div>
+    <h2 style="margin-top:18px">Доска диспетчерской: эскалация</h2>
+    <p class="muted">Карточка без движения дольше норматива колонки × множитель уходит
+      старшему смены (должность со словом «старший»), ещё через указанные минуты —
+      руководителю диспетчерской службы. Нормативы живые: подготовка — медиана по факту,
+      погрузка/выгрузка — ворота, в пути — интервал промежуточного контроля.</p>
+    <form id="dispatchForm" class="fields">
+      <label class="field">Множитель просрочки (во сколько раз дольше норматива)
+        <input name="escalateFactor" type="number" min="0" step="0.5"
+          value="${state.admin.settings?.dispatch?.escalateFactor ?? 2}">
+        <small class="muted">0 — эскалация выключена.</small></label>
+      <label class="field">Минут у старшего смены до передачи руководителю службы
+        <input name="escalateHeadMin" type="number" min="0" step="5"
+          value="${state.admin.settings?.dispatch?.escalateHeadMin ?? 60}">
+        <small class="muted">0 — выше старшего смены не поднимать.</small></label>
+      <button class="button">Сохранить</button>
+    </form>
     <h2 style="margin-top:18px">Точки сервиса</h2>
     <p class="muted">Мойки, шиномонтаж, стоянки, заправки — то, что водитель спрашивает на линии.
       В карточке звонка они показываются от ближайшей к машине.</p>
@@ -914,6 +930,19 @@ async function renderTelephony() {
         }
       }) });
       toast('Настройки телефонии сохранены');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('dispatchForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
+        dispatch: {
+          escalateFactor: Math.max(0, Number(form.elements.escalateFactor.value) || 0),
+          escalateHeadMin: Math.max(0, Number(form.elements.escalateHeadMin.value) || 0)
+        }
+      }) });
+      toast('Настройки эскалации сохранены');
     } catch (error) { toast(error.message, 'error'); }
   };
   byId('servicePointForm').onsubmit = async event => {

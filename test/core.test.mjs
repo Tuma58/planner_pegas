@@ -17,7 +17,7 @@ import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
-import { assignBoardCards, dispatcherShiftLoad, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
+import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, escalationStaff, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
 import { effBoardData } from '../src/efficiency.mjs';
 
 test('пароли хешируются, а секреты 1С шифруются', () => {
@@ -4475,6 +4475,76 @@ test('авторазвод (3б): баланс по ёмкостям, липко
   const snap = snapshotPlanHour(db);
   assert.ok(snap.load.road >= 2, `8 рейсов в пути → ≥2 контролей/час (${snap.load.road})`);
   assert.ok(snap.plan['Большой Диспетчер'] > snap.plan['Малый Диспетчер'], 'план по ёмкостям');
+});
+
+test('эскалация (3в): просроченная карточка → старший смены → руководитель службы', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-esc-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const today = new Date().toISOString().slice(0, 10);
+  const mkUser = db.prepare(`INSERT INTO users(id, username, full_name, password_hash, role, job_role)
+    VALUES(?,?,?,'x',?,?)`);
+  mkUser.run('u-sen', 'senior', 'Старший Логист', 'logist', 'Старший логист смены');
+  mkUser.run('u-head', 'head', 'Руководитель Службы', 'logist', 'Руководитель диспетчерской службы');
+  mkUser.run('u-disp', 'disp', 'Обычный Диспетчер', 'dispatcher', 'dispatcher');
+  db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind) VALUES('sh-sen','u-sen',?,'day')`)
+    .run(today);
+  // Старший ищется по должности в смене, руководитель службы — по должности.
+  const staff = escalationStaff(db);
+  assert.equal(staff.senior, 'Старший Логист');
+  assert.equal(staff.head, 'Руководитель Службы');
+  // Рейс на погрузке 20 часов без движения (норматив ворот ~2 ч, ×2 = 4).
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zones = db.prepare('SELECT id FROM zones LIMIT 2').all();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    status,starts_at,ends_at,on_line_at,revenue_vat,distance_km)
+    VALUES('esc-1',?, 'Т',?,?,'run',datetime('now','-21 hours'),datetime('now','+10 hours'),
+      datetime('now','-20 hours'),1000,100)`).run(vehicle, zones[0].id, zones[1].id);
+  db.prepare(`INSERT INTO dispatch_assignments(trip_id,name,source)
+    VALUES('esc-1','Обычный Диспетчер','auto')`).run();
+  const first = escalateOverdueCards(db);
+  const mine = first.escalated.find(e => e.tripId === 'esc-1');
+  assert.ok(mine, 'просроченная карточка эскалирована');
+  assert.equal(mine.level, 1);
+  assert.equal(mine.name, 'Старший Логист');
+  const row = () => db.prepare(`SELECT name, source FROM dispatch_assignments WHERE trip_id='esc-1'`).get();
+  assert.equal(row().source, 'esc_senior');
+  // Балансировщик эскалированную не трогает, повтор не дублирует.
+  assignBoardCards(db);
+  assert.equal(row().name, 'Старший Логист', 'эскалация неприкосновенна для балансировщика');
+  const again = escalateOverdueCards(db);
+  assert.ok(!again.escalated.some(e => e.tripId === 'esc-1'), 'повторной эскалации нет');
+  // Час тишины у старшего — карточка уходит руководителю службы.
+  db.prepare(`UPDATE dispatch_assignments SET assigned_at=datetime('now','-2 hours')
+    WHERE trip_id='esc-1'`).run();
+  const second = escalateOverdueCards(db);
+  const up = second.escalated.find(e => e.tripId === 'esc-1');
+  assert.ok(up && up.level === 2 && up.name === 'Руководитель Службы', 'уровень 2 — руководителю службы');
+  assert.equal(row().source, 'esc_head');
+  // Движение пошло (свежая отметка контроля) — карточка вернулась в пул.
+  db.prepare(`INSERT INTO task_marks(kind, day, item_key, done_by)
+    VALUES('dispatcher', ?, 'esc-1|контроль|0', 'Обычный Диспетчер')`).run(today);
+  const third = escalateOverdueCards(db);
+  assert.ok(third.released.some(r => r.tripId === 'esc-1'), 'задышавшая карточка освобождена');
+  assert.equal(row().source, 'auto');
+  // Старшего в смене нет — просроченное уходит сразу руководителю службы.
+  // (Карточку после возврата перераздал бы балансировщик — моделируем.)
+  db.prepare(`DELETE FROM task_marks WHERE item_key LIKE 'esc-1|%'`).run();
+  db.prepare(`DELETE FROM staff_shifts WHERE id='sh-sen'`).run();
+  db.prepare(`UPDATE dispatch_assignments SET name='Обычный Диспетчер', source='auto'
+    WHERE trip_id='esc-1'`).run();
+  const fourth = escalateOverdueCards(db);
+  const direct = fourth.escalated.find(e => e.tripId === 'esc-1');
+  assert.ok(direct && direct.level === 2 && direct.name === 'Руководитель Службы',
+    'без старшего в смене — сразу руководителю службы');
+  // Ноль множителя — осознанное «выключено».
+  db.prepare(`INSERT INTO settings(key,value_json) VALUES('dispatch','{"escalateFactor":0}')
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run();
+  const off = escalateOverdueCards(db);
+  assert.equal(off.escalated.length + off.released.length, 0, 'эскалация выключается нулём');
 });
 
 test('телефония: дежурный номер резолвится только по рабочему телефону смены', async t => {
