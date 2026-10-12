@@ -1349,6 +1349,13 @@ export async function renderDispatcher(container, context, options = {}) {
       const ms = Date.parse(String(iso || '').replace(' ', 'T'));
       return Number.isFinite(ms) ? (Date.now() - ms) / 3.6e6 : null;
     };
+    // Перегоны порожним — на доске (заказ руководителя 12.10): весь
+    // жизненный цикл «задание → выехал → прибыл» теми же колонками.
+    const kbTransfers = openTransfers(data).filter(item => !query ||
+      `${item.vehicle_plate} ${item.driver_name || ''} ${item.to_name || ''} ${item.from_label || ''}`
+        .toLowerCase().includes(query));
+    const trPrep = kbTransfers.filter(t => transferStage(t).key !== 'run');
+    const trRoad = kbTransfers.filter(t => transferStage(t).key === 'run');
     const loadCol = [];
     const roadCol = [];
     const unloadCol = [];
@@ -1473,6 +1480,26 @@ export async function renderDispatcher(container, context, options = {}) {
         <span class="val">${person.today} / ${person.cap}</span>
       </div>`;
     };
+    const kbTransferCard = transfer => {
+      const stage = transferStage(transfer);
+      const lateMs = stage.key === 'run' ? Date.now() - Date.parse(transfer.ends_at) : 0;
+      const late = lateMs > 2 * 3.6e6;
+      const departOverdue = stage.key !== 'run' && Date.parse(transfer.starts_at) < Date.now();
+      return `<div class="kb-card kb-transfer ${late || departOverdue ? 'over' : ''}">
+        <div class="kbr kb1"><b class="mono">${escapeHtml(transfer.vehicle_plate || '')}</b>
+          <span class="kb-drv">${escapeHtml((transfer.driver_name || 'без водителя').split(' ').slice(0, 2).join(' '))}</span></div>
+        <div class="kbr kb-own">🚚 порожним · ${escapeHtml(transfer.purpose || '')}</div>
+        <div class="kbr kb3">${escapeHtml((transfer.from_label || '—').slice(0, 22))} → ${escapeHtml((transfer.to_name || '—').slice(0, 22))}${transfer.empty_km ? ` · ~${Math.round(transfer.empty_km)} км` : ''}</div>
+        <div class="kbr kb4 ${late || departOverdue ? 'bad' : ''}">${stage.key === 'run'
+          ? `прибытие план ${formatDateTime(transfer.ends_at)}${late ? ` — ОПАЗДЫВАЕТ ${Math.floor(lateMs / 3.6e6)} ч` : ''}`
+          : `выезд план ${formatDateTime(transfer.starts_at)}${departOverdue ? ' — ВЫЕЗД ПРОСРОЧЕН' : ''}`}</div>
+        ${canAct ? `<button class="button small kb-step ${late || departOverdue ? 'alert' : ''}"
+          data-transfer-step="${transfer.id}" data-transfer-action="${escapeHtml(stage.step)}"
+          data-transfer-label="${escapeHtml(stage.action)}">✔ ${escapeHtml(stage.action)}</button>
+        <button class="button ghost small kb-take" data-transfer-copy="${transfer.id}"
+          title="Скопировать задание для водителя">📋 Задание</button>` : ''}
+      </div>`;
+    };
     const kbCol = (title, cards, lim, over, note) => `<section class="kb-col">
       <div class="kb-chead ${over ? 'bad' : ''}"><span>${title}</span><span class="kb-lim">${lim}</span></div>
       <div class="kb-note">${note}</div>
@@ -1506,14 +1533,14 @@ export async function renderDispatcher(container, context, options = {}) {
       </details>` : ''}
       ${goneCards ? `<div class="kb-gone"><div class="kb-note">🔎 Сошли с доски за 48 ч (по вашему поиску) — ошибочную отметку можно откатить:</div><div class="kb-gone-row">${goneCards}</div></div>` : ''}
       <div class="kb-board">
-        ${kbCol('🧰 Подготовка выхода', [...prepList.filter(matchKb).map(prepCardKb), ...waitingLogist.filter(matchKb).map(waitCardKb)],
-    `${prepTotal} / ${prepLimit}`, prepTotal > prepLimit,
-    'лимит = выходы ближайших 24 ч по плану: готовим больше, чем выходит, — проверьте окна; кнопка — следующий шаг')}
+        ${kbCol('🧰 Подготовка выхода', [...trPrep.map(kbTransferCard), ...prepList.filter(matchKb).map(prepCardKb), ...waitingLogist.filter(matchKb).map(waitCardKb)],
+    `${prepTotal} / ${prepLimit}${trPrep.length ? ` · 🚚 ${trPrep.length}` : ''}`, prepTotal > prepLimit,
+    'лимит = выходы ближайших 24 ч по плану: готовим больше, чем выходит, — проверьте окна; кнопка — следующий шаг; 🚚 — перегоны порожним')}
         ${kbCol('📦 Погрузка', loadCol.filter(matchKb).map(loadCardKb),
     `${loadCol.length}`, loadCol.filter(t => (hoursSince(t.on_line_at) || 0) > 24).length > 10,
     'на линии, убытия нет; красное — дольше суток (ожидание окна)')}
-        ${kbCol('🛣 В пути — контроль и холодовая цепь', roadCol.filter(matchKb).map(roadCardKb),
-    `${roadCol.length} · 🌡/📞: ${roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length}`,
+        ${kbCol('🛣 В пути — контроль и холодовая цепь', [...trRoad.map(kbTransferCard), ...roadCol.filter(matchKb).map(roadCardKb)],
+    `${roadCol.length}${trRoad.length ? ` · 🚚 ${trRoad.length}` : ''} · 🌡/📞: ${roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length}`,
     roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length >= 5,
     `температура против режима рейса и контроль каждые ${midH.toFixed(0)} ч; GPS — помощь, не замена`)}
         ${kbCol('🏗 Выгрузка', unloadCol.filter(matchKb).map(unloadCardKb),
@@ -1595,6 +1622,30 @@ export async function renderDispatcher(container, context, options = {}) {
         } catch (error) { toast(error.message, 'error'); }
       };
     }));
+    container.querySelectorAll('[data-transfer-step]').forEach(button =>
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        factDialog(`Перегон · ${button.dataset.transferLabel}`,
+          'Укажите фактическое время события.', async iso => {
+            await api(`/api/transfers/${button.dataset.transferStep}/step`, {
+              method: 'POST', body: JSON.stringify({ step: button.dataset.transferAction, at: iso })
+            });
+            toast(button.dataset.transferAction === 'arrived'
+              ? 'Перегон завершён — машина числится в точке назначения'
+              : 'Этап перегона отмечен');
+            await context.onReload();
+          });
+      }));
+    container.querySelectorAll('[data-transfer-copy]').forEach(button =>
+      button.addEventListener('click', async event => {
+        event.stopPropagation();
+        const transfer = kbTransfers.find(item => item.id === button.dataset.transferCopy);
+        if (!transfer) return;
+        try {
+          await navigator.clipboard.writeText(transferTaskText(transfer));
+          toast('Задание перегона скопировано — отправьте водителю');
+        } catch { toast('Буфер недоступен', 'error'); }
+      }));
     container.querySelectorAll('[data-kb-take]').forEach(button => button.addEventListener('click', async event => {
       event.stopPropagation();
       button.disabled = true;
