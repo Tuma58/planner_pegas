@@ -472,7 +472,7 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 </head><body><div class="viz-root">
 <div id="tip"></div>
 <h1>Отчёт эксплуатации автопарка — планер</h1>
-<div class="sub">Период ${data.from} — ${data.to} (конец не включается) · выручка без НДС по канону
+<div class="sub">Период ${data.from} — ${data.to} включительно · выручка без НДС по канону
  (наличные как есть, ИП ÷1,07, организации ÷1,22) · ${esc(park.canon)}</div>
 <form class="pick" method="get">
   ${theme ? `<input type="hidden" name="theme" value="${theme}">` : ''}

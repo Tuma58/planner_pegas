@@ -11032,10 +11032,12 @@ async function api(request, response, url) {
     if (!user) return;
     const from = String(url.searchParams.get('from') || '').slice(0, 10);
     const to = String(url.searchParams.get('to') || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
-      return errorJson(response, 422, 'Некорректный период (from/to, to — не включается)');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) {
+      return errorJson(response, 422, 'Некорректный период (from/to, «по» — включительно)');
     }
-    return json(response, 200, opsReportData(db, from, to, parkReportData));
+    const opsJson = opsReportData(db, from, addDayIso(to), parkReportData);
+    opsJson.from = from; opsJson.to = to;
+    return json(response, 200, opsJson);
   }
   if (request.method === 'GET' && pathname === '/api/resource-stats') {
     const user = requirePermission(request, response, 'planner:read');
@@ -11195,7 +11197,8 @@ async function api(request, response, url) {
     const from = /^\d{4}-\d{2}$/.test(start) ? `${start}-01` : start;
     const base = new Date(`${from}T00:00:00.000Z`);
     const defaultTo = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1)).toISOString();
-    const toValue = url.searchParams.get('to') || defaultTo;
+    const toParam = url.searchParams.get('to');
+    const toValue = toParam ? addDayIso(String(toParam).slice(0, 10)) : defaultTo;
     const snap = reportSnapshot(db, from, toValue);
     // Канон для каскада «Показателей периода» (решение руководителя 22.09):
     // те же цифры, что в «Отчёте эксплуатации» и утренних сводках.
@@ -11589,7 +11592,8 @@ async function api(request, response, url) {
       }
     }
     return json(response, 200, { from, to, baseFrom, baseTo,
-      ...effReport(db, { from, to, baseFrom, baseTo }, parkReportData) });
+      ...effReport(db, { from, to: addDayIso(to), baseFrom,
+        baseTo: baseTo ? addDayIso(baseTo) : baseTo }, parkReportData) });
   }
   if (request.method === 'GET' && pathname === '/api/efficiency/issues') {
     const user = requirePermission(request, response, 'reports:read');
@@ -11956,6 +11960,14 @@ function scheduleAssembledPage() {
   return schedulePageCache.html;
 }
 
+// «По» из пикеров пользователя — ВКЛЮЧИТЕЛЬНО (разбор руководителя
+// 12.10: дашборд живёт месяцем-к-дате с сегодняшним днём, а отчёты
+// резали период по «< to» и теряли сегодняшние выгрузки — цифры
+// расходились на глазах). Внутренние вызовы со старой полуоткрытой
+// семантикой не трогаются.
+const addDayIso = iso => new Date(Date.parse(iso + 'T00:00:00Z') + 864e5)
+  .toISOString().slice(0, 10);
+
 function privatePage(request, response, filename) {
   const user = currentUser(request);
   if (!user) {
@@ -12027,13 +12039,15 @@ export const server = http.createServer(async (request, response) => {
       const monthFrom = `${today.slice(0, 7)}-01`;
       let from = String(url.searchParams.get('from') || (monthFrom < today ? monthFrom : today)).slice(0, 10);
       let to = String(url.searchParams.get('to') || today).slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) {
         from = monthFrom < today ? monthFrom : new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
         to = today;
       }
       const theme = ['light', 'dark'].includes(url.searchParams.get('theme'))
         ? url.searchParams.get('theme') : '';
-      const html = Buffer.from(renderOpsReportHtml(opsReportData(db, from, to, parkReportData), theme));
+      const opsPage = opsReportData(db, from, addDayIso(to), parkReportData);
+      opsPage.from = from; opsPage.to = to; // подписи и пикер — как выбрал человек
+      const html = Buffer.from(renderOpsReportHtml(opsPage, theme));
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8',
         'Content-Length': html.length, 'Cache-Control': 'no-cache' });
       return response.end(html);
@@ -12069,7 +12083,9 @@ export const server = http.createServer(async (request, response) => {
         from = monthFrom < today ? monthFrom : new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
         to = today;
       }
-      const pdf = renderOpsReportPdf(opsReportData(db, from, to, parkReportData));
+      const opsPdf = opsReportData(db, from, addDayIso(to), parkReportData);
+      opsPdf.from = from; opsPdf.to = to;
+      const pdf = renderOpsReportPdf(opsPdf);
       const disposition = url.searchParams.get('inline') ? 'inline' : 'attachment';
       response.writeHead(200, { 'Content-Type': 'application/pdf',
         'Content-Length': pdf.length, 'Cache-Control': 'no-cache',
