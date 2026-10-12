@@ -51,15 +51,29 @@ export function callExternalId(item) {
 
 // Наш сотрудник по телефону (target_user_id): ищем в users по последним десяти
 // цифрам — тот же приём, что в вебхуке АТС.
+// Дежурные номера из настроек телефонии (решение руководителя 12.10):
+// трубка не принадлежит никому — только текущему дежурному по work_phone.
+export function dutyPhoneDigits(db) {
+  try {
+    const raw = JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='telephony'`)
+      .get()?.value_json || '{}').dutyPhones || '';
+    return String(raw).split(/[,;\s]+/).map(phoneDigits).filter(d => d.length >= 7);
+  } catch { return []; }
+}
+
 export function findUserByPhone(db, phone) {
   const digits = phoneDigits(phone);
   if (digits.length < 2) return null;
   const norm = column => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${column},'+',''),'-',''),' ',''),'(',''),')','')`;
+  // Дежурный номер резолвится ТОЛЬКО по рабочему телефону смены:
+  // старые привязки в личных полях не должны перехватывать трубку.
+  const duty = dutyPhoneDigits(db).some(d => digits.endsWith(d) || d.endsWith(digits));
+  const columns = duty ? ['work_phone'] : ['work_phone', 'ext_phone', 'phone'];
   // Рабочий телефон текущей смены главнее постоянных: дежурная трубка
   // переезжает между сотрудниками, и карточка должна всплыть у того,
   // кто внёс её номер при входе сегодня. Затем добавочный АТС из
   // карточки сотрудника, затем личный мобильный.
-  for (const column of ['work_phone', 'ext_phone', 'phone']) {
+  for (const column of columns) {
     // Короткий добавочный (меньше 7 цифр) — только точное совпадение:
     // хвостовой LIKE ловил бы чужие номера с тем же окончанием.
     const row = digits.length < 7
@@ -188,6 +202,17 @@ export async function ensureBeelineSubscriptions(db, { token, baseUrl, fetchImpl
   const mapped = subscribeMapped
     ? new Set(matchAtsAbonents(db).filter(row => row.userId).map(row => String(row.ext)))
     : null;
+  // Дежурные трубки подписаны ВСЕГДА: ночью, пока никто не вошёл с
+  // номером, события всё равно должны приходить (пропущенный → вопрос).
+  if (mapped) {
+    const duty = dutyPhoneDigits(db);
+    for (const abonent of abonents) {
+      const ap = phoneDigits(String(abonent.phone || ''));
+      if (duty.some(d => ap.endsWith(d) || d.endsWith(ap))) {
+        mapped.add(String(abonent.extension || abonent.phone || ''));
+      }
+    }
+  }
   for (const abonent of abonents) {
     const pattern = String(abonent.extension || abonent.phone || '');
     if (!pattern) continue;

@@ -4441,3 +4441,30 @@ test('авторазвод (3б): баланс по ёмкостям, липко
   assert.ok(snap.load.road >= 2, `8 рейсов в пути → ≥2 контролей/час (${snap.load.road})`);
   assert.ok(snap.plan['Большой Диспетчер'] > snap.plan['Малый Диспетчер'], 'план по ёмкостям');
 });
+
+test('телефония: дежурный номер резолвится только по рабочему телефону смены', async t => {
+  const { findUserByPhone } = await import('../src/beeline-telephony.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-duty-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const mk = db.prepare(`INSERT INTO users(id, username, full_name, password_hash, role, phone, work_phone)
+    VALUES(?,?,?,'x','dispatcher',?,?)`);
+  mk.run('u-old', 'old', 'Старый Владелец', '89093185095', '');
+  mk.run('u-duty', 'duty', 'Дежурный Смены', '', '');
+  // Пока номер НЕ дежурный: старая привязка в личном поле перехватывает.
+  assert.equal(findUserByPhone(db, '89093185095'), 'u-old', 'без настройки — по личному');
+  // Помечаем номер дежурным в настройках телефонии.
+  db.prepare(`INSERT INTO settings(key, value_json) VALUES('telephony', ?)
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`)
+    .run(JSON.stringify({ dutyPhones: '89093185126, 89093185095' }));
+  assert.equal(findUserByPhone(db, '89093185095'), null,
+    'дежурный без вошедшего — ничей (личное поле не перехватывает)');
+  // Дежурный вошёл с трубкой — work_phone переехал — карточки ему.
+  db.prepare(`UPDATE users SET work_phone='89093185095' WHERE id='u-duty'`).run();
+  assert.equal(findUserByPhone(db, '89093185095'), 'u-duty', 'карточка — вошедшему со сменной трубкой');
+  // Обычные номера работают по-старому.
+  assert.equal(findUserByPhone(db, '89093185126'), null, 'второй дежурный тоже ничей до входа');
+});

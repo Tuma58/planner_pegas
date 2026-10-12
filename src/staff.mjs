@@ -210,5 +210,11 @@ export function updateStaffUser(db, id, body, { allowAdmin = false }) {
     body.hiredAt ?? user.hired_at,
     body.dispatchExempt != null ? (body.dispatchExempt ? 1 : 0) : (user.dispatch_exempt || 0),
     id);
+  // Рабочий телефон смены — явной передачей (открепление дежурной
+  // трубки руками руководителя; '' — снять).
+  if (body.workPhone !== undefined) {
+    db.prepare(`UPDATE users SET work_phone=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(String(body.workPhone || '').trim(), id);
+  }
   return { ok: true };
 }

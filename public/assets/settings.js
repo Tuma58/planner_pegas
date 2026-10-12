@@ -791,6 +791,10 @@ async function renderTelephony() {
       <label class="field">Публичный адрес приложения (для событий Билайна в реальном времени)
         <input name="publicBase" value="${escapeHtml(config.publicBase || '')}"
         placeholder="https://planner.pegasavto.ru"></label>
+      <label class="field">Дежурные номера (через запятую)
+        <input name="dutyPhones" value="${escapeHtml(config.dutyPhones || '')}" placeholder="8909..., 8909...">
+        <small class="muted">Трубки смены: не принадлежат никому — звонки и карточки приходят тому,
+        кто вошёл в планер с этим номером; подписка АТС на них держится всегда</small></label>
       <label class="check"><input type="checkbox" name="subscribeMapped" ${config.subscribeMapped ? 'checked' : ''}>
         Подписки на события — только на добавочные, сопоставленные с сотрудниками
         <small class="muted" style="display:block">Незадействованные номера АТС перестанут слать события и шуметь в журнале; сопоставление — «Сотрудники → ☎ Сверка с АТС»</small></label>
@@ -905,7 +909,8 @@ async function renderTelephony() {
           provider: form.elements.provider.value.trim(), token: form.elements.token.value.trim(),
           publicBase: form.elements.publicBase.value.trim(),
           missedToQuestionMin: Math.max(0, Number(form.elements.missedToQuestionMin.value) || 0),
-          subscribeMapped: form.elements.subscribeMapped.checked
+          subscribeMapped: form.elements.subscribeMapped.checked,
+          dutyPhones: String(form.elements.dutyPhones.value || '').trim()
         }
       }) });
       toast('Настройки телефонии сохранены');
