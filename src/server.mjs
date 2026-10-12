@@ -158,6 +158,9 @@ function publicUser(user) {
     // Вкладка «Сотрудники»: право staff:write или логин из настройки
     // «полный доступ» (решение руководителя 07.10).
     staffAccess: staffAccess(user, settingsObject(db)),
+    // Руководитель диспетчерской службы: вне автораспределения, но с
+    // кнопкой «⚖ Перераспределить» на доске (решение руководителя 12.10).
+    dispatchExempt: Boolean(user.dispatch_exempt),
     // Подсказка дежурства (этап 3, 08.10): «по графику сегодня ваша
     // смена» — фронт показывает тост раз в сутки на рабочем месте.
     todayShift: (() => {
@@ -7370,7 +7373,12 @@ async function api(request, response, url) {
   // числом): auto-назначения сбрасываются и раздаются заново по свежей
   // смене, ёмкости и профили пересчитываются немедленно.
   if (request.method === 'POST' && pathname === '/api/dispatcher/rebalance') {
-    const user = requirePermission(request, response, 'users:write');
+    // Админ — всегда; руководитель диспетчерской службы (dispatch_exempt
+    // с правом отметок) — его рабочая кнопка «⚖ Перераспределить».
+    const actor = currentUser(request);
+    const chiefAllowed = actor && Number(actor.dispatch_exempt) === 1
+      && hasPermission(actor, 'trip-status:write');
+    const user = chiefAllowed ? actor : requirePermission(request, response, 'users:write');
     if (!user) return;
     db.prepare(`DELETE FROM dispatch_assignments WHERE source='auto'`).run();
     const caps = rebuildDispatcherCapacity(db);

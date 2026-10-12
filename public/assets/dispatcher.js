@@ -1512,6 +1512,8 @@ export async function renderDispatcher(container, context, options = {}) {
           <button class="button small" id="kbLayoutBoard">🗂 Доска</button>
           <button class="button small ghost" id="kbLayoutClassic" title="Классический вид: полные карточки контроля, перегоны, массовые инструменты">📋 Классика</button>
         </span>
+        ${state.data.user.dispatchExempt || can('users:write') ? `<button class="button small ghost" id="kbRebalance"
+          title="Полуавтоматика руководителя службы: сбросить авто-назначения и раздать карточки заново по текущей смене и личным ёмкостям (взятые вручную «🖐 Беру» не трогаются)">⚖ Перераспределить</button>` : ''}
         <div class="kb-tiles">
           <div class="kb-tile ${lateQuestions ? 'warn' : ''}"><span class="k">Вопросы водителей</span><b>${questions.length}</b><small>просрочено ${lateQuestions}</small></div>
           <div class="kb-tile"><span class="k">Активных карточек</span><b>${preparing.length + waitingLogist.length + online.length}</b><small>подготовка · линия</small></div>
@@ -1575,6 +1577,17 @@ export async function renderDispatcher(container, context, options = {}) {
           toast('Ответ отправлен водителю');
         } catch (error) { toast(error.message, 'error'); }
       }));
+    container.querySelector('#kbRebalance')?.addEventListener('click', async () => {
+      if (!confirm('Перераспределить карточки по текущей смене? Авто-назначения раздадутся заново по ёмкостям; взятые вручную останутся у владельцев.')) return;
+      const btn = container.querySelector('#kbRebalance');
+      btn.disabled = true;
+      try {
+        const result = await api('/api/dispatcher/rebalance', { method: 'POST', body: '{}' });
+        toast(`Перераспределено: ${result.assigned} из ${result.total} карточек`);
+        state.shiftLoadAt = 0;
+        await renderDispatcher(container, context, { reuseNetwork: true });
+      } catch (error) { btn.disabled = false; toast(error.message, 'error'); }
+    });
     container.querySelector('#kbLayoutClassic').onclick = () => {
       state.dispatcherLayout = 'classic';
       try { localStorage.setItem('pl_disp_layout', 'classic'); } catch { /* ок */ }
