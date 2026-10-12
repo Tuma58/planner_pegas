@@ -505,6 +505,30 @@ export function activeDriverFor(db, vehicleId, at = new Date().toISOString()) {
   return { source: 'card', empty: !card, driverId: null, name: card, phone: '', telegramChatId: null };
 }
 
+// Обратная сторона канона «кто за рулём»: на каком борту водитель СЕЙЧАС.
+// Периодное закрепление главнее постоянного; постоянное годится, только
+// если машина на эту дату не отдана периодом другому (или осознанной
+// пустоте). Кейс телефонии 12.10: Котельников переехал на т726 периодом,
+// а карточка его звонка показывала с964 из постоянного поля справочника.
+export function activeVehicleForDriver(db, driverId, at = new Date().toISOString()) {
+  const day = String(at).slice(0, 10);
+  const period = db.prepare(`SELECT a.vehicle_id, v.plate FROM driver_assignments a
+      JOIN vehicles v ON v.id=a.vehicle_id
+      WHERE a.driver_id=? AND a.starts_at<=? AND a.ends_at>?
+      ORDER BY a.created_at DESC LIMIT 1`).get(driverId, day, day);
+  if (period) return { source: 'period', vehicleId: period.vehicle_id, plate: period.plate };
+  const permanent = db.prepare(`SELECT d.vehicle_id, v.plate FROM drivers d
+      JOIN vehicles v ON v.id=d.vehicle_id WHERE d.id=?`).get(driverId);
+  if (!permanent) return { source: 'none', vehicleId: null, plate: '' };
+  const occupied = db.prepare(`SELECT driver_id FROM driver_assignments
+      WHERE vehicle_id=? AND starts_at<=? AND ends_at>?
+      ORDER BY created_at DESC LIMIT 1`).get(permanent.vehicle_id, day, day);
+  if (occupied && occupied.driver_id !== driverId) {
+    return { source: 'none', vehicleId: null, plate: '' };
+  }
+  return { source: 'permanent', vehicleId: permanent.vehicle_id, plate: permanent.plate };
+}
+
 // Материализация канона в старую витрину: карточка ТС (vehicles.
 // driver_name) следует за действующим периодом — гант, подбор и формы,
 // читающие строку, показывают того, кто реально за рулём. Возвращает

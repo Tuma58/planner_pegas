@@ -1,4 +1,5 @@
 // Телефония и работа с входящими вопросами водителей.
+import { activeVehicleForDriver } from './planner-service.mjs';
 //
 // Номера в системе живут в разном виде: «79875105921», «+7 (987) 510-59-21»,
 // «8 987 510 59 21». Чтобы находить звонящего, все номера приводятся к
@@ -25,13 +26,17 @@ export function identifyCaller(db, phone) {
   const digits = phoneDigits(phone);
   if (digits.length < 6) return { kind: 'unknown', id: null, name: '', vehicleId: null };
   const like = `%${digits}`;
-  const driver = db.prepare(`SELECT d.id, d.full_name, d.phone, d.vehicle_id, v.plate
-    FROM drivers d LEFT JOIN vehicles v ON v.id=d.vehicle_id
+  const driver = db.prepare(`SELECT d.id, d.full_name, d.phone
+    FROM drivers d
     WHERE d.status<>'fired' AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(d.phone,'+',''),'-',''),' ',''),'(',''),')','') LIKE ?
     LIMIT 1`).get(like);
   if (driver) {
+    // Борт — по канону «кто за рулём» (08.10): периодное закрепление
+    // главнее постоянного. Кейс 12.10: Котельников переехал на т726,
+    // а карточка звонка держала с964 из постоянного поля.
+    const live = activeVehicleForDriver(db, driver.id);
     return { kind: 'driver', id: driver.id, name: driver.full_name,
-      vehicleId: driver.vehicle_id, plate: driver.plate || '' };
+      vehicleId: live.vehicleId, plate: live.plate || '' };
   }
   const employee = db.prepare(`SELECT id, full_name, job_role FROM users
     WHERE deleted_at IS NULL AND phone<>'' AND

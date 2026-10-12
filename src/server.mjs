@@ -1682,7 +1682,7 @@ function runMissedCallWatch() {
       db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,phone,topic,note,call_id)
         VALUES(?,?,?,?,?,?,?)`).run(id, call.vehicle_id, call.matched_name || '',
         phonePretty(call.from_phone), 'missed_call',
-        `Звонил${toLabel ? `: ${toLabel}` : ''} — без ответа и перезвона ${waitMin}+ минут`, call.id);
+        `Звонок${toLabel ? ` → ${toLabel}` : ''} — без ответа и перезвона ${waitMin}+ минут`, call.id);
       notify('dispatcher', `📵 Пропущенный звонок водителя ${call.matched_name}`
         + `${plate ? ` (${plate})` : ''}${toLabel ? ` → ${toLabel}` : ''}`
         + ' — перезвоните. Норматив ответа — 10 минут',

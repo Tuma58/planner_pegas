@@ -2324,6 +2324,28 @@ test('телефония: определение звонящего, темы в
   assert.equal(identifyCaller(db, '4951112233').kind, 'customer');
   assert.equal(identifyCaller(db, '9999999999').kind, 'unknown');
 
+  // Канон «кто за рулём» в телефонии (кейс Котельникова 12.10): водитель
+  // переехал на другой борт периодным закреплением — карточка звонка
+  // обязана показывать живой борт, а не постоянное поле справочника.
+  const second = db.prepare('SELECT id, plate FROM vehicles WHERE id<>? LIMIT 1').get(vehicle.id);
+  const day = ms => new Date(Date.now() + ms * 86_400_000).toISOString().slice(0, 10);
+  db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at)
+    VALUES('da-call','dr-call',?,?,?)`).run(second.id, day(-1), day(5));
+  const moved = identifyCaller(db, '79875105921');
+  assert.equal(moved.vehicleId, second.id, 'борт звонка — из периодного закрепления');
+  assert.equal(moved.plate, second.plate);
+  // Постоянная машина отдана другому периодом — фолбэк на неё запрещён:
+  // лучше карточка без борта, чем с чужим.
+  db.prepare(`DELETE FROM driver_assignments WHERE id='da-call'`).run();
+  db.prepare(`INSERT INTO drivers(id,full_name,status) VALUES('dr-other','Сменщик Тест','active')`).run();
+  db.prepare(`INSERT INTO driver_assignments(id,driver_id,vehicle_id,starts_at,ends_at)
+    VALUES('da-other','dr-other',?,?,?)`).run(vehicle.id, day(-1), day(5));
+  assert.equal(identifyCaller(db, '79875105921').vehicleId, null,
+    'постоянный борт занят другим — телефония не приписывает чужую машину');
+  db.prepare(`DELETE FROM driver_assignments WHERE id='da-other'`).run();
+  assert.equal(identifyCaller(db, '79875105921').vehicleId, vehicle.id,
+    'без периодов работает постоянное закрепление');
+
   // Темы — фиксированный список: по нему считается, какой процесс сбоит.
   assert.ok(QUESTION_TOPICS.length >= 9, 'типовые вопросы водителей перечислены');
   assert.ok(QUESTION_TOPICS.some(topic => topic.key === 'no_data_sent' && topic.owner === 'Продажи'));
