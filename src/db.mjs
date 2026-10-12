@@ -828,6 +828,8 @@ function migrateColumns(db) {
   // Должность сотрудника для отчётности (план/факт): не влияет на права —
   // только на то, какие нормативы применяются в «Показателях сотрудников».
   ensure('users', 'job_role', "TEXT NOT NULL DEFAULT ''");
+  // Руководитель службы и т.п.: из автораспределения диспетчерской исключён.
+  ensure('users', 'dispatch_exempt', 'INTEGER NOT NULL DEFAULT 0');
   ensure('users', 'deleted_at', 'TEXT');
   ensure('users', 'guest', 'INTEGER NOT NULL DEFAULT 0');
   // Телефон сотрудника: по нему определяется входящий звонок и по нему же

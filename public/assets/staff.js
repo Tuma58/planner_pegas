@@ -415,6 +415,10 @@ function staffEditDialog(context, person, after) {
     <label class="field">Логин в планер <input name="username" required autocomplete="off"></label>
     <label class="field">Пароль (мин. 10 символов) <input name="password" required minlength="10" autocomplete="new-password"></label>
     <div class="field"><span>Роли в планере</span><div style="margin-top:4px">${roleOptions}</div></div>`}
+    ${person ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
+      <input type="checkbox" name="dispatchExempt" ${person?.dispatchExempt ? 'checked' : ''}>
+      не участвует в автораспределении диспетчерской
+      <small class="muted">(руководитель службы: карточки доски ему не назначаются)</small></label>` : ''}
     <div class="form-error" id="staffFormError"></div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button class="button primary" type="submit">${person ? 'Сохранить' : 'Принять'}</button>
@@ -428,6 +432,7 @@ function staffEditDialog(context, person, after) {
     const values = new FormData(form);
     const body = Object.fromEntries(['fullName', 'jobRole', 'phone', 'extPhone', 'email', 'hiredAt']
       .map(key => [key, String(values.get(key) || '').trim()]));
+    if (person) body.dispatchExempt = form.querySelector('[name="dispatchExempt"]')?.checked || false;
     try {
       if (person) {
         await api(`/api/staff/users/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });

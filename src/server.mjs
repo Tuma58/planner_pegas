@@ -7366,6 +7366,22 @@ async function api(request, response, url) {
     audit(db, user, 'dispatch_take', 'trip', trip.id, {}, requestIp(request));
     return json(response, 200, { ok: true });
   }
+  // Пересборка автораспределения (правка графиков/исключений задним
+  // числом): auto-назначения сбрасываются и раздаются заново по свежей
+  // смене, ёмкости и профили пересчитываются немедленно.
+  if (request.method === 'POST' && pathname === '/api/dispatcher/rebalance') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    db.prepare(`DELETE FROM dispatch_assignments WHERE source='auto'`).run();
+    const caps = rebuildDispatcherCapacity(db);
+    rebuildDispatchProfiles(db);
+    const result = assignBoardCards(db);
+    snapshotPlanHour(db);
+    audit(db, user, 'dispatch_rebalance', 'system', null,
+      { assigned: result.assigned, total: result.total }, requestIp(request));
+    return json(response, 200, { ok: true, assigned: result.assigned, total: result.total,
+      fallback: caps.snapshot.fallback, learned: caps.snapshot.samples.learned });
+  }
   // Отчёт руководителю: план авторазвода против факта смены по часам.
   if (request.method === 'GET' && pathname === '/api/reports/dispatch-shift') {
     const user = requirePermission(request, response, 'reports:read');

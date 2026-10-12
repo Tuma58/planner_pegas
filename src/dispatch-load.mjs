@@ -69,17 +69,21 @@ export function dispatcherShiftLoad(db, nowIso = new Date().toISOString()) {
     WHERE kind='dispatcher' AND day=? AND done_by <> '' AND item_key NOT LIKE 'claim|%'
     GROUP BY done_by`).all(day).map(row => [row.name, row.n]));
   const people = new Map();
-  for (const row of db.prepare(`SELECT u.full_name name, u.role, COALESCE(u.roles,'') roles
+  for (const row of db.prepare(`SELECT u.full_name name, u.role, COALESCE(u.roles,'') roles,
+      COALESCE(u.dispatch_exempt, 0) exempt
       FROM staff_shifts s JOIN users u ON u.id=s.user_id
       WHERE s.day=? AND s.kind IN ('day','night') AND u.active=1`).all(day)) {
+    if (row.exempt) continue; // руководитель службы и т.п. — вне распределения
     people.set(row.name, { name: row.name, onShift: true,
       dispatcherRole: row.role === 'dispatcher' || row.role === 'admin'
         || row.roles.includes('dispatcher') });
   }
   for (const name of today.keys()) {
     if (!people.has(name)) {
-      const user = db.prepare(`SELECT role, COALESCE(roles,'') roles FROM users
+      const user = db.prepare(`SELECT role, COALESCE(roles,'') roles,
+        COALESCE(dispatch_exempt, 0) exempt FROM users
         WHERE full_name=? AND active=1`).get(name);
+      if (user?.exempt) continue;
       people.set(name, { name, onShift: false,
         dispatcherRole: !user ? false : user.role === 'dispatcher' || user.role === 'admin'
           || user.roles.includes('dispatcher') });

@@ -70,6 +70,7 @@ export function staffUserCard(db, id, month) {
       id: user.id, username: user.username, fullName: user.full_name,
       email: user.email || '', roles: rolesOf(user),
       roleLabel: roleLabel(user), jobRole: user.job_role || '',
+      dispatchExempt: !!user.dispatch_exempt,
       phone: user.phone || '', extPhone: user.ext_phone || '',
       workPhone: user.work_phone || '', telegram: Boolean(user.telegram_chat_id),
       guest: Boolean(user.guest), active: Boolean(user.active),
@@ -200,12 +201,14 @@ export function updateStaffUser(db, id, body, { allowAdmin = false }) {
     return { ok: false, error: 'Учётку администратора меняет только администратор' };
   }
   db.prepare(`UPDATE users SET full_name=?, email=?, phone=?, ext_phone=?, job_role=?,
-      hired_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      hired_at=?, dispatch_exempt=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
     String(body.fullName ?? user.full_name).trim() || user.full_name,
     body.email ?? user.email,
     String(body.phone ?? user.phone ?? '').trim(),
     String(body.extPhone ?? user.ext_phone ?? '').trim(),
     String(body.jobRole ?? user.job_role ?? '').trim(),
-    body.hiredAt ?? user.hired_at, id);
+    body.hiredAt ?? user.hired_at,
+    body.dispatchExempt != null ? (body.dispatchExempt ? 1 : 0) : (user.dispatch_exempt || 0),
+    id);
   return { ok: true };
 }
