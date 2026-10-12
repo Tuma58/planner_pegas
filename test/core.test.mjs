@@ -4429,6 +4429,19 @@ test('авторазвод (3б): баланс по ёмкостям, липко
   db.prepare(`UPDATE trips SET status='unloaded', unloaded_at=datetime('now') WHERE id='ab-1'`).run();
   assignBoardCards(db);
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments WHERE trip_id='ab-1'`).get().n, 0);
+  // Только сменные по графику получают раздачу (уточнение 12.10):
+  // Большой — в смене, Малый — активен в свой выходной → всё Большому.
+  db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind) VALUES('sh-big','u-big',?,'day')`)
+    .run(day(0));
+  db.prepare(`DELETE FROM dispatch_assignments`).run();
+  assignBoardCards(db);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments WHERE name='Малый Диспетчер'`).get().n,
+    0, 'выходной активный карточек не получает');
+  assert.ok(db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments WHERE name='Большой Диспетчер'`).get().n > 0,
+    'сменный получил всё');
+  db.prepare(`DELETE FROM staff_shifts WHERE id='sh-big'`).run();
+  db.prepare(`DELETE FROM dispatch_assignments`).run();
+  assignBoardCards(db); // вернуть раздачу для следующих проверок (фолбэк на активных)
   // План-снимок часа: рейсы «в пути» дают ровный поток контролей,
   // план раскладывается по ёмкостям.
   const mkRoad = db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
@@ -4467,4 +4480,32 @@ test('телефония: дежурный номер резолвится то�
   assert.equal(findUserByPhone(db, '89093185095'), 'u-duty', 'карточка — вошедшему со сменной трубкой');
   // Обычные номера работают по-старому.
   assert.equal(findUserByPhone(db, '89093185126'), null, 'второй дежурный тоже ничей до входа');
+});
+
+test('телефония: галочки фиксации — звонок на отключённый номер не шумит', async t => {
+  const { callOnTrackedNumber, setAtsTracked } = await import('../src/beeline-telephony.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-track-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('beeline_abonents',?)`)
+    .run(JSON.stringify({ 268: { phone: '9093185126' }, 301: { phone: '9279999999' } }));
+  const callOn = phone => ({ employee_phone: phone, to_phone: '' });
+  // По умолчанию фиксируются все.
+  assert.equal(callOnTrackedNumber(db, callOn('9279999999')), true);
+  // Сняли галочку с 301 — его входящие не фиксируются.
+  setAtsTracked(db, '301', false);
+  assert.equal(callOnTrackedNumber(db, callOn('9279999999')), false);
+  assert.equal(callOnTrackedNumber(db, callOn('9093185126')), true, 'другие номера не задеты');
+  // Дежурный номер отключить нельзя: фиксируется всегда.
+  db.prepare(`INSERT INTO settings(key, value_json) VALUES('telephony', ?)
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`)
+    .run(JSON.stringify({ dutyPhones: '89093185126' }));
+  setAtsTracked(db, '268', false);
+  assert.equal(callOnTrackedNumber(db, callOn('9093185126')), true, 'дежурный — всегда');
+  // Вернули галочку — снова фиксируется.
+  setAtsTracked(db, '301', true);
+  assert.equal(callOnTrackedNumber(db, callOn('9279999999')), true);
 });

@@ -298,6 +298,45 @@ export function externalPartyDigits(digits, ownPhone) {
 // Сопоставление: добавочный уже в карточке (ext_phone) → телефон смены →
 // личный мобильный, совпавший с FMC-номером абонента. Возвращает строки
 // для экрана сверки и для фильтра подписок.
+// Фиксация входящих по номерам АТС (заказ руководителя 12.10):
+// галочки в «Сверке с АТС» решают, входящие на какие номера попадают
+// в пропущенные/вопросы. По умолчанию — фиксируются ВСЕ; снятая
+// галочка пишет 0 в app_meta ats_tracked. Дежурные — всегда.
+export function atsTrackedMap(db) {
+  try { return JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='ats_tracked'`)
+    .get()?.value || '{}'); } catch { return {}; }
+}
+export function setAtsTracked(db, ext, tracked) {
+  const map = atsTrackedMap(db);
+  map[String(ext)] = tracked ? 1 : 0;
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('ats_tracked',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(map));
+}
+// Отключённые номера (ext + их FMC-цифры) — для фильтра сторожей.
+export function atsUntrackedDigits(db) {
+  const map = atsTrackedMap(db);
+  const off = new Set(Object.entries(map).filter(([, v]) => !v).map(([k]) => String(k)));
+  if (!off.size) return [];
+  const duty = dutyPhoneDigits(db);
+  const out = [];
+  for (const [ext, meta] of Object.entries(abonentsMeta(db))) {
+    if (!off.has(String(ext))) continue;
+    const fmc = phoneDigits(meta.phone);
+    if (duty.some(d => fmc.endsWith(d) || d.endsWith(fmc))) continue; // дежурные всегда
+    out.push({ ext: phoneDigits(ext) || String(ext), fmc });
+  }
+  return out;
+}
+export function callOnTrackedNumber(db, call) {
+  const off = atsUntrackedDigits(db);
+  if (!off.length) return true;
+  const ours = [phoneDigits(call.employee_phone || ''), phoneDigits(call.to_phone || '')]
+    .filter(d => d.length >= 2);
+  if (!ours.length) return true; // не знаем номера — не глушим
+  return !ours.some(d => off.some(o =>
+    (o.fmc && (d.endsWith(o.fmc) || o.fmc.endsWith(d))) || o.ext === d));
+}
+
 export function matchAtsAbonents(db) {
   const users = db.prepare(`SELECT id, full_name, job_role, role, phone, work_phone, ext_phone
     FROM users WHERE deleted_at IS NULL AND active=1`).all();
@@ -311,13 +350,15 @@ export function matchAtsAbonents(db) {
     }
   }
   const rows = [];
+  const trackedMap = atsTrackedMap(db);
   for (const [ext, meta] of Object.entries(abonentsMeta(db))) {
     const extKey = phoneDigits(ext) || ext;
     const fmc = phoneDigits(meta.phone);
     const user = byExt.get(extKey) || byExt.get(ext) || (fmc ? byDigits.get(fmc) : null) || null;
     rows.push({ ext, phone: meta.phone || '', userId: user?.id || null,
       userName: user?.full_name || '', jobRole: user?.job_role || user?.role || '',
-      source: !user ? '' : (byExt.has(extKey) || byExt.has(ext)) ? 'ext' : 'fmc' });
+      source: !user ? '' : (byExt.has(extKey) || byExt.has(ext)) ? 'ext' : 'fmc',
+      tracked: trackedMap[String(ext)] !== 0 });
   }
   return rows.sort((a, b) => String(a.ext).localeCompare(String(b.ext), 'ru', { numeric: true }));
 }

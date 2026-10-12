@@ -167,9 +167,12 @@ export async function staffAtsDialog(context, after) {
       По сопоставленным карточка звонка всплывает адресату; в настройках телефонии
       можно включить «подписки только на сопоставленных».</p>
     <div style="overflow:auto;max-height:56vh"><table class="rtable"><thead><tr>
+      <th title="Галочка: входящие на этот номер фиксируются в системе (пропущенные → вопросы). Снята — звонки на номер не шумят. Дежурные номера фиксируются всегда">📵 Фикс.</th>
       <th>Добавочный</th><th>Моб. АТС</th><th>Сотрудник</th><th></th>
     </tr></thead><tbody>
       ${items.map(item => `<tr>
+        <td><input type="checkbox" data-ats-track="${escapeHtml(String(item.ext))}" ${item.tracked !== false ? 'checked' : ''}
+          title="Фиксировать входящие на этот номер (пропущенные → вопросы)"></td>
         <td class="mono"><b>${escapeHtml(String(item.ext))}</b></td>
         <td class="mono">${escapeHtml(item.phone || '—')}</td>
         <td>${item.userId
@@ -181,6 +184,14 @@ export async function staffAtsDialog(context, after) {
     </tbody></table></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>
   </div>`, 'staffcard');
+  document.querySelectorAll('[data-ats-track]').forEach(box =>
+    box.onchange = async () => {
+      try {
+        await api('/api/staff/ats/track', { method: 'POST', body: JSON.stringify({
+          ext: box.dataset.atsTrack, tracked: box.checked }) });
+        toast(box.checked ? 'Входящие на номер фиксируются' : 'Номер исключён из фиксации');
+      } catch (error) { box.checked = !box.checked; toast(error.message, 'error'); }
+    });
   document.querySelectorAll('[data-ats-bind]').forEach(select =>
     select.onchange = async () => {
       if (!select.value) return;

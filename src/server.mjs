@@ -18,8 +18,8 @@ import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOve
 import { assignBoardCards, dispatcherShiftLoad, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
-import { autoFillExtensions, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
-  matchAtsAbonents, parseXsiEvent, resolveSubscriptionTarget, syncBeelineJournal } from './beeline-telephony.mjs';
+import { autoFillExtensions, callOnTrackedNumber, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
+  matchAtsAbonents, parseXsiEvent, resolveSubscriptionTarget, setAtsTracked, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
@@ -1666,6 +1666,10 @@ function runMissedCallWatch() {
           AND (o.to_phone LIKE '%'||c.from_digits OR o.from_phone LIKE '%'||c.from_digits))
       ORDER BY c.started_at LIMIT 10`).all(since, deadline);
     for (const call of calls) {
+      // Галочки «фиксировать входящие» из Сверки с АТС: звонок на
+      // отключённый номер вопросом не становится (шумели все номера
+      // справочника — разбор руководителя 12.10).
+      if (!callOnTrackedNumber(db, call)) continue;
       const id = randomUUID();
       const plate = call.vehicle_id
         ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(call.vehicle_id)?.plate || '' : '';
@@ -11512,6 +11516,16 @@ async function api(request, response, url) {
     const user = requireStaffAccess(request, response);
     if (!user) return;
     return json(response, 200, { items: matchAtsAbonents(db) });
+  }
+  if (request.method === 'POST' && pathname === '/api/staff/ats/track') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const ext = String(body.ext || '').trim();
+    if (!ext) return errorJson(response, 422, 'Нужен добавочный/номер АТС');
+    setAtsTracked(db, ext, Boolean(body.tracked));
+    audit(db, user, 'ats-track', 'staff', null, { ext, tracked: Boolean(body.tracked) }, requestIp(request));
+    return json(response, 200, { ok: true });
   }
   if (request.method === 'POST' && pathname === '/api/staff/ats/bind') {
     const user = requireStaffAccess(request, response);

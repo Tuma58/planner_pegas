@@ -163,9 +163,19 @@ export function boardCards(db) {
   return cards;
 }
 
+// Раздача — только тем, кто СЕГОДНЯ В СМЕНЕ по графику (уточнение
+// руководителя 12.10: «на тех, кто на выходном, объёмы не
+// распределять»). Активный в свой выходной виден в полосе, но карточек
+// не получает. Фолбэк: график на день пуст — раздаём активным
+// диспетчерам (переходный режим, пока табель не заполнен).
+function shiftWorkers(people) {
+  const onShift = people.filter(p => p.dispatcherRole && p.onShift);
+  return onShift.length ? onShift : people.filter(p => p.dispatcherRole);
+}
+
 export function assignBoardCards(db, nowIso = new Date().toISOString()) {
   const { people } = dispatcherShiftLoad(db, nowIso);
-  const workers = people.filter(p => p.dispatcherRole);
+  const workers = shiftWorkers(people);
   const cards = boardCards(db);
   const activeIds = new Set(cards.map(c => c.tripId));
   // Чистка: назначения закрытых/снятых рейсов уходят.
@@ -212,7 +222,7 @@ export function snapshotPlanHour(db, nowIso = new Date().toISOString()) {
   try { profiles = JSON.parse(metaGet(db, 'dispatch_profiles') || 'null'); } catch { profiles = null; }
   if (!profiles) profiles = rebuildDispatchProfiles(db, nowIso);
   const { people } = dispatcherShiftLoad(db, nowIso);
-  const workers = people.filter(p => p.dispatcherRole);
+  const workers = shiftWorkers(people);
   const cards = boardCards(db);
   const road = cards.filter(c => c.col === 'road').length;
   const load = {
