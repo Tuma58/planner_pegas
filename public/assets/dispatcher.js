@@ -1388,15 +1388,20 @@ export async function renderDispatcher(container, context, options = {}) {
     const tempOf = trip => gpsByTrip.get(trip.id)?.temp || null;
     const tempBad = trip => { const t = tempOf(trip); return !!t && (t.stale || t.ok === false); };
     const ctrlOverdue = trip => Date.now() - lastTouchMs(trip) > MID_CONTROL_MS;
+    // Свежий контроль (касание не дольше норматива назад) гасит красноту
+    // и опускает карточку: красное = долго И БЕЗ ВНИМАНИЯ (кейс т871).
+    const ctrlFresh = trip => !ctrlOverdue(trip);
     const prepList = [...preparing].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
-    loadCol.sort((a, b) => (hoursSince(b.on_line_at) || 0) - (hoursSince(a.on_line_at) || 0));
+    loadCol.sort((a, b) => Number(ctrlFresh(a)) - Number(ctrlFresh(b))
+      || (hoursSince(b.on_line_at) || 0) - (hoursSince(a.on_line_at) || 0));
     roadCol.sort((a, b) => (Number(tempBad(b)) * 2 + Number(ctrlOverdue(b)))
       - (Number(tempBad(a)) * 2 + Number(ctrlOverdue(a))) || eventAt(a) - eventAt(b));
     const unloadAge = trip => {
       const stops = controlByTrip.get(trip.id)?.stops || [];
       return hoursSince(stops[stops.length - 1]?.actual_arrival || trip.arrived_at) || 0;
     };
-    unloadCol.sort((a, b) => unloadAge(b) - unloadAge(a));
+    unloadCol.sort((a, b) => Number(ctrlFresh(a)) - Number(ctrlFresh(b))
+      || unloadAge(b) - unloadAge(a));
     const tempBadCount = online.filter(tempBad).length;
     const ctrlOverCount = roadCol.filter(ctrlOverdue).length;
     const kbMeta = (text, bad) => `<div class="kbr kb4 ${bad ? 'bad' : ''}">${text}</div>`;
@@ -1443,10 +1448,24 @@ export async function renderDispatcher(container, context, options = {}) {
     };
     const waitCardKb = trip => kbCard(trip, '',
       kbMeta('ждёт подтверждения логиста', false), '');
+    // Строка последнего контроля на карточке (кейс т871/Козин 12.10:
+    // Диденко отметила «ждёт погрузку», а карточка горела, как будто
+    // её никто не смотрел, — внимание не было видно на доске).
+    const ctrlRow = trip => {
+      const touched = (Date.now() - lastTouchMs(trip)) / 3.6e6;
+      const mark = [...workedMap.entries()].filter(([key]) => key.startsWith(`${trip.id}|`))
+        .map(([, value]) => value).sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)))[0];
+      const note = mark?.note ? ` · «${mark.note.slice(0, 40)}»` : '';
+      return `<div class="kbr kbc ${touched > midH ? 'bad' : ''}">📞 контроль ${touched.toFixed(0)} ч назад${escapeHtml(note)}</div>`;
+    };
+    const ctrlBtn = trip => canAct ? `<button class="button small kb-step"
+      data-kb-ctrl="${trip.id}" data-kb-ctrl-label="${escapeHtml(nextControlEvent(trip).label).slice(0, 80)}">📞 Контроль пройден</button>` : '';
     const loadCardKb = trip => {
       const age = hoursSince(trip.on_line_at) || 0;
-      return kbCard(trip, age > 24 ? 'over' : '',
-        kbMeta(`на линии ${age.toFixed(0)} ч без убытия${age > 24 ? ' — ожидание окна: сигнал логисту' : ''}`, age > 24), '');
+      const hot = age > 24 && !ctrlFresh(trip);
+      return kbCard(trip, hot ? 'over' : '',
+        kbMeta(`на линии ${age.toFixed(0)} ч без убытия${hot ? ' — ожидание окна: сигнал логисту' : ''}`, hot)
+        + ctrlRow(trip), ctrlBtn(trip));
     };
     const roadCardKb = trip => {
       const t = tempOf(trip);
@@ -1463,8 +1482,10 @@ export async function renderDispatcher(container, context, options = {}) {
     const unloadCardKb = trip => {
       const age = unloadAge(trip);
       const over = age > gateNormH;
-      return kbCard(trip, over ? 'over' : '',
-        kbMeta(`на выгрузке ${age.toFixed(1)} ч <small>норматив ворот ${gateNormH} ч</small>${over ? ' — кандидат в простой/претензию' : ''}`, over), '');
+      const hot = over && !ctrlFresh(trip);
+      return kbCard(trip, hot ? 'over' : '',
+        kbMeta(`на выгрузке ${age.toFixed(1)} ч <small>норматив ворот ${gateNormH} ч</small>${over ? ' — кандидат в простой/претензию' : ''}`, hot)
+        + ctrlRow(trip), ctrlBtn(trip));
     };
     // Сошедшие с доски (ошибочная отметка): поиск находит свежевыгруженные
     // с кнопкой возврата — отметка обратима тем же местом за секунды.
@@ -1573,7 +1594,7 @@ export async function renderDispatcher(container, context, options = {}) {
     'лимит = выходы ближайших 24 ч по плану: готовим больше, чем выходит, — проверьте окна; кнопка — следующий шаг; 🚚 — перегоны порожним')}
         ${kbCol('📦 Погрузка', loadCol.filter(matchKb).map(loadCardKb),
     `${loadCol.length}`, loadCol.filter(t => (hoursSince(t.on_line_at) || 0) > 24).length > 10,
-    'на линии, убытия нет; красное — дольше суток (ожидание окна)')}
+    'на линии, убытия нет; красное — дольше суток И без свежего контроля; «📞 Контроль пройден» гасит и опускает')}
         ${kbCol('🛣 В пути — контроль и холодовая цепь', [...trRoad.map(kbTransferCard), ...roadCol.filter(matchKb).map(roadCardKb)],
     `${roadCol.length}${trRoad.length ? ` · 🚚 ${trRoad.length}` : ''} · 🌡/📞: ${roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length}`,
     roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length >= 5,
@@ -1581,7 +1602,7 @@ export async function renderDispatcher(container, context, options = {}) {
         ${kbCol('🏗 Выгрузка', unloadCol.filter(matchKb).map(unloadCardKb),
     `${unloadCol.length} · сверх ворот: ${unloadCol.filter(t => unloadAge(t) > gateNormH).length}`,
     unloadCol.filter(t => unloadAge(t) > gateNormH).length >= 5,
-    `красное — дольше живого норматива ворот (${gateNormH} ч); «Выгружен» ставится в карточке`)}
+    `красное — дольше живого норматива ворот (${gateNormH} ч) И без свежего контроля; «Выгружен» ставится в карточке`)}
       </div>
     </div>`;
     const savedKb = captureScrolls(container);
