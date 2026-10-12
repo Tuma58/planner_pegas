@@ -607,13 +607,18 @@ export async function renderDispatcher(container, context, options = {}) {
       </div>` : ''}
       ${orderFiles.length ? `<div class="order-files" style="margin:0 0 8px">${orderFiles.map(file =>
         `<a class="ofile" href="/api/order-files/${file.id}" target="_blank" rel="noopener">📎 ${escapeHtml(file.file_name)}</a>`).join('')}</div>` : ''}
-      <textarea id="tripCardText" readonly rows="${Math.min(16, text.split('\n').length + 1)}"
-        style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre">${escapeHtml(text)}</textarea>
+      <textarea id="tripCardText" readonly rows="${text.split('\n').length + 1}"
+        style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;overflow:hidden;width:100%;resize:none">${escapeHtml(text)}</textarea>
       <div style="display:flex;gap:8px;margin-top:10px">
         <button class="button" id="tripCardCopy">📋 Скопировать всё</button>
         <button class="button ghost" id="tripCardClose">Закрыть</button>
       </div>`);
     const area = document.getElementById('tripCardText');
+    // Вся карточка видна сразу (просьба руководителя 12.10): длинные
+    // строки переносятся, высота подгоняется под содержимое — ни
+    // горизонтальной, ни вертикальной прокрутки внутри поля.
+    area.style.height = 'auto';
+    area.style.height = `${area.scrollHeight + 4}px`;
     const copyText = async value => {
       try { await navigator.clipboard.writeText(value); } catch {
         const helper = document.createElement('textarea');
