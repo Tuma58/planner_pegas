@@ -18,7 +18,7 @@ import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOve
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
-import { autoFillExtensions, callOnTrackedNumber, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
+import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
   matchAtsAbonents, parseXsiEvent, resolveSubscriptionTarget, setAtsTracked, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
@@ -1695,7 +1695,14 @@ function runMissedCallWatch() {
       const targetName = call.target_user_id
         ? db.prepare('SELECT full_name FROM users WHERE id=?').get(call.target_user_id)?.full_name || ''
         : '';
-      const toLabel = targetName || (call.to_phone ? `доб. ${call.to_phone}` : '');
+      // Пометка «не в смене» — сразу видно причину тишины: водитель
+      // звонил по старому личному номеру, а не на дежурную трубку
+      // (кейс 12.10: Сидоров → добавочные Дойкиной и Араповой).
+      const offShift = call.target_user_id && !db.prepare(`SELECT 1 FROM staff_shifts
+        WHERE user_id=? AND day=? AND kind IN ('day','night')`)
+        .get(call.target_user_id, new Date().toISOString().slice(0, 10));
+      const toLabel = (targetName ? `${targetName}${offShift ? ' (не в смене!)' : ''}` : '')
+        || (call.to_phone ? `доб. ${call.to_phone}` : '');
       db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,phone,topic,note,call_id)
         VALUES(?,?,?,?,?,?,?)`).run(id, call.vehicle_id, call.matched_name || '',
         phonePretty(call.from_phone), 'missed_call',
@@ -8980,12 +8987,30 @@ async function api(request, response, url) {
     const since = new Date(Date.now() - 5 * 60_000).toISOString();
     // Входящие — карточка адресату; исходящие (08.10) — тихая подсказка
     // самому звонящему сотруднику с той же карточкой под рукой.
-    const items = db.prepare(`SELECT c.*, v.plate vehicle_plate FROM call_events c
+    // Звонок водителя адресату БЕЗ ЖИВОЙ СЕССИИ раньше не видел никто до
+    // «пропущенного» через 10 минут (кейс 12.10: Сидоров звонил на личные
+    // добавочные не-сменных Дойкиной и Араповой). Теперь такой звонок
+    // всплывает у смены: у сменных диспетчеров и у вошедших с дежурной
+    // трубкой; первый увидевший забирает его себе (handled).
+    const day = new Date().toISOString().slice(0, 10);
+    const dutyDigits = dutyPhoneDigits(db);
+    const myWork = phoneDigits(user.work_phone || '');
+    const onDuty = !!myWork && dutyDigits.some(d => d === myWork);
+    const onShiftDispatcher = onDuty || (!!db.prepare(`SELECT 1 FROM staff_shifts
+        WHERE user_id=? AND day=? AND kind IN ('day','night')`).get(user.id, day)
+      && (`${user.role} ${user.roles || ''}`.includes('dispatcher') || user.role === 'admin'));
+    const shiftBranch = onShiftDispatcher ? `OR (c.direction='in' AND c.matched_kind='driver'
+      AND (c.target_user_id IS NULL OR NOT EXISTS (SELECT 1 FROM sessions s
+        WHERE s.user_id=c.target_user_id AND datetime(s.expires_at)>CURRENT_TIMESTAMP)))` : '';
+    const items = db.prepare(`SELECT c.*, v.plate vehicle_plate,
+        (SELECT full_name FROM users WHERE id=c.target_user_id) target_name
+      FROM call_events c
       LEFT JOIN vehicles v ON v.id=c.vehicle_id
       WHERE c.direction IN ('in','out') AND c.status='' AND c.handled_at IS NULL
-        AND c.started_at>=? AND c.target_user_id=?
+        AND c.started_at>=? AND (c.target_user_id=? ${shiftBranch})
       ORDER BY c.started_at DESC LIMIT 5`).all(since, user.id);
-    return json(response, 200, { items });
+    return json(response, 200, { items: items.map(item =>
+      ({ ...item, for_shift: item.target_user_id === user.id ? 0 : 1 })) });
   }
   match = route(/^\/api\/telephony\/calls\/([^/]+)\/handled$/, pathname);
   if (match && request.method === 'POST') {

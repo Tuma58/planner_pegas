@@ -614,6 +614,11 @@ export function watchIncomingCalls(context) {
           toast(`📞 Звонит ${call.matched_name || 'сотрудник'}`);
           continue;
         }
+        // Звонок чужому адресату без живой сессии — принимает смена
+        // (12.10): поясняем, почему карточка всплыла именно у вас.
+        if (call.for_shift) {
+          toast(`📞 Звонок${call.target_name ? ` к: ${call.target_name}` : ''} — адресат не на связи, принимает смена`);
+        }
         callCardDialog(context, { vehicleId: call.vehicle_id || '',
           phone: call.from_phone, callId: call.id });
         break;
