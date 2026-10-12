@@ -4570,6 +4570,22 @@ test('эскалация (3в): просроченная карточка → с
   const direct = fourth.escalated.find(e => e.tripId === 'esc-1');
   assert.ok(direct && direct.level === 2 && direct.name === 'Руководитель Службы',
     'без старшего в смене — сразу руководителю службы');
+  // Предохранитель: за проход поднимаются не больше лимита — самые
+  // горящие (урок первого прогона на проде: 56 карточек залпом).
+  db.prepare(`INSERT INTO settings(key,value_json) VALUES('dispatch','{"escalateMaxPerTick":1}')
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run();
+  const mkOverdue = (id, hoursAgo) => db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,
+    from_zone_id,to_zone_id,status,starts_at,ends_at,on_line_at,revenue_vat,distance_km)
+    VALUES(?,?, 'Т',?,?,'run',datetime('now','-31 hours'),datetime('now','+10 hours'),
+      datetime('now', '-' || ? || ' hours'),1000,100)`).run(id, vehicle,
+    zones[0].id, zones[1].id, hoursAgo);
+  mkOverdue('esc-3', 30);
+  mkOverdue('esc-4', 10);
+  const limited = escalateOverdueCards(db);
+  const fresh = limited.escalated.filter(e => ['esc-3', 'esc-4'].includes(e.tripId));
+  assert.equal(fresh.length, 1, 'за проход поднята одна карточка (лимит)');
+  assert.equal(fresh[0].tripId, 'esc-3', 'поднята самая горящая');
+  assert.ok(limited.queued >= 1, 'остальные ждут очереди');
   // Ноль множителя — осознанное «выключено».
   db.prepare(`INSERT INTO settings(key,value_json) VALUES('dispatch','{"escalateFactor":0}')
     ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run();

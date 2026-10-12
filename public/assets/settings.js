@@ -834,6 +834,11 @@ async function renderTelephony() {
         <input name="escalateHeadMin" type="number" min="0" step="5"
           value="${state.admin.settings?.dispatch?.escalateHeadMin ?? 60}">
         <small class="muted">0 — выше старшего смены не поднимать.</small></label>
+      <label class="field">Карточек за проход (каждые 10 минут)
+        <input name="escalateMaxPerTick" type="number" min="0" step="1"
+          value="${state.admin.settings?.dispatch?.escalateMaxPerTick ?? 5}">
+        <small class="muted">Поднимаются самые горящие, остальные ждут очереди —
+          чтобы накопленный хвост не упал на старшего залпом.</small></label>
       <button class="button">Сохранить</button>
     </form>
     <h2 style="margin-top:18px">Точки сервиса</h2>
@@ -939,7 +944,8 @@ async function renderTelephony() {
       await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
         dispatch: {
           escalateFactor: Math.max(0, Number(form.elements.escalateFactor.value) || 0),
-          escalateHeadMin: Math.max(0, Number(form.elements.escalateHeadMin.value) || 0)
+          escalateHeadMin: Math.max(0, Number(form.elements.escalateHeadMin.value) || 0),
+          escalateMaxPerTick: Math.max(0, Number(form.elements.escalateMaxPerTick.value) || 0)
         }
       }) });
       toast('Настройки эскалации сохранены');

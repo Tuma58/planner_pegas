@@ -325,7 +325,10 @@ export function escalationSettings(db) {
   const raw = settingsObject(db).dispatch || {};
   return {
     factor: raw.escalateFactor === 0 ? 0 : Number(raw.escalateFactor ?? 2),
-    headMin: raw.escalateHeadMin === 0 ? 0 : Number(raw.escalateHeadMin ?? 60)
+    headMin: raw.escalateHeadMin === 0 ? 0 : Number(raw.escalateHeadMin ?? 60),
+    // Предохранитель (урок первого прогона 12.10: 56 карточек залпом):
+    // за проход поднимаются только самые горящие, остальные — очередью.
+    maxPerTick: raw.escalateMaxPerTick === 0 ? 0 : Number(raw.escalateMaxPerTick ?? 5)
   };
 }
 
@@ -413,6 +416,7 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
     name=excluded.name, source=excluded.source, assigned_at=CURRENT_TIMESTAMP`);
   const escalated = [];
   const released = [];
+  const candidates = [];
   for (const card of boardCards(db)) {
     const normH = norms[card.col];
     if (!Number.isFinite(normH) || normH <= 0) continue;
@@ -435,6 +439,13 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
       continue;
     }
     if (!overdue) continue;
+    candidates.push({ card, own, idleH, normH, severity: idleH / normH });
+  }
+  // Предохранитель: только самые горящие за проход (остальные — очередью
+  // следующих тиков). Без него первый запуск поднял 56 карточек залпом.
+  candidates.sort((a, b) => b.severity - a.severity);
+  for (const item of candidates.slice(0, cfg.maxPerTick)) {
+    const { card, own, idleH, normH } = item;
     // Нет старших в смене — карточка уходит сразу руководителю службы.
     const seniorPick = pickSenior();
     const target = seniorPick ? { name: seniorPick, source: 'esc_senior' }
@@ -448,5 +459,5 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
       tripId: card.tripId, plate: card.plate, col: card.col,
       name: target.name, idleH, normH, from: own?.name || '' });
   }
-  return { escalated, released, seniors, head };
+  return { escalated, released, seniors, head, queued: Math.max(0, candidates.length - cfg.maxPerTick) };
 }

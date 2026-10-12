@@ -4827,20 +4827,28 @@ function runDispatchAssignWatch() {
     if (!hasPlan) snapshotPlanHour(db);
     if (result.assigned) console.log(`авторазвод: назначено ${result.assigned} из ${result.total} карточек`);
     // Этап 3в: сильно просроченные — старшему смены, затем руководителю
-    // службы; задышавшие возвращаются в общий пул.
+    // службы; задышавшие возвращаются в общий пул. Уведомление — ОДНО
+    // на человека за проход (урок первого прогона: 56 личных сообщений).
     const esc = escalateOverdueCards(db);
     const colName = { prep: 'Подготовка', load: 'Погрузка', road: 'В пути', unload: 'Выгрузка' };
+    const byName = new Map();
     for (const e of esc.escalated) {
-      const where = `${e.plate ? `${e.plate} · ` : ''}${colName[e.col] || e.col}`;
-      const age = `${e.idleH.toFixed(0)} ч без движения при нормативе ${e.normH.toFixed(1)} ч`;
-      notifyUserByName(e.name, (e.level === 1
-        ? `⏰ Эскалация старшему смены: карточка ${where} — ${age}`
-        : `⏰ Эскалация руководителю службы: карточка ${where} — ${age}`)
-        + `${e.from ? ` (была у: ${e.from})` : ''} — теперь на вас`, 'trip', e.tripId);
+      if (!byName.has(e.name)) byName.set(e.name, []);
+      byName.get(e.name).push(e);
+    }
+    for (const [name, items] of byName) {
+      const lines = items.map(e => `${e.plate || '?'} (${colName[e.col] || e.col}, `
+        + `${e.idleH.toFixed(0)} ч при нормативе ${e.normH.toFixed(1)} ч`
+        + `${e.from ? `, была у: ${e.from}` : ''})`);
+      notifyUserByName(name, items.length === 1
+        ? `⏰ Эскалация: карточка ${lines[0]} — теперь на вас`
+        : `⏰ Эскалация: ${items.length} карточек теперь на вас: ${lines.join('; ')}`,
+      items.length === 1 ? 'trip' : null, items.length === 1 ? items[0].tripId : null);
     }
     if (esc.escalated.length) {
       console.log(`эскалация доски: ${esc.escalated.map(e =>
-        `${e.plate || e.tripId}→${e.name}`).join(', ')}`);
+        `${e.plate || e.tripId}→${e.name}`).join(', ')}`
+        + (esc.queued ? ` · в очереди ещё ${esc.queued}` : ''));
     }
     if (esc.released.length) {
       console.log(`эскалация снята (движение пошло): ${esc.released.length} карточек`);

@@ -1207,6 +1207,17 @@ function migrateColumns(db) {
       COMMIT;
       PRAGMA foreign_keys=ON;`);
   }
+  // ── Разовый сброс залпа эскалаций 12.10.2026 ──
+  // Первый прогон 3в сработал до заведения должности старшего смены и
+  // поднял 56 карточек разом на руководителя службы. Залп возвращается
+  // в общий пул; дальше работает предохранитель maxPerTick.
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='esc_first_sweep_reset'`).get()) {
+    const swept = db.prepare(`UPDATE dispatch_assignments
+      SET source='auto', assigned_at=CURRENT_TIMESTAMP
+      WHERE source IN ('esc_senior','esc_head')`).run();
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('esc_first_sweep_reset',?)`)
+      .run(JSON.stringify({ at: new Date().toISOString(), swept: Number(swept.changes || 0) }));
+  }
   // ── Ознакомление с инструкциями (14.09.2026): цифровая «подпись» ──
   // Сотрудник подтверждает ознакомление с редакцией раздела инструкций
   // кнопкой «✓ Ознакомлен»; при новой редакции (updated) подтверждение
