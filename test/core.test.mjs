@@ -4517,6 +4517,24 @@ test('эскалация (3в): просроченная карточка → с
   assert.equal(row().name, 'Старший Логист', 'эскалация неприкосновенна для балансировщика');
   const again = escalateOverdueCards(db);
   assert.ok(!again.escalated.some(e => e.tripId === 'esc-1'), 'повторной эскалации нет');
+  // Старших двое (Базуев и Филюнина) — эскалации раскладываются по
+  // наименее нагруженному: вторая просроченная уходит второму старшему.
+  mkUser.run('u-sen2', 'senior2', 'Вторая Старшая', 'logist', 'Старший логист смены');
+  db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind) VALUES('sh-sen2','u-sen2',?,'day')`)
+    .run(today);
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    status,starts_at,ends_at,on_line_at,revenue_vat,distance_km)
+    VALUES('esc-2',?, 'Т',?,?,'run',datetime('now','-21 hours'),datetime('now','+10 hours'),
+      datetime('now','-20 hours'),1000,100)`).run(vehicle, zones[0].id, zones[1].id);
+  db.prepare(`INSERT INTO dispatch_assignments(trip_id,name,source)
+    VALUES('esc-2','Обычный Диспетчер','auto')`).run();
+  const spread = escalateOverdueCards(db);
+  const secondCard = spread.escalated.find(e => e.tripId === 'esc-2');
+  assert.ok(secondCard, 'вторая просроченная эскалирована');
+  assert.equal(secondCard.name, 'Вторая Старшая', 'ушла менее нагруженному старшему');
+  db.prepare(`DELETE FROM dispatch_assignments WHERE trip_id='esc-2'`).run();
+  db.prepare(`DELETE FROM trips WHERE id='esc-2'`).run();
+  db.prepare(`DELETE FROM staff_shifts WHERE id='sh-sen2'`).run();
   // Час тишины у старшего — карточка уходит руководителю службы.
   db.prepare(`UPDATE dispatch_assignments SET assigned_at=datetime('now','-2 hours')
     WHERE trip_id='esc-1'`).run();

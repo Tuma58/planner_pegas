@@ -1342,6 +1342,22 @@ export async function renderDispatcher(container, context, options = {}) {
         state.shiftLoadAt = Date.now();
       } catch { state.shiftLoad = state.shiftLoad || { people: [], fallback: 15 }; }
     }
+    const assignments = state.shiftLoad?.assignments || {};
+    const myFull = state.data.user.fullName || '';
+    // Фильтр «чьи карточки» (заказ руководителя 12.10): сотрудник отбирает
+    // свои задания, руководитель службы — любого сотрудника, чтобы видеть
+    // его объём и помочь. Выбор живёт на рабочем месте.
+    if (state.dispatcherOwner === undefined) {
+      try { state.dispatcherOwner = localStorage.getItem('pl_disp_owner') || 'all'; }
+      catch { state.dispatcherOwner = 'all'; }
+    }
+    const canPickPeople = can('reports:read') || state.data.user.dispatchExempt;
+    if (!canPickPeople && state.dispatcherOwner !== 'all' && state.dispatcherOwner !== 'mine') {
+      state.dispatcherOwner = 'all';
+    }
+    const ownerActive = state.dispatcherOwner !== 'all';
+    const ownerName = state.dispatcherOwner === 'mine' ? myFull : state.dispatcherOwner;
+    const ownMatch = trip => !ownerActive || assignments[trip.id]?.name === ownerName;
     const gpsByTrip = new Map((state.gpsControl || []).map(g => [g.trip_id, g]));
     const gateNormH = Number(state.gpsGateNormH) || 4.5;
     const midH = MID_CONTROL_MS / 3.6e6;
@@ -1351,7 +1367,8 @@ export async function renderDispatcher(container, context, options = {}) {
     };
     // Перегоны порожним — на доске (заказ руководителя 12.10): весь
     // жизненный цикл «задание → выехал → прибыл» теми же колонками.
-    const kbTransfers = openTransfers(data).filter(item => !query ||
+    // Ответственного у перегона нет — в именных фильтрах они скрыты.
+    const kbTransfers = (ownerActive ? [] : openTransfers(data)).filter(item => !query ||
       `${item.vehicle_plate} ${item.driver_name || ''} ${item.to_name || ''} ${item.from_label || ''}`
         .toLowerCase().includes(query));
     const trPrep = kbTransfers.filter(t => transferStage(t).key !== 'run');
@@ -1383,8 +1400,6 @@ export async function renderDispatcher(container, context, options = {}) {
     const tempBadCount = online.filter(tempBad).length;
     const ctrlOverCount = roadCol.filter(ctrlOverdue).length;
     const kbMeta = (text, bad) => `<div class="kbr kb4 ${bad ? 'bad' : ''}">${text}</div>`;
-    const assignments = state.shiftLoad?.assignments || {};
-    const myFull = state.data.user.fullName || '';
     const ownerRow = trip => {
       const a = assignments[trip.id];
       if (!a) return '<div class="kbr kb-own none">👤 не назначена</div>';
@@ -1506,16 +1521,28 @@ export async function renderDispatcher(container, context, options = {}) {
       </div>`;
     };
     const kbCol = (title, cards, lim, over, note) => `<section class="kb-col">
-      <div class="kb-chead ${over ? 'bad' : ''}"><span>${title}</span><span class="kb-lim">${lim}</span></div>
+      <div class="kb-chead ${over ? 'bad' : ''}"><span>${title}</span>
+        <span class="kb-lim">${ownerActive ? `👤 ${cards.length} · ` : ''}${lim}</span></div>
       <div class="kb-note">${note}</div>
       <div class="kb-cards">${cards.join('') || '<p class="muted" style="padding:6px">пусто</p>'}</div>
     </section>`;
-    const matchKb = trip => matches(trip);
+    const matchKb = trip => matches(trip) && ownMatch(trip);
     const boardHtml = `<div class="saleswrap kb-wrap">
       <div class="kb-top">
         <span class="resctl-group">
           <button class="button small" id="kbLayoutBoard">🗂 Доска</button>
           <button class="button small ghost" id="kbLayoutClassic" title="Классический вид: полные карточки контроля, перегоны, массовые инструменты">📋 Классика</button>
+        </span>
+        <span class="resctl-group">
+          <button class="button small ${ownerActive ? 'ghost' : ''}" data-kb-owner="all"
+            title="Все карточки смены (перегоны видны только здесь)">Все</button>
+          <button class="button small ${state.dispatcherOwner === 'mine' ? '' : 'ghost'}" data-kb-owner="mine"
+            title="Только карточки, где ответственный — вы">👤 Мои (${Object.values(assignments).filter(a => a.name === myFull).length})</button>
+          ${canPickPeople ? `<select id="kbOwnerSelect" title="Карточки выбранного сотрудника — увидеть его объём и помочь">
+            <option value="">по сотруднику…</option>
+            ${[...new Set(Object.values(assignments).map(a => a.name))].sort().map(n =>
+    `<option value="${escapeHtml(n)}" ${state.dispatcherOwner === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+          </select>` : ''}
         </span>
         ${state.data.user.dispatchExempt || can('users:write') ? `<button class="button small ghost" id="kbRebalance"
           title="Полуавтоматика руководителя службы: сбросить авто-назначения и раздать карточки заново по текущей смене и личным ёмкостям (взятые вручную «🖐 Беру» не трогаются)">⚖ Перераспределить</button>` : ''}
@@ -1582,6 +1609,15 @@ export async function renderDispatcher(container, context, options = {}) {
           toast('Ответ отправлен водителю');
         } catch (error) { toast(error.message, 'error'); }
       }));
+    const setOwnerFilter = value => {
+      state.dispatcherOwner = value || 'all';
+      try { localStorage.setItem('pl_disp_owner', state.dispatcherOwner); } catch { /* ок */ }
+      renderDispatcher(container, context, { reuseNetwork: true });
+    };
+    container.querySelectorAll('[data-kb-owner]').forEach(button =>
+      button.addEventListener('click', () => setOwnerFilter(button.dataset.kbOwner)));
+    container.querySelector('#kbOwnerSelect')?.addEventListener('change', event =>
+      setOwnerFilter(event.target.value));
     container.querySelector('#kbRebalance')?.addEventListener('click', async () => {
       if (!confirm('Перераспределить карточки по текущей смене? Авто-назначения раздадутся заново по ёмкостям; взятые вручную останутся у владельцев.')) return;
       const btn = container.querySelector('#kbRebalance');

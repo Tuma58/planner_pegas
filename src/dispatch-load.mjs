@@ -345,21 +345,22 @@ export function boardStepNorms(db, nowIso = new Date().toISOString()) {
   return { prep: cached.prepH, load: gateH, road: midH, unload: gateH };
 }
 
-// Кто принимает эскалацию. Старший смены — сменный сотрудник с должностью
-// со словом «старший» (вне обычной раздачи — dispatch_exempt его и так
-// исключает); руководитель службы — должность «руководитель …
-// диспетчерской». LOWER кириллицы SQLite не умеет — фильтр в JS.
+// Кто принимает эскалацию. Старшие смены — сменные сотрудники с должностью
+// со словом «старший» (их может быть несколько — Базуев и Филюнина;
+// вне обычной раздачи их держит dispatch_exempt); руководитель службы —
+// должность «руководитель … диспетчерской». LOWER кириллицы SQLite не
+// умеет — фильтр в JS.
 export function escalationStaff(db, nowIso = new Date().toISOString()) {
   const day = nowIso.slice(0, 10);
   const lc = v => String(v || '').toLowerCase();
   const onShift = db.prepare(`SELECT u.full_name name, COALESCE(u.job_role,'') job
     FROM staff_shifts s JOIN users u ON u.id=s.user_id
     WHERE s.day=? AND s.kind IN ('day','night') AND u.active=1`).all(day);
-  const senior = onShift.find(p => lc(p.job).includes('старш'))?.name || null;
+  const seniors = onShift.filter(p => lc(p.job).includes('старш')).map(p => p.name);
   const head = db.prepare(`SELECT full_name name, COALESCE(job_role,'') job FROM users
       WHERE active=1 AND deleted_at IS NULL AND COALESCE(job_role,'')<>''`).all()
     .find(p => lc(p.job).includes('руковод') && lc(p.job).includes('диспетчер'))?.name || null;
-  return { senior, head };
+  return { seniors, senior: seniors[0] || null, head };
 }
 
 // Последнее движение по карточке: вход в колонку, свежая отметка контроля
@@ -378,12 +379,22 @@ function lastActivityMs(db, card) {
 
 export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
   const cfg = escalationSettings(db);
-  if (!cfg.factor) return { escalated: [], released: [], senior: null, head: null };
+  if (!cfg.factor) return { escalated: [], released: [], seniors: [], head: null };
   const norms = boardStepNorms(db, nowIso);
-  const { senior, head } = escalationStaff(db, nowIso);
+  const { seniors, head } = escalationStaff(db, nowIso);
   const nowMs = Date.parse(nowIso);
   const current = new Map(db.prepare(`SELECT trip_id, name, source, assigned_at
     FROM dispatch_assignments`).all().map(r => [r.trip_id, r]));
+  // Старших может быть несколько — эскалации раскладываются по наименее
+  // нагруженному (считая уже висящие на них эскалированные карточки).
+  const seniorLoad = new Map(seniors.map(n => [n, 0]));
+  for (const r of current.values()) {
+    if (r.source === 'esc_senior' && seniorLoad.has(r.name)) {
+      seniorLoad.set(r.name, seniorLoad.get(r.name) + 1);
+    }
+  }
+  const pickSenior = () => seniors.reduce((a, b) =>
+    (a == null || seniorLoad.get(b) < seniorLoad.get(a)) ? b : a, null);
   const put = db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source)
     VALUES(?,?,?) ON CONFLICT(trip_id) DO UPDATE SET
     name=excluded.name, source=excluded.source, assigned_at=CURRENT_TIMESTAMP`);
@@ -411,14 +422,18 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
       continue;
     }
     if (!overdue) continue;
-    // Нет старшего в смене — карточка уходит сразу руководителю службы.
-    const target = senior ? { name: senior, source: 'esc_senior' }
+    // Нет старших в смене — карточка уходит сразу руководителю службы.
+    const seniorPick = pickSenior();
+    const target = seniorPick ? { name: seniorPick, source: 'esc_senior' }
       : head ? { name: head, source: 'esc_head' } : null;
     if (!target || (own && own.name === target.name)) continue;
     put.run(card.tripId, target.name, target.source);
+    if (target.source === 'esc_senior') {
+      seniorLoad.set(target.name, seniorLoad.get(target.name) + 1);
+    }
     escalated.push({ level: target.source === 'esc_senior' ? 1 : 2,
       tripId: card.tripId, plate: card.plate, col: card.col,
       name: target.name, idleH, normH, from: own?.name || '' });
   }
-  return { escalated, released, senior, head };
+  return { escalated, released, seniors, head };
 }
