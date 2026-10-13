@@ -7173,6 +7173,23 @@ async function api(request, response, url) {
       merged.fromPoint, merged.toPoint,
       merged.startsAt, merged.endsAt, merged.distanceKm, merged.revenueVat, merged.status,
       merged.rejectionReason, merged.temperatureMode, merged.bodyType, user.id, match[0]);
+    // Симметрия (13.10): корректировка режима/кузова в рейсе правит и
+    // заявку — иначе копии расходятся (с869/с864: рейс «заморозка»,
+    // заявка «охлаждение»; какой конец прав — не узнать).
+    const linkedOrderId = merged.orderId ?? current.order_id;
+    if (linkedOrderId && (merged.temperatureMode !== current.temperature_mode
+        || merged.bodyType !== current.body_type)) {
+      db.prepare(`UPDATE orders SET temperature_mode=?, body_type=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(merged.temperatureMode, merged.bodyType, linkedOrderId);
+      if (merged.status === 'run' && merged.temperatureMode !== current.temperature_mode) {
+        const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?')
+          .get(merged.vehicleId)?.plate || '';
+        notify('dispatcher', `🌡 Режим перевозки изменён на идущем рейсе ${plate}: `
+          + `«${current.temperature_mode || '—'}» → «${merged.temperatureMode}» — сообщите `
+          + 'водителю и проверьте уставку рефа', 'trip', match[0], { category: 'other' });
+      }
+    }
     // Цепочка сцепки изменилась (сдвиг времени, отклонение, смена ТС) —
     // подгон следующих рейсов пересчитываем у обеих машин.
     refreshEmptyKm(merged.vehicleId);
@@ -7824,6 +7841,32 @@ async function api(request, response, url) {
         .run(Number(body.rateVat ?? current.rate_vat), nextCash, keptOrderNo, user.id, current.trip_id);
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
         integrationPublic().writePolicy === 'automatic');
+    }
+    // Режим перевозки и кузов — атрибуты исполнения: правка заявки доезжает
+    // до незакрытого рейса (разбор т538 13.10: заявку исправили, а рейс
+    // остался со старым режимом — контроль холодовой цепи и задание
+    // водителю сравнивали не с тем; у с869/с864/т938 копии разошлись).
+    const nextMode = String(body.temperatureMode ?? current.temperature_mode);
+    const nextBodyType = String(body.bodyType ?? current.body_type);
+    if (current.trip_id && (nextMode !== current.temperature_mode
+        || nextBodyType !== current.body_type)) {
+      const linked = db.prepare(`SELECT id, status, vehicle_id FROM trips
+        WHERE id=? AND status NOT IN ('paid','rejected')`).get(current.trip_id);
+      if (linked) {
+        db.prepare(`UPDATE trips SET temperature_mode=?, body_type=?,
+          updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(nextMode, nextBodyType, user.id, linked.id);
+        // Рейс уже идёт — водитель везёт по старому заданию: смена обязана
+        // передать новый режим и проверить уставку рефа (кейс т538: реф
+        // морозил −19° при исправленном режиме 0…+4).
+        if (linked.status === 'run' && nextMode !== current.temperature_mode) {
+          const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?')
+            .get(linked.vehicle_id)?.plate || '';
+          notify('dispatcher', `🌡 Режим перевозки изменён на идущем рейсе ${plate}: `
+            + `«${current.temperature_mode || '—'}» → «${nextMode}» — сообщите водителю `
+            + 'и проверьте уставку рефа', 'trip', linked.id, { category: 'other' });
+        }
+      }
     }
     // Сменились адреса — новый плановый километраж уходит в незакрытый рейс.
     if (current.trip_id && nextPlannedKm && nextPlannedKm !== current.planned_km) {
