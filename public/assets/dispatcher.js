@@ -1426,7 +1426,7 @@ export async function renderDispatcher(container, context, options = {}) {
       return '';
     };
     const kbCard = (trip, cls, extraRows, button) => `<div class="kb-card ${cls} ${assignments[trip.id]?.name === myFull ? 'mine' : ''}" data-kb-open="${trip.id}"
-      title="Клик — полная карточка контроля (классический вид, фильтр по этому рейсу)">
+      title="Клик — следующее действие и комментарий; полная карточка и классика — внутри">
       <div class="kbr kb1"><b class="mono">${escapeHtml(trip.vehicle_plate || '')}</b>
         <span class="kb-drv">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span></div>
       ${ownerRow(trip)}
@@ -1460,6 +1460,183 @@ export async function renderDispatcher(container, context, options = {}) {
     };
     const ctrlBtn = trip => canAct ? `<button class="button small kb-step"
       data-kb-ctrl="${trip.id}" data-kb-ctrl-label="${escapeHtml(nextControlEvent(trip).label).slice(0, 80)}">📞 Контроль пройден</button>` : '';
+    // Форма «Контроль пройден» — общая для кнопки на карточке и
+    // усечённого окна (решение руководителя 13.10).
+    const kbCtrlDialog = trip => {
+      const key = eventKeyOf(trip);
+      context.showModal(`<form id="kbCtrlForm">
+        <h2>📞 Контроль пройден</h2>
+        <p class="muted">${escapeHtml(nextControlEvent(trip).label).slice(0, 80)} — что выяснили?</p>
+        <label class="field">Комментарий (обязательно)
+          <textarea name="note" required minlength="5" maxlength="300" rows="3"
+            placeholder="например: едет по графику, реф −2°, будет к 14:00"></textarea></label>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close>Отмена</button>
+          <button class="button">Сохранить</button>
+        </div></form>`);
+      document.getElementById('kbCtrlForm').onsubmit = async event => {
+        event.preventDefault();
+        const note = String(new FormData(event.currentTarget).get('note') || '').trim();
+        if (note.length < 5) { toast('Комментарий обязателен (от 5 символов)', 'error'); return; }
+        try {
+          await api('/api/task-marks', { method: 'POST',
+            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key, note }) });
+          context.closeModal();
+          toast('Контроль отмечен');
+          await renderDispatcher(container, context);
+        } catch (error) { toast(error.message, 'error'); }
+      };
+    };
+    // ── Усечённая карточка (решение руководителя 13.10): клик по карточке
+    // открывает ТОЛЬКО следующее действие и комментарий смены — одно
+    // действие, один клик. Полная карточка (как при звонке) и классика —
+    // кнопками для редких случаев. После действия доска обновляется свежей.
+    const kbQuickDialog = trip => {
+      const inList = list => list.some(item => item.id === trip.id);
+      const col = trip.status === 'plan' ? 'prep'
+        : inList(loadCol) ? 'load' : inList(unloadCol) ? 'unload' : 'road';
+      let stateRow = '';
+      if (col === 'prep') {
+        const startIn = (Date.parse(trip.starts_at) - Date.now()) / 3.6e6;
+        stateRow = startIn < 0 ? `⏱ выход просрочен на ${Math.abs(startIn).toFixed(0)} ч`
+          : `выход через ${startIn.toFixed(0)} ч`;
+      } else {
+        const parts = [];
+        if (col === 'load') parts.push(`на линии ${(hoursSince(trip.on_line_at) || 0).toFixed(0)} ч без убытия`);
+        if (col === 'unload') parts.push(`на выгрузке ${unloadAge(trip).toFixed(1)} ч (норматив ворот ${gateNormH} ч)`);
+        if (col === 'road') {
+          const t = tempOf(trip);
+          if (t) {
+            parts.push(t.stale ? '🌡 датчик молчит'
+              : `🌡 ${Number(t.value).toFixed(1)}° (режим ${t.min}…${t.max}°)${t.ok ? ' ✓' : ' ⚠ ВНЕ РЕЖИМА'}`);
+          }
+        }
+        parts.push(`📞 контроль ${((Date.now() - lastTouchMs(trip)) / 3.6e6).toFixed(0)} ч назад`);
+        stateRow = parts.join(' · ');
+      }
+      let actionHtml = '';
+      const wires = [];
+      if (canAct && col === 'prep') {
+        if (!trip.logist_confirmed_at) {
+          actionHtml = '<span class="muted">ждёт подтверждения логиста — действий нет</span>';
+        } else {
+          const [step, label] = !trip.entered_1c_at && !trip.deferred_1c_at ? ['entered_1c', '🧾 Внести в 1С']
+            : !trip.driver_notified_at ? ['driver_notified', '📨 Задание водителю']
+            : ['on_line', '🚦 Вывести на линию'];
+          actionHtml = `<button type="button" class="button" id="kbqStep">${label}</button>`;
+          wires.push(() => {
+            document.getElementById('kbqStep').onclick = async () => {
+              context.closeModal();
+              await runStep(trip.id, step, () => context.onReload());
+            };
+          });
+        }
+      } else if (canAct) {
+        const event = nextControlEvent(trip);
+        if (event.stopId && event.stepFields) {
+          actionHtml += `<button type="button" class="button" id="kbqFact">✔ ${escapeHtml(event.stepLabel)}</button>`;
+          wires.push(() => {
+            document.getElementById('kbqFact').onclick = () => factDialog(
+              `Этап рейса · ${event.stepLabel}`,
+              'Укажите фактическое время события на стоянке.', async iso => {
+                const body = {};
+                for (const field of String(event.stepFields).split(',')) body[field] = iso;
+                await api(`/api/stops/${event.stopId}`, { method: 'PATCH', body: JSON.stringify(body) });
+                toast('Этап отмечен');
+              });
+          });
+        }
+        // Все точки пройдены — остаётся закрыть рейс фактом выгрузки.
+        const stops = controlByTrip.get(trip.id)?.stops || [];
+        const last = stops[stops.length - 1];
+        if (last?.actual_departure) {
+          actionHtml += ` <button type="button" class="button" id="kbqUnloaded">✅ Выгружен</button>`;
+          wires.push(() => {
+            document.getElementById('kbqUnloaded').onclick = () => factDialog(
+              'Рейс выгружен', 'Фактическое время выгрузки — конец рейса на доске.', async iso => {
+                await api(`/api/trips/${trip.id}`, { method: 'PATCH',
+                  body: JSON.stringify({ status: 'unloaded', factAt: iso }) });
+                toast('Рейс закрыт — «Выгружен»');
+              });
+          });
+        }
+        actionHtml += ` <button type="button" class="button ghost" id="kbqCtrl">📞 Контроль пройден</button>`;
+        wires.push(() => {
+          document.getElementById('kbqCtrl').onclick = () => kbCtrlDialog(trip);
+        });
+      }
+      const noteMark = workedMap.get(`prepnote|${trip.id}`);
+      context.showModal(`<h2><span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
+          <small class="muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</small></h2>
+        <p class="muted">${escapeHtml((trip.customer_name || '').slice(0, 40))}
+          · ${escapeHtml((trip.from_point || trip.from_name || '').slice(0, 25))}
+          → ${escapeHtml((trip.to_point || trip.to_name || '').slice(0, 25))}</p>
+        <p>${stateRow}</p>
+        ${actionHtml ? `<div class="modal-actions" style="justify-content:flex-start;margin:8px 0">${actionHtml}</div>` : ''}
+        ${canAct ? `<form id="kbqNoteForm"><label class="field">💬 Комментарий смены
+          <textarea name="note" maxlength="300" rows="2"
+            placeholder="видит вся смена — в контроле и в карточке звонка">${escapeHtml(noteMark?.note || '')}</textarea></label>
+          <button class="button ghost small">Сохранить комментарий</button></form>`
+    : (noteMark?.note ? `<p>💬 ${escapeHtml(noteMark.note)}</p>` : '')}
+        <div class="modal-actions">
+          <button type="button" class="button ghost small" id="kbqFull"
+            title="Где машина, заявка, окно, контакты, сервисы — карточка как при звонке">📞 Полная карточка</button>
+          <button type="button" class="button ghost small" id="kbqClassic"
+            title="Лента точек, правка времён, массовые инструменты">📋 Классика</button>
+          <button type="button" class="button ghost" data-close>Закрыть</button>
+        </div>`);
+      for (const wire of wires) wire();
+      document.getElementById('kbqNoteForm')?.addEventListener('submit', async event => {
+        event.preventDefault();
+        const note = String(new FormData(event.currentTarget).get('note') || '').trim();
+        try {
+          await api('/api/task-marks', { method: 'POST', body: JSON.stringify({
+            kind: 'dispatcher', day: todayIso, key: `prepnote|${trip.id}`,
+            ...(note ? { note } : { remove: true }) }) });
+          toast(note ? 'Комментарий сохранён — виден смене' : 'Комментарий удалён');
+          context.closeModal();
+          state.dispatcherNetCache = null;
+          await renderDispatcher(container, context);
+        } catch (error) { toast(error.message, 'error'); }
+      });
+      document.getElementById('kbqFull').onclick = () =>
+        callCardDialog(context, { vehicleId: trip.vehicle_id });
+      document.getElementById('kbqClassic').onclick = () => {
+        context.closeModal();
+        state.dispatcherReturnToBoard = { query: state.dispatcherQuery || '' };
+        state.dispatcherLayout = 'classic';
+        state.dispatcherQuery = trip.vehicle_plate || '';
+        renderDispatcher(container, context);
+      };
+    };
+    // Усечённое окно перегона: его единственный шаг и задание копией.
+    const kbQuickTransferDialog = transfer => {
+      const stage = transferStage(transfer);
+      context.showModal(`<h2><span class="mono">${escapeHtml(transfer.vehicle_plate || '')}</span>
+          <small class="muted">${escapeHtml((transfer.driver_name || 'без водителя').split(' ').slice(0, 2).join(' '))}</small></h2>
+        <p class="muted">🚚 перегон порожним · ${escapeHtml((transfer.from_label || '—').slice(0, 25))}
+          → ${escapeHtml((transfer.to_name || '—').slice(0, 25))}</p>
+        <p>${escapeHtml(stage.label)}</p>
+        <div class="modal-actions" style="justify-content:flex-start">
+          ${canAct ? `<button type="button" class="button" id="kbqTrStep">✔ ${escapeHtml(stage.action)}</button>` : ''}
+          <button type="button" class="button ghost small" id="kbqTrCopy"
+            title="Скопировать задание для водителя">📋 Задание</button>
+          <button type="button" class="button ghost" data-close>Закрыть</button>
+        </div>`);
+      document.getElementById('kbqTrStep')?.addEventListener('click', () => factDialog(
+        `Перегон · ${stage.label}`, 'Укажите фактическое время события.', async iso => {
+          await api(`/api/transfers/${transfer.id}/step`, { method: 'POST',
+            body: JSON.stringify({ step: stage.step, at: iso }) });
+          toast(stage.step === 'arrived'
+            ? 'Перегон завершён — машина числится в точке назначения' : 'Этап перегона отмечен');
+        }));
+      document.getElementById('kbqTrCopy').onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(transferTaskText(transfer));
+          toast('Задание скопировано — отправьте водителю');
+        } catch { toast('Не удалось скопировать', 'error'); }
+      };
+    };
     const loadCardKb = trip => {
       const age = hoursSince(trip.on_line_at) || 0;
       const hot = age > 24 && !ctrlFresh(trip);
@@ -1526,7 +1703,8 @@ export async function renderDispatcher(container, context, options = {}) {
       const lateMs = stage.key === 'run' ? Date.now() - Date.parse(transfer.ends_at) : 0;
       const late = lateMs > 2 * 3.6e6;
       const departOverdue = stage.key !== 'run' && Date.parse(transfer.starts_at) < Date.now();
-      return `<div class="kb-card kb-transfer ${late || departOverdue ? 'over' : ''} ${assignments[transfer.id]?.name === myFull ? 'mine' : ''}">
+      return `<div class="kb-card kb-transfer ${late || departOverdue ? 'over' : ''} ${assignments[transfer.id]?.name === myFull ? 'mine' : ''}"
+        data-kb-tr="${transfer.id}" title="Клик — следующее действие перегона">
         <div class="kbr kb1"><b class="mono">${escapeHtml(transfer.vehicle_plate || '')}</b>
           <span class="kb-drv">${escapeHtml((transfer.driver_name || 'без водителя').split(' ').slice(0, 2).join(' '))}</span></div>
         ${ownerRow(transfer)}
@@ -1656,47 +1834,24 @@ export async function renderDispatcher(container, context, options = {}) {
       try { localStorage.setItem('pl_disp_layout', 'classic'); } catch { /* ок */ }
       renderDispatcher(container, context);
     };
+    // Клик по карточке — усечённое окно «следующее действие + комментарий»
+    // (решение руководителя 13.10); классика — кнопкой внутри окна.
     container.querySelectorAll('[data-kb-open]').forEach(card => card.addEventListener('click', event => {
       if (event.target.closest('button')) return;
       const trip = data.trips.find(item => item.id === card.dataset.kbOpen)
         || controlByTrip.get(card.dataset.kbOpen);
-      // Прыжок в полную карточку: запоминаем обратный путь (и поиск
-      // доски) — в классике появится «← На доску» (просьба руководителя
-      // 11.10: «проработал карточку — нужен удобный возврат»).
-      state.dispatcherReturnToBoard = { query: state.dispatcherQuery || '' };
-      state.dispatcherLayout = 'classic'; // временный прыжок, память не трогаем
-      state.dispatcherQuery = trip?.vehicle_plate || '';
-      renderDispatcher(container, context);
+      if (trip) kbQuickDialog(trip);
+    }));
+    container.querySelectorAll('[data-kb-tr]').forEach(card => card.addEventListener('click', event => {
+      if (event.target.closest('button')) return;
+      const transfer = kbTransfers.find(item => item.id === card.dataset.kbTr);
+      if (transfer) kbQuickTransferDialog(transfer);
     }));
     container.querySelectorAll('[data-kb-step]').forEach(button => button.addEventListener('click', () =>
       runStep(button.dataset.kbStep, button.dataset.kbStepName, () => context.onReload())));
     container.querySelectorAll('[data-kb-ctrl]').forEach(button => button.addEventListener('click', () => {
-      const tripId = button.dataset.kbCtrl;
-      const trip = online.find(item => item.id === tripId);
-      if (!trip) return;
-      const key = eventKeyOf(trip);
-      context.showModal(`<form id="kbCtrlForm">
-        <h2>📞 Контроль пройден</h2>
-        <p class="muted">${escapeHtml(button.dataset.kbCtrlLabel || '')} — что выяснили?</p>
-        <label class="field">Комментарий (обязательно)
-          <textarea name="note" required minlength="5" maxlength="300" rows="3"
-            placeholder="например: едет по графику, реф −2°, будет к 14:00"></textarea></label>
-        <div class="modal-actions">
-          <button type="button" class="button ghost" data-close>Отмена</button>
-          <button class="button">Сохранить</button>
-        </div></form>`);
-      document.getElementById('kbCtrlForm').onsubmit = async event => {
-        event.preventDefault();
-        const note = String(new FormData(event.currentTarget).get('note') || '').trim();
-        if (note.length < 5) { toast('Комментарий обязателен (от 5 символов)', 'error'); return; }
-        try {
-          await api('/api/task-marks', { method: 'POST',
-            body: JSON.stringify({ kind: 'dispatcher', day: todayIso, key, note }) });
-          context.closeModal();
-          toast('Контроль отмечен');
-          await renderDispatcher(container, context);
-        } catch (error) { toast(error.message, 'error'); }
-      };
+      const trip = online.find(item => item.id === button.dataset.kbCtrl);
+      if (trip) kbCtrlDialog(trip);
     }));
     container.querySelectorAll('[data-transfer-step]').forEach(button =>
       button.addEventListener('click', event => {
