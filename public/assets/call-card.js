@@ -602,7 +602,15 @@ export function watchIncomingCalls(context) {
       for (const call of items) {
         if (seen.has(call.id)) continue;
         seen.add(call.id);
-        await api(`/api/telephony/calls/${call.id}/handled`, { method: 'POST' }).catch(() => {});
+        // Свой звонок помечается показанным (handled) сразу — карточка
+        // всплыла у адресата. ЧУЖОЙ (адресат не на связи, звонок отдан
+        // смене) НЕ помечается: его должна увидеть вся смена, и сторож
+        // пропущенных остаётся в силе. Иначе первый тикнувший клиент —
+        // даже свёрнутая вкладка — молча «съедал» звонок у всех
+        // (жалоба смены 13.10: «звонки перестали появляться»).
+        if (!call.for_shift) {
+          await api(`/api/telephony/calls/${call.id}/handled`, { method: 'POST' }).catch(() => {});
+        }
         // Исходящий самого сотрудника: тихий уголок с карточкой в клик.
         if (call.direction === 'out') {
           outgoingCallPop(context, call);
