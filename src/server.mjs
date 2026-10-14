@@ -1658,11 +1658,11 @@ function runBeelineWatch() {
 setInterval(runBeelineWatch, 60_000);
 setTimeout(runBeelineWatch, 20_000);
 
-// Пропущенный звонок водителя → автоматический «Вопрос водителя»
-// (решение руководителя 07.10, «каждый получает ответ»): входящий от
-// водителя, на который N минут не было ни карточки, ни перезвона,
-// становится вопросом с SLA — перезвон превращается из доброй воли в
-// регламент. Порог — настройка телефонии (0 = выключено).
+// Звонок водителя → автоматический «Вопрос водителя» (решение руководителя
+// 07.10, «каждый получает ответ»). Определение пропущенного — по признаку АТС
+// (14.10): статус MISSED из статистики Билайна. Отвеченный звонок без
+// комментария в карточке — «не отработан», ждёт «Итог звонка». Порог —
+// настройка телефонии (0 = выключено).
 function runMissedCallWatch() {
   try {
     const telephony = settingsObject(db).telephony || {};
@@ -1671,10 +1671,11 @@ function runMissedCallWatch() {
     if (!waitMin) return; // ноль — осознанное «выключено»
     const since = new Date(Date.now() - 2 * 3_600_000).toISOString();
     const deadline = new Date(Date.now() - waitMin * 60_000).toISOString();
-    const calls = db.prepare(`SELECT c.* FROM call_events c
-      WHERE c.direction='in' AND c.status='' AND c.matched_kind='driver'
+
+    // 1. Пропущенные (АТС MISSED) → «перезвоните». Перезвон снимает вопрос.
+    const missed = db.prepare(`SELECT c.* FROM call_events c
+      WHERE c.direction='in' AND c.status='MISSED' AND c.matched_kind='driver'
         AND c.from_digits<>'' AND c.started_at>=? AND c.started_at<=?
-        AND c.handled_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM driver_questions q WHERE q.call_id=c.id)
         AND NOT EXISTS (SELECT 1 FROM driver_questions q2 WHERE q2.closed_at IS NULL
           AND q2.topic='missed_call' AND q2.vehicle_id IS c.vehicle_id)
@@ -1682,22 +1683,16 @@ function runMissedCallWatch() {
           AND o.started_at>c.started_at
           AND (o.to_phone LIKE '%'||c.from_digits OR o.from_phone LIKE '%'||c.from_digits))
       ORDER BY c.started_at LIMIT 10`).all(since, deadline);
-    for (const call of calls) {
+    for (const call of missed) {
       // Галочки «фиксировать входящие» из Сверки с АТС: звонок на
-      // отключённый номер вопросом не становится (шумели все номера
-      // справочника — разбор руководителя 12.10).
+      // отключённый номер вопросом не становится.
       if (!callOnTrackedNumber(db, call)) continue;
       const id = randomUUID();
       const plate = call.vehicle_id
         ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(call.vehicle_id)?.plate || '' : '';
-      // Кому звонил — пофамильно (решение руководителя 08.10: видно,
-      // кто проигнорировал и не перезвонил); фолбэк — добавочный.
       const targetName = call.target_user_id
         ? db.prepare('SELECT full_name FROM users WHERE id=?').get(call.target_user_id)?.full_name || ''
         : '';
-      // Пометка «не в смене» — сразу видно причину тишины: водитель
-      // звонил по старому личному номеру, а не на дежурную трубку
-      // (кейс 12.10: Сидоров → добавочные Дойкиной и Араповой).
       const offShift = call.target_user_id && !db.prepare(`SELECT 1 FROM staff_shifts
         WHERE user_id=? AND day=? AND kind IN ('day','night')`)
         .get(call.target_user_id, new Date().toISOString().slice(0, 10));
@@ -1706,13 +1701,36 @@ function runMissedCallWatch() {
       db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,phone,topic,note,call_id)
         VALUES(?,?,?,?,?,?,?)`).run(id, call.vehicle_id, call.matched_name || '',
         phonePretty(call.from_phone), 'missed_call',
-        `Звонок${toLabel ? ` → ${toLabel}` : ''} — без ответа и перезвона ${waitMin}+ минут`, call.id);
+        `Звонок${toLabel ? ` → ${toLabel}` : ''} — пропущен, перезвоните`, call.id);
       notify('dispatcher', `📵 Пропущенный звонок водителя ${call.matched_name}`
         + `${plate ? ` (${plate})` : ''}${toLabel ? ` → ${toLabel}` : ''}`
         + ' — перезвоните. Норматив ответа — 10 минут',
       'question', id);
     }
-    if (calls.length) console.log(`пропущенные → вопросы: создано ${calls.length}`);
+    if (missed.length) console.log(`пропущенные → вопросы: создано ${missed.length}`);
+
+    // 2. Отвеченные (АТС RECIEVED) без комментария → «добавьте комментарий».
+    const unworked = db.prepare(`SELECT c.* FROM call_events c
+      WHERE c.direction='in' AND c.status='RECIEVED' AND c.matched_kind='driver'
+        AND c.from_digits<>'' AND c.started_at>=? AND c.started_at<=?
+        AND NOT EXISTS (SELECT 1 FROM driver_questions q WHERE q.call_id=c.id)
+        AND NOT EXISTS (SELECT 1 FROM driver_questions q2 WHERE q2.closed_at IS NULL
+          AND q2.topic='call_note_needed' AND q2.vehicle_id IS c.vehicle_id)
+      ORDER BY c.started_at LIMIT 10`).all(since, deadline);
+    for (const call of unworked) {
+      if (!callOnTrackedNumber(db, call)) continue;
+      const id = randomUUID();
+      const plate = call.vehicle_id
+        ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(call.vehicle_id)?.plate || '' : '';
+      db.prepare(`INSERT INTO driver_questions(id,vehicle_id,driver_name,phone,topic,note,call_id)
+        VALUES(?,?,?,?,?,?,?)`).run(id, call.vehicle_id, call.matched_name || '',
+        phonePretty(call.from_phone), 'call_note_needed',
+        'Звонок отвечен — добавьте комментарий в карточке (что обсудили)', call.id);
+      notify('dispatcher', `📝 Отвеченный звонок ${call.matched_name}`
+        + `${plate ? ` (${plate})` : ''} — добавьте комментарий`,
+      'question', id);
+    }
+    if (unworked.length) console.log(`отвеченные без комментария → вопросы: создано ${unworked.length}`);
   } catch (error) { console.error('Сторож пропущенных:', error.message); }
 }
 setInterval(runMissedCallWatch, 2 * 60_000);
@@ -9499,6 +9517,13 @@ async function api(request, response, url) {
       body.topic, String(body.note || '').slice(0, 500), user.id, body.callId || null,
       resolution, resolution ? user.id : null,
       resolution ? new Date().toISOString() : null);
+    // Зафиксировали ответ по звонку (итог/вопрос) — «не отработан» закрывается:
+    // звонок стал отработанным, напоминание «добавьте комментарий» больше не нужно.
+    if (body.callId) {
+      db.prepare(`UPDATE driver_questions SET closed_by=?, closed_at=CURRENT_TIMESTAMP
+        WHERE call_id=? AND topic='call_note_needed' AND closed_at IS NULL`)
+        .run(user.id, body.callId);
+    }
     const topic = QUESTION_TOPICS.find(item => item.key === body.topic);
     const plate = body.vehicleId
       ? db.prepare('SELECT plate FROM vehicles WHERE id=?').get(body.vehicleId)?.plate || '' : '';

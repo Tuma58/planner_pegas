@@ -104,7 +104,9 @@ export function mapStatisticsCall(item, { findUser } = {}) {
     external_id: callExternalId(item),
     direction,
     from_phone: '',
-    to_phone: '',
+    // Добавочный АТС: по нему статистика сшивается с Xsi-событием (там to_phone —
+    // тот же добавочный), чтобы перенести статус MISSED/RECIEVED на звонок с номером.
+    to_phone: String(abonent.extension || ''),
     from_digits: '',
     matched_kind: 'unknown',
     matched_id: null,
@@ -132,6 +134,7 @@ export async function syncBeelineJournal(db, { token, baseUrl, fetchImpl, nowMs 
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   let added = 0;
   let skipped = 0;
+  let enriched = 0;
   let latest = null;
   for (const item of rows) {
     if (Number.isFinite(item?.startDate) && item.startDate < horizon) continue;
@@ -143,8 +146,30 @@ export async function syncBeelineJournal(db, { token, baseUrl, fetchImpl, nowMs 
       row.matched_kind, row.matched_id, row.matched_name, row.vehicle_id, row.target_user_id,
       started, row.status, row.duration_ms, row.employee_phone, row.handled_at);
     if (result.changes > 0) added += 1; else skipped += 1;
+    // Перенос статуса АТС (MISSED/RECIEVED) на реальное Xsi-событие того же
+    // звонка: статистика не несёт номера звонящего, а Xsi — статуса. Сшиваем
+    // по добавочному (to_phone) и времени начала звонка.
+    if (row.direction === 'in' && row.to_phone && started) {
+      enriched += enrichXsiStatus(db, row.to_phone, started, row.status, row.duration_ms);
+    }
   }
-  return { added, skipped, latest };
+  return { added, skipped, enriched, latest };
+}
+
+// Проставляет статус АТС на Xsi-событие (у которого есть номер звонящего) —
+// по добавочному и времени начала звонка (окно ±3 мин). Только события без
+// статуса, чтобы не перезаписывать уже определённый.
+export function enrichXsiStatus(db, toPhone, startedAt, status, durationMs) {
+  if (!status) return 0;
+  const from = new Date(Date.parse(startedAt) - 3 * 60_000).toISOString();
+  const to = new Date(Date.parse(startedAt) + 3 * 60_000).toISOString();
+  const xsi = db.prepare(`SELECT id FROM call_events WHERE provider='beeline'
+    AND external_id LIKE 'xsi:%' AND direction='in' AND status='' AND to_phone=?
+    AND started_at>=? AND started_at<=? ORDER BY started_at LIMIT 1`)
+    .get(toPhone, from, to);
+  if (!xsi) return 0;
+  return db.prepare(`UPDATE call_events SET status=?, duration_ms=? WHERE id=?`)
+    .run(status, durationMs, xsi.id).changes;
 }
 
 // ── Xsi-Events: подписка на события звонков в реальном времени ──

@@ -2383,7 +2383,7 @@ test('билайн: журнал из статистики, дедуп и раз
   });
   t.after(() => db.close());
   const {
-    callExternalId, mapStatisticsCall, parseXsiEvent, syncBeelineJournal, findUserByPhone
+    callExternalId, enrichXsiStatus, mapStatisticsCall, parseXsiEvent, syncBeelineJournal, findUserByPhone
   } = await import('../src/beeline-telephony.mjs');
 
   const nowMs = Date.now();
@@ -2407,6 +2407,7 @@ test('билайн: журнал из статистики, дедуп и раз
   assert.equal(mappedIn.target_user_id, admin, 'наш сотрудник найден по мобильному');
   assert.ok(mappedIn.handled_at, 'журнальная запись помечена разобранной — не всплывает');
   assert.equal(mappedIn.duration_ms, 0);
+  assert.equal(mappedIn.to_phone, '391', 'добавочный сохранён для сшивки с Xsi-событием');
 
   // Дедуп: один и тот же звонок — один ключ; разные — разные ключи.
   assert.equal(callExternalId(inbound), callExternalId(inbound));
@@ -2426,6 +2427,18 @@ test('билайн: журнал из статистики, дедуп и раз
   assert.equal(stored.employee_phone, '+79630995009');
   assert.equal(stored.target_user_id, admin);
   assert.ok(stored.handled_at, 'журнал не поднимает карточку «номер не найден»');
+  assert.equal(stored.to_phone, '391', 'статистика хранит добавочный');
+
+  // Сшивка: статистика переносит статус АТС на Xsi-событие того же звонка
+  // (у Xsi есть номер звонящего, но нет статуса MISSED/RECIEVED).
+  db.prepare(`INSERT INTO call_events(id,provider,external_id,direction,from_phone,to_phone,
+      from_digits,matched_kind,matched_name,vehicle_id,target_user_id,started_at)
+    VALUES('xsi-1','beeline','xsi:test-1','in','+79875105921','391','9875105921',
+      'driver','Водитель',NULL,NULL,?)`).run(new Date(nowMs).toISOString());
+  assert.equal(enrichXsiStatus(db, '391', new Date(nowMs).toISOString(), 'MISSED', 0), 1,
+    'статус перенесён на Xsi-событие');
+  const xsi = db.prepare(`SELECT status FROM call_events WHERE id='xsi-1'`).get();
+  assert.equal(xsi.status, 'MISSED', 'Xsi-событие получило статус АТС');
 
   // Разбор Xsi-Events (BroadWorks XML): номер звонящего приходит в событии.
   const xml = `<?xml version="1.0"?>
