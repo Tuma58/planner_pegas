@@ -72,17 +72,21 @@ export function workPhoneRequired(roles) {
 // тот же номер у другого активного сотрудника снимается — трубку передали
 // по смене, и звонок должен всплывать у нового владельца.
 export function applyWorkPhone(db, userId, rawPhone) {
-  const value = String(rawPhone || '').trim().slice(0, 30);
-  const digits = phoneDigits(value);
+  const raw = String(rawPhone || '').trim().slice(0, 30);
+  const digits = phoneDigits(raw);
   if (!digits || digits.length < 2) return { ok: false };
+  // Номер приводится к стандартному виду «+7 (…) …» сразу при входе —
+  // иначе в work_phone копились произвольные написания («8909…», «+7 909 …»),
+  // и сверка с АТС/дежурными трубками могла расходиться.
+  const phone = phonePretty(raw) || raw;
   const norm = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(work_phone,'+',''),'-',''),' ',''),'(',''),')','')`;
   const released = digits.length < 7
     ? db.prepare(`UPDATE users SET work_phone='' WHERE id<>? AND work_phone<>'' AND ${norm}=?`)
       .run(userId, digits)
     : db.prepare(`UPDATE users SET work_phone='' WHERE id<>? AND work_phone<>'' AND ${norm} LIKE ?`)
       .run(userId, `%${digits}`);
-  db.prepare(`UPDATE users SET work_phone=? WHERE id=?`).run(value, userId);
-  return { ok: true, phone: value, released: Number(released.changes || 0) };
+  db.prepare(`UPDATE users SET work_phone=? WHERE id=?`).run(phone, userId);
+  return { ok: true, phone, released: Number(released.changes || 0) };
 }
 
 // Темы вопросов — фиксированный список: по нему считается статистика и

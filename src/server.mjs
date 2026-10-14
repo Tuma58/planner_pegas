@@ -9042,15 +9042,19 @@ async function api(request, response, url) {
     const onShiftDispatcher = onDuty || (!!db.prepare(`SELECT 1 FROM staff_shifts
         WHERE user_id=? AND day=? AND kind IN ('day','night')`).get(user.id, day)
       && (`${user.role} ${user.roles || ''}`.includes('dispatcher') || user.role === 'admin'));
+    // Несопоставленный номер (target пуст) всплывает ТОЛЬКО дежурным
+    // диспетчерам (держателям дежурных трубок), а не всей смене.
+    const unmatchedBranch = onDuty ? `OR (c.direction='in' AND c.target_user_id IS NULL)` : '';
+    // Найденный адресат без живой сессии — сменным диспетчерам (12.10).
     const shiftBranch = onShiftDispatcher ? `OR (c.direction='in' AND c.matched_kind='driver'
-      AND (c.target_user_id IS NULL OR NOT EXISTS (SELECT 1 FROM sessions s
-        WHERE s.user_id=c.target_user_id AND datetime(s.expires_at)>CURRENT_TIMESTAMP)))` : '';
+      AND c.target_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sessions s
+        WHERE s.user_id=c.target_user_id AND datetime(s.expires_at)>CURRENT_TIMESTAMP))` : '';
     const items = db.prepare(`SELECT c.*, v.plate vehicle_plate,
         (SELECT full_name FROM users WHERE id=c.target_user_id) target_name
       FROM call_events c
       LEFT JOIN vehicles v ON v.id=c.vehicle_id
       WHERE c.direction IN ('in','out') AND c.status='' AND c.handled_at IS NULL
-        AND c.started_at>=? AND (c.target_user_id=? ${shiftBranch})
+        AND c.started_at>=? AND (c.target_user_id=? ${shiftBranch} ${unmatchedBranch})
       ORDER BY c.started_at DESC LIMIT 5`).all(since, user.id);
     return json(response, 200, { items: items.map(item =>
       ({ ...item, for_shift: item.target_user_id === user.id ? 0 : 1 })) });

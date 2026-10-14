@@ -4150,6 +4150,11 @@ test('телефония: рабочий телефон смены — пере�
   assert.equal(db.prepare(`SELECT work_phone FROM users WHERE id='u-disp1'`).get().work_phone, '');
   // Мусор не принимается.
   assert.equal(applyWorkPhone(db, 'u-disp1', 'нет').ok, false);
+  // Нормализация вводимого номера: хранится стандартный вид «+7 (…) …».
+  const normed = applyWorkPhone(db, 'u-disp1', '8 (900) 555-66-77');
+  assert.equal(normed.phone, '+7 (900) 555-66-77', 'номер приведён к стандартному виду');
+  assert.equal(db.prepare(`SELECT work_phone FROM users WHERE id='u-disp1'`).get().work_phone,
+    '+7 (900) 555-66-77', 'work_phone сохранён нормализованным');
 
   // Сервисный статус водителя для карточки звонка (07.10): отпуск и
   // следующий выход считаются из живых моделей — отсутствие + вахта.
