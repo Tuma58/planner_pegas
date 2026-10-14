@@ -1632,6 +1632,7 @@ function runBeelineWatch() {
   syncBeelineJournal(db, { token })
     .then(result => {
       if (result.added) console.log(`билайн: +${result.added} звонков в журнал (дублей ${result.skipped})`);
+      if (result.enriched) console.log(`билайн: статус АТС перенесён на ${result.enriched} Xsi-событий`);
     })
     .catch(error => console.error('Журнал Билайн:', error.message));
   if (telephony.publicBase) {
