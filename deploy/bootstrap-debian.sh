@@ -164,7 +164,7 @@ systemctl enable --now docker
 
 runtime_log="$(mktemp /tmp/pegas-docker-runtime.XXXXXX)"
 runtime_container="pegas-runtime-check-$$"
-if ! docker run --name "$runtime_container" --rm hello-world >"$runtime_log" 2>&1; then
+if ! docker run --pull=always --name "$runtime_container" --rm hello-world >"$runtime_log" 2>&1; then
   docker rm -f "$runtime_container" >/dev/null 2>&1 || true
   cat "$runtime_log" >&2
   virtualization="$(systemd-detect-virt 2>/dev/null || true)"
@@ -181,16 +181,36 @@ Docker установлен, но внешний AppArmor-профиль зап�
   2. Включите для CT функции nesting=1,keyctl=1.
   3. Полностью остановите и снова запустите CT.
 
-Пример (замените 110 на фактический CTID):
+Пример (подставьте CTID из pct list):
   apt-get update && apt-get install --only-upgrade -y lxc-pve
-  pct set 110 -features nesting=1,keyctl=1
-  pct shutdown 110
-  pct start 110
+  pct set CTID -features nesting=1,keyctl=1
+  pct shutdown CTID
+  pct start CTID
 
 Если apt сообщает 401 для enterprise.proxmox.com, сначала отключите
 Enterprise/Ceph Enterprise без подписки и старые репозитории другого Debian release.
 Не отключайте AppArmor и не откатывайте runc: это снижает безопасность хоста.
 После исправления запустите ту же команду деплоя повторно.
+EOF
+  elif grep -Eq 'failed to fetch anonymous token|lookup .*:53|no such host|Temporary failure|i/o timeout' "$runtime_log"; then
+    dns_servers="$(awk '/^nameserver[[:space:]]+/{printf "%s%s", separator, $2; separator=", "}' /etc/resolv.conf)"
+    cat >&2 <<EOF
+
+ОШИБКА DNS/СЕТИ DOCKER REGISTRY.
+Docker runtime исправен, но VPS не может разрешить имя или подключиться к Docker Hub.
+Настроенные DNS-серверы: ${dns_servers:-не найдены}
+
+Проверьте внутри VPS:
+  getent hosts auth.docker.io
+  curl -I https://auth.docker.io
+
+Для Proxmox LXC DNS задаётся на хосте или в GUI CT → DNS. Пример на хосте
+(подставьте CTID из pct list и доступный DNS вашей сети):
+  pct set CTID -nameserver DNS_IP
+  pct reboot CTID
+
+Скрипт не меняет DNS автоматически, чтобы не нарушить доступ к внутренним именам.
+После восстановления DNS запустите ту же команду деплоя повторно.
 EOF
   else
     cat >&2 <<EOF

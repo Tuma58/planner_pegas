@@ -184,6 +184,19 @@ ssh root@192.168.10.50 "apt-get update && apt-get install -y ca-certificates cur
 ```
 
 LAN-режим из приватного репозитория — с рабочей станции, через read-only deploy key:
+Замените IP и подсеть на свои. `LAN_CIDR` задаёт первоначальную разрешённую веб-подсеть и ограничение SSH в UFW. После первого входа веб-подсети управляются в разделе «Настройки → Сеть и доступ» без повторного деплоя. Текущий адрес администратора нельзя удалить из списка — это защищает от случайной блокировки. При необходимости перед `bash` можно передать `SSH_PORT`, `LAN_TLS`, `REPO_URL` или `REPO_BRANCH`. SSH-ключ для входа на VPS должен быть заранее настроен, а ключ хоста проверен в локальном `known_hosts`.
+
+Bootstrap явно устанавливает необходимые пакеты: Docker Engine и Compose plugin, Git, OpenSSH server/client, Nginx, UFW, Fail2ban, `util-linux` (`flock`), SQLite CLI, OpenSSL, curl, CA-сертификаты и unattended security updates.
+
+Перед клонированием и сборкой проекта bootstrap запускает отдельный Docker runtime preflight с принудительной проверкой Docker Hub, даже если тестовый образ уже есть в кеше. Если Docker установлен внутри несовместимого Proxmox LXC и AppArmor блокирует `net.ipv4.ip_unprivileged_port_start`, установка останавливается с инструкциями для хоста Proxmox. Поддерживаемое исправление — обновить `lxc-pve` до `6.0.5-2` или новее, включить `nesting=1,keyctl=1` и перезапустить CT. Скрипт намеренно не отключает AppArmor и не откатывает `runc`.
+
+После исправления хоста ту же команду деплоя можно запускать повторно: установка идемпотентна. Если на Proxmox без подписки `apt update` возвращает `401 Unauthorized`, отключите Ceph Enterprise и репозитории старого Debian release через `Node → Updates → Repositories`, оставив соответствующий текущему выпуску `pve-no-subscription`.
+
+Готовность приложения проверяется через встроенный Docker healthcheck, а не HTTP-запросом с хоста. Это важно при включённом списке разрешённых подсетей: служебный адрес Docker bridge не должен добавляться в пользовательский allowlist только ради deploy-проверки.
+
+Если Docker Hub недоступен из-за DNS (`failed to fetch anonymous token`, `lookup auth.docker.io ... timeout`), preflight выводит текущие резолверы и останавливает установку до сборки. DNS не заменяется автоматически: для Proxmox LXC задайте доступный сервер в `CT → DNS` или через `pct set CTID -nameserver DNS_IP`, сохранив корпоративный DNS, если он нужен для внутренних имён.
+
+При обновлении старой установки, где первоначальная подсеть ещё не записана в `.env`, доступ временно сохраняется для всех адресов. Сразу после обновления задайте фактические CIDR в «Настройки → Сеть и доступ». Новая установка получает первоначальный список из `LAN_CIDR` автоматически.
 
 ```bash
 LAN_ONLY=true VPS_HOST=192.168.10.50 LAN_HOST=192.168.10.50 LAN_CIDR=192.168.10.0/24 REPO_URL=git@github.com:ORG/PRIVATE_REPOSITORY.git REPO_BRANCH=main DEPLOY_KEY="$HOME/.ssh/pegas-vps/deploy_key" KNOWN_HOSTS_FILE="$HOME/.ssh/pegas-vps/git_known_hosts" bash ./deploy/deploy-to-vps.sh

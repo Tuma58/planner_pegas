@@ -186,6 +186,8 @@ ssh root@192.168.10.50 'systemctl status nginx fail2ban pegas-planner-backup.tim
 
 Если VPS является Proxmox LXC, bootstrap проверяет фактический запуск Docker до сборки приложения. Ошибка `net.ipv4.ip_unprivileged_port_start ... permission denied` означает несовместимый AppArmor-профиль внешнего LXC. Исправление выполняется на хосте Proxmox: обновите `lxc-pve` до версии `6.0.5-2` или новее, включите для CT `nesting=1,keyctl=1`, затем полностью остановите и запустите CT. Отключение AppArmor или откат `runc` не используются.
 
+Preflight принудительно обращается к Docker Hub, поэтому закешированный тестовый образ не скрывает проблемы DNS. При `lookup auth.docker.io ... timeout` проверьте `getent hosts auth.docker.io` внутри VPS и задайте доступный DNS в настройках Proxmox CT. Скрипт не подменяет DNS автоматически, поскольку в корпоративной сети он может быть нужен для внутренних доменов.
+
 ## 7. Обновление из приватного репозитория
 
 Сначала опубликуйте новую версию с рабочей станции:
