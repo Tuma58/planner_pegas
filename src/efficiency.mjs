@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { DONE_STATUSES, calcSettings, tripNet } from './money.mjs';
 import { effectiveArrival, effectiveFinish } from './crew-fund.mjs';
+import { deadTailCards } from './dispatch-load.mjs';
 
 export function effPeriodData(db, from, to, parkFn) {
   const calc = calcSettings(db);
@@ -151,7 +152,11 @@ export function effBoardData(db, from, to) {
     realtimeSharePct: facts.length ? Math.round(realtime / facts.length * 100) : null,
     ctrlMarksPerDay: marks.days ? Math.round(marks.n / marks.days) : 0,
     ctrlPeople: marks.people,
-    shiftCapacity: capacity ? { fallback: capacity.fallback, caps: capacity.caps } : null
+    shiftCapacity: capacity ? { fallback: capacity.fallback, caps: capacity.caps } : null,
+    // «Мёртвый хвост» — снимок на момент сборки выпуска (решение
+    // руководителя 16.10): карточки без движения дольше порога выходят
+    // из эскалаций и зачищаются по этому списку.
+    deadTail: deadTailCards(db)
   };
 }
 

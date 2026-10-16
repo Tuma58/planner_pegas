@@ -328,8 +328,39 @@ export function escalationSettings(db) {
     headMin: raw.escalateHeadMin === 0 ? 0 : Number(raw.escalateHeadMin ?? 60),
     // Предохранитель (урок первого прогона 12.10: 56 карточек залпом):
     // за проход поднимаются только самые горящие, остальные — очередью.
-    maxPerTick: raw.escalateMaxPerTick === 0 ? 0 : Number(raw.escalateMaxPerTick ?? 5)
+    maxPerTick: raw.escalateMaxPerTick === 0 ? 0 : Number(raw.escalateMaxPerTick ?? 5),
+    // Потолок на человеке (решение руководителя 16.10: за двое суток
+    // очередь по 5 перелила на руководителя службы весь хвост — 56):
+    // больше N эскалаций никто не держит, сверх — очередь ждёт.
+    // 0 — без потолка.
+    capPerPerson: raw.escalateCapPerPerson === 0 ? 0 : Number(raw.escalateCapPerPerson ?? 10),
+    // «Мёртвый хвост»: карточка без движения дольше N суток выходит из
+    // круговорота эскалаций — её место в списке зачистки пятничного
+    // выпуска, а не на чьём-то столе. 0 — выключено.
+    deadTailDays: raw.escalateDeadDays === 0 ? 0 : Number(raw.escalateDeadDays ?? 7)
   };
+}
+
+// «Мёртвый хвост» доски: активные карточки без движения дольше порога —
+// для списка зачистки в выпуске «Эффективности» (большинство лечится
+// постановкой забытых фактов, как в «✍ Отметки против физики»).
+export function deadTailCards(db, nowIso = new Date().toISOString()) {
+  const cfg = escalationSettings(db);
+  if (!cfg.deadTailDays) return { days: 0, cards: [] };
+  const nowMs = Date.parse(nowIso);
+  const owners = new Map(db.prepare(`SELECT trip_id, name FROM dispatch_assignments`).all()
+    .map(r => [r.trip_id, r.name]));
+  const cards = [];
+  for (const card of boardCards(db)) {
+    const lastMs = lastActivityMs(db, card);
+    if (!Number.isFinite(lastMs)) continue;
+    const idleDays = (nowMs - lastMs) / 864e5;
+    if (idleDays <= cfg.deadTailDays) continue;
+    cards.push({ tripId: card.tripId, plate: card.plate, col: card.col,
+      kind: card.kind, idleDays: Math.floor(idleDays), owner: owners.get(card.tripId) || '' });
+  }
+  cards.sort((a, b) => b.idleDays - a.idleDays);
+  return { days: cfg.deadTailDays, cards };
 }
 
 // Нормативы шага по колонкам: подготовка учится из факта раз в сутки
@@ -409,8 +440,15 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
       seniorLoad.set(r.name, seniorLoad.get(r.name) + 1);
     }
   }
-  const pickSenior = () => seniors.reduce((a, b) =>
-    (a == null || seniorLoad.get(b) < seniorLoad.get(a)) ? b : a, null);
+  // Потолок эскалаций на человеке: старший с полным столом не получает
+  // новых, руководитель службы — тоже; очередь ждёт отработки текущих.
+  let headLoad = [...current.values()].filter(r => r.source === 'esc_head').length;
+  const underCap = n => !cfg.capPerPerson || n < cfg.capPerPerson;
+  const headFree = () => head && underCap(headLoad);
+  const pickSenior = () => seniors
+    .filter(n => underCap(seniorLoad.get(n)))
+    .reduce((a, b) => (a == null || seniorLoad.get(b) < seniorLoad.get(a)) ? b : a, null);
+  const deadMs = cfg.deadTailDays * 864e5;
   const put = db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source)
     VALUES(?,?,?) ON CONFLICT(trip_id) DO UPDATE SET
     name=excluded.name, source=excluded.source, assigned_at=CURRENT_TIMESTAMP`);
@@ -425,20 +463,28 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
     const idleH = (nowMs - lastMs) / 3.6e6;
     const overdue = idleH > normH * cfg.factor;
     const own = current.get(card.tripId);
+    // «Мёртвый хвост» (решение руководителя 16.10): без движения дольше
+    // N суток — карточка выходит из круговорота эскалаций (висящая на
+    // ком-то освобождается) и живёт в списке зачистки выпуска.
+    const dead = cfg.deadTailDays && nowMs - lastMs > deadMs;
     if (own && own.source.startsWith('esc_')) {
-      if (!overdue) {
-        // Движение пошло — карточка возвращается в общий пул смены.
+      if (!overdue || dead) {
+        // Движение пошло либо хвост признан мёртвым — стол освобождается.
         put.run(card.tripId, own.name, 'auto');
-        released.push({ tripId: card.tripId, plate: card.plate });
-      } else if (own.source === 'esc_senior' && head && cfg.headMin
+        released.push({ tripId: card.tripId, plate: card.plate, dead: !!dead });
+        if (own.source === 'esc_head') headLoad -= 1;
+        else if (seniorLoad.has(own.name)) seniorLoad.set(own.name, seniorLoad.get(own.name) - 1);
+      } else if (own.source === 'esc_senior' && cfg.headMin && headFree()
         && nowMs - parseTsMs(own.assigned_at) > cfg.headMin * 60_000) {
         put.run(card.tripId, head, 'esc_head');
+        headLoad += 1;
+        if (seniorLoad.has(own.name)) seniorLoad.set(own.name, seniorLoad.get(own.name) - 1);
         escalated.push({ level: 2, tripId: card.tripId, plate: card.plate,
           col: card.col, name: head, idleH, normH, from: own.name });
       }
       continue;
     }
-    if (!overdue) continue;
+    if (!overdue || dead) continue;
     candidates.push({ card, own, idleH, normH, severity: idleH / normH });
   }
   // Предохранитель: только самые горящие за проход (остальные — очередью
@@ -446,15 +492,16 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
   candidates.sort((a, b) => b.severity - a.severity);
   for (const item of candidates.slice(0, cfg.maxPerTick)) {
     const { card, own, idleH, normH } = item;
-    // Нет старших в смене — карточка уходит сразу руководителю службы.
+    // Нет свободных старших в смене — руководителю службы (если и у неё
+    // стол не полон); все на потолке — карточка ждёт в очереди.
     const seniorPick = pickSenior();
     const target = seniorPick ? { name: seniorPick, source: 'esc_senior' }
-      : head ? { name: head, source: 'esc_head' } : null;
+      : headFree() ? { name: head, source: 'esc_head' } : null;
     if (!target || (own && own.name === target.name)) continue;
     put.run(card.tripId, target.name, target.source);
     if (target.source === 'esc_senior') {
       seniorLoad.set(target.name, seniorLoad.get(target.name) + 1);
-    }
+    } else headLoad += 1;
     escalated.push({ level: target.source === 'esc_senior' ? 1 : 2,
       tripId: card.tripId, plate: card.plate, col: card.col,
       name: target.name, idleH, normH, from: own?.name || '' });

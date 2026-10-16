@@ -839,6 +839,16 @@ async function renderTelephony() {
           value="${state.admin.settings?.dispatch?.escalateMaxPerTick ?? 5}">
         <small class="muted">Поднимаются самые горящие, остальные ждут очереди —
           чтобы накопленный хвост не упал на старшего залпом.</small></label>
+      <label class="field">Потолок эскалаций на человеке
+        <input name="escalateCapPerPerson" type="number" min="0" step="1"
+          value="${state.admin.settings?.dispatch?.escalateCapPerPerson ?? 10}">
+        <small class="muted">Больше этого числа ни старший, ни руководитель службы
+          не держат — очередь ждёт отработки. 0 — без потолка.</small></label>
+      <label class="field">«Мёртвый хвост»: суток без движения
+        <input name="escalateDeadDays" type="number" min="0" step="1"
+          value="${state.admin.settings?.dispatch?.escalateDeadDays ?? 7}">
+        <small class="muted">Старше порога — карточка выходит из эскалаций и попадает
+          списком зачистки в пятничный выпуск. 0 — выключено.</small></label>
       <button class="button">Сохранить</button>
     </form>
     <h2 style="margin-top:18px">Точки сервиса</h2>
@@ -945,7 +955,9 @@ async function renderTelephony() {
         dispatch: {
           escalateFactor: Math.max(0, Number(form.elements.escalateFactor.value) || 0),
           escalateHeadMin: Math.max(0, Number(form.elements.escalateHeadMin.value) || 0),
-          escalateMaxPerTick: Math.max(0, Number(form.elements.escalateMaxPerTick.value) || 0)
+          escalateMaxPerTick: Math.max(0, Number(form.elements.escalateMaxPerTick.value) || 0),
+          escalateCapPerPerson: Math.max(0, Number(form.elements.escalateCapPerPerson.value) || 0),
+          escalateDeadDays: Math.max(0, Number(form.elements.escalateDeadDays.value) || 0)
         }
       }) });
       toast('Настройки эскалации сохранены');

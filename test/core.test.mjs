@@ -4608,6 +4608,33 @@ test('эскалация (3в): просроченная карточка → с
   assert.equal(fresh.length, 1, 'за проход поднята одна карточка (лимит)');
   assert.equal(fresh[0].tripId, 'esc-3', 'поднята самая горящая');
   assert.ok(limited.queued >= 1, 'остальные ждут очереди');
+  // Потолок на человеке (16.10): стол полон — очередь ждёт.
+  // esc-1 и esc-3 уже висят на руководителе службы (2 шт) — при потолке 1
+  // новая просроченная esc-4 не поднимается никому.
+  db.prepare(`INSERT INTO settings(key,value_json)
+    VALUES('dispatch','{"escalateCapPerPerson":1}')
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run();
+  const capped = escalateOverdueCards(db);
+  assert.ok(!capped.escalated.some(e => e.tripId === 'esc-4'),
+    'при полном столе руководителя службы очередь ждёт');
+  // «Мёртвый хвост» (16.10): без движения дольше порога — карточка
+  // выходит из круговорота: висящая освобождается, новая не поднимается.
+  db.prepare(`INSERT INTO settings(key,value_json)
+    VALUES('dispatch','{"escalateDeadDays":7}')
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run();
+  db.prepare(`UPDATE trips SET on_line_at=datetime('now','-200 hours') WHERE id='esc-3'`).run();
+  db.prepare(`UPDATE trips SET on_line_at=datetime('now','-250 hours') WHERE id='esc-4'`).run();
+  const sweep = escalateOverdueCards(db);
+  assert.ok(sweep.released.some(r => r.tripId === 'esc-3' && r.dead),
+    'мёртвая карточка снята со стола');
+  assert.equal(db.prepare(`SELECT source FROM dispatch_assignments WHERE trip_id='esc-3'`).get().source,
+    'auto');
+  assert.ok(!sweep.escalated.some(e => e.tripId === 'esc-4'), 'мёртвая не эскалируется');
+  const { deadTailCards } = await import('../src/dispatch-load.mjs');
+  const tail = deadTailCards(db);
+  assert.equal(tail.days, 7);
+  assert.ok(tail.cards.some(c => c.tripId === 'esc-3') && tail.cards.some(c => c.tripId === 'esc-4'),
+    'мёртвые карточки в списке зачистки выпуска');
   // Ноль множителя — осознанное «выключено».
   db.prepare(`INSERT INTO settings(key,value_json) VALUES('dispatch','{"escalateFactor":0}')
     ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run();
