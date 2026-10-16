@@ -455,6 +455,7 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
   const escalated = [];
   const released = [];
   const candidates = [];
+  const heldEsc = []; // кто что держит — для приведения к потолку
   for (const card of boardCards(db)) {
     const normH = norms[card.col];
     if (!Number.isFinite(normH) || normH <= 0) continue;
@@ -481,6 +482,11 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
         if (seniorLoad.has(own.name)) seniorLoad.set(own.name, seniorLoad.get(own.name) - 1);
         escalated.push({ level: 2, tripId: card.tripId, plate: card.plate,
           col: card.col, name: head, idleH, normH, from: own.name });
+        heldEsc.push({ tripId: card.tripId, plate: card.plate, name: head,
+          severity: idleH / normH });
+      } else {
+        heldEsc.push({ tripId: card.tripId, plate: card.plate, name: own.name,
+          severity: idleH / normH });
       }
       continue;
     }
@@ -505,6 +511,24 @@ export function escalateOverdueCards(db, nowIso = new Date().toISOString()) {
     escalated.push({ level: target.source === 'esc_senior' ? 1 : 2,
       tripId: card.tripId, plate: card.plate, col: card.col,
       name: target.name, idleH, normH, from: own?.name || '' });
+  }
+  // Приведение к потолку (урок 16.10: потолок не чистил СТАРЫЙ перебор —
+  // у руководителя службы так и висело 50): лишнее сверх потолка уходит
+  // со стола обратно в общий пул, остаются самые горящие.
+  if (cfg.capPerPerson) {
+    const byHolder = new Map();
+    for (const h of heldEsc) {
+      if (!byHolder.has(h.name)) byHolder.set(h.name, []);
+      byHolder.get(h.name).push(h);
+    }
+    for (const list of byHolder.values()) {
+      if (list.length <= cfg.capPerPerson) continue;
+      list.sort((a, b) => a.severity - b.severity);
+      for (const extra of list.slice(0, list.length - cfg.capPerPerson)) {
+        put.run(extra.tripId, extra.name, 'auto');
+        released.push({ tripId: extra.tripId, plate: extra.plate, overCap: true });
+      }
+    }
   }
   return { escalated, released, seniors, head, queued: Math.max(0, candidates.length - cfg.maxPerTick) };
 }

@@ -4617,6 +4617,10 @@ test('эскалация (3в): просроченная карточка → с
   const capped = escalateOverdueCards(db);
   assert.ok(!capped.escalated.some(e => e.tripId === 'esc-4'),
     'при полном столе руководителя службы очередь ждёт');
+  // Приведение к потолку: старый перебор снимается — остаётся самое горящее.
+  assert.ok(capped.released.some(r => r.overCap), 'излишек сверх потолка снят со стола');
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM dispatch_assignments
+    WHERE source='esc_head'`).get().n, 1, 'у руководителя службы ровно потолок');
   // «Мёртвый хвост» (16.10): без движения дольше порога — карточка
   // выходит из круговорота: висящая освобождается, новая не поднимается.
   db.prepare(`INSERT INTO settings(key,value_json)
