@@ -194,3 +194,21 @@
 /* Нативная вкладка планера: рабочая область под шапкой планера. */
 .schedview[data-native] .wrap{max-height:calc(100vh - 290px)}
 .schedview[data-native]{border:1px solid var(--line);border-radius:6px;overflow:hidden}
+
+/* Офлайн-баннер (16.10): сбой подключения графика — громко, не серой строкой. */
+.schedview .sched-offline { background:#c62828; color:#fff; font-weight:700;
+  padding:8px 12px; border-radius:8px; margin:6px 0; font-size:13px; }
+
+/* ── Нативный режим в планере (ревизия 16.10, «пропали фамилии») ──
+   Глобальное правило планера input{width:100%;min-height:38px;padding:8px}
+   раздувало чекбоксы и инлайн-контролы сетки: чекбокс занимал всю ячейку
+   и вытеснял ФИО, селекты режима ломали строки. Возвращаем графику его
+   компактные контролы (специфичность .schedview перебивает глобальную). */
+.schedview input, .schedview select, .schedview textarea {
+  width: auto; min-height: 0; padding: 2px 6px;
+}
+.schedview input[type="checkbox"] {
+  width: 14px; height: 14px; min-height: 0; padding: 0; margin: 0 4px 0 0;
+  vertical-align: middle;
+}
+.schedview td select { padding: 1px 4px; font-size: 12px; }

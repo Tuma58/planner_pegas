@@ -99,7 +99,21 @@ function logAdd(what, drvIds){
 /* сервер подключается вручную кнопкой «Общий доступ…»; по умолчанию всё локально */
 const SYNC={ url: '/api/schedule', rev:0, busy:false, timer:null, joined:false };
 function net(txt, cls){ document.getElementById('netTxt').textContent=txt;
-  document.getElementById('netDot').className='dot '+(cls||''); }
+  document.getElementById('netDot').className='dot '+(cls||'');
+  /* Офлайн — громко (ревизия 16.10: в окно недоступности сервера график
+     молча рисовал устаревшую копию из браузера — «пропали фамилии»).
+     Красная полоса висит, пока первое подключение не удалось; снимается
+     сама — автоповтор каждые 15 с. */
+  let bar=document.getElementById('schedOffline');
+  if(cls==='off' && !SYNC.joined){
+    if(!bar){ bar=document.createElement('div'); bar.id='schedOffline';
+      bar.className='sched-offline';
+      const host=document.querySelector('.schedview')||document.body;
+      host.insertBefore(bar, host.firstChild); }
+    bar.textContent='⚠ ПОКАЗАНА ОФЛАЙН-КОПИЯ ИЗ ЭТОГО БРАУЗЕРА — сервер графика недоступен ('
+      +txt.replace(/^.*\(|\).*$/g,'')+'). Вид может быть устаревшим: не редактируйте, подключение повторяется каждые 15 секунд.';
+  } else if(bar && (cls==='on'||SYNC.joined)){ bar.remove(); }
+}
 function bodies(){
   const map={}; const t=id=>{ if(!map[id]) map[id]={id, ts:[], drv:[]}; return map[id]; };
   S.ts.forEach(x=>t(x.crew).ts.push(x)); S.drv.forEach(x=>t(x.crew).drv.push(x));
