@@ -4495,6 +4495,16 @@ test('авторазвод (3б): баланс по ёмкостям, липко
   const kept = db.prepare(`SELECT name, source FROM dispatch_assignments WHERE trip_id='ab-0'`).get();
   assert.equal(kept.name, 'Малый Диспетчер');
   assert.equal(kept.source, 'manual');
+  // «Беру» живёт, пока владелец на месте (19.10): ручная карточка
+  // не-сменного возвращается в пул, сменного (даже не-диспетчера) — нет.
+  db.prepare(`INSERT INTO users(id, username, full_name, password_hash, role)
+    VALUES('u-gone','gone','Ушедший Диспетчер','x','dispatcher')`).run();
+  db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source) VALUES('ab-2','Ушедший Диспетчер','manual')
+    ON CONFLICT(trip_id) DO UPDATE SET name=excluded.name, source='manual'`).run();
+  assignBoardCards(db);
+  const gone = db.prepare(`SELECT name, source FROM dispatch_assignments WHERE trip_id='ab-2'`).get();
+  assert.notEqual(gone.name, 'Ушедший Диспетчер', 'manual не-сменного перераздан');
+  assert.equal(gone.source, 'auto');
   // Закрытый рейс уходит из назначений.
   db.prepare(`UPDATE trips SET status='unloaded', unloaded_at=datetime('now') WHERE id='ab-1'`).run();
   assignBoardCards(db);

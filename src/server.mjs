@@ -4878,6 +4878,11 @@ function runDispatchAssignWatch() {
     }
     if (esc.released.length) {
       console.log(`эскалация снята (движение пошло): ${esc.released.length} карточек`);
+      // Возвращённые со столов карточки не должны ни минуты числиться
+      // на старшем/руководителе службы как auto (замечание 19.10) —
+      // сразу перераздаём сменным.
+      const again = assignBoardCards(db);
+      if (again.assigned) console.log(`возвращённые перераздано: ${again.assigned}`);
     }
   } catch (error) { console.error('авторазвод:', error.message); }
 }

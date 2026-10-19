@@ -211,17 +211,27 @@ export function assignBoardCards(db, nowIso = new Date().toISOString()) {
   const current = new Map(db.prepare(`SELECT trip_id, name, source FROM dispatch_assignments`)
     .all().map(r => [r.trip_id, r]));
   const names = new Set(workers.map(w => w.name));
+  // «Беру» неприкосновенен, ПОКА владелец на месте (замечание руководителя
+  // 19.10: задания не должны висеть на тех, кого нет): на месте — сменный
+  // по графику (любая роль, включая старших вне раздачи) либо активный
+  // диспетчер переходного фолбэка. Ушёл со смены — карточка в общий пул.
+  const day = nowIso.slice(0, 10);
+  const present = new Set(db.prepare(`SELECT u.full_name FROM staff_shifts s
+      JOIN users u ON u.id=s.user_id
+      WHERE s.day=? AND s.kind IN ('day','night') AND u.active=1`).all(day)
+    .map(r => r.full_name));
+  for (const w of workers) present.add(w.name);
   const loadOf = new Map(workers.map(w => [w.name, 0]));
   for (const card of cards) {
     const own = current.get(card.tripId);
-    if (own && (own.source === 'manual' || names.has(own.name))) {
+    if (own && names.has(own.name)) {
       loadOf.set(own.name, (loadOf.get(own.name) || 0) + 1);
     }
   }
-  // Эскалированные (3в) неприкосновенны, как manual: вернуть карточку
-  // в общий пул может только сама эскалация, когда движение пошло.
-  const sticky = own => own && (own.source === 'manual'
-    || own.source.startsWith('esc_') || names.has(own.name));
+  // Эскалированные (3в) неприкосновенны; manual — пока владелец на месте.
+  const sticky = own => own && (own.source.startsWith('esc_')
+    || (own.source === 'manual' && present.has(own.name))
+    || names.has(own.name));
   const put = db.prepare(`INSERT INTO dispatch_assignments(trip_id, name, source)
     VALUES(?,?, 'auto') ON CONFLICT(trip_id) DO UPDATE SET
     name=excluded.name, source='auto', assigned_at=CURRENT_TIMESTAMP`);
