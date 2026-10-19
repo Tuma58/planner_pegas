@@ -162,9 +162,17 @@ export async function renderBoss(container, context) {
     return;
   }
   const monthIso = state.month.toISOString().slice(0, 10);
-  const nextMonth = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth() + 1, 1));
+  // Дата «по» включительная: дефолт — ПОСЛЕДНИЙ день месяца, а не 1-е
+  // следующего (старый дефолт давал октябрю «32 дн», «оставшиеся 14» и
+  // «нужно/сут» ниже дашборда — замечание руководителя 19.10). Сохранённый
+  // период-пережиток «1-е…1-е следующего» тоже приводим к месяцу.
+  const monthEnd = new Date(Date.UTC(state.month.getUTCFullYear(),
+    state.month.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+  const nextFirst = new Date(Date.UTC(state.month.getUTCFullYear(),
+    state.month.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+  if (state.bossFrom === monthIso && state.bossTo === nextFirst) state.bossTo = monthEnd;
   const from = state.bossFrom || monthIso;
-  const to = state.bossTo || nextMonth.toISOString().slice(0, 10);
+  const to = state.bossTo || monthEnd;
   let report;
   try {
     report = await api(`/api/reports?from=${from}&to=${to}`);
