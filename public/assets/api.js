@@ -305,9 +305,13 @@ export function wireRangePicker(root, idFrom, idTo, onChange) {
       fire();
     }));
   root.querySelector(`[data-pp-month][data-pp-for="${idFrom}"]`)?.addEventListener('click', () => {
+    // Дата «по» всюду ВКЛЮЧИТЕЛЬНАЯ (ревизия 12.10), поэтому месяц — это
+    // 1-е…последнее число, а не «по 1-е следующего»: пресет со старой
+    // границей давал октябрю 32 дня и подписи «32 дн · учтено 19»
+    // (замечание руководителя 19.10: в октябре 31 полные сутки).
     const now = new Date();
     inputFrom.value = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
-    inputTo.value = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+    inputTo.value = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
     fire();
   });
   inputFrom.addEventListener('change', fire);

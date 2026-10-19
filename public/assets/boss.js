@@ -267,11 +267,13 @@ export async function renderBoss(container, context) {
         <div><div class="k">План без НДС</div><div class="v">${revenuePlan ? mln(revenuePlan) : '—'}</div>
           <div class="p">${revenuePlan ? `${rub(revenuePlan / dayCount)}/сут` : 'задайте в консоли'}</div></div>
         <div><div class="k">Забито без НДС</div><div class="v">${mln(report.netRevenue)}</div>
-          <div class="p">выгружено ${mln(report.netRevenueDone || 0)} · ${rub(report.netRevenue / Math.max(1, u.periodDays || u.days))}/сут</div></div>
+          <div class="p">выгружено ${mln(report.netRevenueDone || 0)} · факт ${rub(report.netRevenue / Math.max(1, u.days))}/сут в среднем</div></div>
         <div><div class="k">Выполнение</div><div class="v ${done >= 1 ? 'good' : done >= 0.9 ? 'warn' : 'bad'}">${revenuePlan ? pct(done) : '—'}</div>
           <div class="p">${revenuePlan ? `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}% к плану` : ''}</div></div>
         <div><div class="k">${gap >= 0 ? 'Запас' : 'Разрыв'}</div><div class="v ${gap >= 0 ? 'good' : 'bad'}">${revenuePlan ? mln(Math.abs(gap)) : '—'}</div>
-          <div class="p">${revenuePlan ? `${rub(Math.abs(gap) / Math.max(1, u.days))}/сут` : ''}</div></div>
+          <div class="p">${revenuePlan && gap < 0 ? (u.futureDays
+    ? `нужно ${rub(Math.abs(gap) / u.futureDays)}/сут оставшиеся ${u.futureDays} дн`
+    : 'период прошёл — цель не добрана') : ''}</div></div>
       </div>
       ${revenuePlan ? `<div class="brep-pbar"><i style="width:${Math.min(100, done * 100).toFixed(1)}%"></i><em>план 100%</em></div>` : ''}
       <div class="brep-ctitle" style="margin-top:14px">Выручка нарастающим итогом</div>
@@ -444,7 +446,7 @@ export async function renderBoss(container, context) {
   container.dataset.bossTab = 'classic';
   container.innerHTML = `${bossTabs(state, 'classic')}<div class="bosswrap brep">
     <div class="brep-title"><h2>PegasLogistic · операционный отчёт</h2>
-      <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.days} дн · парк ${u.vehicles} сцепок
+      <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн · парк ${u.vehicles} сцепок
         · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
     <div class="brep-top">
       <div class="console">
