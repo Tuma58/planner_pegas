@@ -51,7 +51,14 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
   // за день» считается по дате ФАКТИЧЕСКОЙ выгрузки (фолбэк — расчётная),
   // как во всех отчётах; «забито» остаётся планом по расчётной дате.
   const doneStatuses = new Set(['unloaded', 'done', 'paid']);
-  const doneTs = trip => Date.parse(trip.unloaded_at || trip.ends_at);
+  // Даты в базе — UTC, но часть исторических без суффикса «Z»: голый
+  // Date.parse читал их ЛОКАЛЬНЫМ временем (+3 МСК), и рейсы у границы
+  // суток перетекали в соседний день — «нужно в день» на дашборде и в
+  // опер-отчёте расходились на доли процента (сверка 19.10).
+  const doneTs = trip => {
+    const raw = String(trip.unloaded_at || trip.ends_at || '').replace(' ', 'T');
+    return Date.parse(raw + (raw.includes('Z') || raw.includes('+') ? '' : 'Z'));
+  };
   const doneTrips = activeTrips.filter(trip => doneStatuses.has(trip.status));
   const factPast = doneTrips.filter(trip => {
     const ts = doneTs(trip);

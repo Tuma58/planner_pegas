@@ -967,6 +967,27 @@ export function reportSnapshot(db, fromValue, toValue) {
     item.vehicles.add(trip.vehicle_id);
     byType.set(trip.vehicle_type, item);
   }
+  // Сопоставимость с дашбордом (замечание руководителя 19.10: «нужно в
+  // день» различалось): bookedNet — ЗАБИТО периода (выгружено + назначенное
+  // с ожидаемой выгрузкой в периоде), netPast — выгружено ДО сегодняшних
+  // суток, remainingDays — остаток дней периода ВКЛЮЧАЯ сегодня. Формула
+  // дашборда: нужно/сут = (план − netPast) / remainingDays.
+  const bookedFuture = db.prepare(`SELECT t.* FROM trips t
+      WHERE t.status IN ('plan','run')
+        AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime(?)
+        AND datetime(COALESCE(t.unloaded_at, t.ends_at)) < datetime(?)`).all(from, to)
+    .reduce((sum, trip) => sum + tripNet(trip, calcCanon), 0);
+  const bookedNet = netRevenue + bookedFuture;
+  const todayStartMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+  let netPast = 0;
+  for (const trip of trips) {
+    const doneMs = Date.parse(String(trip.unloaded_at || trip.ends_at).replace(' ', 'T')
+      + (String(trip.unloaded_at || trip.ends_at).includes('Z') ? '' : 'Z'));
+    if (Number.isFinite(doneMs) && doneMs < todayStartMs) netPast += trip.revenue_vat ? tripNet(trip, calcCanon) : 0;
+  }
+  const remainingDays = (todayStartMs >= Date.parse(from) && todayStartMs < Date.parse(to))
+    ? Math.round((Date.parse(to) - todayStartMs) / 86_400_000) : 0;
+
   const fixedPerVehicleDay =
     Number(calculation.leasePerVehicleDay || 0) + Number(calculation.overheadPerVehicleDay || 0);
   const fixed = fixedPerVehicleDay * vehicleCount * days;
@@ -1068,6 +1089,7 @@ export function reportSnapshot(db, fromValue, toValue) {
     emptyCost: Math.round((emptyKmTotal + repairKmTotal) * perKmRate),
     from, to, days, trips: trips.length, vehicles: vehicleCount,
     factRevenue: Math.round(factRevenue), netRevenue: Math.round(netRevenue), netRevenueDone: Math.round(netRevenueDone),
+    bookedNet: Math.round(bookedNet), netPast: Math.round(netPast), remainingDays,
     contribution: Math.round(contribution), fixed: Math.round(fixed),
     operationalProfit: Math.round(operationalProfit),
     operationalMargin: netRevenue ? operationalProfit / netRevenue : 0,

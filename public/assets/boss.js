@@ -256,8 +256,14 @@ export async function renderBoss(container, context) {
   let acc = 0;
   const cumFact = dailyNet.map(value => (acc += value));
   const cumPlan = dayLabels.map((_, i) => revenuePlan ? revenuePlan / dayCount * (i + 1) : 0);
-  const done = revenuePlan ? report.netRevenue / revenuePlan : 0;
-  const gap = revenuePlan ? report.netRevenue - revenuePlan : 0;
+  // Смыслы — как на дашборде (сверка 19.10): «забито» = выгружено +
+  // назначенное с выгрузкой в периоде; «нужно/сут» = остаток плана от
+  // выгруженного ДО сегодня на остаток дней, ВКЛЮЧАЯ сегодня.
+  const booked = report.bookedNet ?? report.netRevenue;
+  const done = revenuePlan ? booked / revenuePlan : 0;
+  const gap = revenuePlan ? booked - revenuePlan : 0;
+  const needDaily = revenuePlan && report.remainingDays
+    ? Math.max(0, revenuePlan - (report.netPast ?? report.netRevenue)) / report.remainingDays : null;
   const periodSection = `<section id="brep-s1">
     <div class="brep-shead"><span class="idx">01</span><h3>Отчётный период</h3>
       <span class="note">${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн${u.futureDays
@@ -266,13 +272,13 @@ export async function renderBoss(container, context) {
       <div class="brep-mrow">
         <div><div class="k">План без НДС</div><div class="v">${revenuePlan ? mln(revenuePlan) : '—'}</div>
           <div class="p">${revenuePlan ? `${rub(revenuePlan / dayCount)}/сут` : 'задайте в консоли'}</div></div>
-        <div><div class="k">Забито без НДС</div><div class="v">${mln(report.netRevenue)}</div>
-          <div class="p">выгружено ${mln(report.netRevenueDone || 0)} · факт ${rub(report.netRevenue / Math.max(1, u.days))}/сут в среднем</div></div>
+        <div><div class="k">Забито без НДС</div><div class="v">${mln(booked)}</div>
+          <div class="p">выгружено ${mln(report.netRevenue)} · факт ${rub(report.netRevenue / Math.max(1, u.days))}/сут в среднем</div></div>
         <div><div class="k">Выполнение</div><div class="v ${done >= 1 ? 'good' : done >= 0.9 ? 'warn' : 'bad'}">${revenuePlan ? pct(done) : '—'}</div>
-          <div class="p">${revenuePlan ? `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}% к плану` : ''}</div></div>
-        <div><div class="k">${gap >= 0 ? 'Запас' : 'Разрыв'}</div><div class="v ${gap >= 0 ? 'good' : 'bad'}">${revenuePlan ? mln(Math.abs(gap)) : '—'}</div>
-          <div class="p">${revenuePlan && gap < 0 ? (u.futureDays
-    ? `нужно ${rub(Math.abs(gap) / u.futureDays)}/сут оставшиеся ${u.futureDays} дн`
+          <div class="p">${revenuePlan ? `забито к плану · выгружено ${pct(report.netRevenue / revenuePlan)}` : ''}</div></div>
+        <div><div class="k">${gap >= 0 ? 'Запас' : 'Не забито'}</div><div class="v ${gap >= 0 ? 'good' : 'bad'}">${revenuePlan ? mln(Math.abs(gap)) : '—'}</div>
+          <div class="p">${revenuePlan && gap < 0 ? (needDaily != null
+    ? `нужно ${rub(needDaily)}/сут оставшиеся ${report.remainingDays} дн — как на дашборде`
     : 'период прошёл — цель не добрана') : ''}</div></div>
       </div>
       ${revenuePlan ? `<div class="brep-pbar"><i style="width:${Math.min(100, done * 100).toFixed(1)}%"></i><em>план 100%</em></div>` : ''}
