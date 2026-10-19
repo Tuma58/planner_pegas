@@ -8,7 +8,6 @@ export const REPORT_TITLES = {
   summary: 'Сводный отчёт руководителя',
   staff: 'Показатели сотрудников',
   deviations: 'Отклонения конвейера',
-  util: 'Использование парка',
   econ: 'Экономика по типам ТС',
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
@@ -131,7 +130,7 @@ export async function buildReport(kind, from, to, data) {
       <div class="rsums">
         <span class="rsum">Выручка б.НДС: <b>${rub(report.netRevenue)}</b></span>
         <span class="rsum">Марж. доход: <b>${rub(report.contribution)}</b></span>
-        <span class="rsum">Постоянные: <b>${rub(report.fixed)}</b></span>
+        <span class="rsum">Постоянные: <b>${rub(report.fixed)}</b>${report.fixed ? '' : ' <small class="muted">(ставки лизинга/накладных не заданы — Настройки→Калькуляция)</small>'}</span>
         <span class="rsum">Опер. прибыль: <b>${rub(report.operationalProfit)}</b></span>
         <span class="rsum">Опер. маржа: <b>${pct(report.operationalMargin)}</b></span>
         <span class="rsum">Упущено: <b>${rub(u.lostProfit)}</b></span></div>
@@ -342,41 +341,13 @@ export async function buildReport(kind, from, to, data) {
           <td class="num">${num(row.dispatchSteps)}</td><td class="num">${num(row.stopFacts)}</td>
           <td class="num">${num(row.marks)}</td><td class="num"><b>${num(row.total)}</b></td>
           ${isAdmin ? `<td>${roleSelect(row)}</td>` : ''}</tr>`).join('')}</tbody></table>` : ''}`;
-  } else if (kind === 'util') {
-    body = `<div class="rsums">
-        <span class="rsum">Списочный: <b>${u.vehicles}</b></span>
-        <span class="rsum">КТГ: <b>${pct(u.ktg)}</b></span><span class="rsum">КВЛ: <b>${pct(u.kvl)}</b></span>
-        <span class="rsum">КИП: <b>${pct(u.kip)}</b></span>
-        <span class="rsum">В работе от списка: <b>${pct(u.overall)}</b> (норма ${(u.utilizationTarget * 100).toFixed(1)}%)</span></div>
-      <h4>Машино-дни</h4>
-      <table class="rtable"><tbody>
-        <tr><td>Календарный ресурс (списочный × ${u.days})</td><td class="num">${u.calendarDays}</td></tr>
-        <tr><td>Плановые (норма ${(u.utilizationTarget * 100).toFixed(1)}%)</td><td class="num">${u.normDays}</td></tr>
-        <tr><td>Фактические в работе</td><td class="num">${u.workDays}</td></tr>
-        <tr><td>Отклонение от нормы</td><td class="num">${u.workDays - u.normDays}</td></tr>
-        <tr><td>Порожний пробег (подгоны + в ремзоны)</td><td class="num">${(report.emptyKm + report.repairKm).toLocaleString('ru-RU')} км
-          · ${(report.emptyRatio * 100).toFixed(1)}% · ${rub(report.emptyCost)}</td></tr>
-        <tr><td>Марж. доход на машино-день</td><td class="num">${rub(u.marginPerTripDay)}</td></tr>
-        <tr><td><b>Упущенный марж. доход за период</b></td><td class="num"><b>${rub(u.lostProfit)}</b></td></tr></tbody></table>
-      <h4>Операционная прибыль</h4>
-      <table class="rtable"><tbody>
-        <tr><td>Выручка без НДС</td><td class="num">${rub(report.netRevenue)}</td></tr>
-        <tr><td>− Переменные затраты (путевые, страх./дороги, водитель, ХОУ)</td><td class="num">${rub(report.netRevenue - report.contribution)}</td></tr>
-        <tr><td>= Маржинальный доход</td><td class="num">${rub(report.contribution)}</td></tr>
-        <tr><td>− Постоянные затраты (лизинг+накладные · ${u.vehicles}×${u.days} маш-дней)</td><td class="num">${rub(report.fixed)}</td></tr>
-        <tr><td><b>= Операционная прибыль</b></td><td class="num"><b>${rub(report.operationalProfit)}</b></td></tr>
-        <tr><td>Операционная маржа</td><td class="num">${pct(report.operationalMargin)}</td></tr></tbody></table>
-      <h4>Простой по причинам · машино-дни</h4>
-      <table class="rtable"><thead><tr><th>Причина</th><th>Ответственный</th><th class="num">Маш-дни</th></tr></thead><tbody>
-        <tr><td>В ремонте</td><td>КТГ · ТОиР</td><td class="num">${md.repair}</td></tr>
-        <tr><td>Без водителя</td><td>КВЛ · Упр. водителями</td><td class="num">${md.noDriver}</td></tr>
-        <tr><td>Пересменка</td><td>смена вахты</td><td class="num">${md.shift}</td></tr>
-        <tr><td>Без рейса</td><td>КИП · Логистика</td><td class="num">${md.idle}</td></tr></tbody></table>`;
+  // Вид «Использование парка» удалён (ревизия отчётов 19.10): его каскад
+  // и машино-дни дублировали /ops-report по устаревшей методике.
   } else if (kind === 'econ') {
     body = `<div class="rsums">
         <span class="rsum">Выручка б.НДС: <b>${rub(report.netRevenue)}</b></span>
         <span class="rsum">Марж. доход: <b>${rub(report.contribution)}</b></span>
-        <span class="rsum">Постоянные: <b>${rub(report.fixed)}</b></span>
+        <span class="rsum">Постоянные: <b>${rub(report.fixed)}</b>${report.fixed ? '' : ' <small class="muted">(ставки лизинга/накладных не заданы — Настройки→Калькуляция)</small>'}</span>
         <span class="rsum">Опер. прибыль: <b>${rub(report.operationalProfit)}</b></span>
         <span class="rsum">Опер. маржа: <b>${pct(report.operationalMargin)}</b></span></div>
       <div class="geohint">Постоянные затраты (лизинг+накладные) отнесены на календарные машино-дни сцепок каждого типа за период.</div>

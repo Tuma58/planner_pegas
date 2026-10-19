@@ -914,9 +914,20 @@ export function reportSnapshot(db, fromValue, toValue) {
   const to = isoDate(toValue, 'to');
   if (Date.parse(to) <= Date.parse(from)) throw Object.assign(new Error('Период задан неверно'), { status: 422 });
   const calculation = settingsObject(db).calculation;
-  const trips = db.prepare(`SELECT t.*,v.plate,vt.name vehicle_type
-    FROM trips t JOIN vehicles v ON v.id=t.vehicle_id JOIN vehicle_types vt ON vt.id=v.type_id
-    WHERE t.status<>'rejected' AND t.ends_at>=? AND t.ends_at<? ORDER BY t.ends_at`).all(from, to);
+  // КАНОН ОТЧЁТНОСТИ (ревизия цифр 19.10): рейс попадает в период по дате
+  // ВЫГРУЗКИ (как /ops-report и дашборд), раньше — по ends_at, и «Сводный
+  // руководителя» расходился с эталоном и по рейсам (479↔490), и по деньгам.
+  // datetime() нормализует смешанные форматы дат («2026-10-05 10:00» и
+  // «2026-10-05T10:00Z» живут в базе вперемешку) — строковое сравнение с
+  // ISO-границей теряло рейсы начала периода и ловила чужие в конце.
+  // LEFT JOIN типов: рейс машины без типа не должен выпадать из денег.
+  const trips = db.prepare(`SELECT t.*,v.plate,COALESCE(vt.name,'без типа') vehicle_type
+    FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+    LEFT JOIN vehicle_types vt ON vt.id=v.type_id
+    WHERE t.status IN ('unloaded','done','paid')
+      AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime(?)
+      AND datetime(COALESCE(t.unloaded_at, t.ends_at)) < datetime(?)
+    ORDER BY t.unloaded_at`).all(from, to);
   const vehicleCount = db.prepare(`SELECT COUNT(*) count FROM vehicles WHERE status<>'out'`).get().count;
   const days = Math.max(1, (Date.parse(to) - Date.parse(from)) / 86_400_000);
   // Будущие дни периода (открытый месяц до его конца) в машино-дни не входят:
@@ -932,12 +943,11 @@ export function reportSnapshot(db, fromValue, toValue) {
   let contribution = 0;
   let factRevenue = 0;
   let emptyKmTotal = 0;
+  const calcCanon = calcSettings(db);
   for (const trip of trips) {
-    // Наличная перевозка — ставка уже без НДС, не очищается.
-    const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
-      ? Number(calculation.individualEntrepreneurVatRate ?? 0.07)
-      : Number(calculation.vatRate ?? 0.22);
-    const net = Number(trip.revenue_vat) / (1 + vat);
+    // Деньги — только через канон tripNet (money.mjs): раньше здесь жила
+    // собственная копия формулы НДС, и суммы расходились с эталоном.
+    const net = tripNet(trip, calcCanon);
     const tripDays = Math.max(0, (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 86_400_000);
     // Порожний подгон — затрата этого рейса: километровые ставки на него тоже.
     const emptyKm = Number(trip.empty_km || 0);

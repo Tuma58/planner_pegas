@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { calcSettings as calcSettingsCanon, tripNet as tripNetCanon } from '../src/money.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -871,6 +872,31 @@ test('контракты 1С и телематики идемпотентны, �
   assert.ok(report.netRevenue > 0);
   assert.ok(report.fixed > 0);
   assert.equal(report.vehicles, 128);
+  // Ревизия цифр 19.10: Сводный считает деньги ТОЛЬКО через канон tripNet
+  // и берёт рейс по дате ВЫГРУЗКИ — как /ops-report и дашборд.
+  {
+    const tn = tripNetCanon;
+    const calc = calcSettingsCanon(db);
+    const canonSum = db.prepare(`SELECT * FROM trips
+        WHERE status IN ('unloaded','done','paid')
+          AND datetime(COALESCE(unloaded_at, ends_at)) >= datetime('2026-07-01')
+          AND datetime(COALESCE(unloaded_at, ends_at)) < datetime('2026-08-01')`).all()
+      .reduce((sum, row) => sum + tn(row, calc), 0);
+    assert.ok(Math.abs(report.netRevenue - canonSum) < 1,
+      'выручка Сводного = сумма tripNet по дате выгрузки');
+    // Рейс, выгруженный ВНЕ периода, в период не попадает, даже если
+    // ends_at внутри (раньше попадал — расхождение 479↔490 рейсов).
+    const vehId = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+    const zz = db.prepare('SELECT id FROM zones LIMIT 2').all();
+    db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+      status,starts_at,ends_at,unloaded_at,revenue_vat,distance_km)
+      VALUES('rep-out',?, 'Т',?,?,'unloaded','2026-07-30T00:00:00Z','2026-07-31T00:00:00Z',
+        '2026-08-02T10:00:00Z',100000,100)`).run(vehId, zz[0].id, zz[1].id);
+    const after = reportSnapshot(db, '2026-07-01', '2026-08-01');
+    assert.ok(Math.abs(after.netRevenue - canonSum) < 1,
+      'выгрузка в августе не попадает в июльский период');
+    db.prepare(`DELETE FROM trips WHERE id='rep-out'`).run();
+  }
 
   // Утилизация: каскад КТГ×КВЛ×КИП по машино-дням.
   assert.equal(report.utilization.calendarDays, 128 * 31);

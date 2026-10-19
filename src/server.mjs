@@ -11189,16 +11189,10 @@ async function api(request, response, url) {
   //   стоянка у клиента после прибытия — потеря КИП, не «под грузом».
   //   КТГ = 1 − ремонт/календарь; КВЛ = линия/(календарь − ремонт);
   //   КИП = под грузом/линия; КОЭФ = КТГ × КВЛ × КИП.
-  if (request.method === 'GET' && pathname === '/api/park-report') {
-    const user = requirePermission(request, response, 'reports:read');
-    if (!user) return;
-    const from = String(url.searchParams.get('from') || '').slice(0, 10);
-    const to = String(url.searchParams.get('to') || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to <= from) {
-      return errorJson(response, 422, 'Некорректный период (from/to, to — не включается)');
-    }
-    return json(response, 200, parkReportData(from, to));
-  }
+  // /api/park-report удалён (ревизия отчётов 19.10): модал «Эксплуатация
+  // (планер)» был дублем /ops-report на тех же данных, но с невключительным
+  // периодом — источник расхождений «46,4 против 50,6 млн». Канон живёт в
+  // parkReportData и отдаётся через /ops-report и /api/ops-report.
   // Отчёт эксплуатации руководителя: количественные показатели, простой
   // по причинам, опоздания П/В — за произвольный период (заказ 21.09).
   if (request.method === 'GET' && pathname === '/api/ops-report') {
@@ -11381,6 +11375,18 @@ async function api(request, response, url) {
         ({ total: park.total, avgOnline, downtime }))(
         opsReportData(db, String(from).slice(0, 10), String(toValue).slice(0, 10), parkReportData));
     } catch { /* канон не собрался — экран покажет прежние цифры */ }
+    // Ревизия цифр 19.10: КТГ/КВЛ/КИП и «в работе» в Сводном — ТОЛЬКО по
+    // канону эксплуатации (машино-часы, фонд экипажа, калиброванный КИП).
+    // Прежняя методика по машино-дням с midpoint давала КТГ 68% при честных
+    // 86% и КИП 99% по старому определению «день в рейсе / день на линии».
+    try {
+      const canonTotal = parkReportData(String(from).slice(0, 10),
+        String(toValue).slice(0, 10)).total;
+      Object.assign(snap.utilization, {
+        ktg: canonTotal.ktg / 100, kvl: canonTotal.kvl / 100,
+        kip: canonTotal.kip / 100, overall: canonTotal.koef / 100
+      });
+    } catch { /* канон не собрался — прежние цифры */ }
     return json(response, 200, snap);
   }
   // Явка водителей (контур ОУВ): список на день и отметка с классификацией
