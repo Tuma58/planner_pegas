@@ -837,7 +837,7 @@ export async function mileageDialog(context) {
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сформировать</button>
     </div>
-    <p class="muted" id="mileWait" style="display:none">Опрашиваем одометры парка — около 10–20 секунд…</p>
+    <p class="muted" id="mileWait" style="display:none">Опрашиваем одометры парка — до минуты…</p>
   </form>`, 'wide');
   document.getElementById('mileForm').onsubmit = async event => {
     event.preventDefault();

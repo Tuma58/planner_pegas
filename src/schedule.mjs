@@ -739,7 +739,12 @@ export function augmentScheduleFromPlanner(db, userId = null) {
       const pair = pairOf(drv.fio);
       if (pair) pairCount.set(pair, (pairCount.get(pair) || 0) + 1);
       for (const layer of ['plan', 'fact']) {
-        Object.keys(drv[layer] || {}).forEach(key => monthKeys.add(key));
+        // Только валидные «ГГГГ-ММ»: строка, заведённая старым прототипом,
+        // несла ключи «aug»/«sep» — daysIn давал NaN, Array(NaN) ронял
+        // всю ежечасную достройку (сбой 20.10, экипаж X179…944).
+        Object.keys(drv[layer] || {}).forEach(key => {
+          if (/^\d{4}-\d{2}$/.test(key)) monthKeys.add(key);
+        });
       }
     }
   }
