@@ -2988,10 +2988,17 @@ async function collectSegmentEconomy() {
 setInterval(collectDailyRuns, 3_600_000);
 // ── Журнал одометров (конструкция руководителя 20.10) ──
 // Снимок CAN-одометра каждой машины на 00:00 МСК: показание на момент T
-// берётся из /odo-fuel за короткое окно [T-1ч, T] (stop_odo). Ежечасный
-// прогон снимает пропущенные дни (включая бэкфилл истории до 35 суток
-// назад) порциями, чтобы не душить Пилот; отчёт пробегов читает только
-// таблицу — формирование мгновенное и стабильное.
+// берётся из /odo-fuel (stop_odo). Ежечасный прогон снимает пропущенные
+// дни (включая бэкфилл истории до 35 суток назад) порциями, чтобы не
+// душить Пилот; отчёт пробегов читает только таблицу — формирование
+// мгновенное и стабильное.
+// «Спрошено — пусто»: борта без CAN-одометра (их ~57 из 126) отвечают
+// пустотой на каждый день бэкфилла и без кэша съедали бы весь бюджет
+// каждого прогона заново. Кэшируем только честный ответ API «данных
+// нет» (объект без stop_odo); сбой связи (null) не кэшируется и будет
+// переспрошен. Кэш живёт до рестарта процесса — после рестарта один
+// прогон уйдёт на повторную разведку, дальше снова быстро.
+const odoNoData = new Set();
 async function collectOdoSnapshots() {
   try {
     const trackers = db.prepare(`SELECT vehicle_id, imei FROM vehicle_trackers
@@ -3001,13 +3008,15 @@ async function collectOdoSnapshots() {
     const todayMsk = new Date(Math.floor((Date.now() + MSK) / 86_400_000) * 86_400_000 - MSK);
     const insert = db.prepare(`INSERT OR IGNORE INTO vehicle_odometers(vehicle_id, day, odo_km)
       VALUES(?,?,?)`);
-    let budget = 300; // запросов за прогон — бэкфилл дожимается постепенно
+    const perRun = 300; // запросов за прогон — бэкфилл дожимается постепенно
+    let budget = perRun;
     let saved = 0;
     for (let back = 0; back <= 35 && budget > 0; back += 1) {
       const atMs = todayMsk.getTime() - back * 86_400_000;
       const day = new Date(atMs + MSK).toISOString().slice(0, 10);
       for (const tracker of trackers) {
         if (budget <= 0) break;
+        if (odoNoData.has(`${tracker.vehicle_id}|${day}`)) continue;
         const have = db.prepare(`SELECT 1 FROM vehicle_odometers WHERE vehicle_id=? AND day=?`)
           .get(tracker.vehicle_id, day);
         if (have) continue;
@@ -3023,11 +3032,14 @@ async function collectOdoSnapshots() {
         if (Number.isFinite(odo) && odo > 0) {
           insert.run(tracker.vehicle_id, day, Math.round(odo * 10) / 10);
           saved += 1;
+        } else if (answer) {
+          odoNoData.add(`${tracker.vehicle_id}|${day}`);
         }
         await new Promise(resolve => setTimeout(resolve, 140));
       }
     }
-    if (saved) console.log(`одометры: снимков +${saved} (журнал до ${todayMsk.toISOString().slice(0, 10)})`);
+    const asked = perRun - budget;
+    if (asked) console.log(`одометры: снимков +${saved} из ${asked} запросов (журнал до ${todayMsk.toISOString().slice(0, 10)})`);
   } catch (error) { console.error('одометры:', error.message); }
 }
 setInterval(collectOdoSnapshots, 3_600_000);
