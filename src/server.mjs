@@ -11270,14 +11270,19 @@ async function api(request, response, url) {
       } catch { /* кэш ниже */ }
       return null;
     };
-    // Живые запросы батчами по 5 — весь парк за ~10 секунд.
+    // Живые запросы батчами по 10 под жёстким бюджетом времени: nginx
+    // на проде рвёт соединение на 60-й секунде (proxy_read_timeout) —
+    // «отчёт не формируется» (кейс 20.10). Не успевшие машины уходят на
+    // кэш-фолбэк, но ответ гарантированно укладывается в лимит.
     const results = new Map();
     const withImei = fleet.filter(v => v.imei);
-    for (let i = 0; i < withImei.length; i += 5) {
-      const batch = withImei.slice(i, i + 5);
+    const deadline = Date.now() + 40_000;
+    for (let i = 0; i < withImei.length; i += 10) {
+      if (Date.now() > deadline) break;
+      const batch = withImei.slice(i, i + 10);
       const answers = await Promise.all(batch.map(v => liveTotal(v.imei)));
       batch.forEach((v, idx) => { if (answers[idx]) results.set(v.id, answers[idx]); });
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
     // Гружёный: интервалы «под грузом» рейсов, пересечённые с периодом.
     const loadedByVehicle = new Map();
