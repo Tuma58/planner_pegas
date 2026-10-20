@@ -51,6 +51,8 @@ function renderGeneral() {
       <label class="field">Ставка НДС<input id="vatRate" type="number" min="0" max="1" step=".01" value="${calculation.vatRate}"></label>
       <label class="field">Потолок КИП, % <small class="muted">(физический максимум «под грузом»; КИП в отчётах показывается от него; 0 — сырой КИП)</small>
         <input id="kipCeilingPct" type="number" min="0" max="100" step="1" value="${calculation.kipCeilingPct ?? 67}"></label>
+      <label class="field">Цель среднесуточного пробега, км/сут на машину
+        <input id="dailyKmTarget" type="number" min="0" step="10" value="${calculation.dailyKmTarget ?? 500}"></label>
       <label class="field">НДС для ИП<input id="individualEntrepreneurVatRate" type="number" min="0" max="1" step=".01" value="${calculation.individualEntrepreneurVatRate}"></label>
       <label class="field">Запас надёжности обещаний, %<input id="transitReservePct" type="number" min="0" max="50" step="1" value="${calculation.transitReservePct ?? 10}" title="Главный рычаг сроков (22.09): живой транзит (выученная дорожная скорость по дальности плеча + средние ворота) умножается на 1+запас. Рекомендацию из факта (p80) смотрите в «🧠 Живые нормативы» у руководителя; 0 — осознанно без запаса"></label>
       <label class="field">Скорость транзита, км/ч<input id="techSpeedKmh" type="number" min="1" value="${calculation.techSpeedKmh ?? 50}" title="Резервная: работает, только пока живые скорости не выучены (свежая база)"></label>
@@ -92,6 +94,7 @@ async function saveGeneral() {
     calculation: {
       costPerKm: numeric('costPerKm'), vatRate: numeric('vatRate'),
       kipCeilingPct: numeric('kipCeilingPct'),
+      dailyKmTarget: numeric('dailyKmTarget'),
       insuranceAndRoadsPerKm: numeric('insuranceAndRoadsPerKm'),
       driverPerTripDay: numeric('driverPerTripDay'),
       refrigerationPerTripDay: numeric('refrigerationPerTripDay'),

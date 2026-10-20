@@ -508,6 +508,8 @@ export async function renderBoss(container, context) {
           title="Инвентаризация всех процессов: ресурс (дубли прицепов, забытые машины, висящие рейсы, дыры по водителям) + заявки с ошибочными датами, застрявшие стадии, дыры адресов">🧾 Инвентаризация</button>
         <button class="button small" id="bossViewOpsBack"
           title="Вернуться на первый экран: отчёт эксплуатации со строкой «прямо сейчас»">📊 Эксплуатация</button>
+        <button class="button ghost small" id="bossMileage"
+          title="Пробеги парка за период до минуты: общий / гружёный / порожний, среднесуточный против цели — одометр CAN на границах периода, при сбое GPS-трек, затем дневной кэш">🛣 Пробеги</button>
         <button class="button ghost small" id="bossParkReport"
           title="СВЕРКА с выгрузками 1С (Заказы/Путевые листы/Ремонты): каскад по часам под грузом из внешнего источника — для сличения с планерным каноном, не для оперативной работы">🏭 Сверка эксплуатации с 1С</button>
       </div>
@@ -708,6 +710,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossRingLoad').onclick = () => ringLoadDialog(context);
   container.querySelector('#bossSelfTuning').onclick = () => selfTuningDialog(context);
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
+  container.querySelector('#bossMileage').onclick = () => mileageDialog(context);
   wireBossTabs(container, context);
   container.querySelector('#bossViewOpsBack').onclick = () => {
     state.bossView = 'ops';
@@ -808,4 +811,83 @@ async function shiftPlannerDialog(context) {
       </div>`).join('')}</div>`
     : '<p class="muted" style="margin-top:8px">Пиков нет — нагрузка ремзоны ровная, переносы не нужны.</p>'}
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
+}
+
+// «🛣 Пробеги за период» (заказ руководителя 20.10): общий / гружёный /
+// порожний, среднесуточный против цели (настройка dailyKmTarget, 500).
+// Период до минуты; источники в порядке доверия: одометр CAN на границах
+// периода → GPS-трек → дневной кэш (помечается по каждой машине).
+export async function mileageDialog(context) {
+  const { showModal } = context;
+  const now = new Date();
+  const toLocal = date => new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 16);
+  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+  showModal(`<form id="mileForm"><h2>🛣 Пробеги парка за период</h2>
+    <p class="muted">Общий / гружёный / порожний и среднесуточный на машину против цели.
+      Точность — до минуты: одометр CAN на границах периода; при сбое оборудования —
+      GPS-трек, затем дневной кэш (источник виден по каждой машине).</p>
+    <div class="form-grid">
+      <label class="field">С (дата и время)<input type="datetime-local" name="from"
+        value="${toLocal(dayStart)}" required></label>
+      <label class="field">По (дата и время)<input type="datetime-local" name="to"
+        value="${toLocal(now)}" required></label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button">Сформировать</button>
+    </div>
+    <p class="muted" id="mileWait" style="display:none">Опрашиваем одометры парка — около 10–20 секунд…</p>
+  </form>`, 'wide');
+  document.getElementById('mileForm').onsubmit = async event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    const fromIso = new Date(values.from).toISOString();
+    const toIso = new Date(values.to).toISOString();
+    document.getElementById('mileWait').style.display = '';
+    let data;
+    try { data = await api(`/api/mileage-report?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`); }
+    catch (error) { toast(error.message, 'error'); document.getElementById('mileWait').style.display = 'none'; return; }
+    renderMileage(context, data);
+  };
+}
+
+function renderMileage(context, d) {
+  const fmtDT = iso => new Date(iso).toLocaleString('ru-RU',
+    { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const km = value => `${Math.round(value).toLocaleString('ru-RU')} км`;
+  const okTarget = d.perDayPerVehicle >= d.target;
+  const srcLine = Object.entries(d.sources).filter(([, n]) => n > 0)
+    .map(([s, n]) => `${s}: ${n}`).join(' · ');
+  const rows = d.perVehicle.map(v => `<tr${v.perDay < d.target && v.km > 0 ? ' class="warn-row"' : ''}>
+      <td class="mono">${escapeHtml(v.plate)}</td>
+      <td class="num">${v.km.toLocaleString('ru-RU')}</td>
+      <td class="num">${v.loaded.toLocaleString('ru-RU')}</td>
+      <td class="num">${v.empty.toLocaleString('ru-RU')}</td>
+      <td class="num"><b>${v.perDay.toLocaleString('ru-RU')}</b></td>
+      <td>${escapeHtml(v.source)}</td>
+    </tr>`).join('');
+  context.showModal(`<h2>🛣 Пробеги · ${fmtDT(d.from)} — ${fmtDT(d.to)}
+      <small class="muted">(${d.days.toFixed(2)} сут · парк ${d.fleet})</small></h2>
+    <div class="rsums">
+      <span class="rsum">Общий: <b>${km(d.totalKm)}</b></span>
+      <span class="rsum">Гружёный: <b>${km(d.loadedKm)}</b>
+        <small class="muted">${d.totalKm ? Math.round(d.loadedKm / d.totalKm * 100) : 0}%</small></span>
+      <span class="rsum">Порожний: <b>${km(d.emptyKm)}</b>
+        <small class="muted">${d.totalKm ? Math.round(d.emptyKm / d.totalKm * 100) : 0}%</small></span>
+      <span class="rsum">Среднесуточный на машину:
+        <b class="${okTarget ? 'good' : 'bad'}">${d.perDayPerVehicle} км/сут</b>
+        <small class="muted">цель ${d.target}</small></span>
+    </div>
+    <p class="muted">Источники данных по маш.: ${srcLine}. «Гружёный» — честные км рейсов
+      (убытие с погрузки → выгрузка, CAN), частично попавшие рейсы — долей времени;
+      порожний = общий − гружёный.</p>
+    <div style="max-height:55vh;overflow:auto"><table class="rtable">
+      <thead><tr><th>Борт</th><th class="num">Общий, км</th><th class="num">Гружёный</th>
+        <th class="num">Порожний</th><th class="num">км/сут</th><th>Источник</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan=6>нет данных</td></tr>'}</tbody></table></div>
+    <div class="modal-actions">
+      <button type="button" class="button ghost" data-close>Закрыть</button>
+      <button type="button" class="button" onclick="window.print()">Печать</button>
+    </div>`, 'wide');
 }

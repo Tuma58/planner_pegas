@@ -1926,3 +1926,4 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 
 /* 🙏 Благодарность с полосы смены (традиция 19.10). */
 .kb-cap .kb-thank { min-height:0; padding:0 5px; margin-left:6px; font-size:12px; }
+.rtable tr.warn-row td { color:var(--warn); }

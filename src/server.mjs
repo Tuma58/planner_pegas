@@ -11214,6 +11214,119 @@ async function api(request, response, url) {
   // parkReportData и отдаётся через /ops-report и /api/ops-report.
   // Отчёт эксплуатации руководителя: количественные показатели, простой
   // по причинам, опоздания П/В — за произвольный период (заказ 21.09).
+  // ── Отчёт по пробегам за период (заказ руководителя 20.10) ──
+  // Общий / гружёный / порожний, цель среднесуточного — настройка
+  // calculation.dailyKmTarget (500). Период — ДО МИНУТЫ: общий пробег
+  // машины берётся живым запросом одометра CAN на границах периода
+  // (лестница источников как у честного пробега рейса: CAN → GPS-трек →
+  // дневной кэш vehicle_daily_runs с долями краевых суток). Гружёный —
+  // из честных км рейсов (trips.gps_km: убытие с погрузки → выгрузка),
+  // частично попавшие рейсы — долей времени; порожний = общий − гружёный.
+  if (request.method === 'GET' && pathname === '/api/mileage-report') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const fromMs = Date.parse(String(url.searchParams.get('from') || ''));
+    const toMs = Date.parse(String(url.searchParams.get('to') || ''));
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) {
+      return errorJson(response, 422, 'Нужен период from/to (ISO, до минуты)');
+    }
+    const periodDays = (toMs - fromMs) / 86_400_000;
+    if (periodDays > 62) return errorJson(response, 422, 'Период до 62 суток');
+    const target = Number(settingsObject(db).calculation?.dailyKmTarget ?? 500) || 500;
+    const fleet = db.prepare(`SELECT v.id, v.plate, vt.imei FROM vehicles v
+      LEFT JOIN vehicle_trackers vt ON vt.vehicle_id=v.id
+      WHERE v.status='work' ORDER BY v.plate`).all();
+    // Кэш дневных пробегов для фолбэка и машин без трекера.
+    const cacheKm = (vehicleId, aMs, bMs) => {
+      let km = 0;
+      const rows = db.prepare(`SELECT day, COALESCE(can_km, km) v FROM vehicle_daily_runs
+        WHERE vehicle_id=? AND day >= ? AND day <= ?`).all(vehicleId,
+        new Date(aMs).toISOString().slice(0, 10), new Date(bMs).toISOString().slice(0, 10));
+      for (const r of rows) {
+        const dayStart = Date.parse(r.day + 'T00:00:00Z');
+        const overlap = Math.max(0, Math.min(bMs, dayStart + 86_400_000) - Math.max(aMs, dayStart));
+        km += Number(r.v || 0) * overlap / 86_400_000;
+      }
+      return km;
+    };
+    const liveTotal = async imei => {
+      const ts = Math.floor(fromMs / 1000);
+      const te = Math.floor(toMs / 1000);
+      try {
+        const odo = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${imei}&ts=${ts}&te=${te}`);
+        const delta = Number(odo?.points?.stop_odo) - Number(odo?.points?.start_odo);
+        // Санити: не отрицательный и не быстрее 2000 км/сут.
+        if (Number.isFinite(delta) && delta >= 0 && delta <= periodDays * 2000) {
+          return { km: delta, source: 'CAN' };
+        }
+      } catch { /* лестница ниже */ }
+      try {
+        const segs = await pilotApi(`/api/v3/vehicles/trips?imei=${imei}&ts=${ts}&te=${te}`);
+        const list = segs?.data?.trips || segs?.data || [];
+        if (Array.isArray(list) && list.length) {
+          const km = list.reduce((sum, seg) => sum + (Number(seg.gps) || 0), 0);
+          if (km >= 0 && km <= periodDays * 2000) return { km, source: 'GPS' };
+        }
+      } catch { /* кэш ниже */ }
+      return null;
+    };
+    // Живые запросы батчами по 5 — весь парк за ~10 секунд.
+    const results = new Map();
+    const withImei = fleet.filter(v => v.imei);
+    for (let i = 0; i < withImei.length; i += 5) {
+      const batch = withImei.slice(i, i + 5);
+      const answers = await Promise.all(batch.map(v => liveTotal(v.imei)));
+      batch.forEach((v, idx) => { if (answers[idx]) results.set(v.id, answers[idx]); });
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    // Гружёный: интервалы «под грузом» рейсов, пересечённые с периодом.
+    const loadedByVehicle = new Map();
+    for (const trip of db.prepare(`SELECT t.vehicle_id, t.gps_km, t.distance_km,
+        t.on_line_at, t.unloaded_at, t.ends_at,
+        (SELECT MIN(s.actual_departure) FROM trip_stops s WHERE s.trip_id=t.id
+          AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
+        (SELECT MAX(s.actual_arrival) FROM trip_stops s WHERE s.trip_id=t.id
+          AND s.kind='D' AND s.actual_arrival IS NOT NULL) arr
+      FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
+        AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(
+      new Date(toMs).toISOString(), new Date(fromMs).toISOString())) {
+      const a = Date.parse(trip.dep || trip.on_line_at || '');
+      const b = Date.parse(trip.arr || trip.unloaded_at || trip.ends_at || '');
+      if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) continue;
+      const overlap = Math.max(0, Math.min(toMs, b) - Math.max(fromMs, a));
+      if (!overlap) continue;
+      const tripKm = Number(trip.gps_km) > 0 ? Number(trip.gps_km) : Number(trip.distance_km || 0);
+      loadedByVehicle.set(trip.vehicle_id,
+        (loadedByVehicle.get(trip.vehicle_id) || 0) + tripKm * overlap / (b - a));
+    }
+    const perVehicle = [];
+    let totalKm = 0;
+    let loadedTotal = 0;
+    const sources = { CAN: 0, GPS: 0, 'кэш': 0, 'нет данных': 0 };
+    for (const v of fleet) {
+      const live = results.get(v.id);
+      const cached = live ? null : cacheKm(v.id, fromMs, toMs);
+      const km = live ? live.km : cached;
+      const source = live ? live.source : (cached > 0 ? 'кэш' : 'нет данных');
+      sources[source] += 1;
+      const loaded = Math.min(km || 0, loadedByVehicle.get(v.id) || 0);
+      const empty = Math.max(0, (km || 0) - loaded);
+      totalKm += km || 0;
+      loadedTotal += loaded;
+      perVehicle.push({ plate: v.plate, km: Math.round(km || 0),
+        loaded: Math.round(loaded), empty: Math.round(empty),
+        perDay: Math.round((km || 0) / periodDays), source });
+    }
+    perVehicle.sort((a, b) => b.km - a.km);
+    return json(response, 200, {
+      from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString(),
+      days: +periodDays.toFixed(3), target,
+      totalKm: Math.round(totalKm), loadedKm: Math.round(loadedTotal),
+      emptyKm: Math.round(totalKm - loadedTotal),
+      perDayPerVehicle: fleet.length ? Math.round(totalKm / periodDays / fleet.length) : 0,
+      fleet: fleet.length, sources, perVehicle
+    });
+  }
   if (request.method === 'GET' && pathname === '/api/ops-report') {
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;
