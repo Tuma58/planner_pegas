@@ -3013,12 +3013,12 @@ async function collectOdoSnapshots() {
         if (have) continue;
         budget -= 1;
         const te = Math.floor(atMs / 1000);
-        // Окно СУТКИ, а не час: ночью большинство машин стоит, и в
-        // [23:00–00:00] у них нет точек — снимок не снимался (первая
-        // порция: 69 машин из 126). Последнее показание ДО полуночи
-        // валидно на полночь: стоящая машина одометр не крутит.
+        // Окно поиска — до НЕДЕЛИ назад: показание на полночь — это
+        // последняя запись одометра ДО неё, и у машины, стоявшей сутки
+        // и дольше (40 бортов с живым CAN молчали на суточном окне),
+        // оно так же честно: без движения одометр не крутится.
         const answer = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${tracker.imei}` +
-          `&ts=${te - 86_400}&te=${te}`);
+          `&ts=${te - 7 * 86_400}&te=${te}`);
         const odo = Number(answer?.points?.stop_odo);
         if (Number.isFinite(odo) && odo > 0) {
           insert.run(tracker.vehicle_id, day, Math.round(odo * 10) / 10);
