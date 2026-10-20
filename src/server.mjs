@@ -11249,19 +11249,28 @@ async function api(request, response, url) {
       }
       return km;
     };
+    // Таймаут НА КАЖДЫЙ запрос: pilotApi сам ждёт до 15 с, и на длинном
+    // периоде один батч съедал минуту до проверки дедлайна — nginx отвечал
+    // 504 (кейс «с 1-го по сейчас», 20.10). GPS-фолбэк только на коротких
+    // периодах: трек за 20 суток огромен и бесполезно долог.
+    const withTimeout = (p, ms) => Promise.race([p,
+      new Promise(resolve => setTimeout(() => resolve(null), ms))]);
     const liveTotal = async imei => {
       const ts = Math.floor(fromMs / 1000);
       const te = Math.floor(toMs / 1000);
       try {
-        const odo = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${imei}&ts=${ts}&te=${te}`);
+        const odo = await withTimeout(
+          pilotApi(`/api/v3/vehicles/odo-fuel?imei=${imei}&ts=${ts}&te=${te}`), 6_000);
         const delta = Number(odo?.points?.stop_odo) - Number(odo?.points?.start_odo);
         // Санити: не отрицательный и не быстрее 2000 км/сут.
         if (Number.isFinite(delta) && delta >= 0 && delta <= periodDays * 2000) {
           return { km: delta, source: 'CAN' };
         }
       } catch { /* лестница ниже */ }
+      if (periodDays > 7) return null;
       try {
-        const segs = await pilotApi(`/api/v3/vehicles/trips?imei=${imei}&ts=${ts}&te=${te}`);
+        const segs = await withTimeout(
+          pilotApi(`/api/v3/vehicles/trips?imei=${imei}&ts=${ts}&te=${te}`), 6_000);
         const list = segs?.data?.trips || segs?.data || [];
         if (Array.isArray(list) && list.length) {
           const km = list.reduce((sum, seg) => sum + (Number(seg.gps) || 0), 0);
@@ -11276,7 +11285,7 @@ async function api(request, response, url) {
     // кэш-фолбэк, но ответ гарантированно укладывается в лимит.
     const results = new Map();
     const withImei = fleet.filter(v => v.imei);
-    const deadline = Date.now() + 40_000;
+    const deadline = Date.now() + 30_000;
     for (let i = 0; i < withImei.length; i += 10) {
       if (Date.now() > deadline) break;
       const batch = withImei.slice(i, i + 10);
