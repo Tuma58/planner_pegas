@@ -537,6 +537,15 @@ function migrateColumns(db) {
   // Пробег с одометра CAN-шины (методика руководителя 08.09): точнее GPS;
   // GPS-км остаются в km — пригодятся для отклонений от маршрута.
   ensure('vehicle_daily_runs', 'can_km', 'REAL');
+  // Журнал показаний одометра (конструкция руководителя 20.10): снимок
+  // CAN-одометра на 00:00 МСК каждого дня; отчёт пробегов за период —
+  // РАЗНОСТЬ снимков на границах (стабильно и мгновенно, без живого
+  // опроса Пилота при формировании). day — дата МСК.
+  db.exec(`CREATE TABLE IF NOT EXISTS vehicle_odometers (
+    vehicle_id TEXT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    odo_km REAL NOT NULL,
+    PRIMARY KEY (vehicle_id, day))`);
   db.exec(`CREATE TABLE IF NOT EXISTS trailer_positions (
     imei TEXT PRIMARY KEY,
     number TEXT NOT NULL DEFAULT '',

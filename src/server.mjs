@@ -2986,6 +2986,49 @@ async function collectSegmentEconomy() {
   } catch (error) { console.error('collectSegmentEconomy:', error.message); }
 }
 setInterval(collectDailyRuns, 3_600_000);
+// ── Журнал одометров (конструкция руководителя 20.10) ──
+// Снимок CAN-одометра каждой машины на 00:00 МСК: показание на момент T
+// берётся из /odo-fuel за короткое окно [T-1ч, T] (stop_odo). Ежечасный
+// прогон снимает пропущенные дни (включая бэкфилл истории до 35 суток
+// назад) порциями, чтобы не душить Пилот; отчёт пробегов читает только
+// таблицу — формирование мгновенное и стабильное.
+async function collectOdoSnapshots() {
+  try {
+    const trackers = db.prepare(`SELECT vehicle_id, imei FROM vehicle_trackers
+      WHERE COALESCE(imei,'')<>''`).all();
+    if (!trackers.length) return;
+    const MSK = 3 * 3_600_000;
+    const todayMsk = new Date(Math.floor((Date.now() + MSK) / 86_400_000) * 86_400_000 - MSK);
+    const insert = db.prepare(`INSERT OR IGNORE INTO vehicle_odometers(vehicle_id, day, odo_km)
+      VALUES(?,?,?)`);
+    let budget = 300; // запросов за прогон — бэкфилл дожимается постепенно
+    let saved = 0;
+    for (let back = 0; back <= 35 && budget > 0; back += 1) {
+      const atMs = todayMsk.getTime() - back * 86_400_000;
+      const day = new Date(atMs + MSK).toISOString().slice(0, 10);
+      for (const tracker of trackers) {
+        if (budget <= 0) break;
+        const have = db.prepare(`SELECT 1 FROM vehicle_odometers WHERE vehicle_id=? AND day=?`)
+          .get(tracker.vehicle_id, day);
+        if (have) continue;
+        budget -= 1;
+        const te = Math.floor(atMs / 1000);
+        const answer = await pilotApi(`/api/v3/vehicles/odo-fuel?imei=${tracker.imei}` +
+          `&ts=${te - 3600}&te=${te}`);
+        const odo = Number(answer?.points?.stop_odo);
+        if (Number.isFinite(odo) && odo > 0) {
+          insert.run(tracker.vehicle_id, day, Math.round(odo * 10) / 10);
+          saved += 1;
+        }
+        await new Promise(resolve => setTimeout(resolve, 140));
+      }
+    }
+    if (saved) console.log(`одометры: снимков +${saved} (журнал до ${todayMsk.toISOString().slice(0, 10)})`);
+  } catch (error) { console.error('одометры:', error.message); }
+}
+setInterval(collectOdoSnapshots, 3_600_000);
+setTimeout(collectOdoSnapshots, 200_000);
+
 setTimeout(collectDailyRuns, 160_000);
 
 // ── Дедупликация справочника клиентов ──
@@ -11214,89 +11257,52 @@ async function api(request, response, url) {
   // parkReportData и отдаётся через /ops-report и /api/ops-report.
   // Отчёт эксплуатации руководителя: количественные показатели, простой
   // по причинам, опоздания П/В — за произвольный период (заказ 21.09).
-  // ── Отчёт по пробегам за период (заказ руководителя 20.10) ──
-  // Общий / гружёный / порожний, цель среднесуточного — настройка
-  // calculation.dailyKmTarget (500). Период — ДО МИНУТЫ: общий пробег
-  // машины берётся живым запросом одометра CAN на границах периода
-  // (лестница источников как у честного пробега рейса: CAN → GPS-трек →
-  // дневной кэш vehicle_daily_runs с долями краевых суток). Гружёный —
-  // из честных км рейсов (trips.gps_km: убытие с погрузки → выгрузка),
-  // частично попавшие рейсы — долей времени; порожний = общий − гружёный.
+  // ── Отчёт по пробегам за период (конструкция руководителя 20.10) ──
+  // Общий = РАЗНОСТЬ ежедневных снимков одометра (vehicle_odometers,
+  // 00:00 МСК) на границах периода — мгновенно и стабильно, без живого
+  // опроса Пилота. Точность — по суткам (осознанное решение). Лестница
+  // при пробелах журнала: дневной кэш CAN/GPS → «по координатам» (плечи
+  // рейсов: плановые км из фактических плеч + порожние подгоны).
+  // Гружёный — честные км рейсов (убытие с погрузки → выгрузка).
   if (request.method === 'GET' && pathname === '/api/mileage-report') {
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;
-    const fromMs = Date.parse(String(url.searchParams.get('from') || ''));
-    const toMs = Date.parse(String(url.searchParams.get('to') || ''));
-    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) {
-      return errorJson(response, 422, 'Нужен период from/to (ISO, до минуты)');
+    const MSK = 3 * 3_600_000;
+    const dayOf = ms => new Date(ms + MSK).toISOString().slice(0, 10);
+    const rawFrom = Date.parse(String(url.searchParams.get('from') || ''));
+    const rawTo = Date.parse(String(url.searchParams.get('to') || ''));
+    if (!Number.isFinite(rawFrom) || !Number.isFinite(rawTo) || rawTo <= rawFrom) {
+      return errorJson(response, 422, 'Нужен период from/to');
     }
+    // Границы — сутки МСК; «по» включительно; конец не позже последней
+    // снятой полуночи (сегодня 00:00) — журнал дальше ещё не дорос.
+    const fromDay = dayOf(rawFrom);
+    const todayDay = dayOf(Date.now());
+    let toDayExcl = dayOf(rawTo + 86_400_000 - 1);
+    if (toDayExcl > todayDay) toDayExcl = todayDay;
+    const fromMs = Date.parse(fromDay + 'T00:00:00Z') - MSK;
+    const toMs = Date.parse(toDayExcl + 'T00:00:00Z') - MSK;
     const periodDays = (toMs - fromMs) / 86_400_000;
-    if (periodDays > 62) return errorJson(response, 422, 'Период до 62 суток');
+    if (periodDays <= 0) return errorJson(response, 422, 'Период ещё не накоплен журналом (первый снимок — ближайшей ночью)');
+    if (periodDays > 92) return errorJson(response, 422, 'Период до 92 суток');
     const target = Number(settingsObject(db).calculation?.dailyKmTarget ?? 500) || 500;
-    const fleet = db.prepare(`SELECT v.id, v.plate, vt.imei FROM vehicles v
-      LEFT JOIN vehicle_trackers vt ON vt.vehicle_id=v.id
+    const fleet = db.prepare(`SELECT v.id, v.plate FROM vehicles v
       WHERE v.status='work' ORDER BY v.plate`).all();
-    // Кэш дневных пробегов для фолбэка и машин без трекера.
-    const cacheKm = (vehicleId, aMs, bMs) => {
-      let km = 0;
-      const rows = db.prepare(`SELECT day, COALESCE(can_km, km) v FROM vehicle_daily_runs
-        WHERE vehicle_id=? AND day >= ? AND day <= ?`).all(vehicleId,
-        new Date(aMs).toISOString().slice(0, 10), new Date(bMs).toISOString().slice(0, 10));
-      for (const r of rows) {
-        const dayStart = Date.parse(r.day + 'T00:00:00Z');
-        const overlap = Math.max(0, Math.min(bMs, dayStart + 86_400_000) - Math.max(aMs, dayStart));
-        km += Number(r.v || 0) * overlap / 86_400_000;
+    const odoAt = db.prepare(`SELECT odo_km FROM vehicle_odometers WHERE vehicle_id=? AND day=?`);
+    const cacheKm = vehicleId => {
+      let km = 0; let days = 0;
+      for (const r of db.prepare(`SELECT day, COALESCE(can_km, km) v FROM vehicle_daily_runs
+          WHERE vehicle_id=? AND day >= ? AND day < ?`).all(vehicleId, fromDay, toDayExcl)) {
+        km += Number(r.v || 0); days += 1;
       }
-      return km;
+      return days ? km : null;
     };
-    // Таймаут НА КАЖДЫЙ запрос: pilotApi сам ждёт до 15 с, и на длинном
-    // периоде один батч съедал минуту до проверки дедлайна — nginx отвечал
-    // 504 (кейс «с 1-го по сейчас», 20.10). GPS-фолбэк только на коротких
-    // периодах: трек за 20 суток огромен и бесполезно долог.
-    const withTimeout = (p, ms) => Promise.race([p,
-      new Promise(resolve => setTimeout(() => resolve(null), ms))]);
-    const liveTotal = async imei => {
-      const ts = Math.floor(fromMs / 1000);
-      const te = Math.floor(toMs / 1000);
-      try {
-        const odo = await withTimeout(
-          pilotApi(`/api/v3/vehicles/odo-fuel?imei=${imei}&ts=${ts}&te=${te}`), 6_000);
-        const delta = Number(odo?.points?.stop_odo) - Number(odo?.points?.start_odo);
-        // Санити: не отрицательный и не быстрее 2000 км/сут.
-        if (Number.isFinite(delta) && delta >= 0 && delta <= periodDays * 2000) {
-          return { km: delta, source: 'CAN' };
-        }
-      } catch { /* лестница ниже */ }
-      if (periodDays > 7) return null;
-      try {
-        const segs = await withTimeout(
-          pilotApi(`/api/v3/vehicles/trips?imei=${imei}&ts=${ts}&te=${te}`), 6_000);
-        const list = segs?.data?.trips || segs?.data || [];
-        if (Array.isArray(list) && list.length) {
-          const km = list.reduce((sum, seg) => sum + (Number(seg.gps) || 0), 0);
-          if (km >= 0 && km <= periodDays * 2000) return { km, source: 'GPS' };
-        }
-      } catch { /* кэш ниже */ }
-      return null;
-    };
-    // Живые запросы батчами по 10 под жёстким бюджетом времени: nginx
-    // на проде рвёт соединение на 60-й секунде (proxy_read_timeout) —
-    // «отчёт не формируется» (кейс 20.10). Не успевшие машины уходят на
-    // кэш-фолбэк, но ответ гарантированно укладывается в лимит.
-    const results = new Map();
-    const withImei = fleet.filter(v => v.imei);
-    const deadline = Date.now() + 30_000;
-    for (let i = 0; i < withImei.length; i += 10) {
-      if (Date.now() > deadline) break;
-      const batch = withImei.slice(i, i + 10);
-      const answers = await Promise.all(batch.map(v => liveTotal(v.imei)));
-      batch.forEach((v, idx) => { if (answers[idx]) results.set(v.id, answers[idx]); });
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    // Гружёный: интервалы «под грузом» рейсов, пересечённые с периодом.
+    // «По координатам»: плечи рейсов (плановые км выучены из фактических
+    // плеч) + порожние подгоны, доля — по времени рейса внутри периода.
+    const coordKm = new Map();
     const loadedByVehicle = new Map();
-    for (const trip of db.prepare(`SELECT t.vehicle_id, t.gps_km, t.distance_km,
-        t.on_line_at, t.unloaded_at, t.ends_at,
+    for (const trip of db.prepare(`SELECT t.vehicle_id, t.gps_km, t.distance_km, t.empty_km,
+        t.starts_at, t.on_line_at, t.unloaded_at, t.ends_at,
         (SELECT MIN(s.actual_departure) FROM trip_stops s WHERE s.trip_id=t.id
           AND s.kind='P' AND s.actual_departure IS NOT NULL) dep,
         (SELECT MAX(s.actual_arrival) FROM trip_stops s WHERE s.trip_id=t.id
@@ -11304,37 +11310,59 @@ async function api(request, response, url) {
       FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
         AND t.starts_at < ? AND COALESCE(t.unloaded_at, t.ends_at) > ?`).all(
       new Date(toMs).toISOString(), new Date(fromMs).toISOString())) {
-      const a = Date.parse(trip.dep || trip.on_line_at || '');
-      const b = Date.parse(trip.arr || trip.unloaded_at || trip.ends_at || '');
-      if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) continue;
-      const overlap = Math.max(0, Math.min(toMs, b) - Math.max(fromMs, a));
-      if (!overlap) continue;
-      const tripKm = Number(trip.gps_km) > 0 ? Number(trip.gps_km) : Number(trip.distance_km || 0);
-      loadedByVehicle.set(trip.vehicle_id,
-        (loadedByVehicle.get(trip.vehicle_id) || 0) + tripKm * overlap / (b - a));
+      const ta = Date.parse(trip.starts_at);
+      const tb = Date.parse(trip.unloaded_at || trip.ends_at);
+      if (Number.isFinite(ta) && Number.isFinite(tb) && tb > ta) {
+        const share = Math.max(0, Math.min(toMs, tb) - Math.max(fromMs, ta)) / (tb - ta);
+        if (share > 0) {
+          coordKm.set(trip.vehicle_id, (coordKm.get(trip.vehicle_id) || 0)
+            + (Number(trip.distance_km || 0) + Number(trip.empty_km || 0)) * share);
+        }
+      }
+      const la = Date.parse(trip.dep || trip.on_line_at || '');
+      const lb = Date.parse(trip.arr || trip.unloaded_at || trip.ends_at || '');
+      if (Number.isFinite(la) && Number.isFinite(lb) && lb > la) {
+        const overlap = Math.max(0, Math.min(toMs, lb) - Math.max(fromMs, la));
+        if (overlap) {
+          const tripKm = Number(trip.gps_km) > 0 ? Number(trip.gps_km) : Number(trip.distance_km || 0);
+          loadedByVehicle.set(trip.vehicle_id,
+            (loadedByVehicle.get(trip.vehicle_id) || 0) + tripKm * overlap / (lb - la));
+        }
+      }
     }
     const perVehicle = [];
     let totalKm = 0;
     let loadedTotal = 0;
-    const sources = { CAN: 0, GPS: 0, 'кэш': 0, 'нет данных': 0 };
+    const sources = { 'одометр': 0, 'кэш': 0, 'координаты': 0, 'стоянка/нет': 0 };
     for (const v of fleet) {
-      const live = results.get(v.id);
-      const cached = live ? null : cacheKm(v.id, fromMs, toMs);
-      const km = live ? live.km : cached;
-      const source = live ? live.source : (cached > 0 ? 'кэш' : 'нет данных');
+      let km = null;
+      let source = 'стоянка/нет';
+      const a = odoAt.get(v.id, fromDay)?.odo_km;
+      const b = odoAt.get(v.id, toDayExcl)?.odo_km;
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        const delta = b - a;
+        if (delta >= 0 && delta <= periodDays * 2000) { km = delta; source = 'одометр'; }
+      }
+      if (km === null) {
+        const c = cacheKm(v.id);
+        if (c !== null) { km = c; source = 'кэш'; }
+      }
+      if (km === null) {
+        const c = coordKm.get(v.id);
+        if (c > 0) { km = c; source = 'координаты'; }
+      }
       sources[source] += 1;
       const loaded = Math.min(km || 0, loadedByVehicle.get(v.id) || 0);
-      const empty = Math.max(0, (km || 0) - loaded);
       totalKm += km || 0;
       loadedTotal += loaded;
       perVehicle.push({ plate: v.plate, km: Math.round(km || 0),
-        loaded: Math.round(loaded), empty: Math.round(empty),
+        loaded: Math.round(loaded), empty: Math.round(Math.max(0, (km || 0) - loaded)),
         perDay: Math.round((km || 0) / periodDays), source });
     }
     perVehicle.sort((a, b) => b.km - a.km);
     return json(response, 200, {
-      from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString(),
-      days: +periodDays.toFixed(3), target,
+      from: fromDay, to: new Date(toMs - 1 + MSK).toISOString().slice(0, 10),
+      days: periodDays, target,
       totalKm: Math.round(totalKm), loadedKm: Math.round(loadedTotal),
       emptyKm: Math.round(totalKm - loadedTotal),
       perDayPerVehicle: fleet.length ? Math.round(totalKm / periodDays / fleet.length) : 0,

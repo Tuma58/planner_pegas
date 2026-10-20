@@ -825,25 +825,26 @@ export async function mileageDialog(context) {
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
   showModal(`<form id="mileForm"><h2>🛣 Пробеги парка за период</h2>
     <p class="muted">Общий / гружёный / порожний и среднесуточный на машину против цели.
-      Точность — до минуты: одометр CAN на границах периода; при сбое оборудования —
-      GPS-трек, затем дневной кэш (источник виден по каждой машине).</p>
+      Конструкция: ежедневные снимки одометра CAN на 00:00 — отчёт считает РАЗНОСТЬ
+      показаний на границах (мгновенно и стабильно, точность по суткам); пробелы
+      журнала добираются дневным кэшем, машины без CAN — по координатам плеч рейсов.</p>
     <div class="form-grid">
-      <label class="field">С (дата и время)<input type="datetime-local" name="from"
-        value="${toLocal(dayStart)}" required></label>
-      <label class="field">По (дата и время)<input type="datetime-local" name="to"
-        value="${toLocal(now)}" required></label>
+      <label class="field">С (с 00:00)<input type="date" name="from"
+        value="${toLocal(dayStart).slice(0, 10)}" required></label>
+      <label class="field">По (включительно)<input type="date" name="to"
+        value="${toLocal(now).slice(0, 10)}" required></label>
     </div>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button class="button">Сформировать</button>
     </div>
-    <p class="muted" id="mileWait" style="display:none">Опрашиваем одометры парка — до минуты…</p>
+    <p class="muted" id="mileWait" style="display:none">Формируем из журнала одометров…</p>
   </form>`, 'wide');
   document.getElementById('mileForm').onsubmit = async event => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
-    const fromIso = new Date(values.from).toISOString();
-    const toIso = new Date(values.to).toISOString();
+    const fromIso = values.from;
+    const toIso = values.to;
     document.getElementById('mileWait').style.display = '';
     let data;
     try { data = await api(`/api/mileage-report?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`); }
@@ -853,8 +854,8 @@ export async function mileageDialog(context) {
 }
 
 function renderMileage(context, d) {
-  const fmtDT = iso => new Date(iso).toLocaleString('ru-RU',
-    { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const fmtDT = iso => new Date(iso + (String(iso).length === 10 ? 'T00:00:00' : '')).toLocaleDateString('ru-RU',
+    { day: '2-digit', month: '2-digit' });
   const km = value => `${Math.round(value).toLocaleString('ru-RU')} км`;
   const okTarget = d.perDayPerVehicle >= d.target;
   const srcLine = Object.entries(d.sources).filter(([, n]) => n > 0)
