@@ -4098,6 +4098,20 @@ test('сотрудники: доступ, приём/увольнение, гр�
   assert.equal(listed.extPhone, '213');
   // Правка admin-учётки без allowAdmin запрещена.
   const admin = db.prepare(`SELECT id FROM users WHERE username='root-admin'`).get();
+  // Один номер — один владелец (20.10): правка карточкой «перевозит»
+  // номер, снимая его у прежнего владельца (кейс дежурной 126 у Петрова).
+  {
+    const mkU = db.prepare(`INSERT INTO users(id, username, full_name, password_hash, role)
+      VALUES(?,?,?,'x','dispatcher')`);
+    mkU.run('u-ph1', 'ph1', 'Первый Трубочник');
+    mkU.run('u-ph2', 'ph2', 'Второй Трубочник');
+    updateStaffUser(db, 'u-ph1', { workPhone: '89093185126' }, { allowAdmin: true });
+    updateStaffUser(db, 'u-ph2', { workPhone: '8 (909) 318-51-26' }, { allowAdmin: true });
+    const w1 = db.prepare(`SELECT work_phone FROM users WHERE id='u-ph1'`).get().work_phone;
+    const w2 = db.prepare(`SELECT work_phone FROM users WHERE id='u-ph2'`).get().work_phone;
+    assert.equal(w1, '', 'номер снят у прежнего владельца');
+    assert.ok(w2.replace(/\D/g, '').endsWith('9093185126'), 'номер у нового владельца');
+  }
   assert.match(updateStaffUser(db, admin.id, { jobRole: 'x' }, { allowAdmin: false }).error,
     /администратор/i);
   // График: полная замена месяца, мусор отвергается, пустые дни не хранятся.

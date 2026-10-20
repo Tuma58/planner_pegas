@@ -6,6 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { ROLE_LABELS, rolesOf, effectivePermissions } from './permissions.mjs';
+import { applyWorkPhone } from './telephony.mjs';
 
 // Полный доступ к справочнику: право staff:write (руководитель, админ)
 // либо логин из «Настройки → Сотрудники → полный доступ» (решение 07.10:
@@ -213,8 +214,15 @@ export function updateStaffUser(db, id, body, { allowAdmin = false }) {
   // Рабочий телефон смены — явной передачей (открепление дежурной
   // трубки руками руководителя; '' — снять).
   if (body.workPhone !== undefined) {
-    db.prepare(`UPDATE users SET work_phone=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-      .run(String(body.workPhone || '').trim(), id);
+    // Один номер — один владелец (правило руководителя 20.10: дежурная
+    // трубка не может числиться за двумя): непустой номер ставится через
+    // applyWorkPhone — он «перевозит» номер, снимая его у прежнего
+    // владельца (кейс Петрова: дежурная 126 висела на вышедшем со смены,
+    // потому что правка карточкой дублей не снимала).
+    const value = String(body.workPhone || '').trim();
+    if (value) applyWorkPhone(db, id, value);
+    else db.prepare(`UPDATE users SET work_phone='', updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(id);
   }
   return { ok: true };
 }
