@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { DONE_STATUSES, calcSettings, tripNet } from './money.mjs';
 import { effectiveArrival, effectiveFinish } from './crew-fund.mjs';
-import { deadTailCards } from './dispatch-load.mjs';
+import { deadTailCards, heroOfWeek } from './dispatch-load.mjs';
 
 export function effPeriodData(db, from, to, parkFn) {
   const calc = calcSettings(db);
@@ -156,7 +156,10 @@ export function effBoardData(db, from, to) {
     // «Мёртвый хвост» — снимок на момент сборки выпуска (решение
     // руководителя 16.10): карточки без движения дольше порога выходят
     // из эскалаций и зачищаются по этому списку.
-    deadTail: deadTailCards(db)
+    deadTail: deadTailCards(db),
+    // «🏆 Герой недели» — традиция благодарности (19.10): лучший по
+    // плотности контроля к личной норме за период выпуска.
+    hero: heroOfWeek(db, from, to)
   };
 }
 

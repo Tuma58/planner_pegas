@@ -1689,6 +1689,10 @@ export async function renderDispatcher(container, context, options = {}) {
     const shiftAll = state.shiftLoad?.people || [];
     const shiftPeople = (can('reports:read') ? shiftAll
       : shiftAll.filter(p => p.name === (state.data.user.fullName || ''))).slice(0, 8);
+    // «🙏 Поблагодарить» (традиция, решение руководителя 19.10): личное
+    // всплывающее «спасибо» в один клик — у руководителя и руководителя
+    // службы, через обычное личное сообщение чата.
+    const canThank = can('users:write') || state.data.user.dispatchExempt;
     const shiftBar = person => {
       const over = person.today > person.cap;
       const pct = Math.min(100, Math.round(person.today / Math.max(1, person.cap) * 100));
@@ -1696,6 +1700,8 @@ export async function renderDispatcher(container, context, options = {}) {
         <span class="nm">${escapeHtml(person.name.split(' ').slice(0, 2).join(' '))}${person.dispatcherRole ? '' : ' <small class="bad">не диспетчер!</small>'}</span>
         <span class="bar"><i style="--w:${pct}%"></i></span>
         <span class="val">${person.today} / ${person.cap}</span>
+        ${canThank && person.name !== myFull ? `<button class="asgBtn kb-thank" data-kb-thank="${escapeHtml(person.name)}"
+          title="Поблагодарить лично: сообщение всплывёт у сотрудника на экране">🙏</button>` : ''}
       </div>`;
     };
     const kbTransferCard = transfer => {
@@ -1808,6 +1814,34 @@ export async function renderDispatcher(container, context, options = {}) {
             method: 'POST', body: JSON.stringify({ text: text.trim() }) });
           toast('Ответ отправлен водителю');
         } catch (error) { toast(error.message, 'error'); }
+      }));
+    container.querySelectorAll('[data-kb-thank]').forEach(button =>
+      button.addEventListener('click', async event => {
+        event.stopPropagation();
+        const name = button.dataset.kbThank;
+        let users = [];
+        try { users = (await api('/api/chat/users')).items || []; } catch { users = []; }
+        const target = users.find(u => (u.fullName || u.full_name) === name);
+        if (!target) { toast('Сотрудник не найден для личного сообщения', 'error'); return; }
+        context.showModal(`<form id="kbThankForm"><h2>🙏 Поблагодарить</h2>
+          <p class="muted">${escapeHtml(name)} — сообщение придёт лично и всплывёт на экране.</p>
+          <label class="field">Текст
+            <textarea name="text" maxlength="500" rows="4">🙏 ${escapeHtml(name.split(' ')[0])}, спасибо за работу сегодня! </textarea></label>
+          <div class="modal-actions">
+            <button type="button" class="button ghost" data-close>Отмена</button>
+            <button class="button">Отправить</button>
+          </div></form>`);
+        document.getElementById('kbThankForm').onsubmit = async e2 => {
+          e2.preventDefault();
+          const text = String(new FormData(e2.currentTarget).get('text') || '').trim();
+          if (text.length < 5) { toast('Напишите пару слов', 'error'); return; }
+          try {
+            await api('/api/messages', { method: 'POST',
+              body: JSON.stringify({ recipientId: target.id, text }) });
+            context.closeModal();
+            toast(`Благодарность отправлена: ${name}`);
+          } catch (error) { toast(error.message, 'error'); }
+        };
       }));
     const setOwnerFilter = value => {
       state.dispatcherOwner = value || 'all';

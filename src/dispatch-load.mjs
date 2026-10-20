@@ -351,6 +351,42 @@ export function escalationSettings(db) {
   };
 }
 
+// «🏆 Герой недели» (традиция благодарности, решение руководителя 19.10):
+// лучший по ПЛОТНОСТИ контроля к личной норме — отметки за период,
+// делённые на личную ёмкость × отработанные дни. Нормировка на ёмкость
+// даёт шанс и новичку с малой нормой, не только ветерану с большой.
+// Порог участия — минимум дней с работой (настройка dispatch.heroMinDays,
+// фолбэк 3); тай-брейк — больший объём отметок.
+export function heroOfWeek(db, from, to) {
+  const minDays = Number(settingsObject(db).dispatch?.heroMinDays ?? 3) || 3;
+  let snap = null;
+  try { snap = JSON.parse(metaGet(db, 'dispatcher_capacity') || 'null'); } catch { snap = null; }
+  const caps = snap?.caps || {};
+  const fallbackCap = snap?.fallback || CAP_START;
+  const rows = db.prepare(`SELECT done_by name, day, COUNT(*) n FROM task_marks
+    WHERE kind='dispatcher' AND day >= ? AND day < ? AND done_by <> ''
+      AND item_key NOT LIKE 'claim|%'
+    GROUP BY done_by, day`).all(from, to);
+  const byName = new Map();
+  for (const r of rows) {
+    if (!byName.has(r.name)) byName.set(r.name, { days: 0, marks: 0 });
+    const x = byName.get(r.name);
+    x.days += 1;
+    x.marks += r.n;
+  }
+  let best = null;
+  for (const [name, x] of byName) {
+    if (x.days < minDays) continue;
+    const cap = caps[name] ?? fallbackCap;
+    const score = x.marks / (cap * x.days);
+    if (!best || score > best.score + 1e-9
+      || (Math.abs(score - best.score) < 1e-9 && x.marks > best.marks)) {
+      best = { name, marks: x.marks, days: x.days, cap, score: +score.toFixed(3) };
+    }
+  }
+  return best;
+}
+
 // «Мёртвый хвост» доски: активные карточки без движения дольше порога —
 // для списка зачистки в выпуске «Эффективности» (большинство лечится
 // постановкой забытых фактов, как в «✍ Отметки против физики»).

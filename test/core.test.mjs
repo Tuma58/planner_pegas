@@ -4682,6 +4682,36 @@ test('эскалация (3в): просроченная карточка → с
   assert.equal(off.escalated.length + off.released.length, 0, 'эскалация выключается нулём');
 });
 
+test('герой недели: плотность к личной норме, порог дней, тай-брейк объёмом', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-hero-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const { heroOfWeek } = await import('../src/dispatch-load.mjs');
+  const mark = db.prepare(`INSERT INTO task_marks(kind, day, item_key, done_by)
+    VALUES('dispatcher',?,?,?)`);
+  const day = off => new Date(Date.now() - off * 864e5).toISOString().slice(0, 10);
+  // Ёмкости: Ветеран 40, Новичок 10 (из снимка).
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('dispatcher_capacity',?)`)
+    .run(JSON.stringify({ caps: { 'Ветеран В': 40, 'Новичок Н': 10 }, fallback: 15 }));
+  // Ветеран: 4 дня × 30 отметок (плотность 0,75); Новичок: 4 дня × 9 (0,9).
+  for (const off of [1, 2, 3, 4]) {
+    for (let i = 0; i < 30; i += 1) mark.run(day(off), `v${off}-${i}`, 'Ветеран В');
+    for (let i = 0; i < 9; i += 1) mark.run(day(off), `n${off}-${i}`, 'Новичок Н');
+  }
+  // Залётный: 1 день × 50 — не проходит порог 3 дней.
+  for (let i = 0; i < 50; i += 1) mark.run(day(2), `z-${i}`, 'Залётный З');
+  const hero = heroOfWeek(db, day(7), day(0));
+  assert.equal(hero.name, 'Новичок Н', 'нормировка на ёмкость даёт шанс новичку');
+  assert.equal(hero.days, 4);
+  assert.equal(hero.marks, 36);
+  // Без снимка ёмкостей — фолбэк, функция не падает.
+  db.prepare(`DELETE FROM app_meta WHERE key='dispatcher_capacity'`).run();
+  assert.ok(heroOfWeek(db, day(7), day(0)), 'работает и без снимка ёмкостей');
+});
+
 test('телефония: дежурный номер резолвится только по рабочему телефону смены', async t => {
   const { findUserByPhone } = await import('../src/beeline-telephony.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-duty-test-'));

@@ -15,7 +15,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
 import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
-import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
+import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -1818,6 +1818,20 @@ function runEfficiencyIssues() {
         const carry = prev ? JSON.parse(prev.plan_json || '[]').filter(item => !item.done) : [];
         const issue = createIssue(db, { kind: 'week', from, to,
           ...defaultBase(from, to), plan: carry }, parkReportData);
+        // Традиция благодарности (решение руководителя 19.10): герой
+        // недели получает личное поздравление, все — короткое объявление
+        // без чужих цифр (приватность темпа сохраняется).
+        try {
+          const hero = heroOfWeek(db, from, to);
+          if (hero) {
+            notifyUserByName(hero.name, `🏆 Вы — герой недели на доске диспетчерской! `
+              + `${hero.marks} отметок контроля за ${hero.days} дн — лучшая плотность к личной норме. `
+              + 'Спасибо за работу! — руководитель', null, null);
+            notifyEveryone(`🏆 Герой недели на доске диспетчерской — ${hero.name}: `
+              + `${hero.marks} отметок контроля, лучшая плотность к личной норме. Поздравляем!`);
+            console.log(`герой недели: ${hero.name} (${hero.marks} отметок, score ${hero.score})`);
+          }
+        } catch (error) { console.error('герой недели:', error.message); }
         notify('manager', `📊 Недельный выпуск «Эффективности» готов (${from.slice(8)}.${from.slice(5, 7)}–${new Date(Date.parse(to) - 864e5).toISOString().slice(8, 10)}.${to.slice(5, 7)}): `
           + `Руководитель → Неделя. ${carry.length ? `Перенесено незакрытых пунктов плана: ${carry.length}.` : ''} Заполните план следующей недели.`);
         console.log(`эффективность: недельный выпуск ${from}→${to} (${issue.id})`);
