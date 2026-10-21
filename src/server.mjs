@@ -11305,13 +11305,17 @@ async function api(request, response, url) {
     const fleet = db.prepare(`SELECT v.id, v.plate FROM vehicles v
       WHERE v.status='work' ORDER BY v.plate`).all();
     const odoAt = db.prepare(`SELECT odo_km FROM vehicle_odometers WHERE vehicle_id=? AND day=?`);
+    // Нулевой кэш — не источник: у машины со сбойным трекером дневной
+    // кэш забит нулями при живых рейсах (21.10: 35 машин «0 км» при
+    // 7–13 рейсах). Пустая сумма проваливает лестницу дальше, к
+    // «координатам»; честная стоянка и там даст ноль → «стоянка/нет».
     const cacheKm = vehicleId => {
-      let km = 0; let days = 0;
+      let km = 0;
       for (const r of db.prepare(`SELECT day, COALESCE(can_km, km) v FROM vehicle_daily_runs
           WHERE vehicle_id=? AND day >= ? AND day < ?`).all(vehicleId, fromDay, toDayExcl)) {
-        km += Number(r.v || 0); days += 1;
+        km += Number(r.v || 0);
       }
-      return days ? km : null;
+      return km > 0 ? km : null;
     };
     // «По координатам»: плечи рейсов (плановые км выучены из фактических
     // плеч) + порожние подгоны, доля — по времени рейса внутри периода.
