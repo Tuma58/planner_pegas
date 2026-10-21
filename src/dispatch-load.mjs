@@ -437,21 +437,21 @@ export function boardStepNorms(db, nowIso = new Date().toISOString()) {
   return { prep: cached.prepH, load: gateH, road: midH, unload: gateH };
 }
 
-// Кто принимает эскалацию. Старшие смены — сменные сотрудники с должностью
-// со словом «старший» (их может быть несколько — Базуев и Филюнина;
-// вне обычной раздачи их держит dispatch_exempt); руководитель службы —
-// должность «руководитель … диспетчерской». LOWER кириллицы SQLite не
-// умеет — фильтр в JS.
+// Кто принимает эскалацию — по ЯВНОЙ роли из карточки сотрудника
+// (users.esc_role, перевод с текста должности 21.10): старшие смены —
+// сменные с esc_role='senior' (их может быть несколько — Базуев и
+// Филюнина; вне обычной раздачи их держит dispatch_exempt);
+// руководитель службы — esc_role='head'. Снятые галочки — осознанное
+// «не участвует», текстовых фолбэков нет.
 export function escalationStaff(db, nowIso = new Date().toISOString()) {
   const day = nowIso.slice(0, 10);
-  const lc = v => String(v || '').toLowerCase();
-  const onShift = db.prepare(`SELECT u.full_name name, COALESCE(u.job_role,'') job
+  const onShift = db.prepare(`SELECT u.full_name name, COALESCE(u.esc_role,'') esc
     FROM staff_shifts s JOIN users u ON u.id=s.user_id
     WHERE s.day=? AND s.kind IN ('day','night') AND u.active=1`).all(day);
-  const seniors = onShift.filter(p => lc(p.job).includes('старш')).map(p => p.name);
-  const head = db.prepare(`SELECT full_name name, COALESCE(job_role,'') job FROM users
-      WHERE active=1 AND deleted_at IS NULL AND COALESCE(job_role,'')<>''`).all()
-    .find(p => lc(p.job).includes('руковод') && lc(p.job).includes('диспетчер'))?.name || null;
+  const seniors = onShift.filter(p => p.esc === 'senior').map(p => p.name);
+  const head = db.prepare(`SELECT full_name FROM users
+    WHERE active=1 AND deleted_at IS NULL AND esc_role='head'
+    ORDER BY full_name LIMIT 1`).get()?.full_name || null;
   return { seniors, senior: seniors[0] || null, head };
 }
 

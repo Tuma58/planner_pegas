@@ -58,7 +58,8 @@ function roleLabel(user) {
 export function staffUserCard(db, id, month) {
   const user = db.prepare(`SELECT id, username, full_name, email, role, roles, active,
       guest, phone, work_phone, ext_phone, job_role, hired_at, fired_at,
-      telegram_chat_id, created_at FROM users WHERE id=? AND deleted_at IS NULL`).get(id);
+      telegram_chat_id, created_at, dispatch_exempt, esc_role
+    FROM users WHERE id=? AND deleted_at IS NULL`).get(id);
   if (!user) return null;
   const ack = db.prepare(`SELECT MAX(acked_at) at FROM guide_acks WHERE user_id=?`).get(id)?.at || null;
   const lastLogin = db.prepare(`SELECT MAX(created_at) at FROM audit_log
@@ -72,6 +73,7 @@ export function staffUserCard(db, id, month) {
       email: user.email || '', roles: rolesOf(user),
       roleLabel: roleLabel(user), jobRole: user.job_role || '',
       dispatchExempt: !!user.dispatch_exempt,
+      escRole: user.esc_role || '',
       phone: user.phone || '', extPhone: user.ext_phone || '',
       workPhone: user.work_phone || '', telegram: Boolean(user.telegram_chat_id),
       guest: Boolean(user.guest), active: Boolean(user.active),
@@ -202,7 +204,7 @@ export function updateStaffUser(db, id, body, { allowAdmin = false }) {
     return { ok: false, error: 'Учётку администратора меняет только администратор' };
   }
   db.prepare(`UPDATE users SET full_name=?, email=?, phone=?, ext_phone=?, job_role=?,
-      hired_at=?, dispatch_exempt=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      hired_at=?, dispatch_exempt=?, esc_role=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
     String(body.fullName ?? user.full_name).trim() || user.full_name,
     body.email ?? user.email,
     String(body.phone ?? user.phone ?? '').trim(),
@@ -210,6 +212,7 @@ export function updateStaffUser(db, id, body, { allowAdmin = false }) {
     String(body.jobRole ?? user.job_role ?? '').trim(),
     body.hiredAt ?? user.hired_at,
     body.dispatchExempt != null ? (body.dispatchExempt ? 1 : 0) : (user.dispatch_exempt || 0),
+    ['', 'senior', 'head'].includes(body.escRole) ? body.escRole : (user.esc_role || ''),
     id);
   // Рабочий телефон смены — явной передачей (открепление дежурной
   // трубки руками руководителя; '' — снять).

@@ -429,7 +429,14 @@ function staffEditDialog(context, person, after) {
     ${person ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
       <input type="checkbox" name="dispatchExempt" ${person?.dispatchExempt ? 'checked' : ''}>
       не участвует в автораспределении диспетчерской
-      <small class="muted">(руководитель службы: карточки доски ему не назначаются)</small></label>` : ''}
+      <small class="muted">(руководитель службы: карточки доски ему не назначаются)</small></label>
+    <label class="field">Эскалации доски
+      <select name="escRole">
+        <option value="" ${!person?.escRole ? 'selected' : ''}>— не принимает</option>
+        <option value="senior" ${person?.escRole === 'senior' ? 'selected' : ''}>Старший смены (1-й уровень)</option>
+        <option value="head" ${person?.escRole === 'head' ? 'selected' : ''}>Руководитель службы (2-й уровень)</option>
+      </select>
+      <small class="muted">кому доска поднимает сильно просроченные карточки; текст должности на это больше не влияет</small></label>` : ''}
     <div class="form-error" id="staffFormError"></div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button class="button primary" type="submit">${person ? 'Сохранить' : 'Принять'}</button>
@@ -444,6 +451,7 @@ function staffEditDialog(context, person, after) {
     const body = Object.fromEntries(['fullName', 'jobRole', 'phone', 'extPhone', 'email', 'hiredAt']
       .map(key => [key, String(values.get(key) || '').trim()]));
     if (person) body.dispatchExempt = form.querySelector('[name="dispatchExempt"]')?.checked || false;
+    if (person) body.escRole = String(values.get('escRole') || '');
     try {
       if (person) {
         await api(`/api/staff/users/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });

@@ -4569,14 +4569,15 @@ test('эскалация (3в): просроченная карточка → с
   });
   t.after(() => db.close());
   const today = new Date().toISOString().slice(0, 10);
-  const mkUser = db.prepare(`INSERT INTO users(id, username, full_name, password_hash, role, job_role)
-    VALUES(?,?,?,'x',?,?)`);
-  mkUser.run('u-sen', 'senior', 'Старший Логист', 'logist', 'Старший логист смены');
-  mkUser.run('u-head', 'head', 'Руководитель Службы', 'logist', 'Руководитель диспетчерской службы');
-  mkUser.run('u-disp', 'disp', 'Обычный Диспетчер', 'dispatcher', 'dispatcher');
+  const mkUser = db.prepare(`INSERT INTO users(id, username, full_name, password_hash, role, job_role, esc_role)
+    VALUES(?,?,?,'x',?,?,?)`);
+  mkUser.run('u-sen', 'senior', 'Старший Логист', 'logist', 'Старший логист смены', 'senior');
+  mkUser.run('u-head', 'head', 'Руководитель Службы', 'logist', 'Руководитель диспетчерской службы', 'head');
+  mkUser.run('u-disp', 'disp', 'Обычный Диспетчер', 'dispatcher', 'dispatcher', '');
   db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind) VALUES('sh-sen','u-sen',?,'day')`)
     .run(today);
-  // Старший ищется по должности в смене, руководитель службы — по должности.
+  // Старший — явная роль esc_role='senior' в смене, руководитель — esc_role='head'
+  // (21.10: перевод с текста должности на настройку карточки).
   const staff = escalationStaff(db);
   assert.equal(staff.senior, 'Старший Логист');
   assert.equal(staff.head, 'Руководитель Службы');
@@ -4603,7 +4604,7 @@ test('эскалация (3в): просроченная карточка → с
   assert.ok(!again.escalated.some(e => e.tripId === 'esc-1'), 'повторной эскалации нет');
   // Старших двое (Базуев и Филюнина) — эскалации раскладываются по
   // наименее нагруженному: вторая просроченная уходит второму старшему.
-  mkUser.run('u-sen2', 'senior2', 'Вторая Старшая', 'logist', 'Старший логист смены');
+  mkUser.run('u-sen2', 'senior2', 'Вторая Старшая', 'logist', 'Старший логист смены', 'senior');
   db.prepare(`INSERT INTO staff_shifts(id,user_id,day,kind) VALUES('sh-sen2','u-sen2',?,'day')`)
     .run(today);
   db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,

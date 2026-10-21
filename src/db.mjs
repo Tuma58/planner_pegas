@@ -839,8 +839,24 @@ function migrateColumns(db) {
   ensure('users', 'job_role', "TEXT NOT NULL DEFAULT ''");
   // Руководитель службы и т.п.: из автораспределения диспетчерской исключён.
   ensure('users', 'dispatch_exempt', 'INTEGER NOT NULL DEFAULT 0');
+  // Роль в эскалациях доски — ЯВНАЯ настройка карточки сотрудника
+  // (перевод с текста должности, заказ руководителя 21.10):
+  // '' — не участвует, 'senior' — старший смены, 'head' — руководитель
+  // диспетчерской службы. Разовая миграция ниже переносит текущие
+  // должности; дальше текст должности на эскалации не влияет.
+  ensure('users', 'esc_role', "TEXT NOT NULL DEFAULT ''");
   ensure('users', 'deleted_at', 'TEXT');
   ensure('users', 'guest', 'INTEGER NOT NULL DEFAULT 0');
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='esc_role_seeded'`).get()) {
+    for (const u of db.prepare(`SELECT id, job_role FROM users
+        WHERE COALESCE(esc_role,'')='' AND deleted_at IS NULL`).all()) {
+      const job = String(u.job_role || '').toLowerCase();
+      const role = job.includes('руковод') && job.includes('диспетчер') ? 'head'
+        : job.includes('старш') ? 'senior' : '';
+      if (role) db.prepare(`UPDATE users SET esc_role=? WHERE id=?`).run(role, u.id);
+    }
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('esc_role_seeded','1')`).run();
+  }
   // Телефон сотрудника: по нему определяется входящий звонок и по нему же
   // водителю дают контакт механика, диспетчера смены, начальника колонны.
   ensure('users', 'phone', "TEXT NOT NULL DEFAULT ''");
