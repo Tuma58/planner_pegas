@@ -11361,7 +11361,14 @@ async function api(request, response, url) {
       const b = odoAt.get(v.id, toDayExcl)?.odo_km;
       if (Number.isFinite(a) && Number.isFinite(b)) {
         const delta = b - a;
-        if (delta >= 0 && delta <= periodDays * 2000) { km = delta; source = 'одометр'; }
+        // Залипший CAN-одометр (кейс 21.10: т925ат58/т929ат58 — разность 0
+        // при 7 рейсах): показание-константа даёт ничтожную разность на
+        // фоне километров рейсов периода. Коридор здравого смысла: если
+        // рейсы насчитали >1000 км, а одометр — меньше их десятой доли,
+        // ему нет веры, лестница идёт дальше (кэш → координаты).
+        const planned = coordKm.get(v.id) || 0;
+        const stuck = planned > 1000 && delta < planned * 0.1;
+        if (delta >= 0 && delta <= periodDays * 2000 && !stuck) { km = delta; source = 'одометр'; }
       }
       if (km === null) {
         const c = cacheKm(v.id);
