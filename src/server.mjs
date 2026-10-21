@@ -4223,7 +4223,15 @@ async function closeMissedUnloads() {
         FROM trips WHERE id=?`).get(row.trip_id, row.trip_id);
       const notBeforeMs = Date.parse(tripRow?.dep || tripRow?.on_line_at || tripRow?.starts_at || 0) || 0;
       const te = Math.floor(Date.now() / 1000);
-      const ts = Math.max(te - 36 * 3600, Math.floor(notBeforeMs / 1000));
+      let ts = Math.max(te - 36 * 3600, Math.floor(notBeforeMs / 1000));
+      // Проспанная выгрузка (кейс №5226, 21.10): прибытие на точку отмечено,
+      // но прошло больше 36 часов — стоянка выпадала из окна поиска, и рейс
+      // зависал «в пути» навсегда. Когда факт прибытия есть, окно честно
+      // растягивается до него (с часом запаса), не раньше убытия с погрузки.
+      const arrMs = Date.parse(row.actual_arrival || '');
+      if (Number.isFinite(arrMs) && arrMs / 1000 - 3600 < ts) {
+        ts = Math.max(Math.floor(arrMs / 1000) - 3600, Math.floor(notBeforeMs / 1000));
+      }
       if (ts >= te) continue;
       const answer = await pilotApi(`/api/v3/vehicles/track/stops?imei=${imei}&ts=${ts}&te=${te}`);
       const stops = answer?.data?.stops || [];
