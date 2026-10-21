@@ -177,10 +177,16 @@ export function nextEventHint(event, fromMs) {
 
 // Ставка без НДС: наличная перевозка — вся сумма (НДС нет),
 // безналичная — очистка по ставке клиента (ИП 7%, остальные 22%).
+// Льготный НДС: галочка «НДС 7% по договору» в карточке клиента
+// (settings.calculation.vat7Customers) или форма «ИП» в имени.
+const lowVatName = (name, calc) => (calc.vat7Customers || [])
+  .includes(String(name || '').toLowerCase().replace(/\s+/g, ' ').trim())
+  || /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(name || '');
+
 export function orderNet(order, data) {
   const calc = data.settings.calculation;
   if (Number(order.cash)) return Number(order.rate_vat) || 0;
-  const vat = /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(order.customer_name)
+  const vat = lowVatName(order.customer_name, calc)
     ? Number(calc.individualEntrepreneurVatRate ?? 0.07)
     : Number(calc.vatRate ?? 0.22);
   return (Number(order.rate_vat) || 0) / (1 + vat);
@@ -195,7 +201,7 @@ function wireNetField(form, netInput, data) {
   const calc = data.settings.calculation;
   const gross = form.elements.rateVat;
   const vatOf = () => (form.elements.cash?.checked ? 0
-    : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(form.elements.customerName?.value || '')
+    : lowVatName(form.elements.customerName?.value || '', calc)
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07)
       : Number(calc.vatRate ?? 0.22));
   const fromGross = () => {
@@ -946,7 +952,7 @@ export async function renderSales(container, context) {
   const periodTrips = data.trips.filter(trip => trip.status !== 'rejected' &&
     new Date(trip.ends_at) >= curMonthStart && new Date(trip.ends_at) < curMonthEnd);
   const periodNet = periodTrips.reduce((sum, trip) => {
-    const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
+    const vat = trip.cash ? 0 : lowVatName(trip.customer_name, calc)
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22);
     return sum + trip.revenue_vat / (1 + vat);
   }, 0);

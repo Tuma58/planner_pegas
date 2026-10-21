@@ -1141,7 +1141,11 @@ function calculation(fromId, toId, revenue = 0, customerName = '') {
   const distance = Number(rate?.distance_km || 700);
   const gross = Number(revenue || rate?.default_rate_vat || 0);
   const days = transitHours(distance, settings) / 24;
-  const vat = /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(customerName)
+  // Льготный НДС: явная галочка в карточке клиента (список приходит в
+  // settings.vat7Customers) или форма «ИП» в имени — как в каноне денег.
+  const vat = (settings.vat7Customers || [])
+    .includes(String(customerName || '').toLowerCase().replace(/\s+/g, ' ').trim())
+    || /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(customerName)
     ? Number(settings.individualEntrepreneurVatRate ?? 0.07)
     : Number(settings.vatRate ?? 0.22);
   const variable = distance *
@@ -2259,7 +2263,9 @@ function showDayAnalytics(dayIso) {
   // Выручка дня — по рейсам, завершающимся в этот день (б. НДС, наличные целиком).
   const calc = state.data.settings.calculation;
   const netOf = trip => trip.revenue_vat / (1 + (trip.cash ? 0
-    : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
+    : (calc.vat7Customers || [])
+      .includes(String(trip.customer_name || '').toLowerCase().replace(/\s+/g, ' ').trim())
+      || /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22)));
   const dayNet = ending.reduce((sum, trip) => sum + netOf(trip), 0);
 

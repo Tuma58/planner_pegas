@@ -83,12 +83,15 @@ const vatTwin = (planner, c1) =>
   near(planner / 1.07, c1, Math.max(2, c1 * 0.01)) ||
   near(planner * 1.22, c1, Math.max(2, c1 * 0.01));
 
-// Очистка от НДС по правилам планера: ИП — 7%, остальные — 22%.
+// Очистка от НДС по правилам планера: ИП — 7%, остальные — 22%;
+// vat7 — нормализованные имена клиентов с договорной ставкой 7%
+// (settings.calculation.vat7Customers), для них тоже 7%.
 const isIp = name => /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(String(name || ''));
-export const netOf = (sum, customer) => sum / (isIp(customer) ? 1.07 : 1.22);
+export const netOf = (sum, customer, vat7 = []) => sum / (isIp(customer)
+  || vat7.includes(String(customer || '').toLowerCase().replace(/\s+/g, ' ').trim()) ? 1.07 : 1.22);
 
 // Главная сверка. trips — рейсы планера (bootstrap), month — 'ГГГГ-ММ'.
-export function reconcileOrders(orders1c, trips, month) {
+export function reconcileOrders(orders1c, trips, month, vat7 = []) {
   const inMonth = orders1c.filter(order => order.day.startsWith(month));
   // Дата отправления рейса — по МСК (starts_at в базе — UTC).
   const plannerTrips = trips
@@ -159,7 +162,7 @@ export function reconcileOrders(orders1c, trips, month) {
     month,
     monthLabel: `${MONTH_LABELS[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`,
     fileEdge,
-    c1: { n: inMonth.length, sum: c1Sum, net: sum(inMonth, order => netOf(order.sum, order.customer)) },
+    c1: { n: inMonth.length, sum: c1Sum, net: sum(inMonth, order => netOf(order.sum, order.customer, vat7)) },
     planner: { n: plannerTrips.length, sum: sum(plannerTrips, trip => trip.revenue_vat) },
     pairs: pairs.length, exact: exact.length,
     vatErr, oneRub, other, surplus, notYet, onlyC1,
@@ -254,7 +257,8 @@ export function reconcileDialog(context) {
     let currentFile = '';
     let currentOrders = null;
     const runFor = month => {
-      current = reconcileOrders(currentOrders, state.data.trips, month);
+      current = reconcileOrders(currentOrders, state.data.trips, month,
+        state.data.settings?.calculation?.vat7Customers || []);
       const months = fileMonths(currentOrders);
       document.getElementById('reconcileBody').innerHTML = `
         <label class="field" style="max-width:280px">Месяц сверки (в файле их несколько)

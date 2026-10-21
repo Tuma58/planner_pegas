@@ -12,7 +12,7 @@ import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, 
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
-import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon } from './money.mjs';
+import { DONE_STATUSES, calcSettings, forecastMonth, tripNet as tripNetCanon, vat7Customers } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
@@ -104,6 +104,10 @@ function plannerSettings() {
   // сервер (этап 2 проекта «Скорости»).
   const liveSpeeds = liveSpeedNorms()?.live;
   if (liveSpeeds) rest.calculation = { ...rest.calculation, liveSpeeds };
+  // Льготный НДС 7% по договору: фронтовые копии канона денег (дашборд,
+  // руководитель, расчёт при внесении заявки) обязаны видеть тот же
+  // список клиентов, что серверный tripNet.
+  rest.calculation = { ...rest.calculation, vat7Customers: vat7Customers(db) };
   return { ...rest, bodyCompat: BODY_COMPAT,
     telegram: { enabled: Boolean(telegram?.botToken), botName: telegram?.botName || '' },
     telephony: telephony
@@ -6401,21 +6405,24 @@ async function api(request, response, url) {
       ? Number(value) : null;
     db.prepare(`INSERT INTO customer_profiles(customer_name,inn,segment,status,manager_id,contract_no,
         contract_until,payment_days,conditions,next_contact_at,tags,
-        demurrage_rate,demurrage_free_hours,updated_by)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        demurrage_rate,demurrage_free_hours,vat_low,updated_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(customer_name) DO UPDATE SET inn=excluded.inn, segment=excluded.segment,
         status=excluded.status, manager_id=excluded.manager_id, contract_no=excluded.contract_no,
         contract_until=excluded.contract_until, payment_days=excluded.payment_days,
         conditions=excluded.conditions, next_contact_at=excluded.next_contact_at, tags=excluded.tags,
         demurrage_rate=excluded.demurrage_rate, demurrage_free_hours=excluded.demurrage_free_hours,
+        vat_low=excluded.vat_low,
         updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
       .run(name, String(body.inn || '').trim().slice(0, 20), String(body.segment || '').trim().slice(0, 2),
         status, body.managerId || null, String(body.contractNo || '').trim().slice(0, 60),
         body.contractUntil || null, numOrNull(body.paymentDays),
         String(body.conditions || '').trim().slice(0, 1000), body.nextContactAt || null,
         String(body.tags || '').trim().slice(0, 200),
-        numOrNull(body.demurrageRate), numOrNull(body.demurrageFreeHours), user.id);
-    audit(db, user, 'update', 'customer-profile', name, { status, segment: body.segment });
+        numOrNull(body.demurrageRate), numOrNull(body.demurrageFreeHours),
+        body.vatLow ? 1 : 0, user.id);
+    audit(db, user, 'update', 'customer-profile', name,
+      { status, segment: body.segment, vatLow: body.vatLow ? 1 : 0 });
     return json(response, 200, { ok: true });
   }
   if (request.method === 'POST' && pathname === '/api/customers/contacts') {

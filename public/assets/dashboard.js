@@ -16,8 +16,11 @@ const DEFAULT_MONTH_PLAN = 160_000_000;
 const tsMs = value => value ? Date.parse(String(value).replace(' ', 'T') +
   (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
 
+const lowVat = (name, calc) => (calc.vat7Customers || [])
+  .includes(String(name || '').toLowerCase().replace(/\s+/g, ' ').trim())
+  || /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(name || '');
 const tripNet = (trip, calc) => trip.revenue_vat / (1 + (trip.cash ? 0
-  : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name || '')
+  : lowVat(trip.customer_name, calc)
     ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22)));
 
 // Все план-фактные показатели дашборда одним расчётом (тестируемо отдельно).

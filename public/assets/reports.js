@@ -49,6 +49,10 @@ export function wireReport(kind, { reopen }) {
 }
 const pct = value => `${(value * 100).toFixed(1)}%`;
 const isIP = name => /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(String(name || ''));
+// Льготная ставка: ИП по имени или галочка «НДС 7% по договору» в карточке
+// клиента (список в settings.calculation.vat7Customers).
+const isLowVat = (name, calc) => isIP(name) || (calc?.vat7Customers || [])
+  .includes(String(name || '').toLowerCase().replace(/\s+/g, ' ').trim());
 const fmtDay = iso => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' })
   .format(new Date(`${iso}T12:00:00Z`));
 
@@ -62,7 +66,7 @@ function econByClient(data, from, to) {
   const calculation = data.settings.calculation;
   const map = new Map();
   data.trips.filter(trip => trip.status !== 'rejected' && inRange(trip, from, to)).forEach(trip => {
-    const vat = trip.cash ? 0 : isIP(trip.customer_name)
+    const vat = trip.cash ? 0 : isLowVat(trip.customer_name, calculation)
       ? Number(calculation.individualEntrepreneurVatRate ?? 0.07)
       : Number(calculation.vatRate ?? 0.22);
     const net = Number(trip.revenue_vat) / (1 + vat);
@@ -363,19 +367,19 @@ export async function buildReport(kind, from, to, data) {
           <td class="num">${pct(report.operationalMargin)}</td></tr></tbody></table>`;
   } else if (kind === 'clients') {
     const clients = econByClient(data, from, to);
-    const ipCount = clients.filter(row => isIP(row.customer)).length;
+    const ipCount = clients.filter(row => isLowVat(row.customer, data.settings.calculation)).length;
     const totals = clients.reduce((sum, row) =>
       ({ trips: sum.trips + row.trips, revenue: sum.revenue + row.revenue, profit: sum.profit + row.profit }),
       { trips: 0, revenue: 0, profit: 0 });
     body = `<div class="rsums"><span class="rsum">Заказчиков: <b>${clients.length}</b></span>
-        <span class="rsum">из них ИП (НДС 7%): <b>${ipCount}</b></span>
+        <span class="rsum">из них со ставкой 7% (ИП и договорные): <b>${ipCount}</b></span>
         <span class="rsum">Выручка б.НДС: <b>${rub(totals.revenue)}</b></span>
         <span class="rsum">Марж. доход: <b>${rub(totals.profit)}</b></span>
         <span class="rsum">Маржа: <b>${totals.revenue ? pct(totals.profit / totals.revenue) : '—'}</b></span></div>
       <div class="geohint">Сортировка по выручке${clients.length > 40 ? ' · показаны первые 40' : ''}. Выручка без НДС учитывает ставку по клиенту (ИП — 7%).</div>
       <table class="rtable"><thead><tr><th>Заказчик</th><th class="num">НДС</th><th class="num">Рейсов</th><th class="num">Выручка б.НДС</th><th class="num">Марж. доход</th><th class="num">Маржа</th></tr></thead>
-        <tbody>${clients.slice(0, 40).map(row => `<tr><td>${escapeHtml(row.customer)}${isIP(row.customer) ? ' <span class="badge">ИП</span>' : ''}</td>
-          <td class="num">${isIP(row.customer) ? '7%' : '22%'}</td><td class="num">${row.trips}</td>
+        <tbody>${clients.slice(0, 40).map(row => `<tr><td>${escapeHtml(row.customer)}${isIP(row.customer) ? ' <span class="badge">ИП</span>' : isLowVat(row.customer, data.settings.calculation) ? ' <span class="badge">7%</span>' : ''}</td>
+          <td class="num">${isLowVat(row.customer, data.settings.calculation) ? '7%' : '22%'}</td><td class="num">${row.trips}</td>
           <td class="num">${rub(row.revenue)}</td><td class="num">${rub(row.profit)}</td>
           <td class="num ${row.margin < 0 ? 'danger' : ''}">${pct(row.margin)}</td></tr>`).join('') ||
           '<tr><td colspan=6>Нет рейсов за период</td></tr>'}</tbody></table>`;

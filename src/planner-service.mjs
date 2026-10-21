@@ -1114,7 +1114,7 @@ export function vehicleUtilization(db, fromValue, toValue) {
   if (Date.parse(to) <= Date.parse(from)) {
     throw Object.assign(new Error('Период задан неверно'), { status: 422 });
   }
-  const calculation = settingsObject(db).calculation;
+  const calculation = calcSettings(db); // канон: включает vat7Customers
   // Будущие дни периода не учитываются (см. reportSnapshot).
   const tomorrowMs = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() + 1);
   const dayCount = Math.max(0, Math.round((Math.min(Date.parse(to), tomorrowMs) - Date.parse(from)) / 86_400_000));
@@ -1141,12 +1141,8 @@ export function vehicleUtilization(db, fromValue, toValue) {
     for (let day = 0; day < dayCount; day += 1) {
       counts[dayStateOf(trips, dispositions, fromMs + day * 86_400_000)] += 1;
     }
-    const netRevenue = (byVehicleRevenue.get(vehicle.id) || []).reduce((sum, trip) => {
-      const vat = trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
-        ? Number(calculation.individualEntrepreneurVatRate ?? 0.07)
-        : Number(calculation.vatRate ?? 0.22);
-      return sum + trip.revenue_vat / (1 + vat);
-    }, 0);
+    const netRevenue = (byVehicleRevenue.get(vehicle.id) || [])
+      .reduce((sum, trip) => sum + tripNet(trip, calculation), 0);
     const vehicleTripRows = byVehicleRevenue.get(vehicle.id) || [];
     const loadedKm = vehicleTripRows.reduce((sum, row) => sum + Number(row.distance_km || 0), 0);
     const emptyKm = vehicleTripRows.reduce((sum, row) => sum + Number(row.empty_km || 0), 0) +
@@ -1373,7 +1369,8 @@ export function upcomingCustomerDates(db, nowMs = Date.now(), horizonDays = 7) {
 export function customerCard(db, name, nowMs = Date.now()) {
   const profile = db.prepare('SELECT * FROM customer_profiles WHERE customer_name=?').get(name) || {
     customer_name: name, inn: '', segment: '', status: 'active', manager_id: null,
-    contract_no: '', contract_until: null, payment_days: null, conditions: '', next_contact_at: null, tags: ''
+    contract_no: '', contract_until: null, payment_days: null, conditions: '', next_contact_at: null,
+    tags: '', vat_low: 0
   };
   const manager = profile.manager_id
     ? db.prepare('SELECT full_name FROM users WHERE id=?').get(profile.manager_id)?.full_name || '' : '';

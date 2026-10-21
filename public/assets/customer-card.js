@@ -133,6 +133,8 @@ export async function customerCardDialog(name, context) {
         <label class="field">Простой: ставка, ₽/ч<input name="demurrageRate" type="number" min="0" step="50" value="${profile.demurrage_rate ?? ''}" placeholder="пусто = не в договоре" title="Заполняется, если оплата простоя заведена в договоре клиента. С заполненной ставкой сверхнормативный простой П/В автоматически рождает претензию в «⏳ Простои П/В»; пусто — клиент попадает только в понедельничную аналитику «Дорогие ворота»"></label>
         <label class="field">Простой: бесплатно, ч<input name="demurrageFreeHours" type="number" min="0" step="1" value="${profile.demurrage_free_hours ?? ''}" placeholder="из настроек" title="Бесплатные часы по договору этого клиента; пусто — берётся общий норматив из Настроек"></label>
         <label class="field">Теги<input name="tags" value="${escapeHtml(profile.tags || '')}" placeholder="мясо, реф, сеть"></label>
+        <label style="display:inline-flex;gap:6px;align-items:center;margin-top:18px" title="Исключение по договору: вся выручка клиента считается без НДС по льготной ставке из Настроек → Калькуляция (как у ИП) — в отчётах, на дашборде и при внесении заявок">
+          <input type="checkbox" name="vatLow" ${profile.vat_low ? 'checked' : ''}> НДС 7% по договору</label>
       </div>
       <label class="field">Условия и особенности<textarea name="conditions" rows="3" maxlength="1000">${escapeHtml(profile.conditions || '')}</textarea></label>
       <button class="button small">Сохранить реквизиты</button>
@@ -169,7 +171,8 @@ export async function customerCardDialog(name, context) {
     post('/api/customers/profile', 'PUT', { ...profileBody(profile), name, ...values,
       contractUntil: values.contractUntil || null, paymentDays: values.paymentDays === '' ? null : values.paymentDays,
       demurrageRate: values.demurrageRate === '' ? null : values.demurrageRate,
-      demurrageFreeHours: values.demurrageFreeHours === '' ? null : values.demurrageFreeHours });
+      demurrageFreeHours: values.demurrageFreeHours === '' ? null : values.demurrageFreeHours,
+      vatLow: event.currentTarget.querySelector('[name="vatLow"]')?.checked || false });
   });
   document.querySelectorAll('[data-cc-del-contact]').forEach(button =>
     button.addEventListener('click', () => {
@@ -184,5 +187,6 @@ const profileBody = profile => ({
   inn: profile.inn, segment: profile.segment, status: profile.status, managerId: profile.manager_id,
   contractNo: profile.contract_no, contractUntil: profile.contract_until, paymentDays: profile.payment_days,
   conditions: profile.conditions, nextContactAt: profile.next_contact_at, tags: profile.tags,
-  demurrageRate: profile.demurrage_rate, demurrageFreeHours: profile.demurrage_free_hours
+  demurrageRate: profile.demurrage_rate, demurrageFreeHours: profile.demurrage_free_hours,
+  vatLow: !!profile.vat_low
 });

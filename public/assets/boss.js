@@ -55,7 +55,10 @@ function cumChart(fact, plan, labels) {
 }
 
 // Выручка без НДС рейса — единое правило (ИП 7%).
-const tripNet = (trip, calc) => trip.revenue_vat / (1 + (trip.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(trip.customer_name)
+const lowVat = (name, calc) => (calc.vat7Customers || [])
+  .includes(String(name || '').toLowerCase().replace(/\s+/g, ' ').trim())
+  || /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(name || '');
+const tripNet = (trip, calc) => trip.revenue_vat / (1 + (trip.cash ? 0 : lowVat(trip.customer_name, calc)
   ? Number(calc.individualEntrepreneurVatRate ?? 0.07) : Number(calc.vatRate ?? 0.22)));
 
 // Шапка трёх горизонтов (проект «Повышение эффективности», 09.10):
@@ -585,7 +588,7 @@ export async function renderBoss(container, context) {
       const createdDay = (data.orders || []).filter(order => order.status !== 'cancelled' &&
         tsMs(order.created_at) >= dayStart && tsMs(order.created_at) < dayEnd);
       const createdSum = createdDay.reduce((sum, order) => {
-        const vat = order.cash ? 0 : /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu.test(order.customer_name || '')
+        const vat = order.cash ? 0 : lowVat(order.customer_name, state.data.settings.calculation)
           ? Number(state.data.settings.calculation.individualEntrepreneurVatRate ?? 0.07)
           : Number(state.data.settings.calculation.vatRate ?? 0.22);
         return sum + Number(order.rate_vat || 0) / (1 + vat);

@@ -3903,6 +3903,11 @@ test('канон денег: одна формула для всех повер�
   // Наличные — без НДС; ставки из настроек, не зашиты.
   assert.equal(tripNet({ revenue_vat: 50000, cash: 1, customer_name: 'ИП Иванов' }, calc), 50000);
   assert.equal(Math.round(tripNet({ revenue_vat: 110000, customer_name: 'X' }, { vatRate: 0.10 })), 100000);
+  // Договорная ставка 7% (галочка в карточке клиента, 21.10): имя в
+  // vat7Customers — льгота независимо от формы, сравнение без регистра.
+  const calc7 = { ...calc, vat7Customers: ['ооо провентус'] };
+  assert.equal(Math.round(tripNet({ revenue_vat: 107000, customer_name: 'ООО  Провентус' }, calc7)), 100000);
+  assert.equal(Math.round(tripNet({ revenue_vat: 122000, customer_name: 'ООО Другой' }, calc7)), 100000);
   // Дата выгрузки: факт, затем расчётная.
   assert.equal(doneDayOf({ unloaded_at: '2026-10-07T10:00:00Z', ends_at: '2026-10-06T10:00:00Z' }), '2026-10-07');
   assert.equal(doneDayOf({ unloaded_at: null, ends_at: '2026-10-06T10:00:00Z' }), '2026-10-06');

@@ -10,16 +10,36 @@ const IP_RE = /(?<![\p{L}\p{N}])ИП(?![\p{L}\p{N}])/iu;
 
 export const DONE_STATUSES = new Set(['unloaded', 'done', 'paid']);
 
+// Нормализация имени клиента для сравнения написаний («ООО Провентус» и
+// «ооо  провентус» — один клиент в разных регистрах/пробелах).
+export const normCustomer = name => String(name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+// Клиенты со ставкой НДС 7% по договору (галочка в карточке клиента,
+// заказ руководителя 21.10) — нормализованные имена из профилей.
+export function vat7Customers(db) {
+  try {
+    return db.prepare(`SELECT customer_name FROM customer_profiles WHERE vat_low=1`).all()
+      .map(row => normCustomer(row.customer_name));
+  } catch { return []; }
+}
+
 export function calcSettings(db) {
   try {
     const row = db.prepare(`SELECT value_json FROM settings WHERE key='calculation'`).get();
-    return row ? JSON.parse(row.value_json) : {};
+    const calc = row ? JSON.parse(row.value_json) : {};
+    calc.vat7Customers = vat7Customers(db);
+    return calc;
   } catch { return {}; }
 }
 
+// Льготная ставка клиента: явная галочка в карточке ИЛИ форма «ИП» в имени.
+export const lowVatCustomer = (name, calc = {}) =>
+  (Array.isArray(calc.vat7Customers) && calc.vat7Customers.includes(normCustomer(name)))
+  || IP_RE.test(String(name || ''));
+
 export function tripNet(trip, calc = {}) {
   const rate = trip.cash ? 0
-    : IP_RE.test(String(trip.customer_name || ''))
+    : lowVatCustomer(trip.customer_name, calc)
       ? Number(calc.individualEntrepreneurVatRate ?? 0.07)
       : Number(calc.vatRate ?? 0.22);
   return Number(trip.revenue_vat || 0) / (1 + rate);
