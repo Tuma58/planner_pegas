@@ -3417,7 +3417,34 @@ function plannedKmFor(fromAddressId, toAddressId, via = []) {
           (leg.median_km >= straight * 1.05 && leg.median_km <= straight * 1.65)) {
         return leg.median_km;
       }
-      // Медиана вне физики дороги — падаем на прямую×коэффициент ниже.
+      // Медиана вне физики дороги — падаем на этажи ниже.
+    }
+    // Принцип руководителя 22.10: маршруты повторяются — плановые км
+    // новой заявки обязаны соответствовать ПРЕДЫДУЩИМ рейсам этой же
+    // пары адресов. Когда чистых фактов нет (или их глушит коридор),
+    // берём медиану принятых план-км завершённых рейсов пары. Коридором
+    // к прямой этот этаж НЕ режем: битые координаты не должны затирать
+    // живую историю (кейс №5334: «прямая» от Ростова 1 027 км глушила бы
+    // честные ~420). Расхождение истории с прямой — сигнал геокодеру
+    // перепроверить оба адреса (сброс geocode_try_at).
+    const hist = db.prepare(`SELECT t.distance_km km FROM trips t
+      JOIN orders o ON o.id=t.order_id
+      WHERE o.from_address_id=? AND o.to_address_id=? AND t.status IN ('unloaded','done','paid')
+        AND COALESCE(o.via_json,'[]')='[]' AND t.distance_km > 20
+      ORDER BY datetime(COALESCE(t.unloaded_at, t.ends_at)) DESC LIMIT 15`)
+      .all(fromAddressId, toAddressId).map(row => row.km).sort((a, b) => a - b);
+    if (hist.length >= 3) {
+      const medianKm = hist[Math.floor(hist.length / 2)];
+      const a = point.get(fromAddressId);
+      const b = point.get(toAddressId);
+      const straight = a && b
+        ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
+      if (straight && straight >= 30 &&
+          (medianKm < straight * 1.05 || medianKm > straight * 1.65)) {
+        db.prepare(`UPDATE addresses SET geocode_try_at=NULL WHERE id IN (?,?)`)
+          .run(fromAddressId, toAddressId);
+      }
+      return Math.round(medianKm);
     }
   }
   const chain = [point.get(fromAddressId),
