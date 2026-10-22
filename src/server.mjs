@@ -607,12 +607,40 @@ setTimeout(runUnloadWatch, 15_000);
 // правил Nominatim. Координаты дают подгон и плановый километраж; субъект —
 // если пуст; зона — только если не была проставлена вовсе. Неудача
 // помечается geocode_try_at и повторяется не раньше чем через неделю.
+// Адрес с координатами ВНЕ своей геозоны (кейс №5334, 22.10: геокодер
+// посадил московскую Родниковую в Ростов-на-Дону — плановый километраж
+// 1388 км вместо 400, транзит-обещание уехало на сутки, логист чинил
+// руками). Подозрителен адрес дальше 400 км от медианного центра
+// адресов своей зоны (зоны с <4 адресами не судим — центра нет).
+function suspiciousGeoAddress() {
+  const addrs = db.prepare(`SELECT id, name, address, region, zone_id, latitude, longitude
+    FROM addresses WHERE latitude IS NOT NULL AND zone_id IS NOT NULL
+      AND (geocode_try_at IS NULL OR datetime(geocode_try_at) < datetime('now', '-7 days'))`).all();
+  const zones = new Map();
+  for (const a of db.prepare(`SELECT zone_id, latitude, longitude FROM addresses
+    WHERE latitude IS NOT NULL AND zone_id IS NOT NULL`).all()) {
+    if (!zones.has(a.zone_id)) zones.set(a.zone_id, { lats: [], lons: [] });
+    zones.get(a.zone_id).lats.push(a.latitude);
+    zones.get(a.zone_id).lons.push(a.longitude);
+  }
+  const med = list => { list.sort((x, y) => x - y); return list[Math.floor(list.length / 2)]; };
+  for (const a of addrs) {
+    const z = zones.get(a.zone_id);
+    if (!z || z.lats.length < 4) continue;
+    const [clat, clon] = [med([...z.lats]), med([...z.lons])];
+    const away = Math.hypot((a.latitude - clat) * 111,
+      (a.longitude - clon) * 111 * Math.cos(a.latitude / 57.3));
+    if (away > 400) return { ...a, expectLat: clat, expectLon: clon };
+  }
+  return null;
+}
 async function runGeocodeWatch() {
   try {
-    const address = db.prepare(`SELECT id, name, address, region, zone_id FROM addresses
+    const address = db.prepare(`SELECT id, name, address, region, zone_id,
+        NULL expectLat, NULL expectLon FROM addresses
       WHERE latitude IS NULL
         AND (geocode_try_at IS NULL OR datetime(geocode_try_at) < datetime('now', '-7 days'))
-      ORDER BY name LIMIT 1`).get();
+      ORDER BY name LIMIT 1`).get() || suspiciousGeoAddress();
     if (!address) return;
     db.prepare(`UPDATE addresses SET geocode_try_at=CURRENT_TIMESTAMP WHERE id=?`).run(address.id);
     // Каскад упрощений: полный адрес часто не находится из-за «д. 8, стр. 4»
@@ -624,12 +652,33 @@ async function runGeocodeWatch() {
     const short = raw.split(',').map(part => part.trim()).filter(Boolean).slice(0, 2).join(', ');
     let hit = null;
     for (const variant of [...new Set([raw, noHouse, short])].filter(Boolean)) {
-      [hit] = await geocodeQuery(variant);
-      if (hit && Number.isFinite(hit.latitude)) break;
-      hit = null;
+      const found = (await geocodeQuery(variant)).filter(item => Number.isFinite(item.latitude));
+      // Перегеокод подозрительного адреса: из всех результатов берём
+      // ближайший к центру его геозоны — одноимённая улица в другом
+      // городе больше не выигрывает (Родниковая: Москва, не Ростов).
+      if (found.length && Number.isFinite(address.expectLat)) {
+        found.sort((x, y) =>
+          Math.hypot(x.latitude - address.expectLat, x.longitude - address.expectLon)
+          - Math.hypot(y.latitude - address.expectLat, y.longitude - address.expectLon));
+      }
+      hit = found[0] || null;
+      if (hit) break;
       await new Promise(resolve => setTimeout(resolve, 1_300));
     }
     if (!hit) return;
+    // Лучший кандидат всё равно вне зоны (400+ км) — координаты не трогаем,
+    // зовём человека: адрес, видимо, назван так, что классификатор бессилен.
+    if (Number.isFinite(address.expectLat)) {
+      const away = Math.hypot((hit.latitude - address.expectLat) * 111,
+        (hit.longitude - address.expectLon) * 111 * Math.cos(hit.latitude / 57.3));
+      if (away > 400) {
+        notify('logist', `🗺 Адрес «${String(address.name).slice(0, 60)}» стоит в ${Math.round(away)} км ` +
+          `от своей геозоны, и классификатор не находит его правильно — проверьте написание адреса ` +
+          `в справочнике: от координат зависят плановые километры и сроки`, null, null,
+        { category: 'geo_suspect' });
+        return;
+      }
+    }
     const { BASE_POINT } = await import('./db.mjs');
     const region = String(address.region || '').trim() || hit.region;
     const zoneId = address.zone_id
@@ -639,7 +688,8 @@ async function runGeocodeWatch() {
       hit.latitude, hit.longitude, region, zoneId,
       roadKm(hit.latitude, hit.longitude, BASE_POINT.lat, BASE_POINT.lon), address.id);
     audit(db, null, 'geocode', 'address', address.id,
-      { name: address.name, latitude: hit.latitude, longitude: hit.longitude, region }, 'watch');
+      { name: address.name, latitude: hit.latitude, longitude: hit.longitude, region,
+        refix: Number.isFinite(address.expectLat) || undefined }, 'watch');
   } catch { /* классификатор недоступен — попробуем следующим тиком */ }
 }
 setInterval(runGeocodeWatch, 90_000);
