@@ -612,6 +612,35 @@ setTimeout(runUnloadWatch, 15_000);
 // 1388 км вместо 400, транзит-обещание уехало на сутки, логист чинил
 // руками). Подозрителен адрес дальше 400 км от медианного центра
 // адресов своей зоны (зоны с <4 адресами не судим — центра нет).
+// Медианные центры геозон (кэш 10 мин) и проверка «адрес в своей зоне».
+let zoneCentersCache = { at: 0, value: new Map() };
+function zoneCenters() {
+  if (Date.now() - zoneCentersCache.at > 600_000) {
+    const zones = new Map();
+    for (const a of db.prepare(`SELECT zone_id, latitude, longitude FROM addresses
+      WHERE latitude IS NOT NULL AND zone_id IS NOT NULL`).all()) {
+      if (!zones.has(a.zone_id)) zones.set(a.zone_id, { lats: [], lons: [] });
+      zones.get(a.zone_id).lats.push(a.latitude);
+      zones.get(a.zone_id).lons.push(a.longitude);
+    }
+    const med = list => { list.sort((x, y) => x - y); return list[Math.floor(list.length / 2)]; };
+    zoneCentersCache = { at: Date.now(), value: new Map([...zones]
+      .filter(([, z]) => z.lats.length >= 4)
+      .map(([id, z]) => [id, [med(z.lats), med(z.lons)]])) };
+  }
+  return zoneCentersCache.value;
+}
+// Подозрителен адрес без координат или дальше 400 км от центра своей
+// геозоны (мелкие зоны без центра не судим).
+function addrGeoSuspect(addressId) {
+  if (!addressId) return true;
+  const a = db.prepare(`SELECT latitude, longitude, zone_id FROM addresses WHERE id=?`).get(addressId);
+  if (!a || !Number.isFinite(a.latitude)) return true;
+  const c = a.zone_id ? zoneCenters().get(a.zone_id) : null;
+  if (!c) return false;
+  return Math.hypot((a.latitude - c[0]) * 111,
+    (a.longitude - c[1]) * 111 * Math.cos(a.latitude / 57.3)) > 400;
+}
 function suspiciousGeoAddress() {
   const addrs = db.prepare(`SELECT id, name, address, region, zone_id, latitude, longitude
     FROM addresses WHERE latitude IS NOT NULL AND zone_id IS NOT NULL
@@ -3422,11 +3451,12 @@ function plannedKmFor(fromAddressId, toAddressId, via = []) {
     // Принцип руководителя 22.10: маршруты повторяются — плановые км
     // новой заявки обязаны соответствовать ПРЕДЫДУЩИМ рейсам этой же
     // пары адресов. Когда чистых фактов нет (или их глушит коридор),
-    // берём медиану принятых план-км завершённых рейсов пары. Коридором
-    // к прямой этот этаж НЕ режем: битые координаты не должны затирать
-    // живую историю (кейс №5334: «прямая» от Ростова 1 027 км глушила бы
-    // честные ~420). Расхождение истории с прямой — сигнал геокодеру
-    // перепроверить оба адреса (сброс geocode_try_at).
+    // берём медиану принятых план-км завершённых рейсов пары. Арбитр —
+    // здоровье координат: у ЗДОРОВЫХ адресов (в своей геозоне) история
+    // проверяется коридором к прямой (мусорные план-км прошлого не
+    // закрепляются); у ПОДОЗРИТЕЛЬНЫХ история старше прямой (кейс
+    // №5334: «прямая» от Ростова 1 027 км глушила бы честные ~420), а
+    // расхождение шлёт оба адреса на перегеокод (сброс geocode_try_at).
     const hist = db.prepare(`SELECT t.distance_km km FROM trips t
       JOIN orders o ON o.id=t.order_id
       WHERE o.from_address_id=? AND o.to_address_id=? AND t.status IN ('unloaded','done','paid')
@@ -3439,12 +3469,14 @@ function plannedKmFor(fromAddressId, toAddressId, via = []) {
       const b = point.get(toAddressId);
       const straight = a && b
         ? straightKm(a.latitude, a.longitude, b.latitude, b.longitude) : null;
-      if (straight && straight >= 30 &&
-          (medianKm < straight * 1.05 || medianKm > straight * 1.65)) {
-        db.prepare(`UPDATE addresses SET geocode_try_at=NULL WHERE id IN (?,?)`)
-          .run(fromAddressId, toAddressId);
-      }
-      return Math.round(medianKm);
+      const offCorridor = straight && straight >= 30 &&
+        (medianKm < straight * 1.05 || medianKm > straight * 1.65);
+      if (!offCorridor) return Math.round(medianKm);
+      db.prepare(`UPDATE addresses SET geocode_try_at=NULL WHERE id IN (?,?)`)
+        .run(fromAddressId, toAddressId);
+      const healthy = !addrGeoSuspect(fromAddressId) && !addrGeoSuspect(toAddressId);
+      if (!healthy) return Math.round(medianKm);
+      // Координаты здоровы, история вне физики — мусор прошлого, этаж ниже.
     }
   }
   const chain = [point.get(fromAddressId),
