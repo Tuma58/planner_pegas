@@ -3759,11 +3759,31 @@ function rebuildTransitFacts() {
     for (const [key, list] of gates) {
       upsertGate.run(key, list.length, Math.round(median(list) * 10) / 10);
     }
+    // Довозы (промежуточные точки) — СВОЯ живая медиана: среднепарковые
+    // ворота П/В вбирают многочасовые ожидания у клиентов и раздували
+    // транзит каждого довоза на ~5 часов (анализ 22.10, кейс №5340:
+    // довоз занял 0 минут, в плане стоял 4,6 ч). Нижний кламп мягче
+    // воротного: довоз за 10 минут — честный факт, а не мусор.
+    const viaList = [];
+    for (const s of db.prepare(`SELECT s.actual_arrival a, s.actual_departure d
+        FROM trip_stops s JOIN trips t ON t.id=s.trip_id
+        WHERE t.status IN ('unloaded','done','paid')
+          AND COALESCE(t.unloaded_at, t.ends_at) > datetime('now','-60 days')
+          AND s.actual_arrival IS NOT NULL AND s.actual_departure IS NOT NULL
+          AND s.seq > 1
+          AND s.seq < (SELECT MAX(seq) FROM trip_stops x WHERE x.trip_id=s.trip_id)`).all()) {
+      const hours = (Date.parse(s.d) - Date.parse(s.a)) / 3_600_000;
+      if (Number.isFinite(hours) && hours >= 0.05 && hours <= GATE_HOURS_MAX) viaList.push(hours);
+    }
+    if (viaList.length) {
+      upsertGate.run('via:park', viaList.length, Math.round(median(viaList) * 10) / 10);
+    }
     // Застарелые записи вне коридора (собраны до клампа и в этой
     // пересборке не обновились — валидных образцов не осталось) — удалить:
-    // чтение их уже отвергает, пусть не путают и отчёты.
+    // чтение их уже отвергает, пусть не путают и отчёты. Медиана довозов
+    // живёт в своём коридоре — её очистка не касается.
     const staleGates = db.prepare(`DELETE FROM gate_facts
-      WHERE median_hours < ? OR median_hours > ?`)
+      WHERE (median_hours < ? OR median_hours > ?) AND key <> 'via:park'`)
       .run(GATE_HOURS_MIN, GATE_HOURS_MAX).changes;
     const addrGates = [...gates.keys()].filter(key => key.startsWith('addr')).length;
     console.log(`rebuildTransitFacts: плеч с дорогой ${roads.size}, ворот адресных ${addrGates}, клиентских ${gates.size - addrGates}`
@@ -3795,6 +3815,28 @@ function gateFactHours(kind, addressId, customerName) {
   }
   return null;
 }
+// Часы довозов (промежуточных точек) рейса: ворота адреса точки (если
+// via_json известен и адрес выучен) → живая медиана довозов парка
+// ('via:park', от 5 образцов) → перOp-фолбэк. До 22.10 каждый довоз
+// считался по среднепарковым воротам П/В (~5 ч) — хвост плана уезжал
+// за окно клиента, и машина терялась для подбора (кейс №5340).
+function viaHoursFor(order, viaOps, perOp) {
+  if (!viaOps) return 0;
+  let via = [];
+  try { via = JSON.parse(order?.via_json || '[]'); } catch { /* мусор via */ }
+  const park = db.prepare(`SELECT median_hours h, samples s FROM gate_facts
+    WHERE key='via:park'`).get();
+  const parkH = park && park.s >= 5 ? park.h : null;
+  let sum = 0;
+  for (let i = 0; i < viaOps; i += 1) {
+    const point = via[i] || {};
+    const byAddr = point.addressId
+      ? gateFactHours(point.kind === 'P' ? 'load' : 'unload', point.addressId, null)
+      : null;
+    sum += byAddr ?? parkH ?? perOp;
+  }
+  return sum;
+}
 function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
   const calc = liveCalc();
   const legRow = order.from_address_id && order.to_address_id
@@ -3810,16 +3852,17 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
   const roadOk = legRow && legRow.s >= 2 && legRow.h &&
     Number(distanceKm) >= 30 &&
     legRow.h >= physLo && legRow.h <= physHi;
-  if (!roadOk) {
-    return transitHours(distanceKm, calc, 2 + viaOps);
-  }
   // Ворота без факта адреса/клиента: средние живые ворота парка,
   // фолбэк — операция из калькуляции с прежним коэффициентом.
   const perOp = calc.liveSpeeds?.gateH
     ?? Number(calc.handlingHoursPerOperation || 2) * Number(calc.transitFactor || 1.5);
+  if (!roadOk) {
+    // Дорога и П/В — формулой, довозы — своей живой медианой.
+    return transitHours(distanceKm, calc, 2) + viaHoursFor(order, viaOps, perOp);
+  }
   const loadH = gateFactHours('load', order.from_address_id, order.customer_name) ?? perOp;
   const unloadH = gateFactHours('unload', order.to_address_id, order.customer_name) ?? perOp;
-  return loadH + legRow.h + unloadH + viaOps * perOp;
+  return loadH + legRow.h + unloadH + viaHoursFor(order, viaOps, perOp);
 }
 // Лечение раздутых СРОКОВ (кейс т726 11.09: Самара→Пенза 450 км план
 // 39 ч, выгрузка на 19 ч позже окна клиента): активные рейсы, чей план-
@@ -3876,6 +3919,82 @@ function sanitizeInflatedTransit(revision = false) {
     if (updated) console.log(`sanitizeInflatedTransit: сжато сроков ${updated}`);
   } catch (error) { console.error('sanitizeInflatedTransit:', error.message); }
 }
+
+// ── Конец рейса по факту прибытия (анализ 22.10, кейс №5340) ──
+// Машина прибыла на финальную выгрузку, а план-конец держал её занятой
+// ещё 10–16 часов — подбор и Гант её «не видели», стык растягивался
+// (за месяц: 77 рейсов с фактом на 12+ ч раньше плана, после них 83
+// машино-суток простоя). Как только стоит факт прибытия — конец рейса
+// пересчитывается: прибытие + живые ворота адреса/клиента. Только
+// сжатие (и не в прошлое): опоздания лечит контроль, не этот сторож.
+function tightenEndsByArrival() {
+  try {
+    const calc = liveCalc();
+    const fallbackGate = Number(calc.liveSpeeds?.gateH)
+      || Number(calc.handlingHoursPerOperation || 2) * Number(calc.transitFactor || 1.5);
+    let updated = 0;
+    for (const trip of db.prepare(`SELECT t.id, t.arrived_at, t.ends_at, t.customer_name,
+        o.to_address_id FROM trips t LEFT JOIN orders o ON o.id=t.order_id
+      WHERE t.status='run' AND t.arrived_at IS NOT NULL AND t.unloaded_at IS NULL`).all()) {
+      const gate = gateFactHours('unload', trip.to_address_id, trip.customer_name) ?? fallbackGate;
+      const byFact = Date.parse(String(trip.arrived_at).replace(' ', 'T')
+        + (String(trip.arrived_at).includes('Z') ? '' : 'Z')) + gate * 3_600_000;
+      const current = Date.parse(trip.ends_at);
+      // Конец не в прошлом: ворота уже прошли, а выгрузки нет — обещание
+      // «ещё полчаса», дальше факт или контроль.
+      const target = Math.max(byFact, Date.now() + 30 * 60_000);
+      if (Number.isFinite(byFact) && Number.isFinite(current)
+        && current - target > 2 * 3_600_000) {
+        db.prepare(`UPDATE trips SET ends_at=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(new Date(target).toISOString(), trip.id);
+        updated += 1;
+      }
+    }
+    if (updated) console.log(`конец по прибытию: сжато рейсов ${updated}`);
+  } catch (error) { console.error('tightenEndsByArrival:', error.message); }
+}
+setInterval(tightenEndsByArrival, 15 * 60_000);
+setTimeout(tightenEndsByArrival, 110_000);
+
+// ── Окно клиента физически недостижимо (анализ 22.10) ──
+// Дорога даже лучшей скоростью парка плюс минимальные ворота не успевает
+// к window_to (топ хвостов: дальнобой 3–5 т.км с «окном» на сутки-двое
+// раньше физики). План честно длиннее окна — а вот окно стоит
+// передоговорить на этапе заявки. Раз в 6 часов, одно уведомление на
+// заявку (память в app_meta, последние 400).
+function unreachableWindowsWatch() {
+  try {
+    const told = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='unreal_window_told'`).get()?.value || '{}');
+    const bad = [];
+    for (const t of db.prepare(`SELECT t.order_no, t.starts_at, t.distance_km, v.plate,
+        o.id order_id, o.window_to FROM trips t
+      JOIN orders o ON o.id=t.order_id JOIN vehicles v ON v.id=t.vehicle_id
+      WHERE t.status IN ('plan','run') AND COALESCE(o.window_to,'')<>''
+        AND t.distance_km > 100`).all()) {
+      const [physLo] = physHoursRange(Number(t.distance_km) || 0);
+      const minArrive = Date.parse(t.starts_at) + (physLo + GATE_HOURS_MIN) * 3_600_000;
+      const winTo = Date.parse(t.window_to);
+      if (!Number.isFinite(minArrive) || !Number.isFinite(winTo)) continue;
+      if (minArrive - winTo > 2 * 3_600_000 && !told[t.order_id]) {
+        told[t.order_id] = Date.now();
+        bad.push(`№${t.order_no || '—'} ${t.plate} ${Math.round(t.distance_km)} км — окно до ` +
+          `${mskStamp(t.window_to)} МСК, физика не раньше ${mskStamp(new Date(minArrive).toISOString())}`);
+      }
+    }
+    if (bad.length) {
+      const text = `⏰ Окно клиента недостижимо физически: ${bad.slice(0, 8).join('; ')}` +
+        `${bad.length > 8 ? ` и ещё ${bad.length - 8}` : ''}. Передоговорите окно или перепланируйте рейс`;
+      notify('logist', text, null, null, { category: 'unreal_window' });
+      notify('sales', text, null, null, { category: 'unreal_window' });
+      const keep = Object.fromEntries(Object.entries(told).slice(-400));
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('unreal_window_told',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(keep));
+    }
+  } catch (error) { console.error('unreachableWindowsWatch:', error.message); }
+}
+setInterval(unreachableWindowsWatch, 6 * 3_600_000);
+setTimeout(unreachableWindowsWatch, 140_000);
 
 // Лечение раздутых планов (кейс 10.09, «Пенза→Москва 1 055 км»): активные
 // и будущие рейсы, чей план выбился из дорожной физики (> прямая×1,7),
