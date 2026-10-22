@@ -719,6 +719,26 @@ async function runGeocodeWatch() {
     audit(db, null, 'geocode', 'address', address.id,
       { name: address.name, latitude: hit.latitude, longitude: hit.longitude, region,
         refix: Number.isFinite(address.expectLat) || undefined }, 'watch');
+    // Координаты ИЗМЕНИЛИСЬ у существующего адреса — порожние подгоны
+    // активных рейсов пересчитать: подгон «прошлая выгрузка → погрузка»
+    // зависел от битой точки (кейс с669мх58 22.10: подгон 1 117 км от
+    // «ростовской» Родниковой до Видного при честных ~30). Редкое
+    // событие, рейсов ~130 — пересчёт дёшев.
+    if (Number.isFinite(address.expectLat)) {
+      let fixedEmpty = 0;
+      for (const trip of db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.empty_km,
+          o.from_address_id, o.from_point FROM trips t JOIN orders o ON o.id=t.order_id
+        WHERE t.status IN ('plan','run')`).all()) {
+        const fresh = emptyKmFor(trip.vehicle_id, trip.starts_at,
+          trip.from_address_id, trip.from_point, trip.id);
+        if (fresh != null && Math.abs((trip.empty_km || 0) - fresh) > 30) {
+          db.prepare(`UPDATE trips SET empty_km=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+            .run(fresh, trip.id);
+          fixedEmpty += 1;
+        }
+      }
+      if (fixedEmpty) console.log(`перегеокод «${String(address.name).slice(0, 30)}»: пересчитано порожних подгонов ${fixedEmpty}`);
+    }
   } catch { /* классификатор недоступен — попробуем следующим тиком */ }
 }
 setInterval(runGeocodeWatch, 90_000);
