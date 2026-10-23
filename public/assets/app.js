@@ -406,7 +406,15 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       <div class="vehicle-cell ${dayStatus.cls === 'idle' ? 'cell-idle' : ''}"><span class="vehicle-stripe"></span>
         <span class="vehicle-title res-vtitle"><strong class="mono vlink" data-vinfo="${vehicle.id}"
           title="Карточка ТС: рейс, простой, ремонт, отметки контролёра">${escapeHtml(vehicle.plate)}</strong>
-        <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}</small>
+        <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}${(() => {
+          // Накат заступившего водителя (24.10): км/сут с заступления —
+          // для выравнивания нагрузки логистом прямо с Ганта.
+          const rr = vehicle.run_rate;
+          if (!rr) return '';
+          const target = Number(state.data.settings?.calculation?.dailyKmTarget ?? 500) || 500;
+          const low = rr.perDay < target * 0.7;
+          return ` · <span class="${low ? 'runrate-low' : 'runrate'}" title="Накат заступившего водителя: ${rr.perDay} км/сут за ${rr.days} дн (с ${rr.since.slice(8, 10)}.${rr.since.slice(5, 7)})${low ? ' — мало наката, приоритет при назначении' : ''}">📏 ${rr.perDay}</span>`;
+        })()}</small>
         <small class="vday vday-${dayStatus.cls}" ${dayStatus.color ? `style="color:${dayStatus.color}"` : ''}
           title="Занятость сцепки на ${legendDayLabelOf()}">${escapeHtml(dayStatus.text)}</small></span>
       </div>

@@ -339,9 +339,17 @@ function allReferenceData() {
 }
 
 function listVehicles() {
+  // run_rate — накат заступившего водителя (rebuildDriverRunRates, 24.10):
+  // {perDay, days, since} для бейджей подбора ТС и Ганта.
+  let rates = {};
+  try {
+    rates = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='driver_run_rate'`).get()?.value || '{}').rates || {};
+  } catch { /* кэш ещё не собран */ }
   return db.prepare(`SELECT v.*,vt.name type_name,z.name zone_name,z.color zone_color
     FROM vehicles v JOIN vehicle_types vt ON vt.id=v.type_id
-    LEFT JOIN zones z ON z.id=v.zone_id ORDER BY v.plate`).all();
+    LEFT JOIN zones z ON z.id=v.zone_id ORDER BY v.plate`).all()
+    .map(vehicle => ({ ...vehicle, run_rate: rates[vehicle.plate] || null }));
 }
 
 // Диета bootstrap (заказ руководителя 22.10, «чем больше продукт — тем
@@ -4377,6 +4385,52 @@ function nightDataAudit() {
 }
 setInterval(nightDataAudit, 30 * 60_000);
 setTimeout(nightDataAudit, 170_000);
+
+// ── Накат заступившего водителя (заказ руководителя 24.10) ──
+// Нагрузка между водителями неровная: бейдж «км/сут» в подборе ТС и на
+// Ганте помогает логисту отдавать приоритет тем, у кого мало наката.
+// Считается ПО ВОДИТЕЛЮ: с момента его заступления на машину (текущее
+// закрепление; фолбэк — конец последней пересменки; потолок окна 30
+// суток), километры — журнал одометров, фолбэк — дневной кэш. Ежечасно
+// в app_meta, фронту уезжает полем run_rate у машин.
+function rebuildDriverRunRates() {
+  try {
+    const MSK = 3 * 3_600_000;
+    const dayOf = ms => new Date(ms + MSK).toISOString().slice(0, 10);
+    const today = dayOf(Date.now());
+    const odoAt = db.prepare(`SELECT odo_km FROM vehicle_odometers WHERE vehicle_id=? AND day=?`);
+    const rates = {};
+    for (const v of db.prepare(`SELECT id, plate FROM vehicles WHERE status='work'`).all()) {
+      const assign = db.prepare(`SELECT starts_at FROM driver_assignments
+        WHERE vehicle_id=? AND datetime(starts_at) <= datetime('now')
+          AND datetime(ends_at) > datetime('now')
+        ORDER BY datetime(starts_at) DESC LIMIT 1`).get(v.id);
+      const shiftEnd = assign ? null : db.prepare(`SELECT MAX(ends_at) e FROM vehicle_dispositions
+        WHERE vehicle_id=? AND kind='shift' AND datetime(ends_at) <= datetime('now')`).get(v.id)?.e;
+      const sinceMs = Math.max(
+        Date.parse(String(assign?.starts_at || shiftEnd || '').replace(' ', 'T')) || 0,
+        Date.now() - 30 * 86_400_000);
+      const sinceDay = dayOf(sinceMs);
+      const days = Math.max(1, Math.round(
+        (Date.parse(today + 'T00:00:00Z') - Date.parse(sinceDay + 'T00:00:00Z')) / 86_400_000));
+      let km = null;
+      const a = odoAt.get(v.id, sinceDay)?.odo_km;
+      const b = odoAt.get(v.id, today)?.odo_km;
+      if (Number.isFinite(a) && Number.isFinite(b) && b - a >= 0 && b - a <= days * 2000) km = b - a;
+      if (km === null) {
+        const c = Number(db.prepare(`SELECT SUM(COALESCE(can_km, km)) s FROM vehicle_daily_runs
+          WHERE vehicle_id=? AND day >= ? AND day < ?`).get(v.id, sinceDay, today)?.s || 0);
+        if (c > 0) km = c;
+      }
+      if (km !== null) rates[v.plate] = { perDay: Math.round(km / days), days, since: sinceDay };
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('driver_run_rate',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(JSON.stringify({ at: Date.now(), rates }));
+  } catch (error) { console.error('rebuildDriverRunRates:', error.message); }
+}
+setInterval(rebuildDriverRunRates, 3_600_000);
+setTimeout(rebuildDriverRunRates, 190_000);
 
 // Лечение раздутых планов (кейс 10.09, «Пенза→Москва 1 055 км»): активные
 // и будущие рейсы, чей план выбился из дорожной физики (> прямая×1,7),
@@ -11909,15 +11963,25 @@ async function api(request, response, url) {
     }
     // Границы — сутки МСК; «по» включительно; конец не позже последней
     // снятой полуночи (сегодня 00:00) — журнал дальше ещё не дорос.
+    // Тело расчёта вынесено в mileageData — его же ежечасно использует
+    // сторож среднесуточного наката (бейджи подбора и Ганта, 24.10).
     const fromDay = dayOf(rawFrom);
     const todayDay = dayOf(Date.now());
     let toDayExcl = dayOf(rawTo + 86_400_000 - 1);
     if (toDayExcl > todayDay) toDayExcl = todayDay;
+    const periodDaysCheck = (Date.parse(toDayExcl + 'T00:00:00Z') - Date.parse(fromDay + 'T00:00:00Z')) / 86_400_000;
+    if (periodDaysCheck <= 0) return errorJson(response, 422, 'Период ещё не накоплен журналом (первый снимок — ближайшей ночью)');
+    if (periodDaysCheck > 92) return errorJson(response, 422, 'Период до 92 суток');
+    return json(response, 200, mileageData(fromDay, toDayExcl));
+  }
+  // Тело отчёта «Пробеги» (лестница «одометр → кэш → координаты» с
+  // защитами от сбойных трекеров и залипших одометров): используется
+  // роутом выше и ежечасным сторожем среднесуточного наката.
+  function mileageData(fromDay, toDayExcl) {
+    const MSK = 3 * 3_600_000;
     const fromMs = Date.parse(fromDay + 'T00:00:00Z') - MSK;
     const toMs = Date.parse(toDayExcl + 'T00:00:00Z') - MSK;
     const periodDays = (toMs - fromMs) / 86_400_000;
-    if (periodDays <= 0) return errorJson(response, 422, 'Период ещё не накоплен журналом (первый снимок — ближайшей ночью)');
-    if (periodDays > 92) return errorJson(response, 422, 'Период до 92 суток');
     const target = Number(settingsObject(db).calculation?.dailyKmTarget ?? 500) || 500;
     const fleet = db.prepare(`SELECT v.id, v.plate FROM vehicles v
       WHERE v.status='work' ORDER BY v.plate`).all();
@@ -12004,14 +12068,14 @@ async function api(request, response, url) {
         perDay: Math.round((km || 0) / periodDays), source });
     }
     perVehicle.sort((a, b) => b.km - a.km);
-    return json(response, 200, {
+    return {
       from: fromDay, to: new Date(toMs - 1 + MSK).toISOString().slice(0, 10),
       days: periodDays, target,
       totalKm: Math.round(totalKm), loadedKm: Math.round(loadedTotal),
       emptyKm: Math.round(totalKm - loadedTotal),
       perDayPerVehicle: fleet.length ? Math.round(totalKm / periodDays / fleet.length) : 0,
       fleet: fleet.length, sources, perVehicle
-    });
+    };
   }
   if (request.method === 'GET' && pathname === '/api/ops-report') {
     const user = requirePermission(request, response, 'reports:read');

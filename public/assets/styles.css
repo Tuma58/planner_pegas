@@ -1950,3 +1950,6 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 /* 🙏 Благодарность с полосы смены (традиция 19.10). */
 .kb-cap .kb-thank { min-height:0; padding:0 5px; margin-left:6px; font-size:12px; }
 .rtable tr.warn-row td { color:var(--warn); }
+/* Накат заступившего водителя на Ганте (24.10): мало наката — зелёным. */
+.runrate { color: var(--muted); }
+.runrate-low { color: var(--good, #1e7d46); font-weight: 700; }

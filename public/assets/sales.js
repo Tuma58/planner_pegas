@@ -2008,6 +2008,19 @@ function rejectDialog(order, data, context) {
 // options.autoConfirm — назначение из вкладки «Логист»: подтверждение
 // логистом проходит автоматически, рейс сразу уходит диспетчеру.
 // Из продаж — без опции: назначение обязан подтвердить логист.
+// Накат заступившего водителя (24.10): км/сут с момента заступления на
+// машину. Мало наката — зелёный бейдж: таким отдают приоритет, чтобы
+// выровнять нагрузку между водителями.
+function runRateBadge(vehicle, data) {
+  const rr = vehicle.run_rate;
+  if (!rr) return '';
+  const target = Number(data.settings?.calculation?.dailyKmTarget ?? 500) || 500;
+  const low = rr.perDay < target * 0.7;
+  const title = `Накат заступившего водителя: ${rr.perDay} км/сут за ${rr.days} дн (с ${rr.since.slice(8, 10)}.${rr.since.slice(5, 7)})` +
+    (low ? ' — мало наката, приоритет при назначении' : '');
+  return `<span class="badge ${low ? 'ok' : ''}" title="${title}">👤 ${rr.perDay} км/сут · ${rr.days} дн</span>`;
+}
+
 export function assignDialog(order, data, showModal, closeModal, onReload, options = {}) {
   const orderFromAddress = order.from_address_id
     ? (data.reference.addresses || []).find(item => item.id === order.from_address_id)
@@ -2027,6 +2040,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
         <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name)}${candidate.emptyKm != null
           ? ` · подгон ~${candidate.emptyKm} км${candidate.approx ? ' (по городу/зоне)' : ''}` : ''}${candidate.readyAt
           ? ` · ${candidate.ready ? 'готова с' : '⚠ готова только с'} ${fmtDateTime(candidate.readyAt)}` : ''}</small>
+        ${runRateBadge(candidate.vehicle, data)}
         ${candidate.stillRunning ? `<small class="next-event warn">🛣 сейчас в рейсе → ${escapeHtml(candidate.lastTrip.to_point || candidate.lastTrip.to_name || '')}
           · план выгрузки ${fmtDateTime(tripBusyUntilMs(candidate.lastTrip))} — освобождение расчётное</small>` : ''}
         ${nextEventHint(nextVehicleEvent(data, candidate.vehicle.id, loadMs), loadMs)}</span>
