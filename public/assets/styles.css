@@ -902,6 +902,14 @@ input.warn-border { border-color: #c99a2e; }
 }
 .toast.visible { translate: -50% 0; opacity: 1; }
 .toast[data-tone="error"] { background: var(--bad); }
+/* Окно отмены: тост с кнопкой «↩ Отменить» (8 секунд). */
+.undo-toast { display: flex; align-items: center; gap: 12px; }
+.undo-btn {
+  background: rgba(255,255,255,0.16); color: inherit; border: 1px solid rgba(255,255,255,0.45);
+  border-radius: 7px; padding: 4px 10px; font-weight: 750; cursor: pointer; white-space: nowrap;
+}
+.undo-btn:hover { background: rgba(255,255,255,0.28); }
+.undo-btn:disabled { opacity: 0.5; cursor: wait; }
 
 /* Переключатель темы */
 .theme-toggle { border: 0; background: transparent; color: #b9cbd8; padding: 6px; font-size: 15px; border-radius: 7px; }

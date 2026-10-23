@@ -10838,12 +10838,29 @@ async function api(request, response, url) {
     // Факты двигают конвейер: «В пути» после отправления с погрузки,
     // «Выгружен» после прибытия и завершения работ на конечной.
     const newStatus = syncTripFromStops(db, current.trip_id, user.id);
-    if (newStatus) {
+    // Симметрия отмены (окно отмены, 23.10): сняли факты завершения у
+    // ФИНАЛЬНОЙ точки выгрузки — «выгружен» честно возвращается «В
+    // пути», как это делает ручная смена статуса; иначе рейс оставался
+    // закрытым без фактов и место сцепки врало.
+    let revertedStatus = null;
+    if (('actual_departure' in fields || 'work_finished_at' in fields)) {
+      const fresh = db.prepare('SELECT * FROM trip_stops WHERE id=?').get(match[0]);
+      const lastSeq = db.prepare('SELECT MAX(seq) m FROM trip_stops WHERE trip_id=?')
+        .get(current.trip_id).m;
+      const trip = db.prepare('SELECT status FROM trips WHERE id=?').get(current.trip_id);
+      if (fresh.kind === 'D' && fresh.seq === lastSeq && trip?.status === 'unloaded'
+        && !fresh.actual_departure && !fresh.work_finished_at) {
+        db.prepare(`UPDATE trips SET status='run', unloaded_at=NULL,
+          updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(user.id, current.trip_id);
+        revertedStatus = 'run';
+      }
+    }
+    if (newStatus || revertedStatus) {
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
         integrationPublic().writePolicy === 'automatic');
     }
     audit(db, user, 'update', 'trip_stop', match[0], body, requestIp(request));
-    return json(response, 200, { ok: true, tripStatus: newStatus });
+    return json(response, 200, { ok: true, tripStatus: revertedStatus || newStatus });
   }
   if (match && request.method === 'DELETE') {
     const user = requirePermission(request, response, 'trip-status:write');

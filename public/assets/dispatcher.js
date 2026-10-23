@@ -5,7 +5,7 @@
 // 3) рейс переведён на контроль на линии (статус «В пути»).
 // Внештатные ситуации: отказ клиента, поломка ТС (ремонт + переназначение),
 // переназначение ТС — с возвратом заявки в продажи при снятии рейса.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast, captureScrolls, restoreScrolls, wireSelectSearch, renderInto } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, parseMoney, routeLabel, toLocalInput, toast, undoToast, captureScrolls, restoreScrolls, wireSelectSearch, renderInto } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { orderFilesOf, orderNet, resolveAddress } from './sales.js';
 import { waitingLabel } from './pipeline.js';
@@ -2311,10 +2311,17 @@ export async function renderDispatcher(container, context, options = {}) {
       'Укажите фактическое время события на стоянке.', async iso => {
         const body = {};
         for (const field of String(button.dataset.quickField).split(',')) body[field] = iso;
-        await api(`/api/stops/${button.dataset.quickStop}`, {
+        const stopId = button.dataset.quickStop;
+        await api(`/api/stops/${stopId}`, {
           method: 'PATCH', body: JSON.stringify(body)
         });
-        toast('Этап отмечен');
+        // Окно отмены: ошибочный клик возвращается тем же PATCH с null;
+        // снятые факты финала честно вернут рейс «В пути» (симметрия сервера).
+        undoToast(`Этап «${button.dataset.quickLabel}» отмечен`, async () => {
+          const back = {};
+          for (const field of Object.keys(body)) back[field] = null;
+          await api(`/api/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify(back) });
+        });
       })));
 
   // Клик по плашке рейса — карточка с полными данными и копированием;
@@ -2570,10 +2577,15 @@ export async function renderDispatcher(container, context, options = {}) {
       'Укажите фактическое время события на стоянке.', async iso => {
         const body = {};
         for (const field of String(button.dataset.stopField).split(',')) body[field] = iso;
-        await api(`/api/stops/${button.dataset.stopStep}`, {
+        const stopId = button.dataset.stopStep;
+        await api(`/api/stops/${stopId}`, {
           method: 'PATCH', body: JSON.stringify(body)
         });
-        toast('Факт отмечен');
+        undoToast('Факт отмечен', async () => {
+          const back = {};
+          for (const field of Object.keys(body)) back[field] = null;
+          await api(`/api/stops/${stopId}`, { method: 'PATCH', body: JSON.stringify(back) });
+        });
       })));
   scope.querySelectorAll('[data-stop-edit]').forEach(button =>
     button.addEventListener('click', () => {

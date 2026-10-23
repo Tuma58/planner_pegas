@@ -245,6 +245,34 @@ export function toast(message, tone = '') {
   toast.timer = setTimeout(() => element.classList.remove('visible'), 2500);
 }
 
+// Окно отмены (заказ руководителя 22.10): после рискованного клика — тост
+// с кнопкой «↩ Отменить» на 8 секунд. Отмена выполняет обратную ШТАТНУЮ
+// операцию, пока действие не обросло последствиями; дальше — как обычно,
+// правкой карточки.
+export function undoToast(message, undoFn) {
+  document.querySelector('.undo-toast')?.remove();
+  const element = document.createElement('div');
+  element.className = 'toast undo-toast visible';
+  const text = document.createElement('span');
+  text.textContent = message;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'undo-btn';
+  button.textContent = '↩ Отменить';
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      await undoFn();
+      text.textContent = 'Отменено';
+      button.remove();
+    } catch (error) { text.textContent = `Не удалось отменить: ${error.message}`; }
+    setTimeout(() => element.remove(), 2000);
+  };
+  element.append(text, button);
+  document.body.append(element);
+  setTimeout(() => { if (button.isConnected && !button.disabled) element.remove(); }, 8000);
+}
+
 export function escapeHtml(value = '') {
   const element = document.createElement('span');
   element.textContent = String(value);
