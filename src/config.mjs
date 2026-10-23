@@ -37,7 +37,8 @@ export const config = {
   beelineAtsToken: secret('BEELINE_ATS_TOKEN', ''),
   // SMS-центр (smsc.ru): apikey из кабинета. Логин/имя отправителя — в settings.sms.
   // Файл .secrets/smsc_apikey или SMSC_APIKEY / SMSC_APIKEY_FILE.
-  smscApikey: secret('SMSC_APIKEY', ''),
+  // Пробелы/переносы из вставки в редакторе схлопываем — иначе SMSC даёт error 2.
+  smscApikey: secret('SMSC_APIKEY', '').replace(/\s+/g, ''),
   // SMTP reg.ru (и аналоги): пароль ящика. Host/user/from — в settings.smtp.
   // Файл .secrets/smtp_password или SMTP_PASSWORD / SMTP_PASSWORD_FILE.
   smtpPassword: secret('SMTP_PASSWORD', ''),
