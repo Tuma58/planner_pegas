@@ -4405,10 +4405,13 @@ function rebuildDriverRunRates() {
         WHERE vehicle_id=? AND datetime(starts_at) <= datetime('now')
           AND datetime(ends_at) > datetime('now')
         ORDER BY datetime(starts_at) DESC LIMIT 1`).get(v.id);
-      const shiftEnd = assign ? null : db.prepare(`SELECT MAX(ends_at) e FROM vehicle_dispositions
-        WHERE vehicle_id=? AND kind='shift' AND datetime(ends_at) <= datetime('now')`).get(v.id)?.e;
+      // Точка отсчёта — ЗАСТУПЛЕНИЕ по закреплению. Фолбэк пересменок
+      // убран (24.10): пересменки заводятся волнами, и у половины парка
+      // окно схлопывалось в «1 день, 0 км». Без оформленного закрепления
+      // — честные 30 суток машины с пометкой assigned:false (повод
+      // оформить закрепление в Ресурсе).
       const sinceMs = Math.max(
-        Date.parse(String(assign?.starts_at || shiftEnd || '').replace(' ', 'T')) || 0,
+        Date.parse(String(assign?.starts_at || '').replace(' ', 'T')) || 0,
         Date.now() - 30 * 86_400_000);
       const sinceDay = dayOf(sinceMs);
       const days = Math.max(1, Math.round(
@@ -4422,7 +4425,11 @@ function rebuildDriverRunRates() {
           WHERE vehicle_id=? AND day >= ? AND day < ?`).get(v.id, sinceDay, today)?.s || 0);
         if (c > 0) km = c;
       }
-      if (km !== null) rates[v.plate] = { perDay: Math.round(km / days), days, since: sinceDay };
+      // Заступил сегодня — суток ещё нет, честный бейдж «заступил сегодня».
+      const fresh = assign && (Date.now() - sinceMs) < 86_400_000;
+      if (fresh) rates[v.plate] = { fresh: true, days: 0, since: sinceDay, assigned: true };
+      else if (km !== null) rates[v.plate] = { perDay: Math.round(km / days), days,
+        since: sinceDay, assigned: !!assign };
     }
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('driver_run_rate',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`)

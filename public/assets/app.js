@@ -411,9 +411,10 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
           // для выравнивания нагрузки логистом прямо с Ганта.
           const rr = vehicle.run_rate;
           if (!rr) return '';
+          if (rr.fresh) return ` · <span class="runrate-low" title="Водитель заступил сегодня">📏 новый</span>`;
           const target = Number(state.data.settings?.calculation?.dailyKmTarget ?? 500) || 500;
           const low = rr.perDay < target * 0.7;
-          return ` · <span class="${low ? 'runrate-low' : 'runrate'}" title="Накат заступившего водителя: ${rr.perDay} км/сут за ${rr.days} дн (с ${rr.since.slice(8, 10)}.${rr.since.slice(5, 7)})${low ? ' — мало наката, приоритет при назначении' : ''}">📏 ${rr.perDay}</span>`;
+          return ` · <span class="${low ? 'runrate-low' : 'runrate'}" title="${rr.assigned ? `Накат заступившего водителя: ${rr.perDay} км/сут за ${rr.days} дн (с ${rr.since.slice(8, 10)}.${rr.since.slice(5, 7)})` : `Закрепление не оформлено — накат машины за ${rr.days} дн`}${low ? ' — мало наката, приоритет при назначении' : ''}">📏 ${rr.perDay}${rr.assigned ? '' : '*'}</span>`;
         })()}</small>
         <small class="vday vday-${dayStatus.cls}" ${dayStatus.color ? `style="color:${dayStatus.color}"` : ''}
           title="Занятость сцепки на ${legendDayLabelOf()}">${escapeHtml(dayStatus.text)}</small></span>

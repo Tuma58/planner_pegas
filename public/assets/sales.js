@@ -2014,11 +2014,14 @@ function rejectDialog(order, data, context) {
 function runRateBadge(vehicle, data) {
   const rr = vehicle.run_rate;
   if (!rr) return '';
+  if (rr.fresh) return `<span class="badge ok" title="Водитель заступил сегодня — накат ещё не накоплен">👤 заступил сегодня</span>`;
   const target = Number(data.settings?.calculation?.dailyKmTarget ?? 500) || 500;
   const low = rr.perDay < target * 0.7;
-  const title = `Накат заступившего водителя: ${rr.perDay} км/сут за ${rr.days} дн (с ${rr.since.slice(8, 10)}.${rr.since.slice(5, 7)})` +
+  const title = (rr.assigned
+    ? `Накат заступившего водителя: ${rr.perDay} км/сут за ${rr.days} дн (с ${rr.since.slice(8, 10)}.${rr.since.slice(5, 7)})`
+    : `Закрепление водителя не оформлено — накат машины за ${rr.days} дн`) +
     (low ? ' — мало наката, приоритет при назначении' : '');
-  return `<span class="badge ${low ? 'ok' : ''}" title="${title}">👤 ${rr.perDay} км/сут · ${rr.days} дн</span>`;
+  return `<span class="badge ${low ? 'ok' : ''}" title="${title}">👤 ${rr.perDay} км/сут · ${rr.days} дн${rr.assigned ? '' : ' *'}</span>`;
 }
 
 export function assignDialog(order, data, showModal, closeModal, onReload, options = {}) {
