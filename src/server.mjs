@@ -789,15 +789,21 @@ function suspiciousGeoAddress() {
     zones.get(a.zone_id).lons.push(a.longitude);
   }
   const med = list => { list.sort((x, y) => x - y); return list[Math.floor(list.length / 2)]; };
+  // Худшие первыми: самый далёкий от своей зоны адрес чинится раньше —
+  // хвост очереди не голодает, когда головные адреса сбрасываются
+  // пересчётами заявок (затор 23.10: Родниковая ждала в хвосте rowid).
+  let worst = null;
   for (const a of addrs) {
     const z = zones.get(a.zone_id);
     if (!z || z.lats.length < 4) continue;
     const [clat, clon] = [med([...z.lats]), med([...z.lons])];
     const away = Math.hypot((a.latitude - clat) * 111,
       (a.longitude - clon) * 111 * Math.cos(a.latitude / 57.3));
-    if (away > 400) return { ...a, expectLat: clat, expectLon: clon };
+    if (away > 400 && (!worst || away > worst.away)) {
+      worst = { ...a, expectLat: clat, expectLon: clon, away };
+    }
   }
-  return null;
+  return worst;
 }
 async function runGeocodeWatch() {
   try {
@@ -3671,7 +3677,11 @@ function plannedKmFor(fromAddressId, toAddressId, via = []) {
       const offCorridor = straight && straight >= 30 &&
         (medianKm < straight * 1.05 || medianKm > straight * 1.65);
       if (!offCorridor) return Math.round(medianKm);
-      db.prepare(`UPDATE addresses SET geocode_try_at=NULL WHERE id IN (?,?)`)
+      // Сброс не чаще раза в сутки: пересчёты заявок идут постоянно, и
+      // ежеразовый сброс гонял одни и те же адреса в начало очереди
+      // геокодера — хвост очереди (Родниковая) не получал хода (23.10).
+      db.prepare(`UPDATE addresses SET geocode_try_at=NULL
+        WHERE id IN (?,?) AND datetime(COALESCE(geocode_try_at,'2000-01-01')) < datetime('now','-1 day')`)
         .run(fromAddressId, toAddressId);
       const healthy = !addrGeoSuspect(fromAddressId) && !addrGeoSuspect(toAddressId);
       if (!healthy) return Math.round(medianKm);
