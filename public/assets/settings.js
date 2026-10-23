@@ -724,16 +724,20 @@ const NOTIFY_CATEGORIES = [
   ['other', 'Прочее (операционный конвейер)', 'normal']
 ];
 
-async function renderTelephony() {
-  const [config, points] = await Promise.all([
-    api('/api/telephony/config'), api('/api/service-points')
-  ]);
+async function renderNotifications() {
+  const notifyCfg = await api('/api/admin/notify/config');
+  const sms = state.admin.settings?.sms || {};
+  const smtp = state.admin.settings?.smtp || {};
+  const channels = state.admin.settings?.notifyChannels || {};
   byId('settingsContent').innerHTML = `
-    <h2>🔔 Telegram-уведомления</h2>
-    <p class="muted">Бот шлёт уведомления планера в мессенджер на телефон. Создайте бота у
-      @BotFather (/newbot, 2 минуты), вставьте токен и имя бота — сотрудники привяжут свои
-      чаты кнопкой «🔔» в шапке планера. Режимы у каждого свои: только аварии или все
-      уведомления роли.</p>
+    <section>
+    <div class="section-head"><div><h1>Уведомления и оповещения</h1>
+      <p class="muted">Каналы: лента планера (всегда) · Telegram · SMS (smsc.ru) · почта (SMTP reg.ru).
+        Сценарии ниже задают уровень и каналы каждой категории.</p></div></div>
+
+    <h2>🔔 Telegram</h2>
+    <p class="muted">Создайте бота у @BotFather, вставьте токен — сотрудники привяжут чаты
+      кнопкой «🔔» в шапке. Режимы у каждого: только аварии или все уведомления роли.</p>
     <form id="telegramForm" class="fields">
       <label class="field">Токен бота<input name="botToken" value="${escapeHtml(state.admin.settings?.telegram?.botToken || '')}"
         placeholder="123456789:AA…" autocomplete="off"></label>
@@ -744,11 +748,183 @@ async function renderTelephony() {
         placeholder="создайте второго бота у @BotFather" autocomplete="off"></label>
       <label class="field">Базовый URL вебхуков (пусто = опрос раз в 20 с)
         <input name="webhookBase" value="${escapeHtml(state.admin.settings?.telegram?.webhookBase || '')}"
-        placeholder="https://planner.pegasavto.ru" autocomplete="off"
-        title="Требует валидный HTTPS-сертификат. Заполните — оба бота перейдут на мгновенную push-доставку; очистите — вернётся опрос."></label>
+        placeholder="https://planner.pegasavto.ru" autocomplete="off"></label>
       <button class="button">Сохранить</button>
     </form>
-    <h2 style="margin-top:18px">🛰 Мониторинг Pilot-GPS</h2>
+
+    <h2 style="margin-top:18px">📱 SMS-центр (smsc.ru)</h2>
+    <p class="muted">Логин и имя отправителя — здесь; <b>apikey</b> только в
+      <code>.secrets/smsc_apikey</code> на сервере
+      ${notifyCfg.sms?.apikeySet ? '— <b>ключ на месте ✓</b>' : '— <b>ключ не задан</b>'}.</p>
+    <form id="smsForm" class="fields">
+      <label class="check"><input type="checkbox" name="enabled" ${sms.enabled || notifyCfg.sms?.enabled ? 'checked' : ''}>
+        SMS-канал включён (платные сообщения)</label>
+      <label class="field">Логин SMSC<input name="login" value="${escapeHtml(sms.login || notifyCfg.sms?.login || '')}"
+        placeholder="логин кабинета smsc.ru" autocomplete="off"></label>
+      <label class="field">Имя отправителя<input name="sender" value="${escapeHtml(sms.sender || notifyCfg.sms?.sender || '')}"
+        placeholder="как в кабинете SMSC" autocomplete="off"></label>
+      <button class="button">Сохранить</button>
+      <button class="button ghost" type="button" id="smsBalance">Баланс SMSC</button>
+      <button class="button ghost" type="button" id="smsTest">Тест SMS</button>
+    </form>
+
+    <h2 style="margin-top:18px">✉️ SMTP (reg.ru)</h2>
+    <p class="muted">Ящик исходящей почты. Пароль — только
+      <code>.secrets/smtp_password</code>
+      ${notifyCfg.smtp?.passwordSet ? '— <b>пароль на месте ✓</b>' : '— <b>пароль не задан</b>'}.</p>
+    <form id="smtpForm" class="fields">
+      <label class="check"><input type="checkbox" name="enabled" ${(smtp.enabled ?? notifyCfg.smtp?.enabled) !== false ? 'checked' : ''}>
+        Почтовый канал включён</label>
+      <label class="field">SMTP-хост<input name="host" value="${escapeHtml(smtp.host || notifyCfg.smtp?.host || 'mail.hosting.reg.ru')}"></label>
+      <label class="field">Порт<input name="port" type="number" value="${escapeHtml(String(smtp.port || notifyCfg.smtp?.port || 465))}"></label>
+      <label class="check"><input type="checkbox" name="secure" ${(smtp.secure ?? notifyCfg.smtp?.secure) !== false ? 'checked' : ''}>
+        Implicit TLS (порт 465; для 587 снимите галку — STARTTLS)</label>
+      <label class="field">Логин / From<input name="user" value="${escapeHtml(smtp.user || notifyCfg.smtp?.user || 'info@pegasavto.ru')}"
+        autocomplete="off"></label>
+      <label class="field">Подпись From (если отличается)<input name="from" value="${escapeHtml(smtp.from || notifyCfg.smtp?.from || '')}"
+        placeholder="info@pegasavto.ru" autocomplete="off"></label>
+      <button class="button">Сохранить</button>
+      <button class="button ghost" type="button" id="smtpTest">Тест письма</button>
+    </form>
+    ${notifyCfg.outboundLive ? '' : '<p class="muted" style="margin-top:8px">Исходящие SMS/SMTP/Telegram на этом экземпляре подавлены (не production).</p>'}
+
+    <h2 style="margin-top:18px">Сценарии оповещений</h2>
+    <p class="muted"><b>Уровень:</b> Выкл — внешние каналы молчат (лента планера остаётся);
+      Аварийное — все привязанные (и «только аварии», и «все»);
+      Обычное — только режим «все уведомления».
+      <b>Каналы:</b> кому уходит текст роли/рассылки. SMS — на рабочий/личный телефон,
+      почта — на e-mail сотрудника.</p>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>Категория</th><th style="width:130px">Уровень</th>
+        <th style="width:70px">TG</th><th style="width:70px">SMS</th><th style="width:70px">E-mail</th>
+      </tr></thead>
+      <tbody>${NOTIFY_CATEGORIES.map(([key, label, def]) => {
+        const current = state.admin.settings?.notifyRules?.[key] || def;
+        const ch = channels[key] || {};
+        const tgOn = ch.telegram !== false;
+        const smsOn = Boolean(ch.sms);
+        const mailOn = Boolean(ch.email);
+        return `<tr>
+          <td>${escapeHtml(label)}${current === def ? '' : ' <small class="muted">(изменено)</small>'}</td>
+          <td><select data-notify-rule="${key}">
+            <option value="off" ${current === 'off' ? 'selected' : ''}>Выкл</option>
+            <option value="critical" ${current === 'critical' ? 'selected' : ''}>Аварийное</option>
+            <option value="normal" ${current === 'normal' ? 'selected' : ''}>Обычное</option>
+          </select></td>
+          <td style="text-align:center"><input type="checkbox" data-notify-ch="${key}" data-ch="telegram" ${tgOn ? 'checked' : ''}></td>
+          <td style="text-align:center"><input type="checkbox" data-notify-ch="${key}" data-ch="sms" ${smsOn ? 'checked' : ''}></td>
+          <td style="text-align:center"><input type="checkbox" data-notify-ch="${key}" data-ch="email" ${mailOn ? 'checked' : ''}></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    <button class="button" id="saveNotifyRules" style="margin-top:8px">Сохранить сценарии</button>
+    </section>`;
+
+  byId('telegramForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      const telegram = {
+        botToken: form.elements.botToken.value.trim(),
+        botName: form.elements.botName.value.trim().replace(/^@/, ''),
+        driverBotToken: form.elements.driverBotToken.value.trim(),
+        webhookBase: form.elements.webhookBase.value.trim()
+      };
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ telegram }) });
+      state.admin.settings.telegram = telegram;
+      toast('Telegram сохранён');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('smsForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      const sms = {
+        enabled: form.elements.enabled.checked,
+        login: form.elements.login.value.trim(),
+        sender: form.elements.sender.value.trim()
+      };
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ sms }) });
+      state.admin.settings.sms = sms;
+      toast('SMS-центр сохранён');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('smtpForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      const smtp = {
+        enabled: form.elements.enabled.checked,
+        host: form.elements.host.value.trim() || 'mail.hosting.reg.ru',
+        port: Number(form.elements.port.value) || 465,
+        secure: form.elements.secure.checked,
+        user: form.elements.user.value.trim(),
+        from: form.elements.from.value.trim() || form.elements.user.value.trim()
+      };
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ smtp }) });
+      state.admin.settings.smtp = smtp;
+      toast('SMTP сохранён');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('saveNotifyRules').onclick = async () => {
+    const rules = {};
+    const notifyChannels = {};
+    document.querySelectorAll('[data-notify-rule]').forEach(select => {
+      rules[select.dataset.notifyRule] = select.value;
+    });
+    for (const [key] of NOTIFY_CATEGORIES) {
+      notifyChannels[key] = { telegram: true, sms: false, email: false };
+    }
+    document.querySelectorAll('[data-notify-ch]').forEach(box => {
+      const key = box.dataset.notifyCh;
+      const ch = box.dataset.ch;
+      if (!notifyChannels[key]) notifyChannels[key] = {};
+      notifyChannels[key][ch] = box.checked;
+    });
+    try {
+      await api('/api/admin/settings', {
+        method: 'PUT', body: JSON.stringify({ notifyRules: rules, notifyChannels })
+      });
+      state.admin.settings.notifyRules = rules;
+      state.admin.settings.notifyChannels = notifyChannels;
+      toast('Сценарии сохранены — со следующего уведомления');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('smsBalance').onclick = async () => {
+    try {
+      const result = await api('/api/admin/notify/smsc-balance');
+      toast(result.ok ? `Баланс SMSC: ${result.balance}` : (result.error || 'Ошибка'), result.ok ? undefined : 'error');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('smsTest').onclick = async () => {
+    const phone = prompt('Номер для тестовой SMS (+7…)');
+    if (!phone) return;
+    try {
+      const result = await api('/api/admin/notify/test-sms', {
+        method: 'POST', body: JSON.stringify({ phone })
+      });
+      toast(result.ok ? 'SMS отправлена' : (result.error || 'Не удалось'), result.ok ? undefined : 'error');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('smtpTest').onclick = async () => {
+    const to = prompt('E-mail для тестового письма', state.admin.settings?.smtp?.user || 'info@pegasavto.ru');
+    if (!to) return;
+    try {
+      const result = await api('/api/admin/notify/test-smtp', {
+        method: 'POST', body: JSON.stringify({ to })
+      });
+      toast(result.ok ? 'Письмо отправлено' : (result.error || 'Не удалось'), result.ok ? undefined : 'error');
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
+async function renderTelephony() {
+  const [config, points] = await Promise.all([
+    api('/api/telephony/config'), api('/api/service-points')
+  ]);
+  byId('settingsContent').innerHTML = `
+    <h2>🛰 Мониторинг Pilot-GPS</h2>
     <p class="muted">Логин/пароль кабинета Пилота — планер сам получает токен (живёт 48 ч)
       и раз в минуту подтягивает позиции сцепок. После сохранения нажмите «Сопоставить парк» —
       трекеры привяжутся к сцепкам по госномерам (кириллица/латиница и пробелы выравниваются).</p>
@@ -760,24 +936,8 @@ async function renderTelephony() {
       <button class="button ghost" type="button" id="monitoringMap"
         title="Скачать список объектов из Пилота и привязать трекеры к сцепкам по госномерам">🔗 Сопоставить парк</button>
     </form>
-    <h3 style="margin-top:14px">Что отправлять в Telegram</h3>
-    <p class="muted">Уровень каждой категории: <b>Выкл</b> — в мессенджер не идёт (лента планера
-      остаётся); <b>Аварийное</b> — получают все привязанные сотрудники (и режим «только аварии»,
-      и «все»); <b>Обычное</b> — только выбравшие режим «все уведомления». Кому именно —
-      определяется ролью уведомления и ролью сотрудника.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Категория</th><th style="width:150px">Уровень</th></tr></thead>
-      <tbody>${NOTIFY_CATEGORIES.map(([key, label, def]) => {
-        const current = state.admin.settings?.notifyRules?.[key] || def;
-        return `<tr><td>${escapeHtml(label)}${current === def ? '' : ' <small class="muted">(изменено)</small>'}</td>
-          <td><select data-notify-rule="${key}">
-            <option value="off" ${current === 'off' ? 'selected' : ''}>Выкл</option>
-            <option value="critical" ${current === 'critical' ? 'selected' : ''}>Аварийное</option>
-            <option value="normal" ${current === 'normal' ? 'selected' : ''}>Обычное</option>
-          </select></td></tr>`;
-      }).join('')}</tbody>
-    </table></div>
-    <button class="button" id="saveNotifyRules" style="margin-top:8px">Сохранить правила рассылки</button>
+    <p class="muted" style="margin-top:10px">Сценарии Telegram / SMS / почты —
+      в разделе <b>Уведомления</b>.</p>
     <h2 style="margin-top:18px">Телефония</h2>
     <p class="muted">Когда АТС подключена, входящий звонок сам поднимает карточку водителя
       у сотрудника. До подключения та же карточка открывается кнопкой «📞 Звонок» в шапке —
@@ -881,34 +1041,6 @@ async function renderTelephony() {
         <td><button class="button ghost small danger" data-point-del="${point.id}">✕</button></td>
       </tr>`).join('') : '<tr><td colspan="6" class="muted">Точек пока нет — водителю нечего подсказать.</td></tr>'}
       </tbody></table>`;
-  byId('saveNotifyRules').onclick = async () => {
-    const rules = {};
-    document.querySelectorAll('[data-notify-rule]').forEach(select => {
-      rules[select.dataset.notifyRule] = select.value;
-    });
-    try {
-      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ notifyRules: rules }) });
-      state.admin.settings.notifyRules = rules;
-      toast('Правила рассылки сохранены — действуют со следующего уведомления');
-    } catch (error) { toast(error.message, 'error'); }
-  };
-  byId('telegramForm').onsubmit = async event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    try {
-      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({
-        telegram: { botToken: form.elements.botToken.value.trim(),
-          botName: form.elements.botName.value.trim().replace(/^@/, ''),
-          driverBotToken: form.elements.driverBotToken.value.trim(),
-          webhookBase: form.elements.webhookBase.value.trim() }
-      }) });
-      state.admin.settings.telegram = { botToken: form.elements.botToken.value.trim(),
-        botName: form.elements.botName.value.trim().replace(/^@/, ''),
-        driverBotToken: form.elements.driverBotToken.value.trim(),
-        webhookBase: form.elements.webhookBase.value.trim() };
-      toast('Telegram сохранён — сотрудники могут привязываться (кнопка «🔔»)');
-    } catch (error) { toast(error.message, 'error'); }
-  };
   byId('monitoringForm').onsubmit = async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -993,6 +1125,7 @@ async function render() {
     else if (state.section === 'customers') renderCustomers();
     else if (state.section === 'users') await renderUsers();
     else if (state.section === 'network') renderNetwork();
+    else if (state.section === 'notifications') await renderNotifications();
     else if (state.section === 'telephony') await renderTelephony();
     else if (state.section === 'integration') renderIntegration();
     else if (state.section === 'outbox') renderOutbox();

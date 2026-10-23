@@ -10,6 +10,8 @@ local_database="${LOCAL_DATABASE_PATH:-$local_data_dir/planner.db}"
 local_app_secret="$local_secret_dir/local_app_secret"
 local_admin_password="$local_secret_dir/local_admin_password"
 local_beeline_ats_token="$local_secret_dir/beeline_ats_token"
+local_smsc_apikey="$local_secret_dir/smsc_apikey"
+local_smtp_password="$local_secret_dir/smtp_password"
 
 [[ "$local_port" =~ ^[0-9]{1,5}$ ]] && ((local_port >= 1024 && local_port <= 65535)) || {
   echo "LOCAL_PORT должен быть в диапазоне 1024–65535" >&2
@@ -39,7 +41,15 @@ fi
 if [[ ! -e "$local_beeline_ats_token" ]]; then
   : > "$local_beeline_ats_token"
 fi
-chmod 0600 "$local_app_secret" "$local_admin_password" "$local_beeline_ats_token"
+# SMSC apikey и SMTP-пароль — вручную из кабинетов; пустые файлы, чтобы env _FILE не падал.
+if [[ ! -e "$local_smsc_apikey" ]]; then
+  : > "$local_smsc_apikey"
+fi
+if [[ ! -e "$local_smtp_password" ]]; then
+  : > "$local_smtp_password"
+fi
+chmod 0600 "$local_app_secret" "$local_admin_password" "$local_beeline_ats_token" \
+  "$local_smsc_apikey" "$local_smtp_password"
 
 echo "Локальный режим: http://127.0.0.1:$local_port"
 echo "Логин первого запуска: admin"
@@ -55,6 +65,8 @@ export DATABASE_PATH="$local_database"
 export APP_SECRET_FILE="$local_app_secret"
 export ADMIN_PASSWORD_FILE="$local_admin_password"
 export BEELINE_ATS_TOKEN_FILE="$local_beeline_ats_token"
+export SMSC_APIKEY_FILE="$local_smsc_apikey"
+export SMTP_PASSWORD_FILE="$local_smtp_password"
 export ADMIN_USERNAME="admin"
 export ADMIN_NAME="Администратор"
 export NODE_ENV="development"

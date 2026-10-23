@@ -35,6 +35,12 @@ export const config = {
   // Токен API Облачной АТС Билайн («Интеграция по API» → «Создать токен»).
   // Файл .secrets/beeline_ats_token или BEELINE_ATS_TOKEN — см. docs/telephony-beeline.md.
   beelineAtsToken: secret('BEELINE_ATS_TOKEN', ''),
+  // SMS-центр (smsc.ru): apikey из кабинета. Логин/имя отправителя — в settings.sms.
+  // Файл .secrets/smsc_apikey или SMSC_APIKEY / SMSC_APIKEY_FILE.
+  smscApikey: secret('SMSC_APIKEY', ''),
+  // SMTP reg.ru (и аналоги): пароль ящика. Host/user/from — в settings.smtp.
+  // Файл .secrets/smtp_password или SMTP_PASSWORD / SMTP_PASSWORD_FILE.
+  smtpPassword: secret('SMTP_PASSWORD', ''),
   admin: {
     username: process.env.ADMIN_USERNAME || 'admin',
     password: secret('ADMIN_PASSWORD', 'ChangeMe-2026!'),

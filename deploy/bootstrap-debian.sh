@@ -265,9 +265,18 @@ elif [[ ! -s "$APP_DIR/.secrets/admin_password" ]]; then
   openssl rand -hex 16 > "$APP_DIR/.secrets/admin_password"
 fi
 admin_password="$(tr -d '\r\n' < "$APP_DIR/.secrets/admin_password")"
+# Docker Compose требует файлы секретов на диске даже если значение ещё не
+# задано (Билайн / SMSC / SMTP) — иначе `compose up` падает при старте.
+for optional_secret in beeline_ats_token smsc_apikey smtp_password; do
+  if [[ ! -e "$APP_DIR/.secrets/$optional_secret" ]]; then
+    : > "$APP_DIR/.secrets/$optional_secret"
+  fi
+done
 chown -R 1000:1000 "$APP_DIR/data" "$APP_DIR/.secrets"
 chmod 0700 "$APP_DIR/.secrets"
 chmod 0400 "$APP_DIR/.secrets/app_secret" "$APP_DIR/.secrets/admin_password"
+chmod 0400 "$APP_DIR/.secrets/beeline_ats_token" \
+  "$APP_DIR/.secrets/smsc_apikey" "$APP_DIR/.secrets/smtp_password" 2>/dev/null || true
 cookie_secure=false
 if [[ "$DEPLOY_MODE" == "public" || "$LAN_TLS" == "true" ]]; then
   cookie_secure=true

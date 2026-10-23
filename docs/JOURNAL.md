@@ -6,6 +6,12 @@
 
 ## 2026-10-23
 
+- УВЕДОМЛЕНИЯ: раздел «Настройки → Уведомления» — Telegram, SMS (smsc.ru,
+  `.secrets/smsc_apikey`) и SMTP reg.ru (`mail.hosting.reg.ru:465`,
+  `.secrets/smtp_password`); сценарии — уровень + каналы TG/SMS/e-mail
+  (notifyRules + notifyChannels). Клиенты src/smsc.mjs, src/mail.mjs.
+  docs/notifications-sms-smtp.md.
+
 - ОТМЕНА, этап 3 (план руководителя): окно отмены — undoToast (8 с,
   «↩ Отменить») после отметок этапов/фактов на точках; отмена — тем же
   PATCH /api/stops с null. Серверная симметрия: снятие фактов

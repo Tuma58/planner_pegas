@@ -169,6 +169,24 @@ export const defaultSettings = {
     token: '',
     popup: true
   },
+  // SMS-центр (smsc.ru). Apikey — только .secrets/smsc_apikey.
+  sms: {
+    enabled: false,
+    login: '',
+    sender: ''
+  },
+  // SMTP (reg.ru). Пароль — только .secrets/smtp_password.
+  smtp: {
+    enabled: true,
+    host: 'mail.hosting.reg.ru',
+    port: 465,
+    secure: true,
+    user: 'info@pegasavto.ru',
+    from: 'info@pegasavto.ru'
+  },
+  // Каналы по категориям: telegram / sms / email. Уровень (off/critical/normal)
+  // задаётся отдельно в notifyRules. По умолчанию только Telegram.
+  notifyChannels: {},
   general: {
     companyName: 'PegasLogistic',
     appName: 'Диспетчерская',

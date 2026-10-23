@@ -42,6 +42,8 @@ import {
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
 } from './trip-control.mjs';
+import { sendSms, smscBalance } from './smsc.mjs';
+import { sendMail } from './mail.mjs';
 
 // Журнал неудачных логинов для fail2ban (living в data-томе рядом с БД);
 // простая ротация: файл больше 5 МБ обнуляется при старте.
@@ -433,16 +435,18 @@ function integrationPublic() {
 // ── Внутренний чат и уведомления конвейера ──
 // Авто-сообщение адресуется роли следующего участника процесса: клиент
 // показывает его тостом со звуком тем, у кого эта роль, и пишет в общий чат.
-// ── Telegram-уведомления в мессенджер на телефон ──
-// Бот настраивается админом (Настройки → Telegram): токен от @BotFather.
-// Сотрудник привязывает свой чат командой /start КОД. Режимы: critical —
-// только аварии (🚨, ⚖ узкие дни, невыход в окно), all — плюс все
-// уведомления своей роли и общие рассылки.
+// ── Каналы оповещений: Telegram + SMS (smsc.ru) + SMTP (reg.ru) ──
+// Настройки: «Настройки → Уведомления». Бот — токен @BotFather; сотрудник
+// привязывает чат /start КОД. Режимы пользователя: critical — только
+// аварии, all — все уведомления своей роли. SMS/e-mail идут на work_phone
+// / phone и email сотрудников роли (при включённом канале категории).
 const telegramConfig = () => settingsObject(db).telegram || {};
-// Категории уведомлений: руководитель настраивает уровень каждой в
-// «Настройки → Telegram»: off — в мессенджер не шлём (лента планера
-// остаётся), critical — получают все привязанные (и режим «аварии», и
-// «все»), normal — только выбравшие режим «все уведомления».
+const smsConfig = () => settingsObject(db).sms || {};
+const smtpConfig = () => settingsObject(db).smtp || {};
+// Категории: уровень off|critical|normal (notifyRules) и каналы
+// telegram/sms/email (notifyChannels). off — внешние каналы молчат,
+// лента планера остаётся. critical — все привязанные (и «аварии», и «все»),
+// normal — только режим «все уведомления».
 const NOTIFY_CATEGORIES = {
   stuck: { label: '🚨 Простои на точках (не выгружают/не грузят)', def: 'critical' },
   balance: { label: '⚖ Узкие дни баланса парк↔сетка', def: 'critical' },
@@ -470,6 +474,23 @@ const notifyLevelOf = category => {
   return ['off', 'critical', 'normal'].includes(level)
     ? level : (NOTIFY_CATEGORIES[category]?.def || 'normal');
 };
+// Каналы категории. По умолчанию только Telegram (как раньше).
+const notifyChannelsOf = category => {
+  const stored = settingsObject(db).notifyChannels?.[category];
+  return {
+    telegram: stored?.telegram !== false,
+    sms: Boolean(stored?.sms),
+    email: Boolean(stored?.email)
+  };
+};
+const outboundMuted = () => {
+  if (config.isProduction) return false;
+  if (!outboundMuted.warned) {
+    outboundMuted.warned = true;
+    console.log('notify: исходящие SMS/SMTP/Telegram подавлены — NODE_ENV не production');
+  }
+  return true;
+};
 // Запрос к Bot API через node:https с family:4: у LXC нет IPv6-маршрута,
 // а undici-fetch упорно коннектится по v6 (при том что dns.lookup отдаёт
 // v4 из /etc/hosts) — таймаут. Прямой https с family:4 стабилен (~200 мс).
@@ -478,13 +499,7 @@ function tgApi(method, payload, tokenOverride = null) {
   // тест-сервер с копией прод-базы слал руководителю сводки со старыми
   // данными через живой релей и перебивал secret_token вебхуков ботов.
   // Прод определяется NODE_ENV=production (ставится только в Dockerfile).
-  if (!config.isProduction) {
-    if (!tgApi.mutedWarned) {
-      tgApi.mutedWarned = true;
-      console.log('telegram: исходящие подавлены — NODE_ENV не production');
-    }
-    return Promise.resolve(null);
-  }
+  if (outboundMuted()) return Promise.resolve(null);
   return new Promise(resolve => {
     const token = tokenOverride || telegramConfig().botToken;
     if (!token) return resolve(null);
@@ -528,11 +543,105 @@ function telegramChatsForRole(targetRole, level) {
     .map(row => row.telegram_chat_id);
 }
 
+function roleUsersForNotify(targetRole, level) {
+  if (level === 'off') return [];
+  return db.prepare(`SELECT id, email, phone, work_phone, telegram_chat_id, telegram_mode
+      FROM users WHERE active=1 AND deleted_at IS NULL
+        AND (roles LIKE ? OR role = ?)
+        AND (telegram_mode = 'all' OR (telegram_mode = 'critical' AND ?))`)
+    .all(`%"${targetRole}"%`, targetRole, level === 'critical' ? 1 : 0);
+}
+
+function phonesOfUsers(users) {
+  const seen = new Set();
+  const phones = [];
+  for (const user of users) {
+    for (const raw of [user.work_phone, user.phone]) {
+      const digits = phoneDigits(raw);
+      if (!digits || seen.has(digits)) continue;
+      seen.add(digits);
+      phones.push(raw);
+    }
+  }
+  return phones;
+}
+
+function emailsOfUsers(users) {
+  const seen = new Set();
+  const emails = [];
+  for (const user of users) {
+    const email = String(user.email || '').trim().toLowerCase();
+    if (!email.includes('@') || seen.has(email)) continue;
+    seen.add(email);
+    emails.push(email);
+  }
+  return emails;
+}
+
+async function dispatchSms(phones, text) {
+  const sms = smsConfig();
+  // SMS — только явное включение (платный канал).
+  if (sms.enabled !== true || outboundMuted()) return { ok: false, skipped: true };
+  const apikey = config.smscApikey;
+  if (!apikey && !sms.login) return { ok: false, error: 'SMSC не настроен' };
+  return sendSms({
+    login: sms.login || undefined, apikey: apikey || undefined,
+    phones, text: String(text).slice(0, 700), sender: sms.sender || undefined
+  });
+}
+
+async function dispatchMail(to, text, subject) {
+  const smtp = {
+    enabled: true, host: 'mail.hosting.reg.ru', port: 465, secure: true,
+    user: 'info@pegasavto.ru', from: 'info@pegasavto.ru',
+    ...smtpConfig()
+  };
+  // SMTP по умолчанию включён, если пароль на месте; выключается явно.
+  if (smtp.enabled === false || outboundMuted()) return { ok: false, skipped: true };
+  const password = config.smtpPassword;
+  if (!password || !smtp.user) return { ok: false, error: 'SMTP не настроен' };
+  return sendMail({
+    host: smtp.host || 'mail.hosting.reg.ru',
+    port: Number(smtp.port) || 465,
+    secure: smtp.secure !== false,
+    user: smtp.user,
+    password,
+    from: smtp.from || smtp.user,
+    to,
+    subject: subject || 'PegasLogistic',
+    text: String(text || '')
+  });
+}
+
+function deliverExternal(users, text, category, level) {
+  if (level === 'off') return;
+  const channels = notifyChannelsOf(category);
+  const label = NOTIFY_CATEGORIES[category]?.label || category;
+  try {
+    if (channels.telegram) {
+      sendTelegramTo(users.map(u => u.telegram_chat_id).filter(Boolean), text);
+    }
+  } catch { /* не критично */ }
+  try {
+    if (channels.sms) {
+      const phones = phonesOfUsers(users);
+      if (phones.length) dispatchSms(phones, text).catch(() => {});
+    }
+  } catch { /* не критично */ }
+  try {
+    if (channels.email) {
+      const emails = emailsOfUsers(users);
+      if (emails.length) dispatchMail(emails, text, label).catch(() => {});
+    }
+  } catch { /* не критично */ }
+}
+
 function notify(targetRole, text, entity = null, entityId = null, { category = 'other' } = {}) {
   db.prepare(`INSERT INTO messages(author_name,kind,text,target_role,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`).run(text, targetRole, entity, entityId);
   try {
-    sendTelegramTo(telegramChatsForRole(targetRole, notifyLevelOf(category)), text);
+    const level = notifyLevelOf(category);
+    deliverExternal(roleUsersForNotify(targetRole, level), text, category, level);
   } catch { /* не критично */ }
 }
 
@@ -544,17 +653,15 @@ function notifyEveryone(text, entity = null, entityId = null) {
   const insert = db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`);
   for (const user of users) insert.run(text, user.id, entity, entityId);
-  // Дубль в Telegram по уровню категории (руководитель управляет в
-  // Настройках): off — не шлём, critical — всем привязанным, normal —
-  // выбравшим режим «все уведомления».
+  // Внешние каналы по уровню/каналам категории (Настройки → Уведомления).
   try {
-    const level = notifyLevelOf(arguments[3]?.category || 'daily_report');
+    const category = arguments[3]?.category || 'daily_report';
+    const level = notifyLevelOf(category);
     if (level !== 'off') {
-      const chats = db.prepare(`SELECT telegram_chat_id FROM users
-        WHERE active=1 AND deleted_at IS NULL AND telegram_chat_id IS NOT NULL
-          AND (telegram_mode='all' OR ?)`).all(level === 'critical' ? 1 : 0)
-        .map(row => row.telegram_chat_id);
-      sendTelegramTo(chats, text);
+      const recipients = db.prepare(`SELECT id, email, phone, work_phone, telegram_chat_id, telegram_mode
+        FROM users WHERE active=1 AND deleted_at IS NULL
+          AND (telegram_mode='all' OR ?)`).all(level === 'critical' ? 1 : 0);
+      deliverExternal(recipients, text, category, level);
     }
   } catch { /* не критично */ }
   return users.length;
@@ -562,16 +669,16 @@ function notifyEveryone(text, entity = null, entityId = null) {
 
 // Адресное авто-сообщение одному сотруднику по ФИО (эскалации доски):
 // в его ленту «⚙ Конвейер» (recipient_id — тост и звук как адресованное),
-// дубль в Telegram — выбравшим режим «все уведомления».
+// дубль во внешние каналы — при режиме «все уведомления» и каналах «other».
 function notifyUserByName(fullName, text, entity = null, entityId = null) {
-  const user = db.prepare(`SELECT id, telegram_chat_id, telegram_mode FROM users
+  const user = db.prepare(`SELECT id, email, phone, work_phone, telegram_chat_id, telegram_mode FROM users
     WHERE full_name=? AND active=1 AND deleted_at IS NULL`).get(fullName);
   if (!user) return false;
   db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`).run(text, user.id, entity, entityId);
   try {
-    if (user.telegram_chat_id && user.telegram_mode === 'all') {
-      sendTelegramTo([user.telegram_chat_id], text);
+    if (user.telegram_mode === 'all') {
+      deliverExternal([user], text, 'other', 'normal');
     }
   } catch { /* не критично */ }
   return true;
@@ -9319,6 +9426,78 @@ async function api(request, response, url) {
     });
   }
 
+  // Статус каналов оповещений (секреты не отдаём — только «задан/нет»).
+  if (request.method === 'GET' && pathname === '/api/admin/notify/config') {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    const sms = smsConfig();
+    const smtp = smtpConfig();
+    return json(response, 200, {
+      categories: Object.entries(NOTIFY_CATEGORIES).map(([key, meta]) => ({
+        key, label: meta.label, def: meta.def
+      })),
+      sms: {
+        enabled: Boolean(sms.enabled), login: sms.login || '', sender: sms.sender || '',
+        apikeySet: Boolean(config.smscApikey)
+      },
+      smtp: {
+        enabled: smtp.enabled !== false,
+        host: smtp.host || 'mail.hosting.reg.ru',
+        port: Number(smtp.port) || 465,
+        secure: smtp.secure !== false,
+        user: smtp.user || 'info@pegasavto.ru',
+        from: smtp.from || smtp.user || 'info@pegasavto.ru',
+        passwordSet: Boolean(config.smtpPassword)
+      },
+      outboundLive: config.isProduction
+    });
+  }
+
+  if (request.method === 'POST' && pathname === '/api/admin/notify/test-sms') {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const phone = String(body.phone || user.work_phone || user.phone || '').trim();
+    if (!phone) return errorJson(response, 422, 'Укажите номер телефона');
+    if (!config.isProduction) {
+      return json(response, 200, { ok: false, error: 'Тест SMS только на production (NODE_ENV)' });
+    }
+    const result = await dispatchSms([phone],
+      String(body.text || 'PegasLogistic: тест SMS-канала').slice(0, 200));
+    audit(db, user, 'test', 'notify_sms', null, { phone: phoneDigits(phone), ok: result.ok },
+      requestIp(request));
+    return json(response, result.ok ? 200 : 422, result);
+  }
+
+  if (request.method === 'POST' && pathname === '/api/admin/notify/test-smtp') {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const to = String(body.to || user.email || '').trim();
+    if (!to.includes('@')) return errorJson(response, 422, 'Укажите e-mail получателя');
+    if (!config.isProduction) {
+      return json(response, 200, { ok: false, error: 'Тест SMTP только на production (NODE_ENV)' });
+    }
+    const result = await dispatchMail(to,
+      String(body.text || 'PegasLogistic: тест SMTP-канала (reg.ru).'),
+      String(body.subject || 'PegasLogistic — тест почты').slice(0, 120));
+    audit(db, user, 'test', 'notify_smtp', null, { to, ok: result.ok }, requestIp(request));
+    return json(response, result.ok ? 200 : 422, result);
+  }
+
+  if (request.method === 'GET' && pathname === '/api/admin/notify/smsc-balance') {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    const sms = smsConfig();
+    if (!config.smscApikey && !sms.login) {
+      return errorJson(response, 422, 'Задайте SMSC apikey (.secrets/smsc_apikey) или login');
+    }
+    const result = await smscBalance({
+      login: sms.login || undefined, apikey: config.smscApikey || undefined
+    });
+    return json(response, result.ok ? 200 : 422, result);
+  }
+
   // ── Телефония Билайн: callback Xsi-Events ──
   // Билайн шлёт сюда XML-события звонков в реальном времени (подписка
   // BASIC_CALL). Первое событие звонка (received/originated) заводит запись в
@@ -12479,8 +12658,41 @@ async function api(request, response, url) {
     const update = db.prepare(`INSERT INTO settings(key,value_json,updated_by,updated_at)
       VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET
       value_json=excluded.value_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`);
+    // Секреты SMS/SMTP живут только в .secrets — из тела запроса выкидываем.
+    if (body.sms && typeof body.sms === 'object') {
+      const { apikey: _a, password: _p, ...smsSafe } = body.sms;
+      body.sms = {
+        enabled: Boolean(smsSafe.enabled),
+        login: String(smsSafe.login || '').trim().slice(0, 80),
+        sender: String(smsSafe.sender || '').trim().slice(0, 20)
+      };
+    }
+    if (body.smtp && typeof body.smtp === 'object') {
+      const { password: _pw, ...smtpSafe } = body.smtp;
+      body.smtp = {
+        enabled: Boolean(smtpSafe.enabled),
+        host: String(smtpSafe.host || 'mail.hosting.reg.ru').trim().slice(0, 120) || 'mail.hosting.reg.ru',
+        port: Math.max(1, Math.min(65535, Number(smtpSafe.port) || 465)),
+        secure: smtpSafe.secure !== false,
+        user: String(smtpSafe.user || '').trim().slice(0, 120),
+        from: String(smtpSafe.from || smtpSafe.user || '').trim().slice(0, 120)
+      };
+    }
+    if (body.notifyChannels && typeof body.notifyChannels === 'object') {
+      const cleaned = {};
+      for (const key of Object.keys(NOTIFY_CATEGORIES)) {
+        const row = body.notifyChannels[key] || {};
+        cleaned[key] = {
+          telegram: row.telegram !== false,
+          sms: Boolean(row.sms),
+          email: Boolean(row.email)
+        };
+      }
+      body.notifyChannels = cleaned;
+    }
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
       'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules',
+      'notifyChannels', 'sms', 'smtp',
       'monitoring', 'bodyCompat', 'staff', 'dispatch']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }

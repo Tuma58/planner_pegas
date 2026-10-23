@@ -384,6 +384,10 @@ GPS/CAN (Пилот), экономика рейсов и самонастраи�
   вебхуки `/api/telegram/webhook/{staff|driver}` через 443; исходящие —
   api.telegram.org, при блокировке — релей (app_meta telegram_api_host,
   воркер в tools/telegram-relay-worker.js).
+- Уведомления (Настройки → Уведомления): Telegram + SMS (smsc.ru,
+  `.secrets/smsc_apikey`) + SMTP reg.ru (`info@pegasavto.ru`,
+  `.secrets/smtp_password`); сценарии — notifyRules + notifyChannels.
+  См. docs/notifications-sms-smtp.md.
 - Мониторинг: Pilot-GPS (blade.pilot-gps.com), позиции/датчики/одометры;
   лимит 8 rps, X-Node обязателен.
 
