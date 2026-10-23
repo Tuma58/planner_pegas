@@ -753,15 +753,18 @@ async function renderNotifications() {
     </form>
 
     <h2 style="margin-top:18px">📱 SMS-центр (smsc.ru)</h2>
-    <p class="muted">Логин и имя отправителя — здесь; <b>apikey</b> только в
-      <code>.secrets/smsc_apikey</code> на сервере
-      ${notifyCfg.sms?.apikeySet ? '— <b>ключ на месте ✓</b>' : '— <b>ключ не задан</b>'}.</p>
+    <p class="muted">Секрет <code>.secrets/smsc_apikey</code> — три строки:
+      пароль, логин, имя отправителя
+      ${notifyCfg.sms?.passwordSet || notifyCfg.sms?.apikeySet
+        ? '— <b>секрет на месте ✓</b>' : '— <b>секрет не задан</b>'}
+      ${notifyCfg.sms?.loginFromSecret ? ' · логин из файла' : ''}
+      ${notifyCfg.sms?.senderFromSecret ? ' · отправитель из файла' : ''}.</p>
     <form id="smsForm" class="fields">
       <label class="check"><input type="checkbox" name="enabled" ${sms.enabled || notifyCfg.sms?.enabled ? 'checked' : ''}>
         SMS-канал включён (платные сообщения)</label>
-      <label class="field">Логин SMSC<input name="login" value="${escapeHtml(sms.login || notifyCfg.sms?.login || '')}"
+      <label class="field">Логин SMSC (если не в секрете)<input name="login" value="${escapeHtml(sms.login || notifyCfg.sms?.login || '')}"
         placeholder="логин кабинета smsc.ru" autocomplete="off"></label>
-      <label class="field">Имя отправителя<input name="sender" value="${escapeHtml(sms.sender || notifyCfg.sms?.sender || '')}"
+      <label class="field">Имя отправителя (если не в секрете)<input name="sender" value="${escapeHtml(sms.sender || notifyCfg.sms?.sender || '')}"
         placeholder="как в кабинете SMSC" autocomplete="off"></label>
       <button class="button">Сохранить</button>
       <button class="button ghost" type="button" id="smsBalance">Баланс SMSC</button>

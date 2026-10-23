@@ -578,15 +578,28 @@ function emailsOfUsers(users) {
   return emails;
 }
 
+function smscCreds() {
+  const sms = smsConfig();
+  const login = config.smscLogin || sms.login || undefined;
+  const password = config.smscPassword || undefined;
+  const apikey = config.smscApikey || undefined;
+  const sender = config.smscSender || sms.sender || undefined;
+  // Если в секрете APIKey-… — предпочитаем apikey (без дубля psw).
+  if (apikey) return { login, apikey, sender };
+  return { login, password, sender };
+}
+
 async function dispatchSms(phones, text) {
   const sms = smsConfig();
   // SMS — только явное включение (платный канал).
   if (sms.enabled !== true || outboundMuted()) return { ok: false, skipped: true };
-  const apikey = config.smscApikey;
-  if (!apikey && !sms.login) return { ok: false, error: 'SMSC не настроен' };
+  const creds = smscCreds();
+  if (!creds.apikey && !(creds.login && creds.password)) {
+    return { ok: false, error: 'SMSC не настроен' };
+  }
   return sendSms({
-    login: sms.login || undefined, apikey: apikey || undefined,
-    phones, text: String(text).slice(0, 700), sender: sms.sender || undefined
+    ...creds,
+    phones, text: String(text).slice(0, 700)
   });
 }
 
@@ -9437,8 +9450,13 @@ async function api(request, response, url) {
         key, label: meta.label, def: meta.def
       })),
       sms: {
-        enabled: Boolean(sms.enabled), login: sms.login || '', sender: sms.sender || '',
-        apikeySet: Boolean(config.smscApikey)
+        enabled: Boolean(sms.enabled),
+        login: config.smscLogin || sms.login || '',
+        sender: config.smscSender || sms.sender || '',
+        apikeySet: Boolean(config.smscApikey),
+        passwordSet: Boolean(config.smscPassword),
+        loginFromSecret: Boolean(config.smscLogin),
+        senderFromSecret: Boolean(config.smscSender)
       },
       smtp: {
         enabled: smtp.enabled !== false,
@@ -9488,12 +9506,13 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/admin/notify/smsc-balance') {
     const user = requirePermission(request, response, 'settings:write');
     if (!user) return;
-    const sms = smsConfig();
-    if (!config.smscApikey && !sms.login) {
-      return errorJson(response, 422, 'Задайте SMSC apikey (.secrets/smsc_apikey) или login');
+    const creds = smscCreds();
+    if (!creds.apikey && !(creds.login && creds.password)) {
+      return errorJson(response, 422,
+        'Задайте .secrets/smsc_apikey (пароль\\nлогин\\nотправитель) или apikey');
     }
     const result = await smscBalance({
-      login: sms.login || undefined, apikey: config.smscApikey || undefined
+      login: creds.login, password: creds.password, apikey: creds.apikey
     });
     return json(response, result.ok ? 200 : 422, result);
   }

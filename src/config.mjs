@@ -15,6 +15,29 @@ const secret = (name, fallback) => {
   return process.env[name] || fallback;
 };
 
+// .secrets/smsc_apikey — три строки: пароль, логин, имя отправителя.
+// Одна строка (legacy) — apikey без login/psw.
+// В пароле/apikey вида APIKey-… пробелы из вставки убираем.
+function parseSmscSecret(raw) {
+  const lines = String(raw || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const cleanKey = value => String(value || '').replace(/\s+/g, '');
+  if (lines.length >= 3) {
+    const password = cleanKey(lines[0]);
+    const login = lines[1].replace(/\s+/g, '');
+    const sender = lines[2].replace(/\s+/g, '');
+    // APIKey-… можно слать и как apikey, и как psw+login — оставляем оба поля.
+    const apikey = /^APIKey/i.test(password) ? password : '';
+    return { password, login, sender, apikey };
+  }
+  if (lines.length === 2) {
+    return { password: cleanKey(lines[0]), login: lines[1].replace(/\s+/g, ''), sender: '', apikey: '' };
+  }
+  const one = cleanKey(lines[0] || '');
+  return { password: '', login: '', sender: '', apikey: one };
+}
+
+const smscSecret = parseSmscSecret(secret('SMSC_APIKEY', ''));
+
 export const config = {
   root,
   host: process.env.HOST || '127.0.0.1',
@@ -35,10 +58,12 @@ export const config = {
   // Токен API Облачной АТС Билайн («Интеграция по API» → «Создать токен»).
   // Файл .secrets/beeline_ats_token или BEELINE_ATS_TOKEN — см. docs/telephony-beeline.md.
   beelineAtsToken: secret('BEELINE_ATS_TOKEN', ''),
-  // SMS-центр (smsc.ru): apikey из кабинета. Логин/имя отправителя — в settings.sms.
-  // Файл .secrets/smsc_apikey или SMSC_APIKEY / SMSC_APIKEY_FILE.
-  // Пробелы/переносы из вставки в редакторе схлопываем — иначе SMSC даёт error 2.
-  smscApikey: secret('SMSC_APIKEY', '').replace(/\s+/g, ''),
+  // SMS-центр (smsc.ru). Файл .secrets/smsc_apikey / SMSC_APIKEY_FILE:
+  //   стр.1 пароль, стр.2 логин, стр.3 имя отправителя (или одна строка = apikey).
+  smscApikey: smscSecret.apikey,
+  smscPassword: smscSecret.password,
+  smscLogin: smscSecret.login,
+  smscSender: smscSecret.sender,
   // SMTP reg.ru (и аналоги): пароль ящика. Host/user/from — в settings.smtp.
   // Файл .secrets/smtp_password или SMTP_PASSWORD / SMTP_PASSWORD_FILE.
   smtpPassword: secret('SMTP_PASSWORD', ''),

@@ -6,6 +6,9 @@
 
 ## 2026-10-23
 
+- SMSC-секрет: `.secrets/smsc_apikey` — три строки (пароль, логин,
+  отправитель); парсер в config.mjs, APIKey-… без пробелов.
+
 - УВЕДОМЛЕНИЯ: раздел «Настройки → Уведомления» — Telegram, SMS (smsc.ru,
   `.secrets/smsc_apikey`) и SMTP reg.ru (`mail.hosting.reg.ru:465`,
   `.secrets/smtp_password`); сценарии — уровень + каналы TG/SMS/e-mail

@@ -4,7 +4,8 @@
 // Авторизация: login+psw или apikey. Имя отправителя — параметр sender
 // (должно быть зарегистрировано в кабинете SMSC).
 //
-// Секрет: .secrets/smsc_apikey или SMSC_APIKEY; login/sender — в settings.sms.
+// Секрет .secrets/smsc_apikey: три строки (пароль, логин, отправитель)
+// или одна строка (apikey). Дополнительно login/sender могут быть в settings.sms.
 
 import { request as httpsRequest } from 'node:https';
 import { phoneDigits } from './telephony.mjs';
