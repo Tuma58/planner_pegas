@@ -897,6 +897,31 @@ try {
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('geo_cascade_v2','1')`).run();
   }
 } catch { /* не критично */ }
+// Разово (23.10, аудит порожняка Аустрина→Москва): (1) дубли перегонов —
+// одинаковые transfer одной сцепки (старт, конец, адрес) схлопываются до
+// одного; (2) пересчёт порожних подгонов рейсов с 1 сентября: подгон
+// теперь видит плановый перегон (см. vehiclePositionBefore) — километры
+// перегона больше не ложатся на рейс второй раз.
+try {
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='empty_km_transfer_fix'`).get()) {
+    const dups = db.prepare(`DELETE FROM vehicle_dispositions WHERE id NOT IN (
+      SELECT MIN(id) FROM vehicle_dispositions GROUP BY vehicle_id, kind, starts_at, ends_at,
+        COALESCE(address_id,'')) AND kind='transfer'`).run().changes;
+    let fixed = 0;
+    for (const trip of db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.empty_km,
+        o.from_address_id, o.from_point FROM trips t JOIN orders o ON o.id=t.order_id
+      WHERE t.status<>'rejected' AND datetime(t.starts_at) >= datetime('2026-09-01')`).all()) {
+      const fresh = emptyKmFor(trip.vehicle_id, trip.starts_at,
+        trip.from_address_id, trip.from_point, trip.id);
+      if (fresh != null && Math.abs((trip.empty_km || 0) - fresh) > 25) {
+        db.prepare(`UPDATE trips SET empty_km=? WHERE id=?`).run(fresh, trip.id);
+        fixed += 1;
+      }
+    }
+    console.log(`порожняк: дублей перегонов удалено ${dups}, подгонов пересчитано ${fixed}`);
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('empty_km_transfer_fix','1')`).run();
+  }
+} catch (error) { console.error('empty_km_transfer_fix:', error.message); }
 
 // Сторож ресурса: сцепка «без водителя» (по интервалу в календаре) или
 // «без заказа» три и более дней → авто-сообщение роли «Ресурс»,
@@ -6243,13 +6268,19 @@ function vehiclePositionBefore(vehicleId, beforeIso, excludeTripId = '') {
     FROM trips t JOIN zones z ON z.id=t.to_zone_id
     WHERE t.vehicle_id=? AND t.status<>'rejected' AND t.id<>? AND t.starts_at<?
     ORDER BY t.ends_at DESC LIMIT 1`).get(vehicleId, excludeTripId, beforeIso);
-  // Ремонт с адресом и ЗАВЕРШЁННЫЙ перегон тоже задают место сцепки:
-  // после перегона машина стоит в точке прибытия, а не там, где выгрузилась.
+  // Ремонт с адресом и перегон тоже задают место сцепки: после перегона
+  // машина стоит в точке прибытия, а не там, где выгрузилась. Перегон
+  // считается и ПЛАНОВЫЙ, чей конец раньше момента (не только с отметкой
+  // прибытия): отметку обычно ставит автозакрытие через сутки, и подгон
+  // рейса успевал посчитаться от старой выгрузки — километры перегона
+  // ложились на рейс второй раз (аудит 23.10: Аустрина→Москва, подгоны
+  // 400–900 км поверх заведённых перегонов в Пензу).
   const prevPlace = db.prepare(`SELECT COALESCE(d.arrived_at,d.ends_at) at, a.latitude, a.longitude
     FROM vehicle_dispositions d JOIN addresses a ON a.id=d.address_id
     WHERE d.vehicle_id=? AND a.latitude IS NOT NULL AND d.starts_at<?
-      AND (d.kind='repair' OR (d.kind='transfer' AND d.arrived_at IS NOT NULL))
-    ORDER BY at DESC LIMIT 1`).get(vehicleId, beforeIso);
+      AND (d.kind='repair' OR (d.kind='transfer'
+        AND (d.arrived_at IS NOT NULL OR datetime(d.ends_at) <= datetime(?))))
+    ORDER BY at DESC LIMIT 1`).get(vehicleId, beforeIso, beforeIso);
   if (prevPlace && (!prevTrip || String(prevPlace.at) >= String(prevTrip.ends_at))) {
     return { latitude: prevPlace.latitude, longitude: prevPlace.longitude };
   }
