@@ -103,6 +103,21 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
   background: var(--teal); color: white; font-weight: 750;
 }
 .button:hover { filter: brightness(1.06); }
+/* Эффект нажатия (заказ руководителя 22.10): клик виден телом кнопки,
+   а на время запроса кнопка блокируется со спиннером — действие пошло,
+   двойной клик не плодит дублей. */
+.button, button { transition: transform 0.06s ease, filter 0.1s ease; }
+.button:active:not(.busy), button:active:not(.busy) {
+  transform: translateY(1px) scale(0.98); filter: brightness(0.88);
+}
+.button.busy, button.busy { opacity: 0.65; pointer-events: none; cursor: wait; }
+.button.busy::after, button.busy::after {
+  content: ''; width: 11px; height: 11px; flex: 0 0 auto;
+  border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; display: inline-block; margin-left: 6px;
+  animation: btnspin 0.6s linear infinite;
+}
+@keyframes btnspin { to { transform: rotate(360deg); } }
 .button.secondary { background: var(--navy); }
 .button.ghost { background: var(--card); border: 1px solid var(--line); color: var(--ink); }
 .button.danger { background: transparent; border: 1px solid var(--bad); color: var(--bad); }

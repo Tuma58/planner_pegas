@@ -10,22 +10,54 @@ export async function apiConfirmable(path, method, payload) {
   }
 }
 
+// Эффект выполнения (заказ руководителя 22.10): кнопка, чей клик запустил
+// запрос, на время запроса блокируется со спиннером (класс .busy). Связь
+// «клик → запрос» — по последней нажатой кнопке в пределах 1,5 секунды;
+// фоновые тики автообновления под это окно не попадают. Заодно лечит
+// класс ошибок «двойной клик = двойное действие».
+let lastPressedButton = null;
+let lastPressedAt = 0;
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', event => {
+    const button = event.target.closest?.('button, .button');
+    if (button) { lastPressedButton = button; lastPressedAt = Date.now(); }
+  }, true);
+}
+function pressBusy() {
+  const button = lastPressedButton;
+  if (!button || Date.now() - lastPressedAt > 1_500 || !button.isConnected) return null;
+  button.classList.add('busy');
+  button.dataset.busyCount = String(Number(button.dataset.busyCount || 0) + 1);
+  return button;
+}
+function releaseBusy(button) {
+  if (!button) return;
+  const left = Math.max(0, Number(button.dataset.busyCount || 1) - 1);
+  button.dataset.busyCount = String(left);
+  if (!left) button.classList.remove('busy');
+}
+
 export async function api(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    ...options,
-    headers: {
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers
+  const pressed = options.method && options.method !== 'GET' ? pressBusy() : null;
+  try {
+    const response = await fetch(path, {
+      credentials: 'same-origin',
+      ...options,
+      headers: {
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...options.headers
+      }
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 401 && !location.pathname.endsWith('/login.html') && location.pathname !== '/') {
+      location.href = '/login.html';
+      throw new Error('Требуется вход');
     }
-  });
-  const data = await response.json().catch(() => ({}));
-  if (response.status === 401 && !location.pathname.endsWith('/login.html') && location.pathname !== '/') {
-    location.href = '/login.html';
-    throw new Error('Требуется вход');
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  } finally {
+    releaseBusy(pressed);
   }
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-  return data;
 }
 
 // Эффективный конец занятости сцепки рейсом. Незавершённый рейс (план/в
