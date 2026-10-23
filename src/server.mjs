@@ -4304,6 +4304,70 @@ function unreachableWindowsWatch() {
 setInterval(unreachableWindowsWatch, 6 * 3_600_000);
 setTimeout(unreachableWindowsWatch, 140_000);
 
+// ── Ночная автопроверка данных (заказ руководителя 23.10) ──
+// Неделя 21–23.10 показала класс тихих дефектов: устаревшие порожние
+// подгоны (двойной счёт с перегонами), дубли перегонов, рассинхрон
+// статуса и фактов, битые координаты, залипшие одометры. Ночью (после
+// 03:00 МСК, раз в сутки) безопасная часть чинится автоматически —
+// только однозначные вещи, по уже закреплённым правилам, — остальное
+// считается и докладывается руководителю. Тишина = норма: без находок
+// уведомления нет, только строка в логе.
+function nightDataAudit() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCHours() < 3) return;
+    const day = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='night_audit_day'`).get()?.value === day) return;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('night_audit_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+    const report = [];
+    // 1) Порожние подгоны НЕ начавшихся рейсов — освежить (начавшиеся
+    // не трогаем: их подгон уже история).
+    let emptyFixed = 0;
+    for (const trip of db.prepare(`SELECT t.id, t.vehicle_id, t.starts_at, t.empty_km,
+        o.from_address_id, o.from_point FROM trips t JOIN orders o ON o.id=t.order_id
+      WHERE t.status='plan' AND datetime(t.starts_at) > datetime('now')`).all()) {
+      const fresh = emptyKmFor(trip.vehicle_id, trip.starts_at,
+        trip.from_address_id, trip.from_point, trip.id);
+      if (fresh != null && Math.abs((trip.empty_km || 0) - fresh) > 25) {
+        db.prepare(`UPDATE trips SET empty_km=? WHERE id=?`).run(fresh, trip.id);
+        emptyFixed += 1;
+      }
+    }
+    if (emptyFixed) report.push(`подгонов освежено ${emptyFixed}`);
+    // 2) Дубли перегонов — схлопнуть.
+    const dups = db.prepare(`DELETE FROM vehicle_dispositions WHERE id NOT IN (
+      SELECT MIN(id) FROM vehicle_dispositions GROUP BY vehicle_id, kind, starts_at, ends_at,
+        COALESCE(address_id,'')) AND kind='transfer'`).run().changes;
+    if (dups) report.push(`дублей перегонов удалено ${dups}`);
+    // 3) Статус отстал от факта: «выгружен» проставлен, рейс числится
+    // «в пути» (правило инвентаризации — теперь каждую ночь).
+    const stale = db.prepare(`UPDATE trips SET status='unloaded'
+      WHERE status='run' AND unloaded_at IS NOT NULL`).run().changes;
+    if (stale) report.push(`статусов догнало факт ${stale}`);
+    // 4) Счётчики без автофикса — человеку.
+    const geoSuspects = db.prepare(`SELECT id FROM addresses
+      WHERE latitude IS NOT NULL AND zone_id IS NOT NULL`).all()
+      .filter(a => addrGeoSuspect(a.id)).length;
+    if (geoSuspects) report.push(`адресов вне своей геозоны ${geoSuspects} (геокодер чинит очередью)`);
+    const stuckOdo = db.prepare(`SELECT COUNT(*) n FROM (
+      SELECT o1.vehicle_id FROM vehicle_odometers o1 JOIN vehicle_odometers o2
+        ON o2.vehicle_id=o1.vehicle_id AND o2.day=date('now','-7 days')
+      WHERE o1.day=date('now') AND o1.odo_km - o2.odo_km < 10
+        AND (SELECT COUNT(*) FROM trips t WHERE t.vehicle_id=o1.vehicle_id
+          AND t.status IN ('unloaded','done','paid')
+          AND datetime(COALESCE(t.unloaded_at,t.ends_at)) >= datetime('now','-7 days')) >= 2)`).get().n;
+    if (stuckOdo) report.push(`залипших одометров (рейсы есть, км нет) ${stuckOdo}`);
+    if (report.length) {
+      notify('boss', `🧹 Ночная автопроверка данных: ${report.join(' · ')}`,
+        null, null, { category: 'night_audit' });
+    }
+    console.log(`ночная автопроверка: ${report.join(' · ') || 'чисто'}`);
+  } catch (error) { console.error('nightDataAudit:', error.message); }
+}
+setInterval(nightDataAudit, 30 * 60_000);
+setTimeout(nightDataAudit, 170_000);
+
 // Лечение раздутых планов (кейс 10.09, «Пенза→Москва 1 055 км»): активные
 // и будущие рейсы, чей план выбился из дорожной физики (> прямая×1,7),
 // пересчитываются заново — plannedKmFor уже защищён коридором и вернёт
