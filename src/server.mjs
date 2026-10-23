@@ -342,6 +342,12 @@ function listVehicles() {
     LEFT JOIN zones z ON z.id=v.zone_id ORDER BY v.plate`).all();
 }
 
+// Диета bootstrap (заказ руководителя 22.10, «чем больше продукт — тем
+// медленнее»): фронту уходит ЖИВОЙ горизонт — все активные плюс 92 суток
+// истории (ровно лимит отчётных периодов продукта; глубже отчёты и так
+// считает сервер). До диеты пакет весил 21,4 МБ и собирался 3,4 с на
+// однопоточном сервере — треть CPU уходила на упаковку. Горизонт ставит
+// потолок размеру навсегда. Отклонённые рейсы — 30 суток (реестр продаж).
 function listTrips(search = '') {
   return db.prepare(`SELECT t.*,v.plate vehicle_plate,v.trailer_plate,v.driver_name,vt.name vehicle_type,
     f.name from_name,f.color from_color,d.name to_name,d.color to_color
@@ -349,13 +355,23 @@ function listTrips(search = '') {
     JOIN vehicle_types vt ON vt.id=v.type_id JOIN zones f ON f.id=t.from_zone_id
     JOIN zones d ON d.id=t.to_zone_id
     WHERE (?='' OR t.starts_at<=? AND t.ends_at>=?)
+      AND (t.status IN ('plan','run')
+        OR (t.status='rejected' AND datetime(t.updated_at) >= datetime('now','-30 days'))
+        OR (t.status IN ('unloaded','done','paid')
+          AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime('now','-92 days')))
     ORDER BY t.starts_at`).all(search, search, search);
 }
 
-// Отклонённые заявки тоже отдаются: доска продаж строит из них реестр «Отклонённые».
+// Отклонённые заявки тоже отдаются: доска продаж строит из них реестр
+// «Отклонённые». Горизонт — как у рейсов: живые (new/без рейса) всегда,
+// остальное 92 суток по окну; удалённые фронт только отфильтровывает —
+// их не шлём вовсе.
 function listOrders() {
   return db.prepare(`SELECT o.*,f.name from_name,t.name to_name
     FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
+    WHERE o.deleted_at IS NULL
+      AND (o.status='new' OR o.trip_id IS NULL
+        OR datetime(o.window_to) >= datetime('now','-92 days'))
     ORDER BY o.window_from`).all();
 }
 
@@ -680,6 +696,9 @@ async function runGeocodeWatch() {
       .replace(/\s{2,}/g, ' ').replace(/\s,/g, ',').trim();
     const short = raw.split(',').map(part => part.trim()).filter(Boolean).slice(0, 2).join(', ');
     let hit = null;
+    const nearZone = item => !Number.isFinite(address.expectLat)
+      || Math.hypot((item.latitude - address.expectLat) * 111,
+        (item.longitude - address.expectLon) * 111 * Math.cos(item.latitude / 57.3)) <= 400;
     for (const variant of [...new Set([raw, noHouse, short])].filter(Boolean)) {
       const found = (await geocodeQuery(variant)).filter(item => Number.isFinite(item.latitude));
       // Перегеокод подозрительного адреса: из всех результатов берём
@@ -690,8 +709,13 @@ async function runGeocodeWatch() {
           Math.hypot(x.latitude - address.expectLat, x.longitude - address.expectLon)
           - Math.hypot(y.latitude - address.expectLat, y.longitude - address.expectLon));
       }
-      hit = found[0] || null;
-      if (hit) break;
+      const candidate = found[0] || null;
+      if (candidate && (!hit || nearZone(candidate))) hit = candidate;
+      // Кейс Родниковой (23.10): полный адрес с «владение 17Б» находил
+      // ТОЛЬКО ростовскую тёзку, и каскад останавливался на ней. Для
+      // подозрительного адреса перебор продолжается, пока кандидат не
+      // окажется в своей геозоне; лучший «вне зоны» — лишь запасной.
+      if (hit && nearZone(hit)) break;
       await new Promise(resolve => setTimeout(resolve, 1_300));
     }
     if (!hit) return;
@@ -743,6 +767,16 @@ async function runGeocodeWatch() {
 }
 setInterval(runGeocodeWatch, 90_000);
 setTimeout(runGeocodeWatch, 70_000);
+// Разово (23.10): каскад перегеокода научился перебирать варианты до
+// кандидата в своей зоне — адресам, помеченным старым каскадом как
+// «безнадёжные» (Родниковая и ещё 5), даётся новая попытка. Сброс
+// try_at безопасен: очередь идёт тем же щадящим темпом 1 адрес / 90 с.
+try {
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='geo_cascade_v2'`).get()) {
+    db.prepare(`UPDATE addresses SET geocode_try_at=NULL WHERE latitude IS NOT NULL`).run();
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('geo_cascade_v2','1')`).run();
+  }
+} catch { /* не критично */ }
 
 // Сторож ресурса: сцепка «без водителя» (по интервалу в календаре) или
 // «без заказа» три и более дней → авто-сообщение роли «Ресурс»,
