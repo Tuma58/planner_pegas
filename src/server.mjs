@@ -4401,15 +4401,27 @@ function rebuildDriverRunRates() {
     const odoAt = db.prepare(`SELECT odo_km FROM vehicle_odometers WHERE vehicle_id=? AND day=?`);
     const rates = {};
     for (const v of db.prepare(`SELECT id, plate FROM vehicles WHERE status='work'`).all()) {
-      const assign = db.prepare(`SELECT starts_at FROM driver_assignments
-        WHERE vehicle_id=? AND datetime(starts_at) <= datetime('now')
-          AND datetime(ends_at) > datetime('now')
-        ORDER BY datetime(starts_at) DESC LIMIT 1`).get(v.id);
-      // Точка отсчёта — ЗАСТУПЛЕНИЕ по закреплению. Фолбэк пересменок
-      // убран (24.10): пересменки заводятся волнами, и у половины парка
-      // окно схлопывалось в «1 день, 0 км». Без оформленного закрепления
-      // — честные 30 суток машины с пометкой assigned:false (повод
-      // оформить закрепление в Ресурсе).
+      // Закрепления в Ресурсе — СУТОЧНЫЕ записи (явка выписывает каждый
+      // день): «заступление» — начало НЕПРЕРЫВНОЙ серии закреплений
+      // одного водителя (разрыв до 36 ч серию не рвёт). Без закреплений
+      // — честные 30 суток машины с пометкой assigned:false.
+      const chain = db.prepare(`SELECT starts_at, ends_at, driver_id FROM driver_assignments
+        WHERE vehicle_id=? AND datetime(ends_at) > datetime('now','-35 days')
+          AND datetime(starts_at) <= datetime('now')
+        ORDER BY datetime(starts_at) DESC`).all(v.id);
+      const ts = value => Date.parse(String(value).replace(' ', 'T')) || 0;
+      let assign = null;
+      if (chain.length && ts(chain[0].ends_at) > Date.now() - 36 * 3_600_000) {
+        let since = chain[0].starts_at;
+        let prevStart = ts(chain[0].starts_at);
+        for (const row of chain.slice(1)) {
+          if (row.driver_id !== chain[0].driver_id) break;
+          if (prevStart - ts(row.ends_at) > 36 * 3_600_000) break;
+          since = row.starts_at;
+          prevStart = ts(row.starts_at);
+        }
+        assign = { starts_at: since };
+      }
       const sinceMs = Math.max(
         Date.parse(String(assign?.starts_at || '').replace(' ', 'T')) || 0,
         Date.now() - 30 * 86_400_000);
