@@ -1963,6 +1963,9 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .dashwrap { position: relative; }
 .tablo-layer { position: fixed; inset: 0; z-index: 420; background: #10161d; color: #dfe6ec;
   padding: 4vh 4vw 7vh; display: flex; flex-direction: column; gap: 2vh; overflow: hidden; }
+/* display:flex сильнее UA-правила [hidden] — без этой строки скрытый
+   слой оставался чёрным экраном поверх дашборда (инцидент 26.10). */
+.tablo-layer[hidden], .tablo-dots[hidden] { display: none; }
 .tablo-head { font-size: clamp(26px, 3vw, 52px); font-weight: 700; }
 .tablo-empty { font-size: clamp(30px, 4vw, 70px); margin: auto; opacity: .85; }
 .tablo-rows { display: flex; flex-direction: column; gap: 1.1vh; overflow: hidden; }
