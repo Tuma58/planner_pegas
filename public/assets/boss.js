@@ -823,7 +823,6 @@ async function shiftPlannerDialog(context) {
 // порожний, среднесуточный против цели (настройка dailyKmTarget, 500).
 // Период до минуты; источники в порядке доверия: одометр CAN на границах
 // периода → GPS-трек → дневной кэш (помечается по каждой машине).
-export async 
 // «⚡ Сводка периода» (заказ руководителя 26.10): короткий отчёт для
 // коротких совещаний — только главные цифры и кнопка «скопировать текст».
 function briefDialog(context) {
@@ -875,7 +874,7 @@ function briefDialog(context) {
   run();
 }
 
-function mileageDialog(context) {
+export async function mileageDialog(context) {
   const { showModal } = context;
   const now = new Date();
   const toLocal = date => new Date(date.getTime() - date.getTimezoneOffset() * 60000)
