@@ -4437,6 +4437,25 @@ function rebuildDriverRunRates() {
           WHERE vehicle_id=? AND day >= ? AND day < ?`).get(v.id, sinceDay, today)?.s || 0);
         if (c > 0) km = c;
       }
+      // Координатная ветка (26.10): борта без CAN и кэша — км из рейсов
+      // (плечо + подгон) долей времени рейса в окне, как в отчёте «Пробеги».
+      if (km === null) {
+        const winFrom = Date.parse(sinceDay + 'T00:00:00Z') - MSK;
+        const winTo = Date.parse(today + 'T00:00:00Z') - MSK;
+        let coord = 0;
+        for (const t of db.prepare(`SELECT distance_km, empty_km, starts_at,
+            COALESCE(unloaded_at, ends_at) fin FROM trips
+          WHERE vehicle_id=? AND status IN ('unloaded','done','paid','run')
+            AND datetime(starts_at) < datetime(?) AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`)
+          .all(v.id, new Date(winTo).toISOString(), new Date(winFrom).toISOString())) {
+          const ta = Date.parse(String(t.starts_at).replace(' ', 'T'));
+          const tb = Date.parse(String(t.fin).replace(' ', 'T') + (String(t.fin).includes('Z') ? '' : 'Z'));
+          if (!Number.isFinite(ta) || !Number.isFinite(tb) || tb <= ta) continue;
+          const share = Math.max(0, Math.min(winTo, tb) - Math.max(winFrom, ta)) / (tb - ta);
+          if (share > 0) coord += (Number(t.distance_km || 0) + Number(t.empty_km || 0)) * share;
+        }
+        if (coord > 0) km = coord;
+      }
       // Заступил сегодня — суток ещё нет, честный бейдж «заступил сегодня».
       const fresh = assign && (Date.now() - sinceMs) < 86_400_000;
       if (fresh) rates[v.plate] = { fresh: true, days: 0, since: sinceDay, assigned: true };
