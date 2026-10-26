@@ -45,6 +45,26 @@ export function tripNet(trip, calc = {}) {
   return Number(trip.revenue_vat || 0) / (1 + rate);
 }
 
+// План выручки на произвольный период: месячные планы (revenue_plans)
+// раскладываются по доле дней пересечения с периодом. Чистая функция —
+// покрыта тестом; месяцы без плана дают 0 (честно видно в сводке).
+export function planNetForPeriod(planRows, fromDay, toExclDay) {
+  const fromMs = Date.parse(fromDay + 'T00:00:00Z');
+  const toMs = Date.parse(toExclDay + 'T00:00:00Z');
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return 0;
+  let plan = 0;
+  for (const row of planRows || []) {
+    const start = Date.parse(String(row.period_start).slice(0, 10) + 'T00:00:00Z');
+    if (!Number.isFinite(start)) continue;
+    const d = new Date(start);
+    const end = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+    const daysInMonth = (end - start) / 86_400_000;
+    const overlap = Math.min(toMs, end) - Math.max(fromMs, start);
+    if (overlap > 0) plan += Number(row.target_net || 0) * (overlap / 86_400_000) / daysInMonth;
+  }
+  return plan;
+}
+
 // Дата выгрузки рейса: факт, затем расчётная (как на дашборде).
 export const doneDayOf = trip =>
   String(trip.unloaded_at || trip.ends_at || '').slice(0, 10);

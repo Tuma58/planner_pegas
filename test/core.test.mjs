@@ -3892,6 +3892,19 @@ test('на линии среднесуточно: машино-часы/24, не
   ], day), 1);
 });
 
+test('план на период: месячные планы по доле дней', async () => {
+  const { planNetForPeriod } = await import('../src/money.mjs');
+  const plans = [{ period_start: '2026-10-01', target_net: 310000 },
+    { period_start: '2026-11-01', target_net: 300000 }];
+  // 11 первых суток октября: 310000/31×11
+  assert.equal(Math.round(planNetForPeriod(plans, '2026-10-01', '2026-10-12')), 110000);
+  // стык месяцев: 2 дня октября + 3 дня ноября
+  assert.equal(Math.round(planNetForPeriod(plans, '2026-10-30', '2026-11-04')),
+    Math.round(310000 / 31 * 2 + 300000 / 30 * 3));
+  // месяц без плана — 0
+  assert.equal(planNetForPeriod(plans, '2026-12-01', '2026-12-05'), 0);
+});
+
 test('канон денег: одна формула для всех поверхностей', async () => {
   const { tripNet, doneDayOf, DONE_STATUSES } = await import('../src/money.mjs');
   const calc = { vatRate: 0.22, individualEntrepreneurVatRate: 0.07 };

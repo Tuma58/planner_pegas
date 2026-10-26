@@ -511,6 +511,8 @@ export async function renderBoss(container, context) {
           title="Инвентаризация всех процессов: ресурс (дубли прицепов, забытые машины, висящие рейсы, дыры по водителям) + заявки с ошибочными датами, застрявшие стадии, дыры адресов">🧾 Инвентаризация</button>
         <button class="button small" id="bossViewOpsBack"
           title="Вернуться на первый экран: отчёт эксплуатации со строкой «прямо сейчас»">📊 Эксплуатация</button>
+        <button class="button ghost small" id="bossBrief"
+          title="Короткая сводка периода для доклада на совещании: на линии, заказы, км, опоздания, план/факт выручки и темп — одной страницей, с копированием текста">⚡ Сводка периода</button>
         <button class="button ghost small" id="bossMileage"
           title="Пробеги парка за период до минуты: общий / гружёный / порожний, среднесуточный против цели — одометр CAN на границах периода, при сбое GPS-трек, затем дневной кэш">🛣 Пробеги</button>
         <button class="button ghost small" id="bossParkReport"
@@ -713,6 +715,7 @@ export async function renderBoss(container, context) {
   container.querySelector('#bossRingLoad').onclick = () => ringLoadDialog(context);
   container.querySelector('#bossSelfTuning').onclick = () => selfTuningDialog(context);
   container.querySelector('#bossParkReport').onclick = () => parkReportDialog(context);
+  container.querySelector('#bossBrief').onclick = () => briefDialog(context);
   container.querySelector('#bossMileage').onclick = () => mileageDialog(context);
   wireBossTabs(container, context);
   container.querySelector('#bossViewOpsBack').onclick = () => {
@@ -820,7 +823,59 @@ async function shiftPlannerDialog(context) {
 // порожний, среднесуточный против цели (настройка dailyKmTarget, 500).
 // Период до минуты; источники в порядке доверия: одометр CAN на границах
 // периода → GPS-трек → дневной кэш (помечается по каждой машине).
-export async function mileageDialog(context) {
+export async 
+// «⚡ Сводка периода» (заказ руководителя 26.10): короткий отчёт для
+// коротких совещаний — только главные цифры и кнопка «скопировать текст».
+function briefDialog(context) {
+  const today = new Date();
+  const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)).toISOString().slice(0, 10);
+  const yest = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  context.showModal(`<h2>⚡ Сводка периода</h2>
+    <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+      <label class="field">С (с 00:00)<input type="date" id="briefFrom" value="${first}"></label>
+      <label class="field">По (включительно)<input type="date" id="briefTo" value="${yest}"></label>
+      <button class="button small" id="briefGo">Сформировать</button>
+    </div>
+    <div id="briefBody" style="margin-top:10px"></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'narrow');
+  const run = async () => {
+    const from = document.getElementById('briefFrom').value;
+    const to = document.getElementById('briefTo').value;
+    const box = document.getElementById('briefBody');
+    box.innerHTML = '<p class="muted">Формируем…</p>';
+    let r;
+    try { r = await api(`/api/brief-report?from=${from}&to=${to}`); }
+    catch (error) { box.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`; return; }
+    const fd = value => `${String(value).slice(8, 10)}.${String(value).slice(5, 7)}`;
+    const lines = [
+      `Период ${fd(r.from)}–${fd(r.to)} (${r.days} сут)`,
+      `На линии: ${r.onLine} ТС из ${r.fleet}`,
+      `Выполнено заказов: ${r.orders}`,
+      r.km != null ? `Пройдено: ${r.km.toLocaleString('ru-RU')} км (гружёный ${r.loadedPct}%)` : null,
+      r.kmPerDayPerVehicle != null ? `Темп пробега: ${r.kmPerDayPerVehicle} км/сут на ТС (цель ${r.kmTarget})` : null,
+      `Опозданий на выгрузку: ${r.lateUnload} из ${r.lateFacts}${r.lateFacts ? ` (${Math.round(r.lateUnload / r.lateFacts * 100)}%)` : ''}`,
+      r.planNet ? `Выручка б/НДС: план ${rub(r.planNet)} · факт ${rub(r.factNet)} · ${r.planPct}%`
+        : `Выручка б/НДС: факт ${rub(r.factNet)} (план на период не задан)`,
+      r.planPerDay ? `Темп на парк: план ${rub(r.planPerDay)}/сут · факт ${rub(r.factPerDay)}/сут`
+        : `Темп на парк: факт ${rub(r.factPerDay)}/сут`,
+      `Средний чек: ${rub(r.avgCheck)}`,
+      `Потери парка: ремонт ${r.repairMd} м-д · без водителя ${r.noDriverMd} м-д`
+    ].filter(Boolean);
+    box.innerHTML = `<div class="brief-lines">${lines.map(line =>
+      `<div class="brief-line">${escapeHtml(line)}</div>`).join('')}</div>
+      <button class="button small" id="briefCopy" style="margin-top:8px">📋 Скопировать текст</button>`;
+    document.getElementById('briefCopy').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(lines.join('\n'));
+        toast('Сводка скопирована');
+      } catch { toast('Не удалось скопировать', 'error'); }
+    };
+  };
+  document.getElementById('briefGo').onclick = run;
+  run();
+}
+
+function mileageDialog(context) {
   const { showModal } = context;
   const now = new Date();
   const toLocal = date => new Date(date.getTime() - date.getTimezoneOffset() * 60000)

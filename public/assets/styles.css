@@ -1953,3 +1953,7 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 /* Накат заступившего водителя на Ганте (24.10): мало наката — зелёным. */
 .runrate { color: var(--muted); }
 .runrate-low { color: var(--good, #1e7d46); font-weight: 700; }
+/* «⚡ Сводка периода»: крупные строки для доклада. */
+.brief-lines { display: grid; gap: 6px; }
+.brief-line { font-size: 15px; padding: 7px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+.brief-line:first-child { font-weight: 750; }
