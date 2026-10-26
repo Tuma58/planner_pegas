@@ -739,28 +739,45 @@ export async function renderDashboard(container, context) {
   wireBoardNotes(container, state);
   container.querySelector('#dashBoard')?.addEventListener('click', () => boardDialog(context));
   const fullButton = container.querySelector('#dashFull');
-  const setTvButton = on => { if (fullButton) fullButton.textContent = on ? '✕ Выйти (Esc)' : '⛶ На весь экран'; };
+  // Кнопку ищем по id в момент вызова: слушатели Esc/fullscreenchange
+  // вешаются один раз на сессию и переживают перерисовки дашборда.
+  const setTvButton = on => {
+    const button = document.getElementById('dashFull');
+    if (button) button.textContent = on ? '✕ Выйти (Esc)' : '⛶ На весь экран';
+  };
+  // ТВ-режим переживает автообновление: fullscreen берётся на ДОКУМЕНТ
+  // (элемент дашборда при перерисовке пересоздаётся — браузер обязан
+  // выйти из fullscreen, когда его элемент удалён; слетало каждые 90 с),
+  // а киоск-оформление — класс dash-tv, он восстанавливается из state
+  // при каждой перерисовке.
+  const tvOff = () => {
+    state.dashTv = false;
+    document.getElementById('dashRoot')?.classList.remove('dash-tv');
+    setTvButton(false);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  };
+  if (state.dashTv) {
+    container.querySelector('#dashRoot')?.classList.add('dash-tv');
+    setTvButton(true);
+  }
   if (fullButton) fullButton.onclick = async () => {
-    const root = document.getElementById('dashRoot');
-    if (document.fullscreenElement) { document.exitFullscreen(); return; }
-    if (root.classList.contains('dash-tv')) { root.classList.remove('dash-tv'); setTvButton(false); return; }
-    try { await root.requestFullscreen(); } catch {
-      // Нативный fullscreen запрещён (встроенные панели, киоски) —
-      // включаем киоск-класс с теми же стилями поверх окна.
-      root.classList.add('dash-tv');
-      setTvButton(true);
-    }
+    if (state.dashTv || document.fullscreenElement) { tvOff(); return; }
+    state.dashTv = true;
+    document.getElementById('dashRoot')?.classList.add('dash-tv');
+    setTvButton(true);
+    // Нативный fullscreen поверх киоск-класса; запрещён (встроенные
+    // панели, киоски) — остаётся один киоск-класс поверх окна.
+    try { await document.documentElement.requestFullscreen(); } catch {}
   };
   if (!state.dashEscBound) {
     state.dashEscBound = true;
     document.addEventListener('keydown', event => {
       if (event.key !== 'Escape') return;
-      const root = document.getElementById('dashRoot');
-      if (root?.classList.contains('dash-tv')) {
-        root.classList.remove('dash-tv');
-        const button = document.getElementById('dashFull');
-        if (button) button.textContent = '⛶ На весь экран';
-      }
+      if (state.dashTv && !document.fullscreenElement) tvOff();
+    });
+    // Выход из нативного fullscreen (Esc, системная кнопка) гасит и киоск.
+    document.addEventListener('fullscreenchange', () => {
+      if (!document.fullscreenElement && state.dashTv) tvOff();
     });
   }
 
