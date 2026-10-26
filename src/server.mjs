@@ -12136,12 +12136,21 @@ async function api(request, response, url) {
     const todayDay = new Date(Date.now() + MSK).toISOString().slice(0, 10);
     const mileTo = toExcl < todayDay ? toExcl : todayDay;
     const mile = mileTo > from ? mileageData(from, mileTo) : null;
-    // На линии — СРЕДНЕСУТОЧНО (уточнение руководителя 26.10: «127 из
-    // 127 за период» неинформативно): машино-дни на линии из канона,
-    // делённые на дни периода.
+    // На линии — СРЕДНЕСУТОЧНО ПО КАСАНИЮ (уточнения руководителя
+    // 26.10): среднее по дням число машин, у которых в этот день был
+    // рейс — та же мерка, что «в рейсе сегодня» на дашборде. Канонная
+    // доля суток (lineDays) здесь не используется: руководителю нужна
+    // та же цифра, что он видит на дашборде каждый день.
     const fleet = db.prepare(`SELECT COUNT(*) n FROM vehicles WHERE status='work'`).get().n;
-    const lineDays = Number(snap.utilization?.lineDays || 0);
-    const onLineAvg = days ? Math.round(lineDays / days) : 0;
+    const touchStmt = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
+      WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
+        AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
+    let touchSum = 0;
+    for (let t = Date.parse(from + 'T00:00:00Z'); t < Date.parse(toExcl + 'T00:00:00Z'); t += 86_400_000) {
+      touchSum += touchStmt.get(new Date(t + 86_400_000).toISOString().slice(0, 10),
+        new Date(t).toISOString().slice(0, 10)).n;
+    }
+    const onLineAvg = days ? Math.round(touchSum / days) : 0;
     // Опоздания на выгрузку: финальная точка, факт позже плана на 1 ч+
     // (той же меркой, что профиль водителей).
     const late = db.prepare(`SELECT
