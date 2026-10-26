@@ -846,19 +846,44 @@ function briefDialog(context) {
     try { r = await api(`/api/brief-report?from=${from}&to=${to}`); }
     catch (error) { box.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`; return; }
     const fd = value => `${String(value).slice(8, 10)}.${String(value).slice(5, 7)}`;
+    // Номер календарной недели (ISO): одна — «нед. 44», диапазон — «нед. 41–44».
+    const isoWeek = iso => {
+      const d = new Date(Date.parse(iso + 'T00:00:00Z'));
+      const day = (d.getUTCDay() + 6) % 7;
+      d.setUTCDate(d.getUTCDate() - day + 3);
+      const firstThu = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+      const fday = (firstThu.getUTCDay() + 6) % 7;
+      firstThu.setUTCDate(firstThu.getUTCDate() - fday + 3);
+      return 1 + Math.round((d - firstThu) / (7 * 86_400_000));
+    };
+    const w1 = isoWeek(r.from);
+    const w2 = isoWeek(r.to);
+    const weekLabel = w1 === w2 ? `нед. ${w1}` : `нед. ${w1}–${w2}`;
+    // Динамика к предыдущему периоду той же длины (встык): ▲/▼ в процентах.
+    const delta = (curVal, prevVal, goodUp = true) => {
+      if (!Number.isFinite(curVal) || !Number.isFinite(prevVal) || !prevVal) return '';
+      const pct = (curVal - prevVal) / prevVal * 100;
+      if (Math.abs(pct) < 0.5) return ' · =';
+      const arrow = pct > 0 ? '▲' : '▼';
+      return ` · ${arrow}${Math.abs(pct).toFixed(Math.abs(pct) >= 10 ? 0 : 1)}%`;
+    };
+    const p = r.prev || {};
+    const latePct = r.lateFacts ? Math.round(r.lateUnload / r.lateFacts * 100) : null;
+    const prevLatePct = p.lateFacts ? p.lateUnload / p.lateFacts * 100 : null;
     const lines = [
-      `Период ${fd(r.from)}–${fd(r.to)} (${r.days} сут)`,
-      `На линии: ${r.onLineAvg} ТС/сут в среднем (парк ${r.fleet})`,
-      `Выполнено заказов: ${r.orders}`,
-      r.km != null ? `Пройдено: ${r.km.toLocaleString('ru-RU')} км (гружёный ${r.loadedPct}%)` : null,
-      r.kmPerDayPerVehicle != null ? `Темп пробега: ${r.kmPerDayPerVehicle} км/сут на ТС (цель ${r.kmTarget})` : null,
-      `Опозданий на выгрузку: ${r.lateUnload} из ${r.lateFacts}${r.lateFacts ? ` (${Math.round(r.lateUnload / r.lateFacts * 100)}%)` : ''}`,
-      r.planNet ? `Выручка б/НДС: план ${rub(r.planNet)} · факт ${rub(r.factNet)} · ${r.planPct}%`
-        : `Выручка б/НДС: факт ${rub(r.factNet)} (план на период не задан)`,
-      r.planPerDay ? `Темп на парк: план ${rub(r.planPerDay)}/сут · факт ${rub(r.factPerDay)}/сут`
-        : `Темп на парк: факт ${rub(r.factPerDay)}/сут`,
-      `Средний чек: ${rub(r.avgCheck)}`,
-      `Потери парка: ремонт ${r.repairMd} м-д · без водителя ${r.noDriverMd} м-д`
+      `Период ${fd(r.from)}–${fd(r.to)} (${r.days} сут · ${weekLabel})`,
+      `На линии: ${r.onLineAvg} ТС/сут в среднем (парк ${r.fleet})${delta(r.onLineAvg, p.onLineAvg)}`,
+      `Выполнено заказов: ${r.orders}${delta(r.orders, p.orders)}`,
+      r.km != null ? `Пройдено: ${r.km.toLocaleString('ru-RU')} км (гружёный ${r.loadedPct}%)${delta(r.km, p.km)}` : null,
+      r.kmPerDayPerVehicle != null ? `Темп пробега: ${r.kmPerDayPerVehicle} км/сут на ТС (цель ${r.kmTarget})${delta(r.kmPerDayPerVehicle, p.kmPerDayPerVehicle)}` : null,
+      `Опозданий на выгрузку: ${r.lateUnload} из ${r.lateFacts}${latePct != null ? ` (${latePct}%)` : ''}${delta(latePct, prevLatePct, false)}`,
+      r.planNet ? `Выручка б/НДС: план ${rub(r.planNet)} · факт ${rub(r.factNet)} · ${r.planPct}%${delta(r.factNet, p.factNet)}`
+        : `Выручка б/НДС: факт ${rub(r.factNet)} (план на период не задан)${delta(r.factNet, p.factNet)}`,
+      r.planPerDay ? `Темп на парк: план ${rub(r.planPerDay)}/сут · факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`
+        : `Темп на парк: факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`,
+      `Средний чек: ${rub(r.avgCheck)}${delta(r.avgCheck, p.avgCheck)}`,
+      `Потери парка: ремонт ${r.repairMd} м-д · без водителя ${r.noDriverMd} м-д${delta(r.repairMd + r.noDriverMd, (p.repairMd || 0) + (p.noDriverMd || 0), false)}`,
+      `Динамика ▲▼ — к предыдущему периоду той же длины (${fd(r.prevFrom)}–${fd(r.from)})`
     ].filter(Boolean);
     box.innerHTML = `<div class="brief-lines">${lines.map(line =>
       `<div class="brief-line">${escapeHtml(line)}</div>`).join('')}</div>

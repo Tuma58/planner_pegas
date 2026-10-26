@@ -12130,63 +12130,68 @@ async function api(request, response, url) {
     const toExcl = addDayIso(to);
     const days = Math.round((Date.parse(toExcl) - Date.parse(from)) / 86_400_000);
     if (days > 92) return errorJson(response, 422, 'Период до 92 суток');
-    const snap = reportSnapshot(db, from, toExcl);
-    // Километры — журнал одометров (конец не позже сегодняшней полуночи).
-    const MSK = 3 * 3_600_000;
-    const todayDay = new Date(Date.now() + MSK).toISOString().slice(0, 10);
-    const mileTo = toExcl < todayDay ? toExcl : todayDay;
-    const mile = mileTo > from ? mileageData(from, mileTo) : null;
-    // На линии — СРЕДНЕСУТОЧНО ПО КАСАНИЮ (уточнения руководителя
-    // 26.10): среднее по дням число машин, у которых в этот день был
-    // рейс — та же мерка, что «в рейсе сегодня» на дашборде. Канонная
-    // доля суток (lineDays) здесь не используется: руководителю нужна
-    // та же цифра, что он видит на дашборде каждый день.
+    // Динамика (уточнение руководителя 26.10): те же фактовые метрики за
+    // ПРЕДЫДУЩИЙ период той же длины (встык перед «с») — фронт рисует
+    // дельты. Сбор метрик — общий замыканием.
+    const factMetrics = (mFrom, mToExcl) => {
+      const mSnap = reportSnapshot(db, mFrom, mToExcl);
+      const mDays = Math.round((Date.parse(mToExcl) - Date.parse(mFrom)) / 86_400_000);
+      const MSK2 = 3 * 3_600_000;
+      const today2 = new Date(Date.now() + MSK2).toISOString().slice(0, 10);
+      const mMileTo = mToExcl < today2 ? mToExcl : today2;
+      const mMile = mMileTo > mFrom ? mileageData(mFrom, mMileTo) : null;
+      const touch = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
+        WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
+          AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
+      let touchSum = 0;
+      for (let t = Date.parse(mFrom + 'T00:00:00Z'); t < Date.parse(mToExcl + 'T00:00:00Z'); t += 86_400_000) {
+        touchSum += touch.get(new Date(t + 86_400_000).toISOString().slice(0, 10),
+          new Date(t).toISOString().slice(0, 10)).n;
+      }
+      const mLate = db.prepare(`SELECT
+          SUM(CASE WHEN julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24
+            THEN 1 ELSE 0 END) late, COUNT(*) facts
+        FROM trips t JOIN trip_stops s ON s.trip_id=t.id
+          AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
+        WHERE t.status IN ('unloaded','done','paid') AND s.kind='D'
+          AND s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
+          AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime(?)
+          AND datetime(COALESCE(t.unloaded_at, t.ends_at)) < datetime(?)`).get(mFrom, mToExcl);
+      const mDowntime = {};
+      for (const row of db.prepare(`SELECT kind,
+          SUM(julianday(MIN(ends_at, :b)) - julianday(MAX(starts_at, :a))) d
+        FROM vehicle_dispositions WHERE starts_at < :b AND ends_at > :a
+          AND kind IN ('repair','no_driver') GROUP BY kind`).all({ a: mFrom, b: mToExcl })) {
+        mDowntime[row.kind] = Math.round(row.d || 0);
+      }
+      const mFact = Math.round(mSnap.netRevenue || 0);
+      return {
+        orders: mSnap.trips, factNet: mFact,
+        factPerDay: mDays ? Math.round(mFact / mDays) : 0,
+        avgCheck: mSnap.trips ? Math.round(mFact / mSnap.trips) : 0,
+        km: mMile ? mMile.totalKm : null,
+        loadedPct: mMile && mMile.totalKm ? Math.round(mMile.loadedKm / mMile.totalKm * 100) : null,
+        kmPerDayPerVehicle: mMile ? mMile.perDayPerVehicle : null,
+        lateUnload: mLate.late || 0, lateFacts: mLate.facts || 0,
+        onLineAvg: mDays ? Math.round(touchSum / mDays) : 0,
+        repairMd: mDowntime.repair || 0, noDriverMd: mDowntime.no_driver || 0
+      };
+    };
+    const cur = factMetrics(from, toExcl);
+    const prevFrom = new Date(Date.parse(from + 'T00:00:00Z') - days * 86_400_000).toISOString().slice(0, 10);
+    const prev = factMetrics(prevFrom, from);
     const fleet = db.prepare(`SELECT COUNT(*) n FROM vehicles WHERE status='work'`).get().n;
-    const touchStmt = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
-      WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
-        AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
-    let touchSum = 0;
-    for (let t = Date.parse(from + 'T00:00:00Z'); t < Date.parse(toExcl + 'T00:00:00Z'); t += 86_400_000) {
-      touchSum += touchStmt.get(new Date(t + 86_400_000).toISOString().slice(0, 10),
-        new Date(t).toISOString().slice(0, 10)).n;
-    }
-    const onLineAvg = days ? Math.round(touchSum / days) : 0;
-    // Опоздания на выгрузку: финальная точка, факт позже плана на 1 ч+
-    // (той же меркой, что профиль водителей).
-    const late = db.prepare(`SELECT
-        SUM(CASE WHEN julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24
-          THEN 1 ELSE 0 END) late, COUNT(*) facts
-      FROM trips t JOIN trip_stops s ON s.trip_id=t.id
-        AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
-      WHERE t.status IN ('unloaded','done','paid') AND s.kind='D'
-        AND s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
-        AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime(?)
-        AND datetime(COALESCE(t.unloaded_at, t.ends_at)) < datetime(?)`).get(from, toExcl);
     const planNet = planNetForPeriod(
       db.prepare('SELECT period_start, target_net FROM revenue_plans').all(), from, toExcl);
-    // Потери парка — машино-дни ремонта и «без водителя» за период.
-    const downtime = {};
-    for (const row of db.prepare(`SELECT kind,
-        SUM(julianday(MIN(ends_at, :b)) - julianday(MAX(starts_at, :a))) d
-      FROM vehicle_dispositions WHERE starts_at < :b AND ends_at > :a
-        AND kind IN ('repair','no_driver') GROUP BY kind`).all({ a: from, b: toExcl })) {
-      downtime[row.kind] = Math.round(row.d || 0);
-    }
-    const factNet = Math.round(snap.netRevenue || 0);
+    const kmTarget = Number(settingsObject(db).calculation?.dailyKmTarget ?? 500) || 500;
     return json(response, 200, {
-      from, to, days, fleet, onLineAvg,
-      orders: snap.trips, factNet,
+      from, to, days, fleet,
+      ...cur,
       planNet: Math.round(planNet),
-      planPct: planNet > 0 ? Math.round(factNet / planNet * 1000) / 10 : null,
+      planPct: planNet > 0 ? Math.round(cur.factNet / planNet * 1000) / 10 : null,
       planPerDay: planNet > 0 ? Math.round(planNet / days) : null,
-      factPerDay: Math.round(factNet / days),
-      avgCheck: snap.trips ? Math.round(factNet / snap.trips) : 0,
-      km: mile ? mile.totalKm : null,
-      loadedPct: mile && mile.totalKm ? Math.round(mile.loadedKm / mile.totalKm * 100) : null,
-      kmPerDayPerVehicle: mile ? mile.perDayPerVehicle : null,
-      kmTarget: mile ? mile.target : null,
-      lateUnload: late.late || 0, lateFacts: late.facts || 0,
-      repairMd: downtime.repair || 0, noDriverMd: downtime.no_driver || 0
+      kmTarget,
+      prev, prevFrom
     });
   }
   if (request.method === 'GET' && pathname === '/api/ops-report') {
