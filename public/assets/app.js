@@ -347,10 +347,10 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       }
       return `${emptyTail}<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${laneOf(trip)} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''} ${trip.status === 'plan' ? 'plan' : ''} ${width < 70 ? 'tiny' : ''}"
         data-trip="${trip.id}" style="left:${left}px;width:${width}px;background-color:${color}"
-        title="${escapeHtml(routeLabel(trip))}&#10;Геозоны: ${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}${emptyKm
+        title="${trip.order_no ? `Рейс №${trip.order_no}&#10;` : ''}${escapeHtml(routeLabel(trip))}&#10;Геозоны: ${escapeHtml(trip.from_name)} → ${escapeHtml(trip.to_name)}&#10;${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}&#10;${escapeHtml(trip.customer_name)}${emptyKm
           ? `&#10;Порожний подгон ~${Math.round(emptyKm)} км` : ''}">
         <strong>${escapeHtml(routeLabel(trip))}</strong>
-        <small>${escapeHtml(trip.customer_name)}</small>
+        <small>${trip.order_no ? `№${escapeHtml(String(trip.order_no))} · ` : ''}${escapeHtml(trip.customer_name)}</small>
       </button>`;
     }).join('');
     // ── Разрывы между плашками ──

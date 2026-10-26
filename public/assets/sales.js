@@ -2044,7 +2044,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
           ? ` · подгон ~${candidate.emptyKm} км${candidate.approx ? ' (по городу/зоне)' : ''}` : ''}${candidate.readyAt
           ? ` · ${candidate.ready ? 'готова с' : '⚠ готова только с'} ${fmtDateTime(candidate.readyAt)}` : ''}</small>
         ${runRateBadge(candidate.vehicle, data)}
-        ${candidate.stillRunning ? `<small class="next-event warn">🛣 сейчас в рейсе → ${escapeHtml(candidate.lastTrip.to_point || candidate.lastTrip.to_name || '')}
+        ${candidate.stillRunning ? `<small class="next-event warn">🛣 сейчас в рейсе${candidate.lastTrip.order_no ? ` №${candidate.lastTrip.order_no}` : ''} → ${escapeHtml(candidate.lastTrip.to_point || candidate.lastTrip.to_name || '')}
           · план выгрузки ${fmtDateTime(tripBusyUntilMs(candidate.lastTrip))} — освобождение расчётное</small>` : ''}
         ${nextEventHint(nextVehicleEvent(data, candidate.vehicle.id, loadMs), loadMs)}</span>
         <span class="badge ${candidate.inZone ? 'ok' : 'warn'}" style="margin-left:auto"

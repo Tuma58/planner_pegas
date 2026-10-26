@@ -8420,6 +8420,29 @@ async function api(request, response, url) {
           : `Поле ${key} обязательно`);
       }
     }
+    // Щит от двойного ввода (26.10: на тормозящем канале заявка «не
+    // появлялась» в списке, и её вводили повторно — 7 дубль-пар за
+    // выходные, 4 пары машин поехали за одним грузом). Такая же заявка
+    // (клиент + пункты + день окна + ставка) за последние 15 минут —
+    // 409 с номером; фронт спрашивает «создать всё равно?» и повторяет
+    // с forceDuplicate (два одинаковых груза в день — легальный кейс).
+    if (!body.forceDuplicate) {
+      const twin = db.prepare(`SELECT order_no, created_at FROM orders
+        WHERE deleted_at IS NULL AND status<>'cancelled'
+          AND LOWER(TRIM(customer_name))=LOWER(TRIM(?))
+          AND TRIM(COALESCE(from_point,''))=TRIM(?) AND TRIM(COALESCE(to_point,''))=TRIM(?)
+          AND date(window_from)=date(?) AND ABS(rate_vat - ?) < 1
+          AND datetime(created_at) >= datetime('now','-15 minutes')
+        ORDER BY created_at DESC LIMIT 1`).get(
+        String(body.customerName || ''), String(body.fromPoint || ''),
+        String(body.toPoint || ''), String(body.windowFrom || '').slice(0, 10),
+        Number(body.rateVat || 0));
+      if (twin) {
+        return errorJson(response, 409, `Такая же заявка №${twin.order_no} уже создана ` +
+          `${Math.max(1, Math.round((Date.now() - Date.parse(String(twin.created_at).replace(' ', 'T') + 'Z')) / 60_000))} мин назад — похоже на двойной ввод. ` +
+          `Если это настоящая вторая машина (парная перевозка) — подтвердите ещё раз`);
+      }
+    }
     const windowFrom = Date.parse(body.windowFrom);
     const windowTo = Date.parse(body.windowTo);
     if (!Number.isFinite(windowFrom) || !Number.isFinite(windowTo) || windowTo <= windowFrom) {

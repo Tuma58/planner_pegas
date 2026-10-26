@@ -6,7 +6,7 @@ export async function apiConfirmable(path, method, payload) {
     return await api(path, { method, body: JSON.stringify(payload) });
   } catch (error) {
     if (!/подтвердите ещё раз/i.test(error.message || '') || !confirm(error.message)) throw error;
-    return api(path, { method, body: JSON.stringify({ ...payload, confirmPast: true }) });
+    return api(path, { method, body: JSON.stringify({ ...payload, confirmPast: true, forceDuplicate: true }) });
   }
 }
 
