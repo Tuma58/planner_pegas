@@ -31,9 +31,10 @@ export function boardNotesHtml(notes) {
   if (!notes?.length) return '';
   return `<div class="board-strip" data-board-strip>
     ${notes.map((note, index) => `<div class="board-note ${note.kind} ${index === 0 ? 'on' : ''}">
-      <div class="board-text">${escapeHtml(note.text)}</div>
+      <div class="board-text">${escapeHtml(note.text
+    || (String(note.media_mime || '').startsWith('video') ? '🎬 Видео на табло' : '🖼 Изображение на табло'))}</div>
       ${note.subtext ? `<div class="board-sub">${escapeHtml(note.subtext)}</div>` : ''}
-      <div class="board-meta">${escapeHtml(note.created_by_name || '')} · ${untilLabel(note)}</div>
+      <div class="board-meta">${note.media_id ? (String(note.media_mime || '').startsWith('video') ? '🎬 · ' : '🖼 · ') : ''}${escapeHtml(note.created_by_name || '')} · ${untilLabel(note)}</div>
     </div>`).join('')}
     ${notes.length > 1 ? `<div class="board-dots">${notes.map((note, index) =>
     `<i class="${index === 0 ? 'on' : ''}"></i>`).join('')}</div>` : ''}
@@ -64,12 +65,15 @@ export function wireBoardNotes(container, state) {
 export function boardDialog(context) {
   const notes = context.state.data.boardNotes || [];
   context.showModal(`<h2>📢 Объявление на табло</h2>
-    <p class="muted">Появится на общем экране в течение минуты — поверх дашборда, крупно.
+    <p class="muted">Появится на общем экране в течение минуты — в ТВ-режиме на весь экран.
       Снимется само по сроку.</p>
     <form id="boardForm">
-      <label>Текст <small class="muted">до 240 знаков, крупная строка</small>
-        <textarea name="text" rows="2" maxlength="240" required
+      <label>Текст <small class="muted">до 240 знаков; с файлом можно без текста</small>
+        <textarea name="text" rows="2" maxlength="240"
           placeholder="Планёрка в 15:00 в переговорной"></textarea></label>
+      <label>Файл на экран <small class="muted">картинка или видео (png, jpg, mp4, webm…, до 300 МБ) —
+          в ТВ-режиме играет на весь экран</small>
+        <input type="file" name="media" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime"></label>
       <label>Вторая строка <small class="muted">необязательно: детали, ответственный</small>
         <input name="subtext" maxlength="160" placeholder="Логисты и диспетчеры — обязательно"></label>
       <div class="row2">
@@ -101,8 +105,8 @@ export function boardDialog(context) {
     <div class="scolh" style="margin-top:10px">Сейчас на табло <span>${notes.length}</span></div>
     <div class="list">${notes.length ? notes.map(note => `<div class="list-item ordrow">
       <span style="flex:1;min-width:0">
-        <strong>${escapeHtml(note.text.slice(0, 70))}</strong>
-        <small class="muted" style="display:block">${KIND_LABEL[note.kind] || note.kind}
+        <strong>${escapeHtml((note.text || '🎬 файл без текста').slice(0, 70))}</strong>
+        <small class="muted" style="display:block">${KIND_LABEL[note.kind] || note.kind}${note.media_id ? ' · 📎 файл' : ''}
           · ${untilLabel(note)} · ${escapeHtml(note.created_by_name || '')}</small>
       </span>
       <button class="button ghost small" data-board-remove="${note.id}">✕ Снять</button>
@@ -123,13 +127,32 @@ export function boardDialog(context) {
       text: form.text.value.trim(), subtext: form.subtext.value.trim(),
       kind: form.kind.value, hours: Number(form.hours.value)
     };
-    if (!body.text) return;
+    const file = form.media.files[0];
+    if (!body.text && !file) { toast('Нужен текст или файл', true); return; }
+    const submitButton = form.querySelector('button[type=submit]');
     try {
+      if (file) {
+        // Файл уходит сырым телом с именем в заголовке (как файлы заявок);
+        // ролик может грузиться десятки секунд — кнопка говорит об этом.
+        if (submitButton) { submitButton.disabled = true; submitButton.textContent = '⏳ Загрузка файла…'; }
+        const upload = await fetch('/api/board-media', {
+          method: 'POST',
+          headers: { 'X-File-Name': encodeURIComponent(file.name) },
+          body: file
+        });
+        const uploaded = await upload.json().catch(() => ({}));
+        if (!upload.ok) throw new Error(uploaded.error || 'Не удалось загрузить файл');
+        body.mediaId = uploaded.id;
+        body.mediaName = file.name;
+      }
       await api('/api/board-notes', { method: 'POST', body: JSON.stringify(body) });
       toast('Объявление на табло');
       context.closeModal();
       context.onReload();
-    } catch (error) { toast(error.message, true); }
+    } catch (error) {
+      toast(error.message, true);
+      if (submitButton) { submitButton.disabled = false; submitButton.textContent = '📢 Вывести на табло'; }
+    }
   });
   document.querySelectorAll('[data-board-remove]').forEach(button =>
     button.addEventListener('click', async () => {

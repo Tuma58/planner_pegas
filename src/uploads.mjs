@@ -35,6 +35,22 @@ export function uploadMimeOf(fileName) {
   return UPLOAD_TYPES[ext] || null;
 }
 
+// ── Медиа для табло (26.10) ──
+// Картинка или видео к объявлению: играет на общем экране на весь экран.
+// Типы строго по расширению (как у файлов заявок); лимит крупный —
+// ролики с телефона весят десятки мегабайт.
+export const boardMediaPath = path.join(path.dirname(config.databasePath), 'board-media');
+export const MAX_BOARD_MEDIA_BYTES = 300 * 1024 * 1024;
+const BOARD_MEDIA_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime'
+};
+export function boardMediaMimeOf(fileName) {
+  const ext = path.extname(String(fileName || '').toLowerCase());
+  return BOARD_MEDIA_TYPES[ext] || null;
+}
+
 // Имя файла из заголовка: без путей и управляющих символов; длинное имя
 // режется с сохранением расширения в хвосте.
 export function cleanFileName(raw) {

@@ -12,6 +12,180 @@ import { boardDialog, boardNotesHtml, wireBoardNotes } from './board.js';
 const DAY_MS = 86_400_000;
 const DEFAULT_MONTH_PLAN = 160_000_000;
 
+// ── Режим табло (26.10, заказ руководителя) ──
+// В ТВ-режиме экраны сменяют друг друга сами: дашборд → опаздывающие →
+// план дня → темп месяца → объявления (на весь экран, картинка/видео).
+// Одна и та же картинка на табло перестаёт читаться — ротация возвращает
+// взгляды. 180 секунд на экран; новое объявление показывается сразу.
+const TABLO_SLIDE_MS = 180_000;
+
+function tabloSlides(state) {
+  const slides = [
+    { id: 'dash', label: 'Дашборд' },
+    { id: 'late', label: 'Опаздывающие' },
+    { id: 'today', label: 'Сегодня' },
+    { id: 'pace', label: 'Темп месяца' }
+  ];
+  if ((state.data.boardNotes || []).length) slides.push({ id: 'notes', label: '📢 Объявления' });
+  return slides;
+}
+
+// Контроль рейсов для слайдов «Опаздывающие» и «Сегодня»: тот же
+// /api/control, что у диспетчера; кэш на минуту, чтобы ротация и
+// автообновление не дёргали расчёт задержек лишний раз.
+async function tabloControlItems(state) {
+  if (state.tabloControl && Date.now() - state.tabloControl.ts < 60_000) {
+    return state.tabloControl.items;
+  }
+  try {
+    const { items } = await api('/api/control');
+    state.tabloControl = { ts: Date.now(), items };
+  } catch {
+    state.tabloControl = state.tabloControl || { ts: Date.now(), items: [] };
+  }
+  return state.tabloControl.items;
+}
+
+const tabloHm = ts => new Date(ts).toLocaleTimeString('ru-RU',
+  { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' });
+const tabloDm = ts => new Date(ts).toLocaleDateString('ru-RU',
+  { day: '2-digit', month: '2-digit', timeZone: 'Europe/Moscow' });
+const tabloDelay = ms => {
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 48) return `${Math.floor(hours / 24)} д ${hours % 24} ч`;
+  if (hours >= 1) return `${hours} ч ${Math.floor(ms % 3_600_000 / 60_000)} м`;
+  return `${Math.floor(ms / 60_000)} мин`;
+};
+
+function lateSlideHtml(items) {
+  const late = items
+    .filter(item => item.status === 'run' && (item.delay_ms || 0) > 30 * 60_000)
+    .sort((a, b) => b.delay_ms - a.delay_ms).slice(0, 12);
+  if (!late.length) {
+    return `<div class="tablo-head">⏰ Опоздания</div>
+      <div class="tablo-empty">Опозданий нет ✅</div>`;
+  }
+  return `<div class="tablo-head">⏰ Опаздывают · ${late.length}</div>
+    <div class="tablo-rows">${late.map(item => {
+    const final = (item.stops || []).filter(stop => stop.kind === 'D').at(-1);
+    const plan = final?.planned_arrival ? Date.parse(final.planned_arrival) : NaN;
+    return `<div class="tablo-row bad-edge">
+      <b class="tablo-plate">${escapeHtml(item.vehicle_plate || '')}</b>
+      <span class="tablo-cell">${escapeHtml((item.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
+      <span class="tablo-cell grow">${escapeHtml(item.customer_name || '')} · → ${escapeHtml((final?.point || item.to_name || '').slice(0, 44))}</span>
+      <span class="tablo-cell muted">план ${Number.isFinite(plan) ? `${tabloDm(plan)} ${tabloHm(plan)}` : '—'}</span>
+      <b class="tablo-late">+${tabloDelay(item.delay_ms)}</b>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function todaySlideHtml(items, nowMs) {
+  const events = [];
+  for (const trip of items) {
+    if (!['plan', 'run'].includes(trip.status)) continue;
+    for (const stop of trip.stops || []) {
+      if (stop.actual_arrival) continue;
+      const ts = Date.parse(stop.estimated_arrival || stop.planned_arrival || '');
+      if (!Number.isFinite(ts) || ts < nowMs - 3_600_000 || ts > nowMs + 14 * 3_600_000) continue;
+      // На экране — ПЛАНОВОЕ время точки: расчётное у просроченных
+      // клампится к «сейчас», и колонка превращалась в столбик одинаковых
+      // минут. Опоздание и так подсвечено кромкой.
+      const planTs = Date.parse(stop.planned_arrival || '') || ts;
+      events.push({ ts, planTs, kind: stop.kind, plate: trip.vehicle_plate,
+        point: stop.point, customer: trip.customer_name,
+        late: trip.status === 'run' && (trip.delay_ms || 0) > 30 * 60_000 });
+    }
+  }
+  events.sort((a, b) => a.ts - b.ts);
+  const top = events.slice(0, 14);
+  if (!top.length) {
+    return `<div class="tablo-head">📋 Ближайшие погрузки и выгрузки</div>
+      <div class="tablo-empty">В ближайшие часы точек нет</div>`;
+  }
+  return `<div class="tablo-head">📋 Ближайшие погрузки и выгрузки</div>
+    <div class="tablo-rows">${top.map(event => `<div class="tablo-row ${event.late ? 'bad-edge' : ''}">
+      <b class="tablo-time">${new Date(event.planTs).getUTCDate() !== new Date(nowMs).getUTCDate()
+    ? `${tabloDm(event.planTs)} ` : ''}${tabloHm(event.planTs)}</b>
+      <span class="tablo-kind">${event.kind === 'P' ? '📦 погрузка' : '📥 выгрузка'}</span>
+      <b class="tablo-plate">${escapeHtml(event.plate || '')}</b>
+      <span class="tablo-cell grow">${escapeHtml((event.point || '').slice(0, 52))}</span>
+      <span class="tablo-cell muted">${escapeHtml((event.customer || '').slice(0, 24))}</span>
+    </div>`).join('')}</div>`;
+}
+
+function paceSlideHtml(state) {
+  const m = dashboardMetrics(state.data);
+  const left = Math.max(0, m.monthPlan - m.monthPace.fact);
+  const tile = (label, value, cls = '', sub = '') => `<div class="tablo-tile ${cls}">
+    <small>${label}</small><b>${value}</b>${sub ? `<span>${sub}</span>` : ''}</div>`;
+  const mln = value => `${(value / 1e6).toLocaleString('ru-RU',
+    { maximumFractionDigits: 1, minimumFractionDigits: 1 })} млн`;
+  return `<div class="tablo-head">🏁 Темп месяца</div>
+    <div class="tablo-tiles">
+      ${tile('Цель месяца', mln(m.monthPlan))}
+      ${tile('Выгружено', mln(m.monthPace.fact),
+    m.monthPace.diff >= 0 ? 'good' : 'bad',
+    m.monthPace.diff >= 0 ? `опережение +${mln(m.monthPace.diff)}` : `отставание ${mln(-m.monthPace.diff)}`)}
+      ${tile('Прогноз', mln(m.forecast), m.forecast >= m.monthPlan ? 'good' : 'warn')}
+      ${tile('Осталось до цели', mln(left), '', `дней: ${m.remainingDays}`)}
+      ${tile('Нужно в день', mln(m.dayPlan))}
+      ${tile('Вчера выгружено', mln(m.days.yesterday.done),
+    m.days.yesterday.done >= m.dayPlan ? 'good' : 'bad')}
+      ${tile('Сегодня забито', mln(m.days.today.booked))}
+      ${tile('Завтра забито', mln(m.days.tomorrow.booked))}
+    </div>`;
+}
+
+function notesSlideHtml(state) {
+  const notes = state.data.boardNotes || [];
+  if (!notes.length) return '';
+  const idx = ((state.tabloNoteIdx || 0) % notes.length + notes.length) % notes.length;
+  const note = notes[idx];
+  const media = note.media_id
+    ? (String(note.media_mime || '').startsWith('video')
+      ? `<video class="tablo-media" src="/api/board-media/${note.media_id}" autoplay muted loop playsinline></video>`
+      : `<img class="tablo-media" src="/api/board-media/${note.media_id}" alt="">`)
+    : '';
+  return `<div class="tablo-note ${note.kind} ${media ? 'with-media' : ''}">${media}
+    <div class="tablo-note-text">
+      ${note.text ? `<div class="tablo-note-main">${escapeHtml(note.text)}</div>` : ''}
+      ${note.subtext ? `<div class="tablo-note-sub">${escapeHtml(note.subtext)}</div>` : ''}
+    </div>
+    ${notes.length > 1 ? `<div class="tablo-note-count">${idx + 1} / ${notes.length}</div>` : ''}
+  </div>`;
+}
+
+// Перерисовка слоя табло: на слайде «Дашборд» слой скрыт и виден обычный
+// дашборд, на остальных — полноэкранный слой поверх. Вызывается и после
+// каждого автообновления (DOM пересоздан), и при смене слайда.
+async function renderTablo(state) {
+  const layer = document.getElementById('tabloLayer');
+  const dots = document.getElementById('tabloDots');
+  if (!layer) return;
+  const slides = tabloSlides(state);
+  if (!state.dashTv) {
+    layer.hidden = true;
+    if (dots) dots.hidden = true;
+    return;
+  }
+  const current = slides.some(slide => slide.id === state.tabloSlide) ? state.tabloSlide : 'dash';
+  if (dots) {
+    dots.hidden = false;
+    dots.innerHTML = slides.map(slide =>
+      `<span class="${slide.id === current ? 'on' : ''}">${slide.label}</span>`).join('');
+  }
+  if (current === 'dash') { layer.hidden = true; return; }
+  let html = '';
+  if (current === 'late') html = lateSlideHtml(await tabloControlItems(state));
+  else if (current === 'today') html = todaySlideHtml(await tabloControlItems(state), Date.now());
+  else if (current === 'pace') html = paceSlideHtml(state);
+  else if (current === 'notes') html = notesSlideHtml(state);
+  // Пока ждали сеть, из ТВ-режима могли выйти.
+  if (!state.dashTv || !document.body.contains(layer)) { layer.hidden = true; return; }
+  layer.innerHTML = html;
+  layer.hidden = false;
+}
+
 // SQLite CURRENT_TIMESTAMP пишет «YYYY-MM-DD HH:MM:SS» в UTC — приводим к ISO.
 const tsMs = value => value ? Date.parse(String(value).replace(' ', 'T') +
   (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
@@ -606,6 +780,8 @@ export async function renderDashboard(container, context) {
       <button class="button ghost small" id="dashFull" title="Полноэкранный режим для общего экрана (выход — Esc)">⛶ На весь экран</button>
     </div>
     ${boardNotesHtml(context.state.data.boardNotes)}
+    <div class="tablo-layer" id="tabloLayer" hidden></div>
+    <div class="tablo-dots" id="tabloDots" hidden></div>
     <div class="dash-goal dash-month">
       <div class="dash-goal-head">
         <span>Выручка без НДС · ${escapeHtml(monthLabel)} · <b>забито</b></span>
@@ -752,19 +928,52 @@ export async function renderDashboard(container, context) {
   // при каждой перерисовке.
   const tvOff = () => {
     state.dashTv = false;
+    state.tabloSlide = 'dash';
+    clearInterval(state.tabloTimer);
+    state.tabloTimer = null;
     document.getElementById('dashRoot')?.classList.remove('dash-tv');
     setTvButton(false);
+    renderTablo(state);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   };
+  // Ротация табло: каждые 180 с следующий экран; таймер один на сессию
+  // и переживает перерисовки (ссылается на state, не на DOM).
+  const startTabloTimer = () => {
+    clearInterval(state.tabloTimer);
+    state.tabloTimer = setInterval(() => {
+      if (!state.dashTv) { clearInterval(state.tabloTimer); state.tabloTimer = null; return; }
+      const slides = tabloSlides(state);
+      const index = slides.findIndex(slide => slide.id === state.tabloSlide);
+      const next = slides[(index + 1) % slides.length];
+      if (next.id === 'notes') state.tabloNoteIdx = (state.tabloNoteIdx ?? -1) + 1;
+      state.tabloSlide = next.id;
+      renderTablo(state);
+    }, TABLO_SLIDE_MS);
+  };
+  // Новое объявление перебивает ротацию: табло показывает его сразу.
+  {
+    const noteIds = (data.boardNotes || []).map(note => note.id);
+    const unseen = noteIds.filter(id => !state.tabloSeenNotes?.has(id));
+    const firstScan = !state.tabloSeenNotes;
+    state.tabloSeenNotes = new Set(noteIds);
+    if (state.dashTv && unseen.length && !firstScan) {
+      state.tabloNoteIdx = (data.boardNotes || []).findIndex(note => note.id === unseen[0]);
+      state.tabloSlide = 'notes';
+    }
+  }
   if (state.dashTv) {
     container.querySelector('#dashRoot')?.classList.add('dash-tv');
     setTvButton(true);
+    if (!state.tabloTimer) startTabloTimer();
   }
   if (fullButton) fullButton.onclick = async () => {
     if (state.dashTv || document.fullscreenElement) { tvOff(); return; }
     state.dashTv = true;
+    state.tabloSlide = 'dash';
     document.getElementById('dashRoot')?.classList.add('dash-tv');
     setTvButton(true);
+    startTabloTimer();
+    renderTablo(state);
     // Нативный fullscreen поверх киоск-класса; запрещён (встроенные
     // панели, киоски) — остаётся один киоск-класс поверх окна.
     try { await document.documentElement.requestFullscreen(); } catch {}
@@ -780,6 +989,9 @@ export async function renderDashboard(container, context) {
       if (!document.fullscreenElement && state.dashTv) tvOff();
     });
   }
+
+  // Слой табло после перерисовки: DOM пересоздан, слой рисуем заново.
+  renderTablo(state);
 
   // Автообновление, пока открыта вкладка: один живой таймер на сессию.
   clearInterval(state.dashboardTimer);

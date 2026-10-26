@@ -7,7 +7,7 @@ import { config } from './config.mjs';
 import { audit, canonTrailerPlate, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
-import { INLINE_TYPES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
+import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -710,7 +710,8 @@ function notifyUserByName(fullName, text, entity = null, entityId = null) {
 // что действует прямо сейчас: снятое или просроченное объявление клиенту
 // не отдаём вовсе — иначе на экране висит вчерашняя планёрка.
 function activeBoardNotes() {
-  return db.prepare(`SELECT id,text,subtext,kind,starts_at,ends_at,created_by_name,created_at
+  return db.prepare(`SELECT id,text,subtext,kind,starts_at,ends_at,created_by_name,created_at,
+      media_id,media_mime
     FROM board_notes
     WHERE removed_at IS NULL AND datetime(starts_at) <= datetime('now')
       AND (ends_at IS NULL OR datetime(ends_at) > datetime('now'))
@@ -7172,28 +7173,103 @@ async function api(request, response, url) {
     if (!user) return;
     const body = await readJson(request);
     const text = clean(body.text).slice(0, 240);
-    if (!text) return errorJson(response, 422, 'Нужен текст объявления');
+    // Медиа-объявление может быть и без текста: ролик говорит сам.
+    let mediaId = null;
+    let mediaMime = '';
+    if (body.mediaId) {
+      const safeId = String(body.mediaId).replace(/[^\w-]/g, '');
+      const mediaFile = path.join(boardMediaPath, safeId);
+      if (!safeId || !fs.existsSync(mediaFile)) return errorJson(response, 422, 'Файл не загружен — приложите его ещё раз');
+      mediaId = safeId;
+      mediaMime = boardMediaMimeOf(String(body.mediaName || '')) || 'application/octet-stream';
+    }
+    if (!text && !mediaId) return errorJson(response, 422, 'Нужен текст объявления или файл');
     const kind = ['info', 'warn', 'urgent'].includes(body.kind) ? body.kind : 'info';
     // hours = 0 означает «до отмены»: снимать будет админ руками.
     const hours = Number(body.hours);
     const endsAt = Number.isFinite(hours) && hours > 0
       ? new Date(Date.now() + Math.min(720, hours) * 3_600_000).toISOString() : null;
     const id = randomUUID();
-    db.prepare(`INSERT INTO board_notes(id,text,subtext,kind,ends_at,created_by,created_by_name)
-      VALUES(?,?,?,?,?,?,?)`).run(id, text, clean(body.subtext).slice(0, 160), kind, endsAt,
-      user.id, user.full_name || user.username || '');
-    audit(db, user, 'board-note', 'board', id, { kind, hours: hours || 0 }, requestIp(request));
+    db.prepare(`INSERT INTO board_notes(id,text,subtext,kind,ends_at,created_by,created_by_name,
+      media_id,media_mime)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(id, text, clean(body.subtext).slice(0, 160), kind, endsAt,
+      user.id, user.full_name || user.username || '', mediaId, mediaMime);
+    audit(db, user, 'board-note', 'board', id,
+      { kind, hours: hours || 0, media: mediaMime || undefined }, requestIp(request));
     return json(response, 201, { id, notes: activeBoardNotes() });
+  }
+
+  // Загрузка медиа для табло: сырое тело + имя в заголовке (как файлы
+  // заявок). Файл живёт в data/board-media и удаляется вместе со снятым
+  // объявлением; осиротевшие загрузки (окно закрыли, не опубликовав)
+  // чистятся при следующем снятии любого объявления.
+  if (request.method === 'POST' && pathname === '/api/board-media') {
+    const user = requirePermission(request, response, 'settings:write');
+    if (!user) return;
+    let rawName = String(request.headers['x-file-name'] || '');
+    try { rawName = decodeURIComponent(rawName); } catch { /* оставляем как есть */ }
+    const fileName = cleanFileName(rawName);
+    const mime = boardMediaMimeOf(fileName);
+    if (!fileName || !mime) {
+      return errorJson(response, 422, 'На табло можно картинку или видео: png, jpg, webp, gif, mp4, webm, mov');
+    }
+    const content = await readRaw(request, MAX_BOARD_MEDIA_BYTES);
+    if (!content.length) return errorJson(response, 422, 'Файл пустой');
+    const id = randomUUID();
+    fs.mkdirSync(boardMediaPath, { recursive: true });
+    fs.writeFileSync(path.join(boardMediaPath, id), content);
+    audit(db, user, 'board-media', 'board', id,
+      { fileName, size: content.length }, requestIp(request));
+    return json(response, 201, { id, mime, name: fileName });
+  }
+
+  // Отдача медиа табло: видео требует Range (перемотка и Safari), поэтому
+  // отвечаем кусками по заголовку, а не целым буфером.
+  if (request.method === 'GET' && pathname.startsWith('/api/board-media/')) {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const id = pathname.split('/').pop().replace(/[^\w-]/g, '');
+    const note = db.prepare(`SELECT media_mime FROM board_notes WHERE media_id=?`).get(id);
+    const filePath = path.join(boardMediaPath, id);
+    if (!note || !fs.existsSync(filePath)) return errorJson(response, 404, 'Файл не найден');
+    const size = fs.statSync(filePath).size;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range || ''));
+    const start = range && range[1] ? Number(range[1]) : 0;
+    const end = range && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (range && (start >= size || start > end)) {
+      response.writeHead(416, { 'Content-Range': `bytes */${size}` });
+      return response.end();
+    }
+    response.writeHead(range ? 206 : 200, {
+      'Content-Type': note.media_mime || 'application/octet-stream',
+      'Content-Length': end - start + 1,
+      'Accept-Ranges': 'bytes',
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+      'Cache-Control': 'private, max-age=86400'
+    });
+    return fs.createReadStream(filePath, { start, end }).pipe(response);
   }
 
   if (request.method === 'DELETE' && pathname.startsWith('/api/board-notes/')) {
     const user = requirePermission(request, response, 'settings:write');
     if (!user) return;
     const id = pathname.split('/').pop();
-    const note = db.prepare('SELECT id FROM board_notes WHERE id=? AND removed_at IS NULL').get(id);
+    const note = db.prepare('SELECT id,media_id FROM board_notes WHERE id=? AND removed_at IS NULL').get(id);
     if (!note) return errorJson(response, 404, 'Объявление не найдено');
     db.prepare(`UPDATE board_notes SET removed_at=CURRENT_TIMESTAMP, removed_by_name=? WHERE id=?`)
       .run(user.full_name || user.username || '', id);
+    if (note.media_id) {
+      try { fs.unlinkSync(path.join(boardMediaPath, note.media_id)); } catch { /* файла уже нет */ }
+    }
+    // Осиротевшие загрузки: файлы без объявления старше суток.
+    try {
+      const linked = new Set(db.prepare(`SELECT media_id FROM board_notes
+        WHERE media_id IS NOT NULL AND removed_at IS NULL`).all().map(row => row.media_id));
+      for (const name of fs.readdirSync(boardMediaPath)) {
+        const full = path.join(boardMediaPath, name);
+        if (!linked.has(name) && Date.now() - fs.statSync(full).mtimeMs > 86_400_000) fs.unlinkSync(full);
+      }
+    } catch { /* каталога может ещё не быть */ }
     audit(db, user, 'board-note-remove', 'board', id, {}, requestIp(request));
     return json(response, 200, { notes: activeBoardNotes() });
   }
