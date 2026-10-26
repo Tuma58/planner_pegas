@@ -11273,6 +11273,24 @@ async function api(request, response, url) {
         revertedStatus = 'run';
       }
     }
+    // Симметрия и для факта ПРИБЫТИЯ на финальную выгрузку: отметка стопа
+    // зеркалится в trips.arrived_at (syncTripFromStops), но снятие её не
+    // зеркалилось — arrived_at оставался, и сторож «конец по прибытию»
+    // каждые 15 минут заново сжимал ends_at (кейс т945ат58 26.10: логист
+    // промахнулась рейсом, «прибыл» встал машине в 3 640 км от выгрузки,
+    // рейс на Ганте схлопнулся с 31.10 до 26.10). Сняли прибытие у
+    // финальной точки — рейс снова «едет», алерты выгрузки обнуляются.
+    if ('actual_arrival' in fields && !fields.actual_arrival) {
+      const fresh = db.prepare('SELECT * FROM trip_stops WHERE id=?').get(match[0]);
+      const lastSeq = db.prepare('SELECT MAX(seq) m FROM trip_stops WHERE trip_id=?')
+        .get(current.trip_id).m;
+      const trip = db.prepare('SELECT status, arrived_at FROM trips WHERE id=?').get(current.trip_id);
+      if (fresh.kind === 'D' && fresh.seq === lastSeq && !fresh.actual_arrival
+        && trip?.arrived_at && !['done', 'paid', 'rejected'].includes(trip.status)) {
+        db.prepare(`UPDATE trips SET arrived_at=NULL, unload_alert_at=NULL, unload_ping_at=NULL,
+          updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(user.id, current.trip_id);
+      }
+    }
     if (newStatus || revertedStatus) {
       queueOutbox(db, 'trips', current.trip_id, 'update', tripOutboxPayload(current.trip_id),
         integrationPublic().writePolicy === 'automatic');
