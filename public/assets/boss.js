@@ -848,7 +848,7 @@ function briefDialog(context) {
     const fd = value => `${String(value).slice(8, 10)}.${String(value).slice(5, 7)}`;
     const lines = [
       `Период ${fd(r.from)}–${fd(r.to)} (${r.days} сут)`,
-      `На линии: ${r.onLine} ТС из ${r.fleet}`,
+      `На линии: ${r.onLineAvg} ТС/сут в среднем (парк ${r.fleet})`,
       `Выполнено заказов: ${r.orders}`,
       r.km != null ? `Пройдено: ${r.km.toLocaleString('ru-RU')} км (гружёный ${r.loadedPct}%)` : null,
       r.kmPerDayPerVehicle != null ? `Темп пробега: ${r.kmPerDayPerVehicle} км/сут на ТС (цель ${r.kmTarget})` : null,

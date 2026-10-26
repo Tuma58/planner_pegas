@@ -12136,11 +12136,12 @@ async function api(request, response, url) {
     const todayDay = new Date(Date.now() + MSK).toISOString().slice(0, 10);
     const mileTo = toExcl < todayDay ? toExcl : todayDay;
     const mile = mileTo > from ? mileageData(from, mileTo) : null;
-    // На линии: уникальные машины с рейсами, пересекающими период.
-    const onLine = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
-      WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
-        AND datetime(COALESCE(unloaded_at, ends_at)) >= datetime(?)`).get(toExcl, from).n;
+    // На линии — СРЕДНЕСУТОЧНО (уточнение руководителя 26.10: «127 из
+    // 127 за период» неинформативно): машино-дни на линии из канона,
+    // делённые на дни периода.
     const fleet = db.prepare(`SELECT COUNT(*) n FROM vehicles WHERE status='work'`).get().n;
+    const lineDays = Number(snap.utilization?.lineDays || 0);
+    const onLineAvg = days ? Math.round(lineDays / days) : 0;
     // Опоздания на выгрузку: финальная точка, факт позже плана на 1 ч+
     // (той же меркой, что профиль водителей).
     const late = db.prepare(`SELECT
@@ -12164,7 +12165,7 @@ async function api(request, response, url) {
     }
     const factNet = Math.round(snap.netRevenue || 0);
     return json(response, 200, {
-      from, to, days, fleet, onLine,
+      from, to, days, fleet, onLineAvg,
       orders: snap.trips, factNet,
       planNet: Math.round(planNet),
       planPct: planNet > 0 ? Math.round(factNet / planNet * 1000) / 10 : null,
