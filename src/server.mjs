@@ -12178,8 +12178,20 @@ async function api(request, response, url) {
       };
     };
     const cur = factMetrics(from, toExcl);
-    const prevFrom = new Date(Date.parse(from + 'T00:00:00Z') - days * 86_400_000).toISOString().slice(0, 10);
-    const prev = factMetrics(prevFrom, from);
+    // База сравнения (переключатель, 26.10): 'prev' — предыдущий период
+    // той же длины встык; 'month' — тот же отрезок чисел прошлого месяца
+    // (как в выпусках эффективности).
+    const base = url.searchParams.get('base') === 'month' ? 'month' : 'prev';
+    const monthBack = dayStr => {
+      const d = new Date(dayStr + 'T00:00:00Z');
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, d.getUTCDate()))
+        .toISOString().slice(0, 10);
+    };
+    const prevFrom = base === 'month'
+      ? monthBack(from)
+      : new Date(Date.parse(from + 'T00:00:00Z') - days * 86_400_000).toISOString().slice(0, 10);
+    const prevToExcl = base === 'month' ? monthBack(toExcl) : from;
+    const prev = factMetrics(prevFrom, prevToExcl);
     const fleet = db.prepare(`SELECT COUNT(*) n FROM vehicles WHERE status='work'`).get().n;
     const planNet = planNetForPeriod(
       db.prepare('SELECT period_start, target_net FROM revenue_plans').all(), from, toExcl);
@@ -12191,7 +12203,8 @@ async function api(request, response, url) {
       planPct: planNet > 0 ? Math.round(cur.factNet / planNet * 1000) / 10 : null,
       planPerDay: planNet > 0 ? Math.round(planNet / days) : null,
       kmTarget,
-      prev, prevFrom
+      prev, prevFrom, base,
+      prevTo: new Date(Date.parse(prevToExcl + 'T00:00:00Z') - 86_400_000).toISOString().slice(0, 10)
     });
   }
   if (request.method === 'GET' && pathname === '/api/ops-report') {

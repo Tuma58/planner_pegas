@@ -833,6 +833,11 @@ function briefDialog(context) {
     <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
       <label class="field">С (с 00:00)<input type="date" id="briefFrom" value="${first}"></label>
       <label class="field">По (включительно)<input type="date" id="briefTo" value="${yest}"></label>
+      <label class="field">Сравнивать с
+        <select id="briefBase">
+          <option value="prev">предыдущим периодом (встык)</option>
+          <option value="month">тем же отрезком прошлого месяца</option>
+        </select></label>
       <button class="button small" id="briefGo">Сформировать</button>
     </div>
     <div id="briefBody" style="margin-top:10px"></div>
@@ -843,7 +848,8 @@ function briefDialog(context) {
     const box = document.getElementById('briefBody');
     box.innerHTML = '<p class="muted">Формируем…</p>';
     let r;
-    try { r = await api(`/api/brief-report?from=${from}&to=${to}`); }
+    const baseKind = document.getElementById('briefBase').value;
+    try { r = await api(`/api/brief-report?from=${from}&to=${to}&base=${baseKind}`); }
     catch (error) { box.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`; return; }
     const fd = value => `${String(value).slice(8, 10)}.${String(value).slice(5, 7)}`;
     // Номер календарной недели (ISO): одна — «нед. 44», диапазон — «нед. 41–44».
@@ -883,7 +889,7 @@ function briefDialog(context) {
         : `Темп на парк: факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`,
       `Средний чек: ${rub(r.avgCheck)}${delta(r.avgCheck, p.avgCheck)}`,
       `Потери парка: ремонт ${r.repairMd} м-д · без водителя ${r.noDriverMd} м-д${delta(r.repairMd + r.noDriverMd, (p.repairMd || 0) + (p.noDriverMd || 0), false)}`,
-      `Динамика ▲▼ — к предыдущему периоду той же длины (${fd(r.prevFrom)}–${fd(r.from)})`
+      `Динамика ▲▼ — ${r.base === 'month' ? 'к тому же отрезку прошлого месяца' : 'к предыдущему периоду той же длины'} (${fd(r.prevFrom)}–${fd(r.prevTo)})`
     ].filter(Boolean);
     box.innerHTML = `<div class="brief-lines">${lines.map(line =>
       `<div class="brief-line">${escapeHtml(line)}</div>`).join('')}</div>
@@ -896,6 +902,7 @@ function briefDialog(context) {
     };
   };
   document.getElementById('briefGo').onclick = run;
+  document.getElementById('briefBase').onchange = run;
   run();
 }
 
