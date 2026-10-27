@@ -9920,21 +9920,20 @@ async function api(request, response, url) {
     // самому звонящему сотруднику с той же карточкой под рукой.
     // Звонок водителя адресату БЕЗ ЖИВОЙ СЕССИИ раньше не видел никто до
     // «пропущенного» через 10 минут (кейс 12.10: Сидоров звонил на личные
-    // добавочные не-сменных Дойкиной и Араповой). Теперь такой звонок
-    // всплывает у смены: у сменных диспетчеров и у вошедших с дежурной
-    // трубкой; первый увидевший забирает его себе (handled).
-    const day = new Date().toISOString().slice(0, 10);
+    // добавочные не-сменных Дойкиной и Араповой). Такой звонок всплывает
+    // у ДЕЖУРНЫХ — держателей дежурных трубок из настроек телефонии;
+    // первый увидевший забирает его себе (handled). Раньше ветка была
+    // открыта всей смене с ролью «диспетчер» в пакете, и после введения
+    // табеля офиса чужие звонки валились половине офиса (кейс Токаловой
+    // 27.10: логист дневной смены закрывала карточки ночной Дойкиной).
     const dutyDigits = dutyPhoneDigits(db);
     const myWork = phoneDigits(user.work_phone || '');
     const onDuty = !!myWork && dutyDigits.some(d => d === myWork);
-    const onShiftDispatcher = onDuty || (!!db.prepare(`SELECT 1 FROM staff_shifts
-        WHERE user_id=? AND day=? AND kind IN ('day','night')`).get(user.id, day)
-      && (`${user.role} ${user.roles || ''}`.includes('dispatcher') || user.role === 'admin'));
     // Несопоставленный номер (target пуст) всплывает ТОЛЬКО дежурным
     // диспетчерам (держателям дежурных трубок), а не всей смене.
     const unmatchedBranch = onDuty ? `OR (c.direction='in' AND c.target_user_id IS NULL)` : '';
-    // Найденный адресат без живой сессии — сменным диспетчерам (12.10).
-    const shiftBranch = onShiftDispatcher ? `OR (c.direction='in' AND c.matched_kind='driver'
+    // Найденный адресат без живой сессии — тоже только дежурным (27.10).
+    const shiftBranch = onDuty ? `OR (c.direction='in' AND c.matched_kind='driver'
       AND c.target_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sessions s
         WHERE s.user_id=c.target_user_id AND datetime(s.expires_at)>CURRENT_TIMESTAMP))` : '';
     const items = db.prepare(`SELECT c.*, v.plate vehicle_plate,
