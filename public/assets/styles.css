@@ -1973,6 +1973,11 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   border: 1px solid #2b3641; border-radius: 10px; padding: 1.2vh 1.4vw;
   font-size: clamp(15px, 1.6vw, 28px); }
 .tablo-row.bad-edge { border-left: 6px solid #e05d5d; }
+/* «Под угрозой» — прогноз опоздания: срок ещё впереди, но расчёт
+   предсказывает опоздание. Янтарная кромка и «≈» отличают от факта. */
+.tablo-row.warn-edge { border-left: 6px solid #d7a94c; }
+.tablo-late.fore { color: #e8c57a; }
+.tablo-head-sub { color: #d7a94c; font-size: .72em; font-weight: 600; }
 .tablo-plate { font-size: clamp(17px, 1.9vw, 34px); white-space: nowrap; }
 .tablo-time { font-size: clamp(17px, 1.9vw, 34px); font-variant-numeric: tabular-nums; }
 .tablo-kind { white-space: nowrap; opacity: .9; }

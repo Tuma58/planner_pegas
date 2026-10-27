@@ -504,6 +504,32 @@ test('потребность от логистики: ремонт и «без �
     'план завтра: остаток после забитого сегодня на 10 дней');
   assert.equal(dash.days.tomorrow.booked, 0, 'на завтра пока не забито');
 
+  // Табло «Опаздывающие»: факт отделён от прогноза, прибывшие исключены.
+  const { lateSlideRows } = await import('../public/assets/dashboard.js');
+  const lateNow = Date.parse('2026-10-27T09:00:00.000Z');
+  const lateItems = [
+    // Факт: план финальной точки прошёл 2 часа назад.
+    { id: 'L1', status: 'run', delay_ms: 5 * 3_600_000, stops: [
+      { kind: 'D', planned_arrival: '2026-10-27T07:00:00.000Z' }] },
+    // Прогноз: план впереди, но расчёт предсказывает +10 ч.
+    { id: 'L2', status: 'run', delay_ms: 10 * 3_600_000, stops: [
+      { kind: 'D', planned_arrival: '2026-10-28T12:00:00.000Z' }] },
+    // Уже прибыла (точка закрыта) — не «опаздывает», в списке её нет.
+    { id: 'L3', status: 'run', delay_ms: 5 * 3_600_000, stops: [
+      { kind: 'D', planned_arrival: '2026-10-27T03:00:00.000Z',
+        actual_arrival: '2026-10-27T08:30:00.000Z' }] },
+    // Задержка меньше получаса — шум, не показываем.
+    { id: 'L4', status: 'run', delay_ms: 20 * 60_000, stops: [
+      { kind: 'D', planned_arrival: '2026-10-27T05:00:00.000Z' }] },
+  ];
+  const lateRows = lateSlideRows(lateItems, lateNow);
+  assert.deepEqual(lateRows.map(row => row.item.id), ['L1', 'L2'],
+    'прибывшая и почти-в-срок исключены; факт впереди прогноза');
+  assert.equal(lateRows[0].isFact, true, 'просроченный план — факт');
+  assert.equal(lateRows[0].ms, 2 * 3_600_000, 'факт = сейчас − план, не прогноз');
+  assert.equal(lateRows[1].isFact, false, 'план впереди — прогноз');
+  assert.equal(lateRows[1].ms, 10 * 3_600_000, 'прогноз = расчётное − плановое');
+
   // Подбор рейса сцепке: только достижимые окна, в зоне освобождения — сверху.
   const { matchOrdersForVehicle } = await import('../public/assets/logist.js');
   const request = { freeAt: iso(now + 86_400_000), zone: { name: 'Дом' }, vehicle: { id: 'А1' } };

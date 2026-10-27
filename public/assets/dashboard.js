@@ -57,26 +57,45 @@ const tabloDelay = ms => {
   return `${Math.floor(ms / 60_000)} мин`;
 };
 
-function lateSlideHtml(items) {
-  const late = items
+// Чистота слайда (27.10, замечание руководителя): delay_ms — ПРОГНОЗ
+// опоздания на финальную точку (расчётное − плановое), а не факт. На
+// экране факт и прогноз разделены: «＋N» красным — плановый срок уже
+// прошёл (опоздание = сейчас − план), «≈ +N» янтарным — срок впереди,
+// но система предсказывает опоздание. Уже прибывшие (финальная точка
+// закрыта) из списка исключаются — они не «опаздывают», а ждут выгрузку.
+export function lateSlideRows(items, nowMs = Date.now()) {
+  return items
     .filter(item => item.status === 'run' && (item.delay_ms || 0) > 30 * 60_000)
-    .sort((a, b) => b.delay_ms - a.delay_ms).slice(0, 12);
+    .map(item => {
+      const final = (item.stops || []).filter(stop => stop.kind === 'D').at(-1);
+      if (final?.actual_arrival) return null;
+      const plan = final?.planned_arrival ? Date.parse(final.planned_arrival) : NaN;
+      const factMs = Number.isFinite(plan) ? nowMs - plan : 0;
+      const isFact = factMs > 30 * 60_000;
+      return { item, final, plan, isFact, ms: isFact ? factMs : item.delay_ms };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b.isFact - a.isFact) || (b.ms - a.ms))
+    .slice(0, 12);
+}
+
+function lateSlideHtml(items, nowMs = Date.now()) {
+  const late = lateSlideRows(items, nowMs);
   if (!late.length) {
     return `<div class="tablo-head">⏰ Опоздания</div>
       <div class="tablo-empty">Опозданий нет ✅</div>`;
   }
-  return `<div class="tablo-head">⏰ Опаздывают · ${late.length}</div>
-    <div class="tablo-rows">${late.map(item => {
-    const final = (item.stops || []).filter(stop => stop.kind === 'D').at(-1);
-    const plan = final?.planned_arrival ? Date.parse(final.planned_arrival) : NaN;
-    return `<div class="tablo-row bad-edge">
+  const facts = late.filter(row => row.isFact).length;
+  return `<div class="tablo-head">⏰ Опаздывают · ${facts}${late.length > facts
+    ? ` <span class="tablo-head-sub">· под угрозой · ${late.length - facts}</span>` : ''}</div>
+    <div class="tablo-rows">${late.map(({ item, final, plan, isFact, ms }) =>
+    `<div class="tablo-row ${isFact ? 'bad-edge' : 'warn-edge'}">
       <b class="tablo-plate">${escapeHtml(item.vehicle_plate || '')}</b>
       <span class="tablo-cell">${escapeHtml((item.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
       <span class="tablo-cell grow">${escapeHtml(item.customer_name || '')} · → ${escapeHtml((final?.point || item.to_name || '').slice(0, 44))}</span>
       <span class="tablo-cell muted">план ${Number.isFinite(plan) ? `${tabloDm(plan)} ${tabloHm(plan)}` : '—'}</span>
-      <b class="tablo-late">+${tabloDelay(item.delay_ms)}</b>
-    </div>`;
-  }).join('')}</div>`;
+      <b class="tablo-late ${isFact ? '' : 'fore'}">${isFact ? '+' : '≈ +'}${tabloDelay(ms)}</b>
+    </div>`).join('')}</div>`;
 }
 
 function todaySlideHtml(items, nowMs) {
@@ -91,6 +110,10 @@ function todaySlideHtml(items, nowMs) {
       // клампится к «сейчас», и колонка превращалась в столбик одинаковых
       // минут. Опоздание и так подсвечено кромкой.
       const planTs = Date.parse(stop.planned_arrival || '') || ts;
+      // Точка с планом старше суток — не «ближайшее событие», а давно
+      // просроченная (чаще неотмеченная) выгрузка: ей место на экране
+      // опозданий, здесь она замусоривала список (замечание 27.10).
+      if (planTs < nowMs - DAY_MS) continue;
       events.push({ ts, planTs, kind: stop.kind, plate: trip.vehicle_plate,
         point: stop.point, customer: trip.customer_name,
         late: trip.status === 'run' && (trip.delay_ms || 0) > 30 * 60_000 });
