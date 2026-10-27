@@ -23,12 +23,18 @@ import { setupVehicleHover } from './vehicle-hover.js';
 import { renderDispatcher } from './dispatcher.js';
 import { waitingLabel } from './pipeline.js';
 
+// ТВ-режим табло переживает перезагрузку страницы (ночной рестарт
+// ТВ-компьютера): выбор хранится в localStorage, и приложение сразу
+// открывает «Дашборд», где ротация возобновится сама (dashboard.js).
+let savedDashTv = false;
+try { savedDashTv = localStorage.getItem('pl_dash_tv') === '1'; } catch { /* ок */ }
+
 const state = {
   data: null,
   month: null,
   type: 'all',
   panel: null,
-  view: 'gantt',
+  view: savedDashTv ? 'dashboard' : 'gantt',
   permissions: new Set()
 };
 

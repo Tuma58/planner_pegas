@@ -928,6 +928,7 @@ export async function renderDashboard(container, context) {
   // при каждой перерисовке.
   const tvOff = () => {
     state.dashTv = false;
+    try { localStorage.removeItem('pl_dash_tv'); } catch { /* ок */ }
     state.tabloSlide = 'dash';
     clearInterval(state.tabloTimer);
     state.tabloTimer = null;
@@ -961,6 +962,20 @@ export async function renderDashboard(container, context) {
       state.tabloSlide = 'notes';
     }
   }
+  // ТВ-режим переживает перезагрузку страницы: выбор хранится в
+  // localStorage (ночной рестарт ТВ-компьютера сбрасывал всё в Гант, и
+  // утром табло стояло обычным дашбордом, пока кнопку не нажмут снова).
+  // Нативный fullscreen браузер без клика не даёт — возобновляется
+  // киоск-класс на всё окно, этого достаточно.
+  if (!state.dashTv && !state.dashTvResumed) {
+    state.dashTvResumed = true;
+    try {
+      if (localStorage.getItem('pl_dash_tv') === '1') {
+        state.dashTv = true;
+        state.tabloSlide = 'dash';
+      }
+    } catch { /* ок */ }
+  }
   if (state.dashTv) {
     container.querySelector('#dashRoot')?.classList.add('dash-tv');
     setTvButton(true);
@@ -969,6 +984,7 @@ export async function renderDashboard(container, context) {
   if (fullButton) fullButton.onclick = async () => {
     if (state.dashTv || document.fullscreenElement) { tvOff(); return; }
     state.dashTv = true;
+    try { localStorage.setItem('pl_dash_tv', '1'); } catch { /* ок */ }
     state.tabloSlide = 'dash';
     document.getElementById('dashRoot')?.classList.add('dash-tv');
     setTvButton(true);
