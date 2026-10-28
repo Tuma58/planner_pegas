@@ -2713,6 +2713,9 @@ test('машино-ёмкость клиентов: рейсы + стык пос
   // Рейс 2: B→A, 24 ч; следующий грузится в B (не в A) через 12 ч — разрыв.
   trip('t-2', zoneB, zoneA, at(36), at(60));
   trip('t-3', zoneB, zoneA, at(72), at(96));
+  // Честный одометр главнее плана: у t-3 Пилот намерил 400 вместо 500 —
+  // лестница км gps_km → телематика 1С → план (28.10).
+  db.prepare(`UPDATE trips SET gps_km=400 WHERE id='t-3'`).run();
 
   const data = clientFleetData(db, '2026-05-01', '2026-05-15');
   const client = data.clients.find(c => c.name === 'Клиент-К');
@@ -2725,7 +2728,8 @@ test('машино-ёмкость клиентов: рейсы + стык пос
   // Канон денег: 122000 с НДС 22% = 100000 net × 3 рейса
   assert.equal(client.revNet, 300000);
   assert.equal(client.avgCheck, 100000, 'средний чек net');
-  assert.equal(client.rubKm, 200, '₽/км: 300000 net / 1500 км');
+  assert.equal(client.rubKm, Math.round(300000 / 1400), '₽/км: 300000 net / 1400 км (500+500+400 по лестнице)');
+  assert.equal(client.km, 1400, 'км по лестнице честности: gps_km главнее плана');
   assert.equal(client.revPerDay, Math.round(300000 / 14), 'выручка в сутки периода');
   assert.equal(client.busyDays, 4, 'занятость: 72 ч рейсов + 24 ч стыков');
   assert.deepEqual(client.closers, [{ name: 'Клиент-К', pct: 50 }],
@@ -4932,4 +4936,25 @@ test('зонное плечо часов: спасает редкие напра
   // Мало образцов — зонная медиана ещё не норматив.
   db.prepare(`UPDATE leg_fact_km SET hour_samples=2 WHERE key LIKE 'zone:%'`).run();
   assert.equal(zoneLegHours(db, 'addr-msk', 'addr-nsk'), null, 'порог s>=3 держит шум');
+});
+
+test('зонное плечо километров: медиана честных пробегов пары геозон', async t => {
+  const { zoneLegKm } = await import('../src/planner-service.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-zonekm-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [zoneA, zoneB] = db.prepare('SELECT id FROM zones LIMIT 2').all().map(row => row.id);
+  db.prepare(`INSERT INTO addresses(id,name,zone_id) VALUES
+    ('addr-a','Москва, склад',?),('addr-b','Новосибирск, Толмачево',?)`).run(zoneA, zoneB);
+  // Та же строка zone:… несёт и часы, и километры — колонки независимы.
+  db.prepare(`INSERT INTO leg_fact_km(key,samples,median_km,median_hours,hour_samples)
+    VALUES(?,4,3350,93,84)`).run(`zone:${[zoneA, zoneB].sort().join('|')}`);
+  assert.equal(zoneLegKm(db, 'addr-a', 'addr-b'), 3350, 'медиана км пары геозон');
+  assert.equal(zoneLegKm(db, 'addr-b', 'addr-a'), 3350, 'ключ ненаправленный');
+  // Погашенная коридором запись (samples=0) — не норматив.
+  db.prepare(`UPDATE leg_fact_km SET samples=0, median_km=0 WHERE key LIKE 'zone:%'`).run();
+  assert.equal(zoneLegKm(db, 'addr-a', 'addr-b'), null, 'погашенная запись не читается');
 });

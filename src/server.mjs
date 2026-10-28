@@ -29,7 +29,7 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, activeDriverFor, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, syncVehicleDriverNames, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours,
+  gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours, zoneLegKm,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
@@ -3705,19 +3705,39 @@ function plannedKmFor(fromAddressId, toAddressId, via = []) {
       // Координаты здоровы, история вне физики — мусор прошлого, этаж ниже.
     }
   }
-  const chain = [point.get(fromAddressId),
-    ...via.map(item => item.addressId ? point.get(item.addressId) : null).filter(Boolean),
-    point.get(toAddressId)].filter(Boolean);
+  const chain = [{ id: fromAddressId, at: point.get(fromAddressId) },
+    ...via.map(item => item.addressId
+      ? { id: item.addressId, at: point.get(item.addressId) } : null).filter(Boolean),
+    { id: toAddressId, at: point.get(toAddressId) }].filter(item => item.at);
   if (chain.length < 2) return null;
+  // Каждое звено цепочки — своей лестницей (вторая серия №5781, 28.10):
+  // адресная медиана честных пробегов → зонная медиана (пары геозон
+  // адресов, спасение редких направлений) → прямая × калиброванный
+  // коэффициент. Коридор прямой звена (×1,05…×1,65) — на каждом этаже.
   let total = 0;
   for (let i = 1; i < chain.length; i += 1) {
-    const leg = straightKm(chain[i - 1].latitude, chain[i - 1].longitude,
-      chain[i].latitude, chain[i].longitude);
-    if (leg == null) return null;
-    total += leg;
+    const prev = chain[i - 1];
+    const cur = chain[i];
+    const straight = straightKm(prev.at.latitude, prev.at.longitude,
+      cur.at.latitude, cur.at.longitude);
+    if (straight == null) return null;
+    const inCorridor = km => straight < 30 ||
+      (km >= straight * 1.05 && km <= straight * 1.65);
+    const leg = db.prepare(`SELECT median_km FROM leg_fact_km WHERE key=? AND samples>=2`)
+      .get(legKey(prev.id, cur.id));
+    if (leg && leg.median_km > 0 && inCorridor(leg.median_km)) {
+      total += leg.median_km;
+      continue;
+    }
+    const zoneKm = zoneLegKm(db, prev.id, cur.id);
+    if (zoneKm && inCorridor(zoneKm)) {
+      total += zoneKm;
+      continue;
+    }
+    // Дорожный коэффициент калибруется фактом парка (медиана факт/прямая).
+    total += straight * calibratedRoadFactor();
   }
-  // Дорожный коэффициент калибруется фактом парка (медиана факт/прямая).
-  return Math.round(total * calibratedRoadFactor());
+  return Math.round(total);
 }
 
 // Ночью: пересборка справочника плеч и калибровка коэффициента по чистым
@@ -3762,6 +3782,29 @@ function rebuildLegFacts() {
       clean.push({ key: legKey(trip.from_address_id, trip.to_address_id),
         from: trip.from_address_id, to: trip.to_address_id, fact });
     }
+    // Зонные км-медианы — те же чистые честные пробеги по паре геозон
+    // адресов (вторая серия №5781): редкая адресная пара не копит 2
+    // образцов, а зонная набирает статистику. Коридор на запись — медиана
+    // фактов против медианы прямых тех же рейсов (×1,05…×1,65).
+    const zoneKms = new Map();
+    {
+      const zoneOf = db.prepare('SELECT zone_id FROM addresses WHERE id=?');
+      const pointOf = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
+      for (const row of clean) {
+        const fz = zoneOf.get(row.from)?.zone_id;
+        const tz = zoneOf.get(row.to)?.zone_id;
+        if (!fz || !tz || fz === tz) continue;
+        const zkey = `zone:${legKey(fz, tz)}`;
+        if (!zoneKms.has(zkey)) zoneKms.set(zkey, { facts: [], straights: [] });
+        zoneKms.get(zkey).facts.push(row.fact);
+        const a = pointOf.get(row.from);
+        const b = pointOf.get(row.to);
+        if (a?.latitude && b?.latitude) {
+          zoneKms.get(zkey).straights.push(
+            straightKm(a.latitude, a.longitude, b.latitude, b.longitude));
+        }
+      }
+    }
     const byKey = new Map();
     for (const row of clean) {
       if (!byKey.has(row.key)) byKey.set(row.key, []);
@@ -3793,12 +3836,28 @@ function rebuildLegFacts() {
       upsert.run(key, facts.length, medianKm);
     }
     if (rejectedLegs) console.log(`rebuildLegFacts: отвергнуто плеч вне физики дороги: ${rejectedLegs}`);
+    // Запись зонных км-медиан (часы той же строки не трогаются — их ведёт
+    // rebuildTransitFacts). Вне коридора — гасим (samples=0).
+    for (const [zkey, item] of zoneKms) {
+      item.facts.sort((a, b) => a - b);
+      const medianKm = Math.round(item.facts[Math.floor(item.facts.length / 2)]);
+      item.straights.sort((a, b) => a - b);
+      const medianStraight = item.straights.length
+        ? item.straights[Math.floor(item.straights.length / 2)] : null;
+      if (medianStraight && medianStraight >= 30 &&
+          (medianKm < medianStraight * 1.05 || medianKm > medianStraight * 1.65)) {
+        upsert.run(zkey, 0, 0);
+        continue;
+      }
+      upsert.run(zkey, item.facts.length, medianKm);
+    }
     // Калибровка дорожного коэффициента: по МЕДИАНАМ плеч справочника
     // (2+ примера) против их прямых — одиночные рейсы загрязнены краевыми
     // днями цепочки и завышали коэффициент (первая калибровка дала 1,55).
     const point = db.prepare('SELECT latitude, longitude FROM addresses WHERE id=?');
     const pairOf = new Map(clean.map(row => [row.key, row]));
-    const ratios = db.prepare(`SELECT key, median_km FROM leg_fact_km WHERE samples >= 2`).all()
+    const ratios = db.prepare(`SELECT key, median_km FROM leg_fact_km
+      WHERE samples >= 2 AND key NOT LIKE 'zone:%'`).all()
       .map(leg => {
         const pair = pairOf.get(leg.key);
         if (!pair) return null;
@@ -11837,6 +11896,8 @@ async function api(request, response, url) {
       WHERE key NOT LIKE 'zone:%'`).get()) || {};
     const zoneLegs = safe(() => db.prepare(`SELECT COUNT(*) n FROM leg_fact_km
       WHERE key LIKE 'zone:%' AND hour_samples >= 3 AND median_hours > 0`).get()?.n) || 0;
+    const zoneKmLegs = safe(() => db.prepare(`SELECT COUNT(*) n FROM leg_fact_km
+      WHERE key LIKE 'zone:%' AND samples >= 3 AND median_km > 0`).get()?.n) || 0;
     const gate = safe(() => db.prepare(`SELECT SUM(samples >= 2) ok FROM gate_facts`).get()) || {};
     const odo = safe(() => db.prepare(`SELECT COUNT(*) n, SUM(gps_km IS NOT NULL) g FROM trips
       WHERE status IN ('unloaded','done','paid')
@@ -11864,8 +11925,8 @@ async function api(request, response, url) {
         value: `${safe(calibratedRoadFactor) ?? ROAD_FACTOR} (дефолт ${ROAD_FACTOR})`,
         clamp: '1,05–1,45', drift: 'лог ночной пересборки · 📐 Нормативы недели' },
       { name: 'Медианы плеч: километры',
-        learns: 'плановые км плеча адрес→адрес из честных фактов пробега',
-        value: `${legs.kmOk || 0} плеч из ${legs.t || 0} с выученными км`,
+        learns: 'плановые км плеча адрес→адрес (s≥2) → пары геозон адресов (s≥3, с 28.10) из честных фактов пробега',
+        value: `${legs.kmOk || 0} плеч из ${legs.t || 0} с выученными км + ${zoneKmLegs} зонных пар`,
         clamp: 'коридор прямая ×1,05…×1,65 (вне — коэффициент дорог)',
         drift: '🧾 Инвентаризация → «Плановые км расходятся с фактом»' },
       { name: 'Медианы плеч: часы дороги',

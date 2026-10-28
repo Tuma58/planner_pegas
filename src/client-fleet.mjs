@@ -19,9 +19,13 @@ export function clientFleetData(db, from, to) {
   const calc = calcSettings(db);
   const zones = new Map(db.prepare(`SELECT id, name FROM zones`).all()
     .map(zone => [zone.id, zone.name]));
+  // Километры — лестницей честности (28.10): одометр Пилота за интервал
+  // рейса (gps_km, покрытие ~70%, на дальних 87%) → телематика 1С → план.
+  // Прежний COALESCE начинался с мёртвого поля 1С и всегда давал план —
+  // ₽/км дальних клиентов занижался планом, завышенным на ~12%.
   const rows = db.prepare(`SELECT vehicle_id, status, cash, customer_name, revenue_vat,
       starts_at, unloaded_at, ends_at, from_zone_id, to_zone_id,
-      COALESCE(actual_distance_km, distance_km) km FROM trips
+      COALESCE(gps_km, actual_distance_km, distance_km) km FROM trips
     WHERE status<>'rejected' ORDER BY vehicle_id, starts_at`).all();
   const days = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 864e5));
 

@@ -63,6 +63,23 @@ export function zoneLegHours(db, fromAddressId, toAddressId) {
   return row && row.s >= 3 && row.h > 0 ? row.h : null;
 }
 
+// Зонное плечо КИЛОМЕТРОВ — тот же средний этаж для плановых км (28.10,
+// вторая серия кейса №5781: честные одометры дальних рейсов есть у 87%,
+// но адресные пары редких направлений не копят 2 образцов — план падал
+// на прямую × средний коэффициент и завышал Новосибирск на ~400 км).
+// Медиану пишет rebuildLegFacts в колонку median_km строк zone:…;
+// коридор прямой (×1,05…×1,65) прикладывает читатель по своей паре.
+export function zoneLegKm(db, fromAddressId, toAddressId) {
+  if (!fromAddressId || !toAddressId) return null;
+  const zoneOf = db.prepare('SELECT zone_id FROM addresses WHERE id=?');
+  const from = zoneOf.get(fromAddressId)?.zone_id;
+  const to = zoneOf.get(toAddressId)?.zone_id;
+  if (!from || !to || from === to) return null;
+  const row = db.prepare(`SELECT median_km km, samples s FROM leg_fact_km
+    WHERE key=?`).get(`zone:${[from, to].sort().join('|')}`);
+  return row && row.s >= 3 && row.km > 0 ? row.km : null;
+}
+
 function routeDistance(db, fromId, toId) {
   if (fromId === toId) return 40;
   return Number(db.prepare(`SELECT distance_km FROM route_rates
