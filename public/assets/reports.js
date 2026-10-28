@@ -12,6 +12,7 @@ export const REPORT_TITLES = {
   clients: 'Экономика по клиентам',
   rejected: 'Отклонённые рейсы',
   drivers: 'Водители: профиль и дисциплина',
+  'client-fleet': 'Машино-ёмкость клиентов',
   'dispatch-shift': 'Смена диспетчерской: план/факт',
   execution: 'Контроль выполнения рейсов',
   vehicles: 'Аналитика по сцепкам',
@@ -633,6 +634,49 @@ export async function buildReport(kind, from, to, data) {
         || '<tr><td colspan=11>Рейсов за период нет</td></tr>'}</tbody></table>
       <p class="muted" style="margin-top:6px">Сверхвахта и доплаты появятся здесь после
         этапа 3 перестройки Ресурса (явка ↔ факт графика).</p>`;
+  } else if (kind === 'client-fleet') {
+    // Машино-ёмкость клиентов (28.10): рейсы клиента + стык после его
+    // выгрузки = сколько машин парка он фактически занимает; «круг» —
+    // доля следующих грузов из зоны его выгрузки.
+    const cf = await api(`/api/reports/client-fleet?from=${from}&to=${to}`);
+    const main = cf.clients.filter(c => c.vehicles >= 1);
+    const rest = cf.clients.filter(c => c.vehicles < 1);
+    const restVehicles = Math.round(rest.reduce((s, c) => s + c.vehicles, 0) * 10) / 10;
+    const restRev = rest.reduce((s, c) => s + c.revNet, 0);
+    const mln = v => (v / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+    const row = c => `<tr><td>${escapeHtml(c.name.slice(0, 40))}</td>
+      <td class="num">${c.trips}</td><td class="num">${mln(c.revNet)}</td>
+      <td class="num"><b>${c.vehicles.toLocaleString('ru-RU')}</b></td>
+      <td class="num">${c.vehiclesGap ? `<span class="${c.vehiclesGap >= 1.5 ? 'bad' : ''}">${c.vehiclesGap.toLocaleString('ru-RU')}</span>` : '—'}</td>
+      <td class="num"><b>${(c.revPerVd / 1000).toFixed(0)}</b></td>
+      <td class="num">${c.gapMedianH == null ? '—' : `<span class="${c.gapMedianH >= 18 ? 'bad' : ''}">${c.gapMedianH}</span>`}</td>
+      <td class="num">${c.ringPct == null ? '—' : `<span class="${c.ringPct < 50 ? 'bad' : ''}">${c.ringPct}%</span>`}</td></tr>`;
+    body = `<div class="rsums">
+        <span class="rsum">Парк: <b>${cf.fleet}</b></span>
+        <span class="rsum">Занято клиентами: <b>${cf.totalVehicles.toLocaleString('ru-RU')} маш.</b></span>
+        <span class="rsum">из них в стыках: <b>${cf.totalGapVehicles.toLocaleString('ru-RU')} маш.</b></span>
+        <span class="rsum">Период: <b>${cf.days} дн.</b></span></div>
+      <p class="geohint">Машино-ёмкость = машино-дни в рейсах клиента + стык после его
+        выгрузки (хвост до следующей погрузки — его оставляет география клиента:
+        есть обратный груз — хвоста нет). <b>«Круг»</b> — доля случаев, когда следующий
+        груз взят прямо в зоне выгрузки клиента; низкий круг и долгий стык —
+        кандидат на кольцевой маршрут или обратную загрузку. Деньги — канон без НДС.</p>
+      <table class="rtable"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
+        <th class="num">Выручка, млн</th><th class="num">Машин</th><th class="num">из них стык</th>
+        <th class="num">т₽/маш-день</th><th class="num">Стык, ч</th><th class="num">Круг</th></tr></thead>
+      <tbody>${main.map(row).join('') || '<tr><td colspan=8>Рейсов за период нет</td></tr>'}
+      ${rest.length ? `<tr><td class="muted">Остальные (${rest.length} клиентов)</td>
+        <td class="num muted">${rest.reduce((s, c) => s + c.trips, 0)}</td>
+        <td class="num muted">${mln(restRev)}</td>
+        <td class="num muted">${restVehicles.toLocaleString('ru-RU')}</td>
+        <td colspan=4></td></tr>` : ''}</tbody></table>
+      <h4>Где рвутся круги (следующий груз не в зоне выгрузки)</h4>
+      <table class="rtable"><thead><tr><th>Перегон</th><th class="num">Раз за период</th></tr></thead>
+      <tbody>${cf.brokenRings.map(b => `<tr><td>${escapeHtml(b.route)}</td>
+        <td class="num">${b.count}</td></tr>`).join('') || '<tr><td colspan=2>Разрывов нет</td></tr>'}
+      </tbody></table>
+      <p class="muted" style="margin-top:6px">Самые частые перегоны — готовые задания продажам
+        на обратную загрузку: груз из зоны слева превращает перегон в кольцо.</p>`;
   } else if (kind === 'dispatch-shift') {
     // Авторазвод против факта (этап 3б): план часа — снимок балансировщика
     // (объём карточек + профили наплывов по ёмкостям), факт — отметки

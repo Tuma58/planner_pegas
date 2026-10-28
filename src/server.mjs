@@ -14,6 +14,7 @@ import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus,
   listDriverQuestions, phoneDigits, phonePretty, questionStats, workPhoneRequired } from './telephony.mjs';
 import { DONE_STATUSES, calcSettings, forecastMonth, planNetForPeriod, tripNet as tripNetCanon, vat7Customers } from './money.mjs';
 import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssuePlan } from './efficiency.mjs';
+import { clientFleetData } from './client-fleet.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
 import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
@@ -12496,6 +12497,17 @@ async function api(request, response, url) {
     if (!from || !to) return errorJson(response, 422, 'Задайте период');
     return json(response, 200, { from, to,
       ...driverPeriodMetrics(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`) });
+  }
+  // «Машино-ёмкость клиентов» (28.10): сколько машин занимает каждый клиент
+  // (рейсы + стык после его выгрузки) и как складывается круг.
+  if (request.method === 'GET' && pathname === '/api/reports/client-fleet') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!from || !to) return errorJson(response, 422, 'Задайте период');
+    // Граница «по» включительно, как во всех отчётных пикерах.
+    return json(response, 200, clientFleetData(db, from, addDayIso(to)));
   }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const user = requirePermission(request, response, 'reports:read');

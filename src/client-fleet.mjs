@@ -1,0 +1,83 @@
+// Отчёт «Машино-ёмкость клиентов»: сколько машин парка фактически занимает
+// каждый клиент и как у него складывается круг (заказ руководителя 28.10).
+//
+// Машино-ёмкость = машино-часы рейсов клиента + стык ПОСЛЕ его выгрузки —
+// хвост до следующей погрузки вменяется клиенту, потому что его оставляет
+// география клиента (есть обратный груз — хвоста нет). «Круг» — доля
+// случаев, когда следующий груз взят в зоне выгрузки клиента. Деньги —
+// только канон (tripNet), ничего своей формулой.
+import { DONE_STATUSES, calcSettings, tripNet } from './money.mjs';
+
+const HOUR = 3_600_000;
+const median = list => {
+  if (!list.length) return null;
+  const sorted = [...list].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+};
+
+export function clientFleetData(db, from, to) {
+  const calc = calcSettings(db);
+  const zones = new Map(db.prepare(`SELECT id, name FROM zones`).all()
+    .map(zone => [zone.id, zone.name]));
+  const rows = db.prepare(`SELECT vehicle_id, status, cash, customer_name, revenue_vat,
+      starts_at, unloaded_at, ends_at, from_zone_id, to_zone_id FROM trips
+    WHERE status<>'rejected' ORDER BY vehicle_id, starts_at`).all();
+  const days = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 864e5));
+
+  const byClient = new Map();
+  const misses = new Map();
+  for (let i = 0; i < rows.length; i++) {
+    const trip = rows[i];
+    if (!DONE_STATUSES.has(trip.status)) continue;
+    const endIso = trip.unloaded_at || trip.ends_at;
+    const day = String(endIso).slice(0, 10);
+    if (day < from || day >= to) continue;
+    const durH = (Date.parse(endIso) - Date.parse(trip.starts_at)) / HOUR;
+    // Рваные отметки (нулевые и месячные «рейсы») портят часы — мимо.
+    if (!(durH > 1 && durH < 21 * 24)) continue;
+    const next = rows[i + 1]?.vehicle_id === trip.vehicle_id ? rows[i + 1] : null;
+    const item = byClient.get(trip.customer_name)
+      || { name: trip.customer_name, trips: 0, rev: 0, tripH: 0, gaps: [], ring: 0, broken: 0 };
+    item.trips += 1;
+    item.rev += tripNet(trip, calc);
+    item.tripH += durH;
+    if (next) {
+      const gapH = (Date.parse(next.starts_at) - Date.parse(endIso)) / HOUR;
+      if (gapH >= 0 && gapH <= 7 * 24) {
+        item.gaps.push(gapH);
+        if (next.from_zone_id === trip.to_zone_id) item.ring += 1;
+        else {
+          item.broken += 1;
+          const key = `${zones.get(trip.to_zone_id) || '?'} ⇢ ${zones.get(next.from_zone_id) || '?'}`;
+          misses.set(key, (misses.get(key) || 0) + 1);
+        }
+      }
+    }
+    byClient.set(trip.customer_name, item);
+  }
+
+  const clients = [...byClient.values()].map(item => {
+    const gapH = item.gaps.reduce((sum, gap) => sum + gap, 0);
+    const totalH = item.tripH + gapH;
+    const chains = item.ring + item.broken;
+    return {
+      name: item.name, trips: item.trips,
+      revNet: Math.round(item.rev),
+      vehicles: Math.round(totalH / 24 / days * 10) / 10,
+      vehiclesGap: Math.round(gapH / 24 / days * 10) / 10,
+      revPerVd: totalH ? Math.round(item.rev / (totalH / 24)) : 0,
+      gapMedianH: item.gaps.length ? Math.round(median(item.gaps)) : null,
+      ringPct: chains ? Math.round(item.ring / chains * 100) : null
+    };
+  }).sort((a, b) => b.vehicles - a.vehicles);
+
+  const fleet = db.prepare(`SELECT COUNT(*) c FROM vehicles WHERE status='work'`).get().c;
+  return {
+    from, to, days, fleet,
+    clients,
+    totalVehicles: Math.round(clients.reduce((sum, c) => sum + c.vehicles, 0) * 10) / 10,
+    totalGapVehicles: Math.round(clients.reduce((sum, c) => sum + c.vehiclesGap, 0) * 10) / 10,
+    brokenRings: [...misses].map(([route, count]) => ({ route, count }))
+      .sort((a, b) => b.count - a.count).slice(0, 15)
+  };
+}

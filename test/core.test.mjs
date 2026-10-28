@@ -2690,6 +2690,42 @@ test('отметка «данные грузоотправителю»: не б�
     'один из двух рейсов на линии с отметкой — 50%');
 });
 
+test('машино-ёмкость клиентов: рейсы + стык после выгрузки, круг по зоне', async t => {
+  const { clientFleetData } = await import('../src/client-fleet.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-cfleet-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [zoneA, zoneB] = db.prepare('SELECT id FROM zones LIMIT 2').all().map(z => z.id);
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,zone_id,status)
+    VALUES('v-1','а001аа58',?,?,'work')`).run(type, zoneA);
+  const at = hours => new Date(Date.parse('2026-05-10T00:00:00Z') + hours * 3_600_000).toISOString();
+  const trip = (id, from, to, start, unload, nextStart = null) => db.prepare(`INSERT INTO
+      trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,starts_at,ends_at,
+        unloaded_at,distance_km,revenue_vat,status)
+    VALUES(?, 'v-1', 'Клиент-К', ?, ?, ?, ?, ?, 500, 122000, 'done')`)
+    .run(id, from, to, start, unload, unload);
+  // Рейс 1: A→B, 24 ч; следующий грузится в B через 12 ч — круг сложился.
+  trip('t-1', zoneA, zoneB, at(0), at(24));
+  // Рейс 2: B→A, 24 ч; следующий грузится в B (не в A) через 12 ч — разрыв.
+  trip('t-2', zoneB, zoneA, at(36), at(60));
+  trip('t-3', zoneB, zoneA, at(72), at(96));
+
+  const data = clientFleetData(db, '2026-05-01', '2026-05-15');
+  const client = data.clients.find(c => c.name === 'Клиент-К');
+  assert.equal(client.trips, 3);
+  // 72 ч рейсов + 24 ч стыков = 4 машино-дня на 14 дней = 0,3 машины
+  assert.equal(client.vehicles, 0.3);
+  assert.equal(client.gapMedianH, 12, 'медиана стыка после выгрузки');
+  assert.equal(client.ringPct, 50, 'один круг из двух цепочек');
+  assert.equal(data.brokenRings.length, 1, 'разрыв А ⇢ B виден в перегонах');
+  // Канон денег: 122000 с НДС 22% = 100000 net × 3 рейса
+  assert.equal(client.revNet, 300000);
+});
+
 test('запас подачи: метрика меряет окно, а не скорость назначения', async t => {
   const { assignSlackNorm, handoffMetrics } = await import('../src/project160.mjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-slack-test-'));
