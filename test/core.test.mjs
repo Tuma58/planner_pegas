@@ -2724,6 +2724,12 @@ test('машино-ёмкость клиентов: рейсы + стык пос
   assert.equal(data.brokenRings.length, 1, 'разрыв А ⇢ B виден в перегонах');
   // Канон денег: 122000 с НДС 22% = 100000 net × 3 рейса
   assert.equal(client.revNet, 300000);
+  assert.equal(client.avgCheck, 100000, 'средний чек net');
+  assert.equal(client.rubKm, 200, '₽/км: 300000 net / 1500 км');
+  assert.equal(client.revPerDay, Math.round(300000 / 14), 'выручка в сутки периода');
+  assert.equal(client.busyDays, 4, 'занятость: 72 ч рейсов + 24 ч стыков');
+  assert.deepEqual(client.closers, [{ name: 'Клиент-К', pct: 50 }],
+    'круг замыкает клиент, чей груз взят в зоне выгрузки');
 });
 
 test('запас подачи: метрика меряет окно, а не скорость назначения', async t => {

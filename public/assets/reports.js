@@ -644,13 +644,19 @@ export async function buildReport(kind, from, to, data) {
     const restVehicles = Math.round(rest.reduce((s, c) => s + c.vehicles, 0) * 10) / 10;
     const restRev = rest.reduce((s, c) => s + c.revNet, 0);
     const mln = v => (v / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+    const closersCell = c => !c.closers?.length ? '—'
+      : c.closers.map(x => `${escapeHtml(x.name.slice(0, 22))} <small class="muted">${x.pct}%</small>`).join('<br>');
     const row = c => `<tr><td>${escapeHtml(c.name.slice(0, 40))}</td>
       <td class="num">${c.trips}</td><td class="num">${mln(c.revNet)}</td>
+      <td class="num">${(c.revPerDay / 1000).toFixed(0)}</td>
+      <td class="num">${(c.avgCheck / 1000).toFixed(0)}</td>
+      <td class="num">${c.rubKm == null ? '—' : `<span class="${cf.varCostKm && c.rubKm < cf.varCostKm ? 'bad' : ''}">${c.rubKm}</span>`}</td>
       <td class="num"><b>${c.vehicles.toLocaleString('ru-RU')}</b></td>
       <td class="num">${c.vehiclesGap ? `<span class="${c.vehiclesGap >= 1.5 ? 'bad' : ''}">${c.vehiclesGap.toLocaleString('ru-RU')}</span>` : '—'}</td>
       <td class="num"><b>${(c.revPerVd / 1000).toFixed(0)}</b></td>
       <td class="num">${c.gapMedianH == null ? '—' : `<span class="${c.gapMedianH >= 18 ? 'bad' : ''}">${c.gapMedianH}</span>`}</td>
-      <td class="num">${c.ringPct == null ? '—' : `<span class="${c.ringPct < 50 ? 'bad' : ''}">${c.ringPct}%</span>`}</td></tr>`;
+      <td class="num">${c.ringPct == null ? '—' : `<span class="${c.ringPct < 50 ? 'bad' : ''}">${c.ringPct}%</span>`}</td>
+      <td>${closersCell(c)}</td></tr>`;
     body = `<div class="rsums">
         <span class="rsum">Парк: <b>${cf.fleet}</b></span>
         <span class="rsum">Занято клиентами: <b>${cf.totalVehicles.toLocaleString('ru-RU')} маш.</b></span>
@@ -660,16 +666,22 @@ export async function buildReport(kind, from, to, data) {
         выгрузки (хвост до следующей погрузки — его оставляет география клиента:
         есть обратный груз — хвоста нет). <b>«Круг»</b> — доля случаев, когда следующий
         груз взят прямо в зоне выгрузки клиента; низкий круг и долгий стык —
-        кандидат на кольцевой маршрут или обратную загрузку. Деньги — канон без НДС.</p>
+        кандидат на кольцевой маршрут или обратную загрузку. <b>«Замыкает»</b> —
+        клиенты, чьи грузы фактически подхватываются в зоне выгрузки (доля от всех
+        цепочек). ₽/км красным — ниже переменной себестоимости. Деньги — канон без НДС.</p>
       <table class="rtable"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
-        <th class="num">Выручка, млн</th><th class="num">Машин</th><th class="num">из них стык</th>
-        <th class="num">т₽/маш-день</th><th class="num">Стык, ч</th><th class="num">Круг</th></tr></thead>
-      <tbody>${main.map(row).join('') || '<tr><td colspan=8>Рейсов за период нет</td></tr>'}
+        <th class="num">Выручка, млн</th><th class="num">т₽/сутки</th><th class="num">Чек, т₽</th>
+        <th class="num">₽/км</th><th class="num">Машин</th><th class="num">из них стык</th>
+        <th class="num">т₽/маш-день</th><th class="num">Стык, ч</th><th class="num">Круг</th>
+        <th>Замыкает круг</th></tr></thead>
+      <tbody>${main.map(row).join('') || '<tr><td colspan=12>Рейсов за период нет</td></tr>'}
       ${rest.length ? `<tr><td class="muted">Остальные (${rest.length} клиентов)</td>
         <td class="num muted">${rest.reduce((s, c) => s + c.trips, 0)}</td>
         <td class="num muted">${mln(restRev)}</td>
+        <td class="num muted">${(restRev / cf.days / 1000).toFixed(0)}</td>
+        <td colspan=2></td>
         <td class="num muted">${restVehicles.toLocaleString('ru-RU')}</td>
-        <td colspan=4></td></tr>` : ''}</tbody></table>
+        <td colspan=5></td></tr>` : ''}</tbody></table>
       <h4>Где рвутся круги (следующий груз не в зоне выгрузки)</h4>
       <table class="rtable"><thead><tr><th>Перегон</th><th class="num">Раз за период</th></tr></thead>
       <tbody>${cf.brokenRings.map(b => `<tr><td>${escapeHtml(b.route)}</td>

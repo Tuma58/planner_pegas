@@ -20,7 +20,8 @@ export function clientFleetData(db, from, to) {
   const zones = new Map(db.prepare(`SELECT id, name FROM zones`).all()
     .map(zone => [zone.id, zone.name]));
   const rows = db.prepare(`SELECT vehicle_id, status, cash, customer_name, revenue_vat,
-      starts_at, unloaded_at, ends_at, from_zone_id, to_zone_id FROM trips
+      starts_at, unloaded_at, ends_at, from_zone_id, to_zone_id,
+      COALESCE(actual_distance_km, distance_km) km FROM trips
     WHERE status<>'rejected' ORDER BY vehicle_id, starts_at`).all();
   const days = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 864e5));
 
@@ -37,16 +38,22 @@ export function clientFleetData(db, from, to) {
     if (!(durH > 1 && durH < 21 * 24)) continue;
     const next = rows[i + 1]?.vehicle_id === trip.vehicle_id ? rows[i + 1] : null;
     const item = byClient.get(trip.customer_name)
-      || { name: trip.customer_name, trips: 0, rev: 0, tripH: 0, gaps: [], ring: 0, broken: 0 };
+      || { name: trip.customer_name, trips: 0, rev: 0, tripH: 0, km: 0, gaps: [],
+        ring: 0, broken: 0, closers: new Map() };
     item.trips += 1;
     item.rev += tripNet(trip, calc);
     item.tripH += durH;
+    item.km += Number(trip.km || 0);
     if (next) {
       const gapH = (Date.parse(next.starts_at) - Date.parse(endIso)) / HOUR;
       if (gapH >= 0 && gapH <= 7 * 24) {
         item.gaps.push(gapH);
-        if (next.from_zone_id === trip.to_zone_id) item.ring += 1;
-        else {
+        if (next.from_zone_id === trip.to_zone_id) {
+          item.ring += 1;
+          // Кто замыкает круг: чей груз машина берёт в зоне выгрузки.
+          item.closers.set(next.customer_name,
+            (item.closers.get(next.customer_name) || 0) + 1);
+        } else {
           item.broken += 1;
           const key = `${zones.get(trip.to_zone_id) || '?'} ⇢ ${zones.get(next.from_zone_id) || '?'}`;
           misses.set(key, (misses.get(key) || 0) + 1);
@@ -60,14 +67,25 @@ export function clientFleetData(db, from, to) {
     const gapH = item.gaps.reduce((sum, gap) => sum + gap, 0);
     const totalH = item.tripH + gapH;
     const chains = item.ring + item.broken;
+    // Замыкающие круг: топ-3 клиентов, чьи грузы подхватываются в зоне
+    // выгрузки (доля от всех цепочек — и замкнутых, и разорванных).
+    const closers = [...item.closers].sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([name, count]) => ({ name,
+        pct: Math.round(count / chains * 100) }));
     return {
       name: item.name, trips: item.trips,
       revNet: Math.round(item.rev),
+      revPerDay: Math.round(item.rev / days),
+      avgCheck: Math.round(item.rev / item.trips),
+      rubKm: item.km >= 100 ? Math.round(item.rev / item.km) : null,
+      km: Math.round(item.km),
+      busyDays: Math.round(totalH / 24),
       vehicles: Math.round(totalH / 24 / days * 10) / 10,
       vehiclesGap: Math.round(gapH / 24 / days * 10) / 10,
       revPerVd: totalH ? Math.round(item.rev / (totalH / 24)) : 0,
       gapMedianH: item.gaps.length ? Math.round(median(item.gaps)) : null,
-      ringPct: chains ? Math.round(item.ring / chains * 100) : null
+      ringPct: chains ? Math.round(item.ring / chains * 100) : null,
+      closers
     };
   }).sort((a, b) => b.vehicles - a.vehicles);
 

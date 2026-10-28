@@ -12506,8 +12506,10 @@ async function api(request, response, url) {
     const from = String(url.searchParams.get('from') || '').slice(0, 10);
     const to = String(url.searchParams.get('to') || '').slice(0, 10);
     if (!from || !to) return errorJson(response, 422, 'Задайте период');
-    // Граница «по» включительно, как во всех отчётных пикерах.
-    return json(response, 200, clientFleetData(db, from, addDayIso(to)));
+    // Граница «по» включительно, как во всех отчётных пикерах. Порог
+    // подсветки ₽/км — живая переменная себестоимость, не константа.
+    return json(response, 200,
+      { ...clientFleetData(db, from, addDayIso(to)), varCostKm: variableCostPerKm() });
   }
   if (request.method === 'GET' && pathname === '/api/reports') {
     const user = requirePermission(request, response, 'reports:read');
