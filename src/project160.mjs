@@ -24,8 +24,13 @@ const median = list => {
 export const HANDOFFS = [
   { key: 'sales_confirm', label: 'Заявка внесена → подтверждена продажами',
     owner: 'Продажи', normHours: 4 },
-  { key: 'logist_assign', label: 'Подтверждена → назначено ТС',
-    owner: 'Логист', normHours: 4 },
+  // Запас подачи вместо скорости назначения (решение руководителя 28.10):
+  // стык «подтверждена → назначено» краснел тем сильнее, чем раньше продажи
+  // вносили заявки, то есть наказывал за хорошее. Меряем то, что действительно
+  // риск: назначено ли ТС заранее до окна погрузки. dir:'min' — нарушение,
+  // когда запас МЕНЬШЕ норматива. Норматив живой — assignSlackNorm().
+  { key: 'assign_slack', label: 'Запас: назначено ТС → окно подачи',
+    owner: 'Логист', normHours: null, dir: 'min' },
   { key: 'logist_confirm', label: 'Назначено ТС → подтверждено логистом',
     owner: 'Логист', normHours: 1 },
   { key: 'dispatch_1c', label: 'Подтверждено → внесено в 1С',
@@ -43,10 +48,25 @@ export const HANDOFFS = [
     owner: 'Конвейер', normHours: 14 }
 ];
 
+// Живой норматив запаса подачи: запас должен покрывать фактический остаток
+// конвейера после назначения (назначение → задание водителю), иначе цепочка
+// 1С/задание не успевает к окну. Медиана факта за 60 дней, кламп 4–24 ч,
+// фолбэк 8 ч — пока образцов мало.
+export function assignSlackNorm(db) {
+  const list = db.prepare(`SELECT created_at, driver_notified_at FROM trips
+    WHERE driver_notified_at IS NOT NULL AND status<>'rejected'
+      AND created_at >= datetime('now','-60 day')`).all()
+    .map(row => ts(row.driver_notified_at) - ts(row.created_at))
+    .filter(ms => ms >= 0 && ms <= 14 * 24 * HOUR);
+  if (list.length < 30) return 8;
+  return Math.round(Math.min(24, Math.max(4, median(list) / HOUR)) * 10) / 10;
+}
+
 // Время передачи по каждому стыку за период. Берём рейсы, вышедшие на
 // линию в периоде: у них цепочка пройдена целиком и её можно померить.
 export function handoffMetrics(db, fromIso, toIso) {
-  const trips = db.prepare(`SELECT t.*, o.created_at order_created, o.confirmed_at order_confirmed
+  const trips = db.prepare(`SELECT t.*, o.created_at order_created, o.confirmed_at order_confirmed,
+      o.window_from order_window_from
     FROM trips t LEFT JOIN orders o ON o.id=t.order_id
     WHERE t.on_line_at IS NOT NULL AND t.on_line_at>=? AND t.on_line_at<?
       AND t.status<>'rejected'`).all(fromIso, toIso);
@@ -68,7 +88,16 @@ export function handoffMetrics(db, fromIso, toIso) {
       buckets.get(key).push(ms);
     };
     push('sales_confirm', created, confirmed);
-    push('logist_assign', confirmed, assigned);
+    // Запас подачи: окно погрузки минус назначение. Отрицательный (машину
+    // дали после начала окна) — настоящий срыв, он обязан попасть в выборку,
+    // поэтому мимо общего push с его отсечкой ms<0.
+    const windowFrom = ts(trip.order_window_from);
+    if (Number.isFinite(assigned) && Number.isFinite(windowFrom)) {
+      const slack = windowFrom - assigned;
+      if (slack > -14 * 24 * HOUR && slack < 30 * 24 * HOUR) {
+        buckets.get('assign_slack').push(slack);
+      }
+    }
     push('logist_confirm', assigned, logist);
     push('dispatch_1c', logist, entered);
     push('driver_task', entered, notified);
@@ -76,11 +105,16 @@ export function handoffMetrics(db, fromIso, toIso) {
     push('managed_chain', created, notified);
     push('total_chain', created, online);
   }
+  const slackNorm = assignSlackNorm(db);
   return HANDOFFS.map(item => {
     const list = buckets.get(item.key);
     const med = median(list);
-    const overNorm = list.filter(ms => ms > item.normHours * HOUR).length;
-    return { ...item, count: list.length, medianHours: Math.round(med / HOUR * 10) / 10,
+    const norm = item.normHours ?? slackNorm;
+    const overNorm = item.dir === 'min'
+      ? list.filter(ms => ms < norm * HOUR).length
+      : list.filter(ms => ms > norm * HOUR).length;
+    return { ...item, normHours: norm, count: list.length,
+      medianHours: Math.round(med / HOUR * 10) / 10,
       overNorm, overPct: list.length ? Math.round(overNorm / list.length * 100) : 0 };
   });
 }

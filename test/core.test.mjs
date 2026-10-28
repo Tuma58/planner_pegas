@@ -2690,6 +2690,45 @@ test('отметка «данные грузоотправителю»: не б�
     'один из двух рейсов на линии с отметкой — 50%');
 });
 
+test('запас подачи: метрика меряет окно, а не скорость назначения', async t => {
+  const { assignSlackNorm, handoffMetrics } = await import('../src/project160.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-slack-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,zone_id,status)
+    VALUES('v-1','а001аа58',?,?,'work')`).run(type, zone);
+  const iso = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+
+  // Мало образцов остатка конвейера — работает фолбэк норматива.
+  assert.equal(assignSlackNorm(db), 8, 'фолбэк 8 ч, пока факта меньше 30 рейсов');
+
+  // o-ok: машина назначена за 30 ч до окна; o-late — через 2 ч ПОСЛЕ начала окна.
+  const addPair = (suffix, windowFrom) => {
+    db.prepare(`INSERT INTO orders(id,customer_name,from_zone_id,to_zone_id,window_from,
+        window_to,rate_vat,status,confirmed_at) VALUES(?,'Клиент',?,?,?,?,50000,'planned',?)`)
+      .run(`o-${suffix}`, zone, zone, windowFrom, iso(40), iso(-11));
+    db.prepare(`INSERT INTO trips(id,vehicle_id,order_id,from_zone_id,to_zone_id,starts_at,
+        ends_at,distance_km,revenue_vat,status,on_line_at,created_at) VALUES
+      (?, 'v-1', ?, ?, ?, ?, ?, 100, 50000, 'run', ?, ?)`)
+      .run(`t-${suffix}`, `o-${suffix}`, zone, zone, windowFrom, iso(40), iso(-1), iso(-10));
+  };
+  addPair('ok', iso(20));
+  addPair('late', iso(-12));
+
+  const from = new Date(Date.now() - 86_400_000).toISOString();
+  const to = new Date(Date.now() + 86_400_000).toISOString();
+  const slack = handoffMetrics(db, from, to).find(item => item.key === 'assign_slack');
+  assert.equal(slack.count, 2, 'оба рейса в выборке — отрицательный запас не отсечён');
+  assert.equal(slack.normHours, 8, 'норматив живой, сейчас — фолбэк');
+  assert.equal(slack.medianHours, 30, 'медиана запаса считается от окна подачи');
+  assert.equal(slack.overNorm, 1, 'вне нормы ровно рейс, назначенный после начала окна');
+});
+
 test('ночные черновики назначений: таблица и выбор исхода', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-drafts-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

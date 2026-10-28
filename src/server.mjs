@@ -6187,6 +6187,17 @@ function runNormsDigest() {
       (gapWeek.medianH != null
         ? ` · стык: медиана ${gapWeek.medianH} ч${delta(gapWeek.medianH, last?.gapMedianH, ' ч')} (цель ${gapTarget}; ждали заказ ${gapWeek.waitOrderAvg} ч, окно ${gapWeek.waitSlotAvg} ч в среднем)`
         : '') +
+      (() => {
+        // Дрейф живого норматива запаса подачи (замена стыка «→ назначено ТС»
+        // 28.10): назначение раньше окна погрузки минимум на остаток конвейера.
+        const slackRow = handoffMetrics(db,
+          new Date(Date.now() - 7 * 86_400_000).toISOString(), new Date().toISOString())
+          .find(item => item.key === 'assign_slack');
+        return slackRow?.count
+          ? ` · запас подачи: медиана ${slackRow.medianHours} ч при нормативе ≥${slackRow.normHours} ч` +
+            ` (выучен из остатка конвейера), впритык/позже ${slackRow.overPct}% рейсов недели`
+          : '';
+      })() +
       moveLine('⬆ выросли', ups) + moveLine('⬇ просели', downs) +
       (() => {
         // Покрытие умного транзита: сколько план-дат уже считается из факта.

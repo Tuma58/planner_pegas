@@ -46,13 +46,16 @@ function render(context, payload) {
   const pct = goalNet ? Math.round(factAllNet / goalNet * 100) : 0;
 
   const handoffRows = handoffs.filter(item => !['total_chain', 'managed_chain'].includes(item.key)).map(item => {
-    const over = item.medianHours > item.normHours;
+    // dir:'min' — метрика-запас (чем больше, тем лучше): нарушение, когда
+    // значение МЕНЬШЕ норматива; дельту красим в обратную сторону.
+    const isMin = item.dir === 'min';
+    const over = isMin ? item.medianHours < item.normHours : item.medianHours > item.normHours;
     return `<tr class="${over ? 'p160-over' : ''}">
       <td>${escapeHtml(item.label)}</td>
       <td>${escapeHtml(item.owner)}</td>
       <td class="num"><b>${hoursLabel(item.medianHours)}</b>
-        ${deltaHtml(item.medianHours, prevHandoff(item.key))}</td>
-      <td class="num">${item.normHours} ч</td>
+        ${deltaHtml(item.medianHours, prevHandoff(item.key), { lessIsBetter: !isMin })}</td>
+      <td class="num">${isMin ? '≥ ' : ''}${item.normHours} ч</td>
       <td class="num ${item.overPct > 40 ? 'danger' : ''}">${item.overPct}%</td>
       <td class="num muted">${item.count}</td>
     </tr>`;
@@ -118,10 +121,11 @@ function render(context, payload) {
 
     <h3>Где стоит время между участниками</h3>
     <p class="muted" style="margin:0 0 6px">Медиана по рейсам месяца. Ожидание планового окна
-      погрузки сюда не входит — только то, что зависит от нас.</p>
+      погрузки сюда не входит — только то, что зависит от нас. «Запас до подачи» —
+      наоборот: чем больше, тем лучше, норматив «не меньше» выучен из факта конвейера.</p>
     <table class="grid p160-table"><thead><tr>
       <th>Передача</th><th>Кто держит</th><th class="num">Медиана</th>
-      <th class="num">Норматив</th><th class="num">Сверх нормы</th><th class="num">Рейсов</th>
+      <th class="num">Норматив</th><th class="num">Вне нормы</th><th class="num">Рейсов</th>
     </tr></thead><tbody>${handoffRows}</tbody></table>
 
     <h3>Сколько действий стоит работа</h3>
