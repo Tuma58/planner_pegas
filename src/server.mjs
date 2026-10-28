@@ -29,7 +29,7 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, activeDriverFor, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, syncVehicleDriverNames, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization,
+  gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
@@ -3624,6 +3624,13 @@ const straightKm = (a, b, c, d) => {
   return 2 * 6371 * Math.asin(Math.sqrt(h));
 };
 const legKey = (a, b) => [a, b].sort().join('|');
+// Зона адреса справочника — источник истины для геозоны заявки (28.10,
+// кейс №5781: Новосибирск ездил с зоной «Самара» — мимо зонных ставок,
+// колец и «Машино-ёмкости»). Руками зона остаётся только у пунктов,
+// которых нет в справочнике.
+const addressZoneId = id => id
+  ? db.prepare('SELECT zone_id FROM addresses WHERE id=?').get(id)?.zone_id || null
+  : null;
 const calibratedRoadFactor = () => {
   const raw = Number(db.prepare(`SELECT value FROM app_meta WHERE key='road_factor_fact'`).get()?.value);
   return Number.isFinite(raw) && raw >= 1.05 && raw <= 1.45 ? raw : ROAD_FACTOR;
@@ -3806,6 +3813,7 @@ function rebuildLegFacts() {
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(factor));
       console.log(`rebuildLegFacts: плеч ${byKey.size}, чистых рейсов ${clean.length}, коэффициент ${factor}`);
     } else console.log(`rebuildLegFacts: плеч ${byKey.size}, мало данных для калибровки (${ratios.length})`);
+    alignZonesOnce();
     rebuildTransitFacts();
     rebuildSpeedNorms();
     recalcSeptemberKm();
@@ -3998,10 +4006,16 @@ function rebuildTransitFacts() {
     // дорога 28,3 ч при честных 15,8, а ворота погрузки прибавлялись
     // сверху ещё раз). Фолбэк — «на линию», если убытия не отметили.
     const roads = new Map();
-    for (const trip of db.prepare(`SELECT t.on_line_at, t.arrived_at,
+    // Зонные плечи — те же чистые рейсы, сгруппированные по паре геозон
+    // АДРЕСОВ: спасение редких направлений, где каждая адресная пара с
+    // одним образцом (№5781, Новосибирск). Копим и км — для коридора.
+    const zoneRoads = new Map();
+    for (const trip of db.prepare(`SELECT t.on_line_at, t.arrived_at, t.distance_km km,
         (SELECT MIN(s.actual_departure) FROM trip_stops s
           WHERE s.trip_id=t.id AND s.kind='P' AND s.actual_departure IS NOT NULL) load_dep,
-        o.from_address_id fa, o.to_address_id ta
+        o.from_address_id fa, o.to_address_id ta,
+        (SELECT zone_id FROM addresses WHERE id=o.from_address_id) fz,
+        (SELECT zone_id FROM addresses WHERE id=o.to_address_id) tz
       FROM trips t JOIN orders o ON o.id=t.order_id
       WHERE t.status IN ('unloaded','done','paid')
         AND t.arrived_at IS NOT NULL
@@ -4014,6 +4028,12 @@ function rebuildTransitFacts() {
       const key = legKey(trip.fa, trip.ta);
       if (!roads.has(key)) roads.set(key, []);
       roads.get(key).push(hours);
+      if (trip.fz && trip.tz && trip.fz !== trip.tz) {
+        const zkey = `zone:${legKey(trip.fz, trip.tz)}`;
+        if (!zoneRoads.has(zkey)) zoneRoads.set(zkey, { hours: [], kms: [] });
+        zoneRoads.get(zkey).hours.push(hours);
+        if (Number(trip.km) > 0) zoneRoads.get(zkey).kms.push(Number(trip.km));
+      }
     }
     const upsertRoad = db.prepare(`INSERT INTO leg_fact_km(key,samples,median_km,median_hours,hour_samples)
       VALUES(?,0,0,?,?)
@@ -4044,6 +4064,17 @@ function rebuildTransitFacts() {
       upsertRoad.run(key, medianH, list.length);
     }
     if (rejectedRoads) console.log(`rebuildTransitFacts: отвергнуто дорог вне физики: ${rejectedRoads}`);
+    // Зонные медианы — тем же коридором физики, по медианной дистанции
+    // рейсов пары (читатель дополнительно сверит с км своей заявки).
+    for (const [zkey, item] of zoneRoads) {
+      const medianH = Math.round(median(item.hours) * 10) / 10;
+      const medianKm = item.kms.length ? median(item.kms) : null;
+      if (medianKm && medianKm >= 30) {
+        const [lo, hi] = physHoursRange(medianKm);
+        if (medianH < lo || medianH > hi) { upsertRoad.run(zkey, 0, 0); continue; }
+      }
+      upsertRoad.run(zkey, medianH, item.hours.length);
+    }
     // Ворота: погрузка (первая P-стоянка: прибыл → убыл/закончил/на линии)
     // и выгрузка (прибыл на выгрузку → выгружен).
     const gates = new Map();
@@ -4114,7 +4145,7 @@ function rebuildTransitFacts() {
       WHERE (median_hours < ? OR median_hours > ?) AND key <> 'via:park'`)
       .run(GATE_HOURS_MIN, GATE_HOURS_MAX).changes;
     const addrGates = [...gates.keys()].filter(key => key.startsWith('addr')).length;
-    console.log(`rebuildTransitFacts: плеч с дорогой ${roads.size}, ворот адресных ${addrGates}, клиентских ${gates.size - addrGates}`
+    console.log(`rebuildTransitFacts: плеч с дорогой ${roads.size}, зонных пар ${zoneRoads.size}, ворот адресных ${addrGates}, клиентских ${gates.size - addrGates}`
       + (staleGates ? `, удалено ворот вне клампа ${staleGates}` : ''));
   } catch (error) { console.error('rebuildTransitFacts:', error.message); }
 }
@@ -4184,13 +4215,21 @@ function smartTransitHoursFor(order, distanceKm, viaOps = 0) {
   // фолбэк — операция из калькуляции с прежним коэффициентом.
   const perOp = calc.liveSpeeds?.gateH
     ?? Number(calc.handlingHoursPerOperation || 2) * Number(calc.transitFactor || 1.5);
-  if (!roadOk) {
+  // Средний этаж каскада (28.10): адресная пара не выучена — зонное
+  // плечо (медиана чистых рейсов пары геозон адресов), тем же коридором
+  // физики по км заявки. Нет и его — скоростная формула.
+  let roadH = roadOk ? legRow.h : null;
+  if (roadH == null && Number(distanceKm) >= 30) {
+    const zoneH = zoneLegHours(db, order.from_address_id, order.to_address_id);
+    if (zoneH != null && zoneH >= physLo && zoneH <= physHi) roadH = zoneH;
+  }
+  if (roadH == null) {
     // Дорога и П/В — формулой, довозы — своей живой медианой.
     return transitHours(distanceKm, calc, 2) + viaHoursFor(order, viaOps, perOp);
   }
   const loadH = gateFactHours('load', order.from_address_id, order.customer_name) ?? perOp;
   const unloadH = gateFactHours('unload', order.to_address_id, order.customer_name) ?? perOp;
-  return loadH + legRow.h + unloadH + viaHoursFor(order, viaOps, perOp);
+  return loadH + roadH + unloadH + viaHoursFor(order, viaOps, perOp);
 }
 // Лечение раздутых СРОКОВ (кейс т726 11.09: Самара→Пенза 450 км план
 // 39 ч, выгрузка на 19 ч позже окна клиента): активные рейсы, чей план-
@@ -4521,6 +4560,53 @@ function sanitizeInflatedKm() {
     }
     if (updated) console.log(`sanitizeInflatedKm: вылечено рейсов ${updated}`);
   } catch (error) { console.error('sanitizeInflatedKm:', error.message); }
+}
+
+// Разовая гигиена геозон (28.10, кейс №5781 «Новосибирск с зоной Самара»):
+// 1) адрес, чья зона дальше 300 км от его координат, перепривязывается
+//    подсказкой zoneHintForAddress (субъект РФ → ближайший центр зоны),
+//    и только если подсказанная зона сама в пределах 300 км от точки;
+// 2) заявки и их рейсы выравниваются по зоне адреса справочника.
+// Помечается в app_meta, повторный запуск пуст.
+function alignZonesOnce() {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='zones_aligned_2026_10'`).get()) return;
+    let fixedAddresses = 0;
+    for (const address of db.prepare(`SELECT a.id, a.name, a.region, a.latitude, a.longitude,
+        z.latitude zla, z.longitude zlo FROM addresses a JOIN zones z ON z.id=a.zone_id
+      WHERE a.latitude IS NOT NULL AND z.latitude IS NOT NULL`).all()) {
+      if (straightKm(address.latitude, address.longitude, address.zla, address.zlo) <= 300) continue;
+      const hint = zoneHintForAddress(`${address.name} ${address.region || ''}`,
+        address.latitude, address.longitude);
+      if (!hint) continue;
+      const hintZone = db.prepare('SELECT latitude, longitude FROM zones WHERE id=?').get(hint.id);
+      if (!hintZone?.latitude
+          || straightKm(address.latitude, address.longitude, hintZone.latitude, hintZone.longitude) > 300) continue;
+      db.prepare('UPDATE addresses SET zone_id=? WHERE id=?').run(hint.id, address.id);
+      fixedAddresses += 1;
+    }
+    let fixedOrders = 0;
+    for (const order of db.prepare(`SELECT o.id, o.trip_id, o.from_zone_id, o.to_zone_id,
+        fa.zone_id fz, ta.zone_id tz FROM orders o
+      LEFT JOIN addresses fa ON fa.id=o.from_address_id
+      LEFT JOIN addresses ta ON ta.id=o.to_address_id
+      WHERE o.deleted_at IS NULL
+        AND ((fa.zone_id IS NOT NULL AND fa.zone_id<>o.from_zone_id)
+          OR (ta.zone_id IS NOT NULL AND ta.zone_id<>o.to_zone_id))`).all()) {
+      const fromZone = order.fz || order.from_zone_id;
+      const toZone = order.tz || order.to_zone_id;
+      db.prepare('UPDATE orders SET from_zone_id=?, to_zone_id=? WHERE id=?')
+        .run(fromZone, toZone, order.id);
+      if (order.trip_id) {
+        db.prepare('UPDATE trips SET from_zone_id=?, to_zone_id=? WHERE id=?')
+          .run(fromZone, toZone, order.trip_id);
+      }
+      fixedOrders += 1;
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('zones_aligned_2026_10',?)`)
+      .run(JSON.stringify({ at: new Date().toISOString(), fixedAddresses, fixedOrders }));
+    console.log(`alignZonesOnce: адресов перепривязано ${fixedAddresses}, заявок выровнено ${fixedOrders}`);
+  } catch (error) { console.error('alignZonesOnce:', error.message); }
 }
 
 // Разовая миграция: пересчёт плановых км сентябрьских рейсов и заявок
@@ -6203,12 +6289,14 @@ function runNormsDigest() {
       (() => {
         // Покрытие умного транзита: сколько план-дат уже считается из факта.
         const roadLegs = db.prepare(`SELECT COUNT(*) n FROM leg_fact_km
-          WHERE hour_samples >= 2 AND median_hours > 0`).get().n;
+          WHERE hour_samples >= 2 AND median_hours > 0 AND key NOT LIKE 'zone:%'`).get().n;
+        const zonePairs = db.prepare(`SELECT COUNT(*) n FROM leg_fact_km
+          WHERE key LIKE 'zone:%' AND hour_samples >= 3 AND median_hours > 0`).get().n;
         const gateAddr = db.prepare(`SELECT COUNT(*) n FROM gate_facts
           WHERE key LIKE 'addr-%' AND samples >= 2`).get().n;
         const gateCust = db.prepare(`SELECT COUNT(*) n FROM gate_facts
           WHERE key LIKE 'cust-%' AND samples >= 3`).get().n;
-        return roadLegs ? ` · умный транзит: дорога ${roadLegs} плеч, ворота ${gateAddr} адресов / ${gateCust} клиентов` : '';
+        return roadLegs ? ` · умный транзит: дорога ${roadLegs} плеч + ${zonePairs} зонных пар, ворота ${gateAddr} адресов / ${gateCust} клиентов` : '';
       })() +
       (() => {
         // Точность GPS-подсказок «похоже, прибыл»: подтверждена ли подсказка
@@ -8499,8 +8587,11 @@ async function api(request, response, url) {
       return byCity || resolveZone(db, String(text || '').split(',')[0])?.id
         || zoneHintForAddress(text)?.id || null;
     };
-    if (!body.fromZoneId) body.fromZoneId = zoneOfPlace(body.fromAddressId, body.fromPoint);
-    if (!body.toZoneId) body.toZoneId = zoneOfPlace(body.toAddressId, body.toPoint);
+    // Зона адреса справочника главнее присланной формой (кейс №5781).
+    body.fromZoneId = addressZoneId(body.fromAddressId)
+      || body.fromZoneId || zoneOfPlace(body.fromAddressId, body.fromPoint);
+    body.toZoneId = addressZoneId(body.toAddressId)
+      || body.toZoneId || zoneOfPlace(body.toAddressId, body.toPoint);
     for (const key of ['customerName', 'fromZoneId', 'toZoneId', 'windowFrom', 'windowTo']) {
       if (!body[key]) {
         return errorJson(response, 422, key.includes('ZoneId')
@@ -8631,6 +8722,12 @@ async function api(request, response, url) {
     const nextToAddress = 'toAddressId' in body ? (body.toAddressId || null) : current.to_address_id;
     const nextVia = parseVia(body.via) ?? JSON.parse(current.via_json || '[]');
     const nextPlannedKm = plannedKmFor(nextFromAddress, nextToAddress, nextVia) ?? current.planned_km;
+    // Зона адреса справочника главнее выбранной в форме (кейс №5781:
+    // заявка на Новосибирск сохранялась с геозоной «Самара»).
+    const nextFromZone = addressZoneId(nextFromAddress)
+      || body.fromZoneId || current.from_zone_id;
+    const nextToZone = addressZoneId(nextToAddress)
+      || body.toZoneId || current.to_zone_id;
     db.prepare(`UPDATE orders SET customer_name=?,from_zone_id=?,to_zone_id=?,from_point=?,to_point=?,
       rate_vat=?,window_from=?,window_to=?,status=?,temperature_mode=?,body_type=?,stage=?,comment=?,
       order_no=?,cash=?,from_address_id=?,to_address_id=?,planned_km=?,via_json=?,
@@ -8638,7 +8735,7 @@ async function api(request, response, url) {
       stage_changed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       String(body.customerName ?? current.customer_name).trim(),
-      body.fromZoneId ?? current.from_zone_id, body.toZoneId ?? current.to_zone_id,
+      nextFromZone, nextToZone,
       String(body.fromPoint ?? current.from_point ?? '').trim(),
       String(body.toPoint ?? current.to_point ?? '').trim(),
       Number(body.rateVat ?? current.rate_vat), new Date(starts).toISOString(),
@@ -8707,8 +8804,6 @@ async function api(request, response, url) {
       if (trip) {
         const nextFromPoint = String(body.fromPoint ?? current.from_point ?? '').trim();
         const nextToPoint = String(body.toPoint ?? current.to_point ?? '').trim();
-        const nextFromZone = body.fromZoneId ?? current.from_zone_id;
-        const nextToZone = body.toZoneId ?? current.to_zone_id;
         const calc = settingsObject(db).calculation;
         const newStart = trip.status === 'plan' ? new Date(starts).toISOString() : trip.starts_at;
         const transitMs = smartTransitHoursFor({
@@ -11738,7 +11833,10 @@ async function api(request, response, url) {
     const norms = customerSegmentsCache.norms || {};
     const meta = key => db.prepare(`SELECT value FROM app_meta WHERE key=?`).get(key)?.value;
     const legs = safe(() => db.prepare(`SELECT COUNT(*) t, SUM(samples >= 2) kmOk,
-        SUM(median_hours IS NOT NULL AND hour_samples >= 2) hOk FROM leg_fact_km`).get()) || {};
+        SUM(median_hours IS NOT NULL AND hour_samples >= 2) hOk FROM leg_fact_km
+      WHERE key NOT LIKE 'zone:%'`).get()) || {};
+    const zoneLegs = safe(() => db.prepare(`SELECT COUNT(*) n FROM leg_fact_km
+      WHERE key LIKE 'zone:%' AND hour_samples >= 3 AND median_hours > 0`).get()?.n) || 0;
     const gate = safe(() => db.prepare(`SELECT SUM(samples >= 2) ok FROM gate_facts`).get()) || {};
     const odo = safe(() => db.prepare(`SELECT COUNT(*) n, SUM(gps_km IS NOT NULL) g FROM trips
       WHERE status IN ('unloaded','done','paid')
@@ -11771,8 +11869,8 @@ async function api(request, response, url) {
         clamp: 'коридор прямая ×1,05…×1,65 (вне — коэффициент дорог)',
         drift: '🧾 Инвентаризация → «Плановые км расходятся с фактом»' },
       { name: 'Медианы плеч: часы дороги',
-        learns: 'фактические часы дороги плеча — основа умного транзита',
-        value: `${legs.hOk || 0} плеч из ${legs.t || 0} с выученными часами`,
+        learns: 'фактические часы дороги плеча адрес→адрес (s≥2) → пары геозон адресов (s≥3, с 28.10 — спасение редких направлений вроде Новосибирска) — основа умного транзита',
+        value: `${legs.hOk || 0} плеч из ${legs.t || 0} с выученными часами + ${zoneLegs} зонных пар`,
         clamp: 'км/80 … км/22+8 ч (вне — формула калькуляции)',
         drift: 'лог ночной пересборки («отвергнуто дорог вне физики»)' },
       { name: 'Ворота погрузки/выгрузки',

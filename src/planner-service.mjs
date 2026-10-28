@@ -43,6 +43,26 @@ export function transitHours(distanceKm, calculation = {}, operations = 2) {
   return (km / speed + operations * perOperation) * factor;
 }
 
+// Зонное плечо часов дороги — средний этаж каскада умного транзита
+// (28.10, кейс №5781: Новосибирск грузится каждый раз с нового адреса
+// Москвы, адресные пары копят по одному образцу и отвергаются порогом
+// «≥2», транзит падал на скоростную формулу — обещание 126 ч при живом
+// факте плеча 91 ч). Медиану часов чистых рейсов пары ГЕОЗОН адресов
+// пишет rebuildTransitFacts под ключом zone:...; внутризонная пара
+// слишком разнородна (Москва→Москва — и 20, и 600 км) и не считается.
+// Коридор физики к значению прикладывает читатель (smartTransitHoursFor),
+// у которого есть километраж конкретной заявки.
+export function zoneLegHours(db, fromAddressId, toAddressId) {
+  if (!fromAddressId || !toAddressId) return null;
+  const zoneOf = db.prepare('SELECT zone_id FROM addresses WHERE id=?');
+  const from = zoneOf.get(fromAddressId)?.zone_id;
+  const to = zoneOf.get(toAddressId)?.zone_id;
+  if (!from || !to || from === to) return null;
+  const row = db.prepare(`SELECT median_hours h, hour_samples s FROM leg_fact_km
+    WHERE key=?`).get(`zone:${[from, to].sort().join('|')}`);
+  return row && row.s >= 3 && row.h > 0 ? row.h : null;
+}
+
 function routeDistance(db, fromId, toId) {
   if (fromId === toId) return 40;
   return Number(db.prepare(`SELECT distance_km FROM route_rates

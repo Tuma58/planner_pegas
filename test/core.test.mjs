@@ -4906,3 +4906,30 @@ test('телефония: галочки фиксации — звонок на 
   setAtsTracked(db, '301', true);
   assert.equal(callOnTrackedNumber(db, callOn('9279999999')), true);
 });
+
+test('зонное плечо часов: спасает редкие направления, не трогает выученные пары', async t => {
+  const { zoneLegHours } = await import('../src/planner-service.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-zoneleg-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const [zoneA, zoneB] = db.prepare('SELECT id FROM zones LIMIT 2').all().map(row => row.id);
+  db.prepare(`INSERT INTO addresses(id,name,zone_id) VALUES
+    ('addr-msk','Москва, склад',?),('addr-nsk','Новосибирск, Толмачево',?),
+    ('addr-msk2','Москва, второй склад',?),('addr-free','Пункт без зоны',NULL)`)
+    .run(zoneA, zoneB, zoneA);
+  // Медиана пары геозон выучена (3 чистых рейса по 91 ч).
+  db.prepare(`INSERT INTO leg_fact_km(key,samples,median_km,median_hours,hour_samples)
+    VALUES(?,0,0,91,3)`).run(`zone:${[zoneA, zoneB].sort().join('|')}`);
+  assert.equal(zoneLegHours(db, 'addr-msk', 'addr-nsk'), 91,
+    'адресная пара не выучена — берётся зонная медиана');
+  assert.equal(zoneLegHours(db, 'addr-nsk', 'addr-msk'), 91, 'ключ ненаправленный');
+  assert.equal(zoneLegHours(db, 'addr-msk', 'addr-msk2'), null,
+    'внутризонная пара слишком разнородна — не считается');
+  assert.equal(zoneLegHours(db, 'addr-msk', 'addr-free'), null, 'адрес без зоны — нет пары');
+  // Мало образцов — зонная медиана ещё не норматив.
+  db.prepare(`UPDATE leg_fact_km SET hour_samples=2 WHERE key LIKE 'zone:%'`).run();
+  assert.equal(zoneLegHours(db, 'addr-msk', 'addr-nsk'), null, 'порог s>=3 держит шум');
+});

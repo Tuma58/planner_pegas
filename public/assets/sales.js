@@ -1928,6 +1928,16 @@ export function editOrderDialog(order, data, context) {
   [['editFromPoint', 'editFromZone'], ['editToPoint', 'editToZone']].forEach(([pointId, zoneId]) => {
     // Кривой пункт подсвечивается сразу при открытии правки (кейс 892).
     warnUnknownPlace(document.getElementById(pointId), data);
+    // Зона адреса справочника главнее сохранённой (кейс №5781: Новосибирск
+    // ездил с зоной «Самара») — расхождение чинится прямо при открытии,
+    // сервер при сохранении всё равно возьмёт зону адреса.
+    const knownAddress = resolveAddress(data, document.getElementById(pointId).value);
+    const addressZone = knownAddress
+      && data.reference.zones.find(item => item.id === knownAddress.zone_id);
+    if (addressZone && document.getElementById(zoneId).value !== addressZone.id) {
+      document.getElementById(zoneId).value = addressZone.id;
+      toast(`Геозона исправлена по адресу справочника: ${addressZone.name}`);
+    }
     document.getElementById(pointId).addEventListener('change', event => {
       const address = resolveAddress(data, event.currentTarget.value);
       if (address) event.currentTarget.value = address.name;
