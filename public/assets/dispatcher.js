@@ -207,8 +207,9 @@ function incidentDialog(trip, data, context) {
         <span><strong>🚫 Отказ клиента</strong>
         <small class="muted" style="display:block">Рейс снимается, заявка возвращается в продажи</small></span></button>
       <button type="button" class="list-item" id="incReassign">
-        <span><strong>🔁 Переназначить ТС</strong>
-        <small class="muted" style="display:block">Другая сцепка; задание водителю отправляется заново</small></span></button>
+        <span><strong>🔁 Переназначить ТС (перецеп)</strong>
+        <small class="muted" style="display:block">Другая сцепка продолжает рейс с места передачи;
+          рейс делится на звенья, выручка — по километрам плеч</small></span></button>
       <button type="button" class="list-item" id="incReturn">
         <span><strong>📦 Груз не принят получателем</strong>
         <small class="muted" style="display:block">Везём возврат в другую точку — рейс продолжается</small></span></button>

@@ -29,7 +29,7 @@ import {
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, activeDriverFor, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, syncVehicleDriverNames, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
-  gapStats, nextAssignedShare, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours, zoneLegKm,
+  gapStats, nextAssignedShare, relayTripSegments, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours, zoneLegKm,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
@@ -3873,6 +3873,7 @@ function rebuildLegFacts() {
       console.log(`rebuildLegFacts: плеч ${byKey.size}, чистых рейсов ${clean.length}, коэффициент ${factor}`);
     } else console.log(`rebuildLegFacts: плеч ${byKey.size}, мало данных для калибровки (${ratios.length})`);
     alignZonesOnce();
+    backfillRelaySegmentsOnce();
     rebuildTransitFacts();
     rebuildSpeedNorms();
     recalcSeptemberKm();
@@ -4666,6 +4667,67 @@ function alignZonesOnce() {
       .run(JSON.stringify({ at: new Date().toISOString(), fixedAddresses, fixedOrders }));
     console.log(`alignZonesOnce: адресов перепривязано ${fixedAddresses}, заявок выровнено ${fixedOrders}`);
   } catch (error) { console.error('alignZonesOnce:', error.message); }
+}
+
+// Разовое восстановление звеньев перецепа по аудиту (29.10): замены ТС
+// на идущих рейсах шли через карточку рейса, где звенья не создавались
+// (№5370 т903ат58→р106оу58 20.10, №5571 т392уу58→р954тт58 28.10).
+// По audit_log за 45 дней находим смены vehicleId у рейсов, которые на
+// момент смены уже были на линии, и строим цепочку звеньев задним
+// числом: без одометров и координат передачи — километры звеньев добьёт
+// ночной collectSegmentEconomy Пилотом за интервалы (фолбэк — доля
+// длительности). Помечается в app_meta, повторный запуск пуст.
+function backfillRelaySegmentsOnce() {
+  try {
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='segments_backfill_2026_10'`).get()) return;
+    const byTrip = new Map();
+    for (const event of db.prepare(`SELECT entity_id, details_json, created_at FROM audit_log
+        WHERE created_at > datetime('now','-45 days') AND entity='trip'
+          AND action IN ('create','update') ORDER BY created_at`).all()) {
+      let details = {};
+      try { details = JSON.parse(event.details_json); } catch { /* мусор аудита */ }
+      const vehicleId = details.vehicleId || details.vehicle_id;
+      if (!vehicleId) continue;
+      if (!byTrip.has(event.entity_id)) byTrip.set(event.entity_id, []);
+      byTrip.get(event.entity_id).push({ at: event.created_at, vehicleId });
+    }
+    const driverOf = id => db.prepare('SELECT driver_name FROM vehicles WHERE id=?')
+      .get(id)?.driver_name || '';
+    let restored = 0;
+    for (const [tripId, list] of byTrip) {
+      const trip = db.prepare(`SELECT id, status, on_line_at, starts_at, order_no
+        FROM trips WHERE id=?`).get(tripId);
+      if (!trip || trip.status === 'rejected' || !trip.on_line_at) continue;
+      if (db.prepare('SELECT 1 FROM trip_segments WHERE trip_id=? LIMIT 1').get(tripId)) continue;
+      const iso = at => at.replace(' ', 'T') + (at.endsWith('Z') ? '' : 'Z');
+      // Смены машины ПОСЛЕ выхода на линию — только они рвут исполнение.
+      const swaps = [];
+      for (let i = 1; i < list.length; i += 1) {
+        if (list[i].vehicleId !== list[i - 1].vehicleId
+            && Date.parse(trip.on_line_at) < Date.parse(iso(list[i].at))) {
+          swaps.push({ at: iso(list[i].at), from: list[i - 1].vehicleId, to: list[i].vehicleId });
+        }
+      }
+      if (!swaps.length) continue;
+      const firstDep = db.prepare(`SELECT MIN(actual_departure) v FROM trip_stops
+        WHERE trip_id=? AND kind='P' AND actual_departure IS NOT NULL`).get(tripId)?.v;
+      const insert = db.prepare(`INSERT INTO trip_segments(id,trip_id,vehicle_id,driver_name,
+        started_at,ended_at,note) VALUES(?,?,?,?,?,?,?)`);
+      const note = 'звено восстановлено по аудиту замены ТС (29.10)';
+      for (let i = 0; i < swaps.length; i += 1) {
+        insert.run(randomUUID(), tripId, swaps[i].from, driverOf(swaps[i].from),
+          i === 0 ? (firstDep || trip.on_line_at || trip.starts_at) : swaps[i - 1].at,
+          swaps[i].at, note);
+      }
+      insert.run(randomUUID(), tripId, swaps[swaps.length - 1].to,
+        driverOf(swaps[swaps.length - 1].to), swaps[swaps.length - 1].at, null, note);
+      restored += 1;
+      console.log(`  перецеп задним числом №${trip.order_no || tripId.slice(0, 8)}: звеньев ${swaps.length + 1}`);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('segments_backfill_2026_10',?)`)
+      .run(JSON.stringify({ at: new Date().toISOString(), restored }));
+    console.log(`backfillRelaySegmentsOnce: рейсов восстановлено ${restored}`);
+  } catch (error) { console.error('backfillRelaySegmentsOnce:', error.message); }
 }
 
 // Разовая миграция: пересчёт плановых км сентябрьских рейсов и заявок
@@ -8112,6 +8174,23 @@ async function api(request, response, url) {
           `Смените ТС или верните заявку продажам на передоговорённость`);
       }
     }
+    // Перецеп на маршруте (29.10): замена ТС на реально ЕХАВШЕМ рейсе
+    // рвёт его на звенья исполнения и из ЭТОГО пути — карточка рейса,
+    // Гант, внештатная ситуация в контроле на линии. До сих пор звенья
+    // создавал только путь назначения заявки, которым идущие рейсы не
+    // меняют: 92 замены за 45 дней прошли мимо, выручка целиком уходила
+    // последнему тягачу. relayNote — причина внештатного перецепа.
+    if (vehicleReplaced && current.status === 'run' && tripHasMovementFacts(db, current)) {
+      const nextVehicle = db.prepare('SELECT id, driver_name FROM vehicles WHERE id=?')
+        .get(merged.vehicleId);
+      if (nextVehicle && merged.status !== 'rejected') {
+        relayTripSegments(db, current, nextVehicle, {
+          prevOdo: canOdometerKm(current.vehicle_id),
+          nextOdo: canOdometerKm(nextVehicle.id),
+          note: String(body.relayNote || '').trim().slice(0, 200)
+        });
+      }
+    }
     db.prepare(`UPDATE trips SET vehicle_id=?,order_id=?,customer_name=?,from_zone_id=?,to_zone_id=?,
       from_point=?,to_point=?,starts_at=?,ends_at=?,distance_km=?,revenue_vat=?,status=?,rejection_reason=?,
       temperature_mode=?,body_type=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
@@ -9030,28 +9109,11 @@ async function api(request, response, url) {
           // тягач — рвём рейс на звенья исполнения (экономика делится
           // между плечами; доли считает ночной сборщик по честным км).
           if (previous.status === 'run') {
-            const handoverIso = new Date().toISOString();
-            const pos = db.prepare(`SELECT latitude, longitude FROM vehicle_positions
-              WHERE vehicle_id=?`).get(previous.vehicle_id);
-            const openSegment = db.prepare(`SELECT id FROM trip_segments
-              WHERE trip_id=? AND ended_at IS NULL`).get(tripId);
-            if (openSegment) {
-              db.prepare(`UPDATE trip_segments SET ended_at=?, handover_lat=?, handover_lon=?,
-                odo_end=? WHERE id=?`).run(handoverIso, pos?.latitude ?? null,
-                pos?.longitude ?? null, canOdometerKm(previous.vehicle_id), openSegment.id);
-            } else {
-              // Первое звено — ретроспективно, от фактического выезда.
-              db.prepare(`INSERT INTO trip_segments(id,trip_id,vehicle_id,driver_name,
-                started_at,ended_at,handover_lat,handover_lon,odo_end,note)
-                VALUES(?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), tripId, previous.vehicle_id,
-                previous.driver_name || '',
-                previous.first_dep || previous.on_line_at || previous.starts_at, handoverIso,
-                pos?.latitude ?? null, pos?.longitude ?? null,
-                canOdometerKm(previous.vehicle_id), 'звено закрыто заменой ТС на маршруте');
-            }
-            db.prepare(`INSERT INTO trip_segments(id,trip_id,vehicle_id,driver_name,started_at,odo_start)
-              VALUES(?,?,?,?,?,?)`).run(randomUUID(), tripId, vehicle.id,
-              vehicle.driver_name || '', handoverIso, canOdometerKm(vehicle.id));
+            relayTripSegments(db, { id: tripId, vehicle_id: previous.vehicle_id,
+              on_line_at: previous.on_line_at, starts_at: previous.starts_at }, vehicle, {
+              prevOdo: canOdometerKm(previous.vehicle_id),
+              nextOdo: canOdometerKm(vehicle.id)
+            });
           }
           resetDriverNotificationOnVehicleChange(db, tripId);
           if (previous.entered_1c_at || previous.deferred_1c_at) {

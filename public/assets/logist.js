@@ -50,10 +50,17 @@ export function replaceVehicleDialog(trip, data, context) {
       Number(b.bodyOk) - Number(a.bodyOk) ||
       (a.match?.index ?? Infinity) - (b.match?.index ?? Infinity) ||
       a.vehicle.plate.localeCompare(b.vehicle.plate));
+  // Рейс уже в пути — замена станет перецепом: рейс порвётся на звенья,
+  // выручка поделится между тягачами по честным км плеч (29.10).
+  const relay = trip.status === 'run';
   context.showModal(`<h2>Замена ТС на маршруте</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · ${escapeHtml(trip.customer_name || 'без заказчика')}
       · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}
       · сейчас: <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>${trip.body_type ? ` · кузов: ${escapeHtml(trip.body_type)}` : ''}</p>
+    ${relay ? `<p class="muted">🔗 Рейс в пути — это <b>перецеп</b>: рейс разделится на звенья,
+      выручка поделится между тягачами по километрам плеч (видно в карточке рейса).</p>
+    <label class="field">Причина перецепа (поломка, ДТП, болезнь водителя…)
+      <input id="relayNote" maxlength="200" placeholder="необязательно, попадёт в звено рейса"></label>` : ''}
     <input id="replaceVehicleSearch" placeholder="🔍 поиск: номер, водитель, тип" autocomplete="off"
       style="width:100%;margin-bottom:8px">
     <div class="list" style="max-height:320px;overflow:auto;margin-bottom:10px">
@@ -78,10 +85,12 @@ export function replaceVehicleDialog(trip, data, context) {
     button.addEventListener('click', async () => {
       try {
         await api(`/api/trips/${trip.id}`, {
-          method: 'PATCH', body: JSON.stringify({ vehicleId: button.dataset.replaceVehicle })
+          method: 'PATCH', body: JSON.stringify({ vehicleId: button.dataset.replaceVehicle,
+            relayNote: document.getElementById('relayNote')?.value?.trim() || undefined })
         });
         context.closeModal();
-        toast('ТС заменено — рейс переставлен в плане');
+        toast(relay ? 'Перецеп оформлен — звенья и делёж выручки в карточке рейса'
+          : 'ТС заменено — рейс переставлен в плане');
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
     }));

@@ -80,6 +80,45 @@ export function zoneLegKm(db, fromAddressId, toAddressId) {
   return row && row.s >= 3 && row.km > 0 ? row.km : null;
 }
 
+// Перецеп на маршруте: идущий рейс продолжает другой тягач — звено
+// прежнего закрывается моментом передачи (координаты из последней
+// позиции, CAN-одометр от вызывающего), звено нового открывается.
+// ЕДИНАЯ точка всех путей замены ТС на идущем рейсе: назначение заявки,
+// карточка рейса/Гант, внештатная ситуация в контроле на линии (до
+// 29.10 звенья рвал только путь назначения — 92 замены за 45 дней
+// прошли мимо, и выручка целиком уходила последнему тягачу). Доли
+// выручки по звеньям делит ночной collectSegmentEconomy.
+// trip — строка trips ДО замены (прежний vehicle_id), next — строка
+// нового ТС; одометры передаёт вызывающий (у сервера есть canOdometerKm).
+export function relayTripSegments(db, trip, next, { prevOdo = null, nextOdo = null, note = '' } = {}) {
+  const handoverIso = new Date().toISOString();
+  const pos = db.prepare(`SELECT latitude, longitude FROM vehicle_positions
+    WHERE vehicle_id=?`).get(trip.vehicle_id);
+  const open = db.prepare(`SELECT id FROM trip_segments
+    WHERE trip_id=? AND ended_at IS NULL`).get(trip.id);
+  if (open) {
+    db.prepare(`UPDATE trip_segments SET ended_at=?, handover_lat=?, handover_lon=?,
+      odo_end=? WHERE id=?`).run(handoverIso, pos?.latitude ?? null,
+      pos?.longitude ?? null, prevOdo, open.id);
+  } else {
+    // Первое звено — ретроспективно, от фактического выезда.
+    const firstDep = db.prepare(`SELECT MIN(actual_departure) v FROM trip_stops
+      WHERE trip_id=? AND kind='P' AND actual_departure IS NOT NULL`).get(trip.id)?.v;
+    const prevDriver = db.prepare('SELECT driver_name FROM vehicles WHERE id=?')
+      .get(trip.vehicle_id)?.driver_name || '';
+    db.prepare(`INSERT INTO trip_segments(id,trip_id,vehicle_id,driver_name,
+        started_at,ended_at,handover_lat,handover_lon,odo_end,note)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), trip.id, trip.vehicle_id,
+      prevDriver, firstDep || trip.on_line_at || trip.starts_at, handoverIso,
+      pos?.latitude ?? null, pos?.longitude ?? null, prevOdo,
+      'звено закрыто заменой ТС на маршруте');
+  }
+  db.prepare(`INSERT INTO trip_segments(id,trip_id,vehicle_id,driver_name,started_at,odo_start,note)
+    VALUES(?,?,?,?,?,?,?)`).run(randomUUID(), trip.id, next.id,
+    next.driver_name || '', handoverIso, nextOdo, note);
+  return handoverIso;
+}
+
 function routeDistance(db, fromId, toId) {
   if (fromId === toId) return 40;
   return Number(db.prepare(`SELECT distance_km FROM route_rates

@@ -4958,3 +4958,47 @@ test('зонное плечо километров: медиана честны�
   db.prepare(`UPDATE leg_fact_km SET samples=0, median_km=0 WHERE key LIKE 'zone:%'`).run();
   assert.equal(zoneLegKm(db, 'addr-a', 'addr-b'), null, 'погашенная запись не читается');
 });
+
+test('перецеп на маршруте: звенья рвутся из любой точки замены ТС', async t => {
+  const { relayTripSegments } = await import('../src/planner-service.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-relay-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  for (const [id, plate, driver] of [['v-1', 'а001аа58', 'Иванов И'], ['v-2', 'а002аа58', 'Петров П'],
+    ['v-3', 'а003аа58', 'Сидоров С']]) {
+    db.prepare(`INSERT INTO vehicles(id,plate,type_id,zone_id,status,driver_name)
+      VALUES(?,?,?,?,'work',?)`).run(id, plate, type, zone, driver);
+  }
+  const start = new Date(Date.now() - 24 * 3_600_000).toISOString();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,starts_at,
+      ends_at,on_line_at,distance_km,revenue_vat,status)
+    VALUES('t-1','v-1','Клиент',?,?,?,?,?,1000,122000,'run')`)
+    .run(zone, zone, start, new Date().toISOString(), start);
+  db.prepare(`INSERT INTO vehicle_positions(vehicle_id,latitude,longitude) VALUES('v-1',53.2,45.0)`).run();
+  const trip = db.prepare(`SELECT * FROM trips WHERE id='t-1'`).get();
+  // Первый перецеп: первое звено создаётся ретроспективно и закрывается.
+  relayTripSegments(db, trip, { id: 'v-2', driver_name: 'Петров П' },
+    { prevOdo: 100500, note: 'внештатка: поломка' });
+  let segments = db.prepare(`SELECT * FROM trip_segments WHERE trip_id='t-1' ORDER BY started_at`).all();
+  assert.equal(segments.length, 2);
+  assert.equal(segments[0].vehicle_id, 'v-1');
+  assert.equal(segments[0].started_at, start, 'первое звено — от выезда');
+  assert.ok(segments[0].ended_at, 'первое звено закрыто передачей');
+  assert.equal(segments[0].handover_lat, 53.2, 'координаты передачи — позиция прежней машины');
+  assert.equal(segments[0].odo_end, 100500);
+  assert.equal(segments[1].vehicle_id, 'v-2');
+  assert.equal(segments[1].ended_at, null, 'звено нового тягача открыто');
+  assert.equal(segments[1].note, 'внештатка: поломка', 'причина внештатки — в звене');
+  // Второй перецеп: закрывается ОТКРЫТОЕ звено, третье открывается.
+  relayTripSegments(db, { ...trip, vehicle_id: 'v-2' }, { id: 'v-3', driver_name: 'Сидоров С' });
+  segments = db.prepare(`SELECT * FROM trip_segments WHERE trip_id='t-1' ORDER BY started_at`).all();
+  assert.equal(segments.length, 3);
+  assert.ok(segments[1].ended_at, 'второе звено закрыто вторым перецепом');
+  assert.equal(segments[2].vehicle_id, 'v-3');
+  assert.equal(segments[2].ended_at, null);
+});
