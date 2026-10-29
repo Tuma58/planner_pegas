@@ -4679,6 +4679,28 @@ function alignZonesOnce() {
 // длительности). Помечается в app_meta, повторный запуск пуст.
 function backfillRelaySegmentsOnce() {
   try {
+    // Правка первой волны (29.10, тем же днём): машину нередко меняли ещё
+    // на подаче/погрузке, и началом первого звена становилось убытие с
+    // погрузки, случившееся ПОЗЖЕ передачи — started_at > ended_at
+    // (№5370: «от 21.10 00:22 до 20.10 14:33»). Начало такого звена —
+    // выход на линию (факт подачи прежнего тягача), и доли этих рейсов
+    // сбрасываются на пересчёт ночным сборщиком.
+    if (!db.prepare(`SELECT value FROM app_meta WHERE key='segments_backfill_fix_2026_10'`).get()) {
+      let fixedSegments = 0;
+      for (const segment of db.prepare(`SELECT s.id, s.trip_id, s.ended_at, t.on_line_at, t.starts_at
+          FROM trip_segments s JOIN trips t ON t.id=s.trip_id
+          WHERE s.ended_at IS NOT NULL AND s.started_at > s.ended_at`).all()) {
+        const started = [segment.on_line_at, segment.starts_at]
+          .find(v => v && Date.parse(v) < Date.parse(segment.ended_at)) || segment.ended_at;
+        db.prepare('UPDATE trip_segments SET started_at=? WHERE id=?').run(started, segment.id);
+        db.prepare(`UPDATE trip_segments SET revenue_share=NULL, km=NULL WHERE trip_id=?`)
+          .run(segment.trip_id);
+        fixedSegments += 1;
+      }
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('segments_backfill_fix_2026_10',?)`)
+        .run(JSON.stringify({ at: new Date().toISOString(), fixedSegments }));
+      if (fixedSegments) console.log(`backfillRelaySegmentsOnce: поправлено кривых звеньев ${fixedSegments}`);
+    }
     if (db.prepare(`SELECT value FROM app_meta WHERE key='segments_backfill_2026_10'`).get()) return;
     const byTrip = new Map();
     for (const event of db.prepare(`SELECT entity_id, details_json, created_at FROM audit_log
@@ -4715,9 +4737,15 @@ function backfillRelaySegmentsOnce() {
         started_at,ended_at,note) VALUES(?,?,?,?,?,?,?)`);
       const note = 'звено восстановлено по аудиту замены ТС (29.10)';
       for (let i = 0; i < swaps.length; i += 1) {
+        // Начало первого звена — самая ранняя валидная точка ДО передачи:
+        // убытие с погрузки могло случиться уже новой машиной (смена на
+        // подаче) и лежать позже момента передачи.
+        const started = i === 0
+          ? ([firstDep, trip.on_line_at, trip.starts_at]
+            .find(v => v && Date.parse(v) < Date.parse(swaps[i].at)) || swaps[i].at)
+          : swaps[i - 1].at;
         insert.run(randomUUID(), tripId, swaps[i].from, driverOf(swaps[i].from),
-          i === 0 ? (firstDep || trip.on_line_at || trip.starts_at) : swaps[i - 1].at,
-          swaps[i].at, note);
+          started, swaps[i].at, note);
       }
       insert.run(randomUUID(), tripId, swaps[swaps.length - 1].to,
         driverOf(swaps[swaps.length - 1].to), swaps[swaps.length - 1].at, null, note);
