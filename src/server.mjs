@@ -12488,6 +12488,24 @@ async function api(request, response, url) {
     let totalKm = 0;
     let loadedTotal = 0;
     const sources = { 'одометр': 0, 'кэш': 0, 'координаты': 0, 'стоянка/нет': 0 };
+    // Залипший КРАЙ периода (кейс 30.10: т495ве58 — одометр застыл на
+    // 354 835 с 16.09 по 08.10, ожил 27.10 на 374 959; разность «01.10 →
+    // 30.10» вобрала ~8 000 км конца сентября, и порожняк машины раздулся
+    // до 51% при парковых 13%). Снимок на краю, равный снимку недельной
+    // давности при живом движении той недели (>300 км дневного трека), —
+    // не показание, а константа: разности через него веры нет, лестница
+    // идёт дальше (кэш → координаты). Стоянку (ремонт, межвахта) проверка
+    // не трогает: там движения нет и одометр честно неподвижен.
+    const weekRun = db.prepare(`SELECT SUM(km) s FROM vehicle_daily_runs
+      WHERE vehicle_id=? AND day>=? AND day<?`);
+    const stuckEdge = (vehicleId, day) => {
+      const cur = odoAt.get(vehicleId, day)?.odo_km;
+      const weekAgo = new Date(Date.parse(day + 'T00:00:00Z') - 7 * 86_400_000)
+        .toISOString().slice(0, 10);
+      const ago = odoAt.get(vehicleId, weekAgo)?.odo_km;
+      if (!Number.isFinite(cur) || !Number.isFinite(ago) || cur !== ago) return false;
+      return (weekRun.get(vehicleId, weekAgo, day)?.s || 0) > 300;
+    };
     for (const v of fleet) {
       let km = null;
       let source = 'стоянка/нет';
@@ -12502,7 +12520,10 @@ async function api(request, response, url) {
         // ему нет веры, лестница идёт дальше (кэш → координаты).
         const planned = coordKm.get(v.id) || 0;
         const stuck = planned > 1000 && delta < planned * 0.1;
-        if (delta >= 0 && delta <= periodDays * 2000 && !stuck) { km = delta; source = 'одометр'; }
+        if (delta >= 0 && delta <= periodDays * 2000 && !stuck
+            && !stuckEdge(v.id, fromDay) && !stuckEdge(v.id, toDayExcl)) {
+          km = delta; source = 'одометр';
+        }
       }
       if (km === null) {
         const c = cacheKm(v.id);
