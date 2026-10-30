@@ -942,6 +942,15 @@ try {
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('geo_cascade_v2','1')`).run();
   }
 } catch { /* не критично */ }
+// Разово (30.10): каскад получил рубеж «один город» — негеокоженным
+// адресам (114 шт., включая рязанский из кейса р170мт58) сбрасывается
+// карантин на новый круг тем же щадящим темпом 1 адрес / 90 с.
+try {
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='geo_city_cascade'`).get()) {
+    db.prepare(`UPDATE addresses SET geocode_try_at=NULL WHERE latitude IS NULL`).run();
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('geo_city_cascade','1')`).run();
+  }
+} catch { /* не критично */ }
 // Разово (23.10, аудит порожняка Аустрина→Москва): (1) дубли перегонов —
 // одинаковые transfer одной сцепки (старт, конец, адрес) схлопываются до
 // одного; (2) пересчёт порожних подгонов рейсов с 1 сентября: подгон
