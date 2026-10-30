@@ -4507,14 +4507,44 @@ function nightDataAudit() {
       WHERE latitude IS NOT NULL AND zone_id IS NOT NULL`).all()
       .filter(a => addrGeoSuspect(a.id)).length;
     if (geoSuspects) report.push(`адресов вне своей геозоны ${geoSuspects} (геокодер чинит очередью)`);
-    const stuckOdo = db.prepare(`SELECT COUNT(*) n FROM (
-      SELECT o1.vehicle_id FROM vehicle_odometers o1 JOIN vehicle_odometers o2
-        ON o2.vehicle_id=o1.vehicle_id AND o2.day=date('now','-7 days')
-      WHERE o1.day=date('now') AND o1.odo_km - o2.odo_km < 10
-        AND (SELECT COUNT(*) FROM trips t WHERE t.vehicle_id=o1.vehicle_id
-          AND t.status IN ('unloaded','done','paid')
-          AND datetime(COALESCE(t.unloaded_at,t.ends_at)) >= datetime('now','-7 days')) >= 2)`).get().n;
-    if (stuckOdo) report.push(`залипших одометров (рейсы есть, км нет) ${stuckOdo}`);
+    // Одометры с залипшей историей за 35 суток: участок-константа ≥7 дней
+    // при живом движении (дневной трек >300 км или ≥2 закрытых рейса на
+    // участке). Прежний детектор смотрел только «сегодня против недели
+    // назад» и не видел ОЖИВШИЙ датчик (кейс т495ве58 30.10: залип
+    // 16.09–27.10, после оживления выглядел здоровым, а разности истории
+    // продолжали врать в «Пробегах» — отчёт теперь бракует залипшие края
+    // сам, но датчик должен уехать в ремонт). Доклад с бортами и только
+    // пока залипание касается последних 7 суток — починенный датчик
+    // перестаёт напоминать о себе через неделю.
+    const movedOn = db.prepare(`SELECT COALESCE(SUM(km),0) s FROM vehicle_daily_runs
+      WHERE vehicle_id=? AND day>=? AND day<?`);
+    const tripCount = db.prepare(`SELECT COUNT(*) n FROM trips WHERE vehicle_id=?
+      AND status IN ('unloaded','done','paid')
+      AND datetime(COALESCE(unloaded_at,ends_at)) >= datetime(?)
+      AND datetime(COALESCE(unloaded_at,ends_at)) < datetime(?)`);
+    const weekAgoDay = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+    const stuckPlates = [];
+    for (const v of db.prepare(`SELECT id, plate FROM vehicles WHERE status='work'`).all()) {
+      const snaps = db.prepare(`SELECT day, odo_km FROM vehicle_odometers
+        WHERE vehicle_id=? AND day >= date('now','-35 days') ORDER BY day`).all(v.id);
+      let start = null;
+      for (let i = 1; i < snaps.length + 1; i += 1) {
+        const same = i < snaps.length && snaps[i].odo_km === snaps[i - 1].odo_km;
+        if (same) { start = start ?? snaps[i - 1]; continue; }
+        const end = snaps[i - 1];
+        if (start && end.day >= weekAgoDay
+            && Date.parse(end.day) - Date.parse(start.day) >= 6 * 86_400_000
+            && (movedOn.get(v.id, start.day, end.day).s > 300
+              || tripCount.get(v.id, start.day, end.day).n >= 2)) {
+          stuckPlates.push(`${v.plate} (${start.day.slice(5)}–${end.day.slice(5)})`);
+          break;
+        }
+        start = null;
+      }
+    }
+    if (stuckPlates.length) {
+      report.push(`одометры с залипшей историей — датчики в ремонт: ${stuckPlates.join(', ')}`);
+    }
     if (report.length) {
       notify('boss', `🧹 Ночная автопроверка данных: ${report.join(' · ')}`,
         null, null, { category: 'night_audit' });
