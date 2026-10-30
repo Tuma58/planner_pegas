@@ -826,8 +826,12 @@ async function runGeocodeWatch() {
     db.prepare(`UPDATE addresses SET geocode_try_at=CURRENT_TIMESTAMP WHERE id=?`).run(address.id);
     // Каскад упрощений: полный адрес часто не находится из-за «д. 8, стр. 4»
     // и сокращений — пробуем без дома, затем первые два сегмента (щадя
-    // Nominatim паузой между попытками).
-    const raw = String(address.address || '').trim() || String(address.name || '').trim();
+    // Nominatim паузой между попытками). Служебный хвост «‣ Контрагент: …»
+    // (имена из 1С и копипаста) отрезается — классификатору он только мешал
+    // (кейс р170мт58: «Рязань, с/п Баграмовское … ‣ Контрагент: ООО Агроторг»
+    // не находился всеми вариантами).
+    const raw = (String(address.address || '').trim() || String(address.name || '').trim())
+      .split('‣')[0].trim();
     const noHouse = raw.replace(/(?:,\s*)?(?:д\.?|дом|стр\.?|строение|влд\.?|владение|корп\.?|тер\.?)\s*№?\s*[\dА-Яа-я/\-]+\s*/gi, ' ')
       .replace(/\s{2,}/g, ' ').replace(/\s,/g, ',').trim();
     const short = raw.split(',').map(part => part.trim()).filter(Boolean).slice(0, 2).join(', ');
@@ -870,8 +874,28 @@ async function runGeocodeWatch() {
     }
     const { BASE_POINT } = await import('./db.mjs');
     const region = String(address.region || '').trim() || hit.region;
-    const zoneId = address.zone_id
+    let zoneId = address.zone_id
       || zoneHintForAddress(`${address.name} ${region}`, hit.latitude, hit.longitude)?.id || null;
+    // Зона, выбранная руками, пересматривается, когда координаты её опровергли:
+    // точка дальше 300 км от центра своей зоны → перепривязка подсказкой (тот же
+    // порог, что в alignZonesOnce). Кейс р170мт58: рязанский адрес жил в зоне
+    // «Дом», и карточка свободной машины после перегона показывала Самару.
+    if (address.zone_id) {
+      const own = db.prepare('SELECT name, latitude, longitude FROM zones WHERE id=?')
+        .get(address.zone_id);
+      if (Number.isFinite(own?.latitude)
+          && straightKm(hit.latitude, hit.longitude, own.latitude, own.longitude) > 300) {
+        const hint = zoneHintForAddress(`${address.name} ${region}`, hit.latitude, hit.longitude);
+        const hintZone = hint && hint.id !== address.zone_id
+          ? db.prepare('SELECT latitude, longitude FROM zones WHERE id=?').get(hint.id) : null;
+        if (Number.isFinite(hintZone?.latitude)
+            && straightKm(hit.latitude, hit.longitude, hintZone.latitude, hintZone.longitude) <= 300) {
+          zoneId = hint.id;
+          console.log(`геокод: зона адреса «${String(address.name).slice(0, 40)}» ` +
+            `перепривязана ${own.name} → ${hint.name} (${hint.via})`);
+        }
+      }
+    }
     db.prepare(`UPDATE addresses SET latitude=?, longitude=?, region=?, zone_id=?,
       base_distance_km=? WHERE id=?`).run(
       hit.latitude, hit.longitude, region, zoneId,
