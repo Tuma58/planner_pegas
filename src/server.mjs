@@ -835,11 +835,16 @@ async function runGeocodeWatch() {
     const noHouse = raw.replace(/(?:,\s*)?(?:д\.?|дом|стр\.?|строение|влд\.?|владение|корп\.?|тер\.?)\s*№?\s*[\dА-Яа-я/\-]+\s*/gi, ' ')
       .replace(/\s{2,}/g, ' ').replace(/\s,/g, ',').trim();
     const short = raw.split(',').map(part => part.trim()).filter(Boolean).slice(0, 2).join(', ');
+    // Последний рубеж — один только город: «с/п Баграмовское, д.Зеленинские
+    // Двор» классификатор не знает, а «Рязань» находит. Центр города грубее
+    // точного двора, но для субъекта, зоны и подгонов это география вместо
+    // пустоты (кейс р170мт58: адрес три года висел бы без координат).
+    const city = raw.split(',')[0].trim();
     let hit = null;
     const nearZone = item => !Number.isFinite(address.expectLat)
       || Math.hypot((item.latitude - address.expectLat) * 111,
         (item.longitude - address.expectLon) * 111 * Math.cos(item.latitude / 57.3)) <= 400;
-    for (const variant of [...new Set([raw, noHouse, short])].filter(Boolean)) {
+    for (const variant of [...new Set([raw, noHouse, short, city])].filter(v => v && v.length >= 4)) {
       const found = (await geocodeQuery(variant)).filter(item => Number.isFinite(item.latitude));
       // Перегеокод подозрительного адреса: из всех результатов берём
       // ближайший к центру его геозоны — одноимённая улица в другом
