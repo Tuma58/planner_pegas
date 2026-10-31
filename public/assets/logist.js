@@ -717,7 +717,7 @@ export async function renderLogist(container, context) {
         <span class="skl">В пути · машин</span><span class="skv">${runCount}</span>
         <small class="skm">рейсов ${runTrips.length} · ${money(runSum)}</small></div>
       ${demurrageChipHtml(data)}
-      <div class="salesfilter" style="flex:1;min-width:260px">
+      <div class="salesfilter">
         <select id="logistState" title="Показать машины парка в выбранном состоянии: забронированные, в ремонте, без водителя, в перегоне">
           <option value="">Кому нужна работа</option>
           <option value="hold" ${stateFilter === 'hold' ? 'selected' : ''}>🔒 Забронированы (${stateCounts.hold})</option>

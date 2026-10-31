@@ -1950,7 +1950,7 @@ export async function renderDispatcher(container, context, options = {}) {
       ${preparing.length ? `<div class="skpi"><span class="skl">В подготовке</span><span class="skv">${preparing.length}</span></div>` : ''}
       <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
       ${demurrageChipHtml(data)}
-      <div class="salesfilter" style="flex:1;min-width:220px">
+      <div class="salesfilter">
         ${state.dispatcherReturnToBoard ? `<button class="button small" id="kbBackToBoard"
           title="Вернуться на доску — фильтр по борту снимется, поиск доски восстановится">← На доску</button>` : ''}
         <button class="button small ghost" id="kbLayoutBoard2"
