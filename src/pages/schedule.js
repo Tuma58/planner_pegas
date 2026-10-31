@@ -386,12 +386,18 @@ function fillVacancy(dId){
 function fillMonthSelects(){
   const f=document.getElementById('fMonth'), sm=document.getElementById('sMonth');
   const optsAll=MK.map(k=>`<option value="${k}">${MON[k].name}</option>`).join('');
-  const prevF=f.value, prevS=sm.value;
+  /* Прежний выбор уважается, только если его сделал ЧЕЛОВЕК (userPicked).
+     Иначе первый рендер по устаревшей локальной копии закреплял прошлый
+     месяц: 31 октября график открывался на сентябре, и месяц приходилось
+     переключать при каждом входе (ревизия 31.10). */
+  const prevF=f.dataset.userPicked? f.value:'', prevS=sm.dataset.userPicked? sm.value:'';
   f.innerHTML=optsAll+(MK.length>1? `<option value="both">Все месяцы (${MON[MK[0]].short}–${MON[MK[MK.length-1]].short})</option>`:'');
   f.value = (prevF==='both'&&MK.length>1) || MK.includes(prevF) ? prevF : (MK.includes(TODAY.mk)? TODAY.mk : MK[MK.length-1]);
   sm.innerHTML=optsAll;
   sm.value = MK.includes(prevS)? prevS : (MK.includes(TODAY.mk)? TODAY.mk : MK[MK.length-1]);
 }
+['fMonth','sMonth'].forEach(id=>document.getElementById(id)
+  .addEventListener('input', e=>{ e.target.dataset.userPicked='1'; }));
 /* продолжение вахты по режиму: N дней работы, последний из них — пересмена, затем R дней отдыха */
 function extendCycle(d, slots){
   const m=/^(\d+)\s*\/\s*(\d+)$/.exec(d.rezhim||'');
@@ -1188,9 +1194,20 @@ document.getElementById('btnAddDrv').onclick=()=>{
       err.textContent='Заводим в справочник…';
       (async()=>{
         try{
-          const r=await fetch('/api/drivers',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({fullName:fio, phone:box.querySelector('#ndTel').value.trim()})});
-          const j=await r.json().catch(()=>({}));
+          const payload={fullName:fio, phone:box.querySelector('#ndTel').value.trim()};
+          let r=await fetch('/api/drivers',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(payload)});
+          let j=await r.json().catch(()=>({}));
+          /* 409 — похожий уже есть (щит от дублей 31.10): ищем его в
+             справочнике, а полного тёзку создаём после подтверждения */
+          if(r.status===409){
+            if(!confirm((j.error||'Похожий водитель уже есть')+'\n\nСоздать всё равно?')){
+              err.textContent='Не создан: найдите существующего через поиск'; return;
+            }
+            r=await fetch('/api/drivers',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({...payload, forceDuplicate:true})});
+            j=await r.json().catch(()=>({}));
+          }
           if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
           const fl=box.querySelector('#ndFilial').value, nid='D'+Date.now();
           S.drv.push({id:nid, fio, tel:box.querySelector('#ndTel').value.trim(), crew:'X'+Date.now(),

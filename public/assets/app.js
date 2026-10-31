@@ -1452,9 +1452,12 @@ function openDriversDirectory() {
   const vehicles = state.data.vehicles;
   const back = () => openDriversDirectory();
   const query = (state.driversQuery || '').toLowerCase();
-  const filtered = drivers.filter(driver => !query ||
+  const matched = drivers.filter(driver => !query ||
     `${driver.full_name} ${driver.phone} ${driver.vehicle_plate || ''}`.toLowerCase().includes(query));
-  const freeDrivers = filtered.filter(driver => !driver.vehicle_id && driver.status === 'active');
+  const freeDrivers = matched.filter(driver => !driver.vehicle_id && driver.status === 'active');
+  // «Без машины» — фильтр-кнопка, а не простыня фамилий: 60 имён сплошным
+  // текстом съедали пол-экрана и не читались (ревизия 31.10).
+  const filtered = state.driversFreeOnly ? freeDrivers : matched;
   const statusMeta = {
     active: ['в строю', 'ok'], vacation: ['отпуск', 'warn'], sick: ['болен', 'warn']
   };
@@ -1487,7 +1490,9 @@ function openDriversDirectory() {
       <span class="muted">${filtered.length} из ${drivers.length}</span>
       <button class="button small" id="driverAdd">+ Водитель</button>
     </div>
-    ${freeDrivers.length ? `<div class="geohint" style="margin-bottom:8px">🚶 Без машины: ${freeDrivers.map(d => escapeHtml(d.full_name)).join(', ')} — закрепите за свободной сцепкой.</div>` : ''}
+    ${freeDrivers.length ? `<div class="geohint" style="margin-bottom:8px">🚶 Без машины: <b>${freeDrivers.length}</b> —
+      закрепите за свободной сцепкой. <button class="button ghost small" id="driversFreeToggle">${state.driversFreeOnly
+  ? 'Показать всех' : 'Показать только их'}</button></div>` : ''}
     <div style="overflow:auto;max-height:60vh"><table class="rtable"><thead><tr>
       <th>Водитель</th><th>Телефон</th><th>Сцепка</th><th>Статус</th><th></th>
     </tr></thead><tbody>${filtered.map(row).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>
@@ -1527,6 +1532,11 @@ function openDriversDirectory() {
     return openDriversDirectory();
   });
   byId('driverAdd').onclick = () => driverEditDialog(null, back);
+  const freeToggle = byId('driversFreeToggle');
+  if (freeToggle) freeToggle.onclick = () => {
+    state.driversFreeOnly = !state.driversFreeOnly;
+    openDriversDirectory();
+  };
   const byDriver = id => drivers.find(driver => driver.id === id);
   document.querySelectorAll('[data-drv-vehicle]').forEach(select =>
     select.onchange = async () => {
@@ -1714,11 +1724,21 @@ function driverEditDialog(driver, after) {
       <button class="button">Сохранить</button></div></form>`);
   byId('driverForm').onsubmit = async event => {
     event.preventDefault();
+    const values = formValues(event.currentTarget);
     try {
-      await api(driver ? `/api/drivers/${driver.id}` : '/api/drivers', {
-        method: driver ? 'PATCH' : 'POST',
-        body: JSON.stringify(formValues(event.currentTarget))
-      });
+      // 409 — похожий водитель уже есть (щит от дублей 31.10): человек
+      // подтверждает, что это настоящий полный тёзка, и повтор проходит.
+      try {
+        await api(driver ? `/api/drivers/${driver.id}` : '/api/drivers', {
+          method: driver ? 'PATCH' : 'POST', body: JSON.stringify(values)
+        });
+      } catch (error) {
+        if (!driver && /такой водитель уже есть/i.test(error.message)
+            && window.confirm(`${error.message}.\n\nСоздать всё равно?`)) {
+          await api('/api/drivers', { method: 'POST',
+            body: JSON.stringify({ ...values, forceDuplicate: true }) });
+        } else throw error;
+      }
       closeModal(); toast(driver ? 'Водитель обновлён' : 'Водитель добавлен');
       await reload();
       if (after) after();

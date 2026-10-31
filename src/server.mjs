@@ -1939,10 +1939,16 @@ function runQuestionSlaWatch() {
   try {
     for (const item of checkQuestionSla(db)) {
       const topic = QUESTION_TOPICS.find(entry => entry.key === item.topic);
+      // Служебные хвосты телефонии (пропущенный, «добавьте комментарий») —
+      // рутина смены: уведомляется только диспетчерская. Руководителя и
+      // чужие роли дёргают лишь НАСТОЯЩИЕ вопросы водителей (31.10: хвосты
+      // слали руководителю ~50 просрочек в день — сигнал тонул в шуме).
+      const service = ['missed_call', 'call_note_needed', 'call_note'].includes(item.topic);
       notify('dispatcher', `⏱ Вопрос водителя без ответа больше 10 минут: ` +
         `${topic?.label || item.topic}${item.vehicle_plate ? ` · ${item.vehicle_plate}` : ''}` +
         `${item.driver_name ? ` · ${item.driver_name}` : ''}. Возьмите в работу — водитель ждёт`,
       'question', item.id, { category: 'driver_questions' });
+      if (service) continue;
       if (topic?.owner === 'Логист') notify('logist', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
       if (topic?.owner === 'Продажи') notify('sales', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
       if (topic?.owner === 'Ресурс') notify('resource', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
@@ -4461,6 +4467,84 @@ function unreachableWindowsWatch() {
 setInterval(unreachableWindowsWatch, 6 * 3_600_000);
 setTimeout(unreachableWindowsWatch, 140_000);
 
+// Нормализация ФИО водителя для поиска дублей: регистр, ё, пробелы.
+const normDriverName = value => String(value || '').toLowerCase()
+  .replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+
+// Группы водителей-дублей среди работающих: совпадают первые два слова
+// ФИО, отчества не противоречат (одно пустое или равны), телефоны не
+// противоречат (один пуст или равны). Козлов Александрович против
+// Николаевича — разные люди, группа отсеивается.
+function driverDoubleGroups() {
+  const rows = db.prepare(`SELECT id, full_name, phone, vehicle_id, created_at,
+      (SELECT COUNT(*) FROM driver_assignments a WHERE a.driver_id=d.id) asg,
+      (SELECT COUNT(*) FROM driver_attendance t WHERE t.driver_id=d.id) att
+    FROM drivers d WHERE status<>'fired'`).all();
+  const byFI = new Map();
+  for (const row of rows) {
+    const words = normDriverName(row.full_name).split(' ');
+    const key = words.slice(0, 2).join(' ');
+    if (!byFI.has(key)) byFI.set(key, []);
+    byFI.get(key).push({ ...row, patro: words[2] || '', phoneN: String(row.phone || '').replace(/\D/g, '') });
+  }
+  const groups = [];
+  for (const list of byFI.values()) {
+    if (list.length < 2) continue;
+    const ok = list.every((a, i) => list.every((b, j) => i >= j
+      || ((!a.patro || !b.patro || a.patro === b.patro)
+        && (!a.phoneN || !b.phoneN || a.phoneN === b.phoneN))));
+    if (ok) groups.push(list);
+  }
+  return groups;
+}
+
+// ── Разовое слияние дублей водителей (находка руководителя 31.10) ──
+// 9 пар: оригинал августа с историей и дубль октября с коротким ФИО;
+// машину перекрепляли на дубль, и история закреплений/явки рвалась.
+// Мастер — у кого больше истории (закрепления+явка), затем телефон,
+// затем старшинство. Дублю: ссылки переезжают мастеру, машина — только
+// если мастер без машины (конфликт — в лог, решает человек), телефон
+// дополняется, сам дубль мягко увольняется с пометкой в аудите.
+function mergeDriverDoublesOnce() {
+  try {
+    if (db.prepare(`SELECT 1 FROM app_meta WHERE key='drivers_dedup_2026_10'`).get()) return;
+    let merged = 0;
+    const log = [];
+    for (const group of driverDoubleGroups()) {
+      group.sort((a, b) => (b.asg + b.att) - (a.asg + a.att)
+        || Boolean(b.phoneN) - Boolean(a.phoneN)
+        || String(a.created_at).localeCompare(String(b.created_at)));
+      const master = group[0];
+      for (const dup of group.slice(1)) {
+        db.prepare(`UPDATE driver_assignments SET driver_id=? WHERE driver_id=?`).run(master.id, dup.id);
+        db.prepare(`DELETE FROM driver_attendance WHERE driver_id=? AND day IN
+          (SELECT day FROM driver_attendance WHERE driver_id=?)`).run(dup.id, master.id);
+        db.prepare(`UPDATE driver_attendance SET driver_id=? WHERE driver_id=?`).run(master.id, dup.id);
+        if (dup.vehicle_id && !master.vehicle_id) {
+          db.prepare(`UPDATE drivers SET vehicle_id=? WHERE id=?`).run(dup.vehicle_id, master.id);
+          db.prepare(`UPDATE vehicles SET driver_name=? WHERE id=?`).run(master.full_name, dup.vehicle_id);
+          master.vehicle_id = dup.vehicle_id;
+        } else if (dup.vehicle_id && master.vehicle_id && dup.vehicle_id !== master.vehicle_id) {
+          log.push(`у «${master.full_name}» и дубля разные машины — закрепление проверить руками`);
+        }
+        if (!master.phoneN && dup.phoneN) {
+          db.prepare(`UPDATE drivers SET phone=? WHERE id=?`).run(dup.phone, master.id);
+        }
+        db.prepare(`UPDATE drivers SET status='fired', vehicle_id=NULL,
+          note=TRIM(COALESCE(note,'') || ' [дубль «' || ? || '», слит 31.10.2026]') WHERE id=?`)
+          .run(master.full_name, dup.id);
+        audit(db, null, 'merge-double', 'driver', dup.id,
+          { into: master.id, masterName: master.full_name, dupName: dup.full_name }, 'migration');
+        merged += 1;
+      }
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('drivers_dedup_2026_10',?)`)
+      .run(JSON.stringify({ at: new Date().toISOString(), merged, notes: log }));
+    console.log(`mergeDriverDoublesOnce: дублей слито ${merged}${log.length ? ' · ' + log.join(' · ') : ''}`);
+  } catch (error) { console.error('mergeDriverDoublesOnce:', error.message); }
+}
+setTimeout(mergeDriverDoublesOnce, 40_000);
+
 // ── Ночная автопроверка данных (заказ руководителя 23.10) ──
 // Неделя 21–23.10 показала класс тихих дефектов: устаревшие порожние
 // подгоны (двойной счёт с перегонами), дубли перегонов, рассинхрон
@@ -4544,6 +4628,12 @@ function nightDataAudit() {
     }
     if (stuckPlates.length) {
       report.push(`одометры с залипшей историей — датчики в ремонт: ${stuckPlates.join(', ')}`);
+    }
+    // Дубли водителей (находка руководителя 31.10): щит 409 на создании
+    // стоит, но на случай обхода — ночной счётчик с фамилиями.
+    const doubles = driverDoubleGroups();
+    if (doubles.length) {
+      report.push(`дубли водителей: ${doubles.map(g => g[0].full_name).join(', ')} — слить в справочнике`);
     }
     if (report.length) {
       notify('boss', `🧹 Ночная автопроверка данных: ${report.join(' · ')}`,
@@ -9635,6 +9725,21 @@ async function api(request, response, url) {
     const body = await readJson(request);
     const name = String(body.fullName || '').trim();
     if (!name) return errorJson(response, 422, 'Укажите ФИО водителя');
+    // Щит от дублей (31.10: 10 пар «Фамилия Имя» без отчества рядом с
+    // полным ФИО — водителя не находили в справочнике и заводили заново,
+    // машина уезжала на дубль, отрываясь от истории закреплений и явки).
+    // Совпадение первых двух слов ФИО среди работающих — 409 с именем;
+    // настоящий полный тёзка заводится повторной отправкой forceDuplicate.
+    if (!body.forceDuplicate) {
+      const fi = normDriverName(name).split(' ').slice(0, 2).join(' ');
+      const twin = db.prepare(`SELECT full_name FROM drivers WHERE status<>'fired'`).all()
+        .find(row => normDriverName(row.full_name).split(' ').slice(0, 2).join(' ') === fi);
+      if (twin) {
+        return errorJson(response, 409,
+          `Похоже, такой водитель уже есть: «${twin.full_name}» — найдите его в справочнике. ` +
+          'Если это другой человек (полный тёзка) — подтвердите создание ещё раз');
+      }
+    }
     const id = randomUUID();
     const shift = parseShift(body);
     db.prepare(`INSERT INTO drivers(id,full_name,phone,note,shift_on,shift_off,shift_anchor)

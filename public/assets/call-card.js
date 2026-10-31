@@ -458,11 +458,19 @@ export async function loadOpenQuestions() {
 const questionOpenedMs = question => Date.parse(String(question.opened_at).replace(' ', 'T') +
   (String(question.opened_at).includes('Z') ? '' : 'Z'));
 
+// Служебные хвосты телефонии — не вопросы водителя: пропущенный звонок и
+// «добавьте комментарий» живут у диспетчерской и не эскалируются по
+// просрочке на другие роли (31.10: у логиста полоса горела «просрочено 37»,
+// хотя настоящих вопросов логисту не было, — плашку перестали замечать).
+const SERVICE_TOPICS = new Set(['missed_call', 'call_note_needed', 'call_note']);
+
 export function questionsForOwner(questions, owner) {
   if (!owner) return questions;
   return questions.filter(question => {
     const topic = TOPICS.find(item => item.key === question.topic);
-    return topic?.owner === owner || Date.now() - questionOpenedMs(question) > QUESTION_SLA_MS;
+    if (topic?.owner === owner) return true;
+    return !SERVICE_TOPICS.has(question.topic)
+      && Date.now() - questionOpenedMs(question) > QUESTION_SLA_MS;
   });
 }
 
