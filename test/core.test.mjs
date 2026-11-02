@@ -5201,3 +5201,17 @@ test('помощник: правило «выравнивание наката»
   // Сама выбранная «голодной» не считается; без наката у кандидата — мимо.
   assert.equal(runRateHint(chosen, [chosen, vehicle('v4', 'т004ат58', null)], 500), null);
 });
+
+test('помощник: правило «транзит короче физики плеча»', async () => {
+  const { transitPhysicsHint } = await import('../src/assistant.mjs');
+  // 800 км за 8 ч при минимуме 10,7 ч (физика p95) — подсказка с цифрами.
+  const hint = transitPhysicsHint(800, 8, 800 / 75);
+  assert.equal(hint.rule, 'transit-physics');
+  assert.match(hint.text, /800 км за 8,0 ч.*минимум ~10,7 ч/);
+  // Срок в пределах физики — молчим; короткое плечо — молчим (подачи по
+  // городу); кривые входы — молчим.
+  assert.equal(transitPhysicsHint(800, 12, 800 / 75), null);
+  assert.equal(transitPhysicsHint(40, 0.2, 40 / 75), null);
+  assert.equal(transitPhysicsHint(0, 5, 0), null);
+  assert.equal(transitPhysicsHint(800, -2, 10), null);
+});

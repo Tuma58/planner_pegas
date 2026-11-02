@@ -9,7 +9,7 @@ import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
-import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint } from './assistant.mjs';
+import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -8866,7 +8866,21 @@ async function api(request, response, url) {
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
     audit(db, user, 'update', 'trip', match[0], body, requestIp(request));
-    return json(response, 200, { ok: true });
+    // 🤖 Правило «транзит короче физики» (ступень 2, 02.11): срок правят
+    // из многих мест (карточка, Гант, доска) — подсказка уезжает в ответе,
+    // фронт показывает её единым тостом из api(). Не блокирует правку.
+    let assistantHint = null;
+    if ((merged.startsAt !== current.starts_at || merged.endsAt !== current.ends_at)
+        && ['plan', 'run'].includes(merged.status)) {
+      const km = Number(merged.distanceKm ?? current.distance_km) || 0;
+      const newHours = (Date.parse(merged.endsAt) - Date.parse(merged.startsAt)) / 3_600_000;
+      const hint = transitPhysicsHint(km, newHours, physHoursRange(km)[0]);
+      if (hint && !hintShownRecently(db, hint.rule, match[0], user.id)) {
+        recordHint(db, hint.rule, match[0], user.id, 'shown');
+        assistantHint = { ...hint, context: match[0] };
+      }
+    }
+    return json(response, 200, { ok: true, ...(assistantHint ? { assistantHint } : {}) });
   }
   if (match && request.method === 'DELETE') {
     const user = requirePermission(request, response, 'trips:write');

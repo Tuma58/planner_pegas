@@ -11,7 +11,8 @@ export const HINT_RULES = {
   // Логика правила живёт на фронте (runRateHint в sales.js — у модалки
   // подбора уже есть кандидаты с накатом); сервер ведёт троттлинг и
   // оценки через /api/assistant/check + /vote.
-  'run-rate-balance': 'Выравнивание наката при выборе сцепки'
+  'run-rate-balance': 'Выравнивание наката при выборе сцепки',
+  'transit-physics': 'Срок рейса короче физики плеча'
 };
 
 const h1 = value => Number(value).toFixed(1).replace('.', ',');
@@ -70,6 +71,22 @@ export function gateHintForCustomer(db, customerName, targetHours) {
     WHERE trim(customer_name)=? AND demurrage_rate > 0 LIMIT 1`).get(key);
   if (contractual) return null;
   return gateHint(null, customerUnloadStats(db, key), targetHours);
+}
+
+// Правило «транзит короче физики»: новый срок рейса короче физического
+// минимума дороги (км / p95 скоростей парка, без ворот — physHoursRange)
+// — обещание невыполнимо физически. Клампы транзита уже стерегут запись
+// нормативов; здесь добавляется голос в момент правки срока человеком.
+// Плечи до 50 км не трогаем: городские подачи, погрешность важнее сигнала.
+export function transitPhysicsHint(km, newHours, minHours) {
+  if (!(km > 50) || !(newHours > 0) || !(minHours > 0)) return null;
+  if (newHours >= minHours) return null;
+  return {
+    rule: 'transit-physics',
+    text: `Срок рейса короче физики: ${Math.round(km)} км за ${h1(newHours)} ч — быстрее 95% ` +
+      `рейсов парка (физический минимум ~${h1(minHours)} ч, ещё без ворот). ` +
+      'Проверьте срок: обещание клиенту может быть невыполнимым.'
+  };
 }
 
 // Троттлинг: та же подсказка тому же человеку — не чаще раза в сутки.

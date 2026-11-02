@@ -54,10 +54,45 @@ export async function api(path, options = {}) {
       throw new Error('Требуется вход');
     }
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    // 🤖 Подсказка помощника (ступень 2): любой штатный ответ может нести
+    // assistantHint — показываем из одного места, какие бы кнопки ни
+    // дёргали API (карточка, Гант, доска). Сервер уже оттроттлил показ.
+    if (data && data.assistantHint) {
+      try { assistHintToast(data.assistantHint); } catch { /* подсказка не критична */ }
+    }
     return data;
   } finally {
     releaseBusy(pressed);
   }
+}
+
+// Тост подсказки помощника: текст + оценка 👍/👎 (по оценкам решается
+// судьба правила — бесполезные отключаются). Висит дольше обычного
+// тоста: это предупреждение по делу, а не «сохранено».
+export function assistHintToast(hint) {
+  document.querySelector('.assist-toast')?.remove();
+  const element = document.createElement('div');
+  element.className = 'toast undo-toast assist-toast visible';
+  const text = document.createElement('span');
+  text.textContent = `💡 ${hint.text}`;
+  element.append(text);
+  for (const [label, helpful] of [['👍', true], ['👎', false]]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'undo-btn';
+    button.textContent = label;
+    button.title = helpful ? 'Подсказка полезна' : 'Подсказка не по делу — такие правила отключаются';
+    button.onclick = async () => {
+      try {
+        await api('/api/assistant/vote', { method: 'POST', body: JSON.stringify({
+          rule: hint.rule, context: hint.context || '', helpful }) });
+      } catch { /* оценка не критична */ }
+      element.remove();
+    };
+    element.append(button);
+  }
+  document.body.append(element);
+  setTimeout(() => element.remove(), 15_000);
 }
 
 // Эффективный конец занятости сцепки рейсом. Незавершённый рейс (план/в
