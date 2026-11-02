@@ -31,8 +31,11 @@ export function boardNotesHtml(notes) {
   if (!notes?.length) return '';
   return `<div class="board-strip" data-board-strip>
     ${notes.map((note, index) => `<div class="board-note ${note.kind} ${index === 0 ? 'on' : ''}">
-      <div class="board-text">${escapeHtml(note.text
-    || (String(note.media_mime || '').startsWith('video') ? '🎬 Видео на табло' : '🖼 Изображение на табло'))}</div>
+      <div class="board-text">${note.media_id
+    ? `<a href="/api/board-media/${note.media_id}" target="_blank" rel="noopener" style="color:inherit"
+        title="Открыть файл объявления в новой вкладке — на рабочем экране он виден только так, целиком крутится в ТВ-режиме табло">${escapeHtml(note.text
+      || (String(note.media_mime || '').startsWith('video') ? '🎬 Видео на табло — открыть' : '🖼 Изображение на табло — открыть'))}</a>`
+    : escapeHtml(note.text)}</div>
       ${note.subtext ? `<div class="board-sub">${escapeHtml(note.subtext)}</div>` : ''}
       <div class="board-meta">${note.media_id ? (String(note.media_mime || '').startsWith('video') ? '🎬 · ' : '🖼 · ') : ''}${escapeHtml(note.created_by_name || '')} · ${untilLabel(note)}</div>
     </div>`).join('')}
@@ -86,6 +89,7 @@ export function boardDialog(context) {
         <label>Показывать
           <select name="hours">
             <option value="1">1 час</option>
+            <option value="2">2 часа</option>
             <option value="4">4 часа</option>
             <option value="8" selected>до конца смены (8 ч)</option>
             <option value="24">сутки</option>
