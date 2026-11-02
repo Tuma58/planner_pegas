@@ -2019,3 +2019,24 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   display: flex; justify-content: center; gap: 1.6vw; pointer-events: none; }
 .tablo-dots span { font-size: clamp(11px, 1vw, 18px); color: #55626f; }
 .tablo-dots span.on { color: #dfe6ec; }
+
+/* ── 🛟 HELP DESK: карточки заявок в чате ── */
+.hd-top { padding: 10px 10px 6px; display: flex; flex-direction: column; gap: 6px; }
+.hd-card { margin: 6px 8px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--card); display: flex; flex-direction: column;
+  gap: 4px; font-size: var(--fs-sm); box-shadow: var(--shadow); }
+.hd-card.hd-closed { opacity: .72; }
+.hd-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.hd-head small { margin-left: auto; }
+.hd-status { font-size: var(--fs-xs); padding: 1px 7px; border-radius: 9px;
+  background: var(--soft); white-space: nowrap; }
+.hd-status.hd-new { background: color-mix(in srgb, var(--warn) 22%, var(--card)); }
+.hd-status.hd-review { background: color-mix(in srgb, var(--plan) 26%, var(--card)); }
+.hd-status.hd-work { background: color-mix(in srgb, var(--teal) 24%, var(--card)); }
+.hd-status.hd-done { background: color-mix(in srgb, var(--ok) 26%, var(--card)); }
+.hd-status.hd-rejected { background: color-mix(in srgb, var(--bad) 24%, var(--card)); }
+.hd-note { border-left: 3px solid var(--line); padding-left: 8px; }
+.hd-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.hd-form { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+.hd-form input[type=text], .hd-form input:not([type]), .hd-form textarea,
+.hd-form select { width: 100%; box-sizing: border-box; }

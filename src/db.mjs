@@ -1407,6 +1407,26 @@ function migrateColumns(db) {
     db.prepare(`UPDATE trailer_moves SET applied_at=moved_at WHERE applied_at IS NULL`).run();
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('trailer_applied_backfill_v1',datetime('now'))`).run();
   }
+  // ── 🛟 HELP DESK (02.11.2026): заявки сотрудников на доработку планера ──
+  // Форма в чате: любой сотрудник описывает, что мешает; заявки видят все,
+  // статусы меняет руководитель, автор получает личные уведомления.
+  db.exec(`CREATE TABLE IF NOT EXISTS helpdesk_tickets (
+    id TEXT PRIMARY KEY,
+    author_id TEXT REFERENCES users(id),
+    author_name TEXT NOT NULL DEFAULT '',
+    place TEXT NOT NULL DEFAULT '',
+    problem TEXT NOT NULL,
+    expected TEXT NOT NULL DEFAULT '',
+    frequency TEXT NOT NULL DEFAULT '',
+    media_id TEXT, media_mime TEXT,
+    status TEXT NOT NULL DEFAULT 'new'
+      CHECK(status IN ('new','review','work','done','rejected')),
+    decision_note TEXT NOT NULL DEFAULT '',
+    decided_by_name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_helpdesk_status ON helpdesk_tickets(status, created_at);`);
 }
 
 // Справочник адресов из выгрузки 1С «АДРЕС.xlsx»: 611 пунктов с геозонами

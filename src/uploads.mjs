@@ -51,6 +51,13 @@ export function boardMediaMimeOf(fileName) {
   return BOARD_MEDIA_TYPES[ext] || null;
 }
 
+// ── Вложения HELP DESK (02.11) ──
+// Скриншот или короткая запись экрана к заявке сотрудника: типы те же,
+// что у табло (строго по расширению), лимит скромнее — это иллюстрация
+// проблемы, а не ролик для общего экрана.
+export const helpdeskMediaPath = path.join(path.dirname(config.databasePath), 'helpdesk-media');
+export const MAX_HELPDESK_MEDIA_BYTES = 50 * 1024 * 1024;
+
 // Имя файла из заголовка: без путей и управляющих символов; длинное имя
 // режется с сохранением расширения в хвосте.
 export function cleanFileName(raw) {

@@ -159,6 +159,7 @@ export function setupChat(state) {
     if (key === 'all') return '📢 Общий';
     if (key === 'auto') return '⚙ Конвейер';
     if (key === 'personal') return '📬 Планер — лично';
+    if (key === 'helpdesk') return '🛟 HELP DESK';
     if (key.startsWith('dm:')) return peerName(key.slice(3));
     const group = groups.find(item => item.id === key.slice(6));
     return group ? `👥 ${group.title}` : '👥 Группа';
@@ -169,7 +170,7 @@ export function setupChat(state) {
   // Список переписок: закреплённые «Общий» и «Конвейер», затем диалоги и
   // группы по времени последнего сообщения (как в Telegram).
   const roomList = () => {
-    const keys = new Set(['all', 'auto', 'personal']);
+    const keys = new Set(['all', 'auto', 'personal', 'helpdesk']);
     for (const message of allMessages) keys.add(roomKeyOf(message));
     for (const group of groups) keys.add(`group:${group.id}`);
     const lastMsg = {};
@@ -177,7 +178,7 @@ export function setupChat(state) {
       const key = roomKeyOf(message);
       if (!lastMsg[key] || message.id > lastMsg[key].id) lastMsg[key] = message;
     }
-    const pinned = ['all', 'personal', 'auto'];
+    const pinned = ['all', 'personal', 'auto', 'helpdesk'];
     const rest = [...keys].filter(key => !pinned.includes(key))
       .filter(key => {
         // Удалённая группа пропадает из списка сразу (сообщения в памяти не в счёт).
@@ -194,14 +195,16 @@ export function setupChat(state) {
       const count = unreadOf(key);
       const title = roomTitle(key);
       const avatar = key === 'all' ? '📢' : key === 'auto' ? '⚙' : key === 'personal' ? '📬'
-        : key.startsWith('group:') ? '👥' : initials(title);
+        : key === 'helpdesk' ? '🛟' : key.startsWith('group:') ? '👥' : initials(title);
       const time = last ? formatDateTime(last.created_at.includes('Z')
         ? last.created_at : last.created_at.replace(' ', 'T') + 'Z') : '';
       const preview = last
         ? `${last.author_id === myId ? 'Вы: ' : (key.startsWith('group:') || key === 'all')
             ? `${shortName(last.author_name || '⚙')}: ` : ''}${last.text}`
         : (key === 'auto' ? 'Уведомления процесса — по вашим ролям'
-          : key === 'personal' ? 'Личные отчёты планера: отчёт дня, ревизия зазоров' : 'Сообщений пока нет');
+          : key === 'personal' ? 'Личные отчёты планера: отчёт дня, ревизия зазоров'
+          : key === 'helpdesk' ? 'Заявки на доработку планера — что мешает в работе'
+          : 'Сообщений пока нет');
       return `<div class="chat-room ${count ? 'has-unread' : ''}" data-room="${key}">
         <span class="chat-ava ${key.startsWith('dm:') ? 'human' : ''}">${avatar}</span>
         <span class="chat-room-body">
@@ -340,8 +343,152 @@ export function setupChat(state) {
     }
   });
 
+  // ── 🛟 HELP DESK: заявки на доработку планера (02.11) ──
+  // Комната без переписки: лента карточек-заявок + форма «Новая заявка».
+  // Заявки видят все (видно, что уже заявлено коллегами), решение о
+  // выполнении — статусами на карточке — принимает только руководитель.
+  const HD_STATUS = {
+    new: ['🆕 новая', 'hd-new'], review: ['👀 на рассмотрении', 'hd-review'],
+    work: ['🔧 в работе', 'hd-work'], done: ['✅ готово', 'hd-done'],
+    rejected: ['✖ отклонена', 'hd-rejected']
+  };
+  const canDecide = myRoles.some(role => ['manager', 'admin'].includes(role));
+  const hdTime = value => formatDateTime(String(value).includes('Z')
+    ? value : String(value).replace(' ', 'T') + 'Z');
+
+  const hdCard = ticket => {
+    const [label, cls] = HD_STATUS[ticket.status] || HD_STATUS.new;
+    const open = !['done', 'rejected'].includes(ticket.status);
+    return `<div class="hd-card ${open ? '' : 'hd-closed'}">
+      <div class="hd-head"><span class="hd-status ${cls}">${label}</span>
+        <b>${escapeHtml(shortName(ticket.author_name))}</b>
+        <small class="muted">${hdTime(ticket.created_at)}</small></div>
+      ${ticket.place ? `<div><small class="muted">Где:</small> ${escapeHtml(ticket.place)}</div>` : ''}
+      <div>${escapeHtml(ticket.problem)}</div>
+      ${ticket.expected ? `<div><small class="muted">Как должно быть:</small> ${escapeHtml(ticket.expected)}</div>` : ''}
+      ${ticket.frequency ? `<small class="muted">Частота: ${escapeHtml(ticket.frequency)}</small>` : ''}
+      ${ticket.media_id ? `<a href="/api/helpdesk-media/${ticket.media_id}" target="_blank" rel="noopener">📎 Вложение — открыть</a>` : ''}
+      ${ticket.decision_note ? `<div class="hd-note"><small class="muted">${escapeHtml(ticket.decided_by_name || 'Решение')}:</small>
+        ${escapeHtml(ticket.decision_note)}</div>` : ''}
+      ${canDecide && open ? `<div class="hd-actions">
+        ${ticket.status === 'new' ? `<button class="button ghost small" data-hd-set="review" data-hd-id="${ticket.id}">👀 На рассмотрение</button>` : ''}
+        ${ticket.status !== 'work' ? `<button class="button ghost small" data-hd-set="work" data-hd-id="${ticket.id}">🔧 В работу</button>` : ''}
+        <button class="button ghost small" data-hd-set="done" data-hd-id="${ticket.id}">✅ Готово</button>
+        <button class="button ghost small" data-hd-set="rejected" data-hd-id="${ticket.id}">✖ Отклонить</button>
+      </div>` : ''}
+    </div>`;
+  };
+
+  // Форма новой заявки — каркас тех.задания из пяти полей.
+  const hdFormView = () => {
+    list.innerHTML = `<form class="hd-form" id="hdForm">
+      <b>✍ Новая заявка</b>
+      <input name="place" maxlength="120" placeholder="Где: экран или вкладка (например: Логист → карточка рейса)">
+      <textarea name="problem" rows="3" maxlength="1000" required
+        placeholder="Что не так или чего не хватает — своими словами"></textarea>
+      <textarea name="expected" rows="2" maxlength="1000"
+        placeholder="Как должно быть (по-вашему)"></textarea>
+      <select name="frequency">
+        <option value="">Как часто мешает…</option>
+        <option>мешает каждый день</option>
+        <option>несколько раз в неделю</option>
+        <option>иногда</option>
+        <option>случилось один раз</option>
+      </select>
+      <label><small class="muted">Скриншот или запись экрана (по желанию)</small>
+        <input type="file" name="media" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov"></label>
+      <div class="hd-actions">
+        <button class="button small" type="submit">📨 Отправить заявку</button>
+        <button class="button ghost small" type="button" id="hdCancel">Отмена</button>
+      </div>
+      <small class="muted">Заявки рассматриваются раз в день; решение о выполнении
+        принимает руководитель — ответ придёт вам в «📬 Планер — лично».</small>
+    </form>`;
+    list.querySelector('#hdCancel').onclick = () => renderHelpdesk();
+    list.querySelector('#hdForm').onsubmit = async event => {
+      event.preventDefault();
+      const form = event.target;
+      const body = {
+        place: form.place.value.trim(), problem: form.problem.value.trim(),
+        expected: form.expected.value.trim(), frequency: form.frequency.value
+      };
+      const file = form.media.files[0];
+      const submitButton = form.querySelector('button[type=submit]');
+      try {
+        submitButton.disabled = true;
+        if (file) {
+          submitButton.textContent = '⏳ Загрузка файла…';
+          const upload = await fetch('/api/helpdesk-media', {
+            method: 'POST',
+            headers: { 'X-File-Name': encodeURIComponent(file.name) },
+            body: file
+          });
+          const uploaded = await upload.json().catch(() => ({}));
+          if (!upload.ok) throw new Error(uploaded.error || 'Не удалось загрузить файл');
+          body.mediaId = uploaded.id;
+          body.mediaName = file.name;
+        }
+        await api('/api/helpdesk', { method: 'POST', body: JSON.stringify(body) });
+        toast('Заявка отправлена — руководитель получил уведомление');
+        renderHelpdesk();
+      } catch (error) {
+        toast(error.message, 'error');
+        submitButton.disabled = false;
+        submitButton.textContent = '📨 Отправить заявку';
+      }
+    };
+  };
+
+  async function renderHelpdesk() {
+    list.innerHTML = '<div class="muted" style="padding:12px;text-align:center">Загрузка заявок…</div>';
+    let items = [];
+    try { items = (await api('/api/helpdesk')).items; } catch (error) {
+      list.innerHTML = `<div class="muted" style="padding:12px;text-align:center">${escapeHtml(error.message)}</div>`;
+      return;
+    }
+    if (active?.key !== 'helpdesk') return; // пока грузили — ушли в другую переписку
+    list.innerHTML = `<div class="hd-top">
+        <button class="button small" id="hdNew">✍ Новая заявка</button>
+        <small class="muted">Опишите, что мешает в работе планера, — заявку увидят все,
+          решение о выполнении примет руководитель.</small>
+      </div>
+      ${items.map(hdCard).join('')
+        || '<div class="muted" style="padding:12px;text-align:center">Заявок пока нет — опишите первую.</div>'}`;
+    list.scrollTop = 0;
+    list.querySelector('#hdNew').onclick = hdFormView;
+    list.querySelectorAll('[data-hd-set]').forEach(button =>
+      button.addEventListener('click', async () => {
+        const status = button.dataset.hdSet;
+        let note = '';
+        if (status === 'rejected') {
+          note = (prompt('Причина отклонения — автор увидит её в ответе:') || '').trim();
+          if (!note) return;
+        } else if (status === 'done') {
+          note = (prompt('Комментарий к выполнению (можно пусто):') || '').trim();
+        }
+        try {
+          await api(`/api/helpdesk/${button.dataset.hdId}/status`,
+            { method: 'POST', body: JSON.stringify({ status, note }) });
+          toast('Статус заявки обновлён — автор получил уведомление');
+          renderHelpdesk();
+        } catch (error) { toast(error.message, 'error'); }
+      }));
+  }
+
   const renderDialog = () => {
     if (!active) return;
+    if (active.key === 'helpdesk') {
+      el('chatDialogTitle').textContent = roomTitle('helpdesk');
+      el('chatDialogSub').textContent = 'заявки видят все сотрудники · решение за руководителем';
+      el('chatGroupEdit').classList.add('hidden');
+      el('chatDelete').classList.add('hidden');
+      el('chatForm').classList.add('hidden');
+      // Щит ввода: открытая форма заявки переживает фоновый поллинг чата —
+      // перерисовка списка заявок подождёт, пока форму отправят или закроют.
+      if (list.querySelector('#hdForm')) return;
+      renderHelpdesk();
+      return;
+    }
     const messages = allMessages.filter(m => roomKeyOf(m) === active.key);
     list.innerHTML = messages.map(bubble).join('')
       || '<div class="muted" style="padding:12px;text-align:center">Сообщений пока нет — напишите первое.</div>';
@@ -395,7 +542,7 @@ export function setupChat(state) {
     el('chatForm').classList.remove('hidden');
     markSeen();
     renderDialog();
-    if (key !== 'auto') input.focus();
+    if (key !== 'auto' && key !== 'helpdesk' && key !== 'personal') input.focus();
   }
 
   // «Прочитано» — только у открытой переписки.

@@ -7,7 +7,8 @@ import { config } from './config.mjs';
 import { audit, canonTrailerPlate, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
-import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, uploadMimeOf, uploadsPath } from './uploads.mjs';
+import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
+import { HELPDESK_STATUSES, helpdeskStatusMessage, validateTicket } from './helpdesk.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -7718,6 +7719,133 @@ async function api(request, response, url) {
     } catch { /* каталога может ещё не быть */ }
     audit(db, user, 'board-note-remove', 'board', id, {}, requestIp(request));
     return json(response, 200, { notes: activeBoardNotes() });
+  }
+
+  // ── 🛟 HELP DESK: заявки сотрудников на доработку планера (02.11) ──
+  // Любой сотрудник подаёт заявку формой в чате; заявки видят все
+  // (прозрачность и защита от повторов), решение — только руководитель.
+  if (request.method === 'GET' && pathname === '/api/helpdesk') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    // Открытые сверху (новые → рассмотрение → работа), закрытые — хвостом.
+    return json(response, 200, {
+      items: db.prepare(`SELECT * FROM helpdesk_tickets
+        ORDER BY CASE status WHEN 'new' THEN 0 WHEN 'review' THEN 1
+          WHEN 'work' THEN 2 ELSE 3 END, created_at DESC LIMIT 300`).all()
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/helpdesk') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (Number(user.guest)) return errorJson(response, 403, 'Гостевой режим — только просмотр');
+    const body = await readJson(request);
+    const check = validateTicket(body);
+    if (!check.ok) return errorJson(response, 422, check.error);
+    let mediaId = null;
+    let mediaMime = null;
+    if (body.mediaId) {
+      const safeId = String(body.mediaId).replace(/[^\w-]/g, '');
+      if (safeId && fs.existsSync(path.join(helpdeskMediaPath, safeId))) {
+        mediaId = safeId;
+        mediaMime = boardMediaMimeOf(String(body.mediaName || '')) || 'application/octet-stream';
+      }
+    }
+    const id = randomUUID();
+    db.prepare(`INSERT INTO helpdesk_tickets(id,author_id,author_name,place,problem,expected,frequency,media_id,media_mime)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(id, user.id, user.full_name || user.username,
+      check.ticket.place, check.ticket.problem, check.ticket.expected, check.ticket.frequency,
+      mediaId, mediaMime);
+    notify('manager', `🛟 HELP DESK: новая заявка от ${user.full_name || user.username}` +
+      `${check.ticket.place ? ` (${check.ticket.place})` : ''}: «${check.ticket.problem.slice(0, 140)}` +
+      `${check.ticket.problem.length > 140 ? '…' : ''}»`, 'helpdesk', id);
+    // Осиротевшие вложения (форму закрыли, не отправив) старше суток — долой.
+    try {
+      const linked = new Set(db.prepare(`SELECT media_id FROM helpdesk_tickets
+        WHERE media_id IS NOT NULL`).all().map(row => row.media_id));
+      for (const name of fs.readdirSync(helpdeskMediaPath)) {
+        const full = path.join(helpdeskMediaPath, name);
+        if (!linked.has(name) && Date.now() - fs.statSync(full).mtimeMs > 86_400_000) fs.unlinkSync(full);
+      }
+    } catch { /* каталога может ещё не быть */ }
+    audit(db, user, 'create', 'helpdesk', id,
+      { place: check.ticket.place, problem: check.ticket.problem.slice(0, 120) }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  // Смена статуса заявки — только руководитель или администратор; автор
+  // получает личное авто-сообщение («📬 Планер — лично») о судьбе заявки.
+  // (своя переменная: общий let match объявлен ниже по файлу — TDZ)
+  const helpdeskMatch = route(/^\/api\/helpdesk\/([^/]+)\/status$/, pathname);
+  if (helpdeskMatch && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      return errorJson(response, 403, 'Решение по заявкам HELP DESK принимает руководитель');
+    }
+    const ticket = db.prepare('SELECT * FROM helpdesk_tickets WHERE id=?').get(helpdeskMatch[0]);
+    if (!ticket) return errorJson(response, 404, 'Заявка не найдена');
+    const body = await readJson(request);
+    const status = String(body.status || '');
+    if (!HELPDESK_STATUSES[status]) return errorJson(response, 422, 'Неизвестный статус заявки');
+    const note = String(body.note || '').trim().slice(0, 500);
+    if (status === 'rejected' && !note) {
+      return errorJson(response, 422, 'Отклонение — только с причиной: автор должен понять решение');
+    }
+    db.prepare(`UPDATE helpdesk_tickets SET status=?, decision_note=?, decided_by_name=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(status, note, user.full_name || user.username, helpdeskMatch[0]);
+    if (ticket.author_id && ticket.author_id !== user.id) {
+      db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
+        VALUES('Конвейер','auto',?,?,?,?)`)
+        .run(helpdeskStatusMessage(ticket, status, note), ticket.author_id, 'helpdesk', helpdeskMatch[0]);
+    }
+    audit(db, user, 'helpdesk-status', 'helpdesk', helpdeskMatch[0], { status, note }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  // Вложение к заявке: сырое тело + имя в заголовке (как у табло).
+  if (request.method === 'POST' && pathname === '/api/helpdesk-media') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (Number(user.guest)) return errorJson(response, 403, 'Гостевой режим — только просмотр');
+    let rawName = String(request.headers['x-file-name'] || '');
+    try { rawName = decodeURIComponent(rawName); } catch { /* оставляем как есть */ }
+    const fileName = cleanFileName(rawName);
+    const mime = boardMediaMimeOf(fileName);
+    if (!fileName || !mime) {
+      return errorJson(response, 422, 'К заявке можно картинку или видео: png, jpg, webp, gif, mp4, webm, mov');
+    }
+    const content = await readRaw(request, MAX_HELPDESK_MEDIA_BYTES);
+    if (!content.length) return errorJson(response, 422, 'Файл пустой');
+    const id = randomUUID();
+    fs.mkdirSync(helpdeskMediaPath, { recursive: true });
+    fs.writeFileSync(path.join(helpdeskMediaPath, id), content);
+    audit(db, user, 'helpdesk-media', 'helpdesk', id,
+      { fileName, size: content.length }, requestIp(request));
+    return json(response, 201, { id, mime, name: fileName });
+  }
+  if (request.method === 'GET' && pathname.startsWith('/api/helpdesk-media/')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const id = pathname.split('/').pop().replace(/[^\w-]/g, '');
+    const ticket = db.prepare('SELECT media_mime FROM helpdesk_tickets WHERE media_id=?').get(id);
+    const filePath = path.join(helpdeskMediaPath, id);
+    if (!ticket || !fs.existsSync(filePath)) return errorJson(response, 404, 'Файл не найден');
+    // Видео требует Range (перемотка и Safari) — отвечаем кусками, как табло.
+    const size = fs.statSync(filePath).size;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range || ''));
+    const start = range && range[1] ? Number(range[1]) : 0;
+    const end = range && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (range && (start >= size || start > end)) {
+      response.writeHead(416, { 'Content-Range': `bytes */${size}` });
+      return response.end();
+    }
+    response.writeHead(range ? 206 : 200, {
+      'Content-Type': ticket.media_mime || 'application/octet-stream',
+      'Content-Length': end - start + 1,
+      'Accept-Ranges': 'bytes',
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+      'Cache-Control': 'private, max-age=86400'
+    });
+    return fs.createReadStream(filePath, { start, end }).pipe(response);
   }
 
   // ── Мини-приложение водителя «Мой рейс»: состояние, шаги, прогноз ──

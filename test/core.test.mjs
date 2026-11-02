@@ -5043,3 +5043,37 @@ test('вестник недели: данные каноном и газетна
   assert.ok(svg.includes('3,0 млн ₽'), 'выручка недели на полосе');
   assert.ok(svg.includes('Темп месяца'), 'колонка темпа на месте');
 });
+
+test('HELP DESK: валидация формы, тексты статусов и схема заявок', async t => {
+  const { HELPDESK_STATUSES, helpdeskStatusMessage, validateTicket } = await import('../src/helpdesk.mjs');
+  // Суть обязательна и осмысленной длины, короткая отклоняется с подсказкой.
+  assert.equal(validateTicket({ problem: 'мало' }).ok, false);
+  assert.match(validateTicket({}).error, /Опишите/);
+  const good = validateTicket({
+    place: 'Логист → карточка рейса', problem: 'Кнопка печати не видна на ноутбуке',
+    expected: 'Кнопка всегда на экране', frequency: 'мешает каждый день',
+  });
+  assert.equal(good.ok, true);
+  assert.equal(good.ticket.frequency, 'мешает каждый день');
+  // Частота вне фиксированного списка не проходит в заявку.
+  assert.equal(validateTicket({ problem: 'Достаточно длинное описание', frequency: 'левая' }).ticket.frequency, '');
+  // Сообщения автору: готовность зовёт обновить страницу, отказ несёт причину.
+  const ticket = { problem: 'Кнопка печати не видна на ноутбуке' };
+  assert.match(helpdeskStatusMessage(ticket, 'done'), /Обновите страницу/);
+  assert.match(helpdeskStatusMessage(ticket, 'rejected', 'есть иной путь'), /Причина: есть иной путь/);
+  assert.match(helpdeskStatusMessage(ticket, 'work'), /в работу/);
+  assert.equal(Object.keys(HELPDESK_STATUSES).length, 5);
+
+  // Схема: таблица создаётся миграцией, CHECK не пускает чужой статус.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-hd-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  db.prepare(`INSERT INTO helpdesk_tickets(id,author_name,problem) VALUES('hd-1','Иванов И','Описание проблемы для теста')`).run();
+  assert.equal(db.prepare(`SELECT status FROM helpdesk_tickets WHERE id='hd-1'`).get().status, 'new');
+  assert.throws(() => db.prepare(`UPDATE helpdesk_tickets SET status='weird' WHERE id='hd-1'`).run());
+  db.prepare(`UPDATE helpdesk_tickets SET status='done', decision_note='сделано' WHERE id='hd-1'`).run();
+  assert.equal(db.prepare(`SELECT decision_note FROM helpdesk_tickets WHERE id='hd-1'`).get().decision_note, 'сделано');
+});
