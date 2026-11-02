@@ -5098,3 +5098,38 @@ test('HELP DESK: окно плаката 9–11 МСК и газетная по�
   assert.ok(svg.includes('Разбор заявок — каждое утро в 7:00'), 'порядок');
   assert.ok(svg.includes('ПИШИТЕ — ПО ВАШИМ ЗАЯВКАМ'), 'призыв');
 });
+
+test('база знаний: поиск словоформами, гайды, схема и оценки', async t => {
+  const { kbSearch, kbSearchGuides, kbStem, kbTokens } = await import('../public/assets/kb.js');
+  // Токены и основы: «ё»=«е», пустышки («как») отброшены, словоформы
+  // сводятся к общей основе.
+  assert.deepEqual(kbTokens('Как создать Заявку?!'), ['создать', 'заявку']);
+  assert.equal(kbStem('заявку'), 'заяв');
+  assert.ok(kbTokens('перецёп')[0] === 'перецеп');
+  const articles = [
+    { id: 'a1', question: 'Как создать заявку на доработку планера', answer: 'Чат → HELP DESK → Новая заявка', section: 'Общее', helped: 0, not_helped: 0 },
+    { id: 'a2', question: 'Как сделать перецеп на маршруте', answer: 'Карточка рейса → Переназначить ТС', section: 'Логист', helped: 0, not_helped: 0 },
+    { id: 'a3', question: 'Куда вносить простой на выгрузке', answer: 'Карточка точки, факт времени', section: 'Диспетчер', helped: 0, not_helped: 0 }
+  ];
+  // Словоформа «заявки» находит статью с «заявку»; лучший результат — первый.
+  const found = kbSearch(articles, 'как создаются заявки');
+  assert.equal(found[0].article.id, 'a1');
+  assert.equal(kbSearch(articles, 'перецепы').length, 1);
+  assert.equal(kbSearch(articles, 'квартальная премия').length, 0);
+  // Поиск по инструкциям: раздел с «перецеп» в html находится.
+  const guides = [{ id: 'logist', title: 'Логист', html: '<p>Замена ТС на ходу — это <b>перецеп</b>, звенья рейса делят выручку.</p>' }];
+  assert.equal(kbSearchGuides(guides, 'как оформить перецеп')[0]?.guide.id, 'logist');
+
+  // Схема: статья и дыра поиска пишутся, счётчики пользы растут.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-kb-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  db.prepare(`INSERT INTO kb_articles(id,question,answer,section,source) VALUES('k1','Вопрос теста','Ответ теста','Общее','helpdesk:x')`).run();
+  db.prepare(`UPDATE kb_articles SET helped=helped+1 WHERE id='k1'`).run();
+  assert.equal(db.prepare(`SELECT helped FROM kb_articles WHERE id='k1'`).get().helped, 1);
+  db.prepare(`INSERT INTO kb_misses(query,user_name) VALUES('как получить отпуск','Тест')`).run();
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM kb_misses').get().c, 1);
+});

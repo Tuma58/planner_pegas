@@ -1427,6 +1427,30 @@ function migrateColumns(db) {
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS idx_helpdesk_status ON helpdesk_tickets(status, created_at);`);
+  // ── 📚 База знаний (02.11.2026, этап 1 «внутреннего помощника») ──
+  // Копилка «вопрос → ответ»: статьи рождаются из заявок HELP DESK
+  // («вопрос обучения» одной кнопкой становится статьёй) и пишутся
+  // руководителем; каждая несёт счётчики пользы («помогло/нет») —
+  // бесполезные статьи видны и переписываются. Вопросы, на которые
+  // ничего не нашлось, копятся в kb_misses — это карта дыр базы.
+  db.exec(`CREATE TABLE IF NOT EXISTS kb_articles (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    section TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    created_by_name TEXT NOT NULL DEFAULT '',
+    helped INTEGER NOT NULL DEFAULT 0,
+    not_helped INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS kb_misses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query TEXT NOT NULL,
+    user_name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
 }
 
 // Справочник адресов из выгрузки 1С «АДРЕС.xlsx»: 611 пунктов с геозонами

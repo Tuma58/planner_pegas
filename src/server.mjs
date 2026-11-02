@@ -7851,6 +7851,96 @@ async function api(request, response, url) {
       { fileName, size: content.length }, requestIp(request));
     return json(response, 201, { id, mime, name: fileName });
   }
+  // ── 📚 База знаний: копилка «вопрос → ответ» (этап 1 помощника, 02.11) ──
+  // Статьи пишет руководитель/админ (знания курируются), читают и
+  // оценивают все; поиск живёт на фронте (public/assets/kb.js), сервер
+  // хранит и считает пользу. Пустые поиски копятся в kb_misses.
+  if (request.method === 'GET' && pathname === '/api/kb') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const payload = {
+      items: db.prepare(`SELECT * FROM kb_articles ORDER BY updated_at DESC LIMIT 500`).all()
+    };
+    // Дыры базы — руководителю: что спрашивали и не нашли (последние 14 дней).
+    if (rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      payload.misses = db.prepare(`SELECT query, user_name, created_at FROM kb_misses
+        WHERE datetime(created_at) > datetime('now','-14 days')
+        ORDER BY id DESC LIMIT 50`).all();
+    }
+    return json(response, 200, payload);
+  }
+  if (request.method === 'POST' && pathname === '/api/kb') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      return errorJson(response, 403, 'Статьи базы знаний пишет руководитель или администратор');
+    }
+    const body = await readJson(request);
+    const question = String(body.question || '').trim().slice(0, 300);
+    const answer = String(body.answer || '').trim().slice(0, 2000);
+    if (question.length < 5 || answer.length < 5) {
+      return errorJson(response, 422, 'Нужны и вопрос, и ответ (от 5 символов)');
+    }
+    const id = randomUUID();
+    db.prepare(`INSERT INTO kb_articles(id,question,answer,section,source,created_by_name)
+      VALUES(?,?,?,?,?,?)`).run(id, question, answer,
+      String(body.section || '').trim().slice(0, 60),
+      String(body.source || '').trim().slice(0, 80),
+      user.full_name || user.username);
+    audit(db, user, 'create', 'kb', id, { question: question.slice(0, 80) }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  // (свои переменные матчей: общий let match объявлен ниже по файлу — TDZ)
+  const kbMatch = route(/^\/api\/kb\/([^/]+)$/, pathname);
+  if (kbMatch && (request.method === 'PATCH' || request.method === 'DELETE')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      return errorJson(response, 403, 'Статьи базы знаний меняет руководитель или администратор');
+    }
+    const article = db.prepare('SELECT id FROM kb_articles WHERE id=?').get(kbMatch[0]);
+    if (!article) return errorJson(response, 404, 'Статья не найдена');
+    if (request.method === 'DELETE') {
+      db.prepare('DELETE FROM kb_articles WHERE id=?').run(kbMatch[0]);
+      audit(db, user, 'delete', 'kb', kbMatch[0], {}, requestIp(request));
+      return json(response, 200, { ok: true });
+    }
+    const body = await readJson(request);
+    const question = String(body.question || '').trim().slice(0, 300);
+    const answer = String(body.answer || '').trim().slice(0, 2000);
+    if (question.length < 5 || answer.length < 5) {
+      return errorJson(response, 422, 'Нужны и вопрос, и ответ (от 5 символов)');
+    }
+    db.prepare(`UPDATE kb_articles SET question=?, answer=?, section=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(question, answer, String(body.section || '').trim().slice(0, 60), kbMatch[0]);
+    audit(db, user, 'update', 'kb', kbMatch[0], { question: question.slice(0, 80) }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  const kbVoteMatch = route(/^\/api\/kb\/([^/]+)\/vote$/, pathname);
+  if (kbVoteMatch && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const column = body.helped ? 'helped' : 'not_helped';
+    const updated = db.prepare(`UPDATE kb_articles SET ${column}=${column}+1 WHERE id=?`)
+      .run(kbVoteMatch[0]);
+    if (!updated.changes) return errorJson(response, 404, 'Статья не найдена');
+    return json(response, 200, { ok: true });
+  }
+  // Пустой поиск: вопрос без ответа — сырьё для новых статей.
+  if (request.method === 'POST' && pathname === '/api/kb/miss') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const query = String(body.query || '').trim().slice(0, 200);
+    if (query.length >= 3) {
+      db.prepare('INSERT INTO kb_misses(query,user_name) VALUES(?,?)')
+        .run(query, user.full_name || user.username);
+    }
+    return json(response, 200, { ok: true });
+  }
+
   if (request.method === 'GET' && pathname.startsWith('/api/helpdesk-media/')) {
     const user = requireUser(request, response);
     if (!user) return;

@@ -6,6 +6,8 @@
 // Всплывающие системные уведомления браузера — включаются кнопкой 🖥 и
 // работают, даже когда планер в фоновой вкладке. Поллинг raw JSON раз в 20 с.
 import { api, escapeHtml, formatDateTime, toast } from './api.js';
+import { kbSearch, kbSearchGuides } from './kb.js';
+import { GUIDES } from './guide.js';
 
 const POLL_MS = 20_000;
 const ROLE_LABELS = {
@@ -160,6 +162,7 @@ export function setupChat(state) {
     if (key === 'auto') return '⚙ Конвейер';
     if (key === 'personal') return '📬 Планер — лично';
     if (key === 'helpdesk') return '🛟 HELP DESK';
+    if (key === 'kb') return '❓ Справка';
     if (key.startsWith('dm:')) return peerName(key.slice(3));
     const group = groups.find(item => item.id === key.slice(6));
     return group ? `👥 ${group.title}` : '👥 Группа';
@@ -170,7 +173,7 @@ export function setupChat(state) {
   // Список переписок: закреплённые «Общий» и «Конвейер», затем диалоги и
   // группы по времени последнего сообщения (как в Telegram).
   const roomList = () => {
-    const keys = new Set(['all', 'auto', 'personal', 'helpdesk']);
+    const keys = new Set(['all', 'auto', 'personal', 'helpdesk', 'kb']);
     for (const message of allMessages) keys.add(roomKeyOf(message));
     for (const group of groups) keys.add(`group:${group.id}`);
     const lastMsg = {};
@@ -178,7 +181,7 @@ export function setupChat(state) {
       const key = roomKeyOf(message);
       if (!lastMsg[key] || message.id > lastMsg[key].id) lastMsg[key] = message;
     }
-    const pinned = ['all', 'personal', 'auto', 'helpdesk'];
+    const pinned = ['all', 'personal', 'auto', 'helpdesk', 'kb'];
     const rest = [...keys].filter(key => !pinned.includes(key))
       .filter(key => {
         // Удалённая группа пропадает из списка сразу (сообщения в памяти не в счёт).
@@ -195,7 +198,8 @@ export function setupChat(state) {
       const count = unreadOf(key);
       const title = roomTitle(key);
       const avatar = key === 'all' ? '📢' : key === 'auto' ? '⚙' : key === 'personal' ? '📬'
-        : key === 'helpdesk' ? '🛟' : key.startsWith('group:') ? '👥' : initials(title);
+        : key === 'helpdesk' ? '🛟' : key === 'kb' ? '❓'
+        : key.startsWith('group:') ? '👥' : initials(title);
       const time = last ? formatDateTime(last.created_at.includes('Z')
         ? last.created_at : last.created_at.replace(' ', 'T') + 'Z') : '';
       const preview = last
@@ -204,6 +208,7 @@ export function setupChat(state) {
         : (key === 'auto' ? 'Уведомления процесса — по вашим ролям'
           : key === 'personal' ? 'Личные отчёты планера: отчёт дня, ревизия зазоров'
           : key === 'helpdesk' ? 'Заявки на доработку планера — что мешает в работе'
+          : key === 'kb' ? 'База знаний: поиск по статьям и инструкциям'
           : 'Сообщений пока нет');
       return `<div class="chat-room ${count ? 'has-unread' : ''}" data-room="${key}">
         <span class="chat-ava ${key.startsWith('dm:') ? 'human' : ''}">${avatar}</span>
@@ -376,6 +381,10 @@ export function setupChat(state) {
         <button class="button ghost small" data-hd-set="done" data-hd-id="${ticket.id}">✅ Готово</button>
         <button class="button ghost small" data-hd-set="rejected" data-hd-id="${ticket.id}">✖ Отклонить</button>
       </div>` : ''}
+      ${canDecide && !open ? `<div class="hd-actions">
+        <button class="button ghost small" data-hd-kb="${ticket.id}"
+          title="Превратить вопрос и ответ заявки в статью базы знаний">📚 В статью</button>
+      </div>` : ''}
     </div>`;
   };
 
@@ -473,10 +482,193 @@ export function setupChat(state) {
           renderHelpdesk();
         } catch (error) { toast(error.message, 'error'); }
       }));
+    // «📚 В статью»: вопрос и ответ закрытой заявки — в базу знаний.
+    list.querySelectorAll('[data-hd-kb]').forEach(button =>
+      button.addEventListener('click', () => {
+        const ticket = items.find(item => item.id === button.dataset.hdKb);
+        if (!ticket) return;
+        openRoom('kb');
+        kbFormView({ question: ticket.problem, answer: ticket.decision_note || '',
+          section: ticket.place, source: `helpdesk:${ticket.id}` });
+      }));
+  }
+
+  // ── ❓ Справка: база знаний с поиском (этап 1 помощника, 02.11) ──
+  // Поиск сразу по двум источникам: статьи «вопрос → ответ» (копятся из
+  // заявок HELP DESK и пишутся руководителем) и инструкции «?» (GUIDES).
+  // Вопрос без ответа логируется — руководитель видит дыры базы.
+  let kbArticles = [];
+  let kbMisses = [];
+  let kbLastMissLogged = '';
+  let kbVoted = {};
+  try { kbVoted = JSON.parse(localStorage.getItem('pl_kb_voted') || '{}') || {}; } catch { kbVoted = {}; }
+
+  const kbArticleCard = article => {
+    const useful = article.helped - article.not_helped;
+    return `<div class="hd-card">
+      <div class="hd-head"><b>${escapeHtml(article.question)}</b></div>
+      <div style="white-space:pre-wrap">${escapeHtml(article.answer)}</div>
+      <div class="hd-head"><small class="muted">${article.section ? `${escapeHtml(article.section)} · ` : ''}${escapeHtml(article.created_by_name)}</small>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          ${kbVoted[article.id] ? `<small class="muted">спасибо за оценку</small>`
+    : `<button class="button ghost small" data-kb-vote="1" data-kb-id="${article.id}" title="Ответ помог">👍${article.helped ? ` ${article.helped}` : ''}</button>
+       <button class="button ghost small" data-kb-vote="" data-kb-id="${article.id}" title="Не помогло — статью перепишут">👎</button>`}
+          ${canDecide ? `<button class="button ghost small" data-kb-edit="${article.id}" title="Исправить статью">✎</button>` : ''}
+          ${useful < 0 ? `<span class="badge warn" title="Минусов больше, чем плюсов — статья ждёт переписывания">⚠</span>` : ''}
+        </span></div>
+    </div>`;
+  };
+
+  // Форма статьи (руководитель/админ): новая, правка или из заявки HELP DESK.
+  const kbFormView = (prefill = {}, existingId = null) => {
+    list.innerHTML = `<form class="hd-form" id="kbForm">
+      <b>${existingId ? '✎ Правка статьи' : '📚 Новая статья базы знаний'}</b>
+      <input name="question" maxlength="300" required placeholder="Вопрос — как его задал бы сотрудник"
+        value="${escapeHtml(prefill.question || '')}">
+      <input name="section" maxlength="60" placeholder="Раздел (например: Логист, Продажи, Общее)"
+        value="${escapeHtml(prefill.section || '')}">
+      <textarea name="answer" rows="6" maxlength="2000" required
+        placeholder="Ответ — по шагам, с настоящими названиями кнопок">${escapeHtml(prefill.answer || '')}</textarea>
+      <div class="hd-actions">
+        <button class="button small" type="submit">💾 Сохранить</button>
+        <button class="button ghost small" type="button" id="kbCancel">Отмена</button>
+        ${existingId ? `<button class="button ghost small" type="button" id="kbDelete" style="margin-left:auto">🗑 Удалить</button>` : ''}
+      </div>
+    </form>`;
+    list.querySelector('#kbCancel').onclick = () => renderKb();
+    const deleteButton = list.querySelector('#kbDelete');
+    if (deleteButton) {
+      deleteButton.onclick = async () => {
+        if (!confirm('Удалить статью из базы знаний?')) return;
+        try {
+          await api(`/api/kb/${existingId}`, { method: 'DELETE' });
+          toast('Статья удалена');
+          renderKb();
+        } catch (error) { toast(error.message, 'error'); }
+      };
+    }
+    list.querySelector('#kbForm').onsubmit = async event => {
+      event.preventDefault();
+      const form = event.target;
+      const body = {
+        question: form.question.value.trim(), answer: form.answer.value.trim(),
+        section: form.section.value.trim(), source: prefill.source || ''
+      };
+      try {
+        await api(existingId ? `/api/kb/${existingId}` : '/api/kb',
+          { method: existingId ? 'PATCH' : 'POST', body: JSON.stringify(body) });
+        toast(existingId ? 'Статья обновлена' : 'Статья добавлена в базу знаний');
+        renderKb();
+      } catch (error) { toast(error.message, 'error'); }
+    };
+  };
+
+  const kbResultsHtml = query => {
+    if (!query || query.trim().length < 3) {
+      const recent = kbArticles.slice(0, 5);
+      return `${recent.length ? `<div class="hd-top"><small class="muted">Свежие статьи:</small></div>` + recent.map(kbArticleCard).join('')
+        : '<div class="muted" style="padding:12px;text-align:center">База знаний пока пуста — статьи появятся из ваших вопросов.</div>'}`;
+    }
+    const articles = kbSearch(kbArticles, query);
+    const guides = kbSearchGuides(GUIDES, query);
+    const nothing = !articles.length && !guides.length;
+    if (nothing && query !== kbLastMissLogged) {
+      kbLastMissLogged = query;
+      api('/api/kb/miss', { method: 'POST', body: JSON.stringify({ query }) }).catch(() => {});
+    }
+    return `${articles.map(item => kbArticleCard(item.article)).join('')}
+      ${guides.length ? `<div class="hd-top"><small class="muted">В инструкциях «?»:</small></div>
+        ${guides.map(item => `<div class="hd-card"><b>${escapeHtml(item.guide.title)}</b>
+          <small class="muted">откройте кнопку «?» в шапке — раздел «${escapeHtml(item.guide.title)}»</small></div>`).join('')}` : ''}
+      ${nothing ? `<div class="hd-card"><b>Ответа пока нет</b>
+        <small class="muted">Вопрос записан — база знаний пополнится. Если дело срочное или это не вопрос, а проблема — оформите заявку:</small>
+        <div class="hd-actions"><button class="button small" id="kbToHelpdesk">🛟 Оформить заявкой</button></div>
+      </div>` : ''}`;
+  };
+
+  function renderKb() {
+    list.innerHTML = '<div class="muted" style="padding:12px;text-align:center">Загрузка базы знаний…</div>';
+    api('/api/kb').then(payload => {
+      if (active?.key !== 'kb') return;
+      // Пока грузили, успели открыть форму статьи — не затираем её.
+      if (list.querySelector('#kbForm')) return;
+      kbArticles = payload.items || [];
+      kbMisses = payload.misses || [];
+      list.innerHTML = `<div class="hd-top">
+          <input id="kbSearch" class="block-search" placeholder="Спросите по-своему: «как создать заявку», «перецеп», «простой»…" autocomplete="off">
+          ${canDecide ? `<div class="hd-actions"><button class="button ghost small" id="kbNew">📚 Новая статья</button>
+            ${kbMisses.length ? `<button class="button ghost small" id="kbMissesBtn" title="Что спрашивали и не нашли — сырьё для статей">🕳 Без ответа: ${kbMisses.length}</button>` : ''}</div>` : ''}
+        </div>
+        <div id="kbResults">${kbResultsHtml('')}</div>`;
+      const results = list.querySelector('#kbResults');
+      const wireResults = () => {
+        results.querySelectorAll('[data-kb-vote]').forEach(button =>
+          button.addEventListener('click', async () => {
+            try {
+              await api(`/api/kb/${button.dataset.kbId}/vote`,
+                { method: 'POST', body: JSON.stringify({ helped: Boolean(button.dataset.kbVote) }) });
+              kbVoted[button.dataset.kbId] = 1;
+              localStorage.setItem('pl_kb_voted', JSON.stringify(kbVoted));
+              toast('Спасибо — оценка учтена');
+              const article = kbArticles.find(item => item.id === button.dataset.kbId);
+              if (article) article[button.dataset.kbVote ? 'helped' : 'not_helped'] += 1;
+              results.innerHTML = kbResultsHtml(list.querySelector('#kbSearch').value);
+              wireResults();
+            } catch (error) { toast(error.message, 'error'); }
+          }));
+        results.querySelectorAll('[data-kb-edit]').forEach(button =>
+          button.addEventListener('click', () => {
+            const article = kbArticles.find(item => item.id === button.dataset.kbEdit);
+            if (article) kbFormView(article, article.id);
+          }));
+        const toHelpdesk = results.querySelector('#kbToHelpdesk');
+        if (toHelpdesk) {
+          toHelpdesk.onclick = () => {
+            const query = list.querySelector('#kbSearch').value.trim();
+            openRoom('helpdesk');
+            hdFormView();
+            const form = list.querySelector('#hdForm');
+            if (form && query) form.problem.value = query;
+          };
+        }
+      };
+      wireResults();
+      let timer = null;
+      list.querySelector('#kbSearch').addEventListener('input', event => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          results.innerHTML = kbResultsHtml(event.target.value);
+          wireResults();
+        }, 350);
+      });
+      const newButton = list.querySelector('#kbNew');
+      if (newButton) newButton.onclick = () => kbFormView();
+      const missesButton = list.querySelector('#kbMissesBtn');
+      if (missesButton) {
+        missesButton.onclick = () => {
+          results.innerHTML = `<div class="hd-top"><small class="muted">Спрашивали и не нашли (14 дней) — готовые темы для статей:</small></div>
+            ${kbMisses.map(miss => `<div class="hd-card"><b>${escapeHtml(miss.query)}</b>
+              <small class="muted">${escapeHtml(miss.user_name)} · ${formatDateTime(String(miss.created_at).replace(' ', 'T') + 'Z')}</small></div>`).join('')}`;
+        };
+      }
+    }).catch(error => {
+      list.innerHTML = `<div class="muted" style="padding:12px;text-align:center">${escapeHtml(error.message)}</div>`;
+    });
   }
 
   const renderDialog = () => {
     if (!active) return;
+    if (active.key === 'kb') {
+      el('chatDialogTitle').textContent = roomTitle('kb');
+      el('chatDialogSub').textContent = 'ответы из базы знаний и инструкций · вопрос без ответа станет статьёй';
+      el('chatGroupEdit').classList.add('hidden');
+      el('chatDelete').classList.add('hidden');
+      el('chatForm').classList.add('hidden');
+      // Щит ввода: открытые поиск/форма переживают фоновый поллинг чата.
+      if (list.querySelector('#kbSearch') || list.querySelector('#kbForm')) return;
+      renderKb();
+      return;
+    }
     if (active.key === 'helpdesk') {
       el('chatDialogTitle').textContent = roomTitle('helpdesk');
       el('chatDialogSub').textContent = 'заявки видят все сотрудники · решение за руководителем';
@@ -542,7 +734,7 @@ export function setupChat(state) {
     el('chatForm').classList.remove('hidden');
     markSeen();
     renderDialog();
-    if (key !== 'auto' && key !== 'helpdesk' && key !== 'personal') input.focus();
+    if (!['auto', 'helpdesk', 'kb', 'personal'].includes(key)) input.focus();
   }
 
   // «Прочитано» — только у открытой переписки.
