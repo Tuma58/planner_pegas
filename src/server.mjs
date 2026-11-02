@@ -4540,14 +4540,14 @@ function mergeDriverDoublesOnce() {
           db.prepare(`UPDATE drivers SET phone=? WHERE id=?`).run(dup.phone, master.id);
         }
         db.prepare(`UPDATE drivers SET status='fired', vehicle_id=NULL,
-          note=TRIM(COALESCE(note,'') || ' [дубль «' || ? || '», слит 31.10.2026]') WHERE id=?`)
+          note=TRIM(COALESCE(note,'') || ' [дубль «' || ? || '», слит ' || date('now') || ']') WHERE id=?`)
           .run(master.full_name, dup.id);
         audit(db, null, 'merge-double', 'driver', dup.id,
           { into: master.id, masterName: master.full_name, dupName: dup.full_name }, 'migration');
         merged += 1;
       }
     }
-    db.prepare(`INSERT INTO app_meta(key,value) VALUES('drivers_dedup_2026_10',?)`)
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('drivers_dedup_2026_11',?)`)
       .run(JSON.stringify({ at: new Date().toISOString(), merged, notes: log }));
     console.log(`mergeDriverDoublesOnce: дублей слито ${merged}${log.length ? ' · ' + log.join(' · ') : ''}`);
   } catch (error) { console.error('mergeDriverDoublesOnce:', error.message); }
