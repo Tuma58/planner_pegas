@@ -5077,3 +5077,24 @@ test('HELP DESK: валидация формы, тексты статусов и
   db.prepare(`UPDATE helpdesk_tickets SET status='done', decision_note='сделано' WHERE id='hd-1'`).run();
   assert.equal(db.prepare(`SELECT decision_note FROM helpdesk_tickets WHERE id='hd-1'`).get().decision_note, 'сделано');
 });
+
+test('HELP DESK: окно плаката 9–11 МСК и газетная полоса-инструкция', async () => {
+  const { helpdeskPromoDue, renderHelpdeskPosterSvg } = await import('../src/helpdesk.mjs');
+  const at = (day, hourMsk) => Date.UTC(2026, 10, day, hourMsk - 3); // ноябрь, МСК→UTC
+  // В окне, срок не вышел, сегодня не публиковали → пора; снятие в 11:00 МСК.
+  const due = helpdeskPromoDue(at(5, 9), '2026-11-16', '2026-11-04');
+  assert.equal(due.day, '2026-11-05');
+  assert.equal(due.endsAt, '2026-11-05T08:00:00.000Z');
+  // До 9:00 и после 11:00 — не пора; повтор в тот же день — не пора.
+  assert.equal(helpdeskPromoDue(at(5, 8), '2026-11-16', ''), null);
+  assert.equal(helpdeskPromoDue(at(5, 11), '2026-11-16', ''), null);
+  assert.equal(helpdeskPromoDue(at(5, 10), '2026-11-16', '2026-11-05'), null);
+  // Срок приучения вышел — плакат больше не вешается.
+  assert.equal(helpdeskPromoDue(at(17, 9), '2026-11-16', ''), null);
+  // Полоса: шапка, четыре шага, порядок и призыв на месте.
+  const svg = renderHelpdeskPosterSvg();
+  assert.ok(svg.includes('HELP DESK — ЗАЯВКА НА ДОРАБОТКУ ПЛАНЕРА'), 'шапка');
+  assert.ok(svg.includes('Заполните заявку'), 'шаг формы');
+  assert.ok(svg.includes('Разбор заявок — каждое утро в 7:00'), 'порядок');
+  assert.ok(svg.includes('ПИШИТЕ — ПО ВАШИМ ЗАЯВКАМ'), 'призыв');
+});

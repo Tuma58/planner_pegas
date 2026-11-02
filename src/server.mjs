@@ -8,7 +8,7 @@ import { audit, canonTrailerPlate, nextOrderNo, nextRouteNo, openDatabase, queue
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
-import { HELPDESK_STATUSES, helpdeskStatusMessage, validateTicket } from './helpdesk.mjs';
+import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -6696,6 +6696,35 @@ async function runWeeklyBulletin() {
   } catch (error) { console.error('вестник недели:', error.message); }
 }
 setInterval(runWeeklyBulletin, 10 * 60_000);
+
+// ── Плакат HELP DESK на табло (решение руководителя 02.11) ──
+// Пока сотрудники привыкают к заявкам, инструкция висит на табло каждый
+// день с 9:00 до 11:00 МСК. Срок приучения — app_meta
+// 'helpdesk_promo_until' (двигается без правки кода); снимается сам
+// по ends_at. Идемпотентно по дню ('helpdesk_promo_day').
+function runHelpdeskPromo() {
+  try {
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('helpdesk_promo_until',?)`)
+      .run(HELPDESK_PROMO_DEFAULT_UNTIL);
+    const until = db.prepare(`SELECT value FROM app_meta WHERE key='helpdesk_promo_until'`).get()?.value;
+    const published = db.prepare(`SELECT value FROM app_meta WHERE key='helpdesk_promo_day'`).get()?.value;
+    const due = helpdeskPromoDue(Date.now(), until, published);
+    if (!due) return;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('helpdesk_promo_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(due.day);
+    const mediaId = randomUUID();
+    fs.mkdirSync(boardMediaPath, { recursive: true });
+    fs.writeFileSync(path.join(boardMediaPath, mediaId), renderHelpdeskPosterSvg());
+    db.prepare(`INSERT INTO board_notes(id,text,subtext,kind,ends_at,created_by,created_by_name,
+      media_id,media_mime) VALUES(?,?,?,?,?,NULL,?,?,?)`).run(
+      randomUUID(), '🛟 HELP DESK — как подать заявку на доработку планера',
+      'инструкция для всех: чат 💬 → комната «🛟 HELP DESK» → «✍ Новая заявка»',
+      'info', due.endsAt, 'планер', mediaId, 'image/svg+xml');
+    audit(db, null, 'board-note', 'board', mediaId, { helpdeskPromo: due.day }, 'helpdesk');
+    console.log(`плакат HELP DESK: на табло до 11:00 МСК (${due.day}, приучение до ${until})`);
+  } catch (error) { console.error('плакат HELP DESK:', error.message); }
+}
+setInterval(runHelpdeskPromo, 10 * 60_000);
 
 // ── «Дорогие ворота» — понедельничное задание продажам (этап 3, 22.09) ──
 // Клиенты БЕЗ простоя в договоре, чья медиана ворот выгрузки за 28 дн
