@@ -546,11 +546,26 @@ export async function renderLogist(container, context) {
       : '⏭ планов нет — можно продавать';
     // Бронь «🔒»: машина предварительно занята под сделку (радар продаж).
     const hold = (data.vehicleHolds || []).find(item => item.vehicle_id === request.vehicle.id);
+    // Накат заступившего водителя (заявка Базуева, HELP DESK 02.11): тот же
+    // бейдж, что в подборе ТС, — логист видит, кого грузить в приоритете
+    // (мало наката — зелёный), не открывая подбор по каждой сцепке.
+    const runRate = (() => {
+      const rr = request.vehicle.run_rate;
+      if (!rr) return '';
+      if (rr.fresh) return ` <span class="badge ok" title="Водитель заступил сегодня — накат ещё не накоплен">👤 заступил сегодня</span>`;
+      const target = Number(data.settings?.calculation?.dailyKmTarget ?? 500) || 500;
+      const low = rr.perDay < target * 0.7;
+      const title = (rr.assigned
+        ? `Накат заступившего водителя: ${rr.perDay} км/сут за ${rr.days} дн (с ${rr.since.slice(8, 10)}.${rr.since.slice(5, 7)})`
+        : `Закрепление водителя не оформлено — накат машины за ${rr.days} дн`) +
+        (low ? ' — мало наката, приоритет при назначении' : '');
+      return ` <span class="badge ${low ? 'ok' : ''}" title="${title}">👤 ${rr.perDay} км/сут · ${rr.days} дн${rr.assigned ? '' : ' *'}</span>`;
+    })();
     return `<div class="list-item ordrow ${idleDays > 2 ? 'pipe-returned' : ''}">
       <span style="flex:1;min-width:0">
         <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong>
         ${hold ? `<span class="badge warn" title="Забронирована: ${escapeHtml(hold.held_by_name)}${hold.note ? ` — ${escapeHtml(hold.note)}` : ''}">🔒 до ${formatDateTime(hold.until)}</span>` : ''}
-        · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.region || request.zone.name || 'субъект не определён')}
+        · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.region || request.zone.name || 'субъект не определён')}${runRate}
         <span style="display:block;margin:2px 0 1px">${request.idleMs > 0
           ? `<b style="color:var(--warn)">⌛ ${idleLabel}</b> · с <b>${formatDateTime(request.freeAt)}</b>`
           : request.overdueTrip ? '<b class="danger">⏳ выгрузка ожидается — расчётное время вышло</b>'
