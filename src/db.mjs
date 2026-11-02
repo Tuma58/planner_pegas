@@ -1451,6 +1451,18 @@ function migrateColumns(db) {
     user_name TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
+  // Подсказки помощника (ступень 2, 02.11): журнал показов и оценок —
+  // троттлинг «раз в сутки на человека» и дрейф пользы правил.
+  db.exec(`CREATE TABLE IF NOT EXISTS assistant_hints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
+    user_id TEXT,
+    action TEXT NOT NULL CHECK(action IN ('shown','helpful','useless')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_assistant_hints
+    ON assistant_hints(rule, context, user_id, action, created_at);`);
 }
 
 // Справочник адресов из выгрузки 1С «АДРЕС.xlsx»: 611 пунктов с геозонами

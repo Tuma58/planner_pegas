@@ -1165,6 +1165,7 @@ export async function renderSales(container, context) {
               autocomplete="off" required>
             <datalist id="salesCustomers"></datalist>
             <small id="salesCustSeg" style="display:block;margin-top:2px"></small>
+            <small id="salesAssistHint" style="display:block;margin-top:2px"></small>
           </label>
           <div class="form-grid">
             <label class="field">Пункт погрузки<input name="fromPoint" id="salesFromPoint" list="salesPlaces"
@@ -1430,9 +1431,40 @@ export async function renderSales(container, context) {
     box.innerHTML = `<span style="${style};font-weight:700">${label}</span>
       <span class="muted"> · маржа ${Math.round(info.marginDay / 1000)} т₽/машино-сутки (${info.n} рейс.)</span>`;
   };
+  // 🤖 Подсказка помощника (ступень 2, 02.11): выученные ворота клиента
+  // заметно выше цели — предупредить ДО бронирования, чтобы простой лёг
+  // в ставку. Сервер сам троттлит (раз в сутки на человека по клиенту);
+  // оценка 👍/👎 учит правило — бесполезное глохнет.
+  const assistHintLine = async name => {
+    const box = container.querySelector('#salesAssistHint');
+    if (!box) return;
+    box.innerHTML = '';
+    box.dataset.for = name;
+    if (!name) return;
+    try {
+      const { hint } = await api(`/api/assistant/hint?customer=${encodeURIComponent(name)}`);
+      if (!hint || box.dataset.for !== name) return;
+      box.innerHTML = `<span style="color:var(--warn,#b58a2e);font-weight:600">💡 ${escapeHtml(hint.text)}</span>
+        <span style="white-space:nowrap">
+          <button type="button" class="button ghost small" data-assist-vote="1" title="Подсказка полезна">👍</button>
+          <button type="button" class="button ghost small" data-assist-vote="" title="Подсказка не по делу — такие правила отключаются">👎</button>
+        </span>`;
+      box.querySelectorAll('[data-assist-vote]').forEach(button => {
+        button.onclick = async () => {
+          try {
+            await api('/api/assistant/vote', { method: 'POST', body: JSON.stringify({
+              rule: hint.rule, context: hint.context, helpful: Boolean(button.dataset.assistVote) }) });
+          } catch { /* оценка не критична */ }
+          const mark = box.querySelector('span:last-child');
+          if (mark) mark.innerHTML = '<small class="muted">спасибо</small>';
+        };
+      });
+    } catch { /* подсказка не должна мешать вводу */ }
+  };
   container.querySelector('[name="customerName"]').addEventListener('change', event => {
     const name = event.currentTarget.value.trim();
     custSegLine(name);
+    assistHintLine(name);
     const entries = (state.customersDirectory || []).filter(item => item.name === name);
     if (!entries.length) return;
     const main = entries.sort((a, b) => b.trip_count - a.trip_count)[0];

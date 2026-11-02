@@ -5133,3 +5133,30 @@ test('база знаний: поиск словоформами, гайды, с
   db.prepare(`INSERT INTO kb_misses(query,user_name) VALUES('как получить отпуск','Тест')`).run();
   assert.equal(db.prepare('SELECT COUNT(*) c FROM kb_misses').get().c, 1);
 });
+
+test('помощник: правило «ворота клиента», троттлинг и дрейф', async t => {
+  const { gateHint, hintShownRecently, hintStats, recordHint } = await import('../src/assistant.mjs');
+  // Срабатывает от полутора целей и минимума образцов; ниже — тишина.
+  assert.equal(gateHint(null, { h: 14.2, s: 8 }, 6).rule, 'customer-gates');
+  assert.match(gateHint(null, { h: 14.2, s: 8 }, 6).text, /14,2 ч \(8 рейс\.\).*цели 6 ч/);
+  assert.equal(gateHint(null, { h: 8.5, s: 8 }, 6), null, 'ниже порога ×1,5 — молчим');
+  assert.equal(gateHint(null, { h: 14.2, s: 2 }, 6), null, 'мало образцов — молчим');
+  assert.match(gateHint({ h: 10, s: 5 }, { h: 12, s: 6 }, 6).text, /на выгрузке.*на погрузке/);
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-assist-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  // Троттлинг: после показа тот же человек по тому же клиенту сутки молчит.
+  assert.equal(hintShownRecently(db, 'customer-gates', 'Клиент X', 'u1'), false);
+  recordHint(db, 'customer-gates', 'Клиент X', 'u1', 'shown');
+  assert.equal(hintShownRecently(db, 'customer-gates', 'Клиент X', 'u1'), true);
+  assert.equal(hintShownRecently(db, 'customer-gates', 'Клиент X', 'u2'), false, 'другому человеку — можно');
+  // Дрейф: счётчики показов и оценок за период.
+  recordHint(db, 'customer-gates', 'Клиент X', 'u1', 'helpful');
+  const stats = hintStats(db, 14);
+  assert.equal(stats['customer-gates'].shown, 1);
+  assert.equal(stats['customer-gates'].helpful, 1);
+});

@@ -9,6 +9,7 @@ import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
+import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint } from './assistant.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -7928,6 +7929,32 @@ async function api(request, response, url) {
     if (!updated.changes) return errorJson(response, 404, 'Статья не найдена');
     return json(response, 200, { ok: true });
   }
+  // ── 🤖 Подсказки помощника в момент работы (ступень 2, 02.11) ──
+  // Правило «ворота клиента»: при выборе заказчика в форме заявки.
+  // Не чаще раза в сутки на человека по клиенту; каждая оценивается.
+  if (request.method === 'GET' && pathname === '/api/assistant/hint') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const customer = String(url.searchParams.get('customer') || '').trim().slice(0, 120);
+    if (!customer) return json(response, 200, { hint: null });
+    const target = Number((settingsObject(db).calculation || {}).gateTargetHours ?? 6) || 6;
+    const hint = gateHintForCustomer(db, customer, target);
+    if (!hint || hintShownRecently(db, hint.rule, customer, user.id)) {
+      return json(response, 200, { hint: null });
+    }
+    recordHint(db, hint.rule, customer, user.id, 'shown');
+    return json(response, 200, { hint: { ...hint, context: customer } });
+  }
+  if (request.method === 'POST' && pathname === '/api/assistant/vote') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const rule = String(body.rule || '');
+    if (!HINT_RULES[rule]) return errorJson(response, 422, 'Неизвестное правило подсказки');
+    recordHint(db, rule, String(body.context || ''), user.id, body.helpful ? 'helpful' : 'useless');
+    return json(response, 200, { ok: true });
+  }
+
   // Пустой поиск: вопрос без ответа — сырьё для новых статей.
   if (request.method === 'POST' && pathname === '/api/kb/miss') {
     const user = requireUser(request, response);
@@ -12561,6 +12588,17 @@ async function api(request, response, url) {
         learns: 'ночной лекарь: план-транзит длиннее пересчитанного на 15%+ → сжатие, не раньше окна клиента',
         value: 'ночью + разово при вводе клампа', clamp: 'только сжатие',
         drift: 'лог ночной пересборки («транзит-санация №…»)' },
+      { name: 'Подсказки помощника (ступень 2)',
+        learns: 'правило «ворота клиента»: при выборе заказчика в форме заявки предупреждает продажи, если выученные ворота клиента ≥ 1,5 цели (gateTargetHours) — простой закладывается в ставку ДО бронирования; каждая подсказка оценивается 👍/👎',
+        value: (() => {
+          const stats = safe(() => hintStats(db, 14)) || {};
+          const names = { 'customer-gates': 'ворота клиента' };
+          const parts = Object.entries(stats).map(([rule, s]) =>
+            `${names[rule] || rule}: показов ${s.shown}, 👍 ${s.helpful} · 👎 ${s.useless}`);
+          return parts.join(' | ') || 'показов за 14 дней ещё не было';
+        })(),
+        clamp: 'порог = цель ×1,5 · минимум 3 образца ворот · не чаще раза в сутки на человека по клиенту',
+        drift: 'счётчики здесь; правило с перевесом 👎 отключается решением руководителя' },
     ];
     return json(response, 200, { generatedAt: new Date().toISOString(), items });
   }
