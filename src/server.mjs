@@ -6666,6 +6666,36 @@ function runNormsDigest() {
 }
 setInterval(runNormsDigest, 10 * 60_000);
 
+// ── Еженедельный «Вестник „Пегаса"» (решение руководителя 02.11) ──
+// Понедельник 08:00 МСК: газетная полоса по итогам недели (события +
+// темп месяца) публикуется объявлением на табло на сутки. Данные и
+// вёрстка — src/bulletin.mjs (деньги каноном, километры честные);
+// полоса — SVG, браузер табло рисует её сам. Идемпотентно по неделе.
+async function runWeeklyBulletin() {
+  try {
+    const msk = new Date(Date.now() + 3 * 3_600_000);
+    if (msk.getUTCDay() !== 1 || msk.getUTCHours() < 8) return;
+    const day = msk.toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='weekly_bulletin_week'`).get()?.value === day) return;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('weekly_bulletin_week',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+    const { weeklyBulletinData, renderBulletinSvg } = await import('./bulletin.mjs');
+    const data = weeklyBulletinData(db);
+    const mediaId = randomUUID();
+    fs.mkdirSync(boardMediaPath, { recursive: true });
+    fs.writeFileSync(path.join(boardMediaPath, mediaId), renderBulletinSvg(data));
+    db.prepare(`INSERT INTO board_notes(id,text,subtext,kind,ends_at,created_by,created_by_name,
+      media_id,media_mime) VALUES(?,?,?,?,?,NULL,?,?,?)`).run(
+      randomUUID(), `Вестник «Пегаса» — неделя ${data.from.slice(8)}.${data.from.slice(5, 7)}–${data.to.slice(8)}.${data.to.slice(5, 7)}`,
+      'итоги недели и темп месяца — автоматический выпуск',
+      'info', new Date(Date.now() + 24 * 3_600_000).toISOString(), 'планер',
+      mediaId, 'image/svg+xml');
+    audit(db, null, 'board-note', 'board', mediaId, { weekly: true, week: data.from }, 'bulletin');
+    console.log(`вестник недели ${data.from}–${data.to}: опубликован на табло (${(data.net / 1e6).toFixed(1)} млн)`);
+  } catch (error) { console.error('вестник недели:', error.message); }
+}
+setInterval(runWeeklyBulletin, 10 * 60_000);
+
 // ── «Дорогие ворота» — понедельничное задание продажам (этап 3, 22.09) ──
 // Клиенты БЕЗ простоя в договоре, чья медиана ворот выгрузки за 28 дн
 // выше цели руководителя (gateTargetHours): претензию им не выставить —

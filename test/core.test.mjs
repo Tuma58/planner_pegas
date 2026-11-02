@@ -5005,3 +5005,41 @@ test('перецеп на маршруте: звенья рвутся из лю�
   assert.equal(segments[2].vehicle_id, 'v-3');
   assert.equal(segments[2].ended_at, null);
 });
+
+test('вестник недели: данные каноном и газетная полоса', async t => {
+  const { weeklyBulletinData, renderBulletinSvg } = await import('../src/bulletin.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-bul-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  const zones = db.prepare('SELECT id FROM zones LIMIT 2').all();
+  const DAY = 86_400_000;
+  // Прошлая неделя: три закрытых рейса по 1,22 млн с НДС (1 млн бНДС),
+  // у одного честный пробег 2 000 км — он и есть «дальнобой недели».
+  const msk = new Date(Date.now() + 3 * 3_600_000);
+  const monday = Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth(), msk.getUTCDate())
+    - ((msk.getUTCDay() + 6) % 7) * DAY - 3 * 3_600_000;
+  for (let i = 1; i <= 3; i += 1) {
+    const iso = new Date(monday - i * DAY - 6 * 3_600_000).toISOString();
+    db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+        starts_at,ends_at,unloaded_at,status,revenue_vat,distance_km,gps_km,from_point,to_point)
+      VALUES(?,?,'Клиент',?,?,?,?,?,'unloaded',1220000,900,?, 'А','Б')`)
+      .run(`bul-${i}`, vehicle.id, zones[0].id, zones[1].id, iso, iso, iso, i === 1 ? 2000 : null);
+  }
+  // План текущего месяца — 165 млн.
+  const monthKey = new Date(monday + 3 * 3_600_000).toISOString().slice(0, 8) + '01';
+  db.prepare(`INSERT INTO revenue_plans(period_start,target_net) VALUES(?,165000000)
+    ON CONFLICT(period_start) DO UPDATE SET target_net=excluded.target_net`).run(monthKey);
+  const data = weeklyBulletinData(db);
+  assert.equal(data.trips, 3, 'три рейса прошлой недели');
+  assert.ok(Math.abs(data.net - 3_000_000) < 1000, 'выручка недели — канон без НДС');
+  assert.equal(data.topRun.km, 2000, 'дальнобой недели найден по честным км');
+  assert.ok(data.month.plan >= 0, 'темп месяца собран');
+  const svg = renderBulletinSvg(data);
+  assert.ok(svg.includes('ВЕСТНИК «ПЕГАСА»'), 'шапка на месте');
+  assert.ok(svg.includes('3,0 млн ₽'), 'выручка недели на полосе');
+  assert.ok(svg.includes('Темп месяца'), 'колонка темпа на месте');
+});
