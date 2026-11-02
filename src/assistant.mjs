@@ -22,10 +22,10 @@ export function gateHint(load, unload, targetHours) {
   const threshold = targetHours * 1.5;
   const pains = [];
   if (unload && unload.s >= 3 && unload.h >= threshold) {
-    pains.push(`на выгрузке в среднем ${h1(unload.h)} ч (${unload.s} рейс.)`);
+    pains.push(`на выгрузке в среднем ${h1(unload.h)} ч (${unload.s} рейс. за 28 дн)`);
   }
   if (load && load.s >= 3 && load.h >= threshold) {
-    pains.push(`на погрузке в среднем ${h1(load.h)} ч (${load.s} рейс.)`);
+    pains.push(`на погрузке в среднем ${h1(load.h)} ч (${load.s} рейс. за 28 дн)`);
   }
   if (!pains.length) return null;
   return {
@@ -35,12 +35,37 @@ export function gateHint(load, unload, targetHours) {
   };
 }
 
-export function gateHintForCustomer(db, customerName, targetHours) {
-  const key = String(customerName || '').trim().toLowerCase();
+// Честная медиана ворот выгрузки клиента за 28 дней — ТА ЖЕ методика,
+// что недельный дайджест «🚪 Дорогие ворота» (прибыл → выгружен,
+// образцы 0,2–72 ч, от 3 рейсов). Клампованные gate_facts (0,5–8 ч)
+// для правила не годятся: урок калибровки 02.11 — реальные тяжёлые
+// клиенты (12+ ч) там невидимы, и правило молчало по построению.
+export function customerUnloadStats(db, customerName, days = 28) {
+  // Точное имя по trim: имя в форму приходит из справочника клиентов,
+  // который сам собран из рейсов (lower() SQLite кириллицу не понижает —
+  // регистровые трюки тут немые, урок теста 02.11).
+  const key = String(customerName || '').trim();
   if (!key) return null;
-  const gate = op => db.prepare(`SELECT median_hours h, samples s FROM gate_facts WHERE key=?`)
-    .get(`cust-${op}:${key}`) || null;
-  return gateHint(gate('load'), gate('unload'), targetHours);
+  const hours = db.prepare(`SELECT arrived_at, unloaded_at FROM trips
+      WHERE trim(customer_name)=? AND status IN ('unloaded','done','paid')
+        AND arrived_at IS NOT NULL AND unloaded_at >= datetime('now', ?)`)
+    .all(key, `-${Math.max(1, days)} day`)
+    .map(trip => (Date.parse(trip.unloaded_at) - Date.parse(trip.arrived_at)) / 3_600_000)
+    .filter(value => value > 0.2 && value < 72)
+    .sort((a, b) => a - b);
+  if (hours.length < 3) return null;
+  return { h: Math.round(hours[Math.floor(hours.length / 2)] * 10) / 10, s: hours.length };
+}
+
+export function gateHintForCustomer(db, customerName, targetHours) {
+  const key = String(customerName || '').trim();
+  if (!key) return null;
+  // Клиенту с простоем в договоре не подсказываем: ставка уже защищена,
+  // претензии за его ворота идут сами (как в «Дорогих воротах»).
+  const contractual = db.prepare(`SELECT 1 FROM customer_profiles
+    WHERE trim(customer_name)=? AND demurrage_rate > 0 LIMIT 1`).get(key);
+  if (contractual) return null;
+  return gateHint(null, customerUnloadStats(db, key), targetHours);
 }
 
 // Троттлинг: та же подсказка тому же человеку — не чаще раза в сутки.

@@ -5138,7 +5138,7 @@ test('помощник: правило «ворота клиента», трот
   const { gateHint, hintShownRecently, hintStats, recordHint } = await import('../src/assistant.mjs');
   // Срабатывает от полутора целей и минимума образцов; ниже — тишина.
   assert.equal(gateHint(null, { h: 14.2, s: 8 }, 6).rule, 'customer-gates');
-  assert.match(gateHint(null, { h: 14.2, s: 8 }, 6).text, /14,2 ч \(8 рейс\.\).*цели 6 ч/);
+  assert.match(gateHint(null, { h: 14.2, s: 8 }, 6).text, /14,2 ч \(8 рейс\. за 28 дн\).*цели 6 ч/);
   assert.equal(gateHint(null, { h: 8.5, s: 8 }, 6), null, 'ниже порога ×1,5 — молчим');
   assert.equal(gateHint(null, { h: 14.2, s: 2 }, 6), null, 'мало образцов — молчим');
   assert.match(gateHint({ h: 10, s: 5 }, { h: 12, s: 6 }, 6).text, /на выгрузке.*на погрузке/);
@@ -5159,4 +5159,26 @@ test('помощник: правило «ворота клиента», трот
   const stats = hintStats(db, 14);
   assert.equal(stats['customer-gates'].shown, 1);
   assert.equal(stats['customer-gates'].helpful, 1);
+
+  // Честные ворота из рейсов (методика «Дорогих ворот», без клампа 8 ч):
+  // три рейса по 12 ч на выгрузке → медиана 12, подсказка горит; клиент
+  // с простоем в договоре — молчание, его ставка уже защищена.
+  const { customerUnloadStats, gateHintForCustomer } = await import('../src/assistant.mjs');
+  const vehicleId = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zoneId = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const addTrip = (n, hoursAtGate) => {
+    const arrived = new Date(Date.now() - (hoursAtGate + 2) * 3_600_000).toISOString();
+    const unloaded = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+        starts_at,ends_at,distance_km,revenue_vat,status,arrived_at,unloaded_at)
+      VALUES(?,?,?,?,?,?,?,?,?,'done',?,?)`)
+      .run(`hint-t${n}`, vehicleId, 'Тяжёлые Ворота ООО', zoneId, zoneId,
+        arrived, unloaded, 100, 10000, arrived, unloaded);
+  };
+  addTrip(1, 12); addTrip(2, 12); addTrip(3, 12);
+  assert.deepEqual(customerUnloadStats(db, '  Тяжёлые Ворота ООО  '), { h: 12, s: 3 });
+  assert.equal(gateHintForCustomer(db, 'Тяжёлые Ворота ООО', 6).rule, 'customer-gates');
+  db.prepare(`INSERT INTO customer_profiles(customer_name, demurrage_rate)
+    VALUES('Тяжёлые Ворота ООО', 500)`).run();
+  assert.equal(gateHintForCustomer(db, 'Тяжёлые Ворота ООО', 6), null, 'договорной простой — молчим');
 });
