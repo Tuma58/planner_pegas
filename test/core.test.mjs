@@ -4073,7 +4073,10 @@ test('прогноз месяца: серверный порт формулы д
   assert.notDeepEqual(afterMark.recentDays, result.recentDays,
     'фактовый слой для контроля «задним числом» отметку видит');
   // Новая реальная работа (рейс с плановой выгрузкой) прогноз меняет.
-  const iso2 = new Date(Date.now() - 2 * DAY).toISOString();
+  // День — 15-е число ТЕКУЩЕГО месяца: «сегодня −2 дня» на стыке месяцев
+  // уезжал в прошлый, и прогноз честно не рос (тест падал 02.11).
+  const now2 = new Date();
+  const iso2 = new Date(Date.UTC(now2.getUTCFullYear(), now2.getUTCMonth(), 15, 12)).toISOString();
   insert.run('fc-late', vehicle.id, 'Клиент', zones[0].id, zones[1].id,
     iso2, iso2, null, 'run', 2_440_000);
   const after = forecastMonth(db);
