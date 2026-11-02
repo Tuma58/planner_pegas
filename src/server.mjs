@@ -4507,7 +4507,9 @@ function driverDoubleGroups() {
 // дополняется, сам дубль мягко увольняется с пометкой в аудите.
 function mergeDriverDoublesOnce() {
   try {
-    if (db.prepare(`SELECT 1 FROM app_meta WHERE key='drivers_dedup_2026_10'`).get()) return;
+    // Вторая волна (02.11, кейс Королёва: дубль без «ё» через карточку
+    // ТС): метка новая, прошлые слитые уже уволены и в группы не попадут.
+    if (db.prepare(`SELECT 1 FROM app_meta WHERE key='drivers_dedup_2026_11'`).get()) return;
     let merged = 0;
     const log = [];
     for (const group of driverDoubleGroups()) {
@@ -4520,7 +4522,14 @@ function mergeDriverDoublesOnce() {
         db.prepare(`DELETE FROM driver_attendance WHERE driver_id=? AND day IN
           (SELECT day FROM driver_attendance WHERE driver_id=?)`).run(dup.id, master.id);
         db.prepare(`UPDATE driver_attendance SET driver_id=? WHERE driver_id=?`).run(master.id, dup.id);
-        if (dup.vehicle_id && !master.vehicle_id) {
+        // Машина мастера, отданная периодным закреплением другому водителю,
+        // мастеру больше не принадлежит (кейс Королёва: р995оо58 ушла
+        // Васину, человека пересадили на р984вн58 и дубль создали с ней) —
+        // машина дубля в этом случае и есть актуальная.
+        const masterVehicleTaken = master.vehicle_id && db.prepare(`SELECT 1 FROM driver_assignments
+          WHERE vehicle_id=? AND driver_id IS NOT NULL AND driver_id<>? AND ends_at > date('now')
+          LIMIT 1`).get(master.vehicle_id, master.id);
+        if (dup.vehicle_id && (!master.vehicle_id || (masterVehicleTaken && dup.vehicle_id !== master.vehicle_id))) {
           db.prepare(`UPDATE drivers SET vehicle_id=? WHERE id=?`).run(dup.vehicle_id, master.id);
           db.prepare(`UPDATE vehicles SET driver_name=? WHERE id=?`).run(master.full_name, dup.vehicle_id);
           master.vehicle_id = dup.vehicle_id;
@@ -9980,8 +9989,11 @@ async function api(request, response, url) {
       db.prepare(`UPDATE drivers SET vehicle_id=NULL,updated_at=CURRENT_TIMESTAMP
         WHERE vehicle_id=?`).run(match[0]);
       if (newDriver) {
-        const existing = db.prepare(`SELECT id FROM drivers
-          WHERE full_name=? COLLATE NOCASE AND status<>'fired'`).get(newDriver);
+        // Матч по нормализованному ФИО (регистр, ё, пробелы): точное
+        // COLLATE NOCASE не прощало «ё» — «Королев» в карточке ТС тихо
+        // создавал дубля «Королёва» мимо щита (кейс 02.11, р984вн58).
+        const existing = db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()
+          .find(row => normDriverName(row.full_name) === normDriverName(newDriver));
         if (existing) {
           db.prepare(`UPDATE drivers SET vehicle_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
             .run(match[0], existing.id);

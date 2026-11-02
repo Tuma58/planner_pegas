@@ -1451,9 +1451,12 @@ function openDriversDirectory() {
   const drivers = state.data.drivers || [];
   const vehicles = state.data.vehicles;
   const back = () => openDriversDirectory();
-  const query = (state.driversQuery || '').toLowerCase();
+  // Поиск прощает «ё»: «Королев» находит «Королёва» — иначе человека не
+  // находили и заводили дубля (кейс 02.11, второй после волны 31.10).
+  const yo = value => String(value || '').toLowerCase().replace(/ё/g, 'е');
+  const query = yo(state.driversQuery);
   const matched = drivers.filter(driver => !query ||
-    `${driver.full_name} ${driver.phone} ${driver.vehicle_plate || ''}`.toLowerCase().includes(query));
+    yo(`${driver.full_name} ${driver.phone} ${driver.vehicle_plate || ''}`).includes(query));
   const freeDrivers = matched.filter(driver => !driver.vehicle_id && driver.status === 'active');
   // «Без машины» — фильтр-кнопка, а не простыня фамилий: 60 имён сплошным
   // текстом съедали пол-экрана и не читались (ревизия 31.10).
