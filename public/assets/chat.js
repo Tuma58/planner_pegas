@@ -692,6 +692,14 @@ export function setupChat(state) {
       if (knownVersion === null) { knownVersion = health.assetVersion; return; }
       if (health.assetVersion !== knownVersion) {
         knownVersion = health.assetVersion;
+        // Табло в ТВ-режиме обновляется само (решение руководителя 02.11):
+        // у телевизора некому жать «Обновить сейчас», и экран висел на
+        // старой версии до ночного рестарта. ТВ-режим переживает
+        // перезагрузку (pl_dash_tv) и сам вернётся в ротацию; несохранённого
+        // ввода на табло нет. Рабочие места — по-прежнему баннером.
+        let tv = false;
+        try { tv = localStorage.getItem('pl_dash_tv') === '1'; } catch { /* ок */ }
+        if (tv) { location.reload(); return; }
         showUpdateBanner();
       }
     } catch { /* сеть моргнула — проверим в следующий раз */ }
