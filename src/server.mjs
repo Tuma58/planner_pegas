@@ -7945,6 +7945,19 @@ async function api(request, response, url) {
     recordHint(db, hint.rule, customer, user.id, 'shown');
     return json(response, 200, { hint: { ...hint, context: customer } });
   }
+  // Подсказка, вычисленная на фронте (данные уже там): сервер отвечает,
+  // показывать ли (троттлинг «раз в сутки»), и фиксирует показ.
+  if (request.method === 'POST' && pathname === '/api/assistant/check') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const rule = String(body.rule || '');
+    if (!HINT_RULES[rule]) return errorJson(response, 422, 'Неизвестное правило подсказки');
+    const context = String(body.context || '').slice(0, 120);
+    if (hintShownRecently(db, rule, context, user.id)) return json(response, 200, { show: false });
+    recordHint(db, rule, context, user.id, 'shown');
+    return json(response, 200, { show: true });
+  }
   if (request.method === 'POST' && pathname === '/api/assistant/vote') {
     const user = requireUser(request, response);
     if (!user) return;
@@ -12592,7 +12605,7 @@ async function api(request, response, url) {
         learns: 'правило «ворота клиента»: при выборе заказчика в форме заявки предупреждает продажи, если выученные ворота клиента ≥ 1,5 цели (gateTargetHours) — простой закладывается в ставку ДО бронирования; каждая подсказка оценивается 👍/👎',
         value: (() => {
           const stats = safe(() => hintStats(db, 14)) || {};
-          const names = { 'customer-gates': 'ворота клиента' };
+          const names = { 'customer-gates': 'ворота клиента', 'run-rate-balance': 'выравнивание наката' };
           const parts = Object.entries(stats).map(([rule, s]) =>
             `${names[rule] || rule}: показов ${s.shown}, 👍 ${s.helpful} · 👎 ${s.useless}`);
           return parts.join(' | ') || 'показов за 14 дней ещё не было';

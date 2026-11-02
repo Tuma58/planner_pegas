@@ -5182,3 +5182,22 @@ test('помощник: правило «ворота клиента», трот
     VALUES('Тяжёлые Ворота ООО', 500)`).run();
   assert.equal(gateHintForCustomer(db, 'Тяжёлые Ворота ООО', 6), null, 'договорной простой — молчим');
 });
+
+test('помощник: правило «выравнивание наката» при выборе сцепки', async () => {
+  const { runRateHint } = await import('../public/assets/sales.js');
+  const vehicle = (id, plate, perDay, fresh = false) =>
+    ({ id, plate, run_rate: perDay == null ? null : { perDay, days: 10, fresh } });
+  const chosen = vehicle('v1', 'т001ат58', 620);
+  const hungry = vehicle('v2', 'т002ат58', 280);
+  const busy = vehicle('v3', 'т003ат58', 540);
+  // Перекачанная при «голодной» в кандидатах — подсказка с обеими машинами.
+  const hint = runRateHint(chosen, [chosen, busy, hungry], 500);
+  assert.equal(hint.rule, 'run-rate-balance');
+  assert.match(hint.text, /т001ат58.*620.*т002ат58.*280/);
+  // Накат ниже цели — молчим; голодных нет — молчим; свежий водитель — молчим.
+  assert.equal(runRateHint(vehicle('v1', 'т001ат58', 480), [hungry], 500), null);
+  assert.equal(runRateHint(chosen, [busy], 500), null);
+  assert.equal(runRateHint(vehicle('v1', 'т001ат58', 620, true), [hungry], 500), null);
+  // Сама выбранная «голодной» не считается; без наката у кандидата — мимо.
+  assert.equal(runRateHint(chosen, [chosen, vehicle('v4', 'т004ат58', null)], 500), null);
+});

@@ -2066,6 +2066,27 @@ function runRateBadge(vehicle, data) {
   return `<span class="badge ${low ? 'ok' : ''}" title="${title}">👤 ${rr.perDay} км/сут · ${rr.days} дн${rr.assigned ? '' : ' *'}</span>`;
 }
 
+// 🤖 Правило «выравнивание наката» (ступень 2 помощника, 02.11): выбранная
+// сцепка перекачана (накат ≥ цели dailyKmTarget), а среди подходящих
+// кандидатов есть «голодная» (≤70% цели — порог зелёного бейджа) —
+// предупредить ДО назначения. Не запрещает: повторный клик назначает.
+// Чистая логика — под тестом.
+export function runRateHint(chosen, alternatives, targetKmDay) {
+  const rr = chosen?.run_rate;
+  if (!rr || rr.fresh || !(rr.perDay >= targetKmDay)) return null;
+  const hungry = (alternatives || [])
+    .filter(alt => alt && alt.id !== chosen.id && alt.run_rate && !alt.run_rate.fresh
+      && alt.run_rate.perDay <= targetKmDay * 0.7)
+    .sort((a, b) => a.run_rate.perDay - b.run_rate.perDay)[0];
+  if (!hungry) return null;
+  return {
+    rule: 'run-rate-balance',
+    context: chosen.plate,
+    text: `У ${chosen.plate} водитель уже накатал ${rr.perDay} км/сут (цель ${targetKmDay}), ` +
+      `а подходящая ${hungry.plate} — всего ${hungry.run_rate.perDay} км/сут: ей работа нужнее. Решение за вами.`
+  };
+}
+
 export function assignDialog(order, data, showModal, closeModal, onReload, options = {}) {
   const orderFromAddress = order.from_address_id
     ? (data.reference.addresses || []).find(item => item.id === order.from_address_id)
@@ -2128,6 +2149,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
   })()}
     </select></label>
     <div id="assignNext"></div>
+    <div id="assignHint"></div>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button type="button" class="button" id="assignOk">Назначить</button>
@@ -2147,7 +2169,43 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
     element.addEventListener('click', () => { select.value = element.dataset.plate; showNext(); }));
   document.querySelectorAll('[data-usual]').forEach(button =>
     button.addEventListener('click', () => { select.value = button.dataset.usual; showNext(); }));
+  // Мягкий щит выравнивания: первый клик по перекачанной сцепке при
+  // «голодной» в кандидатах — подсказка; повторный клик назначает.
+  let runRateWarnedFor = '';
   document.getElementById('assignOk').onclick = async () => {
+    const target = Number(data.settings?.calculation?.dailyKmTarget ?? 500) || 500;
+    if (runRateWarnedFor !== select.value) {
+      const chosen = data.vehicles.find(vehicle => vehicle.id === select.value);
+      const hint = runRateHint(chosen, candidates.slice(0, 8).map(item => item.vehicle), target);
+      if (hint) {
+        let show = false;
+        try {
+          show = (await api('/api/assistant/check', { method: 'POST',
+            body: JSON.stringify({ rule: hint.rule, context: hint.context }) })).show;
+        } catch { /* сервер молчит — не мешаем назначению */ }
+        if (show) {
+          runRateWarnedFor = select.value;
+          const box = document.getElementById('assignHint');
+          box.innerHTML = `<p style="color:var(--warn,#b58a2e);font-weight:600;margin:6px 0 2px">
+              💡 ${escapeHtml(hint.text)}
+              <span style="white-space:nowrap">
+                <button type="button" class="button ghost small" data-assist-vote="1" title="Подсказка полезна">👍</button>
+                <button type="button" class="button ghost small" data-assist-vote="" title="Подсказка не по делу — такие правила отключаются">👎</button>
+              </span></p>`;
+          document.getElementById('assignOk').textContent = 'Назначить всё же';
+          box.querySelectorAll('[data-assist-vote]').forEach(button => {
+            button.onclick = async () => {
+              try {
+                await api('/api/assistant/vote', { method: 'POST', body: JSON.stringify({
+                  rule: hint.rule, context: hint.context, helpful: Boolean(button.dataset.assistVote) }) });
+              } catch { /* оценка не критична */ }
+              button.parentElement.innerHTML = '<small class="muted">спасибо</small>';
+            };
+          });
+          return;
+        }
+      }
+    }
     // Замена рекомендации подбора — только с причиной: она уходит в отчёт
     // руководителя «доверие автоподбору» и в правила улучшения подбора.
     const draft = (data.assignDrafts || []).find(item => item.order_id === order.id);
