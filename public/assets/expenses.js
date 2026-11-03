@@ -53,12 +53,16 @@ export async function renderExpenses(container, context) {
     container.innerHTML = `<p class="muted" style="padding:16px">${escapeHtml(error.message)}</p>`;
     return;
   }
-  const canWrite = can('expenses:write');
-  const myRoles = state.data.user.roles || [state.data.user.role];
-  const canCategories = myRoles.some(role => ['manager', 'admin'].includes(role));
+  // Доступ персональный: кто видит вкладку, тот и ведёт журнал
+  // (гость — только просмотр); категории — там же.
+  const canWrite = Boolean(state.data.user.expensesAccess) && !Number(state.data.user.guest);
+  const canCategories = canWrite;
   const categoryById = new Map(data.categories.map(category => [category.id, category]));
+  const brandOf = value => String(value || '').split(' · ')[0].trim() || '— без поставщика';
   const filterCat = state.expCat || '';
-  const items = filterCat ? data.items.filter(item => item.category_id === filterCat) : data.items;
+  const filterSup = state.expSup || '';
+  const items = data.items.filter(item => (!filterCat || item.category_id === filterCat)
+    && (!filterSup || brandOf(item.supplier) === filterSup));
 
   const catChip = row => {
     const category = categoryById.get(row.key);
@@ -66,6 +70,23 @@ export async function renderExpenses(container, context) {
       data-exp-cat="${row.key}" title="${row.count} записей · без НДС ${money(row.net)}">
       ${escapeHtml(category?.name || row.key)} <b>${money(row.sum)}</b></button>`;
   };
+  // Структура учёта (решение 03.11): группы «переменные/постоянные»,
+  // внутри — статьи; поставщики с единым счётом (Dornet) — одной
+  // суммой за период, как в их акте.
+  const kindSum = kind => data.summary.byKind.find(row => row.key === kind);
+  const kindRow = (kind, label) => {
+    const chips = data.summary.byCategory
+      .filter(row => (categoryById.get(row.key)?.kind || 'variable') === kind).map(catChip);
+    const total = kindSum(kind);
+    if (!chips.length) return '';
+    return `<div class="resctl" style="margin-bottom:4px;flex-wrap:wrap">
+      <span class="muted">${label}:</span><b>${money(total?.sum || 0)}</b>
+      <small class="muted">без НДС ${money(total?.net || 0)}</small>
+      ${chips.join('')}</div>`;
+  };
+  const supChip = row => `<button class="button ghost small ${filterSup === row.key ? 'active' : ''}"
+      data-exp-sup="${escapeHtml(row.key)}" title="${row.count} записей · без НДС ${money(row.net)}">
+      ${escapeHtml(row.key)} <b>${money(row.sum)}</b></button>`;
 
   const tableRows = items.slice(0, 400).map(item => `<tr>
       <td class="mono">${dayHuman(item.spent_on)}</td>
@@ -90,11 +111,13 @@ export async function renderExpenses(container, context) {
       <small class="muted">Итог периода: <b>${money(data.summary.total)}</b>
         · без НДС <b>${money(data.summary.totalNet)}</b> · записей ${data.summary.count}</small>
     </div>
-    <div class="resctl" style="margin-bottom:8px;flex-wrap:wrap">
-      ${filterCat ? `<button class="button ghost small" data-exp-cat="">✕ все категории</button>` : ''}
-      ${data.summary.byCategory.map(catChip).join('')}
-      ${data.summary.byCategory.length ? '' : '<small class="muted">Журнал пуст — добавьте первую запись или загрузите выгрузку поставщика.</small>'}
-    </div>
+    ${kindRow('variable', 'Переменные')}
+    ${kindRow('fixed', 'Постоянные')}
+    ${data.summary.bySupplier.length ? `<div class="resctl" style="margin-bottom:8px;flex-wrap:wrap">
+      <span class="muted">Поставщики:</span>
+      ${data.summary.bySupplier.map(supChip).join('')}
+      ${filterCat || filterSup ? `<button class="button ghost small" data-exp-reset="1">✕ сбросить фильтры</button>` : ''}
+    </div>` : '<div class="resctl" style="margin-bottom:8px"><small class="muted">Журнал пуст — добавьте первую запись или загрузите выгрузку поставщика.</small></div>'}
     <table class="rtable">
       <thead><tr><th>День</th><th>Категория</th><th class="num">Сумма</th><th>Машина</th>
         <th>Поставщик</th><th>Документ / заметка</th><th>Кто</th><th></th></tr></thead>
@@ -114,6 +137,17 @@ export async function renderExpenses(container, context) {
   container.querySelectorAll('[data-exp-cat]').forEach(button =>
     button.addEventListener('click', () => {
       state.expCat = button.dataset.expCat === filterCat ? '' : button.dataset.expCat;
+      redraw();
+    }));
+  container.querySelectorAll('[data-exp-sup]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.expSup = button.dataset.expSup === filterSup ? '' : button.dataset.expSup;
+      redraw();
+    }));
+  container.querySelectorAll('[data-exp-reset]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.expCat = '';
+      state.expSup = '';
       redraw();
     }));
   container.querySelectorAll('[data-exp-del]').forEach(button =>

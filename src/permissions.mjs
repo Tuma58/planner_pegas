@@ -22,14 +22,14 @@ export const ROLE_PERMISSIONS = {
   resource: ['planner:read', 'fleet:write', 'customers:read'],
   dispatcher: ['planner:read', 'trip-status:write', 'customers:read'],
   sales: ['planner:read', 'orders:write', 'customers:read'],
-  // Журнал затрат (учёт затрат, 03.11.2026) ведут бухгалтерия и
-  // руководитель (админ — через ALL); чтение вкладки — reports:read.
-  accountant: ['planner:read', 'payments:write', 'customers:read', 'expenses:write'],
+  // Учёт затрат: доступ ПЕРСОНАЛЬНЫЙ (решение 03.11 «пока только у
+  // меня») — право expenses:write лишь у admin (через ALL), остальных
+  // впускает список логинов в настройке (expensesAccess, expenses.mjs).
+  accountant: ['planner:read', 'payments:write', 'customers:read'],
   // График смен сотрудников ведёт руководитель (и админ через ALL).
   // staff:write — справочник сотрудников («Сотрудники»): карточки,
   // приём/увольнение, графики смен (решение руководителя 07.10).
-  manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write', 'staff:write',
-    'expenses:write'],
+  manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write', 'staff:write'],
   // Механик (блок «Ремзона», старт 14.09.2026): видит парк и ведёт
   // недоступности — заезды в ремонт/ТО, их причины и закрытие.
   mechanic: ['planner:read', 'fleet:write']

@@ -6,6 +6,23 @@
 // expense_categories (правит руководитель/админ), а не зашитый список:
 // посев ниже — только стартовое наполнение меткой в app_meta.
 
+import { effectivePermissions } from './permissions.mjs';
+
+// Доступ к учёту затрат ПЕРСОНАЛЬНЫЙ (решение руководителя 03.11:
+// «не общим, а пока только у меня»): право expenses:write осталось
+// только у администратора, остальных впускает список логинов в
+// Настройки → Пользователи («Доступ к затратам») — по образцу
+// staffAccess. Роль manager сама по себе доступа НЕ даёт.
+export function expensesAccess(user, settings) {
+  if (!user) return false;
+  if (effectivePermissions(user).includes('expenses:write')) return true;
+  // Разделители — только запятая/точка с запятой: логины в системе
+  // бывают с пробелом («Дарья Н»), по пробелу резать нельзя.
+  const allowed = String(settings?.expenses?.access || '')
+    .split(/[,;]+/).map(item => item.trim().toLowerCase()).filter(Boolean);
+  return allowed.includes(String(user.username || '').toLowerCase());
+}
+
 // Посев категорий: kind — характер затраты для будущего живого
 // норматива себестоимости (Э5): variable ложится на километры,
 // fixed — на машино-дни. Руководитель волен менять и дополнять.
@@ -88,9 +105,18 @@ export function validateExpense(body, categories) {
   } };
 }
 
-// Сводка периода: итоги по категориям и машинам. К без-НДС приводится
-// ставкой калькуляции (vat=0 — сумма уже без НДС, как в документе).
-export function expensesSummary(items, vatRate) {
+// Бренд поставщика: часть до « · » — записи Dornet («Dornet · точка»)
+// сворачиваются в единую строку поставщика, как в его акте за период.
+export const supplierBrand = value =>
+  String(value || '').split(' · ')[0].trim() || '— без поставщика';
+
+// Сводка периода: итоги по категориям, группам (переменные/постоянные —
+// структура учёта, решение руководителя 03.11), машинам и поставщикам
+// (поставщик с единым счётом, как Dornet, виден одной суммой — сверка
+// с его актом). К без-НДС приводится ставкой калькуляции (vat=0 —
+// сумма уже без НДС, как в документе). categories — Map справочника,
+// по нему статья узнаёт свою группу.
+export function expensesSummary(items, vatRate, categories = new Map()) {
   const rate = Number(vatRate) > 0 ? Number(vatRate) : 0;
   const netOf = item => item.vat ? item.amount / (1 + rate) : item.amount;
   const roll = (map, key, item) => {
@@ -102,17 +128,22 @@ export function expensesSummary(items, vatRate) {
   };
   const byCategory = new Map();
   const byVehicle = new Map();
+  const byKind = new Map();
+  const bySupplier = new Map();
   let total = 0;
   let totalNet = 0;
   for (const item of items) {
     total += item.amount;
     totalNet += netOf(item);
     roll(byCategory, item.category_id, item);
+    roll(byKind, categories.get(item.category_id)?.kind || 'variable', item);
+    roll(bySupplier, supplierBrand(item.supplier), item);
     if (item.vehicle_id) roll(byVehicle, item.vehicle_id, item);
   }
   const unpack = map => [...map].map(([key, bucket]) => ({ key,
     sum: Math.round(bucket.sum), net: Math.round(bucket.net), count: bucket.count }))
     .sort((a, b) => b.sum - a.sum);
   return { total: Math.round(total), totalNet: Math.round(totalNet),
-    count: items.length, byCategory: unpack(byCategory), byVehicle: unpack(byVehicle) };
+    count: items.length, byCategory: unpack(byCategory), byVehicle: unpack(byVehicle),
+    byKind: unpack(byKind), bySupplier: unpack(bySupplier).slice(0, 12) };
 }

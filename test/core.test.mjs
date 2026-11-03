@@ -18,7 +18,7 @@ import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
-import { EXPENSE_CATEGORY_SEED, expenseFingerprint, expensesSummary, parseExpenseAmount, parseExpenseDay, validateExpense } from '../src/expenses.mjs';
+import { EXPENSE_CATEGORY_SEED, expenseFingerprint, expensesAccess, expensesSummary, parseExpenseAmount, parseExpenseDay, validateExpense } from '../src/expenses.mjs';
 import { DORNET_SERVICES, dornetExpenseRows } from '../src/dornet.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, escalationStaff, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
 import { effBoardData } from '../src/efficiency.mjs';
@@ -5456,17 +5456,45 @@ test('затраты: валидация записи и отпечаток де
   assert.notEqual(expenseFingerprint(row), expenseFingerprint({ ...row, amount: 15320.51 }));
 });
 
-test('затраты: сводка периода считает НДС и разрезы', () => {
+test('затраты: сводка периода считает НДС, группы и поставщиков', () => {
+  const categories = new Map([
+    ['fuel', { id: 'fuel', kind: 'variable' }],
+    ['wash', { id: 'wash', kind: 'variable' }],
+    ['lease', { id: 'lease', kind: 'fixed' }]
+  ]);
   const items = [
-    { category_id: 'fuel', amount: 1220, vat: 1, vehicle_id: 'v1' },
-    { category_id: 'fuel', amount: 1000, vat: 0, vehicle_id: 'v1' },
-    { category_id: 'wash', amount: 610, vat: 1, vehicle_id: null }
+    { category_id: 'fuel', amount: 1220, vat: 1, vehicle_id: 'v1', supplier: 'АЗС Роснефть' },
+    { category_id: 'fuel', amount: 1000, vat: 0, vehicle_id: 'v1', supplier: '' },
+    { category_id: 'wash', amount: 610, vat: 1, vehicle_id: null, supplier: 'Dornet · Мойка Бежецк' },
+    { category_id: 'lease', amount: 2440, vat: 1, vehicle_id: null, supplier: 'Лизинг-Инвест' }
   ];
-  const summary = expensesSummary(items, 0.22);
-  assert.equal(summary.total, 2830);
-  assert.equal(summary.totalNet, 1000 + 1000 + 500);
-  assert.deepEqual(summary.byCategory[0], { key: 'fuel', sum: 2220, net: 2000, count: 2 });
+  const summary = expensesSummary(items, 0.22, categories);
+  assert.equal(summary.total, 5270);
+  assert.equal(summary.totalNet, 1000 + 1000 + 500 + 2000);
+  assert.deepEqual(summary.byCategory[0], { key: 'lease', sum: 2440, net: 2000, count: 1 });
   assert.equal(summary.byVehicle.length, 1, 'безмашинная запись не попадает в разрез по бортам');
+  // Группы учёта: переменные/постоянные (структура руководителя 03.11).
+  assert.deepEqual(summary.byKind.find(row => row.key === 'variable'),
+    { key: 'variable', sum: 2830, net: 2500, count: 3 });
+  assert.deepEqual(summary.byKind.find(row => row.key === 'fixed'),
+    { key: 'fixed', sum: 2440, net: 2000, count: 1 });
+  // Поставщик с единым счётом сворачивается по бренду (до « · »).
+  assert.ok(summary.bySupplier.some(row => row.key === 'Dornet' && row.sum === 610));
+  assert.ok(summary.bySupplier.some(row => row.key === '— без поставщика'));
+});
+
+test('затраты: доступ персональный — admin или логин из настройки', () => {
+  const admin = { active: 1, role: 'admin', username: 'admin' };
+  const boss = { active: 1, role: 'manager', username: 'nigovorin' };
+  const settings = { expenses: { access: 'nigovorin, buhgalter' } };
+  assert.ok(expensesAccess(admin, {}), 'админ видит всегда');
+  assert.ok(!expensesAccess(boss, {}), 'роль manager сама по себе не впускает');
+  assert.ok(expensesAccess(boss, settings), 'логин из списка впускает');
+  assert.ok(expensesAccess({ ...boss, username: 'NIGOVORIN' }, settings), 'регистр не важен');
+  assert.ok(!expensesAccess({ active: 1, role: 'accountant', username: 'other' }, settings));
+  // Логин с пробелом («Дарья Н») — по пробелу список не режется.
+  assert.ok(expensesAccess({ active: 1, role: 'manager', username: 'Дарья Н' },
+    { expenses: { access: 'Дарья Н, buhgalter' } }));
 });
 
 test('затраты: посев категорий и дедуп импорта в базе', t => {

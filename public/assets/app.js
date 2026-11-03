@@ -781,9 +781,9 @@ const MAIN_VIEWS = [
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') },
-  // «💸 Затраты» (Э1, 03.11, docs/costs-plan.md): журнал фактических
-  // расходов — видят отчётные роли, ведут бухгалтерия/руководитель/админ.
-  { id: 'expenses', title: 'Затраты', show: () => can('expenses:write') || can('reports:read') },
+  // «💸 Затраты» (03.11, docs/costs-plan.md): доступ персональный —
+  // admin и логины из настройки «Доступ к затратам» (решение 03.11).
+  { id: 'expenses', title: 'Затраты', show: () => Boolean(state.data?.user?.expensesAccess) },
   // Справочник сотрудников: staff:write (руководитель, админ) или логин
   // из настройки «полный доступ» — сервер считает флаг staffAccess сам.
   { id: 'staff', title: 'Сотрудники', show: () => Boolean(state.data?.user?.staffAccess) },

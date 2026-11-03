@@ -11,7 +11,7 @@ import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
-import { expenseFingerprint, expensesSummary, validateExpense } from './expenses.mjs';
+import { expenseFingerprint, expensesAccess, expensesSummary, validateExpense } from './expenses.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -171,6 +171,7 @@ function publicUser(user) {
     // Вкладка «Сотрудники»: право staff:write или логин из настройки
     // «полный доступ» (решение руководителя 07.10).
     staffAccess: staffAccess(user, settingsObject(db)),
+    expensesAccess: expensesAccess(user, settingsObject(db)),
     // Руководитель диспетчерской службы: вне автораспределения, но с
     // кнопкой «⚖ Перераспределить» на доске (решение руководителя 12.10).
     dispatchExempt: Boolean(user.dispatch_exempt),
@@ -8114,12 +8115,24 @@ async function api(request, response, url) {
   const expenseCategoriesOf = () => new Map(db.prepare(
     `SELECT * FROM expense_categories ORDER BY sort, name`).all()
     .map(category => [category.id, category]));
-  const canSeeExpenses = user => hasPermission(user, 'reports:read')
-    || hasPermission(user, 'expenses:write');
+  // Доступ персональный (решение 03.11): admin и логины из настройки
+  // «Доступ к затратам»; роль manager сама по себе не впускает.
+  const requireExpensesAccess = (request_, response_, { write = false } = {}) => {
+    const user = requireUser(request_, response_);
+    if (!user) return null;
+    if (!expensesAccess(user, settingsObject(db))) {
+      errorJson(response_, 403, 'Доступ к учёту затрат выдаёт администратор (Настройки → Пользователи)');
+      return null;
+    }
+    if (write && Number(user.guest)) {
+      errorJson(response_, 403, 'Гостевой режим — только просмотр');
+      return null;
+    }
+    return user;
+  };
   if (request.method === 'GET' && pathname === '/api/expenses') {
-    const user = requireUser(request, response);
+    const user = requireExpensesAccess(request, response);
     if (!user) return;
-    if (!canSeeExpenses(user)) return errorJson(response, 403, 'Нет доступа к затратам');
     const to = url.searchParams.get('to') || new Date().toISOString().slice(0, 10);
     const from = url.searchParams.get('from')
       || new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
@@ -8132,14 +8145,15 @@ async function api(request, response, url) {
       WHERE e.spent_on>=? AND e.spent_on<=?
       ORDER BY e.spent_on DESC, e.created_at DESC`).all(from, to);
     const vatRate = Number(settingsObject(db).calculation?.vatRate ?? 0.22);
+    const categories = expenseCategoriesOf();
     return json(response, 200, {
       items, from, to,
-      categories: [...expenseCategoriesOf().values()],
-      summary: expensesSummary(items, vatRate), vatRate
+      categories: [...categories.values()],
+      summary: expensesSummary(items, vatRate, categories), vatRate
     });
   }
   if (request.method === 'POST' && pathname === '/api/expenses') {
-    const user = requirePermission(request, response, 'expenses:write');
+    const user = requireExpensesAccess(request, response, { write: true });
     if (!user) return;
     const body = await readJson(request);
     const checked = validateExpense(body, expenseCategoriesOf());
@@ -8163,7 +8177,7 @@ async function api(request, response, url) {
   // Дедуп отпечатком import_key: повторная загрузка файла не плодит
   // дублей, ответ честно делит строки на добавленные/пропущенные/битые.
   if (request.method === 'POST' && pathname === '/api/expenses/import') {
-    const user = requirePermission(request, response, 'expenses:write');
+    const user = requireExpensesAccess(request, response, { write: true });
     if (!user) return;
     const body = await readJson(request, 20_000_000);
     const rows = Array.isArray(body.rows) ? body.rows.slice(0, 20_000) : [];
@@ -8200,7 +8214,7 @@ async function api(request, response, url) {
   }
   const expenseMatch = route(/^\/api\/expenses\/([^/]+)$/, pathname);
   if (expenseMatch && request.method === 'DELETE') {
-    const user = requirePermission(request, response, 'expenses:write');
+    const user = requireExpensesAccess(request, response, { write: true });
     if (!user) return;
     const expense = db.prepare('SELECT * FROM expenses WHERE id=?').get(expenseMatch[0]);
     if (!expense) return errorJson(response, 404, 'Запись не найдена');
@@ -8212,11 +8226,8 @@ async function api(request, response, url) {
   }
   // Справочник категорий: правят руководитель/админ, active вместо удаления.
   if (request.method === 'POST' && pathname === '/api/expense-categories') {
-    const user = requireUser(request, response);
+    const user = requireExpensesAccess(request, response, { write: true });
     if (!user) return;
-    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
-      return errorJson(response, 403, 'Категории затрат ведёт руководитель или администратор');
-    }
     const body = await readJson(request);
     const name = String(body.name || '').trim().slice(0, 80);
     if (name.length < 3) return errorJson(response, 422, 'Название категории — от 3 символов');
@@ -8233,11 +8244,8 @@ async function api(request, response, url) {
   }
   const expenseCategoryMatch = route(/^\/api\/expense-categories\/([^/]+)$/, pathname);
   if (expenseCategoryMatch && request.method === 'PATCH') {
-    const user = requireUser(request, response);
+    const user = requireExpensesAccess(request, response, { write: true });
     if (!user) return;
-    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
-      return errorJson(response, 403, 'Категории затрат ведёт руководитель или администратор');
-    }
     const category = db.prepare('SELECT * FROM expense_categories WHERE id=?')
       .get(expenseCategoryMatch[0]);
     if (!category) return errorJson(response, 404, 'Категория не найдена');
@@ -14425,7 +14433,7 @@ async function api(request, response, url) {
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
       'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules',
       'notifyChannels', 'sms', 'smtp',
-      'monitoring', 'bodyCompat', 'staff', 'dispatch']) {
+      'monitoring', 'bodyCompat', 'staff', 'dispatch', 'expenses']) {
       if (body[key] !== undefined) update.run(key, JSON.stringify(body[key]), user.id);
     }
     audit(db, user, 'update', 'settings', null, Object.keys(body), requestIp(request));

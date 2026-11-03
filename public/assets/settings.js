@@ -428,6 +428,9 @@ async function renderUsers() {
       <label class="field">Полный доступ к справочнику (логины через запятую)
         <input name="fullAccess" value="${escapeHtml(state.admin?.settings?.staff?.fullAccess || '')}"
           placeholder="например: nikulina"></label>
+      <label class="field">Доступ к учёту затрат «💸 Затраты» (логины через запятую; админ видит всегда)
+        <input name="expensesAccess" value="${escapeHtml(state.admin?.settings?.expenses?.access || '')}"
+          placeholder="пусто = только администратор"></label>
       <div class="form-grid">
         <label class="field">Дневная смена<input name="dayHours"
           value="${escapeHtml(state.admin?.settings?.staff?.dayHours || '08:00–20:00')}"></label>
@@ -446,7 +449,8 @@ async function renderUsers() {
           fullAccess: form.elements.fullAccess.value.trim(),
           dayHours: form.elements.dayHours.value.trim(),
           nightHours: form.elements.nightHours.value.trim()
-        }
+        },
+        expenses: { access: form.elements.expensesAccess.value.trim() }
       }) });
       toast('Настройки справочника сохранены');
     } catch (error) { toast(error.message, 'error'); }
