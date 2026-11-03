@@ -1557,6 +1557,10 @@ function migrateColumns(db) {
   CREATE INDEX IF NOT EXISTS idx_expenses_vehicle ON expenses(vehicle_id, spent_on);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_import
     ON expenses(import_key) WHERE import_key IS NOT NULL;`);
+  // Коннектор «Дорожная сеть» (Dornet) — API-источник журнала затрат:
+  // токен шифруется как у телематики, cid юрлица — в config_json.
+  db.prepare(`INSERT OR IGNORE INTO integration_connectors(id,name,base_url)
+    VALUES('dornet','Дорожная сеть (Dornet)','https://back.dornet.ru')`).run();
   if (!db.prepare(`SELECT value FROM app_meta WHERE key='expense_categories_seed_v1'`).get()) {
     const seedCategory = db.prepare(`INSERT OR IGNORE INTO expense_categories(id,name,kind,sort)
       VALUES(?,?,?,?)`);

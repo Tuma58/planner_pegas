@@ -28,8 +28,9 @@ import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeeline
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
-  encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
+  decryptSecret, encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
+import { DORNET_SERVICES, dornetExpenseRows } from './dornet.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, activeDriverFor, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, syncVehicleDriverNames, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
@@ -442,7 +443,17 @@ function integrationPublic() {
       ...telematics, baseUrl: telematics?.base_url || '', enabled: Boolean(telematics?.enabled),
       hasToken: Boolean(db.prepare(`SELECT token_cipher FROM integration_connectors
         WHERE id='telematics'`).get()?.token_cipher)
-    }
+    },
+    dornet: (() => {
+      const row = db.prepare(`SELECT base_url,enabled,last_success_at,token_cipher,config_json
+        FROM integration_connectors WHERE id='dornet'`).get();
+      let cid = '';
+      try { cid = JSON.parse(row?.config_json || '{}').cid || ''; } catch { /* как пусто */ }
+      const last = JSON.parse(db.prepare(`SELECT value FROM app_meta
+        WHERE key='dornet_sync_last'`).get()?.value || 'null');
+      return { baseUrl: row?.base_url || 'https://back.dornet.ru', enabled: Boolean(row?.enabled),
+        hasToken: Boolean(row?.token_cipher), cid, lastSuccessAt: row?.last_success_at, last };
+    })()
   };
 }
 
@@ -6749,6 +6760,89 @@ function runReturnsWatch() {
   } catch (error) { console.error('сторож возвратов:', error.message); }
 }
 setInterval(runReturnsWatch, 30 * 60_000);
+
+// ── Коннектор «Дорожная сеть» (Dornet) — API-источник затрат (03.11) ──
+// Заказы по видам услуг (стоянки, мойки, шиномонтаж…) и оплаченные
+// штрафы ложатся в журнал expenses записями source='api'. Дедуп —
+// отпечатком dornet:<вид>:<id>, поэтому окно синхронизации смело
+// перекрывает прошлые дни: задним числом дозаписанные заказы доедут,
+// дубли невозможны. Токен и cid — Настройки → Интеграции.
+function dornetConfig() {
+  const row = db.prepare(`SELECT * FROM integration_connectors WHERE id='dornet'`).get();
+  if (!row?.enabled || !row.token_cipher) return null;
+  let cid = 0;
+  try { cid = Number(JSON.parse(row.config_json || '{}').cid) || 0; } catch { /* битый JSON — как пусто */ }
+  if (!cid) return null;
+  try {
+    return { baseUrl: (row.base_url || 'https://back.dornet.ru').replace(/\/+$/, ''),
+      token: decryptSecret(row.token_cipher, config.appSecret), cid };
+  } catch (error) { console.error('dornetConfig:', error.message); return null; }
+}
+
+async function dornetFetch(connector, path, params) {
+  const query = new URLSearchParams(params).toString();
+  const response = await fetch(`${connector.baseUrl}/client/${path}?${query}`, {
+    headers: { Authorization: `Bearer ${connector.token}` },
+    signal: AbortSignal.timeout(20_000)
+  });
+  if (!response.ok) throw new Error(`Dornet ${path}: HTTP ${response.status}`);
+  return response.json();
+}
+
+// Синхронизация периода: каждый вид услуг — своя категория журнала.
+async function runDornetSync(from, to, options = {}) {
+  const connector = dornetConfig();
+  if (!connector) return null;
+  const vehicleByPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+    .map(vehicle => [normalizePlate(vehicle.plate), vehicle.id]));
+  const insert = db.prepare(`INSERT OR IGNORE INTO expenses(id,spent_on,category_id,
+      amount,vat,vehicle_id,supplier,doc_ref,note,source,import_key)
+    VALUES(?,?,?,?,1,?,?,?,?,'api',?)`);
+  const stats = { from, to, added: 0, byService: {}, errors: [] };
+  for (const service of DORNET_SERVICES) {
+    try {
+      const data = await dornetFetch(connector, service.path,
+        { cid: connector.cid, from, to });
+      const rows = dornetExpenseRows(service, data?.[service.listKey]);
+      let added = 0;
+      for (const row of rows) {
+        const vehicleId = vehicleByPlate.get(normalizePlate(row.plate.split('/')[0])) || null;
+        // Невыясненный борт не теряется: госномер из Dornet — в заметку.
+        const note = vehicleId || !row.plate ? row.note
+          : `${row.note ? `${row.note} · ` : ''}ТС: ${row.plate}`.slice(0, 300);
+        const result = insert.run(randomUUID(), row.spent_on, row.category_id,
+          row.amount, vehicleId, row.supplier, row.doc_ref, note, row.import_key);
+        added += result.changes;
+      }
+      if (added) stats.byService[service.label] = added;
+      stats.added += added;
+    } catch (error) { stats.errors.push(`${service.label}: ${error.message}`); }
+  }
+  if (!stats.errors.length || stats.added) {
+    db.prepare(`UPDATE integration_connectors SET last_success_at=CURRENT_TIMESTAMP,
+      updated_at=CURRENT_TIMESTAMP WHERE id='dornet'`).run();
+  }
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('dornet_sync_last',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+    .run(JSON.stringify({ at: new Date().toISOString(), ...stats }));
+  if (stats.added || stats.errors.length || options.verbose) {
+    console.log(`Dornet: +${stats.added} затрат за ${from}..${to}` +
+      (Object.keys(stats.byService).length ? ` (${Object.entries(stats.byService)
+        .map(([label, count]) => `${label} ${count}`).join(' · ')})` : '') +
+      (stats.errors.length ? ` | ошибки: ${stats.errors.join('; ')}` : ''));
+  }
+  return stats;
+}
+
+// Регулярный тик: окно в неделю назад — заказы и штрафы, дозаписанные
+// задним числом, доезжают сами; дедуп держит журнал чистым.
+function dornetSyncTick() {
+  const to = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const from = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+  runDornetSync(from, to).catch(error => console.error('Dornet sync:', error.message));
+}
+setInterval(dornetSyncTick, 6 * 3_600_000);
+setTimeout(dornetSyncTick, 75_000);
 
 // ── «Дорогие ворота» — понедельничное задание продажам (этап 3, 22.09) ──
 // Клиенты БЕЗ простоя в договоре, чья медиана ворот выгрузки за 28 дн
@@ -14409,8 +14503,36 @@ async function api(request, response, url) {
           : connector.token_cipher,
         Number(Boolean(body.telematics.enabled)));
     }
-    audit(db, user, 'update', 'integration', '1', { ...body, password: undefined }, requestIp(request));
+    if (body.dornet) {
+      const connector = db.prepare(`SELECT * FROM integration_connectors WHERE id='dornet'`).get();
+      db.prepare(`UPDATE integration_connectors SET base_url=?,token_cipher=?,enabled=?,
+        config_json=?,updated_at=CURRENT_TIMESTAMP WHERE id='dornet'`).run(
+        String(body.dornet.baseUrl || connector.base_url || 'https://back.dornet.ru'),
+        body.dornet.token
+          ? encryptSecret(String(body.dornet.token), config.appSecret)
+          : connector.token_cipher,
+        Number(Boolean(body.dornet.enabled)),
+        JSON.stringify({ cid: Number(body.dornet.cid) || 0 }));
+    }
+    audit(db, user, 'update', 'integration', '1', { ...body, password: undefined, dornet: body.dornet ? { ...body.dornet, token: undefined } : undefined }, requestIp(request));
     return json(response, 200, { ok: true });
+  }
+  // Dornet: ручная синхронизация произвольного периода (бэкафилл истории).
+  if (request.method === 'POST' && pathname === '/api/admin/dornet/sync') {
+    const user = requirePermission(request, response, 'integration:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const dayRe = /^\d{4}-\d{2}-\d{2}$/;
+    const to = dayRe.test(String(body.to)) ? body.to : new Date().toISOString().slice(0, 10);
+    const from = dayRe.test(String(body.from)) ? body.from
+      : new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+    if ((Date.parse(to) - Date.parse(from)) / 86_400_000 > 366) {
+      return errorJson(response, 422, 'Период синхронизации — не длиннее года');
+    }
+    const stats = await runDornetSync(from, to, { verbose: true });
+    if (!stats) return errorJson(response, 422, 'Коннектор Dornet не настроен или выключен (токен, CID, галка)');
+    audit(db, user, 'dornet-sync', 'integration', 'dornet', { from, to, added: stats.added }, requestIp(request));
+    return json(response, 200, stats);
   }
   if (request.method === 'POST' && pathname === '/api/admin/integration/test') {
     const user = requirePermission(request, response, 'integration:write');

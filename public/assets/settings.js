@@ -557,6 +557,23 @@ function renderIntegration() {
       <label class="check"><input id="telematicsEnabled" type="checkbox" ${cfg.telematics?.enabled ? 'checked' : ''}> Включить коннектор</label>
       <p class="muted">Контракт входных данных: rideId, km, status, unloadedAt. Фактический пробег сохраняется отдельно и участвует в рейсе.</p>
     </div>
+    <div class="card"><h2>Дорожная сеть (Dornet) — затраты</h2>
+      <div class="fields">
+        <label class="field">Токен API ${cfg.dornet?.hasToken ? '(сохранен)' : ''}<input id="dornetToken" type="password"
+          placeholder="${cfg.dornet?.hasToken ? 'оставьте пустым, чтобы не менять' : 'из окна «Для разработчиков»'}" autocomplete="new-password"></label>
+        <label class="field">CID (ID юрлица)<input id="dornetCid" type="number" min="1" value="${cfg.dornet?.cid || ''}"></label>
+      </div>
+      <label class="check"><input id="dornetEnabled" type="checkbox" ${cfg.dornet?.enabled ? 'checked' : ''}> Включить коннектор</label>
+      <p class="muted">Заказы по видам услуг (стоянки, мойки, шиномонтаж, СТО…) и оплаченные штрафы
+        сами ложатся в журнал «💸 Затраты» каждые 6 часов (окно — неделя назад, дубли невозможны).
+        ${cfg.dornet?.lastSuccessAt ? `Последняя синхронизация: ${formatDate(cfg.dornet.lastSuccessAt, { dateStyle: 'short', timeStyle: 'short' })}${cfg.dornet?.last?.added != null ? ` (+${cfg.dornet.last.added})` : ''}.` : 'Синхронизаций ещё не было.'}</p>
+      <div class="actions">
+        <label class="field">с <input id="dornetFrom" type="date"></label>
+        <label class="field">по <input id="dornetTo" type="date"></label>
+        <button class="button secondary" id="dornetSync" type="button">Загрузить период</button>
+        <span class="muted">Бэкафилл истории: сохраните настройки, затем выберите период (до года) и загрузите.</span>
+      </div>
+    </div>
     <div class="card"><h2>Импорт по контракту PegasLogistic v1.0</h2>
       <p class="muted">Для 1С поддерживаются геозоны или города из справочника. Повторная передача того же id обновляет рейс и не создает дубль.</p>
       <label class="field">JSON-массив<textarea id="contractImport" rows="8"
@@ -591,6 +608,16 @@ function renderIntegration() {
     <div class="card"><h2>Последние задания</h2>${jobsTable(state.admin.jobs)}</div>
   </section>`;
   byId('saveIntegration').onclick = saveIntegration;
+  byId('dornetSync').onclick = async () => {
+    try {
+      const result = await api('/api/admin/dornet/sync', { method: 'POST', body: JSON.stringify({
+        from: byId('dornetFrom').value, to: byId('dornetTo').value }) });
+      const detail = Object.entries(result.byService || {})
+        .map(([label, count]) => `${label} ${count}`).join(' · ');
+      toast(`Dornet: добавлено ${result.added}${detail ? ` (${detail})` : ''}` +
+        (result.errors?.length ? ` · ошибки: ${result.errors[0]}` : ''));
+    } catch (error) { toast(error.message, 'error'); }
+  };
   byId('testIntegration').onclick = async () => {
     try { await api('/api/admin/integration/test', { method: 'POST' }); toast('Подключение установлено'); }
     catch (error) { toast(error.message, 'error'); }
@@ -651,6 +678,11 @@ async function saveIntegration() {
       baseUrl: byId('telematicsUrl').value.trim(),
       token: byId('telematicsToken').value,
       enabled: byId('telematicsEnabled').checked
+    },
+    dornet: {
+      token: byId('dornetToken').value,
+      cid: Number(byId('dornetCid').value) || 0,
+      enabled: byId('dornetEnabled').checked
     }
   };
   try {

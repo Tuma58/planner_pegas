@@ -18,7 +18,8 @@ import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
-import { expenseFingerprint, expensesSummary, parseExpenseAmount, parseExpenseDay, validateExpense } from '../src/expenses.mjs';
+import { EXPENSE_CATEGORY_SEED, expenseFingerprint, expensesSummary, parseExpenseAmount, parseExpenseDay, validateExpense } from '../src/expenses.mjs';
+import { DORNET_SERVICES, dornetExpenseRows } from '../src/dornet.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, escalationStaff, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
 import { effBoardData } from '../src/efficiency.mjs';
 
@@ -5484,4 +5485,32 @@ test('затраты: посев категорий и дедуп импорта
   assert.equal(insert.run(crypto.randomUUID(), '2026-10-05', 'fuel', 100, key).changes, 1);
   assert.equal(insert.run(crypto.randomUUID(), '2026-10-05', 'fuel', 100, key).changes, 0,
     'повторная строка выгрузки молча пропущена');
+});
+
+test('затраты: заказы Dornet раскладываются по видам услуг', () => {
+  const parking = DORNET_SERVICES.find(service => service.key === 'parking');
+  const rows = dornetExpenseRows(parking, [
+    { id: 58451033, date_time: '2026-10-01 01:34:49', sum: 268.1,
+      park_name: 'Дорожная сеть Салтыково', vehicle: 'Т486ВЕ58', document_id: 'C-861869' },
+    { id: 1, date_time: '2026-10-02 10:00:00', sum: 0 }, // нулевая — не затрата
+    { id: 2, date_time: 'мусор', sum: 100 } // без даты — мимо
+  ]);
+  assert.equal(rows.length, 1);
+  assert.deepEqual([rows[0].spent_on, rows[0].category_id, rows[0].amount,
+    rows[0].doc_ref, rows[0].import_key],
+  ['2026-10-01', 'parking', 268.1, 'C-861869', 'dornet:parking:58451033']);
+  assert.ok(rows[0].supplier.includes('Салтыково'));
+  const fines = DORNET_SERVICES.find(service => service.key === 'fines');
+  const fineRows = dornetExpenseRows(fines, [
+    { id: 906373, date_time: '2026-10-12 08:14:35', reg_no: 'Т579НН797', gis_status: 'payed',
+      pay_bill_date: '2026-10-19 08:13:17', pay_bill_amount_with_discount: '125.25', pay_bill_amount: '250' },
+    { id: 906374, date_time: '2026-10-13 08:14:35', reg_no: 'Т579НН797', gis_status: 'nopayed',
+      pay_bill_amount_with_discount: '500', pay_bill_amount: '1000' } // неоплаченный — ещё не затрата
+  ]);
+  assert.equal(fineRows.length, 1);
+  assert.deepEqual([fineRows[0].spent_on, fineRows[0].category_id, fineRows[0].amount, fineRows[0].plate],
+    ['2026-10-19', 'fines', 125.25, 'Т579НН797']);
+  // Все виды услуг смотрят в существующие категории посева.
+  const seeded = new Set(EXPENSE_CATEGORY_SEED.map(([id]) => id));
+  for (const service of DORNET_SERVICES) assert.ok(seeded.has(service.category), service.key);
 });
