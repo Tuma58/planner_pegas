@@ -44,6 +44,59 @@ export function incidentsData(db, fromIso, toIso) {
   return { manual, autoLate, autoLateTotal };
 }
 
+// ── Э2: цепочка статусов возврата ──
+// ТЗ Базуева: два измерения одновременно — РЕШЕНИЕ (статус) × ГДЕ ЛЕЖИТ
+// (warehouse: пусто = на борту, иначе склад LTL из справочника).
+// Терминальные статусы (осуществлён/утилизация) уводят возврат в архив
+// и требуют итога — история решений не бывает молчаливой.
+export const RETURN_STATUSES = {
+  open: 'возврат загрузили',
+  wait_decision: 'ждём решения клиента',
+  returned: 'возврат осуществлён',
+  utilized: 'утилизация'
+};
+
+export function returnStatusChange(incident, status, warehouse = '', resolution = '') {
+  if (!incident || incident.kind !== 'return') return { error: 'Цепочка статусов — только у возвратов' };
+  if (incident.closed_at) return { error: 'Возврат уже в архиве' };
+  if (!RETURN_STATUSES[status]) return { error: 'Неизвестный статус возврата' };
+  const terminal = status === 'returned' || status === 'utilized';
+  const note = String(resolution || '').trim().slice(0, 500);
+  if (terminal && !note) return { error: 'Закрытие возврата — только с итогом: куда делся груз' };
+  // Пустой склад = «не менять»: терминальный статус не стирает, где
+  // груз лежал, — это часть истории возврата.
+  const place = String(warehouse || '').trim().slice(0, 120);
+  return { patch: {
+    status,
+    warehouse: place || String(incident.warehouse || ''),
+    resolution: note,
+    terminal
+  } };
+}
+
+// Живой норматив решения возврата: медиана дней «создан → закрыт» по
+// закрытым возвратам (мин 5 образцов), кламп 2–14 дн, фолбэк 5 дн.
+export function returnStuckDays(db) {
+  const days = db.prepare(`SELECT (julianday(closed_at) - julianday(created_at)) d
+      FROM trip_incidents WHERE kind='return' AND closed_at IS NOT NULL
+      ORDER BY d`).all().map(row => row.d).filter(value => value > 0);
+  if (days.length < 5) return 5;
+  const median = days[Math.floor(days.length / 2)];
+  return Math.min(14, Math.max(2, Math.round(median)));
+}
+
+// Зависшие возвраты: открытые дольше норматива и не напомненные за сутки.
+export function returnsStuck(db, stuckDays) {
+  return db.prepare(`SELECT i.*, v.plate vehicle_plate, t.customer_name
+    FROM trip_incidents i
+    JOIN trips t ON t.id=i.trip_id
+    JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE i.kind='return' AND i.closed_at IS NULL
+      AND julianday('now') - julianday(i.created_at) > ?
+      AND (i.reminded_at IS NULL OR datetime(i.reminded_at) < datetime('now','-1 day'))
+    ORDER BY i.created_at`).all(stuckDays);
+}
+
 // Текст уведомления о новом инциденте — продажам (их клиент) и
 // руководителю, одной строкой с сутью.
 export function incidentNotifyText(kind, trip, qty, comment) {

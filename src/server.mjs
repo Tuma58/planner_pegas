@@ -10,7 +10,7 @@ import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaMimeOf, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
-import { INCIDENT_KINDS, incidentNotifyText, incidentsData } from './incidents.mjs';
+import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -6728,6 +6728,26 @@ function runHelpdeskPromo() {
 }
 setInterval(runHelpdeskPromo, 10 * 60_000);
 
+// ── Сторож зависших возвратов (Э2, 03.11) ──
+// Возврат без решения дольше живого норматива (медиана «создан →
+// закрыт» закрытых возвратов, кламп 2–14 дн, фолбэк 5) — напоминание
+// продажам, не чаще раза в сутки по возврату (reminded_at).
+function runReturnsWatch() {
+  try {
+    const stuckDays = returnStuckDays(db);
+    for (const item of returnsStuck(db, stuckDays)) {
+      const age = Math.floor((Date.now() - Date.parse(String(item.created_at).replace(' ', 'T') + 'Z')) / 86_400_000);
+      notify('sales', `↩ Возврат завис: ${item.vehicle_plate}, ${item.customer_name || 'клиент не указан'}` +
+        `${item.qty ? ` (${item.qty})` : ''} — ${age} дн без закрытия при нормативе ${stuckDays} дн` +
+        `${item.warehouse ? `, лежит: ${item.warehouse}` : ', ещё на борту'}. ` +
+        'Свяжитесь с клиентом и отметьте решение во вкладке «Внештатки»',
+      'trip', item.trip_id, { category: 'claims' });
+      db.prepare(`UPDATE trip_incidents SET reminded_at=CURRENT_TIMESTAMP WHERE id=?`).run(item.id);
+    }
+  } catch (error) { console.error('сторож возвратов:', error.message); }
+}
+setInterval(runReturnsWatch, 30 * 60_000);
+
 // ── «Дорогие ворота» — понедельничное задание продажам (этап 3, 22.09) ──
 // Клиенты БЕЗ простоя в договоре, чья медиана ворот выгрузки за 28 дн
 // выше цели руководителя (gateTargetHours): претензию им не выставить —
@@ -7891,6 +7911,87 @@ async function api(request, response, url) {
     const from = url.searchParams.get('from') || new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
     return json(response, 200, incidentsData(db, `${from}T00:00:00Z`, `${to}T23:59:59Z`));
   }
+  // Э2: цепочка статусов возврата — решение × где лежит; терминальный
+  // статус уводит в архив и требует итога.
+  const incidentStatusMatch = route(/^\/api\/incidents\/([^/]+)\/status$/, pathname);
+  if (incidentStatusMatch && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const incident = db.prepare(`SELECT i.*, v.plate vehicle_plate, t.customer_name
+      FROM trip_incidents i JOIN trips t ON t.id=i.trip_id
+      JOIN vehicles v ON v.id=t.vehicle_id WHERE i.id=?`).get(incidentStatusMatch[0]);
+    if (!incident) return errorJson(response, 404, 'Возврат не найден');
+    const body = await readJson(request);
+    const change = returnStatusChange(incident, String(body.status || ''),
+      body.warehouse, body.resolution);
+    if (change.error) return errorJson(response, 422, change.error);
+    const { patch } = change;
+    db.prepare(`UPDATE trip_incidents SET status=?, warehouse=?,
+        resolution=CASE WHEN ?<>'' THEN ? ELSE resolution END,
+        closed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE closed_at END,
+        closed_by_name=CASE WHEN ? THEN ? ELSE closed_by_name END
+      WHERE id=?`)
+      .run(patch.status, patch.warehouse, patch.resolution, patch.resolution,
+        patch.terminal ? 1 : 0, patch.terminal ? 1 : 0,
+        user.full_name || user.username, incidentStatusMatch[0]);
+    if (patch.terminal) {
+      notify('sales', `↩ Возврат (${incident.vehicle_plate}, ${incident.customer_name || 'клиент не указан'}, ` +
+        `${incident.qty}): ${RETURN_STATUSES[patch.status]} — ${patch.resolution}`,
+      'trip', incident.trip_id, { category: 'claims' });
+    }
+    audit(db, user, 'incident-status', 'incident', incidentStatusMatch[0],
+      { status: patch.status, warehouse: patch.warehouse }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  // Склады LTL: живой справочник — читают все, правит руководитель/админ.
+  if (request.method === 'GET' && pathname === '/api/warehouses') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    return json(response, 200, {
+      items: db.prepare(`SELECT * FROM ltl_warehouses ORDER BY active DESC, name`).all()
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/warehouses') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      return errorJson(response, 403, 'Справочник складов ведёт руководитель или администратор');
+    }
+    const body = await readJson(request);
+    const name = String(body.name || '').trim().slice(0, 80);
+    if (name.length < 3) return errorJson(response, 422, 'Название склада — от 3 символов');
+    const id = randomUUID();
+    try {
+      db.prepare(`INSERT INTO ltl_warehouses(id,name,address,phone,contact) VALUES(?,?,?,?,?)`)
+        .run(id, name, String(body.address || '').trim().slice(0, 300),
+          String(body.phone || '').trim().slice(0, 40), String(body.contact || '').trim().slice(0, 80));
+    } catch {
+      return errorJson(response, 422, 'Склад с таким названием уже есть');
+    }
+    audit(db, user, 'create', 'warehouse', id, { name }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  const warehouseMatch = route(/^\/api\/warehouses\/([^/]+)$/, pathname);
+  if (warehouseMatch && request.method === 'PATCH') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      return errorJson(response, 403, 'Справочник складов ведёт руководитель или администратор');
+    }
+    const warehouse = db.prepare('SELECT * FROM ltl_warehouses WHERE id=?').get(warehouseMatch[0]);
+    if (!warehouse) return errorJson(response, 404, 'Склад не найден');
+    const body = await readJson(request);
+    db.prepare(`UPDATE ltl_warehouses SET name=?, address=?, phone=?, contact=?, active=? WHERE id=?`)
+      .run(String(body.name ?? warehouse.name).trim().slice(0, 80),
+        String(body.address ?? warehouse.address).trim().slice(0, 300),
+        String(body.phone ?? warehouse.phone).trim().slice(0, 40),
+        String(body.contact ?? warehouse.contact).trim().slice(0, 80),
+        body.active === undefined ? warehouse.active : (body.active ? 1 : 0),
+        warehouseMatch[0]);
+    audit(db, user, 'update', 'warehouse', warehouseMatch[0], { name: body.name }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   const incidentCloseMatch = route(/^\/api\/incidents\/([^/]+)\/close$/, pathname);
   if (incidentCloseMatch && request.method === 'POST') {
     const user = requirePermission(request, response, 'trip-status:write');
@@ -12682,6 +12783,16 @@ async function api(request, response, url) {
         })(),
         clamp: 'порог = цель ×1,5 · минимум 3 образца ворот · не чаще раза в сутки на человека по клиенту',
         drift: 'счётчики здесь; правило с перевесом 👎 отключается решением руководителя' },
+      { name: 'Норматив решения возврата (внештатки Э2)',
+        learns: 'медиана дней «возврат создан → закрыт» по закрытым возвратам (мин 5 образцов); возврат старше норматива — напоминание продажам раз в сутки',
+        value: (() => {
+          const norm = safe(() => returnStuckDays(db));
+          const open = safe(() => db.prepare(`SELECT COUNT(*) c FROM trip_incidents
+            WHERE kind='return' AND closed_at IS NULL`).get().c) ?? 0;
+          return `норматив ${norm ?? 5} дн · открытых возвратов ${open}`;
+        })(),
+        clamp: '2–14 дн (фолбэк 5, пока закрытых меньше 5)',
+        drift: 'напоминания в чате продаж («↩ Возврат завис»)' },
     ];
     return json(response, 200, { generatedAt: new Date().toISOString(), items });
   }

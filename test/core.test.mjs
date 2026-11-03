@@ -5266,3 +5266,45 @@ test('внештатки Э1: ручные инциденты, авто-опоз
   assert.equal(db.prepare(`SELECT status FROM trip_incidents WHERE id='inc-1'`).get().status, 'closed');
   assert.throws(() => db.prepare(`UPDATE trip_incidents SET kind='weird' WHERE id='inc-1'`).run());
 });
+
+test('внештатки Э2: цепочка возврата, норматив и склады LTL', async t => {
+  const { RETURN_STATUSES, returnStatusChange, returnStuckDays, returnsStuck } = await import('../src/incidents.mjs');
+  assert.deepEqual(Object.keys(RETURN_STATUSES), ['open', 'wait_decision', 'returned', 'utilized']);
+  const ret = { kind: 'return', closed_at: null, warehouse: 'СКЛАД LTL Самара' };
+  // Терминальный статус без итога — отказ; с итогом — архив, склад
+  // («где лежал») не стирается.
+  assert.match(returnStatusChange(ret, 'returned').error, /только с итогом/);
+  const done = returnStatusChange(ret, 'returned', '', 'клиент принял груз');
+  assert.equal(done.patch.terminal, true);
+  assert.equal(done.patch.warehouse, 'СКЛАД LTL Самара');
+  // Два измерения: ждём решения + лежит на складе.
+  const wait = returnStatusChange(ret, 'wait_decision', 'СКЛАД LTL Пенза (Гагарина)');
+  assert.equal(wait.patch.terminal, false);
+  assert.equal(wait.patch.warehouse, 'СКЛАД LTL Пенза (Гагарина)');
+  // Чужой вид и архив — отказ.
+  assert.ok(returnStatusChange({ kind: 'act', closed_at: null }, 'returned', '', 'x').error);
+  assert.ok(returnStatusChange({ kind: 'return', closed_at: '2026-11-01' }, 'wait_decision').error);
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-ret-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  // Склады засеяны из ТЗ; норматив без истории — фолбэк 5 дн.
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM ltl_warehouses').get().c, 8);
+  assert.equal(returnStuckDays(db), 5);
+  // Зависший возврат (7 дн) попадает в сторож; после напоминания — сутки тишины.
+  const vehicleId = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zoneId = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+      starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('ret-t1',?,?,?,?,?,?,100,10000,'done')`)
+    .run(vehicleId, 'Клиент Возврата', zoneId, zoneId,
+      new Date(Date.now() - 9 * 86_400_000).toISOString(), new Date(Date.now() - 8 * 86_400_000).toISOString());
+  db.prepare(`INSERT INTO trip_incidents(id,trip_id,kind,qty,status,created_at)
+    VALUES('ret-1','ret-t1','return','2 паллеты','wait_decision', datetime('now','-7 days'))`).run();
+  assert.equal(returnsStuck(db, 5).length, 1);
+  db.prepare(`UPDATE trip_incidents SET reminded_at=CURRENT_TIMESTAMP WHERE id='ret-1'`).run();
+  assert.equal(returnsStuck(db, 5).length, 0, 'напомнили — сутки не трогаем');
+});

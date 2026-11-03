@@ -1474,6 +1474,38 @@ function migrateColumns(db) {
   );
   CREATE INDEX IF NOT EXISTS idx_trip_incidents ON trip_incidents(kind, status, created_at);
   CREATE INDEX IF NOT EXISTS idx_trip_incidents_trip ON trip_incidents(trip_id);`);
+  // Э2 (03.11): склады LTL — живой справочник (правит руководитель/админ
+  // со вкладки «Внештатки»), и напоминание сторожа по зависшим возвратам.
+  db.exec(`CREATE TABLE IF NOT EXISTS ltl_warehouses (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    address TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    contact TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  ensure('trip_incidents', 'reminded_at', 'TEXT');
+  // Первичное наполнение — адреса из ТЗ Базуева (HELP DESK 02.11);
+  // дальше справочник живёт руками, повторный запуск ничего не трогает.
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='ltl_warehouses_seed_v1'`).get()) {
+    const seed = db.prepare(`INSERT OR IGNORE INTO ltl_warehouses(id,name,address,phone,contact)
+      VALUES(?,?,?,?,?)`);
+    const rows = [
+      ['СКЛАД LTL Пенза (Гагарина)', 'г. Пенза, ул. Гагарина, д. 1', '+79875287204', 'Владислав'],
+      ['СКЛАД LTL Пенза (Строителей)', 'г. Пенза, ул. Строителей, 35', '+79875287204', 'Владислав'],
+      ['СКЛАД LTL Волгоград', 'г. Волгоград, ул. Революционная, 2М', '+79610819004', 'Артем'],
+      ['СКЛАД LTL Новосибирск', 'Новосибирская обл., Толмачевский сельсовет, платформа 3307 км, дом 30, РусАгромаркет', '+79231352858', 'Виктор'],
+      ['СКЛАД LTL Самара', 'Волжское ш., д. 108, Агропарк, врт. 17', '+79277392110', 'Евгений'],
+      ['СКЛАД LTL Родники', 'МО, Раменский м. о., п. Родники, ул. Трудовая, 10, к. 8, въезд через КПП 4', '+79110154252', ''],
+      ['Склад LTL Санкт-Петербург', 'Ленинградская обл., Всеволожский р-н, п. Ковалёво, Поперечная ул., д. 17 (Рефкарс)', '+79110154252', ''],
+      ['Склад LTL Екатеринбург', 'г. Екатеринбург, ул. 11-я Самородная, 5А, ООО РЕФТРАНС', '+79502086389', 'Виктор']
+    ];
+    for (const [name, address, phone, contact] of rows) {
+      seed.run(randomUUID(), name, address, phone, contact);
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('ltl_warehouses_seed_v1',datetime('now'))`).run();
+  }
   // Подсказки помощника (ступень 2, 02.11): журнал показов и оценок —
   // троттлинг «раз в сутки на человека» и дрейф пользы правил.
   db.exec(`CREATE TABLE IF NOT EXISTS assistant_hints (
