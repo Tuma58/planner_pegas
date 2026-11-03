@@ -14,12 +14,14 @@ export const DORNET_SERVICES = [
     label: 'Стоянки', category: 'parking', pointField: 'park_name' },
   { key: 'washing', path: 'points/washs/orders', listKey: 'orders',
     label: 'Мойки', category: 'wash', pointField: 'wash_name' },
+  // Шиномонтаж — услуга (статья tirefit), не агрегат «Шины»: принцип
+  // руководителя 03.11 — запчасть и работа учитываются раздельно.
   { key: 'tirefitting', path: 'points/tirefitting/orders', listKey: 'orders',
-    label: 'Шиномонтаж', category: 'tires', pointField: 'pos_name' },
+    label: 'Шиномонтаж', category: 'tirefit', pointField: 'pos_name' },
   { key: 'sto', path: 'points/sto/orders', listKey: 'orders',
     label: 'СТО', category: 'repair', pointField: 'sto_name' },
   { key: 'store', path: 'points/stores/orders', listKey: 'orders',
-    label: 'Расходники', category: 'repair', pointField: 'store_name' },
+    label: 'Расходники', category: 'parts', pointField: 'store_name' },
   { key: 'tentrepair', path: 'points/tentrepair/orders', listKey: 'orders',
     label: 'Ремонт тентов', category: 'repair', pointField: 'tentrepair_name' },
   { key: 'tow', path: 'points/tows/orders', listKey: 'orders',

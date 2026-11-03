@@ -5553,3 +5553,27 @@ test('затраты: период Dornet бьётся на куски ≤31 д�
   assert.equal(Date.parse(chunks[1][0]) - Date.parse(chunks[0][1]), 86_400_000);
   assert.deepEqual(dornetChunks('2026-11-03', '2026-10-01'), [], 'перевёрнутый период — пусто');
 });
+
+test('затраты: миграция «агрегат ≠ работа» делит старый посев', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-planner-test-'));
+  const dbPath = path.join(directory, 'planner.db');
+  const admin = { username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор' };
+  let db = openDatabase(dbPath, admin);
+  // Откат к состоянию первого посева: без tirefit/parts, старое имя
+  // repair, запись Dornet-шиномонтажа лежит в «Шинах».
+  db.prepare(`DELETE FROM app_meta WHERE key='expense_categories_nature_v1'`).run();
+  db.prepare(`DELETE FROM expense_categories WHERE id IN ('tirefit','parts')`).run();
+  db.prepare(`UPDATE expense_categories SET name='Ремонт и запчасти' WHERE id='repair'`).run();
+  db.prepare(`INSERT INTO expenses(id,spent_on,category_id,amount,import_key)
+    VALUES('e1','2026-10-01','tires',100,'dornet:tirefitting:1')`).run();
+  db.close();
+  db = openDatabase(dbPath, admin);
+  t.after(() => db.close());
+  assert.equal(db.prepare(`SELECT name FROM expense_categories WHERE id='repair'`).get().name,
+    'Ремонт (работы)');
+  assert.equal(db.prepare(`SELECT nature FROM expense_categories WHERE id='tires'`).get().nature, 'goods');
+  assert.equal(db.prepare(`SELECT nature FROM expense_categories WHERE id='tirefit'`).get()?.nature,
+    'service', 'шиномонтаж появился услугой');
+  assert.equal(db.prepare(`SELECT category_id FROM expenses WHERE id='e1'`).get().category_id,
+    'tirefit', 'запись Dornet-шиномонтажа перевешена с «Шин»');
+});

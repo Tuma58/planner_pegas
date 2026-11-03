@@ -1561,12 +1561,40 @@ function migrateColumns(db) {
   // токен шифруется как у телематики, cid юрлица — в config_json.
   db.prepare(`INSERT OR IGNORE INTO integration_connectors(id,name,base_url)
     VALUES('dornet','Дорожная сеть (Dornet)','https://back.dornet.ru')`).run();
+  // Природа статьи (принцип руководителя 03.11): goods — материал/
+  // агрегат, service — услуга/работа. Шины ≠ шиномонтаж.
+  ensure('expense_categories', 'nature', "TEXT NOT NULL DEFAULT 'service'");
   if (!db.prepare(`SELECT value FROM app_meta WHERE key='expense_categories_seed_v1'`).get()) {
-    const seedCategory = db.prepare(`INSERT OR IGNORE INTO expense_categories(id,name,kind,sort)
-      VALUES(?,?,?,?)`);
-    EXPENSE_CATEGORY_SEED.forEach(([id, name, kind], index) =>
-      seedCategory.run(id, name, kind, index));
+    const seedCategory = db.prepare(`INSERT OR IGNORE INTO expense_categories(id,name,kind,sort,nature)
+      VALUES(?,?,?,?,?)`);
+    EXPENSE_CATEGORY_SEED.forEach(([id, name, kind, nature], index) =>
+      seedCategory.run(id, name, kind, index, nature));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('expense_categories_seed_v1',datetime('now'))`).run();
+  }
+  // Разовая миграция «агрегат ≠ работа» (03.11): на базах, посеянных
+  // первым списком, статья «Ремонт и запчасти» делится на «Запчасти»
+  // (материал) и «Ремонт (работы)» (услуга), появляется «Шиномонтаж»;
+  // уже загруженные записи Dornet перевешиваются по природе услуги.
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='expense_categories_nature_v1'`).get()) {
+    const insertCategory = db.prepare(`INSERT OR IGNORE INTO expense_categories(id,name,kind,sort,nature)
+      VALUES(?,?,?,?,?)`);
+    EXPENSE_CATEGORY_SEED.forEach(([id, name, kind, nature], index) =>
+      insertCategory.run(id, name, kind, index, nature));
+    // Природа и порядок — по посеву; имя правим только нетронутое
+    // («Ремонт и запчасти» → «Ремонт (работы)»), ручные правки целы.
+    const align = db.prepare(`UPDATE expense_categories SET nature=?, sort=? WHERE id=?`);
+    EXPENSE_CATEGORY_SEED.forEach(([id, , , nature], index) => align.run(nature, index, id));
+    db.prepare(`UPDATE expense_categories SET name='Ремонт (работы)'
+      WHERE id='repair' AND name='Ремонт и запчасти'`).run();
+    const moved = db.prepare(`UPDATE expenses SET category_id='tirefit'
+      WHERE category_id='tires' AND import_key LIKE 'dornet:tirefitting:%'`).run().changes;
+    const movedStore = db.prepare(`UPDATE expenses SET category_id='parts'
+      WHERE category_id='repair' AND import_key LIKE 'dornet:store:%'`).run().changes;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('expense_categories_nature_v1',?)`)
+      .run(JSON.stringify({ at: new Date().toISOString(), tirefit: moved, parts: movedStore }));
+    if (moved || movedStore) {
+      console.log(`Затраты: шиномонтаж отделён от шин (${moved}), расходники → запчасти (${movedStore})`);
+    }
   }
 }
 

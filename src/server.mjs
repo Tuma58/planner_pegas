@@ -8247,14 +8247,15 @@ async function api(request, response, url) {
     const name = String(body.name || '').trim().slice(0, 80);
     if (name.length < 3) return errorJson(response, 422, 'Название категории — от 3 символов');
     const kind = body.kind === 'fixed' ? 'fixed' : 'variable';
+    const nature = body.nature === 'goods' ? 'goods' : 'service';
     const id = randomUUID();
     try {
-      db.prepare(`INSERT INTO expense_categories(id,name,kind,sort) VALUES(?,?,?,
-        (SELECT COALESCE(MAX(sort),0)+1 FROM expense_categories))`).run(id, name, kind);
+      db.prepare(`INSERT INTO expense_categories(id,name,kind,sort,nature) VALUES(?,?,?,
+        (SELECT COALESCE(MAX(sort),0)+1 FROM expense_categories),?)`).run(id, name, kind, nature);
     } catch {
       return errorJson(response, 422, 'Категория с таким названием уже есть');
     }
-    audit(db, user, 'create', 'expense-category', id, { name, kind }, requestIp(request));
+    audit(db, user, 'create', 'expense-category', id, { name, kind, nature }, requestIp(request));
     return json(response, 201, { id });
   }
   const expenseCategoryMatch = route(/^\/api\/expense-categories\/([^/]+)$/, pathname);
@@ -8265,10 +8266,11 @@ async function api(request, response, url) {
       .get(expenseCategoryMatch[0]);
     if (!category) return errorJson(response, 404, 'Категория не найдена');
     const body = await readJson(request);
-    db.prepare(`UPDATE expense_categories SET name=?, kind=?, active=? WHERE id=?`)
+    db.prepare(`UPDATE expense_categories SET name=?, kind=?, active=?, nature=? WHERE id=?`)
       .run(String(body.name ?? category.name).trim().slice(0, 80),
         ['variable', 'fixed'].includes(body.kind) ? body.kind : category.kind,
         body.active === undefined ? category.active : (body.active ? 1 : 0),
+        ['goods', 'service'].includes(body.nature) ? body.nature : category.nature,
         expenseCategoryMatch[0]);
     audit(db, user, 'update', 'expense-category', expenseCategoryMatch[0],
       { name: body.name, active: body.active }, requestIp(request));

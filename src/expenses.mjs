@@ -25,21 +25,26 @@ export function expensesAccess(user, settings) {
 
 // Посев категорий: kind — характер затраты для будущего живого
 // норматива себестоимости (Э5): variable ложится на километры,
-// fixed — на машино-дни. Руководитель волен менять и дополнять.
+// fixed — на машино-дни. nature — природа статьи (принцип руководителя
+// 03.11: агрегат и работа учитываются раздельно): goods — материал/
+// агрегат (шины, запчасти, топливо), service — услуга/работа
+// (шиномонтаж, ремонт, мойка). Руководитель волен менять и дополнять.
 export const EXPENSE_CATEGORY_SEED = [
-  ['fuel', 'Топливо', 'variable'],
-  ['repair', 'Ремонт и запчасти', 'variable'],
-  ['tires', 'Шины', 'variable'],
-  ['tolls', 'Платные дороги и Платон', 'variable'],
-  ['wash', 'Мойка', 'variable'],
-  ['parking', 'Стоянки', 'variable'],
-  ['fines', 'Штрафы', 'variable'],
-  ['salary', 'Зарплата водителей', 'fixed'],
-  ['lease', 'Лизинг / амортизация', 'fixed'],
-  ['insurance', 'Страхование', 'fixed'],
-  ['tax', 'Налоги', 'fixed'],
-  ['overhead', 'Накладные', 'fixed'],
-  ['other', 'Прочее', 'fixed']
+  ['fuel', 'Топливо', 'variable', 'goods'],
+  ['parts', 'Запчасти', 'variable', 'goods'],
+  ['tires', 'Шины', 'variable', 'goods'],
+  ['repair', 'Ремонт (работы)', 'variable', 'service'],
+  ['tirefit', 'Шиномонтаж', 'variable', 'service'],
+  ['tolls', 'Платные дороги и Платон', 'variable', 'service'],
+  ['wash', 'Мойка', 'variable', 'service'],
+  ['parking', 'Стоянки', 'variable', 'service'],
+  ['fines', 'Штрафы', 'variable', 'service'],
+  ['salary', 'Зарплата водителей', 'fixed', 'service'],
+  ['lease', 'Лизинг / амортизация', 'fixed', 'service'],
+  ['insurance', 'Страхование', 'fixed', 'service'],
+  ['tax', 'Налоги', 'fixed', 'service'],
+  ['overhead', 'Накладные', 'fixed', 'service'],
+  ['other', 'Прочее', 'fixed', 'service']
 ];
 
 // День из ячейки выгрузки: «дд.мм.гггг» (возможно с временем),

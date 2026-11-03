@@ -71,9 +71,14 @@ export async function renderExpenses(container, context) {
   state.expOpen ||= {};
   const kindSum = kind => data.summary.byKind.find(row => row.key === kind)
     || { sum: 0, net: 0, count: 0 };
+  // Пометка природы статьи (принцип 03.11): агрегат/материал отдельно
+  // от услуги/работы — шины ≠ шиномонтаж, запчасть ≠ ремонт.
+  const natureMark = category => category
+    ? ` <small class="muted">· ${category.nature === 'goods' ? 'материал' : 'услуга'}</small>` : '';
   const groupRow = (type, key, name, row, active) => `<button class="exp-row ${active ? 'active' : ''}"
       data-exp-${type}="${escapeHtml(key)}" title="${active ? 'Снять фильтр' : 'Показать в таблице только это'}">
-      <span>${escapeHtml(name)}</span><b>${money(row.sum)}</b>
+      <span>${escapeHtml(name)}${type === 'cat' ? natureMark(categoryById.get(key)) : ''}</span>
+      <b>${money(row.sum)}</b>
       <small class="muted">без НДС ${money(row.net)} · ${row.count} шт</small></button>`;
   const groupBlock = (id, head, rowsHtml) => `<div class="exp-grp">
       <button class="exp-ghead" data-exp-grp="${id}">
@@ -256,7 +261,8 @@ export async function renderExpenses(container, context) {
       <div class="list" style="max-height:300px;overflow:auto">
         ${data.categories.map(category => `<div class="list-item" style="gap:8px">
           <span style="flex:1;min-width:0"><strong style="${category.active ? '' : 'opacity:.5'}">${escapeHtml(category.name)}</strong>
-            <small class="muted"> · ${category.kind === 'variable' ? 'ездовая (₽/км)' : 'постоянная (₽/машино-день)'}</small></span>
+            <small class="muted"> · ${category.kind === 'variable' ? 'ездовая (₽/км)' : 'постоянная (₽/машино-день)'}
+            · ${category.nature === 'goods' ? 'материал/агрегат' : 'услуга/работа'}</small></span>
           <button type="button" class="button ghost small" data-cat-toggle="${category.id}"
             data-cat-active="${category.active}">${category.active ? '⏸ Выключить' : '▶ Включить'}</button>
         </div>`).join('')}
@@ -267,6 +273,10 @@ export async function renderExpenses(container, context) {
         <select name="kind">
           <option value="variable">ездовая — ложится на километры</option>
           <option value="fixed">постоянная — ложится на машино-дни</option>
+        </select>
+        <select name="nature" title="Агрегат и работа учитываются раздельно: шины ≠ шиномонтаж">
+          <option value="service">услуга / работа (ремонт, монтаж, мойка)</option>
+          <option value="goods">материал / агрегат (шины, запчасти, топливо)</option>
         </select>
         <div class="modal-actions">
           <button type="button" class="button ghost" data-close>Закрыть</button>
@@ -287,7 +297,7 @@ export async function renderExpenses(container, context) {
       const form = event.target;
       try {
         await api('/api/expense-categories', { method: 'POST', body: JSON.stringify({
-          name: form.name.value.trim(), kind: form.kind.value }) });
+          name: form.name.value.trim(), kind: form.kind.value, nature: form.nature.value }) });
         toast('Категория добавлена');
         context.closeModal();
         redraw();
