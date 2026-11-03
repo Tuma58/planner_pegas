@@ -664,6 +664,7 @@ function renderIntegration() {
       const result = await api('/api/admin/rncard/sync', { method: 'POST', body: JSON.stringify({
         from: byId('rncardFrom').value, to: byId('rncardTo').value }) });
       toast(`РН-Карт: добавлено ${result.added}` +
+        (result.skippedForeign ? ` · отсеяно не наших бортов ${result.skippedForeign}` : '') +
         (result.errors?.length ? ` · ошибки: ${result.errors[0]}` : ''));
     } catch (error) { toast(error.message, 'error'); }
   };

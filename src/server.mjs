@@ -6959,7 +6959,7 @@ async function runRncardSync(from, to, options = {}) {
   const insert = db.prepare(`INSERT OR IGNORE INTO expenses(id,spent_on,category_id,
       amount,vat,vehicle_id,supplier,doc_ref,note,source,import_key)
     VALUES(?,?,?,?,1,?,?,?,?,'api',?)`);
-  const stats = { from, to, added: 0, liters: 0, errors: [] };
+  const stats = { from, to, added: 0, skippedForeign: 0, errors: [] };
   let cards = new Map();
   try { cards = await rncardCards(connector, vehicleByPlate); }
   catch (error) { stats.errors.push(`карты: ${error.message}`); }
@@ -6973,10 +6973,13 @@ async function runRncardSync(from, to, options = {}) {
       const operations = Array.isArray(data) ? data : (data?.OperationList || []);
       for (const row of rncardExpenseRows(operations, cards)) {
         const vehicleId = vehicleByPlate.get(normalizePlate(row.plate.split('/')[0])) || null;
-        const note = vehicleId || !row.plate ? row.note
-          : `${row.note ? `${row.note} · ` : ''}ТС: ${row.plate}`.slice(0, 300);
+        // Решение руководителя 03.11: тянем ТОЛЬКО наши борты — операции
+        // карт, не привязанных к машине парка, в журнал не пишутся.
+        // Счётчик отсева виден в ответе кнопки: если у нашей карты
+        // просто не заполнено ТС в ЛК, это заметно по росту отсева.
+        if (!vehicleId) { stats.skippedForeign += 1; continue; }
         const result = insert.run(randomUUID(), row.spent_on, row.category_id,
-          row.amount, vehicleId, row.supplier, row.doc_ref, note, row.import_key);
+          row.amount, vehicleId, row.supplier, row.doc_ref, row.note, row.import_key);
         stats.added += result.changes;
       }
     } catch (error) { stats.errors.push(`${chunkFrom}..${chunkTo}: ${error.message}`); }
@@ -6990,6 +6993,7 @@ async function runRncardSync(from, to, options = {}) {
     .run(JSON.stringify({ at: new Date().toISOString(), ...stats }));
   if (stats.added || stats.errors.length || options.verbose) {
     console.log(`РН-Карт: +${stats.added} затрат за ${from}..${to}` +
+      (stats.skippedForeign ? ` · отсеяно не наших бортов ${stats.skippedForeign}` : '') +
       (stats.errors.length ? ` | ошибки: ${stats.errors.join('; ')}` : ''));
   }
   return stats;
