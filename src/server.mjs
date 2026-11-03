@@ -14803,10 +14803,17 @@ async function api(request, response, url) {
     if ((Date.parse(to) - Date.parse(from)) / 86_400_000 > 366) {
       return errorJson(response, 422, 'Период синхронизации — не длиннее года');
     }
-    const stats = await runRncardSync(from, to, { verbose: true });
-    if (!stats) return errorJson(response, 422, 'Коннектор РН-Карт не настроен или выключен (логин, пароль, договор, галка)');
-    audit(db, user, 'rncard-sync', 'integration', 'rncard', { from, to, added: stats.added }, requestIp(request));
-    return json(response, 200, stats);
+    if (!rncardConfig()) {
+      return errorJson(response, 422, 'Коннектор РН-Карт не настроен или выключен (логин, пароль, договор, галка)');
+    }
+    // Первая загрузка опрашивает ТС каждой карты с паузами — это минуты,
+    // веб-прокси обрывает такой запрос по таймауту (урок 03.11: руководитель
+    // получил «ошибку» при живой загрузке). Работаем фоном, отвечаем сразу;
+    // итог — в карточке настроек (последняя синхронизация) и rncard_sync_last.
+    runRncardSync(from, to, { verbose: true })
+      .catch(error => console.error('РН-Карт бэкафилл:', error.message));
+    audit(db, user, 'rncard-sync', 'integration', 'rncard', { from, to }, requestIp(request));
+    return json(response, 200, { started: true, from, to });
   }
   if (request.method === 'POST' && pathname === '/api/admin/integration/test') {
     const user = requirePermission(request, response, 'integration:write');

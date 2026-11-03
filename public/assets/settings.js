@@ -592,7 +592,7 @@ function renderIntegration() {
       <p class="muted">Заправки и услуги АЗС сами ложатся в «💸 Затраты» каждые 6 часов с
         литрами в заметке и привязкой к бортам (ТС карты из ЛК, иначе — примечание карты).
         Если в ЛК включён белый список IP — добавьте туда адрес сервера планера.
-        ${cfg.rncard?.lastSuccessAt ? `Последняя синхронизация: ${formatDate(cfg.rncard.lastSuccessAt, { dateStyle: 'short', timeStyle: 'short' })}${cfg.rncard?.last?.added != null ? ` (+${cfg.rncard.last.added})` : ''}.` : 'Синхронизаций ещё не было.'}</p>
+        ${cfg.rncard?.last ? `Последняя синхронизация ${formatDate(cfg.rncard.last.at, { dateStyle: 'short', timeStyle: 'short' })}: +${cfg.rncard.last.added}${cfg.rncard.last.skippedForeign ? ` · отсеяно чужих ${cfg.rncard.last.skippedForeign}` : ''}${cfg.rncard.last.errors?.length ? ` · ошибка: ${escapeHtml(String(cfg.rncard.last.errors[0]).slice(0, 120))}` : ''}.` : 'Синхронизаций ещё не было.'}</p>
       <div class="actions">
         <label class="field">с <input id="rncardFrom" type="date"></label>
         <label class="field">по <input id="rncardTo" type="date"></label>
@@ -662,11 +662,9 @@ function renderIntegration() {
         contract: byId('rncardContract').value.trim(),
         enabled: true
       } }) });
-      const result = await api('/api/admin/rncard/sync', { method: 'POST', body: JSON.stringify({
+      await api('/api/admin/rncard/sync', { method: 'POST', body: JSON.stringify({
         from: byId('rncardFrom').value, to: byId('rncardTo').value }) });
-      toast(`РН-Карт: добавлено ${result.added}` +
-        (result.skippedForeign ? ` · отсеяно не наших бортов ${result.skippedForeign}` : '') +
-        (result.errors?.length ? ` · ошибки: ${result.errors[0]}` : ''));
+      toast('РН-Карт: загрузка началась в фоне — первая опрашивает ТС всех карт и идёт несколько минут. Итог появится в этой карточке, обновите страницу позже.');
     } catch (error) { toast(error.message, 'error'); }
   };
   byId('testIntegration').onclick = async () => {
