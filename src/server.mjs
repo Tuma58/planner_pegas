@@ -36,7 +36,7 @@ import {
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
-import { dailyOpsText, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
+import { dailyOpsText, dailySeries, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
 import {
@@ -13293,6 +13293,16 @@ async function api(request, response, url) {
       ...cur,
       // Э3 внештаток (03.11): акты/возвраты периода + открытые возвраты.
       incidents: incidentsSummary(db, from, toExcl),
+      // Ряды по дням для графиков печатной формы (03.11): выручка
+      // каноном, пробег из журнала одометров, на линии — касанием рейсов.
+      series: (() => {
+        const series = dailySeries(db, from, toExcl);
+        const touchDay = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
+          WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
+            AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
+        series.online = series.days.map(day => touchDay.get(addDayIso(day), day).n);
+        return series;
+      })(),
       planNet: Math.round(planNet),
       planPct: planNet > 0 ? Math.round(cur.factNet / planNet * 1000) / 10 : null,
       planPerDay: planNet > 0 ? Math.round(planNet / days) : null,

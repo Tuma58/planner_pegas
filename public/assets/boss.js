@@ -900,12 +900,80 @@ function briefDialog(context) {
     ].filter(Boolean);
     box.innerHTML = `<div class="brief-lines">${lines.map(line =>
       `<div class="brief-line">${escapeHtml(line)}</div>`).join('')}</div>
-      <button class="button small" id="briefCopy" style="margin-top:8px">📋 Скопировать текст</button>`;
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="button small" id="briefCopy">📋 Скопировать текст</button>
+        <button class="button small" id="briefPrint"
+          title="Печатная форма со строками сводки и графиками по дням — в диалоге печати выберите «Сохранить как PDF»">🖨 Печать (PDF)</button>
+      </div>`;
     document.getElementById('briefCopy').onclick = async () => {
       try {
         await navigator.clipboard.writeText(lines.join('\n'));
         toast('Сводка скопирована');
       } catch { toast('Не удалось скопировать', 'error'); }
+    };
+    // 🖨 Печатная форма (заказ руководителя 03.11): строки сводки +
+    // графики по дням (выручка/план, на линии, пробег) — печать
+    // браузером, в диалоге «Сохранить как PDF».
+    document.getElementById('briefPrint').onclick = () => {
+      const s = r.series || { days: [], net: [], km: [], online: [] };
+      const W = 980, H = 200, PL = 56, PR = 12, PT = 14, PB = 26;
+      const plotW = W - PL - PR, plotH = H - PT - PB;
+      const esc = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      const chart = (title, values, { plan = null, kind = 'bar', unit = v => v } = {}) => {
+        if (!values.length || !values.some(v => v > 0)) return '';
+        const max = Math.max(...values, plan || 0) * 1.08 || 1;
+        const x = i => PL + plotW * i / Math.max(1, values.length - (kind === 'line' ? 1 : 0));
+        const barW = Math.max(2, plotW / values.length - 2);
+        let grid = '';
+        for (let g = 1; g <= 4; g += 1) {
+          const yy = H - PB - plotH * g / 4;
+          grid += `<line x1="${PL}" y1="${yy}" x2="${W - PR}" y2="${yy}" stroke="#ddd" stroke-width="1"/>`
+            + `<text x="${PL - 6}" y="${yy + 4}" text-anchor="end" font-size="10" fill="#777">${esc(unit(max * g / 4))}</text>`;
+        }
+        // Подписи дат: первая, последняя и каждая ~седьмая.
+        let labels = '';
+        const step = Math.max(1, Math.round(values.length / 10));
+        s.days.forEach((day, i) => {
+          if (i % step && i !== values.length - 1) return;
+          labels += `<text x="${x(i) + (kind === 'bar' ? barW / 2 : 0)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#777">${day.slice(8, 10)}.${day.slice(5, 7)}</text>`;
+        });
+        const body = kind === 'line'
+          ? `<polyline fill="none" stroke="#1f6f54" stroke-width="2" points="${values.map((v, i) =>
+            `${x(i).toFixed(1)},${(H - PB - plotH * v / max).toFixed(1)}`).join(' ')}"/>`
+          : values.map((v, i) => `<rect x="${x(i).toFixed(1)}" y="${(H - PB - plotH * v / max).toFixed(1)}"
+              width="${barW.toFixed(1)}" height="${(plotH * v / max).toFixed(1)}" fill="#2b3a47"/>`).join('');
+        const planLine = plan ? `<line x1="${PL}" y1="${(H - PB - plotH * plan / max).toFixed(1)}"
+            x2="${W - PR}" y2="${(H - PB - plotH * plan / max).toFixed(1)}"
+            stroke="#8f2f24" stroke-width="1.5" stroke-dasharray="6 4"/>` : '';
+        return `<h3>${esc(title)}</h3>
+          <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${grid}${body}${planLine}${labels}</svg>`;
+      };
+      const t = v => `${Math.round(v / 1000)} т₽`;
+      const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+        <title>Сводка периода ${fd(r.from)}–${fd(r.to)}</title>
+        <style>
+          body { font: 13px/1.45 Arial, sans-serif; color: #1c242c; margin: 28px; }
+          h1 { font-size: 20px; margin: 0 0 2px; } h3 { font-size: 13px; margin: 14px 0 4px; }
+          .sub { color: #777; margin-bottom: 12px; }
+          .line { padding: 2px 0; border-bottom: 1px solid #eee; }
+          .foot { color: #999; font-size: 11px; margin-top: 16px; }
+          @media print { body { margin: 10mm; } }
+        </style></head><body>
+        <h1>⚡ Сводка периода ${fd(r.from)} – ${fd(r.to)}</h1>
+        <div class="sub">PegasLogistic · сформировано ${new Date().toLocaleString('ru-RU')}</div>
+        ${lines.map(line => `<div class="line">${esc(line)}</div>`).join('')}
+        ${chart(`Выручка по дням, т₽ без НДС${r.planPerDay ? ' (пунктир — план в день)' : ''}`,
+    s.net, { plan: r.planPerDay, unit: t })}
+        ${chart('На линии, ТС по дням', s.online, { kind: 'line', unit: v => Math.round(v) })}
+        ${chart('Пробег парка по дням, тыс. км', s.km, { unit: v => (v / 1000).toFixed(0) })}
+        <div class="foot">Цифры — из канона отчётности планера; графики по дням периода.
+          Полный отчёт эксплуатации: /ops-report.</div>
+      </body></html>`;
+      const w = window.open('', '_blank');
+      if (!w) { toast('Браузер заблокировал окно печати — разрешите всплывающие окна', 'error'); return; }
+      w.document.write(html);
+      w.document.close();
+      setTimeout(() => { try { w.focus(); w.print(); } catch { /* окно закрыли */ } }, 400);
     };
   };
   document.getElementById('briefGo').onclick = run;

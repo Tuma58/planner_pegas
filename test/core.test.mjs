@@ -5338,3 +5338,27 @@ test('внештатки Э3: сводка периода по типам и о�
   assert.equal(sum.openReturns[0].customer_name, 'Клиент Сводки');
   assert.ok(sum.openReturns[0].age_days >= 2);
 });
+
+test('сводка периода: дневные ряды выручки и километров каноном', async t => {
+  const { dailySeries } = await import('../src/ops-report.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-series-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicleId = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zoneId = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  // Рейс на 122 000 с НДС 22% → 100 000 бНДС в день выгрузки 15-го числа.
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+      starts_at,ends_at,distance_km,revenue_vat,status,unloaded_at)
+    VALUES('ser-t1',?,?,?,?,'2026-11-14T06:00:00Z','2026-11-15T06:00:00Z',500,122000,'done','2026-11-15T10:00:00Z')`)
+    .run(vehicleId, 'ООО Серии', zoneId, zoneId);
+  db.prepare(`INSERT INTO vehicle_daily_runs(vehicle_id,day,km,can_km)
+    VALUES(?, '2026-11-15', 300, 420)`).run(vehicleId);
+  const series = dailySeries(db, '2026-11-14', '2026-11-16');
+  assert.deepEqual(series.days, ['2026-11-14', '2026-11-15']);
+  assert.equal(series.net[0], 0);
+  assert.equal(series.net[1], 100000, 'выручка каноном в день выгрузки');
+  assert.equal(series.km[1], 420, 'км из CAN, не из кэша');
+});

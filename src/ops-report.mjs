@@ -250,6 +250,32 @@ export function opsReportData(db, from, to, parkFn) {
 
 // Текстовая ежедневная сводка (Telegram и лента руководителя): вчера +
 // месяц к дате, показатели в машинах, простой по причинам, опоздания.
+// Дневные ряды для графиков «⚡ Сводки периода» (03.11): выручка каноном
+// (tripNet по дате выгрузки) и пробег парка из журнала одометров.
+export function dailySeries(db, fromIso, toExclIso) {
+  const calc = calcSettings(db);
+  const days = [];
+  for (let t = Date.parse(`${fromIso}T00:00:00Z`); t < Date.parse(`${toExclIso}T00:00:00Z`); t += 86_400_000) {
+    days.push(new Date(t).toISOString().slice(0, 10));
+  }
+  const net = Object.fromEntries(days.map(day => [day, 0]));
+  for (const trip of db.prepare(`SELECT revenue_vat, cash, customer_name, unloaded_at, ends_at
+      FROM trips WHERE status IN ('unloaded','done','paid')
+        AND datetime(COALESCE(unloaded_at, ends_at)) >= datetime(?)
+        AND datetime(COALESCE(unloaded_at, ends_at)) < datetime(?)`).all(fromIso, toExclIso)) {
+    const day = doneDayOf(trip);
+    if (day in net) net[day] += tripNet(trip, calc);
+  }
+  const kmByDay = Object.fromEntries(db.prepare(`SELECT day, SUM(COALESCE(can_km, km)) v
+      FROM vehicle_daily_runs WHERE day >= ? AND day < ? GROUP BY day`).all(fromIso, toExclIso)
+    .map(row => [row.day, Math.round(row.v || 0)]));
+  return {
+    days,
+    net: days.map(day => Math.round(net[day])),
+    km: days.map(day => kmByDay[day] || 0)
+  };
+}
+
 export function dailyOpsText(db, parkFn) {
   const today = new Date().toISOString().slice(0, 10);
   const y = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
