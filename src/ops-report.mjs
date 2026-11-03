@@ -276,6 +276,31 @@ export function dailySeries(db, fromIso, toExclIso) {
   };
 }
 
+// Машин в ремонте среднесуточно по дням — для графика КТГ/КВЛ
+// PDF-презентации сводки (03.11).
+export function repairCarsByDay(db, days) {
+  const q = db.prepare(`SELECT COALESCE(SUM(julianday(MIN(ends_at, :b)) - julianday(MAX(starts_at, :a))), 0) v
+    FROM vehicle_dispositions WHERE kind='repair' AND starts_at < :b AND ends_at > :a`);
+  return days.map(day => {
+    const next = new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    return Math.round(q.get({ a: day, b: next }).v * 100) / 100;
+  });
+}
+
+// Опоздания на выгрузку (>1 ч, финальный стоп) по дням выгрузки —
+// методика канона опозданий, счётчики по дням для презентации.
+export function lateUnloadByDay(db, days) {
+  const rows = Object.fromEntries(db.prepare(`SELECT substr(COALESCE(t.unloaded_at, t.ends_at), 1, 10) day, COUNT(*) c
+    FROM trips t JOIN trip_stops s ON s.trip_id = t.id
+      AND s.seq = (SELECT MAX(seq) FROM trip_stops WHERE trip_id = t.id)
+    WHERE t.status IN ('unloaded','done','paid') AND s.kind='D'
+      AND s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
+      AND julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24
+      AND substr(COALESCE(t.unloaded_at, t.ends_at), 1, 10) BETWEEN ? AND ?
+    GROUP BY day`).all(days[0], days[days.length - 1]).map(row => [row.day, row.c]));
+  return days.map(day => rows[day] || 0);
+}
+
 export function dailyOpsText(db, parkFn) {
   const today = new Date().toISOString().slice(0, 10);
   const y = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);

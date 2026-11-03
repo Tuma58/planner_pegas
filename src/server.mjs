@@ -36,7 +36,8 @@ import {
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
-import { dailyOpsText, dailySeries, opsReportData, renderOpsReportHtml } from './ops-report.mjs';
+import { dailyOpsText, dailySeries, lateUnloadByDay, opsReportData, renderOpsReportHtml, repairCarsByDay } from './ops-report.mjs';
+import { renderBriefDeckPdf } from './brief-deck-pdf.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
 import {
@@ -13207,11 +13208,104 @@ async function api(request, response, url) {
       fleet: fleet.length, sources, perVehicle
     };
   }
+  // Расчёт «⚡ Сводки периода» — общий для JSON-роута и PDF-презентации
+  // (кнопка «📑 Презентация», 03.11). from/to валидирует вызывающий.
+  function briefReportData(from, to, baseKind = 'prev') {
+    const toExcl = addDayIso(to);
+    const days = Math.round((Date.parse(toExcl) - Date.parse(from)) / 86_400_000);
+
+      // Динамика (уточнение руководителя 26.10): те же фактовые метрики за
+      // ПРЕДЫДУЩИЙ период той же длины (встык перед «с») — фронт рисует
+      // дельты. Сбор метрик — общий замыканием.
+      const factMetrics = (mFrom, mToExcl) => {
+        const mSnap = reportSnapshot(db, mFrom, mToExcl);
+        const mDays = Math.round((Date.parse(mToExcl) - Date.parse(mFrom)) / 86_400_000);
+        const MSK2 = 3 * 3_600_000;
+        const today2 = new Date(Date.now() + MSK2).toISOString().slice(0, 10);
+        const mMileTo = mToExcl < today2 ? mToExcl : today2;
+        const mMile = mMileTo > mFrom ? mileageData(mFrom, mMileTo) : null;
+        const touch = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
+          WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
+            AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
+        let touchSum = 0;
+        for (let t = Date.parse(mFrom + 'T00:00:00Z'); t < Date.parse(mToExcl + 'T00:00:00Z'); t += 86_400_000) {
+          touchSum += touch.get(new Date(t + 86_400_000).toISOString().slice(0, 10),
+            new Date(t).toISOString().slice(0, 10)).n;
+        }
+        const mLate = db.prepare(`SELECT
+            SUM(CASE WHEN julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24
+              THEN 1 ELSE 0 END) late, COUNT(*) facts
+          FROM trips t JOIN trip_stops s ON s.trip_id=t.id
+            AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
+          WHERE t.status IN ('unloaded','done','paid') AND s.kind='D'
+            AND s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
+            AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime(?)
+            AND datetime(COALESCE(t.unloaded_at, t.ends_at)) < datetime(?)`).get(mFrom, mToExcl);
+        const mDowntime = {};
+        for (const row of db.prepare(`SELECT kind,
+            SUM(julianday(MIN(ends_at, :b)) - julianday(MAX(starts_at, :a))) d
+          FROM vehicle_dispositions WHERE starts_at < :b AND ends_at > :a
+            AND kind IN ('repair','no_driver') GROUP BY kind`).all({ a: mFrom, b: mToExcl })) {
+          mDowntime[row.kind] = Math.round(row.d || 0);
+        }
+        const mFact = Math.round(mSnap.netRevenue || 0);
+        return {
+          orders: mSnap.trips, factNet: mFact,
+          factPerDay: mDays ? Math.round(mFact / mDays) : 0,
+          avgCheck: mSnap.trips ? Math.round(mFact / mSnap.trips) : 0,
+          km: mMile ? mMile.totalKm : null,
+          loadedPct: mMile && mMile.totalKm ? Math.round(mMile.loadedKm / mMile.totalKm * 100) : null,
+          kmPerDayPerVehicle: mMile ? mMile.perDayPerVehicle : null,
+          lateUnload: mLate.late || 0, lateFacts: mLate.facts || 0,
+          onLineAvg: mDays ? Math.round(touchSum / mDays) : 0,
+          repairMd: mDowntime.repair || 0, noDriverMd: mDowntime.no_driver || 0
+        };
+      };
+      const cur = factMetrics(from, toExcl);
+      // База сравнения (переключатель, 26.10): 'prev' — предыдущий период
+      // той же длины встык; 'month' — тот же отрезок чисел прошлого месяца
+      // (как в выпусках эффективности).
+      const base = baseKind === 'month' ? 'month' : 'prev';
+      const monthBack = dayStr => {
+        const d = new Date(dayStr + 'T00:00:00Z');
+        return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, d.getUTCDate()))
+          .toISOString().slice(0, 10);
+      };
+      const prevFrom = base === 'month'
+        ? monthBack(from)
+        : new Date(Date.parse(from + 'T00:00:00Z') - days * 86_400_000).toISOString().slice(0, 10);
+      const prevToExcl = base === 'month' ? monthBack(toExcl) : from;
+      const prev = factMetrics(prevFrom, prevToExcl);
+      const fleet = db.prepare(`SELECT COUNT(*) n FROM vehicles WHERE status='work'`).get().n;
+      const planNet = planNetForPeriod(
+        db.prepare('SELECT period_start, target_net FROM revenue_plans').all(), from, toExcl);
+      const kmTarget = Number(settingsObject(db).calculation?.dailyKmTarget ?? 500) || 500;
+      return {
+        from, to, days, fleet,
+        ...cur,
+        // Э3 внештаток (03.11): акты/возвраты периода + открытые возвраты.
+        incidents: incidentsSummary(db, from, toExcl),
+        // Ряды по дням для графиков печатной формы (03.11): выручка
+        // каноном, пробег из журнала одометров, на линии — касанием рейсов.
+        series: (() => {
+          const series = dailySeries(db, from, toExcl);
+          const touchDay = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
+            WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
+              AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
+          series.online = series.days.map(day => touchDay.get(addDayIso(day), day).n);
+          return series;
+        })(),
+        planNet: Math.round(planNet),
+        planPct: planNet > 0 ? Math.round(cur.factNet / planNet * 1000) / 10 : null,
+        planPerDay: planNet > 0 ? Math.round(planNet / days) : null,
+        kmTarget,
+        prev, prevFrom, base,
+        prevTo: new Date(Date.parse(prevToExcl + 'T00:00:00Z') - 86_400_000).toISOString().slice(0, 10)
+      };
+  }
   if (request.method === 'GET' && pathname === '/api/brief-report') {
     // «⚡ Сводка периода» (заказ руководителя 26.10): короткий отчёт для
-    // коротких совещаний. Только главные цифры, всё из канона (снимок
-    // отчётности, журнал одометров, месячные планы по доле дней) — без
-    // живых опросов, формируется мгновенно.
+    // коротких совещаний; расчёт — в briefReportData (общий с PDF-колодой).
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;
     const from = String(url.searchParams.get('from') || '').slice(0, 10);
@@ -13222,94 +13316,48 @@ async function api(request, response, url) {
     const toExcl = addDayIso(to);
     const days = Math.round((Date.parse(toExcl) - Date.parse(from)) / 86_400_000);
     if (days > 92) return errorJson(response, 422, 'Период до 92 суток');
-    // Динамика (уточнение руководителя 26.10): те же фактовые метрики за
-    // ПРЕДЫДУЩИЙ период той же длины (встык перед «с») — фронт рисует
-    // дельты. Сбор метрик — общий замыканием.
-    const factMetrics = (mFrom, mToExcl) => {
-      const mSnap = reportSnapshot(db, mFrom, mToExcl);
-      const mDays = Math.round((Date.parse(mToExcl) - Date.parse(mFrom)) / 86_400_000);
-      const MSK2 = 3 * 3_600_000;
-      const today2 = new Date(Date.now() + MSK2).toISOString().slice(0, 10);
-      const mMileTo = mToExcl < today2 ? mToExcl : today2;
-      const mMile = mMileTo > mFrom ? mileageData(mFrom, mMileTo) : null;
-      const touch = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
-        WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
-          AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
-      let touchSum = 0;
-      for (let t = Date.parse(mFrom + 'T00:00:00Z'); t < Date.parse(mToExcl + 'T00:00:00Z'); t += 86_400_000) {
-        touchSum += touch.get(new Date(t + 86_400_000).toISOString().slice(0, 10),
-          new Date(t).toISOString().slice(0, 10)).n;
-      }
-      const mLate = db.prepare(`SELECT
-          SUM(CASE WHEN julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24
-            THEN 1 ELSE 0 END) late, COUNT(*) facts
-        FROM trips t JOIN trip_stops s ON s.trip_id=t.id
-          AND s.seq=(SELECT MAX(seq) FROM trip_stops WHERE trip_id=t.id)
-        WHERE t.status IN ('unloaded','done','paid') AND s.kind='D'
-          AND s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
-          AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime(?)
-          AND datetime(COALESCE(t.unloaded_at, t.ends_at)) < datetime(?)`).get(mFrom, mToExcl);
-      const mDowntime = {};
-      for (const row of db.prepare(`SELECT kind,
-          SUM(julianday(MIN(ends_at, :b)) - julianday(MAX(starts_at, :a))) d
-        FROM vehicle_dispositions WHERE starts_at < :b AND ends_at > :a
-          AND kind IN ('repair','no_driver') GROUP BY kind`).all({ a: mFrom, b: mToExcl })) {
-        mDowntime[row.kind] = Math.round(row.d || 0);
-      }
-      const mFact = Math.round(mSnap.netRevenue || 0);
-      return {
-        orders: mSnap.trips, factNet: mFact,
-        factPerDay: mDays ? Math.round(mFact / mDays) : 0,
-        avgCheck: mSnap.trips ? Math.round(mFact / mSnap.trips) : 0,
-        km: mMile ? mMile.totalKm : null,
-        loadedPct: mMile && mMile.totalKm ? Math.round(mMile.loadedKm / mMile.totalKm * 100) : null,
-        kmPerDayPerVehicle: mMile ? mMile.perDayPerVehicle : null,
-        lateUnload: mLate.late || 0, lateFacts: mLate.facts || 0,
-        onLineAvg: mDays ? Math.round(touchSum / mDays) : 0,
-        repairMd: mDowntime.repair || 0, noDriverMd: mDowntime.no_driver || 0
-      };
-    };
-    const cur = factMetrics(from, toExcl);
-    // База сравнения (переключатель, 26.10): 'prev' — предыдущий период
-    // той же длины встык; 'month' — тот же отрезок чисел прошлого месяца
-    // (как в выпусках эффективности).
-    const base = url.searchParams.get('base') === 'month' ? 'month' : 'prev';
-    const monthBack = dayStr => {
-      const d = new Date(dayStr + 'T00:00:00Z');
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, d.getUTCDate()))
-        .toISOString().slice(0, 10);
-    };
-    const prevFrom = base === 'month'
-      ? monthBack(from)
-      : new Date(Date.parse(from + 'T00:00:00Z') - days * 86_400_000).toISOString().slice(0, 10);
-    const prevToExcl = base === 'month' ? monthBack(toExcl) : from;
-    const prev = factMetrics(prevFrom, prevToExcl);
-    const fleet = db.prepare(`SELECT COUNT(*) n FROM vehicles WHERE status='work'`).get().n;
-    const planNet = planNetForPeriod(
-      db.prepare('SELECT period_start, target_net FROM revenue_plans').all(), from, toExcl);
-    const kmTarget = Number(settingsObject(db).calculation?.dailyKmTarget ?? 500) || 500;
-    return json(response, 200, {
-      from, to, days, fleet,
-      ...cur,
-      // Э3 внештаток (03.11): акты/возвраты периода + открытые возвраты.
-      incidents: incidentsSummary(db, from, toExcl),
-      // Ряды по дням для графиков печатной формы (03.11): выручка
-      // каноном, пробег из журнала одометров, на линии — касанием рейсов.
-      series: (() => {
-        const series = dailySeries(db, from, toExcl);
-        const touchDay = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
-          WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
-            AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
-        series.online = series.days.map(day => touchDay.get(addDayIso(day), day).n);
-        return series;
-      })(),
-      planNet: Math.round(planNet),
-      planPct: planNet > 0 ? Math.round(cur.factNet / planNet * 1000) / 10 : null,
-      planPerDay: planNet > 0 ? Math.round(planNet / days) : null,
-      kmTarget,
-      prev, prevFrom, base,
-      prevTo: new Date(Date.parse(prevToExcl + 'T00:00:00Z') - 86_400_000).toISOString().slice(0, 10)
+    return json(response, 200,
+      briefReportData(from, to, url.searchParams.get('base') === 'month' ? 'month' : 'prev'));
+  }
+  // 📑 Презентация сводки (заказ руководителя 03.11): восемь альбомных
+  // страниц PDF по образцу выпуска 27.10 — титул, ключевые цифры,
+  // КТГ/КВЛ/КИП, выручка и темп, на линии, пробег по неделям, опоздания,
+  // итог. База сравнения — те же числа прошлого месяца.
+  if (request.method === 'GET' && pathname === '/api/brief-deck.pdf') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    const from = String(url.searchParams.get('from') || '').slice(0, 10);
+    const to = String(url.searchParams.get('to') || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) {
+      return errorJson(response, 422, 'Нужен период from/to («по» — включительно)');
+    }
+    if (Math.round((Date.parse(addDayIso(to)) - Date.parse(from)) / 86_400_000) > 92) {
+      return errorJson(response, 422, 'Период до 92 суток');
+    }
+    const brief = briefReportData(from, to, 'month');
+    const prevSeries = dailySeries(db, brief.prevFrom, addDayIso(brief.prevTo));
+    const touchDay = db.prepare(`SELECT COUNT(DISTINCT vehicle_id) n FROM trips
+      WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
+        AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
+    const pdfBuffer = renderBriefDeckPdf({
+      brief,
+      extra: {
+        repairCur: repairCarsByDay(db, brief.series.days),
+        onlinePrev: prevSeries.days.map(day => touchDay.get(addDayIso(day), day).n),
+        lateCur: lateUnloadByDay(db, brief.series.days),
+        latePrev: lateUnloadByDay(db, prevSeries.days),
+        kmPrevJournal: prevSeries.km,
+        prevDays: prevSeries.days.length
+      },
+      generatedAt: new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10).split('-').reverse().join('.')
     });
+    audit(db, user, 'brief-deck', 'report', `${from}..${to}`, {}, requestIp(request));
+    response.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Length': pdfBuffer.length,
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`Сводка_периода_${from}_${to}.pdf`)}`
+    });
+    return response.end(pdfBuffer);
   }
   if (request.method === 'GET' && pathname === '/api/ops-report') {
     const user = requirePermission(request, response, 'reports:read');

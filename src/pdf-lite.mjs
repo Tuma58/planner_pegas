@@ -74,7 +74,10 @@ const colorOf = hex => {
 const num = value => (Math.round(value * 100) / 100).toString();
 
 export class PdfLite {
-  constructor() {
+  // landscape: true — альбомный A4 (презентации); по умолчанию портрет.
+  constructor({ landscape = false } = {}) {
+    this.w = landscape ? A4.h : A4.w;
+    this.h = landscape ? A4.w : A4.h;
     this.fonts = new Map(); // имя → {ttf, buffer, used: Map(gid→code)}
     this.pages = [];
     this.current = null;
@@ -110,16 +113,16 @@ export class PdfLite {
       f.used.set(gid, code);
       hex += gid.toString(16).padStart(4, '0');
     }
-    this.current.ops.push(`BT /${font} ${num(size)} Tf ${colorOf(color)} rg ${num(tx)} ${num(A4.h - y)} Td <${hex}> Tj ET`);
+    this.current.ops.push(`BT /${font} ${num(size)} Tf ${colorOf(color)} rg ${num(tx)} ${num(this.h - y)} Td <${hex}> Tj ET`);
     return w;
   }
 
   line(x1, y1, x2, y2, { color = '#e1e0d9', width = 0.7 } = {}) {
-    this.current.ops.push(`${colorOf(color)} RG ${num(width)} w ${num(x1)} ${num(A4.h - y1)} m ${num(x2)} ${num(A4.h - y2)} l S`);
+    this.current.ops.push(`${colorOf(color)} RG ${num(width)} w ${num(x1)} ${num(this.h - y1)} m ${num(x2)} ${num(this.h - y2)} l S`);
   }
 
   rect(x, y, w, h, { fill, stroke, width = 0.7 } = {}) {
-    const parts = [`${num(x)} ${num(A4.h - y - h)} ${num(w)} ${num(h)} re`];
+    const parts = [`${num(x)} ${num(this.h - y - h)} ${num(w)} ${num(h)} re`];
     if (fill) parts.unshift(`${colorOf(fill)} rg`);
     if (stroke) parts.unshift(`${colorOf(stroke)} RG ${num(width)} w`);
     parts.push(fill && stroke ? 'B' : fill ? 'f' : 'S');
@@ -128,13 +131,13 @@ export class PdfLite {
 
   poly(points, { color = '#2a78d6', width = 1.4 } = {}) {
     if (points.length < 2) return;
-    const path = points.map(([x, y], i) => `${num(x)} ${num(A4.h - y)} ${i ? 'l' : 'm'}`).join(' ');
+    const path = points.map(([x, y], i) => `${num(x)} ${num(this.h - y)} ${i ? 'l' : 'm'}`).join(' ');
     this.current.ops.push(`${colorOf(color)} RG ${num(width)} w 1 j 1 J ${path} S`);
   }
 
   circle(cx, cy, r, { fill = '#2a78d6' } = {}) {
     const k = 0.5523 * r;
-    const y = A4.h - cy;
+    const y = this.h - cy;
     this.current.ops.push(`${colorOf(fill)} rg ${num(cx + r)} ${num(y)} m ` +
       `${num(cx + r)} ${num(y + k)} ${num(cx + k)} ${num(y + r)} ${num(cx)} ${num(y + r)} c ` +
       `${num(cx - k)} ${num(y + r)} ${num(cx - r)} ${num(y + k)} ${num(cx - r)} ${num(y)} c ` +
@@ -178,7 +181,7 @@ endbfchar endcmap end end`;
     for (const page of this.pages) {
       const content = zlib.deflateSync(Buffer.from(page.ops.join('\n')));
       const contentId = add({ stream: content, dict: `<< /Length ${content.length} /Filter /FlateDecode >>` });
-      pageIds.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${A4.w} ${A4.h}]
+      pageIds.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${this.w} ${this.h}]
         /Resources << /Font << ${fontRes} >> >> /Contents ${contentId} 0 R >>`));
     }
     const realPagesId = add(`<< /Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] >>`);

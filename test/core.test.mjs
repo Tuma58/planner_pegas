@@ -5362,3 +5362,57 @@ test('сводка периода: дневные ряды выручки и к�
   assert.equal(series.net[1], 100000, 'выручка каноном в день выгрузки');
   assert.equal(series.km[1], 420, 'км из CAN, не из кэша');
 });
+
+test('презентация сводки: дневные сборщики и PDF-колода', async t => {
+  const { lateUnloadByDay, repairCarsByDay } = await import('../src/ops-report.mjs');
+  const { renderBriefDeckPdf } = await import('../src/brief-deck-pdf.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-deck-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicleId = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zoneId = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  // Ремонт 2 суток 15–16.11 → в эти дни на одну машину меньше в строю.
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at,note)
+    VALUES('deck-d1',?, 'repair','2026-11-15T00:00:00Z','2026-11-17T00:00:00Z','тест')`).run(vehicleId);
+  const rep = repairCarsByDay(db, ['2026-11-14', '2026-11-15', '2026-11-16', '2026-11-17']);
+  assert.deepEqual(rep, [0, 1, 1, 0]);
+  // Опоздание на выгрузку 15.11 — счётчик дня.
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+      starts_at,ends_at,distance_km,revenue_vat,status,unloaded_at)
+    VALUES('deck-t1',?, 'Клиент',?,?, '2026-11-14T06:00:00Z','2026-11-15T06:00:00Z',500,100000,'done','2026-11-15T12:00:00Z')`)
+    .run(vehicleId, zoneId, zoneId);
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,planned_arrival,actual_arrival)
+    VALUES('deck-s1','deck-t1',1,'D','Москва','2026-11-15T06:00:00Z','2026-11-15T10:00:00Z')`).run();
+  assert.deepEqual(lateUnloadByDay(db, ['2026-11-14', '2026-11-15']), [0, 1]);
+  // Колода собирается в честный восьмистраничный PDF на синтетике.
+  const days = Array.from({ length: 31 }, (_, i) => `2026-10-${String(i + 1).padStart(2, '0')}`);
+  const deck = {
+    brief: {
+      from: '2026-10-01', to: '2026-10-31', prevFrom: '2026-09-01', prevTo: '2026-09-30',
+      base: 'month', days: 31, fleet: 127, factNet: 155_290_000, planNet: 160_000_000,
+      planPct: 97.1, planPerDay: 5_161_290, factPerDay: 5_009_000, orders: 1451,
+      avgCheck: 107_024, onLineAvg: 106, km: 1_771_087, loadedPct: 88,
+      kmPerDayPerVehicle: 450, kmTarget: 500, lateUnload: 292, lateFacts: 1423,
+      repairMd: 379, noDriverMd: 379,
+      incidents: { counts: { act: 1, return: 2, late: 0 }, returnsClosed: 1, openReturns: [] },
+      series: { days, net: days.map((_, i) => 4e6 + (i % 5) * 5e5), km: days.map(() => 40000),
+        online: days.map(() => 106) },
+      prev: { orders: 1525, factNet: 151_500_000, avgCheck: 99_300, onLineAvg: 109,
+        km: 1_677_000, loadedPct: 88, kmPerDayPerVehicle: 440, lateUnload: 366,
+        lateFacts: 1500, repairMd: 272, noDriverMd: 405 }
+    },
+    extra: {
+      repairCur: days.map(() => 12), onlinePrev: Array.from({ length: 30 }, () => 109),
+      lateCur: days.map(() => 9), latePrev: Array.from({ length: 30 }, () => 12),
+      kmPrevJournal: Array.from({ length: 30 }, () => 38000), prevDays: 30
+    },
+    generatedAt: '03.11.2026'
+  };
+  const buffer = renderBriefDeckPdf(deck);
+  assert.ok(buffer.length > 50_000, 'PDF не пустой');
+  assert.equal(buffer.subarray(0, 5).toString('latin1'), '%PDF-');
+  assert.equal((buffer.toString('latin1').match(/\/Type \/Page\b/g) || []).length, 8, 'ровно 8 страниц');
+});

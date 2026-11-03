@@ -904,12 +904,25 @@ function briefDialog(context) {
         <button class="button small" id="briefCopy">📋 Скопировать текст</button>
         <button class="button small" id="briefPrint"
           title="Печатная форма со строками сводки и графиками по дням — в диалоге печати выберите «Сохранить как PDF»">🖨 Печать (PDF)</button>
+        <button class="button small" id="briefDeck"
+          title="Презентация для совещания: восемь альбомных страниц — титул, ключевые цифры, КТГ/КВЛ/КИП, выручка и темп, на линии, пробег по неделям, опоздания, итог. База — те же числа прошлого месяца. Скачивается готовым PDF-файлом">📑 Презентация (PDF)</button>
       </div>`;
     document.getElementById('briefCopy').onclick = async () => {
       try {
         await navigator.clipboard.writeText(lines.join('\n'));
         toast('Сводка скопирована');
       } catch { toast('Не удалось скопировать', 'error'); }
+    };
+    // 📑 Презентация (03.11): готовый PDF с сервера — скачивание ссылкой,
+    // всплывающие окна не нужны.
+    document.getElementById('briefDeck').onclick = () => {
+      const link = document.createElement('a');
+      link.href = `/api/brief-deck.pdf?from=${r.from}&to=${r.to}`;
+      link.download = `Сводка_периода_${r.from}_${r.to}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast('Презентация формируется — файл сейчас скачается');
     };
     // 🖨 Печатная форма (заказ руководителя 03.11): строки сводки +
     // графики по дням (выручка/план, на линии, пробег) — печать
