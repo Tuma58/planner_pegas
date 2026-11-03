@@ -57,6 +57,13 @@ export function boardMediaMimeOf(fileName) {
 // проблемы, а не ролик для общего экрана.
 export const helpdeskMediaPath = path.join(path.dirname(config.databasePath), 'helpdesk-media');
 export const MAX_HELPDESK_MEDIA_BYTES = 50 * 1024 * 1024;
+// Заявка Базуева 02.11: текстовое ТЗ приходилось слать скриншотом.
+// Текст отдаётся строго как text/plain — браузер показывает, не исполняет.
+const HELPDESK_TEXT_TYPES = { '.md': 'text/plain', '.txt': 'text/plain' };
+export function helpdeskMediaMimeOf(fileName) {
+  const ext = path.extname(String(fileName || '').toLowerCase());
+  return boardMediaMimeOf(fileName) || HELPDESK_TEXT_TYPES[ext] || null;
+}
 
 // Имя файла из заголовка: без путей и управляющих символов; длинное имя
 // режется с сохранением расширения в хвосте.

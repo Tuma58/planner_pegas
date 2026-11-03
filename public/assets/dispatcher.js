@@ -1334,6 +1334,10 @@ export async function renderDispatcher(container, context, options = {}) {
     try { state.dispatcherLayout = localStorage.getItem('pl_disp_layout') || 'board'; }
     catch { state.dispatcherLayout = 'board'; }
   }
+  if (state.kbDense === undefined) {
+    try { state.kbDense = localStorage.getItem('pl_kb_dense') === '1'; }
+    catch { state.kbDense = false; }
+  }
   if (state.dispatcherLayout === 'board') {
     // Этап 2: живые лимиты — личная ёмкость смены (p50 отметок за 14 дн,
     // пересчёт сторожем) и лимит «Подготовки» = выходы ближайших суток.
@@ -1433,7 +1437,7 @@ export async function renderDispatcher(container, context, options = {}) {
       ${ownerRow(trip)}
       <div class="kbr kb2">${escapeHtml((trip.customer_name || '').slice(0, 30))}</div>
       <div class="kbr kb3">${escapeHtml((trip.from_point || trip.from_name || '').slice(0, 22))} → ${escapeHtml((trip.to_point || trip.to_name || '').slice(0, 22))}</div>
-      ${extraRows}${button || ''}${takeBtn(trip)}</div>`;
+      ${extraRows}<div class="kb-btns">${button || ''}${takeBtn(trip)}</div></div>`;
     const stepBtn = (trip, step, label) => canAct
       ? `<button class="button small kb-step" data-kb-step="${trip.id}" data-kb-step-name="${step}">${label}</button>` : '';
     const prepCardKb = trip => {
@@ -1739,6 +1743,8 @@ export async function renderDispatcher(container, context, options = {}) {
         <span class="resctl-group">
           <button class="button small" id="kbLayoutBoard">🗂 Доска</button>
           <button class="button small ghost" id="kbLayoutClassic" title="Классический вид: полные карточки контроля, перегоны, массовые инструменты">📋 Классика</button>
+          <button class="button small ghost" id="kbDense"
+            title="Компактные карточки: только ТС, водитель, срок и следующий шаг — клиент и маршрут видны по клику (заявка HELP DESK, 03.11). Запоминается на этом рабочем месте">${state.kbDense ? '▦ Подробно' : '▤ Компактно'}</button>
         </span>
         <span class="resctl-group">
           <button class="button small ${ownerActive ? 'ghost' : ''}" data-kb-owner="all"
@@ -1773,7 +1779,7 @@ export async function renderDispatcher(container, context, options = {}) {
         <div class="list">${questionCards}</div>
       </details>` : ''}
       ${goneCards ? `<div class="kb-gone"><div class="kb-note">🔎 Сошли с доски за 48 ч (по вашему поиску) — ошибочную отметку можно откатить:</div><div class="kb-gone-row">${goneCards}</div></div>` : ''}
-      <div class="kb-board">
+      <div class="kb-board ${state.kbDense ? 'kb-dense' : ''}">
         ${kbCol('🧰 Подготовка выхода', [...trPrep.map(kbTransferCard), ...prepList.filter(matchKb).map(prepCardKb), ...waitingLogist.filter(matchKb).map(waitCardKb)],
     `${prepTotal} / ${prepLimit}${trPrep.length ? ` · 🚚 ${trPrep.length}` : ''}`, prepTotal > prepLimit,
     'лимит = выходы ближайших 24 ч по плану: готовим больше, чем выходит, — проверьте окна; кнопка — следующий шаг; 🚚 — перегоны порожним')}
@@ -1867,6 +1873,14 @@ export async function renderDispatcher(container, context, options = {}) {
     container.querySelector('#kbLayoutClassic').onclick = () => {
       state.dispatcherLayout = 'classic';
       try { localStorage.setItem('pl_disp_layout', 'classic'); } catch { /* ок */ }
+      renderDispatcher(container, context);
+    };
+    // ▤ Компакт карточек (заявка Клемешовой из HELP DESK, 03.11): прячем
+    // владельца, клиента и маршрут — остаются ТС, водитель, срок и ОДИН
+    // следующий шаг (конструкция доски неизменна). Память рабочего места.
+    container.querySelector('#kbDense').onclick = () => {
+      state.kbDense = !state.kbDense;
+      try { localStorage.setItem('pl_kb_dense', state.kbDense ? '1' : ''); } catch { /* ок */ }
       renderDispatcher(container, context);
     };
     // Клик по карточке — усечённое окно «следующее действие + комментарий»

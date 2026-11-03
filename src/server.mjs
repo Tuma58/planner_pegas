@@ -7,7 +7,7 @@ import { config } from './config.mjs';
 import { audit, canonTrailerPlate, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
-import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
+import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaMimeOf, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
@@ -7777,7 +7777,7 @@ async function api(request, response, url) {
       const safeId = String(body.mediaId).replace(/[^\w-]/g, '');
       if (safeId && fs.existsSync(path.join(helpdeskMediaPath, safeId))) {
         mediaId = safeId;
-        mediaMime = boardMediaMimeOf(String(body.mediaName || '')) || 'application/octet-stream';
+        mediaMime = helpdeskMediaMimeOf(String(body.mediaName || '')) || 'application/octet-stream';
       }
     }
     const id = randomUUID();
@@ -7839,9 +7839,9 @@ async function api(request, response, url) {
     let rawName = String(request.headers['x-file-name'] || '');
     try { rawName = decodeURIComponent(rawName); } catch { /* оставляем как есть */ }
     const fileName = cleanFileName(rawName);
-    const mime = boardMediaMimeOf(fileName);
+    const mime = helpdeskMediaMimeOf(fileName);
     if (!fileName || !mime) {
-      return errorJson(response, 422, 'К заявке можно картинку или видео: png, jpg, webp, gif, mp4, webm, mov');
+      return errorJson(response, 422, 'К заявке можно картинку, видео или текст: png, jpg, webp, gif, mp4, webm, mov, md, txt');
     }
     const content = await readRaw(request, MAX_HELPDESK_MEDIA_BYTES);
     if (!content.length) return errorJson(response, 422, 'Файл пустой');

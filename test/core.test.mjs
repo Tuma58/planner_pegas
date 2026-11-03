@@ -5215,3 +5215,12 @@ test('помощник: правило «транзит короче физик�
   assert.equal(transitPhysicsHint(0, 5, 0), null);
   assert.equal(transitPhysicsHint(800, -2, 10), null);
 });
+
+test('HELP DESK: текстовые вложения .md/.txt отдаются плоским текстом', async () => {
+  const { helpdeskMediaMimeOf } = await import('../src/uploads.mjs');
+  assert.equal(helpdeskMediaMimeOf('ТЗ внештатки.md'), 'text/plain');
+  assert.equal(helpdeskMediaMimeOf('заметка.txt'), 'text/plain');
+  assert.equal(helpdeskMediaMimeOf('скрин.png'), 'image/png');
+  assert.equal(helpdeskMediaMimeOf('страница.html'), null, 'разметка не проходит');
+  assert.equal(helpdeskMediaMimeOf('script.js'), null);
+});

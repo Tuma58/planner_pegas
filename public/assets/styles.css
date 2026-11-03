@@ -1891,6 +1891,18 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   width:100%; box-sizing:border-box; display:flex; flex-direction:column; gap:3px; }
 .kb-card .kbr { min-height:17px; line-height:17px; }
 .kb-card button { align-self:stretch; }
+.kb-card .kb-btns { display:flex; flex-direction:column; gap:4px; }
+.kb-card .kb-btns:empty { display:none; }
+.kb-card .kb-btns button { flex:1 1 auto; }
+/* ▤ Компакт карточек доски (заявка Клемешовой из HELP DESK, 03.11):
+   остаются ТС+водитель, срок/контроль и один следующий шаг; владелец,
+   клиент и маршрут прячутся — они видны по клику в карточке. */
+.kb-dense .kb-cards { gap:5px; }
+.kb-dense .kb-card { padding:4px 8px; gap:1px; }
+.kb-dense .kb-card .kb2, .kb-dense .kb-card .kb3, .kb-dense .kb-card .kb-own { display:none; }
+.kb-dense .kb-card .kbr { min-height:15px; line-height:15px; font-size:var(--fs-xs); }
+.kb-dense .kb-card .kb-btns { flex-direction:row; }
+.kb-dense .kb-card .kb-btns button { padding:2px 6px; font-size:var(--fs-xs); }
 .kb-card:hover { border-color:var(--accent, #4a7); }
 .kb-card.over { border-color:var(--bad); box-shadow:inset 3px 0 0 var(--bad); }
 .kb-card.soon { box-shadow:inset 3px 0 0 var(--ok); }
