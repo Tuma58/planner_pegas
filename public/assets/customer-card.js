@@ -42,6 +42,8 @@ export async function customerCardDialog(name, context) {
       <div class="cc-tile"><b>${money(stats.avgCheck)}</b><span>средний чек</span><small>всего ${money(stats.sumAll)}</small></div>
       <div class="cc-tile ${stats.daysSinceLast != null && stats.daysSinceLast > 30 ? 'warn' : ''}"><b>${stats.daysSinceLast != null ? `${stats.daysSinceLast} дн` : '—'}</b><span>с последнего рейса</span><small>${stats.lastTripAt ? fmtDay(stats.lastTripAt) : 'рейсов не было'}</small></div>
       <div class="cc-tile ${stats.claimsCount ? 'warn' : ''}"><b>${stats.claimsCount}</b><span>претензий по простою</span><small>${money(stats.claimsSum)}</small></div>
+      ${stats.incidents && (stats.incidents.act || stats.incidents.return)
+    ? `<div class="cc-tile warn" title="Акты на выгрузке и возвраты продукции за 180 дней — вкладка «Внештатки»"><b>${stats.incidents.act + stats.incidents.return}</b><span>актов и возвратов</span><small>акты ${stats.incidents.act} · возвраты ${stats.incidents.return} (180 дн)</small></div>` : ''}
       ${stats.gateLoad || stats.gateUnload ? (() => {
     // Фактические ворота клиента — аргумент для договора: рекомендуемый
     // бесплатный простой = наибольшая медиана, округлённая вверх, +1 ч.

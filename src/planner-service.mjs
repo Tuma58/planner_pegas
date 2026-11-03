@@ -1491,6 +1491,17 @@ export function customerCard(db, name, nowMs = Date.now()) {
       topLanes: Object.entries(lanes).sort((a, b) => b[1] - a[1]).slice(0, 4)
         .map(([lane, count]) => ({ lane, count })),
       claimsCount: claims.c, claimsSum: claims.s,
+      // Внештатки клиента за 180 дней (Э3, 03.11): акты и возвраты —
+      // аргумент продажам о качестве работы с этим клиентом.
+      incidents: (() => {
+        const result = { act: 0, return: 0 };
+        for (const row of db.prepare(`SELECT i.kind, COUNT(*) c FROM trip_incidents i
+            JOIN trips t ON t.id=i.trip_id
+            WHERE trim(t.customer_name)=trim(?) AND i.kind IN ('act','return')
+              AND datetime(i.created_at) > datetime('now','-180 days')
+            GROUP BY i.kind`).all(name)) result[row.kind] = row.c;
+        return result;
+      })(),
       // Фактические «ворота» клиента (медианы из gate_facts) — аргумент для
       // договора: сколько бесплатного простоя закладывать и какой тариф.
       gateLoad: db.prepare(`SELECT median_hours h, samples s FROM gate_facts WHERE key=?`)

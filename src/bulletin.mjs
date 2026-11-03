@@ -4,6 +4,7 @@
 // Деньги — ТОЛЬКО каноном (tripNet), километры — честные (журнал/трек).
 
 import { DONE_STATUSES, calcSettings, tripNet } from './money.mjs';
+import { incidentsSummary } from './incidents.mjs';
 
 const MSK = 3 * 3_600_000;
 const DAY = 86_400_000;
@@ -83,7 +84,17 @@ export function weeklyBulletinData(db, nowMs = Date.now()) {
     if (ms >= monthStart && ms < nowMs) monthNet += tripNet(t, calc);
   }
   const daysLeft = Math.max(1, Math.ceil((monthEnd - nowMs) / DAY));
+  // Внештатки недели (Э3, 03.11): акты и закрытые возвраты — в «Неделю
+  // в цифрах», когда есть что сказать.
+  const weekIncidents = (() => {
+    try {
+      const summary = incidentsSummary(db, new Date(from).toISOString(), new Date(monday).toISOString());
+      return { acts: summary.counts.act, returns: summary.counts.return,
+        returnsClosed: summary.returnsClosed };
+    } catch { return null; }
+  })();
   return {
+    incidents: weekIncidents,
     from: mskDay(from), to: mskDay(monday - 1),
     net: Math.round(cur.net), netPrev: Math.round(prev.net), trips: cur.trips,
     avgCheck: cur.trips ? Math.round(cur.net / cur.trips) : 0,
@@ -161,6 +172,10 @@ export function renderBulletinSvg(d) {
     (d.weekKmPrev ? ` (${sign(Math.round((d.weekKm - d.weekKmPrev) / 1000))} тыс. к прошлой).` : '.'));
   rows.push(`Ремонт: ${d.repairMd} машино-дней за неделю` +
     (d.repairMdPrev ? ` (прошлая — ${d.repairMdPrev}).` : '.'));
+  if (d.incidents && (d.incidents.acts || d.incidents.returns || d.incidents.returnsClosed)) {
+    rows.push(`Внештатки: актов ${d.incidents.acts}, возвратов ${d.incidents.returns}` +
+      (d.incidents.returnsClosed ? ` (закрыто ${d.incidents.returnsClosed}).` : '.'));
+  }
   for (const row of rows) {
     const lines = wrapText(row, CH - 2);
     lines.forEach((ln, i) => { t(cols[0] + (i ? 26 : 0), y, SIZE, i ? ln : '• ' + ln); y += LH; });

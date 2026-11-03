@@ -890,6 +890,12 @@ function briefDialog(context) {
         : `Темп на парк: факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`,
       `Средний чек: ${rub(r.avgCheck)}${delta(r.avgCheck, p.avgCheck)}`,
       `Потери парка: ремонт ${r.repairMd} м-д · без водителя ${r.noDriverMd} м-д${delta(r.repairMd + r.noDriverMd, (p.repairMd || 0) + (p.noDriverMd || 0), false)}`,
+      // Э3 внештаток: строка появляется, только когда есть что сказать.
+      r.incidents && (r.incidents.counts.act || r.incidents.counts.return || r.incidents.openReturns.length)
+        ? `Внештатки: актов ${r.incidents.counts.act} · возвратов ${r.incidents.counts.return}` +
+          `${r.incidents.returnsClosed ? ` (закрыто ${r.incidents.returnsClosed})` : ''}` +
+          `${r.incidents.openReturns.length ? ` · в работе ${r.incidents.openReturns.length}, старший ${Math.ceil(r.incidents.openReturns[0].age_days)} дн` : ''}`
+        : null,
       `Динамика ▲▼ — ${r.base === 'month' ? 'к тому же отрезку прошлого месяца' : 'к предыдущему периоду той же длины'} (${fd(r.prevFrom)}–${fd(r.prevTo)})`
     ].filter(Boolean);
     box.innerHTML = `<div class="brief-lines">${lines.map(line =>

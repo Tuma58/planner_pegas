@@ -10,7 +10,7 @@ import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaMimeOf, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
-import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
+import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -13291,6 +13291,8 @@ async function api(request, response, url) {
     return json(response, 200, {
       from, to, days, fleet,
       ...cur,
+      // Э3 внештаток (03.11): акты/возвраты периода + открытые возвраты.
+      incidents: incidentsSummary(db, from, toExcl),
       planNet: Math.round(planNet),
       planPct: planNet > 0 ? Math.round(cur.factNet / planNet * 1000) / 10 : null,
       planPerDay: planNet > 0 ? Math.round(planNet / days) : null,

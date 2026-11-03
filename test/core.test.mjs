@@ -5308,3 +5308,33 @@ test('внештатки Э2: цепочка возврата, норматив 
   db.prepare(`UPDATE trip_incidents SET reminded_at=CURRENT_TIMESTAMP WHERE id='ret-1'`).run();
   assert.equal(returnsStuck(db, 5).length, 0, 'напомнили — сутки не трогаем');
 });
+
+test('внештатки Э3: сводка периода по типам и открытые возвраты', async t => {
+  const { incidentsSummary } = await import('../src/incidents.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-incsum-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicleId = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zoneId = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+      starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('sum-t1',?,?,?,?,?,?,100,10000,'done')`)
+    .run(vehicleId, 'Клиент Сводки', zoneId, zoneId,
+      new Date(Date.now() - 3 * 86_400_000).toISOString(), new Date(Date.now() - 2 * 86_400_000).toISOString());
+  db.prepare(`INSERT INTO trip_incidents(id,trip_id,kind,created_by_name) VALUES('s-1','sum-t1','act','Т')`).run();
+  db.prepare(`INSERT INTO trip_incidents(id,trip_id,kind,qty,created_by_name,created_at)
+    VALUES('s-2','sum-t1','return','1 паллета','Т',datetime('now','-2 days'))`).run();
+  db.prepare(`INSERT INTO trip_incidents(id,trip_id,kind,qty,status,resolution,closed_at,created_by_name)
+    VALUES('s-3','sum-t1','return','2 паллеты','returned','вернули',CURRENT_TIMESTAMP,'Т')`).run();
+  const sum = incidentsSummary(db, new Date(Date.now() - 7 * 86_400_000).toISOString(),
+    new Date(Date.now() + 86_400_000).toISOString());
+  assert.equal(sum.counts.act, 1);
+  assert.equal(sum.counts.return, 2);
+  assert.equal(sum.returnsClosed, 1);
+  assert.equal(sum.openReturns.length, 1, 'закрытый возврат не висит');
+  assert.equal(sum.openReturns[0].customer_name, 'Клиент Сводки');
+  assert.ok(sum.openReturns[0].age_days >= 2);
+});

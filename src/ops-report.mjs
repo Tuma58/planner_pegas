@@ -7,6 +7,7 @@
 // сводка в Telegram и ленту руководителя.
 
 import { DONE_STATUSES, calcSettings, doneDayOf, tripNet } from './money.mjs';
+import { incidentsSummary } from './incidents.mjs';
 
 // Среднесуточно на линии = машино-часы линии в дне / 24 (интервалы по
 // машине объединяются — стыки не двоят). До 09.10 считалось «машин,
@@ -273,8 +274,18 @@ export function dailyOpsText(db, parkFn) {
     idleBad.length
       ? `⚠ Сейчас без заказа и причины: ${idleBad.slice(0, 6).map(x => `${x.plate} (${x.where}, с ${x.since})`).join(', ')}${idleBad.length > 6 ? ` и ещё ${idleBad.length - 6}` : ''}`
       : '✅ Машин без заказа и причины сейчас нет',
+    // Э3 внештаток (03.11): строка только когда есть что сказать.
+    (() => {
+      try {
+        const inc = incidentsSummary(db, `${y}T00:00:00Z`, `${today}T00:00:00Z`);
+        if (!inc.counts.act && !inc.counts.return && !inc.openReturns.length) return null;
+        return `⚠ Внештатки за сутки: актов ${inc.counts.act} · возвратов ${inc.counts.return}` +
+          (inc.openReturns.length ? ` · возвратов в работе ${inc.openReturns.length}` +
+            ` (старший ${Math.ceil(inc.openReturns[0].age_days)} дн${inc.openReturns[0].warehouse ? `, ${inc.openReturns[0].warehouse}` : ''})` : '');
+      } catch { return null; }
+    })(),
     `Полный отчёт с графиками: /ops-report (период задаётся датами)`
-  ];
+  ].filter(Boolean);
   return lines.join('\n');
 }
 

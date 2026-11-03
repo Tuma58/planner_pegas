@@ -97,6 +97,28 @@ export function returnsStuck(db, stuckDays) {
     ORDER BY i.created_at`).all(stuckDays);
 }
 
+// ── Э3: сводка внештаток — для «⚡ Сводки периода», утреннего отчёта
+// и вестника. Создано за период по типам + возвраты, закрытые за
+// период, + открытые возвраты СЕЙЧАС (с возрастом, старшие первыми).
+export function incidentsSummary(db, fromIso, toIso) {
+  const counts = { act: 0, return: 0, late: 0 };
+  for (const row of db.prepare(`SELECT kind, COUNT(*) c FROM trip_incidents
+      WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)
+      GROUP BY kind`).all(fromIso, toIso)) counts[row.kind] = row.c;
+  const returnsClosed = db.prepare(`SELECT COUNT(*) c FROM trip_incidents
+    WHERE kind='return' AND closed_at IS NOT NULL
+      AND datetime(closed_at) >= datetime(?) AND datetime(closed_at) < datetime(?)`)
+    .get(fromIso, toIso).c;
+  const openReturns = db.prepare(`SELECT i.qty, i.warehouse, v.plate, t.customer_name,
+      ROUND(julianday('now') - julianday(i.created_at), 1) age_days
+    FROM trip_incidents i
+    JOIN trips t ON t.id=i.trip_id
+    JOIN vehicles v ON v.id=t.vehicle_id
+    WHERE i.kind='return' AND i.closed_at IS NULL
+    ORDER BY i.created_at LIMIT 20`).all();
+  return { counts, returnsClosed, openReturns };
+}
+
 // Текст уведомления о новом инциденте — продажам (их клиент) и
 // руководителю, одной строкой с сутью.
 export function incidentNotifyText(kind, trip, qty, comment) {
