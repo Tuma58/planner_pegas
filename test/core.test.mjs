@@ -5601,7 +5601,12 @@ test('затраты: операции РН-Карт раскладываютс�
   assert.equal(rows[1].amount, 29.7);
   const fuel = rows[2];
   assert.deepEqual([fuel.category_id, fuel.plate, fuel.import_key, fuel.spent_on],
-    ['fuel', 'Т486ВЕ58', 'rncard:555001', '2026-10-05']);
+    ['fuel', 'Т486ВЕ58', 'rncard::555001', '2026-10-05']);
+  // Несколько договоров: код договора в отпечатке — id операций разных
+  // договоров могут совпадать (уточнение руководителя 03.11).
+  const withContract = rncardExpenseRows([{ Date: '2026-10-05T08:10:00', Card: 'x',
+    Type: 11, Sum: 100, GCat: 'FUEL', Code: '7' }], new Map(), 'ISS123');
+  assert.equal(withContract[0].import_key, 'rncard:ISS123:7');
   assert.ok(fuel.note.includes('320.5 л'), 'литры в заметке');
   assert.ok(fuel.supplier.startsWith('РН-Карт · '), 'бренд поставщика единый');
   // Маппинг категорий: топливо/мойка/шиномонтаж/дороги/масла.

@@ -465,7 +465,9 @@ function integrationPublic() {
         WHERE key='rncard_sync_last'`).get()?.value || 'null');
       return { baseUrl: row?.base_url || 'https://lkapi.rn-card.ru', enabled: Boolean(row?.enabled),
         hasPassword: Boolean(row?.token_cipher), login: saved.login || '',
-        contract: saved.contract || '', lastSuccessAt: row?.last_success_at, last };
+        contract: (Array.isArray(saved.contracts) ? saved.contracts : [saved.contract])
+          .filter(Boolean).join(', '),
+        lastSuccessAt: row?.last_success_at, last };
     })()
   };
 }
@@ -6883,10 +6885,14 @@ function rncardConfig() {
   if (!row?.enabled || !row.token_cipher) return null;
   let saved = {};
   try { saved = JSON.parse(row.config_json || '{}'); } catch { /* битый JSON — как пусто */ }
-  if (!saved.login || !saved.contract) return null;
+  // Договоров может быть несколько (уточнение руководителя 03.11):
+  // массив contracts; одиночный contract — обратная совместимость.
+  const contracts = (Array.isArray(saved.contracts) ? saved.contracts
+    : [saved.contract]).map(item => String(item || '').trim()).filter(Boolean);
+  if (!saved.login || !contracts.length) return null;
   try {
     return { baseUrl: (row.base_url || 'https://lkapi.rn-card.ru').replace(/\/+$/, ''),
-      login: String(saved.login), contract: String(saved.contract),
+      login: String(saved.login), contracts,
       password: decryptSecret(row.token_cipher, config.appSecret) };
   } catch (error) { console.error('rncardConfig:', error.message); return null; }
 }
@@ -6918,14 +6924,15 @@ async function rncardFetch(connector, path, params, attempts = 3) {
 
 // Карты договора с ТС: кэш на сутки в app_meta (ЛК просит не частить).
 // Фолбэк привязки: примечание карты, если оно похоже на госномер парка.
-async function rncardCards(connector, vehicleByPlate) {
+async function rncardCards(connector, contract, vehicleByPlate) {
+  const cacheKey = `rncard_cards:${contract}`;
   const cached = JSON.parse(db.prepare(`SELECT value FROM app_meta
-    WHERE key='rncard_cards'`).get()?.value || 'null');
+    WHERE key=?`).get(cacheKey)?.value || 'null');
   if (cached && Date.now() - Date.parse(cached.at) < 24 * 3_600_000) {
     return new Map(Object.entries(cached.cards));
   }
   const list = await rncardFetch(connector, 'v1/GetCardsByContract',
-    { contract: connector.contract });
+    { contract });
   const cards = {};
   for (const card of Array.isArray(list) ? list : []) {
     const num = String(card.Num || '');
@@ -6934,7 +6941,7 @@ async function rncardCards(connector, vehicleByPlate) {
     if (card.SCode === '00') { // ТС спрашиваем только у карт в работе
       try {
         const vehicle = await rncardFetch(connector, 'v2/InfoCardVehicle',
-          { Contract: connector.contract, Card: num }, 1);
+          { Contract: contract, Card: num }, 1);
         info.plate = String(vehicle?.RegNum || '');
       } catch { /* ТС у карты не заполнено — ниже фолбэк по примечанию */ }
       await new Promise(resolve => setTimeout(resolve, 150));
@@ -6945,9 +6952,9 @@ async function rncardCards(connector, vehicleByPlate) {
     }
     cards[num] = info;
   }
-  db.prepare(`INSERT INTO app_meta(key,value) VALUES('rncard_cards',?)
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES(?,?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
-    .run(JSON.stringify({ at: new Date().toISOString(), cards }));
+    .run(cacheKey, JSON.stringify({ at: new Date().toISOString(), cards }));
   return new Map(Object.entries(cards));
 }
 
@@ -6959,30 +6966,34 @@ async function runRncardSync(from, to, options = {}) {
   const insert = db.prepare(`INSERT OR IGNORE INTO expenses(id,spent_on,category_id,
       amount,vat,vehicle_id,supplier,doc_ref,note,source,import_key)
     VALUES(?,?,?,?,1,?,?,?,?,'api',?)`);
-  const stats = { from, to, added: 0, skippedForeign: 0, errors: [] };
-  let cards = new Map();
-  try { cards = await rncardCards(connector, vehicleByPlate); }
-  catch (error) { stats.errors.push(`карты: ${error.message}`); }
-  // Период кусками ≤55 дней: регламент не принимает выборку длиннее 2 мес.
-  for (const [chunkFrom, chunkTo] of dornetChunks(from, to, 55)) {
-    try {
-      const data = await rncardFetch(connector, 'v2/GetOperByContract', {
-        contract: connector.contract,
-        begin: `${chunkFrom}T00:00:00`, end: `${chunkTo}T23:59:59`
-      });
-      const operations = Array.isArray(data) ? data : (data?.OperationList || []);
-      for (const row of rncardExpenseRows(operations, cards)) {
-        const vehicleId = vehicleByPlate.get(normalizePlate(row.plate.split('/')[0])) || null;
-        // Решение руководителя 03.11: тянем ТОЛЬКО наши борты — операции
-        // карт, не привязанных к машине парка, в журнал не пишутся.
-        // Счётчик отсева виден в ответе кнопки: если у нашей карты
-        // просто не заполнено ТС в ЛК, это заметно по росту отсева.
-        if (!vehicleId) { stats.skippedForeign += 1; continue; }
-        const result = insert.run(randomUUID(), row.spent_on, row.category_id,
-          row.amount, vehicleId, row.supplier, row.doc_ref, row.note, row.import_key);
-        stats.added += result.changes;
-      }
-    } catch (error) { stats.errors.push(`${chunkFrom}..${chunkTo}: ${error.message}`); }
+  const stats = { from, to, added: 0, skippedForeign: 0, byContract: {}, errors: [] };
+  // Договоров может быть несколько — обходим каждый со своими картами.
+  for (const contract of connector.contracts) {
+    let cards = new Map();
+    try { cards = await rncardCards(connector, contract, vehicleByPlate); }
+    catch (error) { stats.errors.push(`${contract} карты: ${error.message}`); }
+    // Период кусками ≤55 дней: регламент не принимает выборку длиннее 2 мес.
+    for (const [chunkFrom, chunkTo] of dornetChunks(from, to, 55)) {
+      try {
+        const data = await rncardFetch(connector, 'v2/GetOperByContract', {
+          contract,
+          begin: `${chunkFrom}T00:00:00`, end: `${chunkTo}T23:59:59`
+        });
+        const operations = Array.isArray(data) ? data : (data?.OperationList || []);
+        for (const row of rncardExpenseRows(operations, cards, contract)) {
+          const vehicleId = vehicleByPlate.get(normalizePlate(row.plate.split('/')[0])) || null;
+          // Решение руководителя 03.11: тянем ТОЛЬКО наши борты — операции
+          // карт, не привязанных к машине парка, в журнал не пишутся.
+          // Счётчик отсева виден в ответе кнопки: если у нашей карты
+          // просто не заполнено ТС в ЛК, это заметно по росту отсева.
+          if (!vehicleId) { stats.skippedForeign += 1; continue; }
+          const result = insert.run(randomUUID(), row.spent_on, row.category_id,
+            row.amount, vehicleId, row.supplier, row.doc_ref, row.note, row.import_key);
+          stats.added += result.changes;
+          if (result.changes) stats.byContract[contract] = (stats.byContract[contract] || 0) + 1;
+        }
+      } catch (error) { stats.errors.push(`${contract} ${chunkFrom}..${chunkTo}: ${error.message}`); }
+    }
   }
   if (!stats.errors.length || stats.added) {
     db.prepare(`UPDATE integration_connectors SET last_success_at=CURRENT_TIMESTAMP,
@@ -14755,9 +14766,10 @@ async function api(request, response, url) {
           : connector.token_cipher,
         Number(Boolean(body.rncard.enabled)),
         JSON.stringify({ login: String(body.rncard.login || '').trim().slice(0, 120),
-          contract: String(body.rncard.contract || '').trim().slice(0, 60) }));
-      // Логин/договор сменились — кэш карт мог относиться к чужому договору.
-      db.prepare(`DELETE FROM app_meta WHERE key='rncard_cards'`).run();
+          contracts: String(body.rncard.contract || '').split(/[,;]+/)
+            .map(item => item.trim().slice(0, 60)).filter(Boolean).slice(0, 20) }));
+      // Логин/договоры сменились — кэши карт могли относиться к чужим.
+      db.prepare(`DELETE FROM app_meta WHERE key LIKE 'rncard_cards%'`).run();
     }
     audit(db, user, 'update', 'integration', '1', { ...body, password: undefined, dornet: body.dornet ? { ...body.dornet, token: undefined } : undefined }, requestIp(request));
     return json(response, 200, { ok: true });

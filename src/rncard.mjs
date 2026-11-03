@@ -30,7 +30,10 @@ export function rncardCategoryOf(gcat, gcode) {
 // из регламента). cardInfo — Map «номер карты → {plate, holder}» из
 // списка карт договора (ТС карты заполняется в ЛК; примечание карты
 // часто несёт госномер — фолбэк решает сервер при привязке).
-export function rncardExpenseRows(operations, cardInfo = new Map()) {
+// contract — код договора: входит в отпечаток дедупа, потому что
+// договоров может быть несколько (уточнение руководителя 03.11), а id
+// операции уникален только внутри своего договора.
+export function rncardExpenseRows(operations, cardInfo = new Map(), contract = '') {
   const rows = [];
   for (const oper of operations || []) {
     const type = Number(oper?.Type);
@@ -55,7 +58,7 @@ export function rncardExpenseRows(operations, cardInfo = new Map()) {
       supplier: `РН-Карт · ${String(oper.Address || 'АЗС').trim().slice(0, 90)}`,
       doc_ref: String(oper.Rrn || oper.Code),
       note: noteParts.join(' · ').slice(0, 300),
-      import_key: `rncard:${oper.Code}`
+      import_key: `rncard:${contract || oper.Contract || ''}:${oper.Code}`
     });
   }
   return rows;

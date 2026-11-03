@@ -584,8 +584,9 @@ function renderIntegration() {
           <input id="rncardLogin" value="${escapeHtml(cfg.rncard?.login || '')}" autocomplete="off"></label>
         <label class="field">Пароль ${cfg.rncard?.hasPassword ? '(сохранен)' : ''}<input id="rncardPassword" type="password"
           placeholder="${cfg.rncard?.hasPassword ? 'оставьте пустым, чтобы не менять' : ''}" autocomplete="new-password"></label>
-        <label class="field">Код договора (ISS…, из ЛК «Дополнительная информация»)
-          <input id="rncardContract" value="${escapeHtml(cfg.rncard?.contract || '')}" autocomplete="off"></label>
+        <label class="field">Коды договоров (ISS…, из ЛК «Дополнительная информация»; несколько — через запятую)
+          <input id="rncardContract" value="${escapeHtml(cfg.rncard?.contract || '')}" autocomplete="off"
+            placeholder="например: ISS12345, ISS67890"></label>
       </div>
       <label class="check"><input id="rncardEnabled" type="checkbox" ${cfg.rncard?.enabled ? 'checked' : ''}> Включить коннектор</label>
       <p class="muted">Заправки и услуги АЗС сами ложатся в «💸 Затраты» каждые 6 часов с
