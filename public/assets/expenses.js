@@ -64,29 +64,46 @@ export async function renderExpenses(container, context) {
   const items = data.items.filter(item => (!filterCat || item.category_id === filterCat)
     && (!filterSup || brandOf(item.supplier) === filterSup));
 
-  const catChip = row => {
-    const category = categoryById.get(row.key);
-    return `<button class="button ghost small ${filterCat === row.key ? 'active' : ''}"
-      data-exp-cat="${row.key}" title="${row.count} записей · без НДС ${money(row.net)}">
-      ${escapeHtml(category?.name || row.key)} <b>${money(row.sum)}</b></button>`;
-  };
-  // Структура учёта (решение 03.11): группы «переменные/постоянные»,
-  // внутри — статьи; поставщики с единым счётом (Dornet) — одной
-  // суммой за период, как в их акте.
-  const kindSum = kind => data.summary.byKind.find(row => row.key === kind);
-  const kindRow = (kind, label) => {
-    const chips = data.summary.byCategory
-      .filter(row => (categoryById.get(row.key)?.kind || 'variable') === kind).map(catChip);
+  // Структура учёта (решение 03.11): разворачивающиеся группы —
+  // «Переменные/Постоянные затраты» со статьями внутри и «Поставщики»
+  // (поставщик с единым счётом, как Dornet, — одной суммой за период).
+  // Свёрнуто видны только заголовки с итогами; строка внутри — фильтр.
+  state.expOpen ||= {};
+  const kindSum = kind => data.summary.byKind.find(row => row.key === kind)
+    || { sum: 0, net: 0, count: 0 };
+  const groupRow = (type, key, name, row, active) => `<button class="exp-row ${active ? 'active' : ''}"
+      data-exp-${type}="${escapeHtml(key)}" title="${active ? 'Снять фильтр' : 'Показать в таблице только это'}">
+      <span>${escapeHtml(name)}</span><b>${money(row.sum)}</b>
+      <small class="muted">без НДС ${money(row.net)} · ${row.count} шт</small></button>`;
+  const groupBlock = (id, head, rowsHtml) => `<div class="exp-grp">
+      <button class="exp-ghead" data-exp-grp="${id}">
+        <span class="exp-arrow">${state.expOpen[id] ? '▾' : '▸'}</span>${head}</button>
+      ${state.expOpen[id] && rowsHtml ? `<div class="exp-rows">${rowsHtml}</div>` : ''}
+    </div>`;
+  const kindBlock = (kind, label) => {
+    const rows = data.summary.byCategory
+      .filter(row => (categoryById.get(row.key)?.kind || 'variable') === kind);
+    if (!rows.length) return '';
     const total = kindSum(kind);
-    if (!chips.length) return '';
-    return `<div class="resctl" style="margin-bottom:4px;flex-wrap:wrap">
-      <span class="muted">${label}:</span><b>${money(total?.sum || 0)}</b>
-      <small class="muted">без НДС ${money(total?.net || 0)}</small>
-      ${chips.join('')}</div>`;
+    return groupBlock(kind,
+      `${label} <b>${money(total.sum)}</b> <small class="muted">без НДС ${money(total.net)} · ${total.count} шт</small>`,
+      rows.map(row => groupRow('cat', row.key,
+        categoryById.get(row.key)?.name || row.key, row, filterCat === row.key)).join(''));
   };
-  const supChip = row => `<button class="button ghost small ${filterSup === row.key ? 'active' : ''}"
-      data-exp-sup="${escapeHtml(row.key)}" title="${row.count} записей · без НДС ${money(row.net)}">
-      ${escapeHtml(row.key)} <b>${money(row.sum)}</b></button>`;
+  const supplierBlock = () => {
+    const rows = data.summary.bySupplier;
+    if (!rows.length) return '';
+    const lead = rows[0];
+    return groupBlock('sup',
+      `Поставщики <b>${escapeHtml(lead.key)} ${money(lead.sum)}</b>` +
+      (rows.length > 1 ? ` <small class="muted">и ещё ${rows.length - 1}</small>` : ''),
+      rows.map(row => groupRow('sup', row.key, row.key, row, filterSup === row.key)).join(''));
+  };
+  const filterNote = filterCat || filterSup
+    ? `<div class="resctl" style="margin:4px 0"><small class="muted">Фильтр таблицы:</small>
+        <b>${escapeHtml([categoryById.get(filterCat)?.name, filterSup].filter(Boolean).join(' · '))}</b>
+        <button class="button ghost small" data-exp-reset="1">✕ снять</button></div>`
+    : '';
 
   const tableRows = items.slice(0, 400).map(item => `<tr>
       <td class="mono">${dayHuman(item.spent_on)}</td>
@@ -111,13 +128,12 @@ export async function renderExpenses(container, context) {
       <small class="muted">Итог периода: <b>${money(data.summary.total)}</b>
         · без НДС <b>${money(data.summary.totalNet)}</b> · записей ${data.summary.count}</small>
     </div>
-    ${kindRow('variable', 'Переменные')}
-    ${kindRow('fixed', 'Постоянные')}
-    ${data.summary.bySupplier.length ? `<div class="resctl" style="margin-bottom:8px;flex-wrap:wrap">
-      <span class="muted">Поставщики:</span>
-      ${data.summary.bySupplier.map(supChip).join('')}
-      ${filterCat || filterSup ? `<button class="button ghost small" data-exp-reset="1">✕ сбросить фильтры</button>` : ''}
-    </div>` : '<div class="resctl" style="margin-bottom:8px"><small class="muted">Журнал пуст — добавьте первую запись или загрузите выгрузку поставщика.</small></div>'}
+    ${data.summary.count ? `<div class="exp-groups">
+      ${kindBlock('variable', 'Переменные затраты')}
+      ${kindBlock('fixed', 'Постоянные затраты')}
+      ${supplierBlock()}
+    </div>${filterNote}`
+    : '<div class="resctl" style="margin-bottom:8px"><small class="muted">Журнал пуст — добавьте первую запись или загрузите выгрузку поставщика.</small></div>'}
     <table class="rtable">
       <thead><tr><th>День</th><th>Категория</th><th class="num">Сумма</th><th>Машина</th>
         <th>Поставщик</th><th>Документ / заметка</th><th>Кто</th><th></th></tr></thead>
@@ -134,6 +150,11 @@ export async function renderExpenses(container, context) {
   container.querySelector('#expTo').addEventListener('change', event => {
     state.expTo = event.target.value; redraw();
   });
+  container.querySelectorAll('[data-exp-grp]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.expOpen[button.dataset.expGrp] = !state.expOpen[button.dataset.expGrp];
+      redraw();
+    }));
   container.querySelectorAll('[data-exp-cat]').forEach(button =>
     button.addEventListener('click', () => {
       state.expCat = button.dataset.expCat === filterCat ? '' : button.dataset.expCat;

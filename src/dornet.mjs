@@ -32,6 +32,23 @@ export const DORNET_SERVICES = [
     label: 'Штрафы', category: 'fines', pointField: null }
 ];
 
+// Длинный период бьётся на куски ≤31 дня: выборка стоянок за месяц —
+// самая тяжёлая (урок 03.11: «Стоянки: fetch failed» на бэкафилле
+// октября — месяц целиком не доехал с одной попытки).
+export function dornetChunks(from, to, maxDays = 31) {
+  const chunks = [];
+  let cursor = Date.parse(from);
+  const endMs = Date.parse(to);
+  if (!Number.isFinite(cursor) || !Number.isFinite(endMs) || cursor > endMs) return chunks;
+  while (cursor <= endMs) {
+    const chunkEnd = Math.min(cursor + (maxDays - 1) * 86_400_000, endMs);
+    chunks.push([new Date(cursor).toISOString().slice(0, 10),
+      new Date(chunkEnd).toISOString().slice(0, 10)]);
+    cursor = chunkEnd + 86_400_000;
+  }
+  return chunks;
+}
+
 // День затраты из полей Dornet: заказы несут date_time («2026-10-01
 // 01:34:49»), штрафы — date_time штрафа; почта — delivered («01.09.2021,
 // 14:10:00»). Канон разбора тот же, что у импорта Excel.

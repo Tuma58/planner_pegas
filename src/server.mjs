@@ -30,7 +30,7 @@ import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
 import {
   decryptSecret, encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
-import { DORNET_SERVICES, dornetExpenseRows } from './dornet.mjs';
+import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from './dornet.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, activeDriverFor, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, syncVehicleDriverNames, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
@@ -6780,14 +6780,23 @@ function dornetConfig() {
   } catch (error) { console.error('dornetConfig:', error.message); return null; }
 }
 
-async function dornetFetch(connector, path, params) {
+// Три попытки с нарастающей паузой и щедрым таймаутом: тяжёлая выборка
+// (стоянки за месяц) с одного раза доезжает не всегда (урок 03.11).
+async function dornetFetch(connector, path, params, attempts = 3) {
   const query = new URLSearchParams(params).toString();
-  const response = await fetch(`${connector.baseUrl}/client/${path}?${query}`, {
-    headers: { Authorization: `Bearer ${connector.token}` },
-    signal: AbortSignal.timeout(20_000)
-  });
-  if (!response.ok) throw new Error(`Dornet ${path}: HTTP ${response.status}`);
-  return response.json();
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const response = await fetch(`${connector.baseUrl}/client/${path}?${query}`, {
+        headers: { Authorization: `Bearer ${connector.token}` },
+        signal: AbortSignal.timeout(60_000)
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      if (attempt >= attempts) throw new Error(`Dornet ${path}: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, 2_000 * attempt));
+    }
+  }
 }
 
 // Синхронизация периода: каждый вид услуг — своя категория журнала.
@@ -6801,23 +6810,29 @@ async function runDornetSync(from, to, options = {}) {
     VALUES(?,?,?,?,1,?,?,?,?,'api',?)`);
   const stats = { from, to, added: 0, byService: {}, errors: [] };
   for (const service of DORNET_SERVICES) {
-    try {
-      const data = await dornetFetch(connector, service.path,
-        { cid: connector.cid, from, to });
-      const rows = dornetExpenseRows(service, data?.[service.listKey]);
-      let added = 0;
-      for (const row of rows) {
-        const vehicleId = vehicleByPlate.get(normalizePlate(row.plate.split('/')[0])) || null;
-        // Невыясненный борт не теряется: госномер из Dornet — в заметку.
-        const note = vehicleId || !row.plate ? row.note
-          : `${row.note ? `${row.note} · ` : ''}ТС: ${row.plate}`.slice(0, 300);
-        const result = insert.run(randomUUID(), row.spent_on, row.category_id,
-          row.amount, vehicleId, row.supplier, row.doc_ref, note, row.import_key);
-        added += result.changes;
+    // Период кусками ≤31 дня: тяжёлые выборки надёжнее месяц за месяцем,
+    // упавший кусок честно виден в errors и доедет повторной загрузкой.
+    for (const [chunkFrom, chunkTo] of dornetChunks(from, to)) {
+      try {
+        const data = await dornetFetch(connector, service.path,
+          { cid: connector.cid, from: chunkFrom, to: chunkTo });
+        const rows = dornetExpenseRows(service, data?.[service.listKey]);
+        let added = 0;
+        for (const row of rows) {
+          const vehicleId = vehicleByPlate.get(normalizePlate(row.plate.split('/')[0])) || null;
+          // Невыясненный борт не теряется: госномер из Dornet — в заметку.
+          const note = vehicleId || !row.plate ? row.note
+            : `${row.note ? `${row.note} · ` : ''}ТС: ${row.plate}`.slice(0, 300);
+          const result = insert.run(randomUUID(), row.spent_on, row.category_id,
+            row.amount, vehicleId, row.supplier, row.doc_ref, note, row.import_key);
+          added += result.changes;
+        }
+        if (added) stats.byService[service.label] = (stats.byService[service.label] || 0) + added;
+        stats.added += added;
+      } catch (error) {
+        stats.errors.push(`${service.label} ${chunkFrom}..${chunkTo}: ${error.message}`);
       }
-      if (added) stats.byService[service.label] = added;
-      stats.added += added;
-    } catch (error) { stats.errors.push(`${service.label}: ${error.message}`); }
+    }
   }
   if (!stats.errors.length || stats.added) {
     db.prepare(`UPDATE integration_connectors SET last_success_at=CURRENT_TIMESTAMP,

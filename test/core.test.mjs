@@ -19,7 +19,7 @@ import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '.
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
 import { EXPENSE_CATEGORY_SEED, expenseFingerprint, expensesAccess, expensesSummary, parseExpenseAmount, parseExpenseDay, validateExpense } from '../src/expenses.mjs';
-import { DORNET_SERVICES, dornetExpenseRows } from '../src/dornet.mjs';
+import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from '../src/dornet.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, escalationStaff, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
 import { effBoardData } from '../src/efficiency.mjs';
 
@@ -5541,4 +5541,15 @@ test('затраты: заказы Dornet раскладываются по ви
   // Все виды услуг смотрят в существующие категории посева.
   const seeded = new Set(EXPENSE_CATEGORY_SEED.map(([id]) => id));
   for (const service of DORNET_SERVICES) assert.ok(seeded.has(service.category), service.key);
+});
+
+test('затраты: период Dornet бьётся на куски ≤31 дня', () => {
+  assert.deepEqual(dornetChunks('2026-10-01', '2026-10-05'), [['2026-10-01', '2026-10-05']]);
+  const chunks = dornetChunks('2026-09-01', '2026-11-03');
+  assert.equal(chunks.length, 3);
+  assert.deepEqual(chunks[0], ['2026-09-01', '2026-10-01']);
+  assert.deepEqual(chunks[2], ['2026-11-02', '2026-11-03']);
+  // Куски стыкуются без дыр и нахлёстов.
+  assert.equal(Date.parse(chunks[1][0]) - Date.parse(chunks[0][1]), 86_400_000);
+  assert.deepEqual(dornetChunks('2026-11-03', '2026-10-01'), [], 'перевёрнутый период — пусто');
 });
