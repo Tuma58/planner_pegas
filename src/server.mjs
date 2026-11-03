@@ -8454,6 +8454,38 @@ async function api(request, response, url) {
     audit(db, user, 'create', 'expense-category', id, { name, kind, nature }, requestIp(request));
     return json(response, 201, { id });
   }
+  // Пресеты импорта выгрузок (03.11, под Автодор/Платон): сопоставление
+  // колонок запоминается по отпечатку строки заголовков — повторный файл
+  // того же формата узнаётся сам, останется нажать «Загрузить».
+  if (request.method === 'GET' && pathname === '/api/expenses/import-presets') {
+    const user = requireExpensesAccess(request, response);
+    if (!user) return;
+    return json(response, 200, JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='expense_import_presets'`).get()?.value || '{}'));
+  }
+  if (request.method === 'POST' && pathname === '/api/expenses/import-presets') {
+    const user = requireExpensesAccess(request, response, { write: true });
+    if (!user) return;
+    const body = await readJson(request);
+    const fingerprint = String(body.fingerprint || '').slice(0, 300);
+    if (!fingerprint) return errorJson(response, 422, 'Пустой отпечаток формата');
+    const presets = JSON.parse(db.prepare(`SELECT value FROM app_meta
+      WHERE key='expense_import_presets'`).get()?.value || '{}');
+    presets[fingerprint] = {
+      mapping: body.mapping || {}, category_id: String(body.category_id || ''),
+      vat: body.vat ? 1 : 0, label: String(body.label || '').slice(0, 80),
+      headerIndex: Number(body.headerIndex) || 0, savedAt: new Date().toISOString()
+    };
+    // Держим не больше 40 форматов — старые забываются первыми.
+    const keys = Object.keys(presets);
+    if (keys.length > 40) {
+      keys.sort((a, b) => String(presets[a].savedAt).localeCompare(String(presets[b].savedAt)));
+      for (const key of keys.slice(0, keys.length - 40)) delete presets[key];
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('expense_import_presets',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(presets));
+    return json(response, 200, { ok: true });
+  }
   const expenseCategoryMatch = route(/^\/api\/expense-categories\/([^/]+)$/, pathname);
   if (expenseCategoryMatch && request.method === 'PATCH') {
     const user = requireExpensesAccess(request, response, { write: true });

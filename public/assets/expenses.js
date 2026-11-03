@@ -246,7 +246,7 @@ export async function renderExpenses(container, context) {
           : await readXlsxRows(file);
       } catch (error) { toast(`Не прочитан файл: ${error.message}`, 'error'); return; }
       if (!rows.length) { toast('Файл пуст', 'error'); return; }
-      importMappingDialog(rows, data.categories, context, redraw);
+      importMappingDialog(rows, data.categories, context, redraw, file.name);
     };
     input.click();
   };
@@ -310,9 +310,17 @@ export async function renderExpenses(container, context) {
 // выбирается (угадывается первая «населённая»), для каждой нужной
 // колонки — выпадашка; категория и НДС — одни на файл. Предпросмотр
 // показывает сырые значения — канон разбора на сервере.
-function importMappingDialog(rows, categories, context, done) {
+async function importMappingDialog(rows, categories, context, done, fileName = '') {
   const guessHeader = rows.findIndex(row =>
     (row || []).filter(cell => String(cell ?? '').trim() !== '').length >= 2);
+  // Пресеты форматов (под выгрузки Автодора/Платона и любые другие):
+  // отпечаток строки заголовков → сохранённое сопоставление. Повторный
+  // файл того же формата узнаётся сам.
+  let presets = {};
+  try { presets = await api('/api/expenses/import-presets'); } catch { /* без пресетов */ }
+  const fingerprintOf = header => (header || [])
+    .map(cell => String(cell ?? '').trim().toLowerCase()).filter(Boolean)
+    .join('|').slice(0, 300);
   const fields = [
     ['day', 'День *'], ['amount', 'Сумма *'], ['plate', 'Госномер'],
     ['supplier', 'Поставщик'], ['doc_ref', 'Документ'], ['note', 'Заметка']
@@ -338,19 +346,23 @@ function importMappingDialog(rows, categories, context, done) {
   let headerIndex = Math.max(0, guessHeader);
   const render = () => {
     const { options, guessFor, dataRows } = build(headerIndex);
+    const preset = presets[fingerprintOf(rows[headerIndex])];
+    const pick = field => preset?.mapping?.[field] ?? guessFor(field);
     const preview = dataRows.slice(0, 4);
     context.showModal(`<h2>📥 Импорт затрат</h2>
+      ${preset ? `<p class="muted">✓ Формат узнан${preset.label ? ` («${escapeHtml(preset.label)}»)` : ''} —
+        сопоставление и категория подставлены из прошлой загрузки.</p>` : ''}
       <form id="expImportForm" class="fields">
         <label class="field">Строка заголовков в файле
           <input type="number" name="header" min="1" max="${rows.length}" value="${headerIndex + 1}"
             title="Если шапка таблицы не в первой строке — укажите её номер"></label>
         ${fields.map(([field, label]) => `<label class="field">${label}
-          <select name="${field}" ${field === 'day' || field === 'amount' ? 'required' : ''}>${options(guessFor(field))}</select></label>`).join('')}
+          <select name="${field}" ${field === 'day' || field === 'amount' ? 'required' : ''}>${options(pick(field))}</select></label>`).join('')}
         <label class="field">Категория всех строк файла<select name="category" required>
           ${categories.filter(category => category.active).map(category =>
-    `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join('')}
+    `<option value="${category.id}" ${preset?.category_id === category.id ? 'selected' : ''}>${escapeHtml(category.name)}</option>`).join('')}
         </select></label>
-        <label class="field"><input type="checkbox" name="vat" checked> в суммах есть НДС</label>
+        <label class="field"><input type="checkbox" name="vat" ${preset && !preset.vat ? '' : 'checked'}> в суммах есть НДС</label>
         <p class="muted" style="margin:4px 0">Строк под заголовком: <b>${dataRows.length}</b>.
           Повторная загрузка того же файла дублей не создаст.</p>
         <div style="max-height:120px;overflow:auto"><table class="rtable"><tbody>
@@ -388,6 +400,13 @@ function importMappingDialog(rows, categories, context, done) {
         context.closeModal();
         toast(`Загружено ${result.added} · пропущено ${result.skipped} (дубли и битые строки)`
           + (result.errors?.length ? ` · например: ${result.errors[0]}` : ''));
+        // Формат запоминается: следующий файл с теми же заголовками
+        // узнается сам (сопоставление, категория, НДС).
+        api('/api/expenses/import-presets', { method: 'POST', body: JSON.stringify({
+          fingerprint: fingerprintOf(rows[headerIndex]), mapping: cols,
+          category_id: form.category.value, vat: form.vat.checked,
+          headerIndex, label: fileName.replace(/\.[a-z]+$/i, '').slice(0, 60)
+        }) }).catch(() => { /* пресет — удобство, не данные */ });
         done();
       } catch (error) { toast(error.message, 'error'); }
     };
