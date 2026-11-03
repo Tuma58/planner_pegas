@@ -8227,6 +8227,44 @@ async function api(request, response, url) {
       { rows: rows.length, added, skipped }, requestIp(request));
     return json(response, 200, { added, skipped, errors });
   }
+  // Затраты борта для карточки ТС (Э4, 03.11): итог окна, топ статей и
+  // факт переменных ₽/км — километры каноном одометров (разность
+  // снимков на границах), фолбэк — журнал дневных пробегов.
+  const expenseVehicleMatch = route(/^\/api\/expenses\/vehicle\/([^/]+)$/, pathname);
+  if (expenseVehicleMatch && request.method === 'GET') {
+    const user = requireExpensesAccess(request, response);
+    if (!user) return;
+    const vehicleId = expenseVehicleMatch[0];
+    const windowDays = Math.min(120, Math.max(7, Number(url.searchParams.get('days')) || 30));
+    const to = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - windowDays * 86_400_000).toISOString().slice(0, 10);
+    const categories = expenseCategoriesOf();
+    const items = db.prepare(`SELECT category_id, amount, vat, vehicle_id, supplier
+      FROM expenses WHERE vehicle_id=? AND spent_on>=? AND spent_on<=?`).all(vehicleId, from, to);
+    const summary = expensesSummary(items,
+      Number(settingsObject(db).calculation?.vatRate ?? 0.22), categories);
+    const edge = db.prepare(`SELECT day, odo_km FROM vehicle_odometers
+      WHERE vehicle_id=? AND day>=? AND day<=? ORDER BY day`);
+    const snapshots = edge.all(vehicleId, from, addDayIso(to));
+    let km = null;
+    if (snapshots.length >= 2) {
+      const diff = snapshots[snapshots.length - 1].odo_km - snapshots[0].odo_km;
+      if (diff > 0) km = Math.round(diff);
+    }
+    if (km === null) {
+      const runs = db.prepare(`SELECT SUM(COALESCE(can_km, km)) s FROM vehicle_daily_runs
+        WHERE vehicle_id=? AND day>=? AND day<=?`).get(vehicleId, from, to);
+      if (runs?.s > 0) km = Math.round(runs.s);
+    }
+    const variableNet = summary.byKind.find(row => row.key === 'variable')?.net || 0;
+    return json(response, 200, {
+      from, to, days: windowDays, total: summary.total, totalNet: summary.totalNet,
+      count: summary.count, km,
+      perKm: km && variableNet ? Math.round(variableNet / km * 10) / 10 : null,
+      top: summary.byCategory.slice(0, 4).map(row => ({
+        name: categories.get(row.key)?.name || row.key, sum: row.sum }))
+    });
+  }
   const expenseMatch = route(/^\/api\/expenses\/([^/]+)$/, pathname);
   if (expenseMatch && request.method === 'DELETE') {
     const user = requireExpensesAccess(request, response, { write: true });
@@ -13577,6 +13615,23 @@ async function api(request, response, url) {
         prevTo: new Date(Date.parse(prevToExcl + 'T00:00:00Z') - 86_400_000).toISOString().slice(0, 10)
       };
   }
+  // Затраты периода для сводки (Э4 плана затрат, 03.11): журнал по
+  // группам и топ статей. Едет в ответ ТОЛЬКО обладателю персонального
+  // доступа к затратам — остальные читатели сводки блока не видят.
+  const expensesBriefOf = (f, t) => {
+    const categories = expenseCategoriesOf();
+    const items = db.prepare(`SELECT category_id, amount, vat, vehicle_id, supplier
+      FROM expenses WHERE spent_on>=? AND spent_on<=?`).all(f, t);
+    const summary = expensesSummary(items,
+      Number(settingsObject(db).calculation?.vatRate ?? 0.22), categories);
+    return {
+      total: summary.total, totalNet: summary.totalNet, count: summary.count,
+      byKind: summary.byKind,
+      top: summary.byCategory.slice(0, 5).map(row => ({
+        name: categories.get(row.key)?.name || row.key, sum: row.sum, net: row.net })),
+      suppliers: summary.bySupplier.slice(0, 3)
+    };
+  };
   if (request.method === 'GET' && pathname === '/api/brief-report') {
     // «⚡ Сводка периода» (заказ руководителя 26.10): короткий отчёт для
     // коротких совещаний; расчёт — в briefReportData (общий с PDF-колодой).
@@ -13590,8 +13645,13 @@ async function api(request, response, url) {
     const toExcl = addDayIso(to);
     const days = Math.round((Date.parse(toExcl) - Date.parse(from)) / 86_400_000);
     if (days > 92) return errorJson(response, 422, 'Период до 92 суток');
-    return json(response, 200,
-      briefReportData(from, to, url.searchParams.get('base') === 'month' ? 'month' : 'prev'));
+    const payload = briefReportData(from, to,
+      url.searchParams.get('base') === 'month' ? 'month' : 'prev');
+    if (expensesAccess(user, settingsObject(db))) {
+      payload.expenses = expensesBriefOf(from, to);
+      payload.prevExpenses = expensesBriefOf(payload.prevFrom, payload.prevTo);
+    }
+    return json(response, 200, payload);
   }
   // 📑 Презентация сводки (заказ руководителя 03.11): восемь альбомных
   // страниц PDF по образцу выпуска 27.10 — титул, ключевые цифры,

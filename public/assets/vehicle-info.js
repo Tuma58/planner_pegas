@@ -133,6 +133,8 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
           : `работает до ${new Date(`${shift.until}T12:00:00Z`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} включительно, дальше межвахта ${driver.shift_off} дн`}</p>` : '';
     })()}
     ${stateBlock}
+    ${data.user?.expensesAccess ? `<div class="vinfo-state" id="vinfoExpenses">
+      <small class="muted">⏳ затраты борта…</small></div>` : ''}
     ${nextTrip || nextDispo ? `<div class="vinfo-next muted">Дальше по плану: ${nextTrip
       ? `рейс ${escapeHtml(routeLabel(nextTrip))} · выход ${formatDateTime(nextTrip.starts_at)}`
       : `${KIND_LABEL[nextDispo.kind] || nextDispo.kind} с ${formatDateTime(nextDispo.starts_at)}`}</div>` : ''}
@@ -148,6 +150,25 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
     const place = vehiclePlace(data, vehicle.id, nowMs).pointName || vehicle.zone_name;
     transferDialog(vehicle, data, { ...context, state: { data } }, { fromLabel: place || '' });
   });
+
+  // Затраты борта (Э4, 03.11) — только обладателю персонального доступа:
+  // итог за 30 дней, факт переменных ₽/км (канон одометров) и топ статей.
+  if (data.user?.expensesAccess) {
+    api(`/api/expenses/vehicle/${vehicle.id}?days=30`).then(exp => {
+      const box = document.getElementById('vinfoExpenses');
+      if (!box) return;
+      box.innerHTML = exp.count
+        ? `<div class="vinfo-row"><b>💸 Затраты 30 дн:</b> ${money(exp.total)}
+            ${exp.perKm ? ` · переменные <b>${exp.perKm} ₽/км</b>` : ''}
+            ${exp.km ? ` · пробег ${exp.km.toLocaleString('ru-RU')} км` : ''}</div>
+          <div class="vinfo-row muted">${exp.top.map(item =>
+    `${escapeHtml(item.name)} ${money(item.sum)}`).join(' · ')}</div>`
+        : '<small class="muted">💸 Затрат по борту за 30 дней в журнале нет.</small>';
+    }).catch(() => {
+      const box = document.getElementById('vinfoExpenses');
+      if (box) box.innerHTML = '';
+    });
+  }
 
   // Отметки контролёра подгружаются после открытия окна (3 последних дня).
   if (active && document.getElementById('vinfoNotes')) {

@@ -889,6 +889,15 @@ function briefDialog(context) {
       r.planPerDay ? `Темп на парк: план ${rub(r.planPerDay)}/сут · факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`
         : `Темп на парк: факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`,
       `Средний чек: ${rub(r.avgCheck)}${delta(r.avgCheck, p.avgCheck)}`,
+      // Э4 затрат (03.11): блок приходит с сервера только обладателю
+      // персонального доступа к затратам — у остальных строк просто нет.
+      r.expenses?.count ? `Затраты (журнал, б/НДС): ${rub(r.expenses.totalNet)}` +
+        `${delta(r.expenses.totalNet, r.prevExpenses?.totalNet, false)} — ` +
+        r.expenses.byKind.map(k => `${k.key === 'variable' ? 'перем.' : 'пост.'} ${rub(k.net)}`).join(' · ') : null,
+      r.expenses?.top?.length ? `Топ статей: ${r.expenses.top.slice(0, 4)
+        .map(item => `${item.name} ${rub(item.net)}`).join(' · ')}` : null,
+      r.expenses?.count ? `Прибыль по учтённому: ${rub(r.factNet - r.expenses.totalNet)}` +
+        ` (выручка − затраты журнала; статьи вне журнала — пока нормативы калькуляции)` : null,
       `Потери парка: ремонт ${r.repairMd} м-д · без водителя ${r.noDriverMd} м-д${delta(r.repairMd + r.noDriverMd, (p.repairMd || 0) + (p.noDriverMd || 0), false)}`,
       // Э3 внештаток: строка появляется, только когда есть что сказать.
       r.incidents && (r.incidents.counts.act || r.incidents.counts.return || r.incidents.openReturns.length)
