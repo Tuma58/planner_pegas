@@ -8,6 +8,7 @@ import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
 import { renderFlows } from './flows.js';
 import { renderIncidents } from './incidents.js';
+import { renderExpenses } from './expenses.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { fleetPlanDialog } from './fleet-plan.js';
 import { buildReport, wireReport } from './reports.js';
@@ -780,6 +781,9 @@ const MAIN_VIEWS = [
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
   { id: 'boss', title: 'Руководитель', show: () => can('reports:read') },
+  // «💸 Затраты» (Э1, 03.11, docs/costs-plan.md): журнал фактических
+  // расходов — видят отчётные роли, ведут бухгалтерия/руководитель/админ.
+  { id: 'expenses', title: 'Затраты', show: () => can('expenses:write') || can('reports:read') },
   // Справочник сотрудников: staff:write (руководитель, админ) или логин
   // из настройки «полный доступ» — сервер считает флаг staffAccess сам.
   { id: 'staff', title: 'Сотрудники', show: () => Boolean(state.data?.user?.staffAccess) },
@@ -880,6 +884,8 @@ function renderMain() {
     renderMonitoring(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'incidents') {
     renderIncidents(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
+  } else if (state.view === 'expenses') {
+    renderExpenses(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'flows') {
     renderFlows(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip,

@@ -13,7 +13,7 @@ const ALL = [
   'planner:read', 'trips:write', 'trip-status:write', 'orders:write',
   'fleet:write', 'payments:write', 'reports:read', 'customers:read',
   'settings:write', 'users:write', 'integration:write', 'audit:read',
-  'shifts:write', 'staff:write'
+  'shifts:write', 'staff:write', 'expenses:write'
 ];
 
 export const ROLE_PERMISSIONS = {
@@ -22,11 +22,14 @@ export const ROLE_PERMISSIONS = {
   resource: ['planner:read', 'fleet:write', 'customers:read'],
   dispatcher: ['planner:read', 'trip-status:write', 'customers:read'],
   sales: ['planner:read', 'orders:write', 'customers:read'],
-  accountant: ['planner:read', 'payments:write', 'customers:read'],
+  // Журнал затрат (учёт затрат, 03.11.2026) ведут бухгалтерия и
+  // руководитель (админ — через ALL); чтение вкладки — reports:read.
+  accountant: ['planner:read', 'payments:write', 'customers:read', 'expenses:write'],
   // График смен сотрудников ведёт руководитель (и админ через ALL).
   // staff:write — справочник сотрудников («Сотрудники»): карточки,
   // приём/увольнение, графики смен (решение руководителя 07.10).
-  manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write', 'staff:write'],
+  manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write', 'staff:write',
+    'expenses:write'],
   // Механик (блок «Ремзона», старт 14.09.2026): видит парк и ведёт
   // недоступности — заезды в ремонт/ТО, их причины и закрытие.
   mechanic: ['planner:read', 'fleet:write']

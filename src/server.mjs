@@ -11,6 +11,7 @@ import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
+import { expenseFingerprint, expensesSummary, validateExpense } from './expenses.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -8009,6 +8010,151 @@ async function api(request, response, url) {
         closed_by_name=?, closed_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(resolution, user.full_name || user.username, incidentCloseMatch[0]);
     audit(db, user, 'close', 'incident', incidentCloseMatch[0], { resolution: resolution.slice(0, 120) }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
+  // ── 💸 Учёт затрат (Э1+Э2 плана docs/costs-plan.md, 03.11) ──
+  // Журнал фактических расходов: ручной ввод и импорт выгрузок Excel.
+  // Читают reports:read и те, кто вносит (expenses:write: бухгалтерия,
+  // руководитель, админ); категории — живой справочник.
+  const expenseCategoriesOf = () => new Map(db.prepare(
+    `SELECT * FROM expense_categories ORDER BY sort, name`).all()
+    .map(category => [category.id, category]));
+  const canSeeExpenses = user => hasPermission(user, 'reports:read')
+    || hasPermission(user, 'expenses:write');
+  if (request.method === 'GET' && pathname === '/api/expenses') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!canSeeExpenses(user)) return errorJson(response, 403, 'Нет доступа к затратам');
+    const to = url.searchParams.get('to') || new Date().toISOString().slice(0, 10);
+    const from = url.searchParams.get('from')
+      || new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const items = db.prepare(`SELECT e.*, v.plate vehicle_plate, d.full_name driver_name,
+        u.full_name created_by_name
+      FROM expenses e
+      LEFT JOIN vehicles v ON v.id=e.vehicle_id
+      LEFT JOIN drivers d ON d.id=e.driver_id
+      LEFT JOIN users u ON u.id=e.created_by
+      WHERE e.spent_on>=? AND e.spent_on<=?
+      ORDER BY e.spent_on DESC, e.created_at DESC`).all(from, to);
+    const vatRate = Number(settingsObject(db).calculation?.vatRate ?? 0.22);
+    return json(response, 200, {
+      items, from, to,
+      categories: [...expenseCategoriesOf().values()],
+      summary: expensesSummary(items, vatRate), vatRate
+    });
+  }
+  if (request.method === 'POST' && pathname === '/api/expenses') {
+    const user = requirePermission(request, response, 'expenses:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const checked = validateExpense(body, expenseCategoriesOf());
+    if (checked.error) return errorJson(response, 422, checked.error);
+    const value = checked.value;
+    const vehicle = body.vehicle_id
+      ? db.prepare('SELECT id FROM vehicles WHERE id=?').get(String(body.vehicle_id)) : null;
+    if (body.vehicle_id && !vehicle) return errorJson(response, 422, 'Машина не найдена');
+    const id = randomUUID();
+    db.prepare(`INSERT INTO expenses(id,spent_on,category_id,amount,vat,vehicle_id,
+        supplier,doc_ref,note,source,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,'manual',?)`)
+      .run(id, value.spent_on, value.category_id, value.amount, value.vat,
+        vehicle?.id || null, value.supplier, value.doc_ref, value.note, user.id);
+    audit(db, user, 'create', 'expense', id,
+      { day: value.spent_on, category: value.category_id, amount: value.amount }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  // Импорт выгрузки: строки уже сопоставлены с полями на фронте
+  // (public/assets/expenses.js), сервер — канон разбора дат и сумм.
+  // Дедуп отпечатком import_key: повторная загрузка файла не плодит
+  // дублей, ответ честно делит строки на добавленные/пропущенные/битые.
+  if (request.method === 'POST' && pathname === '/api/expenses/import') {
+    const user = requirePermission(request, response, 'expenses:write');
+    if (!user) return;
+    const body = await readJson(request, 20_000_000);
+    const rows = Array.isArray(body.rows) ? body.rows.slice(0, 20_000) : [];
+    if (!rows.length) return errorJson(response, 422, 'В файле не нашлось строк для загрузки');
+    const categories = expenseCategoriesOf();
+    const vehicleByPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+      .map(vehicle => [normalizePlate(vehicle.plate), vehicle.id]));
+    const insert = db.prepare(`INSERT OR IGNORE INTO expenses(id,spent_on,category_id,
+        amount,vat,vehicle_id,supplier,doc_ref,note,source,import_key,created_by)
+      VALUES(?,?,?,?,?,?,?,?,?,'import',?,?)`);
+    let added = 0;
+    let skipped = 0;
+    const errors = [];
+    for (const row of rows) {
+      const checked = validateExpense(row, categories);
+      if (checked.error) {
+        if (errors.length < 5) errors.push(checked.error);
+        skipped += 1;
+        continue;
+      }
+      const value = checked.value;
+      // В выгрузках номер бывает с прицепом через «/» — машиной считаем тягач.
+      const vehicleId = vehicleByPlate.get(normalizePlate(String(row.plate ?? '').split('/')[0])) || null;
+      const key = expenseFingerprint({ ...value, vehicle_id: vehicleId });
+      const result = insert.run(randomUUID(), value.spent_on, value.category_id,
+        value.amount, value.vat, vehicleId, value.supplier, value.doc_ref,
+        value.note, key, user.id);
+      if (result.changes) added += 1;
+      else skipped += 1;
+    }
+    audit(db, user, 'import', 'expense', null,
+      { rows: rows.length, added, skipped }, requestIp(request));
+    return json(response, 200, { added, skipped, errors });
+  }
+  const expenseMatch = route(/^\/api\/expenses\/([^/]+)$/, pathname);
+  if (expenseMatch && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'expenses:write');
+    if (!user) return;
+    const expense = db.prepare('SELECT * FROM expenses WHERE id=?').get(expenseMatch[0]);
+    if (!expense) return errorJson(response, 404, 'Запись не найдена');
+    db.prepare('DELETE FROM expenses WHERE id=?').run(expenseMatch[0]);
+    audit(db, user, 'delete', 'expense', expenseMatch[0],
+      { day: expense.spent_on, category: expense.category_id, amount: expense.amount },
+      requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  // Справочник категорий: правят руководитель/админ, active вместо удаления.
+  if (request.method === 'POST' && pathname === '/api/expense-categories') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      return errorJson(response, 403, 'Категории затрат ведёт руководитель или администратор');
+    }
+    const body = await readJson(request);
+    const name = String(body.name || '').trim().slice(0, 80);
+    if (name.length < 3) return errorJson(response, 422, 'Название категории — от 3 символов');
+    const kind = body.kind === 'fixed' ? 'fixed' : 'variable';
+    const id = randomUUID();
+    try {
+      db.prepare(`INSERT INTO expense_categories(id,name,kind,sort) VALUES(?,?,?,
+        (SELECT COALESCE(MAX(sort),0)+1 FROM expense_categories))`).run(id, name, kind);
+    } catch {
+      return errorJson(response, 422, 'Категория с таким названием уже есть');
+    }
+    audit(db, user, 'create', 'expense-category', id, { name, kind }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  const expenseCategoryMatch = route(/^\/api\/expense-categories\/([^/]+)$/, pathname);
+  if (expenseCategoryMatch && request.method === 'PATCH') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) {
+      return errorJson(response, 403, 'Категории затрат ведёт руководитель или администратор');
+    }
+    const category = db.prepare('SELECT * FROM expense_categories WHERE id=?')
+      .get(expenseCategoryMatch[0]);
+    if (!category) return errorJson(response, 404, 'Категория не найдена');
+    const body = await readJson(request);
+    db.prepare(`UPDATE expense_categories SET name=?, kind=?, active=? WHERE id=?`)
+      .run(String(body.name ?? category.name).trim().slice(0, 80),
+        ['variable', 'fixed'].includes(body.kind) ? body.kind : category.kind,
+        body.active === undefined ? category.active : (body.active ? 1 : 0),
+        expenseCategoryMatch[0]);
+    audit(db, user, 'update', 'expense-category', expenseCategoryMatch[0],
+      { name: body.name, active: body.active }, requestIp(request));
     return json(response, 200, { ok: true });
   }
 

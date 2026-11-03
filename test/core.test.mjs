@@ -18,6 +18,7 @@ import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
 import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
+import { expenseFingerprint, expensesSummary, parseExpenseAmount, parseExpenseDay, validateExpense } from '../src/expenses.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, escalationStaff, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
 import { effBoardData } from '../src/efficiency.mjs';
 
@@ -5418,4 +5419,69 @@ test('презентация сводки: дневные сборщики и PD
   assert.ok(buffer.length > 50_000, 'PDF не пустой');
   assert.equal(buffer.subarray(0, 5).toString('latin1'), '%PDF-');
   assert.equal((buffer.toString('latin1').match(/\/Type \/Page\b/g) || []).length, 8, 'ровно 8 страниц');
+});
+
+// ── Учёт затрат (Э1+Э2, docs/costs-plan.md) ──
+test('затраты: разбор дней и сумм из выгрузок', () => {
+  assert.equal(parseExpenseDay('05.10.2026'), '2026-10-05');
+  assert.equal(parseExpenseDay('05.10.2026 14:30'), '2026-10-05');
+  assert.equal(parseExpenseDay('2026-10-05'), '2026-10-05');
+  assert.equal(parseExpenseDay(46300), '2026-10-05'); // порядковая дата Excel
+  assert.equal(parseExpenseDay('итого'), null);
+  assert.equal(parseExpenseDay(15320.5), null); // сумма — не дата
+  assert.equal(parseExpenseAmount('1 234,56'), 1234.56);
+  assert.equal(parseExpenseAmount('1.234,56 ₽'), 1234.56); // точки-разряды
+  assert.equal(parseExpenseAmount(980), 980);
+  assert.equal(parseExpenseAmount('0'), null); // ноль — не затрата
+  assert.equal(parseExpenseAmount('итого'), null);
+});
+
+test('затраты: валидация записи и отпечаток дедупа', () => {
+  const categories = new Map([['fuel', { id: 'fuel', name: 'Топливо', active: 1 }],
+    ['old', { id: 'old', name: 'Старая', active: 0 }]]);
+  const good = validateExpense({ spent_on: '05.10.2026', category_id: 'fuel',
+    amount: '15 320,50', supplier: ' АЗС №7 ' }, categories);
+  assert.equal(good.error, undefined);
+  assert.deepEqual([good.value.spent_on, good.value.amount, good.value.vat, good.value.supplier],
+    ['2026-10-05', 15320.5, 1, 'АЗС №7']);
+  assert.ok(validateExpense({ spent_on: 'итого', category_id: 'fuel', amount: 10 }, categories).error);
+  assert.ok(validateExpense({ spent_on: '05.10.2026', category_id: 'нет', amount: 10 }, categories).error);
+  assert.ok(validateExpense({ spent_on: '05.10.2026', category_id: 'old', amount: 10 }, categories).error,
+    'отключённая категория не принимает записи');
+  const row = { spent_on: '2026-10-05', category_id: 'fuel', amount: 15320.5,
+    vehicle_id: 'v1', doc_ref: ' Чек-77 ' };
+  assert.equal(expenseFingerprint(row), expenseFingerprint({ ...row, doc_ref: 'чек-77' }),
+    'отпечаток не чувствителен к регистру и пробелам документа');
+  assert.notEqual(expenseFingerprint(row), expenseFingerprint({ ...row, amount: 15320.51 }));
+});
+
+test('затраты: сводка периода считает НДС и разрезы', () => {
+  const items = [
+    { category_id: 'fuel', amount: 1220, vat: 1, vehicle_id: 'v1' },
+    { category_id: 'fuel', amount: 1000, vat: 0, vehicle_id: 'v1' },
+    { category_id: 'wash', amount: 610, vat: 1, vehicle_id: null }
+  ];
+  const summary = expensesSummary(items, 0.22);
+  assert.equal(summary.total, 2830);
+  assert.equal(summary.totalNet, 1000 + 1000 + 500);
+  assert.deepEqual(summary.byCategory[0], { key: 'fuel', sum: 2220, net: 2000, count: 2 });
+  assert.equal(summary.byVehicle.length, 1, 'безмашинная запись не попадает в разрез по бортам');
+});
+
+test('затраты: посев категорий и дедуп импорта в базе', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-planner-test-'));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const categories = db.prepare('SELECT id, kind FROM expense_categories').all();
+  assert.ok(categories.length >= 13, 'посев категорий прошёл');
+  assert.ok(categories.some(category => category.id === 'fuel' && category.kind === 'variable'));
+  const insert = db.prepare(`INSERT OR IGNORE INTO expenses(id,spent_on,category_id,amount,import_key)
+    VALUES(?,?,?,?,?)`);
+  const key = expenseFingerprint({ spent_on: '2026-10-05', category_id: 'fuel',
+    amount: 100, vehicle_id: '', doc_ref: 'x' });
+  assert.equal(insert.run(crypto.randomUUID(), '2026-10-05', 'fuel', 100, key).changes, 1);
+  assert.equal(insert.run(crypto.randomUUID(), '2026-10-05', 'fuel', 100, key).changes, 0,
+    'повторная строка выгрузки молча пропущена');
 });

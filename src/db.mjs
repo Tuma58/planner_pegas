@@ -6,6 +6,7 @@ import { hashPassword } from './security.mjs';
 import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
+import { EXPENSE_CATEGORY_SEED } from './expenses.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -1521,6 +1522,48 @@ function migrateColumns(db) {
   );
   CREATE INDEX IF NOT EXISTS idx_assistant_hints
     ON assistant_hints(rule, context, user_id, action, created_at);`);
+  // ── Учёт затрат (03.11.2026, docs/costs-plan.md) ──
+  // Категории — живой справочник (правит руководитель/админ, active
+  // вместо удаления); kind — характер для будущего норматива ₽/км:
+  // variable ложится на километры, fixed — на машино-дни.
+  db.exec(`CREATE TABLE IF NOT EXISTS expense_categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'variable' CHECK(kind IN ('variable','fixed')),
+    active INTEGER NOT NULL DEFAULT 1,
+    sort INTEGER NOT NULL DEFAULT 0)`);
+  // Журнал фактических затрат: одна запись — один расход. Сумма — как в
+  // документе, vat говорит, включён ли НДС; привязки к машине/водителю/
+  // рейсу необязательны; import_key — отпечаток строки выгрузки
+  // (уникальный индекс молча глотает повторную загрузку того же файла).
+  db.exec(`CREATE TABLE IF NOT EXISTS expenses (
+    id TEXT PRIMARY KEY,
+    spent_on TEXT NOT NULL,
+    category_id TEXT NOT NULL REFERENCES expense_categories(id),
+    amount REAL NOT NULL,
+    vat INTEGER NOT NULL DEFAULT 1,
+    vehicle_id TEXT REFERENCES vehicles(id),
+    driver_id TEXT REFERENCES drivers(id),
+    trip_id TEXT REFERENCES trips(id),
+    supplier TEXT NOT NULL DEFAULT '',
+    doc_ref TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','import','api')),
+    import_key TEXT,
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_expenses_day ON expenses(spent_on);
+  CREATE INDEX IF NOT EXISTS idx_expenses_vehicle ON expenses(vehicle_id, spent_on);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_import
+    ON expenses(import_key) WHERE import_key IS NOT NULL;`);
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='expense_categories_seed_v1'`).get()) {
+    const seedCategory = db.prepare(`INSERT OR IGNORE INTO expense_categories(id,name,kind,sort)
+      VALUES(?,?,?,?)`);
+    EXPENSE_CATEGORY_SEED.forEach(([id, name, kind], index) =>
+      seedCategory.run(id, name, kind, index));
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('expense_categories_seed_v1',datetime('now'))`).run();
+  }
 }
 
 // Справочник адресов из выгрузки 1С «АДРЕС.xlsx»: 611 пунктов с геозонами
