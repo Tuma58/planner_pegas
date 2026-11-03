@@ -5221,6 +5221,9 @@ test('HELP DESK: текстовые вложения .md/.txt отдаются �
   assert.equal(helpdeskMediaMimeOf('ТЗ внештатки.md'), 'text/plain');
   assert.equal(helpdeskMediaMimeOf('заметка.txt'), 'text/plain');
   assert.equal(helpdeskMediaMimeOf('скрин.png'), 'image/png');
+  assert.equal(helpdeskMediaMimeOf('реестр.xlsx'),
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'эксель проходит (03.11)');
+  assert.equal(helpdeskMediaMimeOf('выгрузка.csv'), 'text/plain');
   assert.equal(helpdeskMediaMimeOf('страница.html'), null, 'разметка не проходит');
   assert.equal(helpdeskMediaMimeOf('script.js'), null);
 });

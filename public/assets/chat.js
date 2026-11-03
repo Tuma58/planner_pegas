@@ -404,8 +404,8 @@ export function setupChat(state) {
         <option>иногда</option>
         <option>случилось один раз</option>
       </select>
-      <label><small class="muted">Скриншот, запись экрана или текстовый файл (по желанию)</small>
-        <input type="file" name="media" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.md,.txt"></label>
+      <label><small class="muted">Скриншот, запись экрана, текст или таблица (по желанию)</small>
+        <input type="file" name="media" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.md,.txt,.csv,.xlsx,.xls"></label>
       <div class="hd-actions">
         <button class="button small" type="submit">📨 Отправить заявку</button>
         <button class="button ghost small" type="button" id="hdCancel">Отмена</button>

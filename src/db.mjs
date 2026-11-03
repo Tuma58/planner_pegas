@@ -1486,6 +1486,9 @@ function migrateColumns(db) {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
   ensure('trip_incidents', 'reminded_at', 'TEXT');
+  // Имя вложения HELP DESK (03.11): таблицы и тексты скачиваются со
+  // своим именем и расширением, а не как безликий id.
+  ensure('helpdesk_tickets', 'media_name', "TEXT NOT NULL DEFAULT ''");
   // Первичное наполнение — адреса из ТЗ Базуева (HELP DESK 02.11);
   // дальше справочник живёт руками, повторный запуск ничего не трогает.
   if (!db.prepare(`SELECT value FROM app_meta WHERE key='ltl_warehouses_seed_v1'`).get()) {

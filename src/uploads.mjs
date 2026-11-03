@@ -58,8 +58,14 @@ export function boardMediaMimeOf(fileName) {
 export const helpdeskMediaPath = path.join(path.dirname(config.databasePath), 'helpdesk-media');
 export const MAX_HELPDESK_MEDIA_BYTES = 50 * 1024 * 1024;
 // Заявка Базуева 02.11: текстовое ТЗ приходилось слать скриншотом.
-// Текст отдаётся строго как text/plain — браузер показывает, не исполняет.
-const HELPDESK_TEXT_TYPES = { '.md': 'text/plain', '.txt': 'text/plain' };
+// Текст отдаётся строго как text/plain — браузер показывает, не
+// исполняет. 03.11 добавлены таблицы (жалоба руководителя: «не
+// подгружается эксель») — браузер их скачивает, не открывая.
+const HELPDESK_TEXT_TYPES = {
+  '.md': 'text/plain', '.txt': 'text/plain', '.csv': 'text/plain',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.xls': 'application/vnd.ms-excel'
+};
 export function helpdeskMediaMimeOf(fileName) {
   const ext = path.extname(String(fileName || '').toLowerCase());
   return boardMediaMimeOf(fileName) || HELPDESK_TEXT_TYPES[ext] || null;

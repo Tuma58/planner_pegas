@@ -7795,18 +7795,20 @@ async function api(request, response, url) {
     if (!check.ok) return errorJson(response, 422, check.error);
     let mediaId = null;
     let mediaMime = null;
+    let mediaName = '';
     if (body.mediaId) {
       const safeId = String(body.mediaId).replace(/[^\w-]/g, '');
       if (safeId && fs.existsSync(path.join(helpdeskMediaPath, safeId))) {
         mediaId = safeId;
-        mediaMime = helpdeskMediaMimeOf(String(body.mediaName || '')) || 'application/octet-stream';
+        mediaName = cleanFileName(String(body.mediaName || ''));
+        mediaMime = helpdeskMediaMimeOf(mediaName) || 'application/octet-stream';
       }
     }
     const id = randomUUID();
-    db.prepare(`INSERT INTO helpdesk_tickets(id,author_id,author_name,place,problem,expected,frequency,media_id,media_mime)
-      VALUES(?,?,?,?,?,?,?,?,?)`).run(id, user.id, user.full_name || user.username,
+    db.prepare(`INSERT INTO helpdesk_tickets(id,author_id,author_name,place,problem,expected,frequency,media_id,media_mime,media_name)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, user.id, user.full_name || user.username,
       check.ticket.place, check.ticket.problem, check.ticket.expected, check.ticket.frequency,
-      mediaId, mediaMime);
+      mediaId, mediaMime, mediaName);
     notify('manager', `🛟 HELP DESK: новая заявка от ${user.full_name || user.username}` +
       `${check.ticket.place ? ` (${check.ticket.place})` : ''}: «${check.ticket.problem.slice(0, 140)}` +
       `${check.ticket.problem.length > 140 ? '…' : ''}»`, 'helpdesk', id);
@@ -7863,7 +7865,7 @@ async function api(request, response, url) {
     const fileName = cleanFileName(rawName);
     const mime = helpdeskMediaMimeOf(fileName);
     if (!fileName || !mime) {
-      return errorJson(response, 422, 'К заявке можно картинку, видео или текст: png, jpg, webp, gif, mp4, webm, mov, md, txt');
+      return errorJson(response, 422, 'К заявке можно картинку, видео, текст или таблицу: png, jpg, webp, gif, mp4, webm, mov, md, txt, csv, xlsx, xls');
     }
     const content = await readRaw(request, MAX_HELPDESK_MEDIA_BYTES);
     if (!content.length) return errorJson(response, 422, 'Файл пустой');
@@ -8143,9 +8145,15 @@ async function api(request, response, url) {
     const user = requireUser(request, response);
     if (!user) return;
     const id = pathname.split('/').pop().replace(/[^\w-]/g, '');
-    const ticket = db.prepare('SELECT media_mime FROM helpdesk_tickets WHERE media_id=?').get(id);
+    const ticket = db.prepare('SELECT media_mime, media_name FROM helpdesk_tickets WHERE media_id=?').get(id);
     const filePath = path.join(helpdeskMediaPath, id);
     if (!ticket || !fs.existsSync(filePath)) return errorJson(response, 404, 'Файл не найден');
+    // Картинки/видео/текст браузер показывает; таблицы и прочее —
+    // скачиваются со своим именем (без него Excel-файл терял расширение).
+    const inline = /^(image|video)\//.test(String(ticket.media_mime)) || ticket.media_mime === 'text/plain';
+    const disposition = ticket.media_name
+      ? { 'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(ticket.media_name)}` }
+      : {};
     // Видео требует Range (перемотка и Safari) — отвечаем кусками, как табло.
     const size = fs.statSync(filePath).size;
     const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range || ''));
@@ -8160,6 +8168,7 @@ async function api(request, response, url) {
       'Content-Length': end - start + 1,
       'Accept-Ranges': 'bytes',
       ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+      ...disposition,
       'Cache-Control': 'private, max-age=86400'
     });
     return fs.createReadStream(filePath, { start, end }).pipe(response);
