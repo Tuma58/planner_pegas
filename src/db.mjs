@@ -1561,6 +1561,10 @@ function migrateColumns(db) {
   // токен шифруется как у телематики, cid юрлица — в config_json.
   db.prepare(`INSERT OR IGNORE INTO integration_connectors(id,name,base_url)
     VALUES('dornet','Дорожная сеть (Dornet)','https://back.dornet.ru')`).run();
+  // РН-Карт (Роснефть) — топливный процессинг: пароль шифруется,
+  // логин ЛК и код договора (ISS…) — в config_json.
+  db.prepare(`INSERT OR IGNORE INTO integration_connectors(id,name,base_url)
+    VALUES('rncard','РН-Карт (Роснефть)','https://lkapi.rn-card.ru')`).run();
   // Природа статьи (принцип руководителя 03.11): goods — материал/
   // агрегат, service — услуга/работа. Шины ≠ шиномонтаж.
   ensure('expense_categories', 'nature', "TEXT NOT NULL DEFAULT 'service'");

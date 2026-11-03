@@ -118,7 +118,7 @@ export async function renderExpenses(container, context) {
       <td>${escapeHtml(item.supplier || '')}</td>
       <td class="muted">${escapeHtml(item.doc_ref || '')}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</td>
       <td class="muted"><small>${item.source === 'manual' ? escapeHtml(item.created_by_name || '')
-    : item.source === 'api' ? '⚙ Dornet' : '📥 импорт'}</small></td>
+    : item.source === 'api' ? '⚙ авто' : '📥 импорт'}</small></td>
       <td>${canWrite ? `<button class="button ghost small" data-exp-del="${item.id}" title="Удалить запись (с аудитом)">✕</button>` : ''}</td>
     </tr>`).join('');
 

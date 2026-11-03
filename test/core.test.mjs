@@ -20,6 +20,7 @@ import { ROUND_TEMPLATES } from '../public/assets/rounds.js';
 import { effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from '../src/crew-fund.mjs';
 import { EXPENSE_CATEGORY_SEED, expenseFingerprint, expensesAccess, expensesSummary, parseExpenseAmount, parseExpenseDay, validateExpense } from '../src/expenses.mjs';
 import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from '../src/dornet.mjs';
+import { rncardCategoryOf, rncardExpenseRows } from '../src/rncard.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, escalationStaff, rebuildDispatcherCapacity, snapshotPlanHour } from '../src/dispatch-load.mjs';
 import { effBoardData } from '../src/efficiency.mjs';
 
@@ -5576,4 +5577,38 @@ test('затраты: миграция «агрегат ≠ работа» де�
     'service', 'шиномонтаж появился услугой');
   assert.equal(db.prepare(`SELECT category_id FROM expenses WHERE id='e1'`).get().category_id,
     'tirefit', 'запись Dornet-шиномонтажа перевешена с «Шин»');
+});
+
+test('затраты: операции РН-Карт раскладываются по статьям', () => {
+  const cards = new Map([['7826010000000436', { plate: 'Т486ВЕ58', holder: '' }]]);
+  const rows = rncardExpenseRows([
+    // Примеры из регламента WebAPI EMV v2 (п. 2.5.1): покупка и возврат.
+    { Date: '2016-07-01T21:50:17', Card: '7826010000000436', Type: 24, Value: 3,
+      Sum: 29.70, GCode: 'gkafe', GName: 'Кафе', GCat: 'SERVICE', Code: '9422',
+      Address: 'трасса М7, 18 км', Rrn: '509987945316' },
+    { Date: '2016-07-01T20:50:13', Card: '7826010000000436', Type: 11, Value: 3,
+      Sum: 29.70, Price: 9.90, GCode: 'gkafe', GName: 'Кафе', GCat: 'SERVICE', Code: '9418',
+      Address: 'трасса М7, 18 км' },
+    { Date: '2026-10-05T08:10:00', Card: '7826010000000436', Type: 11, Value: 320.5,
+      Sum: 19230, Price: 60, GCode: 'gDT', GName: 'ДТ', GCat: 'FUEL', Code: '555001',
+      Address: 'АЗС №112' },
+    { Date: '2026-10-05T09:00:00', Card: 'x', Type: 4, Sum: 1000, Code: '555002' }, // движение счёта
+    { Date: '2026-10-05T09:00:00', Card: 'x', Type: 11, Sum: 0, Code: '555003' } // нулевая
+  ], cards);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].amount, -29.7, 'возврат — сторно отрицательной суммой');
+  assert.equal(rows[0].category_id, 'other', 'кафе — прочее');
+  assert.equal(rows[1].amount, 29.7);
+  const fuel = rows[2];
+  assert.deepEqual([fuel.category_id, fuel.plate, fuel.import_key, fuel.spent_on],
+    ['fuel', 'Т486ВЕ58', 'rncard:555001', '2026-10-05']);
+  assert.ok(fuel.note.includes('320.5 л'), 'литры в заметке');
+  assert.ok(fuel.supplier.startsWith('РН-Карт · '), 'бренд поставщика единый');
+  // Маппинг категорий: топливо/мойка/шиномонтаж/дороги/масла.
+  assert.equal(rncardCategoryOf('FUEL', 'g95'), 'fuel');
+  assert.equal(rncardCategoryOf('SERVICE', 'gmoika'), 'wash');
+  assert.equal(rncardCategoryOf('SERVICE', 'gshm'), 'tirefit');
+  assert.equal(rncardCategoryOf('SERVICE', 'gDorog'), 'tolls');
+  assert.equal(rncardCategoryOf('GOODS', 'gMasla'), 'parts');
+  assert.equal(rncardCategoryOf('GOODS', 'gAvtoakses'), 'parts');
 });

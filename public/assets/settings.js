@@ -578,6 +578,27 @@ function renderIntegration() {
         <span class="muted">Бэкафилл истории: введите токен и CID, выберите период (до года) и жмите — кнопка сохранит настройки сама.</span>
       </div>
     </div>
+    <div class="card"><h2>РН-Карт (Роснефть) — топливо</h2>
+      <div class="fields">
+        <label class="field">Логин ЛК (лучше отдельная учётка для API)
+          <input id="rncardLogin" value="${escapeHtml(cfg.rncard?.login || '')}" autocomplete="off"></label>
+        <label class="field">Пароль ${cfg.rncard?.hasPassword ? '(сохранен)' : ''}<input id="rncardPassword" type="password"
+          placeholder="${cfg.rncard?.hasPassword ? 'оставьте пустым, чтобы не менять' : ''}" autocomplete="new-password"></label>
+        <label class="field">Код договора (ISS…, из ЛК «Дополнительная информация»)
+          <input id="rncardContract" value="${escapeHtml(cfg.rncard?.contract || '')}" autocomplete="off"></label>
+      </div>
+      <label class="check"><input id="rncardEnabled" type="checkbox" ${cfg.rncard?.enabled ? 'checked' : ''}> Включить коннектор</label>
+      <p class="muted">Заправки и услуги АЗС сами ложатся в «💸 Затраты» каждые 6 часов с
+        литрами в заметке и привязкой к бортам (ТС карты из ЛК, иначе — примечание карты).
+        Если в ЛК включён белый список IP — добавьте туда адрес сервера планера.
+        ${cfg.rncard?.lastSuccessAt ? `Последняя синхронизация: ${formatDate(cfg.rncard.lastSuccessAt, { dateStyle: 'short', timeStyle: 'short' })}${cfg.rncard?.last?.added != null ? ` (+${cfg.rncard.last.added})` : ''}.` : 'Синхронизаций ещё не было.'}</p>
+      <div class="actions">
+        <label class="field">с <input id="rncardFrom" type="date"></label>
+        <label class="field">по <input id="rncardTo" type="date"></label>
+        <button class="button secondary" id="rncardSync" type="button">Загрузить период</button>
+        <span class="muted">Кнопка сохранит настройки сама и загрузит период (до года, кусками по 2 месяца).</span>
+      </div>
+    </div>
     <div class="card"><h2>Импорт по контракту PegasLogistic v1.0</h2>
       <p class="muted">Для 1С поддерживаются геозоны или города из справочника. Повторная передача того же id обновляет рейс и не создает дубль.</p>
       <label class="field">JSON-массив<textarea id="contractImport" rows="8"
@@ -627,6 +648,22 @@ function renderIntegration() {
       const detail = Object.entries(result.byService || {})
         .map(([label, count]) => `${label} ${count}`).join(' · ');
       toast(`Dornet: добавлено ${result.added}${detail ? ` (${detail})` : ''}` +
+        (result.errors?.length ? ` · ошибки: ${result.errors[0]}` : ''));
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('rncardSync').onclick = async () => {
+    try {
+      // Кнопка сама сохраняет поля карточки (урок Dornet 03.11).
+      byId('rncardEnabled').checked = true;
+      await api('/api/admin/integration', { method: 'PUT', body: JSON.stringify({ rncard: {
+        login: byId('rncardLogin').value.trim(),
+        password: byId('rncardPassword').value,
+        contract: byId('rncardContract').value.trim(),
+        enabled: true
+      } }) });
+      const result = await api('/api/admin/rncard/sync', { method: 'POST', body: JSON.stringify({
+        from: byId('rncardFrom').value, to: byId('rncardTo').value }) });
+      toast(`РН-Карт: добавлено ${result.added}` +
         (result.errors?.length ? ` · ошибки: ${result.errors[0]}` : ''));
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -695,6 +732,12 @@ async function saveIntegration() {
       token: byId('dornetToken').value,
       cid: Number(byId('dornetCid').value) || 0,
       enabled: byId('dornetEnabled').checked
+    },
+    rncard: {
+      login: byId('rncardLogin').value.trim(),
+      password: byId('rncardPassword').value,
+      contract: byId('rncardContract').value.trim(),
+      enabled: byId('rncardEnabled').checked
     }
   };
   try {

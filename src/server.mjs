@@ -31,6 +31,7 @@ import {
   decryptSecret, encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
 import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from './dornet.mjs';
+import { rncardExpenseRows } from './rncard.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
   ABSENCE_REASONS, activeDriverFor, attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups, chatMessages, createDriverAssignment, syncVehicleDriverNames, customerCard, demurrageCases, demurrageSettings, demurrageSummary, driverCardData, driverPeriodMetrics, driverScheduleData, importTelematics, importTripsFrom1C, markAttendance,
@@ -454,6 +455,17 @@ function integrationPublic() {
         WHERE key='dornet_sync_last'`).get()?.value || 'null');
       return { baseUrl: row?.base_url || 'https://back.dornet.ru', enabled: Boolean(row?.enabled),
         hasToken: Boolean(row?.token_cipher), cid, lastSuccessAt: row?.last_success_at, last };
+    })(),
+    rncard: (() => {
+      const row = db.prepare(`SELECT base_url,enabled,last_success_at,token_cipher,config_json
+        FROM integration_connectors WHERE id='rncard'`).get();
+      let saved = {};
+      try { saved = JSON.parse(row?.config_json || '{}'); } catch { /* как пусто */ }
+      const last = JSON.parse(db.prepare(`SELECT value FROM app_meta
+        WHERE key='rncard_sync_last'`).get()?.value || 'null');
+      return { baseUrl: row?.base_url || 'https://lkapi.rn-card.ru', enabled: Boolean(row?.enabled),
+        hasPassword: Boolean(row?.token_cipher), login: saved.login || '',
+        contract: saved.contract || '', lastSuccessAt: row?.last_success_at, last };
     })()
   };
 }
@@ -6859,6 +6871,137 @@ function dornetSyncTick() {
 }
 setInterval(dornetSyncTick, 6 * 3_600_000);
 setTimeout(dornetSyncTick, 75_000);
+
+// ── Коннектор «РН-Карт» (Роснефть) — топливо в журнал затрат (03.11) ──
+// WebAPI EMV v2 (lkapi.rn-card.ru): логин ЛК в query, пароль заголовком
+// RnCard-Identity-Account-Pass (Base64), операции за период ≤2 мес
+// (качаем кусками), транзакции задерживаются до 2 ч — окно тика их
+// добирает. Привязка к бортам: ТС карты из ЛК (InfoCardVehicle), кэш
+// карт сутки; фолбэк — примечание карты, если в нём госномер.
+function rncardConfig() {
+  const row = db.prepare(`SELECT * FROM integration_connectors WHERE id='rncard'`).get();
+  if (!row?.enabled || !row.token_cipher) return null;
+  let saved = {};
+  try { saved = JSON.parse(row.config_json || '{}'); } catch { /* битый JSON — как пусто */ }
+  if (!saved.login || !saved.contract) return null;
+  try {
+    return { baseUrl: (row.base_url || 'https://lkapi.rn-card.ru').replace(/\/+$/, ''),
+      login: String(saved.login), contract: String(saved.contract),
+      password: decryptSecret(row.token_cipher, config.appSecret) };
+  } catch (error) { console.error('rncardConfig:', error.message); return null; }
+}
+
+async function rncardFetch(connector, path, params, attempts = 3) {
+  const query = new URLSearchParams({ u: connector.login, ...params, type: 'json' }).toString();
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const response = await fetch(`${connector.baseUrl}/api/emv/${path}?${query}`, {
+        headers: {
+          'RnCard-Identity-Account-Pass': Buffer.from(connector.password).toString('base64'),
+          'RnCard-RequestId': randomUUID()
+        },
+        signal: AbortSignal.timeout(60_000)
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try { message = JSON.parse(text).Message || message; } catch { /* не JSON */ }
+        throw new Error(message);
+      }
+      return JSON.parse(text);
+    } catch (error) {
+      if (attempt >= attempts) throw new Error(`РН-Карт ${path}: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, 2_000 * attempt));
+    }
+  }
+}
+
+// Карты договора с ТС: кэш на сутки в app_meta (ЛК просит не частить).
+// Фолбэк привязки: примечание карты, если оно похоже на госномер парка.
+async function rncardCards(connector, vehicleByPlate) {
+  const cached = JSON.parse(db.prepare(`SELECT value FROM app_meta
+    WHERE key='rncard_cards'`).get()?.value || 'null');
+  if (cached && Date.now() - Date.parse(cached.at) < 24 * 3_600_000) {
+    return new Map(Object.entries(cached.cards));
+  }
+  const list = await rncardFetch(connector, 'v1/GetCardsByContract',
+    { contract: connector.contract });
+  const cards = {};
+  for (const card of Array.isArray(list) ? list : []) {
+    const num = String(card.Num || '');
+    if (!num) continue;
+    const info = { plate: '', holder: '' };
+    if (card.SCode === '00') { // ТС спрашиваем только у карт в работе
+      try {
+        const vehicle = await rncardFetch(connector, 'v2/InfoCardVehicle',
+          { Contract: connector.contract, Card: num }, 1);
+        info.plate = String(vehicle?.RegNum || '');
+      } catch { /* ТС у карты не заполнено — ниже фолбэк по примечанию */ }
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    if (!info.plate && card.Rem
+      && vehicleByPlate.has(normalizePlate(String(card.Rem).split('/')[0]))) {
+      info.plate = String(card.Rem);
+    }
+    cards[num] = info;
+  }
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('rncard_cards',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+    .run(JSON.stringify({ at: new Date().toISOString(), cards }));
+  return new Map(Object.entries(cards));
+}
+
+async function runRncardSync(from, to, options = {}) {
+  const connector = rncardConfig();
+  if (!connector) return null;
+  const vehicleByPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+    .map(vehicle => [normalizePlate(vehicle.plate), vehicle.id]));
+  const insert = db.prepare(`INSERT OR IGNORE INTO expenses(id,spent_on,category_id,
+      amount,vat,vehicle_id,supplier,doc_ref,note,source,import_key)
+    VALUES(?,?,?,?,1,?,?,?,?,'api',?)`);
+  const stats = { from, to, added: 0, liters: 0, errors: [] };
+  let cards = new Map();
+  try { cards = await rncardCards(connector, vehicleByPlate); }
+  catch (error) { stats.errors.push(`карты: ${error.message}`); }
+  // Период кусками ≤55 дней: регламент не принимает выборку длиннее 2 мес.
+  for (const [chunkFrom, chunkTo] of dornetChunks(from, to, 55)) {
+    try {
+      const data = await rncardFetch(connector, 'v2/GetOperByContract', {
+        contract: connector.contract,
+        begin: `${chunkFrom}T00:00:00`, end: `${chunkTo}T23:59:59`
+      });
+      const operations = Array.isArray(data) ? data : (data?.OperationList || []);
+      for (const row of rncardExpenseRows(operations, cards)) {
+        const vehicleId = vehicleByPlate.get(normalizePlate(row.plate.split('/')[0])) || null;
+        const note = vehicleId || !row.plate ? row.note
+          : `${row.note ? `${row.note} · ` : ''}ТС: ${row.plate}`.slice(0, 300);
+        const result = insert.run(randomUUID(), row.spent_on, row.category_id,
+          row.amount, vehicleId, row.supplier, row.doc_ref, note, row.import_key);
+        stats.added += result.changes;
+      }
+    } catch (error) { stats.errors.push(`${chunkFrom}..${chunkTo}: ${error.message}`); }
+  }
+  if (!stats.errors.length || stats.added) {
+    db.prepare(`UPDATE integration_connectors SET last_success_at=CURRENT_TIMESTAMP,
+      updated_at=CURRENT_TIMESTAMP WHERE id='rncard'`).run();
+  }
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('rncard_sync_last',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+    .run(JSON.stringify({ at: new Date().toISOString(), ...stats }));
+  if (stats.added || stats.errors.length || options.verbose) {
+    console.log(`РН-Карт: +${stats.added} затрат за ${from}..${to}` +
+      (stats.errors.length ? ` | ошибки: ${stats.errors.join('; ')}` : ''));
+  }
+  return stats;
+}
+
+function rncardSyncTick() {
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+  runRncardSync(from, to).catch(error => console.error('РН-Карт sync:', error.message));
+}
+setInterval(rncardSyncTick, 6 * 3_600_000);
+setTimeout(rncardSyncTick, 105_000);
 
 // ── «Дорогие ворота» — понедельничное задание продажам (этап 3, 22.09) ──
 // Клиенты БЕЗ простоя в договоре, чья медиана ворот выгрузки за 28 дн
@@ -14599,6 +14742,19 @@ async function api(request, response, url) {
         Number(Boolean(body.dornet.enabled)),
         JSON.stringify({ cid: Number(body.dornet.cid) || 0 }));
     }
+    if (body.rncard) {
+      const connector = db.prepare(`SELECT * FROM integration_connectors WHERE id='rncard'`).get();
+      db.prepare(`UPDATE integration_connectors SET token_cipher=?,enabled=?,
+        config_json=?,updated_at=CURRENT_TIMESTAMP WHERE id='rncard'`).run(
+        body.rncard.password
+          ? encryptSecret(String(body.rncard.password), config.appSecret)
+          : connector.token_cipher,
+        Number(Boolean(body.rncard.enabled)),
+        JSON.stringify({ login: String(body.rncard.login || '').trim().slice(0, 120),
+          contract: String(body.rncard.contract || '').trim().slice(0, 60) }));
+      // Логин/договор сменились — кэш карт мог относиться к чужому договору.
+      db.prepare(`DELETE FROM app_meta WHERE key='rncard_cards'`).run();
+    }
     audit(db, user, 'update', 'integration', '1', { ...body, password: undefined, dornet: body.dornet ? { ...body.dornet, token: undefined } : undefined }, requestIp(request));
     return json(response, 200, { ok: true });
   }
@@ -14617,6 +14773,23 @@ async function api(request, response, url) {
     const stats = await runDornetSync(from, to, { verbose: true });
     if (!stats) return errorJson(response, 422, 'Коннектор Dornet не настроен или выключен (токен, CID, галка)');
     audit(db, user, 'dornet-sync', 'integration', 'dornet', { from, to, added: stats.added }, requestIp(request));
+    return json(response, 200, stats);
+  }
+  // РН-Карт: ручная синхронизация произвольного периода (бэкафилл).
+  if (request.method === 'POST' && pathname === '/api/admin/rncard/sync') {
+    const user = requirePermission(request, response, 'integration:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const dayRe = /^\d{4}-\d{2}-\d{2}$/;
+    const to = dayRe.test(String(body.to)) ? body.to : new Date().toISOString().slice(0, 10);
+    const from = dayRe.test(String(body.from)) ? body.from
+      : new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+    if ((Date.parse(to) - Date.parse(from)) / 86_400_000 > 366) {
+      return errorJson(response, 422, 'Период синхронизации — не длиннее года');
+    }
+    const stats = await runRncardSync(from, to, { verbose: true });
+    if (!stats) return errorJson(response, 422, 'Коннектор РН-Карт не настроен или выключен (логин, пароль, договор, галка)');
+    audit(db, user, 'rncard-sync', 'integration', 'rncard', { from, to, added: stats.added }, requestIp(request));
     return json(response, 200, stats);
   }
   if (request.method === 'POST' && pathname === '/api/admin/integration/test') {
