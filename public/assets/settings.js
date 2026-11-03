@@ -575,7 +575,7 @@ function renderIntegration() {
         <label class="field">с <input id="dornetFrom" type="date"></label>
         <label class="field">по <input id="dornetTo" type="date"></label>
         <button class="button secondary" id="dornetSync" type="button">Загрузить период</button>
-        <span class="muted">Бэкафилл истории: сохраните настройки, затем выберите период (до года) и загрузите.</span>
+        <span class="muted">Бэкафилл истории: введите токен и CID, выберите период (до года) и жмите — кнопка сохранит настройки сама.</span>
       </div>
     </div>
     <div class="card"><h2>Импорт по контракту PegasLogistic v1.0</h2>
@@ -614,6 +614,14 @@ function renderIntegration() {
   byId('saveIntegration').onclick = saveIntegration;
   byId('dornetSync').onclick = async () => {
     try {
+      // Кнопка сама сохраняет поля карточки: общая «Сохранить» далеко,
+      // и забытая галка/токен давали «коннектор не настроен» (03.11).
+      byId('dornetEnabled').checked = true;
+      await api('/api/admin/integration', { method: 'PUT', body: JSON.stringify({ dornet: {
+        token: byId('dornetToken').value,
+        cid: Number(byId('dornetCid').value) || 0,
+        enabled: true
+      } }) });
       const result = await api('/api/admin/dornet/sync', { method: 'POST', body: JSON.stringify({
         from: byId('dornetFrom').value, to: byId('dornetTo').value }) });
       const detail = Object.entries(result.byService || {})
