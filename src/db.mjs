@@ -1451,6 +1451,29 @@ function migrateColumns(db) {
     user_name TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
+  // ── Блок «Внештатки и возвраты», Э1 (03.11, план docs/returns-plan.md) ──
+  // Ручные инциденты рейса: акт на выгрузке, возврат продукции,
+  // опоздание без отметок. Словарь статусов заложен с запасом под Э2
+  // (цепочка возврата: загрузили → ждём решения → склад/утилизация/
+  // осуществлён), warehouse — склад LTL из справочника Э2.
+  db.exec(`CREATE TABLE IF NOT EXISTS trip_incidents (
+    id TEXT PRIMARY KEY,
+    trip_id TEXT NOT NULL REFERENCES trips(id),
+    kind TEXT NOT NULL CHECK(kind IN ('act','return','late')),
+    qty TEXT NOT NULL DEFAULT '',
+    comment TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open'
+      CHECK(status IN ('open','closed','loaded','wait_decision','to_warehouse','utilized','returned')),
+    warehouse TEXT NOT NULL DEFAULT '',
+    resolution TEXT NOT NULL DEFAULT '',
+    created_by TEXT REFERENCES users(id),
+    created_by_name TEXT NOT NULL DEFAULT '',
+    closed_by_name TEXT NOT NULL DEFAULT '',
+    closed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_trip_incidents ON trip_incidents(kind, status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_trip_incidents_trip ON trip_incidents(trip_id);`);
   // Подсказки помощника (ступень 2, 02.11): журнал показов и оценок —
   // троттлинг «раз в сутки на человека» и дрейф пользы правил.
   db.exec(`CREATE TABLE IF NOT EXISTS assistant_hints (

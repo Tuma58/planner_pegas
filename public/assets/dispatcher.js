@@ -12,6 +12,7 @@ import { waitingLabel } from './pipeline.js';
 import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 import { openTransfers, transferStage, transferTaskText, transferDialog } from './transfer.js';
 import { callCardDialog, closeQuestionDialog, questionDialog, setTopics, topicLabel } from './call-card.js';
+import { tripIncidentDialog } from './incidents.js';
 
 const LATE_MS = 30 * 60_000;
 // «ТС не выгружают»: плановое прибытие прошло более 6 часов назад,
@@ -219,6 +220,16 @@ function incidentDialog(trip, data, context) {
       <button type="button" class="list-item" id="incOther">
         <span><strong>✕ Снять рейс по другой причине</strong>
         <small class="muted" style="display:block">ДТП, погода, опоздание и прочее — с обязательной причиной</small></span></button>
+      <div class="kb-note" style="margin-top:4px">Записать во «⚠ Внештатки» (рейс продолжается, учёт — отдельно):</div>
+      <button type="button" class="list-item" id="incAct">
+        <span><strong>📋 Акт на выгрузке</strong>
+        <small class="muted" style="display:block">Расхождение, бой, недостача — составлен акт; продажи и руководитель узнают сразу</small></span></button>
+      <button type="button" class="list-item" id="incReturnRec">
+        <span><strong>↩ Возврат продукции</strong>
+        <small class="muted" style="display:block">Клиент вернул груз: паллеты/коробки берутся на учёт во вкладке «⚠ Внештатки»</small></span></button>
+      <button type="button" class="list-item" id="incLate">
+        <span><strong>⏰ Опоздание (без отметок)</strong>
+        <small class="muted" style="display:block">Опоздания с отметками прибытия попадают во «⚠ Внештатки» сами — этой кнопкой фиксируются случаи без отметок</small></span></button>
     </div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button></div>`);
   document.getElementById('incBreakdown').onclick = () => breakdownDialog(trip, data, context);
@@ -230,6 +241,11 @@ function incidentDialog(trip, data, context) {
     if (vehicle) transferDialog(vehicle, data, context, { fromLabel: trip.to_point || trip.to_name });
   };
   document.getElementById('incOther').onclick = () => rejectTripDialog(trip, data, context);
+  // Э1 «Внештатки и возвраты» (03.11): учётные инциденты — рейс живёт,
+  // запись уходит во вкладку «⚠ Внештатки» с уведомлением продаж.
+  document.getElementById('incAct').onclick = () => tripIncidentDialog(trip, 'act', context);
+  document.getElementById('incReturnRec').onclick = () => tripIncidentDialog(trip, 'return', context);
+  document.getElementById('incLate').onclick = () => tripIncidentDialog(trip, 'late', context);
 }
 
 function checklistBlock(trip, canAct, data = null) {

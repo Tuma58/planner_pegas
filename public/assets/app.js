@@ -7,6 +7,7 @@ import { renderBoss } from './boss.js';
 import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
 import { renderFlows } from './flows.js';
+import { renderIncidents } from './incidents.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
 import { fleetPlanDialog } from './fleet-plan.js';
 import { buildReport, wireReport } from './reports.js';
@@ -772,6 +773,9 @@ const MAIN_VIEWS = [
   // Блок «Ремзона» — отдельная вкладка (НЕ часть Ресурса): этап
   // автономной конструкции, на подбор и гант пока не влияет.
   { id: 'remzona', title: 'Ремзона', show: () => can('fleet:write') || can('reports:read') },
+  // «⚠ Внештатки» (Э1, 03.11): акты, возвраты, опоздания — видна всем,
+  // заводит инциденты диспетчер из карточки рейса.
+  { id: 'incidents', title: 'Внештатки', show: () => true },
   { id: 'flows', title: 'Потоки', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
@@ -874,6 +878,8 @@ function renderMain() {
     renderDashboard(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'monitoring') {
     renderMonitoring(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'incidents') {
+    renderIncidents(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'flows') {
     renderFlows(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip,

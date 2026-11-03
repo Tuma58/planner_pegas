@@ -10,6 +10,7 @@ import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaMimeOf, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
+import { INCIDENT_KINDS, incidentNotifyText, incidentsData } from './incidents.mjs';
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -7852,6 +7853,61 @@ async function api(request, response, url) {
       { fileName, size: content.length }, requestIp(request));
     return json(response, 201, { id, mime, name: fileName });
   }
+  // ── ⚠ Внештатки и возвраты, Э1 (03.11, план docs/returns-plan.md) ──
+  // Ручной инцидент рейса заводит диспетчер из меню внештатной ситуации;
+  // вкладка собирает ручные + авто-опоздания из отметок.
+  const incidentTripMatch = route(/^\/api\/trips\/([^/]+)\/incidents$/, pathname);
+  if (incidentTripMatch && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const trip = db.prepare(`SELECT t.*, v.plate,
+        (SELECT o.order_no FROM orders o WHERE o.id=t.order_id) order_no
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id WHERE t.id=?`).get(incidentTripMatch[0]);
+    if (!trip) return errorJson(response, 404, 'Рейс не найден');
+    const body = await readJson(request);
+    const kind = String(body.kind || '');
+    if (!INCIDENT_KINDS[kind]) return errorJson(response, 422, 'Неизвестный тип внештатки');
+    const qty = String(body.qty || '').trim().slice(0, 120);
+    const comment = String(body.comment || '').trim().slice(0, 500);
+    if (kind === 'return' && !qty) {
+      return errorJson(response, 422, 'Для возврата укажите количество (паллеты/коробки)');
+    }
+    const id = randomUUID();
+    db.prepare(`INSERT INTO trip_incidents(id,trip_id,kind,qty,comment,created_by,created_by_name)
+      VALUES(?,?,?,?,?,?,?)`).run(id, trip.id, kind, qty, comment,
+      user.id, user.full_name || user.username);
+    // Продажи — их клиент, руководитель — картина дня; категория claims
+    // (акт/возврат — почти всегда деньги и разговор с клиентом).
+    const text = incidentNotifyText(kind, trip, qty, comment);
+    notify('sales', text, 'trip', trip.id, { category: 'claims' });
+    notify('manager', text, 'trip', trip.id, { category: 'claims' });
+    audit(db, user, 'create', 'incident', id, { kind, trip: trip.id, qty }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  if (request.method === 'GET' && pathname === '/api/incidents') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const to = url.searchParams.get('to') || new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const from = url.searchParams.get('from') || new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    return json(response, 200, incidentsData(db, `${from}T00:00:00Z`, `${to}T23:59:59Z`));
+  }
+  const incidentCloseMatch = route(/^\/api\/incidents\/([^/]+)\/close$/, pathname);
+  if (incidentCloseMatch && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const incident = db.prepare(`SELECT * FROM trip_incidents WHERE id=?`).get(incidentCloseMatch[0]);
+    if (!incident) return errorJson(response, 404, 'Внештатка не найдена');
+    if (incident.closed_at) return errorJson(response, 422, 'Уже закрыта');
+    const body = await readJson(request);
+    const resolution = String(body.resolution || '').trim().slice(0, 500);
+    if (!resolution) return errorJson(response, 422, 'Закрытие — только с итогом: что решили и чем кончилось');
+    db.prepare(`UPDATE trip_incidents SET status='closed', resolution=?,
+        closed_by_name=?, closed_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(resolution, user.full_name || user.username, incidentCloseMatch[0]);
+    audit(db, user, 'close', 'incident', incidentCloseMatch[0], { resolution: resolution.slice(0, 120) }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
   // ── 📚 База знаний: копилка «вопрос → ответ» (этап 1 помощника, 02.11) ──
   // Статьи пишет руководитель/админ (знания курируются), читают и
   // оценивают все; поиск живёт на фронте (public/assets/kb.js), сервер

@@ -5224,3 +5224,45 @@ test('HELP DESK: текстовые вложения .md/.txt отдаются �
   assert.equal(helpdeskMediaMimeOf('страница.html'), null, 'разметка не проходит');
   assert.equal(helpdeskMediaMimeOf('script.js'), null);
 });
+
+test('внештатки Э1: ручные инциденты, авто-опоздания из отметок, закрытие', async t => {
+  const { INCIDENT_KINDS, incidentNotifyText, incidentsData } = await import('../src/incidents.mjs');
+  assert.deepEqual(Object.keys(INCIDENT_KINDS), ['act', 'return', 'late']);
+  assert.match(incidentNotifyText('return', { plate: 'т001ат58', customer_name: 'Клиент', order_no: 77 },
+    '3 паллеты', 'бой упаковки'), /↩ Возврат продукции.*№ 77.*т001ат58.*3 паллеты.*бой упаковки/);
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-inc-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicleId = db.prepare('SELECT id FROM vehicles LIMIT 1').get().id;
+  const zoneId = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  const now = Date.now();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+      starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('inc-t1',?,?,?,?,?,?,500,50000,'run')`)
+    .run(vehicleId, 'Клиент Внештатки', zoneId, zoneId,
+      new Date(now - 86_400_000).toISOString(), new Date(now + 86_400_000).toISOString());
+  // Ручной возврат.
+  db.prepare(`INSERT INTO trip_incidents(id,trip_id,kind,qty,comment,created_by_name)
+    VALUES('inc-1','inc-t1','return','3 паллеты','клиент вернул','Диспетчер Т')`).run();
+  // Авто-опоздание: финальный стоп, факт на 3 ч позже плана.
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,planned_arrival,actual_arrival)
+    VALUES('inc-s1','inc-t1',1,'D','Москва',?,?)`)
+    .run(new Date(now - 4 * 3_600_000).toISOString(), new Date(now - 3_600_000).toISOString());
+  const from = new Date(now - 7 * 86_400_000).toISOString();
+  const to = new Date(now + 86_400_000).toISOString();
+  const data = incidentsData(db, from, to);
+  assert.equal(data.manual.length, 1);
+  assert.equal(data.manual[0].kind, 'return');
+  assert.equal(data.manual[0].customer_name, 'Клиент Внештатки');
+  assert.equal(data.autoLate.length, 1);
+  assert.equal(data.autoLate[0].late_hours, 3);
+  // Закрытие с итогом; чужой статус схема не пустит.
+  db.prepare(`UPDATE trip_incidents SET status='closed', resolution='вернули клиенту',
+    closed_by_name='Диспетчер Т', closed_at=CURRENT_TIMESTAMP WHERE id='inc-1'`).run();
+  assert.equal(db.prepare(`SELECT status FROM trip_incidents WHERE id='inc-1'`).get().status, 'closed');
+  assert.throws(() => db.prepare(`UPDATE trip_incidents SET kind='weird' WHERE id='inc-1'`).run());
+});
