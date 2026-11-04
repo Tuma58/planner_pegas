@@ -1575,6 +1575,51 @@ function migrateColumns(db) {
       seedCategory.run(id, name, kind, index, nature));
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('expense_categories_seed_v1',datetime('now'))`).run();
   }
+  // Справочник «как связаться с заказчиком» (заявка Дарьи Н из HELP DESK,
+  // 03.11): канал связи (MAX-чат, почта, менеджер) ложится контактом в
+  // карточку клиента. Данные — src/customer-contact-notes.json (без
+  // паролей площадок — секретам в репозитории не место); матч имён —
+  // нормализацией с отбросом форм собственности + подстрока; клиент,
+  // которого нет в базе, пропускается с перечнем в логе.
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='customer_contact_notes_seed_v1'`).get()) {
+    try {
+      const notes = JSON.parse(fs.readFileSync(
+        new URL('./customer-contact-notes.json', import.meta.url), 'utf8'));
+      const normName = value => String(value || '').toLowerCase().replace(/[«»"()]/g, ' ')
+        .replace(/\b(ооо|оао|ао|зао|ип|тд|тк|мпк|спк|мпбк)\b/g, ' ').replace(/\s+/g, ' ').trim();
+      const customers = db.prepare('SELECT name FROM customers').all();
+      const byNorm = new Map(customers.map(c => [normName(c.name), c.name]));
+      const exists = db.prepare(`SELECT 1 FROM customer_contacts
+        WHERE customer_name=? AND full_name=?`);
+      const insertContact = db.prepare(`INSERT INTO customer_contacts(id,customer_name,
+        full_name,position,note) VALUES(?,?,?,?,?)`);
+      let added = 0;
+      const missed = [];
+      for (const item of notes) {
+        const n = normName(item.customer);
+        // Точный матч, иначе подстрочный: обе стороны не короче 6 знаков
+        // (в базе живут обрубки вроде «пен» — им чужие контакты не
+        // достаются), из кандидатов берётся самый длинный.
+        const candidates = customers.filter(c => {
+          const cn = normName(c.name);
+          if (!cn || !n || Math.min(cn.length, n.length) < 6) return false;
+          return cn.includes(n) || n.includes(cn);
+        }).sort((a, b) => normName(b.name).length - normName(a.name).length);
+        const found = byNorm.get(n) || candidates[0]?.name;
+        if (!found) { missed.push(item.customer); continue; }
+        const fullName = String(item.name || item.channel || '').trim().slice(0, 120);
+        if (!fullName || exists.get(found, fullName)) continue;
+        insertContact.run(randomUUID(), found, fullName,
+          String(item.channel || '').trim().slice(0, 80),
+          String(item.extra || '').trim().slice(0, 500));
+        added += 1;
+      }
+      db.prepare(`INSERT INTO app_meta(key,value) VALUES('customer_contact_notes_seed_v1',?)`)
+        .run(JSON.stringify({ at: new Date().toISOString(), added, missed }));
+      console.log(`Справочник связи с заказчиками: добавлено ${added} контактов` +
+        (missed.length ? `; не найдены клиенты: ${missed.join(', ')}` : ''));
+    } catch (error) { console.error('посев справочника связи:', error.message); }
+  }
   // Разовая миграция «агрегат ≠ работа» (03.11): на базах, посеянных
   // первым списком, статья «Ремонт и запчасти» делится на «Запчасти»
   // (материал) и «Ремонт (работы)» (услуга), появляется «Шиномонтаж»;
