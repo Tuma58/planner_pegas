@@ -582,9 +582,14 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     // Блокирующие интервалы (ремонт, без водителя, резерв под заказ),
     // заканчивающиеся позже рейса: сцепка реально доступна после самого
     // позднего из них. Резерв — сцепка обещана, продажам не предлагается.
+    // Блокирует только интервал, НАКРЫВАЮЩИЙ момент освобождения: ремонт,
+    // запланированный на будущее, машину из потребности не прячет — у неё
+    // есть свободное окно до заезда, и его надо продавать (кейс т508ве58:
+    // освобождалась в среду, а ТО с воскресенья прятало её из списка).
     const blocking = (data.dispositions || []).filter(item =>
       item.vehicle_id === vehicle.id && ['repair', 'no_driver', 'reserve'].includes(item.kind) &&
-      Date.parse(item.ends_at) > Math.max(tripFreeMs, nowMs - 86_400_000));
+      Date.parse(item.ends_at) > Math.max(tripFreeMs, nowMs - 86_400_000) &&
+      Date.parse(item.starts_at) <= Math.max(tripFreeMs, nowMs));
     const blockEndMs = blocking.length ? Math.max(...blocking.map(item => Date.parse(item.ends_at))) : 0;
     // До выхода из ремонта/появления водителя больше суток — не потребность.
     if (blockEndMs > nowMs + 86_400_000) return;

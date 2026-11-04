@@ -298,12 +298,13 @@ test('потребность от логистики: ремонт и «без �
     starts_at: iso(endMs - 86_400_000), ends_at: iso(endMs) });
   const data = {
     reference: { zones, routeRates: [] },
-    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3'), vehicle('А4'), vehicle('А5'), vehicle('А6')],
+    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3'), vehicle('А4'), vehicle('А5'), vehicle('А6'),
+      vehicle('А7')],
     // А4 — «июльский хвост»: последний рейс закончился до начала месяца,
     // сцепка простаивает дольше всех и обязана быть в потребности.
     trips: [trip('А1', now - 3_600_000), trip('А2', now - 3_600_000), trip('А3', now - 3_600_000),
       trip('А4', monthStart.getTime() - 5 * 86_400_000),
-      trip('А5', now - 3_600_000), trip('А6', now - 3_600_000)],
+      trip('А5', now - 3_600_000), trip('А6', now - 3_600_000), trip('А7', now - 3_600_000)],
     dispositions: [
       // А2: в ремонте ещё 3 дня — в потребность не попадает
       { vehicle_id: 'А2', kind: 'repair', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
@@ -312,7 +313,11 @@ test('потребность от логистики: ремонт и «без �
       // А5: в резерве под заказ ещё 3 дня — обещана, продажам не предлагается
       { vehicle_id: 'А5', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
       // А6: резерв истекает через 10 часов — видна с пометкой «выйдет из резерва»
-      { vehicle_id: 'А6', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) }
+      { vehicle_id: 'А6', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) },
+      // А7: свободна уже сейчас, а ремонт только ЗАПЛАНИРОВАН через 4 дня —
+      // будущий заезд не прячет машину, свободное окно до него продаётся
+      // (кейс т508ве58: ТО с воскресенья скрывало борт со среды).
+      { vehicle_id: 'А7', kind: 'repair', starts_at: iso(now + 4 * 86_400_000), ends_at: iso(now + 5 * 86_400_000) }
     ]
   };
   const requests = autoRequests(data, monthStart, monthEnd);
@@ -323,6 +328,10 @@ test('потребность от логистики: ремонт и «без �
   assert.ok(!plates.includes('А5'), 'в резерве под заказ — скрыта из потребности');
   assert.equal(requests.find(request => request.vehicle.plate === 'А6')?.blockedKind,
     'reserve', 'резерв истекает за сутки — пометка «выйдет из резерва»');
+  const a7 = requests.find(request => request.vehicle.plate === 'А7');
+  assert.ok(a7, 'ремонт, запланированный на будущее, машину из потребности не прячет');
+  assert.equal(a7.blockedKind, null, 'будущий ремонт — не блокировка, а событие горизонта');
+  assert.ok(a7.idleMs > 0, 'до запланированного ремонта машина простаивает — приоритет загрузки');
   const a3 = requests.find(request => request.vehicle.plate === 'А3');
   assert.equal(a3.blockedKind, 'no_driver', 'пометка «получит водителя»');
   assert.equal(a3.freeAt, data.dispositions[1].ends_at, 'момент освобождения — конец диспозиции');
