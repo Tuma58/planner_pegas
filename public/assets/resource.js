@@ -332,7 +332,7 @@ function buildScheduleTable({ payload, data, view, startIso, days: DAYS,
   const total = view === 'drivers' ? payload.drivers.length : payload.vehicles.length;
   const shown = view === 'drivers' ? drivers.length : vehicles.length;
   const legend = `<p class="sched-legend">
-    <span><i class="lg-chip" style="--c:#3f8a78"></i> в рейсе</span>
+    <span><i class="lg-chip" style="--c:var(--teal)"></i> в рейсе</span>
     <span><i class="lg-chip" style="--c:#5e87ad"></i> пересменка</span>
     <span><i class="lg-chip" style="--c:#b06a55"></i> нет водителя (некому работать)</span>
     <span><i class="lg-chip lg-gap"></i> пусто = водителя нет (после пересменки или снят)</span>

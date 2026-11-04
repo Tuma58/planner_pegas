@@ -785,11 +785,11 @@ async function shiftPlannerDialog(context) {
   const rows = plan.days.map(day => {
     const wd = new Date(Date.parse(day.day)).getUTCDay();
     const ratio = day.load / plan.norm;
-    const color = ratio > 1.5 ? 'var(--bad,#b1483e)' : ratio > 1 ? '#c99a2e' : 'var(--ok,#2e7d6b)';
+    const color = ratio > 1.5 ? 'var(--bad)' : ratio > 1 ? 'var(--warn)' : 'var(--ok)';
     const width = Math.round(day.load / maxLoad * 100);
     const shopList = day.inShop.map(item =>
       `${item.plate} (${item.kind === 'repair' ? 'ремонт' : 'пересменка'} до ${item.till.slice(8)}.${item.till.slice(5, 7)})`).join(', ');
-    return `<tr${day.day === plan.todayIso ? ' style="background:color-mix(in srgb, #c99a2e 12%, transparent)"' : ''}>
+    return `<tr${day.day === plan.todayIso ? ' style="background:color-mix(in srgb, var(--warn) 12%, transparent)"' : ''}>
       <td style="white-space:nowrap"><b>${day.day.slice(8)}.${day.day.slice(5, 7)}</b> <small class="muted">${WDS[wd]}</small></td>
       <td style="min-width:180px"><div title="${escapeHtml(shopList)}" style="background:${color};height:14px;border-radius:4px;width:${width}%;min-width:${day.load ? 22 : 0}px;color:#fff;font-size:10px;text-align:center;line-height:14px">${day.load || ''}</div></td>
       <td class="num">${day.starts.length ? `+${day.starts.length}` : ''}</td>

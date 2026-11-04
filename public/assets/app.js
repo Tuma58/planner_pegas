@@ -57,6 +57,17 @@ function monthDays(date) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
 }
 
+// Отдел структуры направления СТ по роли — цвет отдела закреплён
+// бренд-платформой (Штаб — янтарь, Логистика — синий, Эксплуатация —
+// зелёный, ТОиР — бирюза). При нескольких ролях — отдел первой.
+const ROLE_DEPT = {
+  admin: 'staff', manager: 'staff', accountant: 'staff',
+  logist: 'log', sales: 'log',
+  dispatcher: 'drv', resource: 'drv',
+  mechanic: 'toir'
+};
+const DEPT_LABELS = { staff: 'Штаб', log: 'Логистика', drv: 'Эксплуатация', toir: 'ТОиР' };
+
 function setupUser() {
   setTimeZone(state.data.settings.general.timezone);
   const user = state.data.user;
@@ -65,6 +76,11 @@ function setupUser() {
   byId('profileRole').textContent = user.guest ? `${user.roleLabel} · 👁 гостевой режим` : user.roleLabel;
   byId('profileRole').title = user.guest ? 'Только просмотр: права редактирования отключены администратором' : '';
   byId('avatar').textContent = user.fullName.trim().charAt(0).toUpperCase();
+  const dept = (user.roles || [user.role]).map(role => ROLE_DEPT[role]).find(Boolean);
+  if (dept) {
+    document.documentElement.dataset.dept = dept;
+    byId('avatar').title = `Отдел: ${DEPT_LABELS[dept]}`;
+  }
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
 }
 
@@ -1635,8 +1651,8 @@ async function driverCardDialog(driver, after) {
       <div class="task-kpi"><b>${card.trips30.count}</b><span>рейсов сцепки за 30 дн</span></div>
       <div class="task-kpi"><b>${Math.round(card.trips30.km).toLocaleString('ru-RU')}</b><span>км · выручка ${money(card.trips30.revenue)}</span></div>
     </div>
-    <div style="background:var(--panel2,#f2f7f7);border-radius:10px;padding:10px 12px;margin:8px 0">
-      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">📅 МЕСЯЦ —
+    <div style="background:var(--panel2);border-radius:10px;padding:10px 12px;margin:8px 0">
+      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted)">📅 МЕСЯЦ —
         <button type="button" class="button ghost small" id="dcMPrev">◀</button>
         <b id="dcMonthLabel"></b>
         <button type="button" class="button ghost small" id="dcMNext">▶</button>

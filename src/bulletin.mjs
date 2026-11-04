@@ -3,8 +3,16 @@
 // Публикуется объявлением на табло в понедельник 08:00 МСК на сутки.
 // Деньги — ТОЛЬКО каноном (tripNet), километры — честные (журнал/трек).
 
+import { readFileSync } from 'node:fs';
 import { DONE_STATUSES, calcSettings, tripNet } from './money.mjs';
 import { incidentsSummary } from './incidents.mjs';
+
+// Знак «Пегас-Авто» для шапки полосы: одноцветный SVG читается с диска один
+// раз при загрузке модуля. Полоса живёт отдельным файлом image/svg+xml, где
+// currentColor не от чего унаследовать, — цвет знака проставляется явно.
+const PEGAS_LOGO_SVG = readFileSync(new URL('../public/assets/brand/pegas-logo.svg', import.meta.url), 'utf8')
+  .trim().replace(/currentColor/g, '#294894');
+const PEGAS_LOGO_BOX = (PEGAS_LOGO_SVG.match(/viewBox="([^"]+)"/)?.[1] || '0 0 228 140').split(/\s+/).map(Number);
 
 const MSK = 3 * 3_600_000;
 const DAY = 86_400_000;
@@ -115,6 +123,9 @@ export function weeklyBulletinData(db, nowMs = Date.now()) {
 }
 
 // ── Газетная полоса 1920×1080 (SVG, тот же почерк, что пилотный выпуск) ──
+// Оформление — бренд-платформа «Пегас-Авто»: шапка-полоса ультрамарина со
+// знаком на белой подложке, светлое полотно, акцент — ультрамарин.
+// Газетная антиква (Georgia) сохранена осознанно — это почерк «Вестника».
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const mln = v => (v / 1e6).toFixed(1).replace('.', ',');
 const ruDate = d => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
@@ -134,7 +145,8 @@ function wrapText(text, maxChars) {
 
 export function renderBulletinSvg(d) {
   const W = 1920, H = 1080, M = 70;
-  const INK = '#211d15', PAPER = '#f4efe3', ACCENT = '#1f6f54', WARM = '#8f2f24', RULE = '#8a8372';
+  const INK = '#141b2e', PAPER = '#ffffff', ACCENT = '#2a44a0', BAND = '#1b2f7a',
+    BAND_SUB = '#c3d0f7', MUTED = '#525d78', RULE = '#d9deec';
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <rect width="${W}" height="${H}" fill="${PAPER}"/>`;
   const t = (x, y, size, text, { w = 400, anchor = 'start', fill = INK, italic = false } = {}) => {
@@ -143,17 +155,21 @@ export function renderBulletinSvg(d) {
   const line = (x1, y1, x2, y2, sw = 2, color = INK) => {
     svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${sw}"/>`;
   };
-  line(M, 64, W - M, 64, 5); line(M, 70, W - M, 70, 1.5);
-  t(W / 2, 136, 76, 'ВЕСТНИК «ПЕГАСА»', { w: 700, anchor: 'middle' });
-  t(M, 176, 25, `Неделя ${ruDate(d.from)} – ${ruDate(d.to)}`, { italic: true });
-  t(W - M, 176, 25, 'автоматический выпуск · факты из планера, без прикрас', { anchor: 'end', italic: true });
-  line(M, 194, W - M, 194, 1.5); line(M, 200, W - M, 200, 5);
+  // Шапка: полоса ультрамарина, знак на белой подложке, название выпуска.
+  const logoH = 112, logoW = logoH * PEGAS_LOGO_BOX[2] / PEGAS_LOGO_BOX[3];
+  svg += `<rect width="${W}" height="214" fill="${BAND}"/>`;
+  svg += `<rect x="${M}" y="34" width="${(logoW + 40).toFixed(0)}" height="${logoH + 32}" rx="14" fill="#ffffff"/>`;
+  svg += PEGAS_LOGO_SVG.replace('<svg ', `<svg x="${M + 20}" y="50" width="${logoW.toFixed(0)}" height="${logoH}" `);
+  t(W / 2 + 120, 126, 76, 'ВЕСТНИК «ПЕГАСА»', { w: 700, anchor: 'middle', fill: '#ffffff' });
+  t(W - M, 70, 22, 'ПЕГАС-АВТО · ПЛАНЕР', { anchor: 'end', w: 700, fill: BAND_SUB });
+  t(M + logoW + 76, 182, 25, `Неделя ${ruDate(d.from)} – ${ruDate(d.to)}`, { italic: true, fill: BAND_SUB });
+  t(W - M, 182, 25, 'автоматический выпуск · факты из планера, без прикрас', { anchor: 'end', italic: true, fill: BAND_SUB });
 
-  t(M, 320, 118, `${mln(d.net)} млн ₽`, { w: 700 });
+  t(M, 320, 118, `${mln(d.net)} млн ₽`, { w: 700, fill: ACCENT });
   const dNet = d.netPrev ? Math.round((d.net - d.netPrev) / 1e5) / 10 : null;
-  t(M + 790, 285, 30, `выгружено за неделю без НДС${dNet != null ? ` · ${sign(dNet).replace('.', ',')} млн к прошлой` : ''}`);
-  t(M + 790, 325, 30, `${d.trips} рейсов · средний чек ${d.avgCheck.toLocaleString('ru-RU')} ₽`);
-  line(M, 360, W - M, 360, 2.5);
+  t(M + 790, 285, 30, `выгружено за неделю без НДС${dNet != null ? ` · ${sign(dNet).replace('.', ',')} млн к прошлой` : ''}`, { fill: MUTED });
+  t(M + 790, 325, 30, `${d.trips} рейсов · средний чек ${d.avgCheck.toLocaleString('ru-RU')} ₽`, { fill: MUTED });
+  line(M, 360, W - M, 360, 2.5, ACCENT);
 
   const colW = (W - 2 * M - 2 * 56) / 3;
   const cols = [M, M + colW + 56, M + 2 * (colW + 56)];
@@ -209,9 +225,9 @@ export function renderBulletinSvg(d) {
     y += 8;
   }
 
-  svg += `<rect x="${M}" y="962" width="${W - 2 * M}" height="86" fill="${ACCENT}" rx="6"/>`;
+  svg += `<rect x="${M}" y="962" width="${W - 2 * M}" height="86" fill="${BAND}" rx="14"/>`;
   t(M + 36, 1000, 34, m.plan ? `ЦЕЛЬ МЕСЯЦА — ${mln(m.plan)} МЛН ₽` : 'НОВАЯ НЕДЕЛЯ — НОВЫЙ СЧЁТ', { w: 700, fill: PAPER });
-  t(M + 36, 1034, 24, m.plan ? `к утру понедельника выгружено ${mln(m.done)} млн · нужно по ${mln(m.needPerDay)} млн в день` : '', { fill: '#dcd5be' });
+  t(M + 36, 1034, 24, m.plan ? `к утру понедельника выгружено ${mln(m.done)} млн · нужно по ${mln(m.needPerDay)} млн в день` : '', { fill: BAND_SUB });
   t(W - M - 36, 1020, 27, 'Каждую цифру можно открыть и проверить в планере.', { anchor: 'end', fill: PAPER, w: 700 });
   svg += '</svg>';
   return svg;

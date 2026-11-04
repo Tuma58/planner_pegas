@@ -293,7 +293,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
     const wd = (firstWd + i) % 7;
     const isToday = `${plan.month}-${String(i + 1).padStart(2, '0')}` === todayIso;
     return `<th class="${wd === 0 || wd === 6 ? 'muted' : ''}"
-      style="text-align:center;min-width:26px${isToday ? ';background:color-mix(in srgb, #c99a2e 25%, transparent)' : ''}">${i + 1}<br><small>${WD[wd]}</small></th>`;
+      style="text-align:center;min-width:26px${isToday ? ';background:color-mix(in srgb, var(--warn) 25%, transparent)' : ''}">${i + 1}<br><small>${WD[wd]}</small></th>`;
   }).join('');
 
   const freeTotal = rowsData.filter(row => row.freeDays >= 10 && !row.template).length;
@@ -350,11 +350,11 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
     `<td style="text-align:center;${t.unavail ? 'color:var(--muted)' : ''}">${t.unavail || ''}</td>`).join('')}</tr>
       <tr class="plan-totals${needByDay ? '' : ' total-key'}" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="Свободные будущие дни — ресурс под новых клиентов">🟢 Свободно</td>${totals.map(t =>
-    `<td style="text-align:center;${t.free ? 'color:#c99a2e' : ''}">${t.free || ''}</td>`).join('')}</tr>
+    `<td style="text-align:center;${t.free ? 'color:var(--warn)' : ''}">${t.free || ''}</td>`).join('')}</tr>
       ${needByDay ? `<tr class="plan-totals total-key" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="(Занято рейсами + Свободно) − Нужно по сетке: плюс — парка хватает и остаётся резерв, минус — день сеткой не вывозится имеющимся парком. Клик по ячейке дня — регулятор баланса: рычаги и задания. При включённых фильтрах считается по отфильтрованным машинам">⚖ Баланс к сетке</td>${needByDay.map((need, i) =>
     { const balance = totals[i].trips + totals[i].free - need;
-      return `<td data-fp-bal="${i + 1}" style="text-align:center;cursor:pointer;${balance < -0.5 ? 'color:var(--bad,#c0392b)' : 'color:var(--ok,#20624f)'}"
+      return `<td data-fp-bal="${i + 1}" style="text-align:center;cursor:pointer;${balance < -0.5 ? 'color:var(--bad)' : 'color:var(--ok)'}"
         title="Регулятор баланса ${i + 1}-го: рычаги дня и задания ролям">${Math.round(balance) > 0 ? '+' : ''}${Math.round(balance) || ''}</td>`; }).join('')}</tr>` : ''}
       ${rowsData.map(row => `<tr>
         <td class="mono plan-fix" style="white-space:nowrap"><span class="vlink" data-fp-veh="${row.vehicle.id}">${escapeHtml(row.vehicle.plate)}</span></td>
@@ -362,7 +362,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
             <option value="">— без круга —</option>
             ${ROUND_TEMPLATES.map(item => `<option value="${item.key}" ${row.template?.key === item.key ? 'selected' : ''}>${escapeHtml(item.name.split(' · ')[0])} · ${escapeHtml(item.name.split(' · ')[1] || '')}</option>`).join('')}
           </select>` : escapeHtml(row.template?.name || '—')}</td>
-        <td style="text-align:center;${row.freeDays >= 10 ? 'color:#c99a2e;font-weight:700' : ''}">${row.freeDays || ''}</td>
+        <td style="text-align:center;${row.freeDays >= 10 ? 'color:var(--warn);font-weight:700' : ''}">${row.freeDays || ''}</td>
         ${row.cells.map((cell, i) => `<td class="${cell.cls}" title="${escapeHtml(`${row.vehicle.plate}: ${cell.hint}`)}"
           ${cell.cls ? `data-fp-cell="${row.vehicle.id}|${i + 1}" style="text-align:center;cursor:pointer"` : 'style="text-align:center"'}>${cell.text}</td>`).join('')}
       </tr>`).join('')}

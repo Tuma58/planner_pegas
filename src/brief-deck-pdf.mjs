@@ -2,20 +2,25 @@
 // альбомных страниц — титул, ключевые цифры, КТГ/КВЛ/КИП, выручка и
 // темп, машины на линии, пробег по неделям, опоздания, итог периода.
 // Данные — briefReportData (канон) + дневные ряды; формат повторяет
-// выпуск 27.10, который руководитель принял за образец.
+// выпуск 27.10, который руководитель принял за образец. Оформление —
+// светлая подача бренд-платформы «Пегас-Авто» (BRAND из pdf-lite):
+// титул с полосой ультрамарина и знаком, КТГ/КВЛ — цвета отделов.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PdfLite } from './pdf-lite.mjs';
+import { PdfLite, BRAND, PEGAS_LOGO } from './pdf-lite.mjs';
 
 const fontsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fonts');
 const FONT_R = fs.readFileSync(path.join(fontsDir, 'DejaVuSans.ttf'));
 const FONT_B = fs.readFileSync(path.join(fontsDir, 'DejaVuSans-Bold.ttf'));
 
-const C = { ink: '#1a2430', sub: '#5a6b86', blue: '#2e5bff', green: '#0b8a52',
-  red: '#d23d2d', orange: '#d97b00', gray: '#aab4c2', bar: '#4f7df7',
-  grid: '#e7ebf1', card: '#eef2f7', line: '#c9d2de' };
+// base — серия «база сравнения» (нейтральная), text2 — абзацы фактов.
+const C = { ink: BRAND.ink, sub: BRAND.muted, blue: BRAND.accent, green: BRAND.pos,
+  red: BRAND.neg, orange: BRAND.warn, gray: BRAND.faint, bar: BRAND.u500,
+  grid: BRAND.border2, card: BRAND.panel2, line: BRAND.border, base: BRAND.faint,
+  text2: BRAND.muted, ktg: BRAND.repair, kvl: BRAND.ops, band: BRAND.u800 };
 const W = 841.89, H = 595.28, ML = 48, MR = 48;
+const PEGAS_RATIO = PEGAS_LOGO.w / PEGAS_LOGO.h; // пропорция знака
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
   'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 const ruDate = iso => `${Number(iso.slice(8, 10))} ${MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
@@ -50,8 +55,10 @@ export function renderBriefDeckPdf(deck) {
   const header = (title, sub) => {
     pdf.page();
     pageNo += 1;
+    pdf.rect(0, 0, W, 6, { fill: C.band });
     pdf.text(ML, 52, title, { size: 19, font: 'B', color: C.ink });
     pdf.text(ML, 70, sub, { size: 8.5, color: C.sub });
+    pdf.logo(W - MR - 26 * PEGAS_RATIO, 32, 26);
     pdf.line(ML, 78, W - MR, 78, { color: C.blue, width: 1.8 });
   };
   const footer = () => {
@@ -60,7 +67,7 @@ export function renderBriefDeckPdf(deck) {
     pdf.text(W - MR, H - 22, String(pageNo), { size: 6.5, color: C.sub, align: 'right' });
   };
   const card = (x, y, w, h, label, value, note, vcolor = C.ink, vsize = 19) => {
-    pdf.rect(x, y, w, h, { fill: C.card });
+    pdf.rect(x, y, w, h, { fill: C.card, stroke: C.line, width: 0.6 });
     pdf.text(x + 10, y + 20, label, { size: 7.5, color: C.sub });
     pdf.text(x + 10, y + h / 2 + 8, value, { size: vsize, font: 'B', color: vcolor });
     pdf.text(x + 10, y + h - 11, note, { size: 6.8, color: C.sub });
@@ -94,15 +101,21 @@ export function renderBriefDeckPdf(deck) {
     });
   };
 
-  // ── 1. Титул ──
+  // ── 1. Титул: полоса ультрамарина, знак на белой подложке, словесный знак ──
   pdf.page(); pageNo += 1;
+  pdf.rect(0, 0, W, 140, { fill: C.band });
+  pdf.rect(ML, 30, 136, 80, { fill: '#ffffff' });
+  pdf.logo(ML + 12, 36, 68);
+  pdf.text(ML + 160, 78, 'Пегас-Авто', { size: 26, font: 'B', color: '#ffffff' });
+  pdf.text(ML + 160, 100, 'Планер · сводка для руководителя', { size: 11, color: BRAND.u200 });
+  pdf.rect(ML + 10, 330, 64, 3, { fill: C.blue });
   pdf.text(ML + 10, 200, 'Сводка периода', { size: 34, font: 'B', color: C.ink });
   pdf.text(ML + 10, 245, `${ruDate(B.from).replace(` ${B.from.slice(0, 4)}`, '')} – ${ruDate(B.to)} · недели ${isoWeek(B.from)}–${isoWeek(B.to)}`,
     { size: 22, font: 'B', color: C.blue });
   pdf.text(ML + 10, 290, `База сравнения: ${ruDate(B.prevFrom).replace(` ${B.prevFrom.slice(0, 4)}`, '')} – ${ruDate(B.prevTo)}` +
-    (B.base === 'month' ? ' (те же числа месяца)' : ' (предыдущий период той же длины)'), { size: 11, color: '#3a4656' });
+    (B.base === 'month' ? ' (те же числа месяца)' : ' (предыдущий период той же длины)'), { size: 11, color: C.text2 });
   pdf.text(ML + 10, 312, `Автопарк: ${B.fleet} ТС в работе · выручка без НДС · все итоги — из штатного отчёта «Сводка периода»`,
-    { size: 11, color: '#3a4656' });
+    { size: 11, color: C.text2 });
   pdf.text(ML + 10, H - 60, `ООО «Пегас-Авто» · подготовлено автоматически из данных «Пегас-Авто · Планер» · ${deck.generatedAt}`,
     { size: 8, color: C.sub });
 
@@ -159,11 +172,11 @@ export function renderBriefDeckPdf(deck) {
       pdf.text(ML + 30, yAt(val) + 2.5, Math.round(val), { size: 6.5, color: C.sub, align: 'right' });
     }
     const xAt = i => ML + 34 + (W - MR - ML - 34) * i / Math.max(1, n - 1);
-    pdf.poly(ktgD.map((v, i) => [xAt(i), yAt(v)]), { color: '#1f9e63', width: 1.6 });
-    pdf.poly(kvlD.map((v, i) => [xAt(i), yAt(v)]), { color: C.blue, width: 1.6 });
+    pdf.poly(ktgD.map((v, i) => [xAt(i), yAt(v)]), { color: C.ktg, width: 1.6 });
+    pdf.poly(kvlD.map((v, i) => [xAt(i), yAt(v)]), { color: C.kvl, width: 1.6, dash: [4, 2.5] });
     dayTicks(top, ch, S.days, xAt);
-    pdf.text(ML + 40, top + 14, `— КТГ по дням · ср. ${comma(ktg.toFixed(1))}%`, { size: 8, color: '#1f9e63' });
-    pdf.text(ML + 190, top + 14, `— КВЛ по дням · ср. ${comma(kvl.toFixed(1))}%`, { size: 8, color: C.blue });
+    pdf.text(ML + 40, top + 14, `— КТГ по дням · ср. ${comma(ktg.toFixed(1))}%`, { size: 8, color: C.ktg });
+    pdf.text(ML + 190, top + 14, `— КВЛ по дням · ср. ${comma(kvl.toFixed(1))}%`, { size: 8, color: C.kvl });
   }
   footer();
 
@@ -189,13 +202,13 @@ export function renderBriefDeckPdf(deck) {
     const yCum = value => top + ch - ch * value / maxCum;
     const xMid = i => ML + 34 + plotW * i / n + bw / 2;
     pdf.poly(cum.map((v, i) => [xMid(i), yCum(v)]), { color: C.green, width: 2 });
-    if (B.planNet) dashed(xMid(0), yCum(B.planNet / 1e6 / n), xMid(n - 1), yCum(B.planNet / 1e6), { color: '#6a7686', width: 1.2 });
+    if (B.planNet) dashed(xMid(0), yCum(B.planNet / 1e6 / n), xMid(n - 1), yCum(B.planNet / 1e6), { color: C.base, width: 1.2 });
     for (let g = 1; g <= 4; g += 1) {
       pdf.text(W - MR + 4, yCum(maxCum * g / 4) + 2.5, Math.round(maxCum * g / 4), { size: 6.5, color: C.sub });
     }
     dayTicks(top, ch, S.days, xMid);
     pdf.text(ML + 40, top + 14, `— Накопительно · ${comma(run.toFixed(1))} млн`, { size: 8, color: C.green });
-    if (B.planNet) pdf.text(ML + 220, top + 14, `--- План периода · ${comma((B.planNet / 1e6).toFixed(1))} млн`, { size: 8, color: '#6a7686' });
+    if (B.planNet) pdf.text(ML + 220, top + 14, `--- План периода · ${comma((B.planNet / 1e6).toFixed(1))} млн`, { size: 8, color: C.base });
     pdf.text(ML, top + ch + 26, 'левая шкала — млн руб. в день · правая — млн руб. накопительно', { size: 7, color: C.sub });
   }
   footer();
@@ -215,14 +228,14 @@ export function renderBriefDeckPdf(deck) {
     }
     const xAt = i => ML + 34 + (W - MR - ML - 34) * i / Math.max(1, Math.max(n, X.onlinePrev.length) - 1);
     const prevPts = X.onlinePrev.map((v, i) => [xAt(i), yAt(v)]);
-    for (let i = 1; i < prevPts.length; i += 1) dashed(...prevPts[i - 1], ...prevPts[i], { color: '#6a7686', width: 1.1 });
+    for (let i = 1; i < prevPts.length; i += 1) dashed(...prevPts[i - 1], ...prevPts[i], { color: C.base, width: 1.1 });
     pdf.poly(S.online.map((v, i) => [xAt(i), yAt(v)]), { color: C.blue, width: 1.8 });
     S.online.forEach((v, i) => pdf.circle(xAt(i), yAt(v), 1.6, { fill: C.blue }));
     dashed(ML + 34, yAt(B.fleet), W - MR, yAt(B.fleet), { color: C.red, width: 0.9 });
     pdf.text(ML + 40, yAt(B.fleet) - 5, `парк ${B.fleet} ТС`, { size: 7.5, color: C.red });
     dayTicks(top, ch, S.days, xAt);
     pdf.text(ML + 40, top + 14, `— Период · ср. ${B.onLineAvg}`, { size: 8, color: C.blue });
-    pdf.text(ML + 170, top + 14, `--- База · ср. ${P.onLineAvg ?? '—'}`, { size: 8, color: '#6a7686' });
+    pdf.text(ML + 170, top + 14, `--- База · ср. ${P.onLineAvg ?? '—'}`, { size: 8, color: C.base });
   }
   footer();
 
@@ -251,12 +264,12 @@ export function renderBriefDeckPdf(deck) {
       pdf.text(cx - 3 - bw / 2, yAt(so[i] / 1000) - 5, Math.round(so[i] / ((b - a + 1) * B.fleet)), { size: 7.5, color: C.blue, align: 'center' });
       if (ss[i]) {
         const [pa, pb] = prevSegs[i] || [0, 0];
-        pdf.text(cx + 3 + bw / 2, yAt(ss[i] / 1000) - 5, Math.round(ss[i] / ((pb - pa + 1) * B.fleet)), { size: 7.5, color: '#6a7686', align: 'center' });
+        pdf.text(cx + 3 + bw / 2, yAt(ss[i] / 1000) - 5, Math.round(ss[i] / ((pb - pa + 1) * B.fleet)), { size: 7.5, color: C.base, align: 'center' });
       }
       pdf.text(cx, top + ch + 12, `нед. ${i + 1} (${dm(S.days[a]).slice(0, 2)}–${dm(S.days[b]).slice(0, 2)})`, { size: 7, color: C.sub, align: 'center' });
     });
     pdf.text(ML + 40, top - 16, `■ Период · ${Math.round(B.km / 1000)} т.км · ${B.kmPerDayPerVehicle} км/сут·ТС`, { size: 8, color: C.blue });
-    pdf.text(ML + 280, top - 16, `■ База · ${Math.round((P.km || 0) / 1000)} т.км · ${P.kmPerDayPerVehicle ?? '—'} км/сут·ТС`, { size: 8, color: '#6a7686' });
+    pdf.text(ML + 280, top - 16, `■ База · ${Math.round((P.km || 0) / 1000)} т.км · ${P.kmPerDayPerVehicle ?? '—'} км/сут·ТС`, { size: 8, color: C.base });
   }
   footer();
 
@@ -273,12 +286,12 @@ export function renderBriefDeckPdf(deck) {
     const bw = Math.max(2, slot / 2 - 1.5);
     for (let i = 0; i < days; i += 1) {
       const x = ML + 34 + slot * i;
-      if (X.lateCur[i]) pdf.rect(x, yAt(X.lateCur[i]), bw, top + ch - yAt(X.lateCur[i]), { fill: '#e05252' });
+      if (X.lateCur[i]) pdf.rect(x, yAt(X.lateCur[i]), bw, top + ch - yAt(X.lateCur[i]), { fill: C.red });
       if (X.latePrev[i]) pdf.rect(x + bw + 1, yAt(X.latePrev[i]), bw, top + ch - yAt(X.latePrev[i]), { fill: C.gray });
     }
     dayTicks(top, ch, S.days, i => ML + 34 + slot * i + bw);
-    pdf.text(ML + 40, top + 14, `■ Период · всего ${X.lateCur.reduce((s, v) => s + v, 0)}`, { size: 8, color: '#e05252' });
-    pdf.text(ML + 190, top + 14, `■ База · всего ${X.latePrev.reduce((s, v) => s + v, 0)}`, { size: 8, color: '#6a7686' });
+    pdf.text(ML + 40, top + 14, `■ Период · всего ${X.lateCur.reduce((s, v) => s + v, 0)}`, { size: 8, color: C.red });
+    pdf.text(ML + 190, top + 14, `■ База · всего ${X.latePrev.reduce((s, v) => s + v, 0)}`, { size: 8, color: C.base });
   }
   footer();
 
@@ -309,7 +322,7 @@ export function renderBriefDeckPdf(deck) {
         ? `· Внештатки: актов ${B.incidents.counts.act} · возвратов ${B.incidents.counts.return}${B.incidents.returnsClosed ? ` (закрыто ${B.incidents.returnsClosed})` : ''}.`
         : null
     ].filter(Boolean);
-    facts.forEach((line, i) => pdf.text(ML, 292 + i * 22, line, { size: 9.5, color: '#3a4656' }));
+    facts.forEach((line, i) => pdf.text(ML, 292 + i * 22, line, { size: 9.5, color: C.text2 }));
   }
   footer();
 

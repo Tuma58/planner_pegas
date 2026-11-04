@@ -197,7 +197,7 @@ function newLegDialog(context, plan, customer, flt) {
 function segBadge(plan, customer) {
   const info = (plan.segments || {})[customer];
   if (!info || (info.seg !== 'C' && info.seg !== 'D')) return '';
-  const color = info.seg === 'D' ? 'var(--bad,#b1483e)' : '#c26f2e';
+  const color = info.seg === 'D' ? 'var(--bad)' : '#c26f2e';
   return ` <b style="color:${color}" title="Сегмент ${info.seg}: маржа ${Math.round(info.marginDay / 1000)} т₽/машино-сутки без НДС (${info.n} рейс. за 60 дн) — слоты продлевать только с повышенной ставкой">[${info.seg}]</b>`;
 }
 
@@ -296,7 +296,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
   const dayHead = Array.from({ length: daysInMonth }, (_, i) => {
     const wd = weekdayOf(i + 1);
     const isToday = dayIso(i + 1) === todayIso;
-    return `<th style="text-align:center;min-width:30px${isToday ? ';background:color-mix(in srgb, #c99a2e 25%, transparent)' : ''}"
+    return `<th style="text-align:center;min-width:30px${isToday ? ';background:color-mix(in srgb, var(--warn) 25%, transparent)' : ''}"
       class="${wd === 0 || wd === 6 ? 'muted' : ''}">${i + 1}<br><small>${WD[wd]}</small></th>`;
   }).join('');
 
@@ -314,9 +314,9 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     const fact = factOf(row, day);
     const gap = gapOf(row, day);
     const stageClass = fact
-      ? fact.stage >= 3 ? 'background:#20624f;color:#fff'
-        : fact.stage >= 2 ? 'background:#2e7d6b;color:#fff'
-          : 'background:#3b6ea5;color:#fff'
+      ? fact.stage >= 3 ? 'background:#176a46;color:#fff'
+        : fact.stage >= 2 ? 'background:#1f8a5b;color:#fff'
+          : 'background:#3a57c4;color:#fff'
       : '';
     const planCls = !fact && p ? ' class="cell-plan"' : '';
     // План в ячейке — математическое округление (0,5 → 1); редкие слоты
@@ -330,7 +330,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     const hint = `${row.customer} · ${row.leg} · ${day}.${plan.month.slice(5, 7)}: план ${p ? Math.round(p * 100) / 100 : 0}` +
       (fact ? `, заявок ${fact.n} (${['', 'внесена', 'ТС назначено', 'выгружено'][fact.stage]}) на ${money(Math.round(fact.rv))}` : ', заявок нет') +
       (clickable ? ' — клик: взятые рейсы и потенциал дня' : '');
-    return `<td${planCls} style="text-align:center;${stageClass}${clickable ? ';cursor:pointer' : ''}${canEdit && gap > 0 ? ';outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
+    return `<td${planCls} style="text-align:center;${stageClass}${clickable ? ';cursor:pointer' : ''}${canEdit && gap > 0 ? ';outline:1px dashed var(--warn);outline-offset:-2px' : ''}"
       ${clickable ? `data-dpl-cell="${rowIndex}|${day}"` : ''} title="${escapeHtml(hint)}">${text}</td>`;
   };
 
@@ -361,12 +361,12 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
       gap += gapOf(row, day) || 0;
     }
     const stageClass = factN
-      ? stage >= 3 ? 'background:#20624f;color:#fff' : stage >= 2 ? 'background:#2e7d6b;color:#fff' : 'background:#3b6ea5;color:#fff'
+      ? stage >= 3 ? 'background:#176a46;color:#fff' : stage >= 2 ? 'background:#1f8a5b;color:#fff' : 'background:#3a57c4;color:#fff'
       : '';
     const planCls = !factN && p ? ' class="cell-plan"' : '';
     const hint = `${group.customer} · ${group.legs.length} плеч · ${day}.${plan.month.slice(5, 7)}: план ${Math.round(p * 100) / 100}` +
       (factN ? `, заявок ${factN} на ${money(Math.round(factRv))}` : ', заявок нет') + ' — клик: развернуть плечи';
-    return `<td${planCls} style="text-align:center;${stageClass}${canEdit && gap > 0 ? ';outline:1px dashed #c99a2e;outline-offset:-2px' : ''}"
+    return `<td${planCls} style="text-align:center;${stageClass}${canEdit && gap > 0 ? ';outline:1px dashed var(--warn);outline-offset:-2px' : ''}"
       title="${escapeHtml(hint)}">${factN || (Math.round(p) || '')}</td>`;
   };
   const cardBtn = customer => `<small data-dpl-card="${escapeHtml(customer)}" style="cursor:pointer;opacity:.75"
@@ -374,7 +374,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
   const bodyRows = groups.map((group, groupIndex) => {
     const multi = group.legs.length > 1;
     const open = !multi || openSet.has(group.customer);
-    const topLine = groupIndex > 0 ? ' style="border-top:2px solid var(--border,#b9c2cc)"' : '';
+    const topLine = groupIndex > 0 ? ' style="border-top:2px solid var(--border)"' : '';
     if (!open) {
       return `<tr${topLine}>
     <td class="plan-fix" style="white-space:nowrap;max-width:150px;min-width:150px;overflow:hidden;text-overflow:ellipsis">

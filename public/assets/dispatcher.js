@@ -687,7 +687,7 @@ export async function renderDispatcher(container, context, options = {}) {
         t.status === 'rejected' && t.entered_1c_at && t.vehicle_plate &&
         t.vehicle_plate !== trip.vehicle_plate)
       .sort((a, b) => String(b.entered_1c_at).localeCompare(String(a.entered_1c_at)))[0];
-    return prev ? `<small class="prep-note" style="color:var(--bad,#b3261e);font-weight:600">📒 Ранее заказ внесён в 1С на ТС ${escapeHtml(prev.vehicle_plate)} — измените данные в учётной системе</small>` : '';
+    return prev ? `<small class="prep-note" style="color:var(--bad);font-weight:600">📒 Ранее заказ внесён в 1С на ТС ${escapeHtml(prev.vehicle_plate)} — измените данные в учётной системе</small>` : '';
   };
   const prepStepOf = trip => !trip.entered_1c_at && !trip.deferred_1c_at ? ['1c', 'внести заказ в 1С']
     : !trip.driver_notified_at ? ['driver', 'отправить задание водителю']
@@ -715,7 +715,7 @@ export async function renderDispatcher(container, context, options = {}) {
           title="Заметка по подготовке в произвольной форме — видна всей смене">💬${note ? ' ✎' : ' Заметка'}</button>` : ''}</small>
         ${note ? `<small class="prep-note">💬 ${escapeHtml(note.done_by || '')}: ${escapeHtml(note.note || '')}</small>` : ''}
         ${prev1cNote(trip)}
-        ${trip.needs_1c_update_at ? `<small class="prep-note" style="color:var(--bad,#b3261e);font-weight:600">📒
+        ${trip.needs_1c_update_at ? `<small class="prep-note" style="color:var(--bad);font-weight:600">📒
           Ранее заказ внесён в 1С на прежнее ТС (${escapeHtml(trip.needs_1c_note || 'замена ТС')}) —
           внесите изменения в учётную систему
           ${canAct ? `<button class="button small" data-step="1c_updated" data-trip="${trip.id}"

@@ -259,8 +259,8 @@ export async function staffCardDialog(context, id, after) {
     ];
     const open = items.filter(([, done]) => !done);
     if (!fresh || !open.length || !person.active) return '';
-    return `<div style="background:var(--panel2,#f2f7f7);border-radius:10px;padding:10px 12px;margin-bottom:10px">
-      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">🚀 ЧЕК-ЛИСТ ПРИЁМА · выполнено ${items.length - open.length}/${items.length}</h3>
+    return `<div style="background:var(--panel2);border-radius:10px;padding:10px 12px;margin-bottom:10px">
+      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted)">🚀 ЧЕК-ЛИСТ ПРИЁМА · выполнено ${items.length - open.length}/${items.length}</h3>
       <div style="display:flex;flex-wrap:wrap;gap:6px">${items.map(([label, done, hint]) =>
     `<span class="badge ${done ? 'ok' : 'warn'}" title="${escapeHtml(hint)}">${done ? '✓' : '✗'} ${label}</span>`).join('')}</div>
       ${open.length ? `<div class="muted" style="font-size:11.5px;margin-top:5px">${open.map(([label, , hint]) => `<b>${label}</b>: ${escapeHtml(hint)}`).join(' · ')}</div>` : ''}
@@ -268,7 +268,7 @@ export async function staffCardDialog(context, id, after) {
   })()}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px" class="staff-grid">
       <div class="sec" style="background:var(--panel2);border-radius:10px;padding:10px 12px">
-        <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">📞 СВЯЗЬ</h3>
+        <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted)">📞 СВЯЗЬ</h3>
         <div class="dash-row"><span>Добавочный АТС</span><b>${escapeHtml(person.extPhone || '—')}</b></div>
         <div class="dash-row"><span>Личный мобильный</span><b>${escapeHtml(person.phone || '—')}</b></div>
         <div class="dash-row"><span>Телефон смены</span><b>${escapeHtml(person.workPhone || '—')}</b></div>
@@ -276,14 +276,14 @@ export async function staffCardDialog(context, id, after) {
         <div class="dash-row"><span>E-mail</span><b>${escapeHtml(person.email || '—')}</b></div>
       </div>
       <div class="sec" style="background:var(--panel2);border-radius:10px;padding:10px 12px">
-        <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">🔐 ДОСТУП</h3>
+        <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted)">🔐 ДОСТУП</h3>
         <div class="dash-row"><span>Роли в планере</span><b>${escapeHtml(person.roleLabel)}</b></div>
         <div class="dash-row"><span>Инструкции</span><b>${person.guideAckAt ? `✍ ${fmtDate(person.guideAckAt)}` : '—'}</b></div>
         <div class="dash-row"><span>Учётка</span><b>${person.active ? 'активна' : 'отключена'}${person.guest ? ' · гость' : ''}</b></div>
       </div>
     </div>
     <div style="background:var(--panel2);border-radius:10px;padding:10px 12px;margin-top:10px">
-      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">📅 ГРАФИК —
+      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted)">📅 ГРАФИК —
         <button class="button ghost small" id="scMPrev">◀</button>
         <b id="scMonthLabel">${month}</b>
         <button class="button ghost small" id="scMNext">▶</button>
@@ -304,7 +304,7 @@ export async function staffCardDialog(context, id, after) {
       </div>
     </div>
     <div style="background:var(--panel2);border-radius:10px;padding:10px 12px;margin-top:10px">
-      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted,#5b7083)">🕘 ИСТОРИЯ</h3>
+      <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted)">🕘 ИСТОРИЯ</h3>
       <div style="font-size:12.5px;max-height:160px;overflow:auto">${card.history.map(histRow).join('') || '<span class="muted">пусто</span>'}</div>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">

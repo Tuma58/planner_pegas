@@ -1,17 +1,18 @@
 // PDF-версия отчёта «Водители: профиль и дисциплина» (заказ 25.09):
 // те же данные driverPeriodMetrics, что и экранная таблица, свёрстанные
 // pdf-lite в многостраничный A4. Светофор — цветной маркер + балл.
+// Оформление — светлая подача бренд-платформы «Пегас-Авто» (BRAND).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PdfLite, A4 } from './pdf-lite.mjs';
+import { PdfLite, A4, BRAND } from './pdf-lite.mjs';
 
 const fontsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fonts');
 const FONT_R = fs.readFileSync(path.join(fontsDir, 'DejaVuSans.ttf'));
 const FONT_B = fs.readFileSync(path.join(fontsDir, 'DejaVuSans-Bold.ttf'));
 
-const C = { ink: '#0b0b0b', sec: '#52514e', mut: '#8a887f', grid: '#e1e0d9',
-  tile: '#f2f1ee', green: '#0ca30c', yellow: '#e2a400', red: '#d03b3b', none: '#c3c2b7' };
+const C = { ink: BRAND.ink, sec: BRAND.muted, mut: BRAND.faint, grid: BRAND.border2,
+  tile: BRAND.thBg, green: BRAND.pos, yellow: BRAND.warn, red: BRAND.neg, none: BRAND.faint };
 const ML = 40, MR = 40, MW = A4.w - ML - MR;
 
 const fmtDay = iso => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
@@ -23,15 +24,21 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
   pdf.page();
   let y = 52;
 
-  pdf.text(ML, y, 'Водители: профиль и дисциплина', { size: 15, font: 'B' });
-  y += 16;
+  // Шапка: полоса ультрамарина, знак на белой подложке, словесный знак.
+  pdf.rect(0, 0, A4.w, 78, { fill: BRAND.u800 });
+  pdf.rect(ML, 16, 74, 46, { fill: '#ffffff' });
+  pdf.logo(ML + 7, 20, 38);
+  pdf.text(ML + 88, 33, 'Пегас-Авто', { size: 9, font: 'B', color: BRAND.u200 });
+  pdf.text(ML + 88, 53, 'Водители: профиль и дисциплина', { size: 16, font: 'B', color: '#ffffff' });
+  pdf.text(ML + MW, 33, 'Пегас-Авто · Планер', { size: 7.5, color: BRAND.u300, align: 'right' });
+  y = 100;
   pdf.text(ML, y, `Период ${fmtDay(from)} — ${fmtDay(to)} (конец не включается) · Пегас-Авто · Планер`, { size: 8.5, color: C.sec });
   y += 12;
   pdf.text(ML, y, `Медианы парка: рейс целиком ${park.ve ?? '—'} км/ч · в движении ${park.vt ?? '—'} км/ч · ворота выгрузки ${park.gateUnloadH ?? '—'} ч · КИП ${park.kip ?? '—'}%`, { size: 8.5, color: C.sec });
   y += 12;
   pdf.text(ML, y, 'Оценка: 100 − отставание скорости от парка (до 40) − опоздания П (до 30) − опоздания В (до 15) − рваные отметки (до 15).', { size: 8, color: C.mut });
   y += 10;
-  const legend = [['#0ca30c', '80+ норма'], ['#e2a400', '60–79 внимание'], ['#d03b3b', 'до 60 разбор'], ['#c3c2b7', 'меньше 3 рейсов']];
+  const legend = [[C.green, '80+ норма'], [C.yellow, '60–79 внимание'], [C.red, 'до 60 разбор'], [C.none, 'меньше 3 рейсов']];
   let lx = ML;
   for (const [color, label] of legend) {
     pdf.rect(lx, y - 6, 7, 7, { fill: color });
@@ -60,17 +67,27 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
   const cellX = i => cols[i].align === 'right' ? xs[i] + cols[i].w - 2 : xs[i];
 
   const head = () => {
-    pdf.rect(ML, y - 9, MW, 13, { fill: C.tile });
-    cols.forEach((col, i) => pdf.text(cellX(i), y, col.label, { size: 7.5, font: 'B', align: col.align }));
+    // Плашка во всю ширину колонок (их сумма чуть шире поля) — белый текст
+    // шапки не должен сойти на белое.
+    pdf.rect(ML, y - 9, Math.max(MW, acc - ML), 13, { fill: C.tile });
+    cols.forEach((col, i) => pdf.text(cellX(i) + (col.align === 'right' ? 0 : 2), y, col.label,
+      { size: 7.5, font: 'B', color: '#ffffff', align: col.align }));
     y += 8;
     pdf.line(ML, y, ML + MW, y, { color: C.grid });
     y += 9;
   };
   head();
+  // Страница продолжения: тонкая фирменная полоса и колонтитул.
+  function nextPage() {
+    pdf.page();
+    pdf.rect(0, 0, A4.w, 4, { fill: BRAND.u800 });
+    pdf.text(ML, 24, 'Пегас-Авто · Водители: профиль и дисциплина', { size: 7.5, font: 'B', color: BRAND.accent });
+    pdf.text(ML + MW, 24, `${fmtDay(from)} — ${fmtDay(to)}`, { size: 7.5, color: C.mut, align: 'right' });
+  }
 
   const lightColor = light => C[light] || C.none;
   for (const d of drivers) {
-    if (y > A4.h - 50) { pdf.page(); y = 52; head(); }
+    if (y > A4.h - 50) { nextPage(); y = 52; head(); }
     pdf.rect(xs[0], y - 6.5, 7, 7, { fill: lightColor(d.light) });
     pdf.text(xs[0] + 10, y, d.score == null ? '—' : String(d.score), { size: 8, font: 'B' });
     pdf.text(xs[1], y, d.name.slice(0, 30) + (d.vehicles > 1 ? ` ×${d.vehicles}` : ''), { size: 8 });
@@ -96,7 +113,7 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
     y += 9;
   }
 
-  if (y > A4.h - 60) { pdf.page(); y = 52; }
+  if (y > A4.h - 60) { nextPage(); y = 52; }
   y += 4;
   pdf.text(ML, y, 'Как читать: Vэ ниже парковой на 20%+ (красным) — водитель много стоит; если Vт нормальная — вопрос к организации,', { size: 7.5, color: C.mut });
   y += 9;

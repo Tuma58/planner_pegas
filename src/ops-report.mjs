@@ -6,8 +6,15 @@
 // Потребители: страница /ops-report, JSON /api/ops-report, ежедневная
 // сводка в Telegram и ленту руководителя.
 
+import { readFileSync } from 'node:fs';
 import { DONE_STATUSES, calcSettings, doneDayOf, tripNet } from './money.mjs';
 import { incidentsSummary } from './incidents.mjs';
+
+// Знак «Пегас-Авто» для шапки страницы: одноцветный SVG (currentColor)
+// читается с диска один раз при загрузке модуля и вставляется инлайном
+// на белую подложку (бренд-платформа: знак только на белом).
+const PEGAS_LOGO_SVG = readFileSync(new URL('../public/assets/brand/pegas-logo.svg', import.meta.url), 'utf8')
+  .trim().replace('<svg ', '<svg class="brand-logo" aria-hidden="true" focusable="false" ');
 
 // Среднесуточно на линии = машино-часы линии в дне / 24 (интервалы по
 // машине объединяются — стыки не двоят). До 09.10 считалось «машин,
@@ -397,7 +404,7 @@ export function renderOpsReportHtml(data, theme = '') {
     let s = grid(mx);
     series.forEach((vals, si) => {
       const pts = vals.map((v, i) => `${(PL + i * dx).toFixed(1)},${(H - PB - plotH * v / mx).toFixed(1)}`).join(' ');
-      s += `<polyline points="${pts}" fill="none" stroke="${colors[si]}" stroke-width="2"/>`;
+      s += `<polyline points="${pts}" fill="none" stroke="${colors[si]}" stroke-width="2"${colors[si] === 'var(--kvl)' ? ' stroke-dasharray="6 4"' : ''}/>`;
       vals.forEach((v, i) => {
         const cx = (PL + i * dx).toFixed(1);
         const cy = (H - PB - plotH * v / mx).toFixed(1);
@@ -428,7 +435,7 @@ export function renderOpsReportHtml(data, theme = '') {
       ['Подгон и погрузка сверх закладки', F.loadOver, 'var(--s2)'],
       ['Выгрузка сверх норматива', F.unloadOver, 'var(--s2)'],
       ['Перегоны без груза (факт)', F.transfers || 0, 'var(--s3)'],
-      ['Ожидание заказа и прочее', F.wait, 'var(--s4, #999)']
+      ['Ожидание заказа и прочее', F.wait, 'var(--s4)']
     ];
     const rh = 26;
     let out = '';
@@ -472,31 +479,46 @@ export function renderOpsReportHtml(data, theme = '') {
 <title>Отчёт эксплуатации · планер · ${data.from} — ${data.to}</title>
 <style>
 .viz-root{color-scheme:light;
- --surface-1:#fcfcfb;--surface-2:#f2f1ee;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#8a887f;
- --line:#e3e1da;--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--bad:#b8352a}
+ --surface-1:#fff;--surface-2:#f2f5fc;--text-primary:#141b2e;--text-secondary:#525d78;--muted:#8793ad;
+ --line:#d9deec;--line-2:#ebeef6;--s1:#2a44a0;--s2:#b07a1e;--s3:#1f8a5b;--s4:#8793ad;--bad:#c23b43;
+ --accent-soft:#e7ecfb;--th-bg:#1b2f7a;--th-ink:#fff;--band:#1b2f7a;--band-ink:#fff;--band-sub:#c3d0f7;
+ --ktg:#166b70;--kvl:#1b744d;--kip:#1f54a8}
 @media (prefers-color-scheme: dark){:root:where(:not([data-theme="light"])) .viz-root{color-scheme:dark;
- --surface-1:#1a1a19;--surface-2:#242422;--text-primary:#fff;--text-secondary:#c3c2b7;--muted:#8f8d83;
- --line:#393833;--s1:#3987e5;--s2:#d95926;--s3:#199e70;--bad:#ef8377}}
+ --surface-1:#161d2e;--surface-2:#1f2840;--text-primary:#e9edf8;--text-secondary:#9aa6c2;--muted:#9aa6c2;
+ --line:#293249;--line-2:#293249;--s1:#5b7be6;--s2:#e2ad46;--s3:#3ecf8e;--s4:#9aa6c2;--bad:#f2666e;
+ --accent-soft:#1f2840;--th-bg:#1f2840;--th-ink:#e9edf8;--band:#15265e;--band-ink:#fff;--band-sub:#8aa4f2;
+ --ktg:#38c6cd;--kvl:#45cf92;--kip:#6ab0ff}}
 :root[data-theme="dark"] .viz-root{color-scheme:dark;
- --surface-1:#1a1a19;--surface-2:#242422;--text-primary:#fff;--text-secondary:#c3c2b7;--muted:#8f8d83;
- --line:#393833;--s1:#3987e5;--s2:#d95926;--s3:#199e70;--bad:#ef8377}
-body{margin:0;background:#fcfcfb}
-@media (prefers-color-scheme: dark){:root:where(:not([data-theme="light"])) body{background:#1a1a19}}
-:root[data-theme="dark"] body{background:#1a1a19}
-:root[data-theme="light"] body{background:#fcfcfb}
+ --surface-1:#161d2e;--surface-2:#1f2840;--text-primary:#e9edf8;--text-secondary:#9aa6c2;--muted:#9aa6c2;
+ --line:#293249;--line-2:#293249;--s1:#5b7be6;--s2:#e2ad46;--s3:#3ecf8e;--s4:#9aa6c2;--bad:#f2666e;
+ --accent-soft:#1f2840;--th-bg:#1f2840;--th-ink:#e9edf8;--band:#15265e;--band-ink:#fff;--band-sub:#8aa4f2;
+ --ktg:#38c6cd;--kvl:#45cf92;--kip:#6ab0ff}
+body{margin:0;background:#eef1f8}
+@media (prefers-color-scheme: dark){:root:where(:not([data-theme="light"])) body{background:#0d1220}}
+:root[data-theme="dark"] body{background:#0d1220}
+:root[data-theme="light"] body{background:#eef1f8}
 .viz-root{font:14px/1.45 "Segoe UI",Roboto,Arial,sans-serif;color:var(--text-primary);
- background:var(--surface-1);max-width:1080px;margin:0 auto;padding:24px 30px 50px}
+ background:var(--surface-1);max-width:1080px;margin:0 auto;padding:24px 30px 50px;
+ border:1px solid var(--line);border-top:0;border-radius:0 0 14px 14px;box-shadow:0 6px 24px rgba(21,38,94,.08)}
+.brand{display:flex;align-items:center;gap:16px;background:var(--band);color:var(--band-ink);
+ margin:-24px -30px 16px;padding:14px 30px}
+.brand-plate{flex:none;background:#fff;border-radius:10px;padding:6px 10px;line-height:0;color:#294894}
+.brand-logo{display:block;height:44px;width:auto}
+.brand-name{font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--band-sub)}
+.brand-product{margin-left:auto;font-size:12px;color:var(--band-sub);text-align:right}
 h1{font-size:20px;margin:0 0 2px}
+.brand h1{color:var(--band-ink)}
 .sub{color:var(--text-secondary);font-size:12.5px;margin-bottom:14px}
 .pick{display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:14px}
-.pick input{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:4px;
+.pick input{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:10px;
  background:var(--surface-1);color:var(--text-primary)}
-.pick button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:4px;
+.pick button{font:inherit;padding:4px 12px;border:1px solid var(--line);border-radius:10px;
  background:var(--surface-2);color:var(--text-primary);cursor:pointer}
-h2{font-size:15px;margin:26px 0 8px;border-bottom:1px solid var(--line);padding-bottom:5px}
+h2{font-size:15px;margin:26px 0 8px;border-bottom:1px solid var(--line);padding:0 0 5px 10px;
+ border-left:3px solid var(--s1)}
 .tiles{display:flex;flex-wrap:wrap;gap:10px}
-.tile{background:var(--surface-2);border-radius:8px;padding:9px 14px;min-width:118px}
-.tile b{display:block;font-size:19px;font-weight:650}
+.tile{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:9px 14px;min-width:118px}
+.tile b{display:block;font-size:19px;font-weight:650;font-family:ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
 .tile span{font-size:11.5px;color:var(--text-secondary)}
 .tile small{display:block;font-size:11px;color:var(--muted)}
 .chart{margin:6px 0 4px}
@@ -507,25 +529,31 @@ svg .val{fill:var(--text-primary);font-weight:600}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .crow{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 0 6px}
 .crow .legend{margin:0}
-.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-left:auto}
 .seg button{font:inherit;font-size:12px;border:0;background:var(--surface-1);color:var(--text-secondary);padding:3px 12px;cursor:pointer}
-.seg button.on{background:var(--surface-2);color:var(--text-primary);font-weight:600}
+.seg button.on{background:var(--accent-soft);color:var(--s1);font-weight:600}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
-th,td{border-bottom:1px solid var(--line);padding:4px 8px;text-align:right}
+th,td{border-bottom:1px solid var(--line-2);padding:4px 8px;text-align:right}
+td{font-variant-numeric:tabular-nums}
+.wide td:not(:first-child){font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 th:first-child,td:first-child{text-align:left}
 td:nth-child(2),td:nth-child(3),td:nth-child(4){text-align:left}
 .wide td{text-align:right}.wide td:first-child{text-align:left}
-th{color:var(--text-secondary);font-weight:600;font-size:11.5px}
+th{background:var(--th-bg);color:var(--th-ink);font-weight:600;font-size:11.5px;border-bottom:0}
 details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:pointer}
 #tip{position:fixed;pointer-events:none;background:var(--surface-2);border:1px solid var(--line);
- border-radius:6px;padding:5px 9px;font-size:12px;display:none;z-index:9;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+ border-radius:10px;padding:5px 9px;font-size:12px;display:none;z-index:9;box-shadow:0 4px 14px rgba(21,38,94,.18)}
 .note{font-size:12px;color:var(--text-secondary)}
 @media print{
  :root .viz-root,:root[data-theme="dark"] .viz-root{color-scheme:light;
-  --surface-1:#fff;--surface-2:#f3f2ef;--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#8a887f;
-  --line:#d8d6cf;--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--bad:#b8352a}
+ --surface-1:#fff;--surface-2:#f2f5fc;--text-primary:#141b2e;--text-secondary:#525d78;--muted:#8793ad;
+ --line:#d9deec;--line-2:#ebeef6;--s1:#2a44a0;--s2:#b07a1e;--s3:#1f8a5b;--s4:#8793ad;--bad:#c23b43;
+ --accent-soft:#e7ecfb;--th-bg:#1b2f7a;--th-ink:#fff;--band:#1b2f7a;--band-ink:#fff;--band-sub:#c3d0f7;
+ --ktg:#166b70;--kvl:#1b744d;--kip:#1f54a8}
  :root body,:root[data-theme="dark"] body{background:#fff}
- .viz-root{max-width:none;padding:0}
+ .viz-root{max-width:none;padding:0;border:0;box-shadow:none}
+ .brand{margin:0 0 14px;padding:12px 16px;border-radius:12px;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+ th{print-color-adjust:exact;-webkit-print-color-adjust:exact}
  #tip,.pick,.seg{display:none!important}
  [hidden]{display:none!important}
  h2{break-after:avoid}.chart{break-inside:avoid}}
@@ -533,7 +561,9 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <script src="/assets/ops-report-page.js"></script>
 </head><body><div class="viz-root">
 <div id="tip"></div>
-<h1>Отчёт эксплуатации автопарка — планер</h1>
+<header class="brand"><span class="brand-plate">${PEGAS_LOGO_SVG}</span>
+<div><div class="brand-name">Пегас-Авто</div><h1>Отчёт эксплуатации автопарка</h1></div>
+<div class="brand-product">Пегас-Авто · Планер<br>отчёт руководителя</div></header>
 <div class="sub">Период ${data.from} — ${data.to} включительно · выручка без НДС по канону
  (наличные как есть, ИП ÷1,07, организации ÷1,22) · ${esc(park.canon)}</div>
 <form class="pick" method="get">
@@ -554,10 +584,10 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 </div>
 
 <h2>КТГ · КВЛ · КИП в динамике, %</h2>
-<div class="crow"><div class="legend"><span><i style="background:var(--s1)"></i>КТГ — техготовность</span><span><i style="background:var(--s2)"></i>КВЛ — выпуск на линию</span><span><i style="background:var(--s3)"></i>КИП — использование</span></div>${granSeg('kkk')}</div>
+<div class="crow"><div class="legend"><span><i style="background:var(--ktg)"></i>КТГ — техготовность</span><span><i style="background:var(--kvl)"></i>КВЛ — выпуск на линию</span><span><i style="background:var(--kip)"></i>КИП — использование</span></div>${granSeg('kkk')}</div>
 ${granPair('kkk',
-    linesSvg([D.ktg, D.kvl, D.kip], ['КТГ', 'КВЛ', 'КИП'], D.labels, D.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100),
-    linesSvg([WK.ktg, WK.kvl, WK.kip], ['КТГ', 'КВЛ', 'КИП'], WK.labels, WK.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100, 1))}
+    linesSvg([D.ktg, D.kvl, D.kip], ['КТГ', 'КВЛ', 'КИП'], D.labels, D.tips, ['var(--ktg)', 'var(--kvl)', 'var(--kip)'], '%', 100),
+    linesSvg([WK.ktg, WK.kvl, WK.kip], ['КТГ', 'КВЛ', 'КИП'], WK.labels, WK.tips, ['var(--ktg)', 'var(--kvl)', 'var(--kip)'], '%', 100, 1))}
 <p class="note">техготовность и линия — среднесуточно (ремонт/выведенные из диспозиций, линия — живой ряд рейсов и перегонов); КИП в динамике — грубый ряд «под грузом/линия» по дням, итоговый КИП периода — по канону работы от фонда экипажа (плитка и водопад); недели — пн–вс внутри периода.</p>
 
 <h2>Простой парка по причинам — среднесуточно машин</h2>

@@ -2,24 +2,24 @@
    standalone-страницы /schedule и нативной вкладки планера
    (сессия 4, 11.10). Генерировано из прежнего <style> schedule.html. */
 .schedview{
-    --ink:#1b222c; --ink-2:#5c6673; --ink-3:#8b95a3;
-    --line:#d4d9e0; --line-2:#e7ebf0; --bg:#f2f4f7; --panel:#fff; --head:#e3e8ee;
+    --ink:#141b2e; --ink-2:#525d78; --ink-3:#8793ad;
+    --line:#d9deec; --line-2:#ebeef6; --bg:#eef1f8; --panel:#fff; --head:#e7ecfb;
     --c-v:#cfe8d1; --c-otp:#ffe7ad; --c-bl:#cddff5; --c-bs:#e3e3e3;
     --c-p:#ffc9a6; --c-rp:#f3c3dd; --c-r:#ddd2f6; --c-zam:#d9ecff;
-    --warn:#b8352a; --warn-bg:#fdeceb; --ok:#2f7d46; --accent:#1f4e79;}@media (prefers-color-scheme: dark){
+    --warn:#c23b43; --warn-bg:color-mix(in srgb, var(--warn) 10%, var(--panel)); --ok:#1f8a5b; --accent:#2a44a0;}@media (prefers-color-scheme: dark){
 :root:not([data-theme="light"]) .schedview{
-      --ink:#e5eaf0; --ink-2:#9ba5b3; --ink-3:#77818f;
-      --line:#39414d; --line-2:#2a313b; --bg:#14181e; --panel:#1c212a; --head:#252c36;
+      --ink:#e9edf8; --ink-2:#9aa6c2; --ink-3:#6a7694;
+      --line:#293249; --line-2:#1e2740; --bg:#0d1220; --panel:#161d2e; --head:#1f2840;
       --c-v:#2f5b3a; --c-otp:#6b5620; --c-bl:#2a4a6e; --c-bs:#3a3f47;
       --c-p:#7a4324; --c-rp:#6b3552; --c-r:#453a6d; --c-zam:#26445f;
-      --warn:#ef8377; --warn-bg:#3a2320; --accent:#8ab4e0;}
+      --warn:#f2666e; --warn-bg:color-mix(in srgb, var(--warn) 12%, var(--panel)); --accent:#5b7be6;}
 }
 :root[data-theme="dark"] .schedview{
-      --ink:#e5eaf0; --ink-2:#9ba5b3; --ink-3:#77818f;
-      --line:#39414d; --line-2:#2a313b; --bg:#14181e; --panel:#1c212a; --head:#252c36;
+      --ink:#e9edf8; --ink-2:#9aa6c2; --ink-3:#6a7694;
+      --line:#293249; --line-2:#1e2740; --bg:#0d1220; --panel:#161d2e; --head:#1f2840;
       --c-v:#2f5b3a; --c-otp:#6b5620; --c-bl:#2a4a6e; --c-bs:#3a3f47;
       --c-p:#7a4324; --c-rp:#6b3552; --c-r:#453a6d; --c-zam:#26445f;
-      --warn:#ef8377; --warn-bg:#3a2320; --accent:#8ab4e0;}
+      --warn:#f2666e; --warn-bg:color-mix(in srgb, var(--warn) 12%, var(--panel)); --accent:#5b7be6;}
 .schedview, .schedview *{box-sizing:border-box}
 .schedview{margin:0;background:var(--bg);color:var(--ink);
        font:13px/1.35 "Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}
@@ -114,7 +114,7 @@
 .schedview td.mday.hand{border-left:2px solid var(--accent)}
 .schedview td.mday.hand.late{border-left:2px solid var(--warn)}
 .schedview td.mday.hand.bad{border-left:2px dashed var(--warn)}
-.schedview td.mday.hand.early{border-left:2px solid #c98a1b}
+.schedview td.mday.hand.early{border-left:2px solid #b07a1e}
 .schedview td.fix, .schedview th.fix{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .schedview tr>*.fix:nth-child(1){max-width:78px;width:78px}
 .schedview tr>*.fix:nth-child(2){max-width:168px;width:168px}
@@ -124,7 +124,7 @@
 .schedview tr>*.fix:nth-child(6){max-width:34px;width:34px}
 .schedview .pfill{font-size:9.5px;margin-left:5px;padding:0 4px;border-radius:6px}
 .schedview .pfill.ok{color:var(--ok)}
-.schedview .pfill.part{color:#c98a1b}
+.schedview .pfill.part{color:#b07a1e}
 .schedview .pfill.none{color:var(--warn);font-weight:600}
 .schedview .hitch{font-size:9px;position:absolute;margin-left:1px;opacity:.9}
 .schedview td.mday{position:relative}
@@ -138,7 +138,7 @@
 .schedview .asgBtn{font-size:11px;padding:1px 7px;margin-left:4px}
 .schedview td.day.sel{outline:2px solid var(--accent); outline-offset:-2px;
     box-shadow:inset 0 0 0 99px rgba(31,78,121,.14)}
-.schedview td.day.overday{box-shadow:inset 0 0 0 2px #c0392b; font-weight:700; position:relative}
+.schedview td.day.overday{box-shadow:inset 0 0 0 2px var(--warn); font-weight:700; position:relative}
 .schedview td.day.overday::after{content:'';position:absolute;inset:0;pointer-events:none;
     background:repeating-linear-gradient(45deg, rgba(192,57,43,.20) 0 3px, transparent 3px 6px)}
 .schedview td.fix.over{color:var(--warn);font-weight:700}
@@ -167,7 +167,7 @@
 .schedview .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);display:inline-block}
 .schedview .dot.on{background:var(--ok)}
 .schedview .dot.off{background:var(--warn)}
-.schedview .dot.sync{background:#c98a1b}
+.schedview .dot.sync{background:#b07a1e}
 .schedview .who{color:var(--ink-3);font-size:10px}
 .schedview #logTable td{font-size:12px}
 .schedview #logTable tr.mine td{background:var(--line-2)}
@@ -196,7 +196,7 @@
 .schedview[data-native]{border:1px solid var(--line);border-radius:6px;overflow:hidden}
 
 /* Офлайн-баннер (16.10): сбой подключения графика — громко, не серой строкой. */
-.schedview .sched-offline { background:#c62828; color:#fff; font-weight:700;
+.schedview .sched-offline { background:var(--warn); color:#fff; font-weight:700;
   padding:8px 12px; border-radius:8px; margin:6px 0; font-size:13px; }
 
 /* ── Нативный режим в планере (ревизия 16.10, «пропали фамилии») ──

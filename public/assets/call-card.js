@@ -167,7 +167,7 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
       <p class="muted">Номер ${escapeHtml(phonePrettyLocal(phone) || phone || '—')} в системе не найден: ни водитель,
         ни сотрудник, ни контакт клиента. Спросите, кто это, и привяжите номер —
         следующий звонок карточка узнает сама.</p>
-      <form id="unkContactForm" style="border-top:1px solid var(--line,#d6e0e4);padding-top:8px">
+      <form id="unkContactForm" style="border-top:1px solid var(--line);padding-top:8px">
         <b>➕ Это контакт клиента</b>
         <div class="form-grid">
           <label class="field">Клиент<input name="customerName" list="unkCustomers" required
@@ -178,7 +178,7 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
         <label class="field">Должность<input name="position" placeholder="логист, кладовщик…"></label>
         <button class="button small">Сохранить контакт</button>
       </form>
-      <form id="unkDriverForm" style="border-top:1px solid var(--line,#d6e0e4);margin-top:10px;padding-top:8px">
+      <form id="unkDriverForm" style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">
         <b>👤 Это водитель</b> <small class="muted">(новый/второй номер — заменит номер в справочнике)</small>
         <label class="field">Водитель<input name="driverName" list="unkDrivers" required
           placeholder="фамилия"><datalist id="unkDrivers">${drivers.slice(0, 400)

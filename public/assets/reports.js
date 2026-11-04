@@ -744,13 +744,13 @@ export async function buildReport(kind, from, to, data) {
       const v = getter(d);
       return v == null ? null : `${x(i).toFixed(0)},${y(v).toFixed(0)}`;
     }).filter(Boolean).join(' ');
-    const chart = days.length >= 2 ? `<svg viewBox="0 0 ${W} ${Hg}" style="width:100%;max-width:${W}px;background:var(--panel-2,#f6f6f4);border-radius:8px">
-      ${[20, 40, 60, 80].map(v => `<line x1="30" y1="${y(v)}" x2="${W - 10}" y2="${y(v)}" stroke="#ccc" stroke-dasharray="3"/>
-        <text x="2" y="${y(v) + 4}" font-size="10" fill="#888">${v}</text>`).join('')}
+    const chart = days.length >= 2 ? `<svg viewBox="0 0 ${W} ${Hg}" style="width:100%;max-width:${W}px;background:var(--panel2);border-radius:8px">
+      ${[20, 40, 60, 80].map(v => `<line x1="30" y1="${y(v)}" x2="${W - 10}" y2="${y(v)}" style="stroke:var(--line)" stroke-dasharray="3"/>
+        <text x="2" y="${y(v) + 4}" font-size="10" style="fill:var(--muted)">${v}</text>`).join('')}
       <polyline points="${line(d => techBy.get(d))}" fill="none" stroke="#1f9d55" stroke-width="2"/>
       <polyline points="${line(d => opBy.get(d))}" fill="none" stroke="#c0742e" stroke-width="2"/>
       ${days.map((d, i) => i % Math.ceil(days.length / 10) === 0
-        ? `<text x="${x(i)}" y="${Hg - 4}" font-size="9" fill="#888" text-anchor="middle">${d.slice(8, 10)}.${d.slice(5, 7)}</text>` : '').join('')}
+        ? `<text x="${x(i)}" y="${Hg - 4}" font-size="9" style="fill:var(--muted)" text-anchor="middle">${d.slice(8, 10)}.${d.slice(5, 7)}</text>` : '').join('')}
       <text x="${W - 150}" y="18" font-size="11" fill="#1f9d55">— техническая</text>
       <text x="${W - 150}" y="32" font-size="11" fill="#c0742e">— эксплуатационная</text>
     </svg>` : '<p class="muted">Мало дней с данными GPS — дневные пробеги копятся ночным сборщиком.</p>';

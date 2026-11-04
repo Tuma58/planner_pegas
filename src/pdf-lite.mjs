@@ -1,12 +1,33 @@
 // Мини-генератор PDF без зависимостей (по образцу xlsx-lite): страницы
 // A4, TrueType-шрифт с кириллицей встраивается целиком (CIDFontType2 +
 // Identity-H + ToUnicode), примитивы — текст, линия, прямоугольник,
-// полилиния, круг. Потоки и шрифт сжимаются FlateDecode (node:zlib).
+// полилиния, круг, векторный путь (SVG-подмножество M/L/H/V/C/Z — им
+// рисуется знак «Пегас-Авто»). Потоки и шрифт сжимаются FlateDecode (node:zlib).
 // Система координат наружу — привычная экранная: y растёт ВНИЗ от
 // верхнего края страницы; в PDF переводится при записи.
+import fs from 'node:fs';
 import zlib from 'node:zlib';
 
 export const A4 = { w: 595.28, h: 841.89 };
+
+// Печатная (светлая) палитра бренд-платформы «Пегас-Авто» — общая для всех
+// PDF планера: ультрамарин, нейтрали, смысловые цвета и цвета отделов
+// (КТГ — ТОиР, КВЛ — Эксплуатация, КИП — Логистика).
+export const BRAND = {
+  u900: '#15265e', u800: '#1b2f7a', u700: '#24409c', u600: '#2a44a0', u500: '#3a57c4',
+  u400: '#5b7be6', u300: '#8aa4f2', u200: '#c3d0f7', u100: '#e7ecfb', brand: '#2f49b0',
+  canvas: '#eef1f8', panel: '#ffffff', panel2: '#f2f5fc', ink: '#141b2e', muted: '#525d78',
+  faint: '#8793ad', border: '#d9deec', border2: '#ebeef6', accent: '#2a44a0',
+  accentSoft: '#e7ecfb', thBg: '#1b2f7a', pos: '#1f8a5b', neg: '#c23b43', warn: '#b07a1e',
+  logo: '#294894',
+  hq: '#8a5f1a', logistics: '#1f54a8', ops: '#1b744d', repair: '#166b70'
+};
+
+// Знак «Пегас-Авто» (одноцветный контур из public/assets/brand/pegas-logo.svg):
+// читается с диска один раз при загрузке модуля; рисуется pdf.logo().
+const LOGO_SVG = fs.readFileSync(new URL('../public/assets/brand/pegas-logo.svg', import.meta.url), 'utf8');
+const LOGO_BOX = (LOGO_SVG.match(/viewBox="([^"]+)"/)?.[1] || '0 0 228 140').split(/\s+/).map(Number);
+export const PEGAS_LOGO = { d: LOGO_SVG.match(/\sd="([^"]+)"/)?.[1] || '', w: LOGO_BOX[2], h: LOGO_BOX[3] };
 
 // ── Разбор TrueType: unitsPerEm, ширины глифов, cmap символ→глиф ──
 function parseTtf(buffer) {
@@ -101,7 +122,7 @@ export class PdfLite {
   }
 
   // align: left (умолч.) | center | right — относительно x.
-  text(x, y, value, { size = 10, font = 'R', color = '#0b0b0b', align = 'left' } = {}) {
+  text(x, y, value, { size = 10, font = 'R', color = BRAND.ink, align = 'left' } = {}) {
     const f = this.fonts.get(font);
     const str = String(value);
     const w = this.width(str, size, font);
@@ -117,7 +138,7 @@ export class PdfLite {
     return w;
   }
 
-  line(x1, y1, x2, y2, { color = '#e1e0d9', width = 0.7 } = {}) {
+  line(x1, y1, x2, y2, { color = BRAND.border, width = 0.7 } = {}) {
     this.current.ops.push(`${colorOf(color)} RG ${num(width)} w ${num(x1)} ${num(this.h - y1)} m ${num(x2)} ${num(this.h - y2)} l S`);
   }
 
@@ -129,13 +150,16 @@ export class PdfLite {
     this.current.ops.push(parts.join(' '));
   }
 
-  poly(points, { color = '#2a78d6', width = 1.4 } = {}) {
+  // dash — пунктир [штрих, зазор] в pt: КВЛ рисуется пунктиром, чтобы
+  // не сливаться с КТГ (бирюза ТОиР и зелёный Эксплуатации близки).
+  poly(points, { color = BRAND.accent, width = 1.4, dash = null } = {}) {
     if (points.length < 2) return;
     const path = points.map(([x, y], i) => `${num(x)} ${num(this.h - y)} ${i ? 'l' : 'm'}`).join(' ');
-    this.current.ops.push(`${colorOf(color)} RG ${num(width)} w 1 j 1 J ${path} S`);
+    const pattern = dash ? `[${dash.map(num).join(' ')}] 0 d ` : '';
+    this.current.ops.push(`q ${colorOf(color)} RG ${num(width)} w 1 j 1 J ${pattern}${path} S Q`);
   }
 
-  circle(cx, cy, r, { fill = '#2a78d6' } = {}) {
+  circle(cx, cy, r, { fill = BRAND.accent } = {}) {
     const k = 0.5523 * r;
     const y = this.h - cy;
     this.current.ops.push(`${colorOf(fill)} rg ${num(cx + r)} ${num(y)} m ` +
@@ -143,6 +167,51 @@ export class PdfLite {
       `${num(cx - k)} ${num(y + r)} ${num(cx - r)} ${num(y + k)} ${num(cx - r)} ${num(y)} c ` +
       `${num(cx - r)} ${num(y - k)} ${num(cx - k)} ${num(y - r)} ${num(cx)} ${num(y - r)} c ` +
       `${num(cx + k)} ${num(y - r)} ${num(cx + r)} ${num(y - k)} ${num(cx + r)} ${num(y)} c f`);
+  }
+
+  // Векторный путь в синтаксисе SVG (абсолютные M/L/H/V/C/Z, повторы
+  // координат без буквы — как в SVG): (x, y) — левый верх, scale — масштаб
+  // единиц пути. Заливка по правилу even-odd, как fill-rule="evenodd".
+  path(d, { x = 0, y = 0, scale = 1, fill = BRAND.ink, evenOdd = true } = {}) {
+    const tokens = String(d).match(/[MLHVCZmlhvcz]|-?(?:\d+\.?\d*|\.\d+)(?:e-?\d+)?/g) || [];
+    const px = v => num(x + v * scale);
+    const py = v => num(this.h - (y + v * scale));
+    const ops = [];
+    let cmd = '', i = 0, cx = 0, cy = 0;
+    const next = () => Number(tokens[i++]);
+    while (i < tokens.length) {
+      if (/[A-Za-z]/.test(tokens[i])) {
+        cmd = tokens[i++].toUpperCase();
+        if (cmd === 'Z') { ops.push('h'); continue; }
+      }
+      if (cmd === 'M') {
+        cx = next(); cy = next();
+        ops.push(`${px(cx)} ${py(cy)} m`);
+        cmd = 'L'; // по SVG: координаты после M без буквы — это L
+      } else if (cmd === 'L') {
+        cx = next(); cy = next();
+        ops.push(`${px(cx)} ${py(cy)} l`);
+      } else if (cmd === 'H') {
+        cx = next(); ops.push(`${px(cx)} ${py(cy)} l`);
+      } else if (cmd === 'V') {
+        cy = next(); ops.push(`${px(cx)} ${py(cy)} l`);
+      } else if (cmd === 'C') {
+        const a = [next(), next(), next(), next(), next(), next()];
+        cx = a[4]; cy = a[5];
+        ops.push(`${px(a[0])} ${py(a[1])} ${px(a[2])} ${py(a[3])} ${px(a[4])} ${py(a[5])} c`);
+      } else {
+        i += 1; // неизвестная команда — пропуск числа, без зацикливания
+      }
+    }
+    if (ops.length) this.current.ops.push(`${colorOf(fill)} rg ${ops.join(' ')} ${evenOdd ? 'f*' : 'f'}`);
+  }
+
+  // Знак «Пегас-Авто» высотой height (ширина — по пропорции знака);
+  // возвращает ширину. Ставится на белую подложку — её рисует вызывающий.
+  logo(x, y, height, { color = BRAND.logo } = {}) {
+    const scale = height / PEGAS_LOGO.h;
+    this.path(PEGAS_LOGO.d, { x, y, scale, fill: color });
+    return PEGAS_LOGO.w * scale;
   }
 
   build() {

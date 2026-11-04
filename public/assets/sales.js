@@ -1416,10 +1416,10 @@ export async function renderSales(container, context) {
   // Светофор потоков: сегмент клиента по марже машино-суток без НДС —
   // продажи видят цену клиента для парка ДО бронирования заявки.
   const SEG_BADGE = {
-    A: ['🟢 A — локомотив парка', 'color:var(--ok,#2e7d6b)'],
+    A: ['🟢 A — локомотив парка', 'color:var(--ok)'],
     B: ['🟡 B — рабочая база', 'color:#b58a2e'],
     C: ['🟠 C — слабая маржа: поднимайте ставку', 'color:#c26f2e'],
-    D: ['🔴 D — возим дешевле переменных: только с повышенной ставкой', 'color:var(--bad,#b1483e)']
+    D: ['🔴 D — возим дешевле переменных: только с повышенной ставкой', 'color:var(--bad)']
   };
   const custSegLine = name => {
     const box = container.querySelector('#salesCustSeg');
@@ -1444,7 +1444,7 @@ export async function renderSales(container, context) {
     try {
       const { hint } = await api(`/api/assistant/hint?customer=${encodeURIComponent(name)}`);
       if (!hint || box.dataset.for !== name) return;
-      box.innerHTML = `<span style="color:var(--warn,#b58a2e);font-weight:600">💡 ${escapeHtml(hint.text)}</span>
+      box.innerHTML = `<span style="color:var(--warn);font-weight:600">💡 ${escapeHtml(hint.text)}</span>
         <span style="white-space:nowrap">
           <button type="button" class="button ghost small" data-assist-vote="1" title="Подсказка полезна">👍</button>
           <button type="button" class="button ghost small" data-assist-vote="" title="Подсказка не по делу — такие правила отключаются">👎</button>
@@ -2186,7 +2186,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
         if (show) {
           runRateWarnedFor = select.value;
           const box = document.getElementById('assignHint');
-          box.innerHTML = `<p style="color:var(--warn,#b58a2e);font-weight:600;margin:6px 0 2px">
+          box.innerHTML = `<p style="color:var(--warn);font-weight:600;margin:6px 0 2px">
               💡 ${escapeHtml(hint.text)}
               <span style="white-space:nowrap">
                 <button type="button" class="button ghost small" data-assist-vote="1" title="Подсказка полезна">👍</button>
