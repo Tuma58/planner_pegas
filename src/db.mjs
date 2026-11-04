@@ -1533,6 +1533,32 @@ function migrateColumns(db) {
   CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)`);
   db.exec(`CREATE TABLE IF NOT EXISTS messages_archive AS SELECT * FROM messages WHERE 0`);
   db.exec(`CREATE TABLE IF NOT EXISTS audit_log_archive AS SELECT * FROM audit_log WHERE 0`);
+  // Назначение поверх диспозиции (заявка Базуева, решение руководителя
+  // 04.11): пересменка/резерв и прочее НЕ-ремонт назначается с
+  // обязательной причиной — причины копятся здесь и анализируются через
+  // месяц (улучшают правила). Ремонт — жёсткий запрет с запросом
+  // выпуска у ремзоны (remzona_release_requests).
+  db.exec(`CREATE TABLE IF NOT EXISTS dispo_overrides (
+    id TEXT PRIMARY KEY,
+    order_id TEXT, vehicle_id TEXT NOT NULL,
+    kind TEXT NOT NULL, dispo_ends_at TEXT,
+    reason TEXT NOT NULL,
+    created_by_name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS remzona_release_requests (
+    id TEXT PRIMARY KEY,
+    vehicle_id TEXT NOT NULL REFERENCES vehicles(id),
+    order_id TEXT,
+    need_by TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    requested_by TEXT, requested_by_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done','declined')),
+    resolution TEXT NOT NULL DEFAULT '',
+    resolved_by_name TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT
+  );`);
   // ── Учёт затрат (03.11.2026, docs/costs-plan.md) ──
   // Категории — живой справочник (правит руководитель/админ, active
   // вместо удаления); kind — характер для будущего норматива ₽/км:

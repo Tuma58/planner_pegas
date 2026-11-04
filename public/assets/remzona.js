@@ -3,7 +3,7 @@
 // готов → выдан», работами и одометрами. До этапа интеграции блок НЕ
 // влияет на подбор, гант и занятость машин — копит собственные факты,
 // из которых позже выучатся нормативы длительности работ.
-import { api, escapeHtml, toast, renderInto } from './api.js';
+import { api, escapeHtml, formatDateTime, toast, renderInto } from './api.js';
 
 const PURPOSES = ['ТО', 'плановый ремонт', 'поломка на линии', 'ДТП', 'шины', 'документы', 'прочее'];
 const STATUS_LABEL = {
@@ -65,6 +65,26 @@ export async function renderRemzona(container, context) {
       ${groups[status].map(order => orderCardHtml(order, can)).join('')
         || '<div class="muted" style="padding:8px 2px">пусто</div>'}
     </div>`).join('');
+  // Запросы выпуска от логистов (решение руководителя 04.11): борт в
+  // ремонте не назначается на рейс — логист шлёт запрос, механик правит
+  // заезд/диспозицию штатно и отвечает здесь; автор получает личное
+  // уведомление, после выпуска назначение открывается.
+  const releaseRows = (payload.releaseRequests || []).map(item => `<div class="list-item" style="gap:8px">
+      <span style="flex:1;min-width:0">
+        <b class="mono">${escapeHtml(item.plate)}</b>
+        ${item.status === 'open' ? '<span class="badge warn">ждёт ответа</span>'
+    : item.status === 'done' ? '<span class="badge ok">выпущен</span>' : '<span class="badge">отказ</span>'}
+        <small class="muted" style="display:block">${escapeHtml(item.requested_by_name)}
+          · ${formatDateTime(String(item.created_at).replace(' ', 'T') + 'Z')}
+          ${item.need_by ? ` · нужна к ${formatDateTime(item.need_by)}` : ''}
+          ${item.note ? ` · ${escapeHtml(item.note)}` : ''}
+          ${item.resolution ? ` → ${escapeHtml(item.resolution)} (${escapeHtml(item.resolved_by_name || '')})` : ''}</small>
+      </span>
+      ${item.status === 'open' && can('fleet:write') ? `
+        <button class="button small" data-rz-release="${item.id}" data-rz-action="done"
+          title="Сначала скорректируйте заезд/диспозицию, затем подтвердите — логист получит уведомление">✅ Выпускаю</button>
+        <button class="button ghost small" data-rz-release="${item.id}" data-rz-action="declined">✖ Не выпущу</button>` : ''}
+    </div>`).join('');
   renderInto(container, `<div style="padding:10px 14px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
       <h2 style="margin:0">🔧 Ремзона</h2>
@@ -72,8 +92,27 @@ export async function renderRemzona(container, context) {
       <small class="muted">блок автономен: на подбор машин и гант пока не влияет —
         недоступность ТС по-прежнему ставится диспозицией в «Ресурсе»</small>
     </div>
+    ${releaseRows ? `<div style="margin-bottom:12px">
+      <h3 style="margin:0 0 6px">📨 Запросы выпуска от логистов</h3>
+      <div class="list">${releaseRows}</div>
+    </div>` : ''}
     <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">${columns}</div>
   </div>`);
+  container.querySelectorAll('[data-rz-release]').forEach(button =>
+    button.addEventListener('click', async () => {
+      const action = button.dataset.rzAction;
+      const resolution = prompt(action === 'done'
+        ? 'Что сделали (заезд сокращён/закрыт, к какому времени машина готова):'
+        : 'Почему не выпускаете (причина обязательна):');
+      if (resolution === null) return;
+      if (!resolution.trim()) { toast('Пояснение обязательно', 'error'); return; }
+      try {
+        await api(`/api/remzona/release-requests/${button.dataset.rzRelease}`, { method: 'POST',
+          body: JSON.stringify({ action, resolution: resolution.trim() }) });
+        toast('Ответ отправлен — логист получил личное уведомление');
+        renderRemzona(container, context);
+      } catch (error) { toast(error.message, 'error'); }
+    }));
   const refresh = () => renderRemzona(container, context);
   container.querySelector('#rzNew')?.addEventListener('click', () => {
     const vehicles = (state.data.vehicles || []).filter(vehicle => vehicle.status === 'work')

@@ -8365,6 +8365,67 @@ async function api(request, response, url) {
       { status: patch.status, warehouse: patch.warehouse }, requestIp(request));
     return json(response, 200, { ok: true });
   }
+  // ── Запрос выпуска у ремзоны (заявка Базуева, решение 04.11) ──
+  // Борт в ремонте не назначается; логист шлёт запрос — механик видит
+  // его в «Ремзоне», правит заезд штатно и отвечает; автор получает
+  // личное уведомление. Решения копятся — видно, как ремзона отпускает.
+  if (request.method === 'POST' && pathname === '/api/remzona/release-requests') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'trips:write') && !hasPermission(user, 'orders:write')) {
+      return errorJson(response, 403, 'Запрос выпуска шлёт логист или продажи');
+    }
+    const body = await readJson(request);
+    const vehicle = db.prepare('SELECT id, plate FROM vehicles WHERE id=?')
+      .get(String(body.vehicleId || ''));
+    if (!vehicle) return errorJson(response, 422, 'Машина не найдена');
+    const open = db.prepare(`SELECT id FROM remzona_release_requests
+      WHERE vehicle_id=? AND status='open'`).get(vehicle.id);
+    if (open) return errorJson(response, 409, 'По этому борту уже есть открытый запрос — ремзона ответит');
+    const id = randomUUID();
+    const needBy = body.needBy && Number.isFinite(Date.parse(body.needBy))
+      ? new Date(Date.parse(body.needBy)).toISOString() : null;
+    db.prepare(`INSERT INTO remzona_release_requests(id,vehicle_id,order_id,need_by,note,
+        requested_by,requested_by_name) VALUES(?,?,?,?,?,?,?)`)
+      .run(id, vehicle.id, String(body.orderId || '') || null, needBy,
+        String(body.note || '').trim().slice(0, 300), user.id,
+        user.full_name || user.username);
+    notify('mechanic', `🔧→🚚 Запрос выпуска: ${vehicle.plate} нужна под рейс` +
+      `${needBy ? ` к ${needBy.slice(0, 16).replace('T', ' ')} (UTC)` : ''}. ` +
+      `${user.full_name || user.username}${body.note ? `: ${String(body.note).slice(0, 120)}` : ''}. ` +
+      'Ответьте во вкладке «Ремзона» (блок запросов)', 'vehicle', vehicle.id);
+    audit(db, user, 'release-request', 'vehicle', vehicle.id, { orderId: body.orderId }, requestIp(request));
+    return json(response, 201, { id });
+  }
+  const releaseMatch = route(/^\/api\/remzona\/release-requests\/([^/]+)$/, pathname);
+  if (releaseMatch && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!hasPermission(user, 'fleet:write')) {
+      return errorJson(response, 403, 'Решение по выпуску принимает механик (или ресурс/админ)');
+    }
+    const reqRow = db.prepare(`SELECT r.*, v.plate FROM remzona_release_requests r
+      JOIN vehicles v ON v.id=r.vehicle_id WHERE r.id=?`).get(releaseMatch[0]);
+    if (!reqRow) return errorJson(response, 404, 'Запрос не найден');
+    if (reqRow.status !== 'open') return errorJson(response, 409, 'Запрос уже решён');
+    const body = await readJson(request);
+    const action = body.action === 'done' ? 'done' : 'declined';
+    const resolution = String(body.resolution || '').trim().slice(0, 300);
+    if (!resolution) return errorJson(response, 422, 'Ответ — с пояснением: что сделали или почему не выпускаете');
+    db.prepare(`UPDATE remzona_release_requests SET status=?, resolution=?,
+        resolved_by_name=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(action, resolution, user.full_name || user.username, releaseMatch[0]);
+    if (reqRow.requested_by) {
+      db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
+        VALUES('Конвейер','auto',?,?,?,?)`)
+        .run(`${action === 'done' ? '✅ Ремзона выпускает' : '✖ Ремзона не выпускает'} ${reqRow.plate}: ` +
+          `${resolution} (${user.full_name || user.username})` +
+          (action === 'done' ? '. Заезд скорректирован — назначайте' : ''),
+        reqRow.requested_by, 'vehicle', reqRow.vehicle_id);
+    }
+    audit(db, user, 'release-' + action, 'vehicle', reqRow.vehicle_id, { resolution }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   // Склады LTL: живой справочник — читают все, правит руководитель/админ.
   if (request.method === 'GET' && pathname === '/api/warehouses') {
     const user = requireUser(request, response);
@@ -10358,7 +10419,8 @@ async function api(request, response, url) {
   }
   // Ядро назначения: транзит, рейс, стоянки, порожняк, каскад заявки —
   // используется одиночным assign и цепным назначением маршрута.
-  function assignOrderCore(order, vehicle, user, { startsAt: startsAtOverride, distanceKm } = {}) {
+  function assignOrderCore(order, vehicle, user, { startsAt: startsAtOverride, distanceKm,
+    dispoOverrideReason = '' } = {}) {
     const settings = settingsObject(db).calculation;
     const rate = db.prepare(`SELECT distance_km FROM route_rates
       WHERE (from_zone_id=? AND to_zone_id=?) OR (from_zone_id=? AND to_zone_id=?)
@@ -10417,11 +10479,34 @@ async function api(request, response, url) {
     if (blockingDispo) {
       const label = ({ repair: 'в ремонте', no_driver: 'без водителя', shift: 'на пересменке',
         out: 'выведена', transfer: 'в перегоне' })[blockingDispo.kind] || blockingDispo.kind;
-      const err = new Error(`Сцепка ${label} до ` +
-        `${blockingDispo.ends_at.slice(0, 16).replace('T', ' ')} (UTC) — рейс пересекает интервал. ` +
-        `Выберите другое ТС или скорректируйте интервал в «Ресурсе»`);
-      err.status = 422;
-      throw err;
+      const untilText = blockingDispo.ends_at.slice(0, 16).replace('T', ' ');
+      // Решение руководителя 04.11 (заявка Базуева): ремонт — жёсткий
+      // запрет с запросом выпуска у ремзоны; остальные диспозиции
+      // назначаются с ОБЯЗАТЕЛЬНОЙ причиной, причины копятся в
+      // dispo_overrides и анализируются через месяц.
+      if (blockingDispo.kind === 'repair') {
+        const err = new Error(`Сцепка в ремонте до ${untilText} (UTC) — назначение закрыто. ` +
+          `Запросите выпуск у ремзоны: механик скорректирует заезд, и назначение откроется`);
+        err.status = 422;
+        err.code = 'dispo_repair';
+        err.dispo = { kind: blockingDispo.kind, endsAt: blockingDispo.ends_at,
+          vehicleId: vehicle.id, plate: vehicle.plate };
+        throw err;
+      }
+      const reason = String(dispoOverrideReason || '').trim();
+      if (reason.length < 5) {
+        const err = new Error(`Сцепка ${label} до ${untilText} (UTC) — рейс пересекает интервал. ` +
+          `Назначить можно, объяснив причину: почему ставим несмотря на диспозицию ` +
+          `(причины анализируются и улучшают правила)`);
+        err.status = 422;
+        err.code = 'dispo_confirm';
+        err.dispo = { kind: blockingDispo.kind, endsAt: blockingDispo.ends_at, label };
+        throw err;
+      }
+      db.prepare(`INSERT INTO dispo_overrides(id,order_id,vehicle_id,kind,dispo_ends_at,
+          reason,created_by_name) VALUES(?,?,?,?,?,?,?)`)
+        .run(randomUUID(), order.id, vehicle.id, blockingDispo.kind, blockingDispo.ends_at,
+          reason.slice(0, 300), user?.full_name || user?.username || 'система');
     }
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -10565,7 +10650,8 @@ async function api(request, response, url) {
     const previousTrip = order.trip_id
       ? db.prepare('SELECT auto_assigned, vehicle_id, order_no FROM trips WHERE id=?').get(order.trip_id)
       : null;
-    const tripId = assignOrderCore(order, vehicle, user, { distanceKm: body.distanceKm });
+    const tripId = assignOrderCore(order, vehicle, user,
+      { distanceKm: body.distanceKm, dispoOverrideReason: body.dispoOverrideReason });
     if (previousTrip?.auto_assigned && previousTrip.vehicle_id !== vehicle.id) {
       reportAutoAssignIssue(`на рейсе №${previousTrip.order_no || '?'} человек заменил ТС `
         + `(${String(overrideReason || body.overrideReason || 'без причины').slice(0, 80)}) — зелёный коридор ошибся`);
@@ -12107,7 +12193,13 @@ async function api(request, response, url) {
     const jobsFor = db.prepare(`SELECT id, title, parts, status, hours, done_at
       FROM repair_jobs WHERE order_id=? ORDER BY created_at`);
     return json(response, 200, { items: items.map(item =>
-      ({ ...item, jobs: jobsFor.all(item.id) })) });
+      ({ ...item, jobs: jobsFor.all(item.id) })),
+    // Запросы выпуска от логистов (решение 04.11): открытые + свежие
+    // решения — механик отвечает прямо со вкладки.
+    releaseRequests: db.prepare(`SELECT r.*, v.plate FROM remzona_release_requests r
+      JOIN vehicles v ON v.id=r.vehicle_id
+      WHERE r.status='open' OR r.created_at > datetime('now','-7 days')
+      ORDER BY CASE r.status WHEN 'open' THEN 0 ELSE 1 END, r.created_at DESC`).all() });
   }
   if (request.method === 'POST' && pathname === '/api/repairs') {
     const user = requirePermission(request, response, 'fleet:write');
@@ -12714,6 +12806,12 @@ async function api(request, response, url) {
       audit(db, user, 'dispatch_step', 'trip', match[0], { step: body.step }, requestIp(request));
       return json(response, 200, { ok: true, statusChanged });
     } catch (error) {
+      // Машинный код ошибки (dispo_repair/dispo_confirm…) едет фронту:
+      // он различает сценарии и предлагает действие, а не только текст.
+      if (error.code) {
+        return json(response, error.status || 500,
+          { error: error.message, code: error.code, dispo: error.dispo || null });
+      }
       return errorJson(response, error.status || 500, error.message);
     }
   }
@@ -14079,6 +14177,12 @@ async function api(request, response, url) {
         url.searchParams.get('from') || new Date(Date.now() - 30 * 86_400_000).toISOString(),
         url.searchParams.get('to') || new Date().toISOString()));
     } catch (error) {
+      // Машинный код ошибки (dispo_repair/dispo_confirm…) едет фронту:
+      // он различает сценарии и предлагает действие, а не только текст.
+      if (error.code) {
+        return json(response, error.status || 500,
+          { error: error.message, code: error.code, dispo: error.dispo || null });
+      }
       return errorJson(response, error.status || 500, error.message);
     }
   }

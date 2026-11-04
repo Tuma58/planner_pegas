@@ -2089,3 +2089,16 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .kbq-feed { margin: 6px 0; max-height: 160px; overflow: auto; }
 .kbq-note { padding: 3px 0; font-size: var(--fs-sm); border-top: 1px dashed color-mix(in srgb, var(--line) 50%, transparent); }
 .kbq-note:first-child { border-top: 0; }
+.kbq-stop-row { display: flex; align-items: center; gap: 8px; }
+
+/* 📞 Сворачивание карточки звонка (заявка Базуева, 04.11) */
+.modal { position: relative; }
+.call-min { position: absolute; top: 8px; right: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--muted); border-radius: 6px; width: 28px; height: 24px;
+  cursor: pointer; line-height: 1; font-size: 14px; }
+.call-min:hover { color: inherit; }
+#callDock { position: fixed; right: 16px; bottom: 16px; z-index: 900;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 14px; cursor: pointer; font: inherit; color: inherit;
+  box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+#callDock:hover { border-color: var(--accent, #2e7); }

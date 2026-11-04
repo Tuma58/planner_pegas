@@ -53,7 +53,13 @@ export async function api(path, options = {}) {
       location.href = '/login.html';
       throw new Error('Требуется вход');
     }
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    if (!response.ok) {
+      const err = new Error(data.error || `HTTP ${response.status}`);
+      // Машинный код ошибки: фронт различает сценарии (диспозиция,
+      // ремонт…) и предлагает правильное действие, а не только текст.
+      if (data.code) { err.code = data.code; err.payload = data; }
+      throw err;
+    }
     // 🤖 Подсказка помощника (ступень 2): любой штатный ответ может нести
     // assistantHint — показываем из одного места, какие бы кнопки ни
     // дёргали API (карточка, Гант, доска). Сервер уже оттроттлил показ.

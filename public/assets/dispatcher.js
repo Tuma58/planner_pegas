@@ -1593,12 +1593,27 @@ export async function renderDispatcher(container, context, options = {}) {
       }
       const noteMark = workedMap.get(`prepnote|${trip.id}`);
       // Точки рейса в быстрой карточке (заявка Токаловой 03.11): план и
-      // факт каждой стоянки видны без ухода в классику.
-      const kbqStops = (controlByTrip.get(trip.id)?.stops || []).map(stop => `<div class="kbq-stop">
-        <b>${stop.kind === 'P' ? '📦' : '🏗'}</b> ${escapeHtml((stop.point || '').slice(0, 44))}
-        <small class="muted">план ${fmtKb(stop.planned_arrival)}${stop.actual_arrival
+      // факт каждой стоянки видны без ухода в классику. Кнопки фактов у
+      // каждой точки (заявка Токаловой 04.11, «мешает каждый день»):
+      // прибытие/убытие ставится прямо здесь, у нужного адреса.
+      const stopFactBtn = stop => {
+        if (!canAct || trip.status === 'plan') return '';
+        if (!stop.actual_arrival) {
+          return `<button class="button ghost small" data-kbq-stop="${stop.id}"
+            data-kbq-field="actualArrival" data-kbq-label="прибытие · ${escapeHtml((stop.point || '').slice(0, 30))}">✔ прибыл</button>`;
+        }
+        if (!stop.actual_departure) {
+          return `<button class="button ghost small" data-kbq-stop="${stop.id}"
+            data-kbq-field="actualDeparture" data-kbq-label="убытие · ${escapeHtml((stop.point || '').slice(0, 30))}">✔ убыл</button>`;
+        }
+        return '';
+      };
+      const kbqStops = (controlByTrip.get(trip.id)?.stops || []).map(stop => `<div class="kbq-stop kbq-stop-row">
+        <span style="flex:1;min-width:0"><b>${stop.kind === 'P' ? '📦' : '🏗'}</b> ${escapeHtml((stop.point || '').slice(0, 44))}
+        <small class="muted" style="display:block;margin-left:22px">план ${fmtKb(stop.planned_arrival)}${stop.actual_arrival
     ? ` · прибыл ${fmtKb(stop.actual_arrival)}` : ''}${stop.actual_departure
-    ? ` · убыл ${fmtKb(stop.actual_departure)}` : ''}</small></div>`).join('');
+    ? ` · убыл ${fmtKb(stop.actual_departure)}` : ''}</small></span>
+        ${stopFactBtn(stop)}</div>`).join('');
       context.showModal(`<h2><span class="mono">${escapeHtml(trip.vehicle_plate || '')}${trailerOf(trip)
         ? ` <small class="muted">/ ${escapeHtml(trailerOf(trip))}</small>` : ''}</span>
           <small class="muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</small></h2>
@@ -1625,6 +1640,16 @@ export async function renderDispatcher(container, context, options = {}) {
           <button type="button" class="button ghost" data-close>Закрыть</button>
         </div>`);
       for (const wire of wires) wire();
+      // Кнопки фактов у точек (заявка Токаловой 04.11): время спрашивается
+      // как у этапов, хронологию сверяет сервер (PATCH /api/stops).
+      document.querySelectorAll('[data-kbq-stop]').forEach(button =>
+        button.addEventListener('click', () => factDialog(
+          `Точка рейса · ${button.dataset.kbqLabel}`,
+          'Укажите фактическое время события на точке.', async iso => {
+            await api(`/api/stops/${button.dataset.kbqStop}`, { method: 'PATCH',
+              body: JSON.stringify({ [button.dataset.kbqField]: iso }) });
+            toast('Отметка поставлена');
+          })));
       // Лента комментариев рейса (заявка Токаловой 03.11): отметки смены
       // за 5 дней — кто, когда и что написал; свежие сверху.
       (async () => {

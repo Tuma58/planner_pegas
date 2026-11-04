@@ -2217,17 +2217,45 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
       if (overrideReason === null) return;
       if (!overrideReason.trim()) { toast('Без причины замены назначение не принимается', 'error'); return; }
     }
-    try {
+    const submitAssign = async (dispoOverrideReason = '') => {
       await api(`/api/orders/${order.id}/assign`, {
         method: 'POST',
         body: JSON.stringify({ vehicleId: select.value, autoConfirm: Boolean(options.autoConfirm),
-          ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}) })
+          ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}),
+          ...(dispoOverrideReason ? { dispoOverrideReason } : {}) })
       });
       closeModal();
       toast(options.autoConfirm
         ? 'ТС назначена и подтверждена — рейс у диспетчера'
         : 'ТС назначена — рейс проведён в план');
       await onReload();
-    } catch (error) { toast(error.message, 'error'); }
+    };
+    try {
+      await submitAssign();
+    } catch (error) {
+      // Диспозиция в интервале рейса (решение руководителя 04.11, заявка
+      // Базуева): НЕ-ремонт назначается с обязательной причиной (копятся
+      // и анализируются); ремонт — запрос выпуска у ремзоны.
+      if (error.code === 'dispo_confirm') {
+        const reason = prompt(`${error.message}\n\nПричина (обязательно):`);
+        if (reason === null) return;
+        if (reason.trim().length < 5) { toast('Причина — от 5 символов', 'error'); return; }
+        try { await submitAssign(reason.trim()); }
+        catch (error2) { toast(error2.message, 'error'); }
+        return;
+      }
+      if (error.code === 'dispo_repair') {
+        if (!confirm(`${error.message}\n\nОтправить запрос выпуска ремзоне сейчас?`)) return;
+        const note = prompt('Комментарий механику (к какому времени и зачем нужна машина):') || '';
+        try {
+          await api('/api/remzona/release-requests', { method: 'POST', body: JSON.stringify({
+            vehicleId: error.payload?.dispo?.vehicleId || select.value,
+            orderId: order.id, needBy: order.window_from, note: note.trim() }) });
+          toast('Запрос отправлен — механик ответит лично вам; после выпуска назначайте заново');
+        } catch (error2) { toast(error2.message, 'error'); }
+        return;
+      }
+      toast(error.message, 'error');
+    }
   };
 }

@@ -89,7 +89,34 @@ function serviceLine(ds) {
     + `${ds.vehiclePlate ? ` · сцепка <span class="mono">${escapeHtml(ds.vehiclePlate)}</span>` : ''}`;
 }
 
+// Сворачивание карточки звонка (заявка Базуева 04.11): во время звонка
+// нужно ходить по вкладкам, а клик мимо окна его закрывал. Кнопка «▁»
+// прячет карточку в плавающий бейдж в углу; клик по бейджу открывает
+// её заново (данные перечитываются — карточка всегда свежая).
+function attachCallMinimize(context, reopen, label) {
+  const modal = document.querySelector('#modalRoot .modal');
+  if (!modal || modal.querySelector('.call-min')) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'call-min';
+  button.title = 'Свернуть карточку в угол — вкладки останутся доступными, звонок не потеряется';
+  button.textContent = '▁';
+  button.onclick = () => {
+    context.closeModal();
+    document.getElementById('callDock')?.remove();
+    const dock = document.createElement('button');
+    dock.id = 'callDock';
+    dock.type = 'button';
+    dock.textContent = `📞 ${label} — развернуть`;
+    dock.title = 'Свёрнутая карточка звонка — клик разворачивает';
+    dock.onclick = () => { dock.remove(); reopen(); };
+    document.body.appendChild(dock);
+  };
+  modal.appendChild(button);
+}
+
 export async function callCardDialog(context, { vehicleId = '', phone = '', callId = '' } = {}) {
+  const reopenSelf = () => callCardDialog(context, { vehicleId, phone, callId });
   const query = new URLSearchParams();
   if (vehicleId) query.set('vehicleId', vehicleId);
   if (phone) query.set('phone', phone);
@@ -121,6 +148,7 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
         driverName: ds.fullName, phone: ds.phone || phone, callId });
       document.getElementById('noVehNote').onclick = () => callNoteDialog(context, {
         driverName: ds.fullName, phone: ds.phone || phone, callId });
+      attachCallMinimize(context, reopenSelf, ds.fullName);
       return;
     }
     // Сотрудник: карточка не нужна — достаточно сказать, кто это.
@@ -186,6 +214,7 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
       } catch (error) { unkError.textContent = error.message; }
     });
     document.getElementById('unkQuestion').onclick = () => questionDialog(context, { phone, callId });
+    attachCallMinimize(context, reopenSelf, phonePrettyLocal(phone) || phone || 'звонок');
     return;
   }
 
@@ -304,6 +333,8 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
   document.getElementById('callNoteResult').onclick = () => callNoteDialog(context, {
     vehicleId: vehicle.id, driverName: card.driver?.full_name || vehicle.driver_name || '',
     phone: driverPhone || phone, callId });
+  attachCallMinimize(context, reopenSelf,
+    `${vehicle.plate} · ${(card.driver?.full_name || vehicle.driver_name || '').split(' ')[0]}`);
 
   // Комментарий пишется в общие отметки смены (ключ заметки по рейсу) —
   // ровно туда, откуда его читает карточка контроля у диспетчера.
