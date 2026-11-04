@@ -1446,9 +1446,14 @@ export async function renderDispatcher(container, context, options = {}) {
       }
       return '';
     };
+    // Прицеп на карточке (заявка Токаловой 03.11): номер полуприцепа
+    // нужен для ГЛОНАСС — берём из данных контроля, фолбэк из парка.
+    const trailerOf = trip => trip.trailer_plate
+      || (data.vehicles || []).find(vehicle => vehicle.id === trip.vehicle_id)?.trailer_plate || '';
     const kbCard = (trip, cls, extraRows, button) => `<div class="kb-card ${cls} ${assignments[trip.id]?.name === myFull ? 'mine' : ''}" data-kb-open="${trip.id}"
       title="Клик — следующее действие и комментарий; полная карточка и классика — внутри">
-      <div class="kbr kb1"><b class="mono">${escapeHtml(trip.vehicle_plate || '')}</b>
+      <div class="kbr kb1"><b class="mono">${escapeHtml(trip.vehicle_plate || '')}</b>${trailerOf(trip)
+        ? ` <small class="mono muted" title="Полуприцеп">/ ${escapeHtml(trailerOf(trip))}</small>` : ''}
         <span class="kb-drv">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span></div>
       ${ownerRow(trip)}
       <div class="kbr kb2">${escapeHtml((trip.customer_name || '').slice(0, 30))}</div>
@@ -1587,26 +1592,61 @@ export async function renderDispatcher(container, context, options = {}) {
         });
       }
       const noteMark = workedMap.get(`prepnote|${trip.id}`);
-      context.showModal(`<h2><span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>
+      // Точки рейса в быстрой карточке (заявка Токаловой 03.11): план и
+      // факт каждой стоянки видны без ухода в классику.
+      const kbqStops = (controlByTrip.get(trip.id)?.stops || []).map(stop => `<div class="kbq-stop">
+        <b>${stop.kind === 'P' ? '📦' : '🏗'}</b> ${escapeHtml((stop.point || '').slice(0, 44))}
+        <small class="muted">план ${fmtKb(stop.planned_arrival)}${stop.actual_arrival
+    ? ` · прибыл ${fmtKb(stop.actual_arrival)}` : ''}${stop.actual_departure
+    ? ` · убыл ${fmtKb(stop.actual_departure)}` : ''}</small></div>`).join('');
+      context.showModal(`<h2><span class="mono">${escapeHtml(trip.vehicle_plate || '')}${trailerOf(trip)
+        ? ` <small class="muted">/ ${escapeHtml(trailerOf(trip))}</small>` : ''}</span>
           <small class="muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</small></h2>
         <p class="muted">${escapeHtml((trip.customer_name || '').slice(0, 40))}
           · ${escapeHtml((trip.from_point || trip.from_name || '').slice(0, 25))}
-          → ${escapeHtml((trip.to_point || trip.to_name || '').slice(0, 25))}</p>
+          → ${escapeHtml((trip.to_point || trip.to_name || '').slice(0, 25))}
+          ${trip.order_no ? ` · № ${escapeHtml(String(trip.order_no))}` : ''}</p>
         <p>${stateRow}</p>
+        ${kbqStops ? `<div class="kbq-stops">${kbqStops}</div>` : ''}
         ${actionHtml ? `<div class="modal-actions" style="justify-content:flex-start;margin:8px 0">${actionHtml}</div>` : ''}
         ${canAct ? `<form id="kbqNoteForm"><label class="field">💬 Комментарий смены
           <textarea name="note" maxlength="300" rows="2"
             placeholder="видит вся смена — в контроле и в карточке звонка">${escapeHtml(noteMark?.note || '')}</textarea></label>
           <button class="button ghost small">Сохранить комментарий</button></form>`
     : (noteMark?.note ? `<p>💬 ${escapeHtml(noteMark.note)}</p>` : '')}
+        <div class="kbq-feed" id="kbqFeed"><small class="muted">⏳ лента комментариев…</small></div>
         <div class="modal-actions">
           <button type="button" class="button ghost small" id="kbqFull"
             title="Где машина, заявка, окно, контакты, сервисы — карточка как при звонке">📞 Полная карточка</button>
+          ${canAct ? `<button type="button" class="button ghost small" id="kbqFix"
+            title="Поменялись время, адрес или точки заказа — правка доступна и в пути; каждая правка в журнале, продажи получают список изменений">✏ Корректировка</button>` : ''}
           <button type="button" class="button ghost small" id="kbqClassic"
             title="Лента точек, правка времён, массовые инструменты">📋 Классика</button>
           <button type="button" class="button ghost" data-close>Закрыть</button>
         </div>`);
       for (const wire of wires) wire();
+      // Лента комментариев рейса (заявка Токаловой 03.11): отметки смены
+      // за 5 дней — кто, когда и что написал; свежие сверху.
+      (async () => {
+        const feedBox = document.getElementById('kbqFeed');
+        if (!feedBox) return;
+        try {
+          const days = Array.from({ length: 5 }, (_, offset) =>
+            new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10));
+          const lists = await Promise.all(days.map(day =>
+            api(`/api/task-marks?kind=dispatcher&day=${day}`).then(r => r.items).catch(() => [])));
+          const mine = lists.flat().filter(item => String(item.item_key).includes(trip.id))
+            .sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
+          const mark = key => key.startsWith('prepnote|') ? '💬' : key.startsWith('claim|') ? '🖐' : '✓';
+          feedBox.innerHTML = mine.length
+            ? mine.slice(0, 12).map(item => `<div class="kbq-note">${mark(item.item_key)}
+                <b>${escapeHtml(item.done_by || '')}</b>
+                <small class="muted">${formatDateTime(String(item.done_at).includes('Z')
+    ? item.done_at : String(item.done_at).replace(' ', 'T') + 'Z')}</small>
+                ${item.note ? ` — ${escapeHtml(item.note)}` : ''}</div>`).join('')
+            : '<small class="muted">Комментариев по рейсу за 5 дней нет.</small>';
+        } catch { feedBox.innerHTML = ''; }
+      })();
       document.getElementById('kbqNoteForm')?.addEventListener('submit', async event => {
         event.preventDefault();
         const note = String(new FormData(event.currentTarget).get('note') || '').trim();
@@ -1622,6 +1662,13 @@ export async function renderDispatcher(container, context, options = {}) {
       });
       document.getElementById('kbqFull').onclick = () =>
         callCardDialog(context, { vehicleId: trip.vehicle_id });
+      // Корректировка из быстрой карточки (решение 04.11): открыта и для
+      // рейса в пути — диалог общий с «✏ Корректировка заказа».
+      const kbqFix = document.getElementById('kbqFix');
+      if (kbqFix) kbqFix.onclick = () => {
+        const full = data.trips.find(item => item.id === trip.id) || trip;
+        orderFixDialog(full);
+      };
       document.getElementById('kbqClassic').onclick = () => {
         context.closeModal();
         state.dispatcherReturnToBoard = { query: state.dispatcherQuery || '' };
@@ -1665,6 +1712,19 @@ export async function renderDispatcher(container, context, options = {}) {
         kbMeta(`на линии ${age.toFixed(0)} ч без убытия${hot ? ' — ожидание окна: сигнал логисту' : ''}`, hot)
         + ctrlRow(trip), ctrlBtn(trip));
     };
+    // Время на доске (решение руководителя 04.11 по заявке Базуева):
+    // главное — ПЛАНОВАЯ выгрузка (последняя точка рейса), освобождение
+    // ТС с учётом отдыха — рядом, заметной второй строкой.
+    const fmtKb = iso => iso ? formatDateTime(iso) : '—';
+    const unloadPlanRows = trip => {
+      const stops = controlByTrip.get(trip.id)?.stops || [];
+      const plan = stops[stops.length - 1]?.planned_arrival || null;
+      const freeMs = Date.parse(trip.ends_at);
+      if (!plan) return `<div class="kbr kb4">📦 выгрузка ~ ${fmtKb(trip.ends_at)}</div>`;
+      const gapH = (freeMs - Date.parse(plan)) / 3.6e6;
+      return `<div class="kbr kb4">📦 выгрузка по плану <b>${fmtKb(plan)}</b></div>`
+        + (gapH > 1 ? `<div class="kbr kb4">🛌 освободится ~ ${fmtKb(trip.ends_at)} <small>с отдыхом водителя</small></div>` : '');
+    };
     const roadCardKb = trip => {
       const t = tempOf(trip);
       const tRow = !t ? '<div class="kbr kbt muted">🌡 без датчика / не реф</div>'
@@ -1675,7 +1735,7 @@ export async function renderDispatcher(container, context, options = {}) {
       const cRow = `<div class="kbr kbc ${over ? 'bad' : ''}">📞 контроль ${touched.toFixed(0)} ч назад <small>норматив ${midH.toFixed(0)} ч</small>${over ? ' — ПРОСРОЧЕН' : ''}</div>`;
       const btn = canAct ? `<button class="button small kb-step ${over || tempBad(trip) ? 'alert' : ''}"
         data-kb-ctrl="${trip.id}" data-kb-ctrl-label="${escapeHtml(nextControlEvent(trip).label).slice(0, 80)}">📞 Контроль пройден</button>` : '';
-      return kbCard(trip, tempBad(trip) || over ? 'over' : '', tRow + cRow, btn);
+      return kbCard(trip, tempBad(trip) || over ? 'over' : '', unloadPlanRows(trip) + tRow + cRow, btn);
     };
     const unloadCardKb = trip => {
       const age = unloadAge(trip);
@@ -1775,6 +1835,8 @@ export async function renderDispatcher(container, context, options = {}) {
         </span>
         ${state.data.user.dispatchExempt || can('users:write') ? `<button class="button small ghost" id="kbRebalance"
           title="Полуавтоматика руководителя службы: сбросить авто-назначения и раздать карточки заново по текущей смене и личным ёмкостям (взятые вручную «🖐 Беру» не трогаются)">⚖ Перераспределить</button>` : ''}
+        <button class="button small ghost" id="kbArchive"
+          title="Закрытые рейсы за 7 дней: вернуть в контроль или исправить ошибочно проставленное время точек — каждая правка в журнале">🗂 Архив</button>
         <div class="kb-tiles">
           <div class="kb-tile ${lateQuestions ? 'warn' : ''}"><span class="k">Вопросы водителей</span><b>${questions.length}</b><small>просрочено ${lateQuestions}</small></div>
           <div class="kb-tile"><span class="k">Активных карточек</span><b>${preparing.length + waitingLogist.length + online.length}</b><small>подготовка · линия</small></div>
@@ -1963,6 +2025,107 @@ export async function renderDispatcher(container, context, options = {}) {
         await context.onReload();
       } catch (error) { button.disabled = false; toast(error.message, 'error'); }
     }));
+    // 🗂 Архив доски (заявка Токаловой, решение руководителя 04.11):
+    // закрытые рейсы за 7 дней — вернуть в контроль или исправить
+    // ошибочно проставленное время. Безопасность: окно недели (старше —
+    // устоявшаяся история отчётов, её не трогаем), правка идёт штатным
+    // PATCH точки — хронологию проверяет сервер, каждая правка в аудите
+    // с именем, снятые факты финальной выгрузки возвращают рейс «В пути».
+    const archiveBtn = container.querySelector('#kbArchive');
+    if (archiveBtn) archiveBtn.onclick = async () => {
+      let items = [];
+      try {
+        const from = new Date(Date.now() - 7 * 86_400_000).toISOString();
+        ({ items } = await api(`/api/control?from=${encodeURIComponent(from)}&to=${encodeURIComponent(new Date().toISOString())}`));
+      } catch (error) { toast(error.message, 'error'); return; }
+      const closed = items.filter(item => ['unloaded', 'done', 'paid'].includes(item.status))
+        .sort((a, b) => String(b.unloaded_at || b.ends_at).localeCompare(String(a.unloaded_at || a.ends_at)));
+      context.showModal(`<h2>🗂 Архив доски — 7 дней</h2>
+        <p class="muted">Закрытые рейсы: вернуть в контроль (отметка «Выгружен» снимется)
+          или исправить ошибочно проставленное время точек. Каждая правка — в журнале.</p>
+        <input id="archSearch" class="block-search" placeholder="🔍 ТС, водитель, заказчик, №" autocomplete="off">
+        <div class="list" style="max-height:380px;overflow:auto" id="archList">
+          ${closed.map(item => `<div class="list-item" style="gap:8px">
+            <span style="flex:1;min-width:0"><b class="mono">${escapeHtml(item.vehicle_plate)}</b>
+              ${escapeHtml((item.customer_name || '').slice(0, 26))}
+              <small class="muted" style="display:block">${escapeHtml((item.from_point || item.from_name || '').slice(0, 20))}
+                → ${escapeHtml((item.to_point || item.to_name || '').slice(0, 20))}
+                · выгружен ${item.unloaded_at ? formatDateTime(item.unloaded_at) : '—'}</small></span>
+            ${canAct ? `<button class="button ghost small" data-arch-stops="${item.id}"
+              title="Поправить ошибочное время точек — с проверкой хронологии и журналом">✎ Время</button>` : ''}
+            ${canAct && item.status === 'unloaded' ? `<button class="button ghost small"
+              data-kb-return-arch="${item.id}">↩ В контроль</button>` : ''}
+          </div>`).join('') || '<p class="muted">За 7 дней закрытых рейсов нет.</p>'}
+        </div>
+        <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
+      document.querySelectorAll('[data-kb-return-arch]').forEach(button => button.onclick = async () => {
+        if (!confirm('Вернуть рейс в контроль? Отметка «Выгружен» снимется, машина снова займётся рейсом.')) return;
+        try {
+          await api(`/api/trips/${button.dataset.kbReturnArch}`, { method: 'PATCH',
+            body: JSON.stringify({ status: 'run' }) });
+          toast('Рейс возвращён в контроль');
+          context.closeModal();
+          state.dispatcherNetCache = null;
+          await context.onReload();
+        } catch (error) { toast(error.message, 'error'); }
+      });
+      document.querySelectorAll('[data-arch-stops]').forEach(button => button.onclick = () => {
+        const trip = closed.find(item => item.id === button.dataset.archStops);
+        if (trip) archStopsDialog(trip);
+      });
+      // Поиск по архиву: закрытых за неделю сотни — фильтр по тексту строки.
+      document.getElementById('archSearch')?.addEventListener('input', event => {
+        const query = event.target.value.trim().toLowerCase();
+        document.querySelectorAll('#archList .list-item').forEach(row => {
+          row.style.display = !query || row.textContent.toLowerCase().includes(query) ? '' : 'none';
+        });
+      });
+    };
+    function archStopsDialog(trip) {
+      const stops = trip.stops || [];
+      context.showModal(`<form id="archStopsForm">
+        <h2>✎ Время точек · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span></h2>
+        <p class="muted">Исправление ошибочной отметки. Сервер не даст прибыть раньше события
+          на предыдущей точке; снятые факты финальной выгрузки честно вернут рейс «В пути».
+          Каждая правка пишется в журнал с вашим именем.</p>
+        ${stops.map((stop, index) => `<div class="kbq-stop" style="padding:6px 0">
+          <b>${stop.kind === 'P' ? '📦' : '🏗'}</b> ${escapeHtml((stop.point || '').slice(0, 44))}
+          <div class="form-grid" style="grid-template-columns:1fr 1fr;margin-top:4px">
+            <label class="field"><small>прибыл</small><input type="datetime-local" name="arr_${index}"
+              value="${stop.actual_arrival ? toLocalInput(stop.actual_arrival) : ''}"></label>
+            <label class="field"><small>убыл</small><input type="datetime-local" name="dep_${index}"
+              value="${stop.actual_departure ? toLocalInput(stop.actual_departure) : ''}"></label>
+          </div></div>`).join('')}
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close>Отмена</button>
+          <button class="button">Сохранить правки</button>
+        </div></form>`);
+      document.getElementById('archStopsForm').onsubmit = async event => {
+        event.preventDefault();
+        const formData = new FormData(event.currentTarget);
+        const msOf = value => value ? Date.parse(value) : null;
+        try {
+          let changed = 0;
+          for (let index = 0; index < stops.length; index += 1) {
+            const body = {};
+            const arrMs = msOf(formData.get(`arr_${index}`));
+            const depMs = msOf(formData.get(`dep_${index}`));
+            const oldArr = stops[index].actual_arrival ? Date.parse(stops[index].actual_arrival) : null;
+            const oldDep = stops[index].actual_departure ? Date.parse(stops[index].actual_departure) : null;
+            if (arrMs !== oldArr) body.actualArrival = arrMs ? new Date(arrMs).toISOString() : null;
+            if (depMs !== oldDep) body.actualDeparture = depMs ? new Date(depMs).toISOString() : null;
+            if (Object.keys(body).length) {
+              await api(`/api/stops/${stops[index].id}`, { method: 'PATCH', body: JSON.stringify(body) });
+              changed += 1;
+            }
+          }
+          toast(changed ? `Исправлено точек: ${changed} — правки в журнале` : 'Изменений нет');
+          context.closeModal();
+          state.dispatcherNetCache = null;
+          await context.onReload();
+        } catch (error) { toast(error.message, 'error'); }
+      };
+    }
     attachSearch(container.querySelector('#dispatcherSearch'), async value => {
       state.dispatcherQuery = value;
       await renderDispatcher(container, context, { reuseNetwork: true });
@@ -2083,7 +2246,13 @@ export async function renderDispatcher(container, context, options = {}) {
   container.querySelectorAll('[data-confirm-sum]').forEach(button =>
     button.addEventListener('click', () => {
       const trip = data.trips.find(item => item.id === button.dataset.confirmSum);
-      if (!trip) return;
+      if (trip) orderFixDialog(trip);
+    }));
+  // Решение руководителя 04.11 (заявка Токаловой): корректировка открыта
+  // и для рейса В ПУТИ — кнопка в быстрой карточке доски; каждая правка
+  // журналируется (аудит + уведомление продажам со списком изменений).
+  function orderFixDialog(trip) {
+    {
       // «Корректировка заказа» (09.09): от продаж проскальзывают неверные
       // время, адреса и суммы — диспетчер сверяет заказ с заявкой клиента
       // целиком. Окно и пункты уходят PATCH'ем заявки (каскад: рейс,
@@ -2223,7 +2392,8 @@ export async function renderDispatcher(container, context, options = {}) {
         event.preventDefault();
         submit(new FormData(event.currentTarget));
       };
-    }));
+    }
+  }
 
   container.querySelectorAll('[data-worked]').forEach(button =>
     button.addEventListener('click', async () => {

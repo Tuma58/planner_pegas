@@ -396,7 +396,7 @@ export function checkStuckUnloading(db, nowMs = Date.now()) {
 // опоздавший рейс остаётся проблемой и после планового окончания) со
 // стоянками, расчётом и задержкой.
 export function controlSnapshot(db, fromIso, toIso, nowMs = Date.now()) {
-  const trips = db.prepare(`SELECT t.*,v.plate vehicle_plate,v.driver_name,
+  const trips = db.prepare(`SELECT t.*,v.plate vehicle_plate,v.trailer_plate,v.driver_name,
     f.name from_name,z.name to_name FROM trips t
     JOIN vehicles v ON v.id=t.vehicle_id
     JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
