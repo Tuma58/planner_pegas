@@ -1,1 +1,137 @@
-/* BI-дополнения группы «sales» (реконструкция 04.11). */
+/* BI-дополнения группы «sales» (реконструкция 04.11).
+   Доска продаж в стиле «Рабочей среды СТ»: ряд плиток .metric →
+   строка фильтров → две колонки-секции. Всё под .bi-sales / .sales-modal,
+   чтобы общие .saleswrap/.skpi/.scol у логиста и диспетчерской не задеть. */
+
+/* ── Каркас страницы: высота экрана, колонки прокручиваются внутри ── */
+.saleswrap.bi-sales { padding: 14px 22px 14px; gap: 12px; height: 100%; overflow: hidden; }
+.bi-sales > * { flex-shrink: 0; }
+.bi-sales > .salesboard { flex: 1 1 auto; min-height: 0; }
+
+/* Баннер «завтра» и свёртка кругов — плоские полосы на токенах */
+.bi-sales .sales-day-banner { margin: 0; padding: 8px 15px; border-radius: 11px;
+  background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--log);
+  box-shadow: var(--shadow); font-size: 13px; }
+.bi-sales .sales-day-banner.lack { border-left-color: var(--bad); }
+.bi-sales .sales-day-banner.met { border-left-color: var(--ok); }
+.bi-sales .sales-day-banner b { font-family: var(--mono-font); font-size: 16px; letter-spacing: -.01em; }
+.bi-sales .sales-day-banner .sdb-gap { font-family: var(--mono-font); font-size: 14px; letter-spacing: .01em; }
+.bi-sales .sales-day-banner .sdb-ok { font-size: 14px; }
+.bi-sales .sales-rings { margin: 0; padding: 7px 15px; border-radius: 11px; }
+
+/* ── Ряд плиток KPI: .skpi = .metric ── */
+.bi-sales .salekpis.sales-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 12px; margin: 0; align-items: stretch; flex-wrap: nowrap; }
+.bi-sales .sales-kpis .skpi { flex-direction: column; align-items: stretch; gap: 2px; padding: 11px 15px;
+  border-radius: 11px; border: 1px solid var(--line); border-top: 2px solid var(--accent);
+  background: var(--card); box-shadow: var(--shadow); min-width: 0; position: relative; }
+.bi-sales .sales-kpis .skpi.dept-log { border-top-color: var(--log); }
+.bi-sales .sales-kpis .skpi.dept-staff { border-top-color: var(--staff); }
+.bi-sales .sales-kpis .skpi .skl { font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .04em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bi-sales .sales-kpis .skpi .skv { font-family: var(--mono-font); font-size: 23px; font-weight: 700;
+  letter-spacing: -.02em; color: var(--ink); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bi-sales .sales-kpis .skpi .skv small { font-size: 13px; font-weight: 600; color: var(--muted); }
+.bi-sales .sales-kpis .skpi .skm { display: block; margin: 0; font-family: var(--mono-font); font-size: 11.5px;
+  color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Состояния плиток: «горит» (подтвердить), простои сверх нормы, окно истекло */
+.bi-sales .sales-kpis .skpi.skpi-hot { border-color: var(--line); border-top-color: var(--teal); box-shadow: var(--shadow); }
+.bi-sales .sales-kpis .skpi.skpi-hot .skv { color: var(--teal); }
+.bi-sales .sales-kpis .skpi.skpi-warn { border-top-color: var(--warn); }
+.bi-sales .sales-kpis .skpi.skpi-warn .skv { color: var(--warn); }
+.bi-sales .sales-kpis .skpi.metric.neg { border-top-color: var(--bad); }
+.bi-sales .sales-kpis .skpi.metric.neg .skv { color: var(--bad); }
+.bi-sales .sales-kpis .skpi.clickable { cursor: pointer; }
+.bi-sales .sales-kpis .skpi.clickable:hover,
+.bi-sales .sales-kpis .skpi.clickable.open { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), var(--shadow); }
+.bi-sales .sales-kpis .skpi-drop { z-index: 40; }
+.bi-sales .sales-kpis .skpi-row b { font-family: var(--mono-font); white-space: nowrap; }
+
+/* ── Строка фильтров/инструментов (bi-sub) ── */
+.bi-sales .sales-toolbar { gap: 8px; }
+.bi-sales .sales-toolbar .salesfilter { flex: 1 1 auto; margin-left: 0; padding: 8px 12px; gap: 8px;
+  border-radius: 11px; box-shadow: var(--shadow); }
+.bi-sales .sales-toolbar .salesfilter .block-search { min-width: 170px; flex: 1 1 220px; }
+.bi-sales .sales-toolbar .salesfilter > * { flex-shrink: 0; }
+.bi-sales .sales-toolbar .salesfilter select { max-width: 230px; }
+.bi-sales .sales-toolbar .filter-sum { font-family: var(--mono-font); font-size: 12px; color: var(--muted); }
+
+/* ── Доска: две колонки-секции ── */
+.bi-sales .salesboard.bi-board { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px; align-items: stretch; overflow: visible; }
+.bi-sales .scol.section { padding: 0; overflow: auto; border-radius: 12px; min-height: 0; }
+/* Правая колонка — стопка секций (споты, форма, портфель), прокрутка общая */
+.bi-sales .scol.sales-stack { background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 0 2px 0 0;
+  display: flex; flex-direction: column; gap: 14px; overflow: auto; min-height: 0; }
+.bi-sales .scol.sales-stack > .section { flex-shrink: 0; }
+
+/* Шапка колонки: .scolh → .sec-h (заголовок + счётчик) */
+.bi-sales .scolh.sec-h { margin: 0; padding: 10px 15px; font-size: 14px; font-weight: 650; text-transform: none;
+  letter-spacing: 0; color: var(--ink); background: var(--panel2); border-bottom: 1px solid var(--border2);
+  gap: 8px; flex-wrap: wrap; position: static; z-index: 2; }
+.bi-sales .scol.section > .scolh.sec-h:first-child { position: sticky; top: 0; margin-top: 0; }
+.bi-sales .scolh.sec-h span { background: none; padding: 0; border-radius: 0; color: inherit; font-size: inherit; }
+.bi-sales .scolh.sec-h .st { font-weight: 650; font-size: 14px; color: var(--ink); }
+.bi-sales .scolh.sec-h .scount { font-family: var(--mono-font); font-size: 11.5px; font-weight: 700; color: var(--muted);
+  background: var(--card); border: 1px solid var(--border2); border-radius: 6px; padding: 1px 7px; }
+.bi-sales .scolh.sec-h .hint { color: var(--faint); font-size: 11.5px; font-weight: 400; }
+.bi-sales .scolh.sec-h .sec-actions { margin-left: auto; }
+.bi-sales .sec-b > .geohint { margin-top: 10px; }
+
+/* Карточки заявок и клиентов: аккуратная плашка, числа — моно */
+.bi-sales .list { gap: 8px; }
+.bi-sales .list-item { border-radius: 10px; padding: 10px 12px; border-color: var(--border2); align-items: flex-start; }
+.bi-sales .list-item:hover { border-color: var(--line); }
+.bi-sales .list-item strong { font-weight: 650; }
+.bi-sales .list-item small.muted { margin-top: 2px; line-height: 1.45; }
+.bi-sales .list-item .mono, .bi-sales .ord-net { font-family: var(--mono-font); }
+.bi-sales .ord-rate { font-family: var(--mono-font); font-size: 14.5px; font-weight: 700; letter-spacing: -.01em;
+  color: var(--ink); white-space: nowrap; }
+.bi-sales .ord-net { font-size: 11px; white-space: nowrap; }
+.bi-sales .ordrow.pipe-mine { border-left-color: var(--log); background: color-mix(in srgb, var(--log) 5%, var(--card)); }
+.bi-sales .client-card.open { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.bi-sales .client-orders { display: grid; gap: 6px; margin: -2px 0 4px 14px; padding-left: 10px;
+  border-left: 2px solid var(--border2); }
+.bi-sales .stepper-row { margin-top: 4px; }
+.bi-sales .stp.on { background: var(--log); }
+/* Споты — компактные плашки внутри секции */
+.bi-sales .sales-spots .question-card { border-radius: 10px; box-shadow: none; border: 1px solid var(--border2); }
+.bi-sales .sales-spots .question-card.late { border-left: 3px solid var(--bad); }
+/* Форма бронирования */
+.bi-sales .sales-form-sec .sec-b { padding: 12px 15px 14px; }
+.bi-sales .sales-form-sec .feas { border-radius: 10px; }
+.bi-sales .sales-form-sec .feas-row b { font-family: var(--mono-font); }
+/* Отклонённые */
+.bi-sales .rejected-details { margin-top: 12px; }
+.bi-sales .rejected-details .scount { font-family: var(--mono-font); }
+
+@media (max-width: 900px) {
+  .saleswrap.bi-sales { height: auto; overflow: visible; padding: 12px 14px 32px; }
+  .bi-sales .salesboard.bi-board { grid-template-columns: 1fr; }
+  .bi-sales .scol.section, .bi-sales .scol.sales-stack { overflow: visible; }
+  .bi-sales .scol.section > .scolh.sec-h:first-child { position: static; }
+}
+
+/* ── Модалки продаж: шапки секций и таблицы (логика не тронута) ── */
+.sales-modal h3.sec-h { margin: 12px 0 6px; border: 1px solid var(--border2); border-radius: 9px; font-size: 14px; }
+.sales-modal h3.sec-h:first-of-type { margin-top: 8px; }
+.sales-modal h3.sec-h .badge { font-family: var(--mono-font); }
+.sales-modal .table-wrap { border: 1px solid var(--border2); border-radius: 9px; }
+.sales-modal .table-wrap .bi-table { margin: 0; }
+.sales-modal .table-wrap .bi-table td.num b { font-weight: 700; }
+.sales-radar .dmr-row b, .sales-radar .badge { font-variant-numeric: tabular-nums; }
+/* Задание продажам: плитки как .metric */
+.sales-modal .task-kpi { background: var(--card); border: 1px solid var(--line); border-top: 2px solid var(--log);
+  border-radius: 11px; text-align: left; padding: 9px 13px; box-shadow: var(--shadow); }
+.sales-modal .task-kpi b { font-family: var(--mono-font); font-size: 21px; letter-spacing: -.02em; }
+.sales-modal .task-kpi span { text-transform: uppercase; letter-spacing: .04em; font-weight: 600; font-size: 10.5px; }
+.sales-modal .task-kpi.warn { border-color: var(--line); border-top-color: var(--warn); }
+.sales-modal .task-kpi.muted b { color: var(--muted); }
+.sales-modal .task-sec > b { padding: 7px 12px; margin-bottom: 8px; background: var(--panel2);
+  border: 1px solid var(--border2); border-radius: 9px; font-size: 12px; color: var(--ink); }
+.sales-modal .task-lane { border-color: var(--border2); border-radius: 10px; }
+.sales-modal .task-lane-nums b, .sales-modal .task-row b.mono { font-family: var(--mono-font); }
+/* Назначение ТС: кандидаты */
+.sales-assign .sales-cands { border: 1px solid var(--border2); border-radius: 10px; padding: 6px; background: var(--panel2); }
+.sales-assign .sales-cands .sugtruck { border-radius: 9px; text-align: left; }
+.sales-modal .via-box .via-head { font-weight: 650; }

@@ -1,1 +1,146 @@
-/* BI-дополнения группы «dispatch» (реконструкция 04.11). */
+/* BI-дополнения группы «dispatch» (реконструкция 04.11).
+   Экраны: «Диспетчер» (доска · компактно · классика) и «Внештатки».
+   Всё под .disp-bi — классы kb-*/cq-* старой разметки сохранены (на них
+   опираются обработчики и captureScrolls по первому классу), здесь только
+   перекраска под набор: плитки .metric, колонки .section, таблицы .bi-table. */
+
+/* ── Шапка экрана: переключатели, фильтры, поиск ─────────────────── */
+.disp-bi .kb-top.bi-sub { margin: 0; gap: 8px 10px; }
+.disp-bi .kb-top .block-search { flex: 1 1 240px; min-width: 220px; }
+.disp-bi .resctl-group { gap: 6px; }
+.disp-bi .disp-kpis { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.disp-bi .metric .d { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Плашка простоев (demurrage.js, чужой модуль) в ряду плиток — как .metric */
+.disp-bi .bi-kpis .skpi { margin: 0; padding: 11px 15px; border-radius: 11px; min-width: 0; }
+.disp-bi .bi-kpis .skpi .skl { font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+.disp-bi .bi-kpis .skpi .skv { font-size: 23px; line-height: 1.15; }
+.disp-bi .bi-kpis .skpi .skm { font-family: var(--mono-font); font-size: 11.5px; color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; }
+.disp-bi .bi-kpis .skpi.skpi-warn { border-color: var(--line); border-top-color: var(--warn); }
+
+/* Свёртка вопросов водителей — в рамке секции */
+.disp-bi .questions-strip.compact { margin: 0; background: var(--card); border-color: var(--line);
+  border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.disp-bi .questions-strip.compact > summary { padding: 10px 15px; background: var(--panel2); font-size: 14px; font-weight: 650; }
+.disp-bi .questions-strip.compact[open] > summary { border-bottom: 1px solid var(--border2); }
+.disp-bi .questions-strip.compact .list { padding: 6px 10px 10px; }
+.disp-bi .questions-strip .scount { font-family: var(--mono-font); }
+
+/* Ёмкость смены — секция с полосами .bi-meter */
+.disp-bi .kb-shift.section { margin: 0; padding: 0; background: var(--card); border-color: var(--line); border-radius: 12px; }
+.disp-bi .kb-shift .kb-shift-t { display: inline; margin: 0; font-size: 14px; font-weight: 650; color: var(--ink);
+  text-transform: none; letter-spacing: 0; }
+.disp-bi .kb-shift-row.sec-b { gap: 8px 18px; }
+.disp-bi .kb-cap .bar.bi-meter { height: 6px; background: var(--border2); }
+.disp-bi .kb-cap .val { font-family: var(--mono-font); }
+
+/* Сошедшие с доски — секция */
+.disp-bi .kb-gone.section { margin: 0; }
+.disp-bi .kb-gone-row.sec-b { gap: 8px; }
+
+/* ── Доска: колонка = секция ──────────────────────────────────────── */
+.disp-bi .kb-board { gap: 14px; }
+.disp-bi .kb-col.section { padding: 0; background: var(--card); border: 1px solid var(--line);
+  border-top: 2px solid var(--drv); border-radius: 12px; display: flex; flex-direction: column; }
+.disp-bi .kb-col.section.kb-over { border-top-color: var(--bad); }
+.disp-bi .kb-chead.sec-h { padding: 9px 12px; gap: 8px; justify-content: flex-start; flex-wrap: nowrap; font-weight: 400; }
+.disp-bi .kb-chead .st { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.disp-bi .kb-chead .kb-lim.bi-tag { margin-left: auto; flex-shrink: 0; font-weight: 650; border-radius: 6px;
+  padding: 2px 7px; font-size: 11px; background: var(--paper); color: var(--muted); border: 1px solid var(--border2); }
+.disp-bi .kb-chead.bad .kb-lim.bi-tag { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--bad) 35%, var(--card)); }
+.disp-bi .kb-note { padding: 6px 12px; min-height: 0; font-size: 11px; line-height: 1.35; color: var(--faint);
+  border-bottom: 1px solid var(--border2); }
+.disp-bi .kb-cards { padding: 8px; gap: 6px; background: var(--paper); }
+.disp-bi .kb-cards > .bi-empty { padding: 14px; }
+
+/* Карточка рейса: ровные строки, номера и числа моно */
+.disp-bi .kb-card { border-radius: 8px; padding: 7px 10px; gap: 1px; border-color: var(--line); background: var(--card); }
+.disp-bi .kb-card:hover { border-color: var(--accent); background: var(--card); }
+.disp-bi .kb-card .kbr { line-height: 17px; min-height: 17px; }
+.disp-bi .kb1 { align-items: baseline; }
+.disp-bi .kb1 b.mono { font-family: var(--mono-font); font-size: 13px; letter-spacing: -.01em; color: var(--ink); }
+.disp-bi .kb1 small.mono { font-family: var(--mono-font); font-size: 11px; }
+.disp-bi .kb-drv { font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
+.disp-bi .kb2 { font-size: 12px; color: var(--ink); }
+.disp-bi .kb3 { font-size: 11px; color: var(--muted); }
+.disp-bi .kb4, .disp-bi .kbt, .disp-bi .kbc { font-size: 11.5px; margin-top: 0; }
+.disp-bi .kbn { font-family: var(--mono-font); font-variant-numeric: tabular-nums; font-weight: 650; }
+.disp-bi .kb4 b.kbn { font-weight: 700; color: var(--ink); }
+.disp-bi .kb4.bad .kbn, .disp-bi .kbt.bad .kbn, .disp-bi .kbc.bad .kbn { color: var(--bad); }
+.disp-bi .kb-own { font-size: 11px; }
+.disp-bi .kb-card .kb-btns { margin-top: 5px; gap: 4px; }
+.disp-bi .kb-card .kb-step { margin-top: 0; }
+.disp-bi .kb-card .kb-take { margin-top: 0; }
+.disp-bi .kb-card.over { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+
+/* ── ▤ Компактно: колонка читается как таблица (строка = рейс) ────── */
+.disp-bi .kb-dense .kb-cards { gap: 0; padding: 0; background: var(--card); }
+.disp-bi .kb-dense .kb-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; row-gap: 0;
+  border: 0; border-bottom: 1px solid var(--border2); border-radius: 0; padding: 5px 12px; }
+.disp-bi .kb-dense .kb-card:hover { background: var(--hover); }
+.disp-bi .kb-dense .kb-card > .kbr { grid-column: 1; }
+.disp-bi .kb-dense .kb-card > .kb-btns { grid-column: 2; grid-row: 1 / span 6; align-self: center; margin: 0; }
+/* у перегона кнопки — прямые дети карточки: строкой под данными */
+.disp-bi .kb-dense .kb-card > button { grid-column: 1 / -1; width: auto; margin: 3px 0 0; }
+.disp-bi .kb-dense .kb-card .kb-btns { flex-direction: column; margin: 0; }
+.disp-bi .kb-dense .kb-card .kb-btns button { width: auto; white-space: nowrap; }
+.disp-bi .kb-dense .kb-card.over { box-shadow: inset 3px 0 0 var(--bad); }
+.disp-bi .kb-dense .kb-card.soon { box-shadow: inset 3px 0 0 var(--ok); }
+.disp-bi .kb-dense .kb-card.mine { box-shadow: inset 3px 0 0 var(--ok); }
+.disp-bi .kb-dense .kb-card.kb-transfer { box-shadow: inset 3px 0 0 var(--log); }
+.disp-bi .kb-dense .kb-card.kb-transfer.over { box-shadow: inset 3px 0 0 var(--bad); }
+.disp-bi .kb-dense .kb-card .kbr { font-size: 11.5px; }
+
+/* ── 📋 Классика: две колонки-секции + таблица очереди контроля ───── */
+.disp-classic.saleswrap { padding: 16px 22px 16px; gap: 14px; }
+.disp-classic > * { flex-shrink: 0; }
+.disp-classic .disp-cl-bar { margin: 0; }
+.disp-classic .disp-cl-bar .bi-actions { align-items: center; flex: 1 1 520px; justify-content: flex-end; }
+.disp-classic .disp-cl-bar .block-search { flex: 1 1 260px; min-width: 220px; max-width: 460px; }
+.disp-classic .disp-kpis { margin: 0; }
+.disp-classic .disp-cl-board.salesboard { flex: 1 1 auto; gap: 14px; min-height: 0; }
+.disp-classic .disp-scol.section { overflow: auto; min-height: 0; border-top: 2px solid var(--drv); }
+.disp-classic .disp-scol > .sec-h:first-child { position: sticky; top: 0; z-index: 3; }
+.disp-classic .disp-subh { border-top: 1px solid var(--border2); }
+.disp-classic .sec-b .disp-subh { margin: 12px -15px 8px; }
+.disp-classic .sec-h .bi-tag { font-weight: 650; }
+.disp-classic .sec-h .sec-actions .button { min-height: 26px; }
+.disp-classic .cq-switch { margin: 0 0 8px; }
+.disp-classic .geohint { margin-top: 10px; }
+
+/* Очередь контроля — таблица набора внутри прокрутки колонки */
+.disp-classic .cq-scroll { max-height: none; overflow: visible; border: 1px solid var(--border2); border-radius: 8px; }
+.disp-classic .cq-table th { position: static; }
+.disp-classic .cq-table td { padding: 6px 8px; vertical-align: middle; }
+.disp-classic .cq-table .cq-time { white-space: nowrap; font-weight: 650; }
+.disp-classic .cq-table .cq-kind { white-space: nowrap; width: 30px; }
+.disp-classic .cq-table .cq-plate { font-size: 12.5px; white-space: nowrap; }
+.disp-classic .cq-table .cq-main { min-width: 0; }
+.disp-classic .cq-table .cq-driver { display: block; font-weight: 600; color: var(--ink); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.disp-classic .cq-table .cq-what { display: block; white-space: normal; overflow: visible; color: var(--muted); font-size: 11.5px; }
+.disp-classic .cq-table .cq-acts { width: 1%; }
+.disp-classic .cq-table .cq-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 260px; }
+.disp-classic .cq-tr.overdue .cq-time { color: var(--bad); font-weight: 700; }
+.disp-classic .cq-tr.alarm td { background: color-mix(in srgb, var(--bad) 9%, var(--card)); }
+.disp-classic .cq-tr.alarm:hover td { background: color-mix(in srgb, var(--bad) 14%, var(--card)); }
+
+@media (max-width: 900px) {
+  .disp-classic .disp-scol.section { overflow: visible; }
+  .disp-classic .disp-scol > .sec-h:first-child { position: static; }
+}
+
+/* ── ⚠ Внештатки: плитки → колонки-секции → таблица опозданий ─────── */
+.inc-page.disp-bi .resctl.bi-sub { margin: 0; justify-content: flex-start; gap: 8px 14px; }
+.inc-page.disp-bi .resctl.bi-sub p { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+.inc-page.disp-bi .kb-cards { max-height: none; }
+.inc-page.disp-bi .kb-card { cursor: default; }
+.inc-page.disp-bi .kb-card:hover { border-color: var(--line); }
+.inc-page.disp-bi .kb-card.inc-closed { opacity: .65; }
+.inc-page.disp-bi .kb-card .inc-note { white-space: normal; line-height: 1.35; }
+.inc-page.disp-bi .kb-card .inc-ret-btns { flex-direction: row; flex-wrap: wrap; }
+.inc-page.disp-bi .kb-card .inc-ret-btns button { flex: 1 1 auto; }
+.inc-late-sec .bi-table td { vertical-align: middle; }
+.inc-late-sec .inc-late-h { color: var(--bad); font-weight: 700; }

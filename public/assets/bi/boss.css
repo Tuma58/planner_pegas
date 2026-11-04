@@ -1,1 +1,102 @@
-/* BI-дополнения группы «boss» (реконструкция 04.11). */
+/* BI-дополнения группы «boss» (реконструкция 04.11).
+   Вкладка «Руководитель»: виды-вкладки, операционный отчёт (плитки →
+   кабина → якорные чипы → сетка секций), печатные отчёты (экранная часть),
+   «Эксплуатация парка (1С)», «Сверка 1С», модалки пробегов/ремзоны.
+   Только токены; кабина (.console) не перекрашивается — только в секции. */
+
+/* ── Переключатель видов «Сегодня · Неделя · Месяц · Отчёты» ── */
+.boss-viewbar { display: flex; gap: 4px; flex-wrap: wrap; margin: 0; padding: 14px 22px 0; }
+.boss-viewbar .button.small { border-radius: 999px; padding: 4px 14px; }
+.boss-viewbar .button.small.ghost { background: var(--card); color: var(--muted); border-color: var(--line); }
+.boss-viewbar .button.small.ghost:hover { color: var(--ink); border-color: var(--accent); }
+
+/* ── Первый экран «Эксплуатация»: строка «прямо сейчас» + отчёт во фрейме ── */
+.boss-ops { gap: 12px; }
+.boss-ops .ops-now { margin: 0; background: var(--card); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: 11px; padding: 9px 15px; box-shadow: var(--shadow); }
+.boss-frame #opsFrame { display: block; border: 0; border-radius: 0; }
+
+/* ── Операционный отчёт ── */
+.boss-bi .section { scroll-margin-top: 62px; }
+/* Кабина: скевоморфная консоль как есть, секция лишь даёт рамку и шапку */
+.boss-cabin .console { border-top: 0; border-bottom: 0; }
+
+/* Якорная навигация разделов — чипы, липнут к верху при прокрутке */
+.boss-anchors { position: sticky; top: 0; z-index: 9; display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 8px 0; margin: -6px 0; background: var(--paper); }
+.boss-anchors a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 13px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+  color: var(--muted); font-size: var(--fs-sm); font-weight: 650; white-space: nowrap; }
+.boss-anchors a b { font-family: var(--mono-font); font-size: 11px; color: var(--faint); }
+.boss-anchors a:hover { color: var(--ink); border-color: var(--accent); }
+.boss-anchors a.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.boss-anchors a.on b { color: var(--accent); }
+
+/* Плитки: тон отклонения — на цифре (полоса сверху остаётся цветом отдела) */
+.boss-bi .metric .v.good, .boss-modal-kpis .metric .v.good { color: var(--ok); }
+.boss-bi .metric .v.warn { color: var(--warn); }
+.boss-bi .metric .v.bad { color: var(--bad); }
+.boss-bi .metric .d { white-space: normal; line-height: 1.35; }
+.boss-kpi-tag { align-self: flex-start; margin-top: 4px; }
+.boss-bi .metric .bi-meter { margin-top: 8px; }
+
+/* Таблицы отчёта */
+.boss-bi .bi-table td.good, .boss-bi .bi-table td.good b { color: var(--ok); }
+.boss-bi .bi-table td.warn, .boss-bi .bi-table td.warn b { color: var(--warn); }
+.boss-bi .bi-table td.bad, .boss-bi .bi-table td.bad b { color: var(--bad); }
+.boss-bi .bi-table tr.tot td { font-weight: 700; background: var(--panel2); border-top: 1px solid var(--line); }
+.boss-kv td:first-child { color: var(--muted); }
+.boss-sub { font-size: 11px; color: var(--faint); margin-top: 2px; line-height: 1.35; }
+.boss-pad { padding: 10px 15px 12px; margin: 0 !important; }
+.boss-note { font-size: 11.5px; color: var(--faint); margin-top: 6px; }
+.boss-pbar { margin: 0 0 10px; }
+.boss-foot { padding: 0 4px; margin-top: 0; }
+
+/* P&L — строки k/v */
+.boss-bi .bi-row .k { min-width: 0; }
+.boss-bi .bi-row .v { white-space: nowrap; }
+.boss-bi .bi-row .v.bad { color: var(--bad); }
+.boss-bi .bi-row.boss-big { border-top: 1px solid var(--line); font-size: var(--fs-md); }
+.boss-bi .bi-row.boss-big .k { color: var(--ink); font-weight: 650; }
+.boss-bi .bi-row.boss-big .v { font-size: 16px; }
+
+/* Пары секций 8+4 и 7+5 при 1280 не разваливаются на ряды */
+@media (max-width: 1280px) {
+  .boss-bi .bi-grid > .s8, .boss-bi .bi-grid > .s7 { grid-column: span 7; }
+  .boss-bi .bi-grid > .s4, .boss-bi .bi-grid > .s5 { grid-column: span 5; }
+}
+
+/* ── Печатные отчёты: экранная часть модала (печать — тем же модалом) ── */
+.boss-report-h { padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--border2); }
+.boss-report .rsums { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 10px 0; }
+.boss-report .rsum { display: flex; flex-direction: column; gap: 2px; background: var(--card);
+  border: 1px solid var(--line); border-top: 2px solid var(--accent); border-radius: 10px;
+  padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; font-weight: 600; }
+.boss-report .rsum b { font-family: var(--mono-font); font-size: 16px; text-transform: none; letter-spacing: -.01em; }
+.boss-report .rsum small { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.boss-report h4 { margin: 16px 0 8px; padding: 7px 12px; background: var(--panel2);
+  border: 1px solid var(--border2); border-left: 3px solid var(--accent); border-radius: 8px; }
+.boss-report .bi-table { margin-bottom: 6px; border: 1px solid var(--line); }
+.boss-report .bi-table th { position: static; white-space: normal; }
+@media print {
+  .boss-report .bi-table th { background: none; color: var(--ink); border-bottom: 1px solid var(--line); }
+  .boss-report .rsum, .boss-report h4 { background: none; }
+}
+
+/* ── Модалки: пробеги, сверка 1С — ряд плиток ── */
+.boss-modal-kpis { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); margin: 10px 0; }
+.boss-modal-kpis .metric .v { font-size: 19px; }
+.boss-modal-kpis .metric .d { white-space: normal; }
+
+/* ── «Эксплуатация парка (1С)» ── */
+.boss-park { padding: 6px 0 0; }
+.boss-park .metric .v.boss-v-sm { font-size: 16px; white-space: normal; }
+.boss-park .section .sec-b { overflow: auto; }
+
+/* ── «Сверка 1С»: разделы-свёртки как секции ── */
+.boss-rec-sub { margin: 12px 0 0; }
+.boss-det-list { display: flex; flex-direction: column; gap: 8px; }
+.rejected-details.boss-det { margin-top: 0; border-top: 1px solid var(--line); padding-top: 0; }
+.rejected-details.boss-det summary.sec-h { color: var(--ink); text-transform: none; letter-spacing: 0; font-size: var(--fs-base); }
+.rejected-details.boss-det:not([open]) summary.sec-h { border-bottom: 0; }
+.rejected-details.boss-det .sec-b { padding: 8px 12px; }

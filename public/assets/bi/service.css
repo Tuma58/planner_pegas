@@ -1,1 +1,67 @@
-/* BI-дополнения группы «service» (реконструкция 04.11). */
+/* BI-дополнения группы «service» (реконструкция 04.11):
+   Ремзона, Сотрудники, Затраты, Инвентаризация, страница «Настройки».
+   Только токены styles.css; детали набора — в kit.css. */
+
+/* ── Ремзона: доска статусов ── */
+.svc-rz .rz-board { grid-auto-columns: minmax(220px, 1fr); }
+.svc-rz .rz-col .sec-b { padding: 10px; }
+.svc-rz .rz-col .list { gap: 8px; }
+.svc-rz .rz-col .list-item { border-color: var(--border2); background: var(--card); }
+.svc-rz .rz-col .list-item:hover { border-color: var(--toir); }
+.svc-rz .rz-col .list-item .button.small { margin-left: 0; }
+.svc-rz .rz-col .bi-empty { padding: 14px; }
+.svc-rz .section > .sec-b > .list .list-item { border-color: var(--border2); }
+
+/* ── Сотрудники ── */
+.svc-staff .bi-sub .block-search { min-height: 32px; }
+.svc-staff .bi-table td .vlink { font-weight: 600; }
+
+/* ── Затраты ── */
+.svc-exp .bi-sub label { display: inline-flex; align-items: center; gap: 6px; }
+.svc-exp .bi-sub input[type="date"] { width: auto; min-height: 32px; }
+.svc-exp .metric.hero .v { color: var(--staff); }
+.svc-exp .exp-groups { max-width: none; margin: 0; }
+.svc-exp .exp-ghead b { font-family: var(--mono-font); }
+.svc-exp .exp-row b { font-family: var(--mono-font); }
+.svc-exp .bi-table td.muted { color: var(--muted); font-size: var(--fs-xs); }
+.svc-exp .resctl { margin: 8px 0 0; justify-content: flex-start; }
+
+/* ── Инвентаризация (модалка): находка = секция-раскрывашка ── */
+.svc-inv-kpis { margin: 0 0 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.inv-section.section { margin-bottom: 10px; }
+.inv-section > summary.sec-h { cursor: pointer; list-style: none; }
+.inv-section > summary.sec-h::-webkit-details-marker { display: none; }
+.inv-section > summary.sec-h::before { content: '▸'; color: var(--muted); width: 12px; }
+.inv-section[open] > summary.sec-h::before { content: '▾'; }
+.inv-section > summary.sec-h .hint { flex-basis: 100%; padding-left: 20px; }
+.inv-section:not([open]) > summary.sec-h { border-bottom: 0; }
+.inv-section .sec-b .list { gap: 6px; }
+
+/* ── Страница «Настройки» ── */
+.settings-content > .bi-page.svc-set { padding: 0; max-width: 1320px; }
+.svc-set .bi-sub h2 { font-size: var(--fs-lg); }
+.svc-set .bi-sub .bi-actions .button { margin-left: 0; }
+.svc-set .section { margin: 0; }
+.svc-set .sec-b > :first-child { margin-top: 0; }
+.svc-set .sec-b > :last-child { margin-bottom: 0; }
+.svc-set .sec-b.flush > .table-wrap { border: 0; border-radius: 0; }
+.svc-set .bi-table input:not([type="checkbox"]):not([type="color"]),
+.svc-set .bi-table select, .svc-set .bi-table textarea { width: 100%; min-width: 80px; }
+.svc-set .bi-table input[type="color"] { width: 46px; padding: 2px; }
+.svc-set .bi-table th[style*="width"] { white-space: nowrap; }
+.svc-set .s4 .fields, .svc-set .s5 .fields { grid-template-columns: 1fr; }
+.svc-set .mapping:first-of-type { border-top: 0; padding-top: 0; }
+@media (max-width: 1280px) {
+  /* пары s5+s7 и s4+s8 не разъезжаются на две строки */
+  .svc-set .bi-grid > .s7, .svc-set .bi-grid > .s8 { grid-column: span 6; }
+  .svc-set .s6 .fields.three, .svc-set .s8 .fields.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .svc-set .s4 .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Оглавление-якоря раздела под активной кнопкой меню */
+.svc-toc { display: flex; flex-direction: column; margin: 4px 0 10px 14px; padding-left: 8px;
+  border-left: 2px solid var(--border); }
+.svc-toc a { padding: 4px 8px; border-radius: 6px; color: var(--muted); font-size: var(--fs-sm);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc-toc a:hover { color: var(--accent); background: var(--card); }
+@media (max-width: 900px) { .svc-toc { display: none; } }

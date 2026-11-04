@@ -317,8 +317,41 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
   const isTab = !!context.planTarget;
   let totalsOpen = false;
   try { totalsOpen = localStorage.getItem('plFpTotals') === 'open'; } catch { /* приватный режим */ }
+  // BI-сводка (04.11): плитки считаются из тех же rowsData/totals/needByDay,
+  // что и сводные строки сетки, — отдельного расчёта нет.
+  const todayIdx = todayIso.slice(0, 7) === plan.month ? Number(todayIso.slice(8, 10)) - 1 : -1;
+  const todayT = todayIdx >= 0 ? totals[todayIdx] : null;
+  const todayNeed = todayIdx >= 0 && needByDay ? needByDay[todayIdx] : null;
+  const todayBalance = todayT && todayNeed != null ? Math.round(todayT.trips + todayT.free - todayNeed) : null;
+  const freeDaysSum = rowsData.reduce((sum, row) => sum + row.freeDays, 0);
+  const withRound = rowsData.filter(row => row.template).length;
+  const fpKpis = `<div class="bi-kpis fp-kpis">
+      <div class="metric dept-drv"><span class="l">Машин в плане</span>
+        <span class="v">${rowsData.length}<small>${rowsData.length !== allRowsData.length ? `из ${allRowsData.length}` : 'маш'}</small></span>
+        <span class="d">${MONTHS[monthNum - 1]} ${year}</span></div>
+      <div class="metric dept-drv"><span class="l">На кругах</span>
+        <span class="v">${withRound}<small>маш</small></span>
+        <span class="d">без круга ${rowsData.length - withRound}</span></div>
+      <div class="metric ${freeTotal ? 'warn' : ''}"><span class="l">Резерв под клиентов</span>
+        <span class="v">${freeTotal}<small>маш</small></span>
+        <span class="d">10+ свободных дней без круга</span></div>
+      <div class="metric ${freeDaysSum ? 'warn' : ''}"><span class="l">Свободно впереди</span>
+        <span class="v">${freeDaysSum}<small>маш·дн</small></span>
+        <span class="d">до конца месяца</span></div>
+      <div class="metric dept-log"><span class="l">Сегодня в рейсах</span>
+        <span class="v">${todayT ? todayT.trips : '—'}<small>${todayT ? 'маш' : ''}</small></span>
+        <span class="d">${todayT ? `недоступны ${todayT.unavail} · свободно ${todayT.free}` : 'месяц не текущий'}</span></div>
+      ${needByDay ? `<div class="metric ${todayBalance == null ? '' : todayBalance < 0 ? 'neg' : 'pos'}"><span class="l">Баланс к сетке</span>
+        <span class="v">${todayBalance == null ? '—' : `${todayBalance > 0 ? '+' : ''}${todayBalance}`}<small>${todayBalance == null ? '' : 'маш'}</small></span>
+        <span class="d">${todayNeed != null ? `нужно по сетке ${Math.round(todayNeed)}` : 'сегодня вне месяца'}</span></div>` : ''}
+    </div>`;
   renderCanvas(`${isTab ? '' : `<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>`}
-    <div class="console compact" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
+    <div class="bi-page fp-page${isTab ? ' fp-tab' : ''}">
+    ${fpKpis}
+    <section class="section dept-drv fp-sec">
+    <div class="sec-h"><span class="st">Сетка машин на месяц</span>
+      <span class="hint">рейсы · диспозиции · прогноз по кругу · свободные дни — резерв сверху</span></div>
+    <div class="console compact" style="margin:0;row-gap:6px">
       <button type="button" class="button ghost small" id="fpPrev">←</button>
       <strong style="font-size:var(--fs-sm);text-transform:capitalize;min-width:104px;text-align:center">${isTab ? `${MONTHS[monthNum - 1]} ${year}` : ''}</strong>
       <button type="button" class="button ghost small" id="fpNext">→</button>
@@ -337,7 +370,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
         title="Показать/спрятать сводные строки (нужно по сетке, занято, недоступны, свободно) — строка «⚖ Баланс к сетке» видна всегда">∑ сводка</span>
       <span class="legend-tip" style="margin-left:auto" title="Ячейка: синяя — рейс в плане, зелёная — в пути, тёмная — выгружен, серая — диспозиция, точка — прогноз по назначенному кругу, жёлтая — свободный день (ресурс под новых клиентов). Колонка «Круг» — типовой цикл машины: по нему считается прогноз и утренняя стыковка. Машины отсортированы по свободным дням — резерв сверху.">ⓘ легенда</span>
     </div>
-    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid${totalsOpen ? '' : ' totals-folded'}">
+    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 330px)' : '52vh'};overflow:auto"><table style="font-size:11px" class="fleet-plan plan-grid${totalsOpen ? '' : ' totals-folded'}">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:90px">ТС</th><th class="plan-fix2" style="left:90px;min-width:120px">Круг</th><th title="Свободных дней до конца месяца">🟢</th>${dayHead}</tr>
       ${needByDay ? `<tr class="plan-totals" style="font-weight:700"><td colspan="3" class="plan-fix"
         title="Сколько машин требует сетка Плана вывоза в этот день: рейсы слотов × цикл плеча (транзит + 8 ч) / 24 — та же строка, что «Машин занято (оценка)» в Плане вывоза">Нужно по сетке</td>${needByDay.map(need =>
@@ -367,6 +400,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
           ${cell.cls ? `data-fp-cell="${row.vehicle.id}|${i + 1}" style="text-align:center;cursor:pointer"` : 'style="text-align:center"'}>${cell.text}</td>`).join('')}
       </tr>`).join('')}
     </table></div>
+    </section></div>
     ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
 
   if (canvasSame) return; // тихий тик: данные и разметка не менялись

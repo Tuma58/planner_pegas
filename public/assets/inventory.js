@@ -15,13 +15,14 @@ export async function inventoryDialog(context, scope = 'resource') {
   const problem = snapshot.sections.filter(section => section.count > 0);
   const clean = snapshot.sections.filter(section => !section.count);
   const sectionHtml = section => `
-    <details class="inv-section" ${section.count && section.count <= 25 ? 'open' : ''}>
-      <summary style="cursor:pointer;padding:6px 0">
-        <strong>${section.title}</strong>
-        <span class="badge ${section.count ? 'bad' : 'ok'}" style="margin-left:8px">${section.count || '✓'}</span>
-        <small class="muted" style="display:block;margin-left:16px">${escapeHtml(section.hint || '')}</small>
+    <details class="inv-section section" ${section.count && section.count <= 25 ? 'open' : ''}>
+      <summary class="sec-h">
+        <span class="st">${section.title}</span>
+        <span class="bi-tag ${section.count ? 'neg' : 'pos'}">${section.count || '✓'}</span>
+        ${section.hint ? `<span class="hint">${escapeHtml(section.hint)}</span>` : ''}
       </summary>
-      ${section.items.map(item => `<div class="list-item" style="padding:5px 10px;margin-left:12px">
+      <div class="sec-b"><div class="list">
+      ${section.items.map(item => `<div class="list-item" style="padding:5px 10px">
         <span style="flex:1;min-width:0">
           ${item.vehicleId
             ? `<strong class="mono vlink" data-vinfo="${item.vehicleId}">${escapeHtml(item.label)}</strong>`
@@ -31,19 +32,26 @@ export async function inventoryDialog(context, scope = 'resource') {
         ${item.action === 'back-to-plan' ? `<button class="button ghost small" data-inv-plan="${item.tripId}"
           title="Рейс без единой отметки вернётся в «План», шаги «задание водителю» и «на линию» снимутся — диспетчер отметит их в реальный момент выхода">↩ Вернуть в план</button>` : ''}
       </div>`).join('')}
+      </div>
       ${section.count > section.items.length
-        ? `<div class="muted" style="margin-left:22px;padding:4px 0">… и ещё ${section.count - section.items.length}</div>` : ''}
+        ? `<div class="muted" style="padding:6px 2px 0">… и ещё ${section.count - section.items.length}</div>` : ''}
+      </div>
     </details>`;
   context.showModal(`
     <h2 style="margin-bottom:2px">${scope === 'all' ? '🧾 Инвентаризация процессов' : '🔍 Ревизия ресурса'}</h2>
     <p class="muted" style="margin:0 0 10px">Снимок на ${new Date(snapshot.generatedAt).toLocaleString('ru-RU')}.
       Всего находок: <strong>${snapshot.total}</strong>. Клик по госномеру — карточка ТС.</p>
+    <div class="bi-kpis svc-inv-kpis">
+      <div class="metric ${snapshot.total ? 'warn' : 'pos'}"><span class="l">Находок</span><span class="v">${snapshot.total}</span></div>
+      <div class="metric ${problem.length ? 'neg' : 'pos'}"><span class="l">Проверок с замечаниями</span><span class="v">${problem.length}<small>из ${snapshot.sections.length}</small></span></div>
+      <div class="metric pos"><span class="l">Без замечаний</span><span class="v">${clean.length}</span></div>
+    </div>
     <p style="margin:0 0 10px"><button class="button small" id="invAutoFix"
       title="Чинит то, что не требует решения человека: пробелы в закреплениях и именах клиентов, уволенных в карточках ТС, пустые геозоны, написание прицепов, телефоны водителей к +7, статусы, отставшие от факта выгрузки; негеокоженные адреса — геокодеру на новый круг">⚙ Исправить автоматически</button></p>
     ${problem.map(sectionHtml).join('')}
-    ${clean.length ? `<details class="inv-section"><summary style="cursor:pointer;padding:6px 0" class="muted">
-      ✅ Без замечаний: ${clean.length} провер${clean.length === 1 ? 'ка' : 'ок'}</summary>
-      ${clean.map(section => `<div class="muted" style="margin-left:16px;padding:2px 0">✓ ${section.title}</div>`).join('')}
+    ${clean.length ? `<details class="inv-section section"><summary class="sec-h">
+      <span class="st">✅ Без замечаний: ${clean.length} провер${clean.length === 1 ? 'ка' : 'ок'}</span></summary>
+      <div class="sec-b">${clean.map(section => `<div class="muted" style="padding:2px 0">✓ ${section.title}</div>`).join('')}</div>
     </details>` : ''}`);
   document.querySelectorAll('[data-inv-plan]').forEach(button => {
     button.onclick = async () => {

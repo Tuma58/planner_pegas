@@ -112,7 +112,7 @@ export function salesRadarDialog(context) {
 
   const presetDays = { '72h': 3, '7d': 7, '14d': 14 };
 
-  context.showModal(`<h2>🎯 Куда продавать</h2>
+  context.showModal(`<div class="sales-modal sales-radar"><h2>🎯 Куда продавать</h2>
     <div id="radarChips" style="display:flex;gap:4px;flex-wrap:wrap;margin:8px 0"></div>
     <div class="console" style="margin:0 0 8px">
       <span class="cnl">Дыры плана:</span>
@@ -120,14 +120,14 @@ export function salesRadarDialog(context) {
     `<button type="button" class="button ghost small" data-preset="${key}">${label}</button>`).join('')}
       <span class="muted" style="margin-left:auto">рынок за 60 дней · простой ${money(DAY_RATE)}/машино-день</span>
     </div>
-    <h3 style="margin:8px 0 6px">1 · Горящие зоны — машины ждут груз
-      <small class="muted" style="text-transform:none;font-weight:400">клик по номеру — 🔒 бронь под сделку</small></h3>
+    <h3 class="sec-h"><span class="sn">1</span><span class="st">Горящие зоны — машины ждут груз</span>
+      <span class="hint">клик по номеру — 🔒 бронь под сделку</span></h3>
     <div class="list" id="radarZones" style="max-height:36vh;overflow:auto"></div>
-    <h3 style="margin:12px 0 6px">2 · Дыры плана вывоза <span class="badge" id="radarHolesBadge">…</span></h3>
+    <h3 class="sec-h"><span class="sn">2</span><span class="st">Дыры плана вывоза</span> <span class="badge" id="radarHolesBadge">…</span></h3>
     <div class="dmr-list" id="radarHoles" style="max-height:22vh;overflow:auto"><p class="muted">Загружаю…</p></div>
-    <h3 style="margin:12px 0 6px">3 · Прайс направлений <span class="badge" id="radarMarketBadge"></span></h3>
+    <h3 class="sec-h"><span class="sn">3</span><span class="st">Прайс направлений</span> <span class="badge" id="radarMarketBadge"></span></h3>
     <div class="table-wrap" id="radarMarket" style="max-height:30vh;overflow:auto"></div>
-    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div></div>`,
   'wide');
 
   const zoneBlockHtml = group => {
@@ -192,16 +192,16 @@ export function salesRadarDialog(context) {
     if (!box) return;
     const rows = market.filter(dir => !filter.zone || dir.from === filter.zone || dir.to === filter.zone);
     document.getElementById('radarMarketBadge').textContent = rows.length;
-    box.innerHTML = `<table>
-      <tr><th>Направление</th><th>Рейсов/нед</th><th>Рынок (медиана)</th><th>Коридор</th><th>₽/км</th><th>Постоянные клиенты</th></tr>
-      ${rows.map(dir => `<tr>
+    box.innerHTML = `<table class="bi-table">
+      <thead><tr><th>Направление</th><th class="r">Рейсов/нед</th><th class="r">Рынок (медиана)</th><th class="r">Коридор</th><th class="r">₽/км</th><th>Постоянные клиенты</th></tr></thead>
+      <tbody>${rows.map(dir => `<tr>
         <td><b>${escapeHtml(dir.key)}</b></td>
-        <td style="text-align:right">${dir.perWeek.toFixed(1)}</td>
-        <td style="text-align:right"><b>${money(dir.median)}</b></td>
-        <td style="text-align:right" class="muted">${money(dir.p25)}–${money(dir.p75)}</td>
-        <td style="text-align:right">${dir.rubKm ?? '—'}</td>
+        <td class="num">${dir.perWeek.toFixed(1)}</td>
+        <td class="num"><b>${money(dir.median)}</b></td>
+        <td class="num muted">${money(dir.p25)}–${money(dir.p75)}</td>
+        <td class="num">${dir.rubKm ?? '—'}</td>
         <td>${dir.topCustomers.map(([name, count]) => `${escapeHtml(name.slice(0, 26))} (${count})`).join(', ')}</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="muted">Пусто.</td></tr>'}
+      </tr>`).join('') || '<tr><td colspan="6" class="muted">Пусто.</td></tr>'}</tbody>
     </table>`;
   };
 

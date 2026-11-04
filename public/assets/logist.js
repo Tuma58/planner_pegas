@@ -588,7 +588,7 @@ export async function renderLogist(container, context) {
         </span>
       </span>
     </div>`;
-  }).join('') || '<p class="muted">Простаивающих и освобождающихся сцепок нет — парк загружен.</p>';
+  }).join('') || '<div class="bi-empty">Простаивающих и освобождающихся сцепок нет — парк загружен.</div>';
 
   const orderWaitMs = order => order.stage_changed_at
     ? Date.now() - Date.parse(String(order.stage_changed_at).replace(' ', 'T') +
@@ -606,32 +606,36 @@ export async function renderLogist(container, context) {
   const queueCard = order => {
     const waiting = orderWaitMs(order);
     const draft = draftByOrder.get(order.id);
-    return `<div class="list-item ordrow ${order.returned_at ? 'pipe-returned' : 'pipe-mine'}">
-      <span style="flex:1;min-width:0">
+    // BI-вид: заявка очереди — строка таблицы .bi-table (см. queueTable).
+    return `<tr class="lg-row ${order.returned_at ? 'lg-returned' : 'lg-mine'}">
+      <td class="lg-main">
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         ${deadlineBadge(order)}
-        <small class="muted" style="display:block">окно ${formatDateTime(order.window_from)} → ${formatDateTime(order.window_to)}
-          · ${escapeHtml(order.body_type || 'Реф')} ${waiting > 3_600_000 ? ` · ждёт ${waitingLabel(waiting)}` : ''}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
         ${draft ? `<small style="display:block">${draft.reason.startsWith('стыковка')
     ? '⏭ стыковка плеча' : '🌙 ночной подбор'}:
           <strong class="mono vlink" data-vinfo="${draft.vehicle_id}">${escapeHtml(draft.vehicle_plate)}</strong>
           <span class="muted">· ${escapeHtml(draft.reason)}</span></small>` : ''}
-      </span>
-      <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        <b>${money(order.rate_vat)}</b>
+      </td>
+      <td class="num">${formatDateTime(order.window_from)}<small class="muted" style="display:block">→ ${formatDateTime(order.window_to)}</small></td>
+      <td>${escapeHtml(order.body_type || 'Реф')}</td>
+      <td class="num">${waiting > 3_600_000 ? waitingLabel(waiting) : '—'}</td>
+      <td class="num"><b>${money(order.rate_vat)}</b></td>
+      <td class="lg-act">
         ${draft ? `<button class="button small" data-draft-assign="${order.id}"
           data-draft-vehicle="${draft.vehicle_id}"
           title="Назначить машину ночного подбора: ${escapeHtml(draft.vehicle_plate)} — проверка занятости выполнится как при обычном назначении">⚡ ${escapeHtml(draft.vehicle_plate)}</button>` : ''}
         <button class="button ${draft ? 'ghost ' : ''}small" data-assign="${order.id}">${draft ? 'Другое ТС' : 'Назначить ТС'}</button>
-        <span style="display:flex;gap:5px">
-          <button class="button ghost small" data-edit="${order.id}">Изменить</button>
-          <button class="button ghost small" data-reject-order="${order.id}">Отклонить</button>
-        </span>
-      </span>
-    </div>`;
+        <button class="button ghost small" data-edit="${order.id}">Изменить</button>
+        <button class="button ghost small" data-reject-order="${order.id}">Отклонить</button>
+      </td>
+    </tr>`;
   };
+  const queueTable = rows => rows.length ? `<div class="bi-scroll"><table class="bi-table lg-table">
+    <thead><tr><th>Заказчик · маршрут</th><th class="r">Окно погрузки</th><th>Кузов</th>
+      <th class="r">Ждёт</th><th class="r">Ставка с НДС</th><th class="r">Действия</th></tr></thead>
+    <tbody>${rows.map(queueCard).join('')}</tbody></table></div>` : '';
   // Архив очереди: окно погрузки уже закрылось — в заявленном виде заявку
   // не выполнить. Такие уходят в свёрнутый блок, чтобы не хоронить живую
   // очередь; «Изменить» (новое окно) возвращает заявку в работу,
@@ -639,14 +643,14 @@ export async function renderLogist(container, context) {
   const nowIso = new Date().toISOString();
   const liveQueue = queue.filter(order => String(order.window_to) >= nowIso);
   const archiveQueue = queue.filter(order => String(order.window_to) < nowIso);
-  const queueCards = liveQueue.map(queueCard).join('')
-    || (archiveQueue.length ? '' : '<p class="muted">Очередь пуста — все подтверждённые заявки обеспечены ТС.</p>');
+  const queueCards = queueTable(liveQueue)
+    || (archiveQueue.length ? '' : '<div class="bi-empty">Очередь пуста — все подтверждённые заявки обеспечены ТС.</div>');
   const archiveBlock = archiveQueue.length ? `<details class="stale-preps" id="logistArchive"
       ${state.logistArchiveOpen ? 'open' : ''}>
     <summary>🗄 Архив · окно погрузки истекло <span class="scount">${archiveQueue.length}</span></summary>
     <p class="geohint">Окно закрылось — заявка в этом виде невыполнима. Согласуйте с продажами:
       «Изменить» с новым окном вернёт её в очередь, «Отклонить» с причиной отправит в реестр отчёта.</p>
-    ${archiveQueue.map(queueCard).join('')}
+    ${queueTable(archiveQueue)}
   </details>` : '';
 
   const statusMeta = Object.fromEntries((data.settings.statuses || []).map(([id, label, color]) => [id, { label, color }]));
@@ -659,37 +663,39 @@ export async function renderLogist(container, context) {
   const tripCard = trip => {
     const meta = statusMeta[trip.status] || { label: trip.status, color: 'var(--muted)' };
     const unconfirmed = trip.status === 'plan' && !trip.logist_confirmed_at;
-    return `<div class="list-item ordrow ${unconfirmed ? 'pipe-mine' : ''}">
-      <span style="flex:1;min-width:0">
-        <strong>${escapeHtml(routeLabel(trip))}</strong>
-        · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
-        <small class="muted" style="display:block">${escapeHtml(trip.customer_name || 'без заказчика')}
-          · ${formatDateTime(trip.starts_at)} → ${formatDateTime(trip.ends_at)}
-          · ${Number(trip.distance_km).toLocaleString('ru-RU')} км${trip.empty_km
-            ? ` <span class="muted">+ ${Math.round(trip.empty_km)} порож.</span>` : ''} · ${money(trip.revenue_vat)}</small>
-      </span>
-      <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        <span class="badge" style="background:${meta.color};color:#fff">${escapeHtml(meta.label)}</span>
-        <span style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+    // BI-вид: рейс — строка таблицы .bi-table (см. tripTable).
+    return `<tr class="lg-row ${unconfirmed ? 'lg-mine' : ''}">
+      <td class="lg-main"><strong>${escapeHtml(routeLabel(trip))}</strong>
+        <small class="muted" style="display:block">${escapeHtml(trip.customer_name || 'без заказчика')}</small></td>
+      <td class="mono">${escapeHtml(trip.vehicle_plate)}</td>
+      <td class="num">${formatDateTime(trip.starts_at)}<small class="muted" style="display:block">→ ${formatDateTime(trip.ends_at)}</small></td>
+      <td class="num">${Number(trip.distance_km).toLocaleString('ru-RU')}${trip.empty_km
+            ? `<small class="muted" style="display:block">+ ${Math.round(trip.empty_km)} порож.</small>` : ''}</td>
+      <td class="num">${money(trip.revenue_vat)}</td>
+      <td><span class="badge" style="background:${meta.color};color:#fff">${escapeHtml(meta.label)}</span></td>
+      <td class="lg-act">
           ${unconfirmed && can('trips:write') ? `<button class="button small" data-confirm="${trip.id}"
             title="Проверить сцепку и сроки — рейс уйдёт диспетчеру на подготовку выхода">Подтвердить назначение</button>` : ''}
           <button class="button ${unconfirmed ? 'ghost ' : ''}small" data-replace="${trip.id}" title="Подобрать другую сцепку на этот маршрут">Заменить ТС</button>
           <button class="button ghost small" data-open="${trip.id}" title="Времена, статус, заявка">Карточка</button>
           <button class="button ghost small" data-reject-trip="${trip.id}" title="Причина обязательна; заявка вернётся в продажи">Отклонить</button>
-        </span>
-      </span>
-    </div>`;
+      </td>
+    </tr>`;
   };
-  const confirmCards = unconfirmedTrips.map(tripCard).join('');
-  const tripCards = confirmedTrips.map(tripCard).join('')
-    || '<p class="muted">Действующих маршрутов нет.</p>';
-  const returnedCards = returnedOrders.map(order => queueCard(order)).join('')
-    || '<p class="muted">Возвратов нет.</p>';
+  const tripTable = rows => rows.length ? `<div class="bi-scroll"><table class="bi-table lg-table">
+    <thead><tr><th>Маршрут · заказчик</th><th>ТС</th><th class="r">Период</th><th class="r">Км</th>
+      <th class="r">Выручка с НДС</th><th>Статус</th><th class="r">Действия</th></tr></thead>
+    <tbody>${rows.map(tripCard).join('')}</tbody></table></div>` : '';
+  const confirmCards = tripTable(unconfirmedTrips);
+  const tripCards = tripTable(confirmedTrips)
+    || '<div class="bi-empty">Действующих маршрутов нет.</div>';
+  const returnedCards = queueTable(returnedOrders)
+    || '<div class="bi-empty">Возвратов нет.</div>';
   const focusTripCards = (state.logistFocus === 'run'
-    ? runTrips.map(tripCard).join('')
+    ? tripTable(runTrips)
     : state.logistFocus === 'plan'
-      ? confirmedTrips.filter(trip => trip.status === 'plan').map(tripCard).join('')
-      : tripCards) || '<p class="muted">Пусто.</p>';
+      ? tripTable(confirmedTrips.filter(trip => trip.status === 'plan'))
+      : tripCards) || '<div class="bi-empty">Пусто.</div>';
 
   // Плашки — переключатели правой колонки: клик оставляет только свою
   // секцию (повторный — сброс). В плашке: счётчик, деньги и возраст хвоста.
@@ -705,34 +711,42 @@ export async function renderLogist(container, context) {
   // всё, что просрочено: вопрос не должен висеть ни у кого.
   const questions = questionsForOwner(await loadOpenQuestions(), 'Логист');
   const savedScrolls = captureScrolls(container);
-  const html = `<div class="saleswrap">
+  const html = `<div class="bi-page lg-page lg-logist">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — логисту', compact: true, open: state.logistQuestionsOpen })}
-    <div class="salekpis compact">
-      <div class="skpi clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
+    <div class="bi-kpis">
+      <div class="metric dept-log clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
         title="Показать только очередь на назначение">
-        <span class="skl">Ждут назначения ТС</span><span class="skv">${queue.length}</span>
-        <small class="skm">${money(queueSum)}${oldestWait > 3_600_000 ? ` · ждёт ${waitingLabel(oldestWait)}` : ''}</small></div>
-      ${returned ? `<div class="skpi clickable ${focus === 'returned' ? 'open' : ''} skpi-warn" data-kpi="returned"
+        <span class="l">Ждут назначения ТС</span><span class="v">${queue.length}<small>заявок</small></span>
+        <span class="d">${money(queueSum)}${oldestWait > 3_600_000 ? ` · ждёт ${waitingLabel(oldestWait)}` : ''}</span></div>
+      ${returned ? `<div class="metric warn clickable ${focus === 'returned' ? 'open' : ''}" data-kpi="returned"
         title="Показать только возвраты из плана — их причины требуют решения">
-        <span class="skl">Возвраты из плана</span><span class="skv">${returned}</span>
-        <small class="skm">разобрать причины</small></div>` : ''}
-      ${needConfirm ? `<div class="skpi clickable ${focus === 'confirm' ? 'open' : ''} skpi-hot" data-kpi="confirm"
+        <span class="l">Возвраты из плана</span><span class="v">${returned}</span>
+        <span class="d">разобрать причины</span></div>` : ''}
+      ${needConfirm ? `<div class="metric neg clickable ${focus === 'confirm' ? 'open' : ''}" data-kpi="confirm"
         title="Показать только рейсы на подтверждении — приоритет №1">
-        <span class="skl">На подтверждении</span><span class="skv">${needConfirm}</span>
-        <small class="skm">${money(confirmSum)} · диспетчер ждёт</small></div>` : ''}
-      ${(state.exceptions?.transferGaps || []).length ? `<div class="skpi clickable skpi-warn" data-kpi="transfer-gaps"
+        <span class="l">На подтверждении</span><span class="v">${needConfirm}<small>рейс.</small></span>
+        <span class="d">${money(confirmSum)} · диспетчер ждёт</span></div>` : ''}
+      ${(state.exceptions?.transferGaps || []).length ? `<div class="metric warn clickable" data-kpi="transfer-gaps"
         title="Следующая погрузка дальше норматива от точки выгрузки, а порожний перегон не оформлен — гант и подбор видят машину не там, где она есть. Клик — реестр с кнопкой «Оформить»">
-        <span class="skl">🚚 Перегон не оформлен</span><span class="skv">${state.exceptions.transferGaps.length}</span></div>` : ''}
-      <div class="skpi clickable ${focus === 'plan' ? 'open' : ''}" data-kpi="plan"
+        <span class="l">🚚 Перегон не оформлен</span><span class="v">${state.exceptions.transferGaps.length}</span>
+        <span class="d">оформить в реестре</span></div>` : ''}
+      <div class="metric dept-log clickable ${focus === 'plan' ? 'open' : ''}" data-kpi="plan"
         title="Показать только рейсы в плане">
-        <span class="skl">В плане</span><span class="skv">${confirmedTrips.filter(trip => trip.status === 'plan').length}</span>
-        <small class="skm">${money(planSum)}</small></div>
-      <div class="skpi clickable ${focus === 'run' ? 'open' : ''}" data-kpi="run"
+        <span class="l">В плане</span><span class="v">${confirmedTrips.filter(trip => trip.status === 'plan').length}<small>рейс.</small></span>
+        <span class="d">${money(planSum)}</span></div>
+      <div class="metric pos clickable ${focus === 'run' ? 'open' : ''}" data-kpi="run"
         title="Машин в пути (у сцепки может быть два рейса: следующий выведен заранее) — показать только рейсы в пути">
-        <span class="skl">В пути · машин</span><span class="skv">${runCount}</span>
-        <small class="skm">рейсов ${runTrips.length} · ${money(runSum)}</small></div>
+        <span class="l">В пути · машин</span><span class="v">${runCount}<small>маш</small></span>
+        <span class="d">рейсов ${runTrips.length} · ${money(runSum)}</span></div>
+      <div class="metric dept-log">
+        <span class="l">Сцепкам нужна работа</span><span class="v">${vehicleRequests.length}<small>маш</small></span>
+        <span class="d">простаивают и освобождаются</span></div>
       ${demurrageChipHtml(data)}
-      <div class="salesfilter">
+    </div>
+    <section class="section lg-filterbar">
+      <div class="sec-h"><span class="st">Фильтры</span>
+        <span class="hint">геозона, субъект и период действуют на все секции экрана</span></div>
+      <div class="sec-b"><div class="salesfilter lg-filters">
         <select id="logistState" title="Показать машины парка в выбранном состоянии: забронированные, в ремонте, без водителя, в перегоне">
           <option value="">Кому нужна работа</option>
           <option value="hold" ${stateFilter === 'hold' ? 'selected' : ''}>🔒 Забронированы (${stateCounts.hold})</option>
@@ -776,12 +790,16 @@ export async function renderLogist(container, context) {
               title="Сетка машин на месяц: рейсы, круги, свободные дни — резерв под новых клиентов">🚛 План парка</button>
           </div>
         </details>
-      </div>
-    </div>
-    <div class="salesboard">
-      <div class="scol">
-        <div class="scolh">${stateFilter ? stateLabels[stateFilter] : 'Сцепки: простаивают и освобождаются'}
-          <span>${stateFilter ? stateVehicles.length : vehicleRequests.length}</span></div>
+      </div></div>
+    </section>
+    <div class="bi-grid">
+      <section class="section s5 dept-log">
+        <div class="sec-h"><span class="st">${stateFilter ? stateLabels[stateFilter] : 'Сцепки: простаивают и освобождаются'}</span>
+          <span class="bi-tag">${stateFilter ? stateVehicles.length : vehicleRequests.length}</span>
+          <span class="hint">${stateFilter
+    ? 'машины парка в выбранном состоянии'
+    : 'кандидаты ТС под очередь'}</span></div>
+        <div class="sec-b">
         ${zone && !stateFilter ? (() => {
     const dayEndMs = Date.parse(new Date().toISOString().slice(0, 10) + 'T23:59:59Z');
     const inZoneAll = (data.vehicles || []).filter(vehicle => vehicle.status === 'work' &&
@@ -792,31 +810,36 @@ export async function renderLogist(container, context) {
       ? `, <b>${busyCount}</b> занятых или недоступных — их видно в Ганте (легенда зоны), в «🚛 Плане парка» и в фильтре состояния`
       : ''}.</div>`;
   })() : ''}
-        <div class="list">${stateFilter ? stateCards : vehicleCards}</div>
+        <div class="list lg-list bi-scroll">${stateFilter ? stateCards : vehicleCards}</div>
         <div class="geohint">${stateFilter
     ? 'Показаны машины парка в выбранном состоянии. Вернуться к потребности — «Кому нужна работа» в фильтре состояния.'
     : '«Подобрать рейс» — заявки очереди, подходящие по времени освобождения; «→ Продажи» — запрос загрузки, если подходящего рейса нет.'}</div>
-      </div>
-      <div class="scol">
-        <div class="scolh">Назначение и подтверждение <span>${queue.length + needConfirm}</span>
-          ${focus ? `<button class="button ghost small" id="logistFocusOff" style="margin-left:auto"
-            title="Показать все секции">✕ показать всё</button>` : ''}</div>
+        </div>
+      </section>
+      <section class="section s7 dept-log">
+        <div class="sec-h"><span class="st">Назначение и подтверждение</span>
+          <span class="bi-tag">${queue.length + needConfirm}</span>
+          ${focus ? `<div class="sec-actions"><button class="button ghost small" id="logistFocusOff"
+            title="Показать все секции">✕ показать всё</button></div>` : ''}</div>
+        <div class="sec-b flush">
         ${(!focus || focus === 'confirm') && (needConfirm || focus === 'confirm')
-          ? `<div class="scolh" style="font-size:var(--fs-sm);margin-top:2px">Подтвердите назначение <span>${needConfirm}</span></div>
-        <div class="list" style="margin-bottom:12px">${confirmCards || '<p class="muted">Подтверждений не ждут.</p>'}</div>` : ''}
+          ? `<div class="lg-subh">Подтвердите назначение <span class="bi-tag neg">${needConfirm}</span></div>
+        <div class="lg-subb">${confirmCards || '<div class="bi-empty">Подтверждений не ждут.</div>'}</div>` : ''}
         ${!focus || focus === 'queue' || focus === 'returned'
-          ? `<div class="scolh" style="font-size:var(--fs-sm);margin-top:2px">${focus === 'returned'
-              ? 'Возвраты из плана' : 'Очередь на назначение'} <span>${focus === 'returned' ? returned : queue.length}</span></div>
-        <div class="list" style="margin-bottom:12px">${focus === 'returned' ? returnedCards : `${queueCards}${archiveBlock}`}</div>` : ''}
+          ? `<div class="lg-subh">${focus === 'returned'
+              ? 'Возвраты из плана' : 'Очередь на назначение'} <span class="bi-tag">${focus === 'returned' ? returned : queue.length}</span>
+              <span class="hint">сверху — с ранним дедлайном назначения</span></div>
+        <div class="lg-subb">${focus === 'returned' ? returnedCards : `${queueCards}${archiveBlock}`}</div>` : ''}
         ${!focus || focus === 'plan' || focus === 'run'
-          ? `<div class="scolh" style="font-size:var(--fs-sm)">${focus === 'run'
+          ? `<div class="lg-subh">${focus === 'run'
               ? 'Рейсы в пути' : focus === 'plan' ? 'Рейсы в плане' : 'Действующие маршруты'}
-            <span>${focus === 'run' ? runCount : focus === 'plan'
+            <span class="bi-tag">${focus === 'run' ? runCount : focus === 'plan'
               ? confirmedTrips.filter(trip => trip.status === 'plan').length : confirmedTrips.length}</span></div>
-        <div class="list">${focusTripCards}</div>` : ''}
-        <div class="geohint">Назначение создаёт рейс и передаёт его диспетчеру; «Заменить ТС» —
+        <div class="lg-subb">${focusTripCards}</div>` : ''}
+        <div class="geohint lg-foot">Назначение создаёт рейс и передаёт его диспетчеру; «Заменить ТС» —
           с проверкой занятости; отклонение возвращает заявку в продажи.</div>
-      </div>
+        </div>
+      </section>
     </div>
   </div>`;
 

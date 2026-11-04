@@ -66,15 +66,17 @@ export async function renderIncidents(container, context) {
     </div>`;
   };
 
-  const lateCard = item => `<div class="kb-card inc-auto">
-      <div class="kbr kb1"><b class="mono">${escapeHtml(item.vehicle_plate)}</b>
-        <span class="kb-drv">${item.order_no ? `№ ${escapeHtml(String(item.order_no))}` : ''}</span></div>
-      <div class="kbr kb2">${escapeHtml((item.customer_name || '').slice(0, 34))}</div>
-      <div class="kbr"><b style="color:var(--bad)">+${item.late_hours} ч</b>
-        на ${item.stop_kind === 'P' ? 'погрузке' : 'выгрузке'} ${escapeHtml((item.point || '').slice(0, 26))}</div>
-      <div class="kbr"><small class="muted">план ${tsf(item.planned_arrival)} · факт ${tsf(item.actual_arrival)}
-        · <span class="badge" title="Создано автоматически из отметки прибытия — факты не закрываются, они уже случились">⚙ из отметок</span></small></div>
-    </div>`;
+  // BI-вид 04.11: опоздания из отметок — строки таблицы .bi-table
+  // (их десятки, карточка на каждое съедала колонку).
+  const lateRow = item => `<tr class="inc-auto-row">
+      <td><b class="mono">${escapeHtml(item.vehicle_plate)}</b></td>
+      <td class="num">${item.order_no ? escapeHtml(String(item.order_no)) : ''}</td>
+      <td>${escapeHtml((item.customer_name || '').slice(0, 34))}</td>
+      <td>${item.stop_kind === 'P' ? 'погрузка' : 'выгрузка'} · ${escapeHtml((item.point || '').slice(0, 34))}</td>
+      <td class="num inc-late-h">+${item.late_hours} ч</td>
+      <td class="num">${tsf(item.planned_arrival)}</td>
+      <td class="num">${tsf(item.actual_arrival)}</td>
+    </tr>`;
 
   const columns = [
     ['act', manual.filter(item => item.kind === 'act').map(card)],
@@ -83,27 +85,47 @@ export async function renderIncidents(container, context) {
       ...(data.autoLateTotal > data.autoLate.length
         ? [`<p class="muted" style="padding:4px 8px">Всего опозданий из отметок за период: ${data.autoLateTotal} — показаны ${data.autoLate.length} крупнейших. Полная картина — в отчётах руководителя.</p>`]
         : []),
-      ...data.autoLate.map(lateCard)]]
+      ]]
   ];
+  const openOf = kind => data.manual.filter(item => item.kind === kind && !item.closed_at);
+  const waitDecision = openOf('return').filter(item => item.status === 'wait_decision').length;
 
-  const html = `<div class="inc-page">
-    <div class="resctl" style="margin-bottom:8px">
-      <strong>⚠ Внештатки</strong>
+  const html = `<div class="inc-page bi-page disp-bi">
+    <div class="resctl bi-sub">
       <label class="muted">с <input type="date" id="incFrom" value="${state.incFrom}"></label>
       <label class="muted">по <input type="date" id="incTo" value="${state.incTo}"></label>
       <label class="muted" title="Закрытые акты и возвраты — история решений">
         <input type="checkbox" id="incClosed" ${showClosed ? 'checked' : ''}> показать закрытые</label>
       ${canManageWh ? `<button class="button ghost small" id="incWarehouses"
         title="Справочник складов LTL: названия, адреса, телефоны — для статуса «на складе»">🏬 Склады LTL</button>` : ''}
-      <small class="muted">Завести внештатку: Диспетчер → карточка рейса → «⋯ Внештатная ситуация» → Акт / Возврат / Опоздание</small>
+      <p>Завести внештатку: Диспетчер → карточка рейса → «⋯ Внештатная ситуация» → Акт / Возврат / Опоздание</p>
+    </div>
+    <div class="bi-kpis disp-kpis">
+      <div class="metric ${openOf('act').length ? 'warn' : 'dept-drv'}"><span class="l">📋 Акты открыты</span>
+        <span class="v">${openOf('act').length}</span><span class="d">за период · ждут итога</span></div>
+      <div class="metric ${openOf('return').length ? 'warn' : 'dept-drv'}"><span class="l">↩ Возвраты в работе</span>
+        <span class="v">${openOf('return').length}</span><span class="d">ждут решения клиента: ${waitDecision}</span></div>
+      <div class="metric ${waitDecision ? 'neg' : 'dept-drv'}"><span class="l">⏳ Ждут решения</span>
+        <span class="v">${waitDecision}</span><span class="d">возвраты без решения</span></div>
+      <div class="metric ${data.autoLateTotal || data.autoLate.length ? 'neg' : 'pos'}"><span class="l">⏰ Опоздания из отметок</span>
+        <span class="v">${data.autoLateTotal || data.autoLate.length}</span><span class="d">ручных открыто: ${openOf('late').length}</span></div>
     </div>
     <div class="kb-board">
-      ${columns.map(([kind, cards]) => `<section class="kb-col">
-        <div class="kb-chead"><span>${KIND_META[kind][0]}</span><span class="kb-lim">${cards.length}</span></div>
+      ${columns.map(([kind, cards]) => `<section class="kb-col section">
+        <div class="kb-chead sec-h"><span class="st">${KIND_META[kind][0]}</span><span class="kb-lim bi-tag">${cards.length}</span></div>
         <div class="kb-note">${KIND_META[kind][1]}</div>
-        <div class="kb-cards">${cards.join('') || '<p class="muted" style="padding:8px">Пусто — и хорошо.</p>'}</div>
+        <div class="kb-cards">${cards.join('') || '<p class="bi-empty">Пусто — и хорошо.</p>'}</div>
       </section>`).join('')}
     </div>
+    ${data.autoLate.length ? `<section class="section inc-late-sec">
+      <div class="sec-h"><span class="st">⏰ Опоздания из отметок прибытия</span>
+        <span class="bi-tag neg">${data.autoLate.length}${data.autoLateTotal > data.autoLate.length ? ` из ${data.autoLateTotal}` : ''}</span>
+        <span class="hint">⚙ созданы автоматически — факты не закрываются, они уже случились</span></div>
+      <div class="sec-b flush bi-scroll"><table class="bi-table">
+        <thead><tr><th>ТС</th><th class="r">№</th><th>Заказчик</th><th>Точка</th><th class="r">Опоздание</th>
+          <th class="r">План</th><th class="r">Факт</th></tr></thead>
+        <tbody>${data.autoLate.map(lateRow).join('')}</tbody></table></div>
+    </section>` : ''}
   </div>`;
   if (!renderInto(container, html)) return;
 

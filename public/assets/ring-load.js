@@ -43,27 +43,56 @@ export async function ringLoadDialog(context) {
     }).join('');
   const totalHole = load.items.reduce((sum, item) => sum + item.holeVehicles, 0);
   const totalMoney = load.items.reduce((sum, item) => sum + item.holeMarginMonth, 0);
+  const totalPlan = load.items.reduce((sum, item) => sum + item.planVehicles, 0);
+  const totalFact = load.items.reduce((sum, item) => sum + item.week.factVehicles, 0);
+  const totalAssigned = load.items.reduce((sum, item) => sum + item.assigned.length, 0);
+  const round1 = value => Math.round(value * 10) / 10;
   context.showModal(`
     <h2 style="margin-bottom:2px">⭕ Загрузка кругов</h2>
-    <p class="muted" style="margin:0 0 8px">План машин — объём шаблона при живом зазоре
+    <div class="bi-page ring-page">
+    <div class="bi-kpis">
+      <div class="metric dept-drv"><span class="l">План машин</span>
+        <span class="v">${round1(totalPlan)}<small>маш</small></span>
+        <span class="d">зазор стыковки ${load.gap.days} дн</span></div>
+      <div class="metric dept-drv"><span class="l">Закреплено</span>
+        <span class="v">${totalAssigned}<small>маш</small></span>
+        <span class="d">колонка «Круг» Плана парка</span></div>
+      <div class="metric dept-log"><span class="l">Машин факт</span>
+        <span class="v">${round1(totalFact)}<small>маш</small></span>
+        <span class="d">полные циклы за ${load.windowDays} дн</span></div>
+      <div class="metric ${totalHole >= 1 ? 'neg' : 'pos'}"><span class="l">Дыра</span>
+        <span class="v">${round1(totalHole)}<small>маш</small></span>
+        <span class="d">недобор объёма шаблонов</span></div>
+      <div class="metric ${totalMoney > 0 ? 'neg' : 'pos'}"><span class="l">Цена дыры</span>
+        <span class="v">${money(totalMoney)}</span>
+        <span class="d">маржа шаблонов за месяц</span></div>
+    </div>
+    <section class="section dept-drv">
+      <div class="sec-h"><span class="st">Круги: план ↔ факт ↔ дыра</span>
+        <span class="hint">сортировка по цене дыры</span></div>
+      <div class="sec-b flush"><div class="bi-scroll" style="max-height:52vh"><table class="bi-table">
+      <thead><tr><th style="text-align:left">Круг</th>
+        <th class="r">план машин</th><th class="r">закреплено</th><th class="r">машин факт</th><th class="r">циклов/нед</th>
+        <th class="r">дыра, маш</th><th class="r">цена дыры, ₽/мес</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td style="text-align:left"><b>Итого дыра</b></td><td></td><td></td><td></td><td></td>
+        <td class="num"><b>${Math.round(totalHole * 10) / 10}</b></td>
+        <td class="num"><b>${money(totalMoney)}</b></td></tr></tfoot>
+    </table></div></div></section>
+    <section class="section">
+      <div class="sec-h"><span class="st">Как считается</span></div>
+      <div class="sec-b"><p class="muted" style="margin:0 0 6px">План машин — объём шаблона при живом зазоре
       стыковки <b>${load.gap.days} дн</b>${load.gap.learned
     ? ` (медиана ${load.gap.samples} пар рейсов за 30 дн)` : ` (фолбэк: образцов ${load.gap.samples})`}.
       Факт — <b>полные циклы</b> за ${load.windowDays} дней: машина прошла плечи круга
       по порядку (плюс не больше одного рейса-заполнителя между плечами), каждый рейс
       засчитывается одному кругу. План и факт в одной единице — машины непрерывной
       занятости. Дыра = недобор объёма в машинах; цена — маржа шаблона за месяц.</p>
-    <div style="max-height:60vh;overflow:auto"><table class="rep-table" style="width:100%">
-      <thead><tr><th style="text-align:left">Круг</th>
-        <th>план машин</th><th>закреплено</th><th>машин факт</th><th>циклов/нед</th>
-        <th>дыра, маш</th><th>цена дыры, ₽/мес</th></tr></thead>
-      <tbody>${rows}</tbody>
-      <tfoot><tr><td style="text-align:left"><b>Итого дыра</b></td><td></td><td></td><td></td><td></td>
-        <td class="num"><b>${Math.round(totalHole * 10) / 10}</b></td>
-        <td class="num"><b>${money(totalMoney)}</b></td></tr></tfoot>
-    </table></div>
-    <p class="muted" style="margin:8px 0 0">Постоянные кольца стоят в Конструкторе (К-1, К-2п,
+    <p class="muted" style="margin:0">Постоянные кольца стоят в Конструкторе (К-1, К-2п,
       К-4а, К-5): удалить нельзя, закрытие — только с причиной, она приходит вам уведомлением.
       Борта закрепляются в «Плане парка» (колонка «Круг»). Задание продажам по дырам — блок
-      «⭕ Круги» во вкладке Продажи; итоги — строка «круги» в «📐 Нормативах недели» (пн 08:10).</p>`,
+      «⭕ Круги» во вкладке Продажи; итоги — строка «круги» в «📐 Нормативах недели» (пн 08:10).</p></div>
+    </section>
+    </div>`,
   'wide');
 }

@@ -364,20 +364,54 @@ export async function renderFlows(container, context) {
   const deficit = tiles.filter(tile => tile.balance < 0);
   const surplus = tiles.filter(tile => tile.balance > 0);
 
-  const sameMarkup = !renderInto(container, `<div class="salesfilter" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
-      <b style="margin-right:4px">🔀 Потоки</b>
+  // BI-вид: плитки итогов → секция «Баланс зон» (таблица) → секция плашек.
+  // Итоги — суммы уже посчитанных полей плашек zoneFlows, новых расчётов нет.
+  const sumOf = (rows, pick) => rows.reduce((total, tile) => total + pick(tile), 0);
+  const deficitTs = sumOf(deficit, tile => -tile.balance);
+  const surplusTs = sumOf(surplus, tile => tile.balance);
+  const noVehicleTotal = sumOf(tiles, tile => tile.noVehicle.length);
+  const sameMarkup = !renderInto(container, `<div class="bi-page lg-page lg-flows">
+    <div class="salesfilter bi-sub lg-flowbar">
+      <h2>🔀 Потоки между зонами</h2>
+      <p>потребности против доступного ресурса за период</p>
+      <div class="bi-actions">
       ${rangePickerHtml('flowsFrom', 'flowsTo', state.flowsFrom, state.flowsTo, 'период')}
       <button type="button" class="button ghost small" data-flow-preset="0">Сегодня</button>
       <button type="button" class="button ghost small" data-flow-preset="2">3 дня</button>
       <button type="button" class="button ghost small" data-flow-preset="6">Неделя</button>
-      <span class="muted" style="margin-left:auto">
-        ${deficit.length ? `дефицит: <b>${deficit.map(tile => `${tile.zone.name} ${-tile.balance}`).join(' · ')}</b>` : 'дефицита нет'}
-        ${surplus.length ? ` · профицит: ${surplus.map(tile => `${tile.zone.name} +${tile.balance}`).join(' · ')}` : ''}
-      </span>
+      </div>
     </div>
-    <div class="flow-grid" style="--flow-cols:${Math.max(2, Math.ceil(tiles.length / 2))}">${
-      tiles.map(tile => tileHtml(tile)).join('')
-      || '<p class="muted">В выбранном периоде нет ни потребностей, ни движения парка.</p>'}</div>`);
+    <div class="bi-kpis">
+      <div class="metric dept-log"><span class="l">Зон в движении</span><span class="v">${tiles.length}</span>
+        <span class="d">с потребностью или парком</span></div>
+      <div class="metric ${deficit.length ? 'neg' : 'pos'}"><span class="l">Дефицит · направить</span>
+        <span class="v">${deficitTs}<small>ТС</small></span>
+        <span class="d">${deficit.length ? `зон ${deficit.length}: ${escapeHtml(deficit.slice(0, 3).map(tile => tile.zone.name).join(', '))}${deficit.length > 3 ? '…' : ''}` : 'дефицита нет'}</span></div>
+      <div class="metric"><span class="l">Профицит ресурса</span><span class="v">${surplusTs}<small>ТС</small></span>
+        <span class="d">${surplus.length ? `зон ${surplus.length} · нужны грузы` : 'профицита нет'}</span></div>
+      <div class="metric ${noVehicleTotal ? 'warn' : ''}"><span class="l">Заявок без ТС</span>
+        <span class="v">${noVehicleTotal}</span><span class="d">подтверждены, ТС не назначено</span></div>
+    </div>
+    ${tiles.length ? `<div class="bi-grid">
+    <section class="section s5 dept-log">
+      <div class="sec-h"><span class="st">Баланс зон</span><span class="hint">ресурс − потребность · клик — окно зоны</span></div>
+      <div class="sec-b flush"><div class="bi-scroll"><table class="bi-table lg-table">
+        <thead><tr><th>Зона</th><th class="r">Потребн.</th><th class="r">Ресурс</th><th class="r">Баланс</th></tr></thead>
+        <tbody>${tiles.map(tile => `<tr class="lg-click" data-fz="${tile.zone.id}" data-fz-tab="${tile.balance < 0 ? 'send' : 'vehicles'}"
+          title="${tile.balance < 0 ? 'Направить ТС' : 'ТС в зоне и направленные'}">
+          <td><b>${escapeHtml(tile.zone.name)}</b></td>
+          <td class="num">${tile.need}</td><td class="num">${tile.supply}</td>
+          <td class="num ${tile.balance < 0 ? 'lg-neg' : tile.balance > 0 ? 'lg-pos' : ''}">${tile.balance > 0 ? '+' : ''}${tile.balance}</td>
+        </tr>`).join('')}</tbody></table></div></div>
+    </section>
+    <section class="section s7">
+      <div class="sec-h"><span class="st">Зоны</span><span class="bi-tag">${tiles.length}</span>
+        <span class="hint">рейсы · клиенты · ТС · направить — строка открывает вкладку окна зоны</span></div>
+      <div class="sec-b"><div class="flow-grid" style="--flow-cols:${Math.max(2, Math.ceil(tiles.length / 2))}">${
+      tiles.map(tile => tileHtml(tile)).join('')}</div></div>
+    </section>
+    </div>` : '<div class="section"><div class="bi-empty">В выбранном периоде нет ни потребностей, ни движения парка.</div></div>'}
+  </div>`);
   if (sameMarkup) return; // тихий тик: разметка не менялась
 
   wireRangePicker(container, 'flowsFrom', 'flowsTo', (from, to) => {

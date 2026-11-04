@@ -27,21 +27,36 @@ function statusBadge(status) {
   return `<span class="badge ${tone}">${escapeHtml(status)}</span>`;
 }
 
+// BI-вид (04.11, по образцу «Рабочей среды СТ»): страница раздела =
+// шапка .bi-sub → сетка .bi-grid из секций; карточка настроек = .section,
+// её заголовок — шапка .sec-h. Поля, id и обработчики не меняются.
+const biHead = (title, text = '', actions = '') => `<div class="bi-sub"><h2>${title}</h2>
+  ${text ? `<p>${text}</p>` : ''}${actions ? `<div class="bi-actions">${actions}</div>` : ''}</div>`;
+const biSec = (title, body, { span = '', hint = '', actions = '', flush = false } = {}) =>
+  `<section class="section ${span}"><div class="sec-h"><span class="st">${title}</span>
+    ${hint ? `<span class="hint">${hint}</span>` : ''}${actions ? `<div class="sec-actions">${actions}</div>` : ''}</div>
+    <div class="sec-b${flush ? ' flush' : ''}">${body}</div></section>`;
+const biPage = (headHtml, sections) => `<div class="bi-page svc-set">${headHtml}
+  <div class="bi-grid">${sections.join('')}</div></div>`;
+
 function renderGeneral() {
   const { general, calculation, statuses, rejectionReasons, orderOptions } = state.admin.settings;
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Настройки планера</h1>
-      <p>Параметры, которые раньше были зашиты непосредственно в HTML.</p></div>
-      <button class="button" id="saveGeneral">Сохранить</button></div>
-    <div class="card"><h2>Общие</h2><div class="fields three">
+  content.innerHTML = biPage(biHead('Настройки планера',
+    'Параметры, которые раньше были зашиты непосредственно в HTML.',
+    '<button class="button" id="saveGeneral">Сохранить</button>'), [
+    biSec('Общие', `<div class="fields">
       <label class="field">Название компании<input id="companyName" value="${escapeHtml(general.companyName)}"></label>
       <label class="field">Название приложения<input id="appName" value="${escapeHtml(general.appName)}"></label>
       <label class="field">Часовой пояс<input id="timezone" value="${escapeHtml(general.timezone)}"></label>
       <label class="field">Начало горизонта<input id="horizonStart" type="date" value="${general.horizonStart}"></label>
       <label class="field">Горизонт, месяцев<input id="horizonMonths" type="number" min="1" max="36" value="${general.horizonMonths}"></label>
       <label class="field">Ширина дня, px<input id="plannerCellWidth" type="number" min="28" max="100" value="${general.plannerCellWidth}"></label>
-    </div></div>
-    <div class="card"><h2>Экономика и нормативы</h2><div class="fields three">
+    </div>`, { span: 's6' }),
+    biSec('Статусы рейса', `<div class="table-wrap"><table class="bi-table"><thead><tr><th>Код</th><th>Название</th><th>Цвет</th></tr></thead>
+      <tbody>${statuses.map(([id, name, color]) => `<tr data-status="${escapeHtml(id)}"><td class="mono">${escapeHtml(id)}</td>
+        <td><input data-status-name value="${escapeHtml(name)}"></td><td><input data-status-color type="color" value="${escapeHtml(color)}"></td></tr>`).join('')}</tbody></table></div>`,
+      { span: 's6', flush: true }),
+    biSec('Экономика и нормативы', `<div class="fields three">
       <label class="field">Себестоимость, ₽/км<input id="costPerKm" type="number" min="0" step=".01" value="${calculation.costPerKm}"></label>
       <label class="field">Страхование, Платон и дороги, ₽/км<input id="insuranceAndRoadsPerKm" type="number" min="0" step=".01" value="${calculation.insuranceAndRoadsPerKm}"></label>
       <label class="field">Водитель, ₽/сутки рейса<input id="driverPerTripDay" type="number" min="0" value="${calculation.driverPerTripDay}"></label>
@@ -65,21 +80,16 @@ function renderGeneral() {
       <label class="field">Цель: ворота выгрузки, ч<input id="gateTargetHours" type="number" min="1" step="1" value="${calculation.gateTargetHours ?? 6}" title="Цель руководителя (22.09): сколько часов машина должна проводить на выгрузке (прибыл → выгружен). Превышение у клиентов со ставкой простоя в карточке — претензия; у остальных — понедельничная аналитика «Дорогие ворота» продажам"></label>
       <label class="field">Простой: бесплатно, ч<input id="demurrageFreeHours" type="number" min="0" step="1" value="${calculation.demurrageFreeHours ?? 8}" title="Общий норматив бесплатного простоя от планового времени операции — применяется, когда в карточке клиента не заданы свои часы"></label>
       <label class="field">Простой: тариф, ₽/ч<input id="demurrageRatePerHour" type="number" min="0" step="50" value="${calculation.demurrageRatePerHour ?? 1000}" title="Ставка за каждый начатый час сверхнормативного простоя — попадает в документ претензии"></label>
-    </div></div>
-    <div class="card"><h2>Статусы рейса</h2>
-      <div class="table-wrap"><table><thead><tr><th>Код</th><th>Название</th><th>Цвет</th></tr></thead>
-      <tbody>${statuses.map(([id, name, color]) => `<tr data-status="${escapeHtml(id)}"><td class="mono">${escapeHtml(id)}</td>
-        <td><input data-status-name value="${escapeHtml(name)}"></td><td><input data-status-color type="color" value="${escapeHtml(color)}"></td></tr>`).join('')}</tbody></table></div>
-    </div>
-    <div class="card"><h2>Причины отклонения</h2>
-      <label class="field">По одной причине в строке<textarea id="rejectionReasons">${escapeHtml(rejectionReasons.join('\n'))}</textarea></label>
-    </div>
-    <div class="card"><h2>Параметры заявок</h2><div class="fields">
+    </div>`, { hint: 'цели руководителя и резервные формулы; живые нормативы — у руководителя' }),
+    biSec('Причины отклонения', `
+      <label class="field">По одной причине в строке<textarea id="rejectionReasons">${escapeHtml(rejectionReasons.join('\n'))}</textarea></label>`,
+      { span: 's4' }),
+    biSec('Параметры заявок', `<div class="fields three">
       <label class="field">Температурные режимы, по одному в строке<textarea id="temperatureModes">${escapeHtml(orderOptions.temperatureModes.join('\n'))}</textarea></label>
       <label class="field">Типы кузова, по одному в строке<textarea id="bodyTypes">${escapeHtml(orderOptions.bodyTypes.join('\n'))}</textarea></label>
       <label class="field">Этапы заявки, по одному в строке<textarea id="orderStages">${escapeHtml(orderOptions.stages.join('\n'))}</textarea></label>
-    </div></div>
-  </section>`;
+    </div>`, { span: 's8' })
+  ]);
   byId('saveGeneral').onclick = saveGeneral;
 }
 
@@ -133,25 +143,23 @@ async function saveGeneral() {
 
 function renderNetwork() {
   const allowedSubnets = state.admin.settings.networkAccess?.allowedSubnets || [];
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Сеть и доступ</h1>
-      <p>Подсети, из которых разрешено открывать планер и страницу входа.</p></div>
-      <button class="button" id="saveNetwork">Сохранить</button></div>
-    <div class="card"><h2>Разрешённые подсети</h2>
+  content.innerHTML = biPage(biHead('Сеть и доступ',
+    'Подсети, из которых разрешено открывать планер и страницу входа.',
+    '<button class="button" id="saveNetwork">Сохранить</button>'), [
+    biSec('Разрешённые подсети', `
       <label class="field">По одной IPv4- или IPv6-подсети в строке
         <textarea id="allowedSubnets" rows="9" spellcheck="false"
           placeholder="192.168.10.0/24&#10;10.20.0.0/16">${escapeHtml(allowedSubnets.join('\n'))}</textarea>
       </label>
       <p class="muted">Текущий адрес: <span class="mono">${escapeHtml(state.admin.network?.currentIp || 'не определён')}</span>.
         Он должен входить хотя бы в одну сохраняемую подсеть — защита от случайной потери доступа.</p>
-      <p class="muted">Изменение применяется сразу ко всему веб-интерфейсу и API. Ограничение SSH на VPS управляется отдельно системным firewall.</p>
-    </div>
-    <div class="card"><h2>Примеры CIDR</h2>
+      <p class="muted">Изменение применяется сразу ко всему веб-интерфейсу и API. Ограничение SSH на VPS управляется отдельно системным firewall.</p>`,
+      { span: 's7' }),
+    biSec('Примеры CIDR', `
       <div class="code">192.168.10.0/24 — адреса 192.168.10.1–192.168.10.254<br>
 10.20.0.15/32 — только один компьютер<br>
-2001:db8:1234::/64 — IPv6-подсеть</div>
-    </div>
-  </section>`;
+2001:db8:1234::/64 — IPv6-подсеть</div>`, { span: 's5' })
+  ]);
   byId('saveNetwork').onclick = saveNetwork;
 }
 
@@ -171,48 +179,47 @@ async function saveNetwork() {
 
 function renderDictionaries() {
   const { zones, vehicleTypes, routeRates } = state.admin.reference;
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Справочники</h1>
-      <p>Зоны, типы ТС и нормативные маршруты, перенесенные из прототипа.</p></div>
-      <button class="button" id="saveDictionaries">Сохранить</button></div>
-    <div class="card"><h2>Геозоны</h2><div class="table-wrap"><table><thead><tr><th>Порядок</th><th>Зона</th><th>Цвет</th><th>Координаты</th><th>Города и регионы</th><th>ID 1С</th></tr></thead>
+  content.innerHTML = biPage(biHead('Справочники',
+    'Зоны, типы ТС и нормативные маршруты, перенесенные из прототипа.',
+    '<button class="button" id="saveDictionaries">Сохранить</button>'), [
+    biSec('Геозоны', `<div class="table-wrap bi-scroll"><table class="bi-table"><thead><tr><th>Порядок</th><th>Зона</th><th>Цвет</th><th>Координаты</th><th>Города и регионы</th><th>ID 1С</th></tr></thead>
       <tbody>${zones.map(zone => `<tr data-zone="${zone.id}"><td>${zone.sort_order + 1}</td><td><input data-zone-name value="${escapeHtml(zone.name)}"></td>
       <td><input data-zone-color type="color" value="${escapeHtml(zone.color)}"></td>
       <td><div class="actions"><input data-zone-lat type="number" step=".01" value="${zone.latitude ?? ''}" placeholder="широта">
       <input data-zone-lon type="number" step=".01" value="${zone.longitude ?? ''}" placeholder="долгота"></div></td>
       <td><textarea data-zone-aliases rows="2">${escapeHtml((zone.aliases || []).join('\n'))}</textarea></td>
-      <td class="mono muted">${escapeHtml(zone.external_id || 'не связан')}</td></tr>`).join('')}</tbody></table></div></div>
-    <div class="card"><h2>Типы транспортных средств</h2><div class="actions">
-      ${vehicleTypes.map(type => `<label class="field" data-type="${type.id}"><input data-type-name value="${escapeHtml(type.name)}"></label>`).join('')}</div></div>
-    <div class="card"><h2>Расстояния и ставки по умолчанию</h2>
-      <div class="table-wrap"><table><thead><tr><th>Откуда</th><th>Куда</th><th>Км</th><th>Ставка с НДС</th></tr></thead>
+      <td class="mono muted">${escapeHtml(zone.external_id || 'не связан')}</td></tr>`).join('')}</tbody></table></div>`,
+      { flush: true, hint: `${zones.length} зон` }),
+    biSec('Типы транспортных средств', `<div class="actions">
+      ${vehicleTypes.map(type => `<label class="field" data-type="${type.id}"><input data-type-name value="${escapeHtml(type.name)}"></label>`).join('')}</div>`,
+      { span: 's5', hint: `${vehicleTypes.length} типов` }),
+    biSec('Расстояния и ставки по умолчанию', `
+      <div class="table-wrap bi-scroll"><table class="bi-table"><thead><tr><th>Откуда</th><th>Куда</th><th>Км</th><th>Ставка с НДС</th></tr></thead>
       <tbody>${routeRates.map(rate => `<tr data-rate="${rate.id}"><td>${escapeHtml(rate.from_name)}</td><td>${escapeHtml(rate.to_name)}</td>
       <td><input data-rate-km type="number" min="0" value="${rate.distance_km}"></td>
-      <td><input data-rate-value type="number" min="0" value="${rate.default_rate_vat}"></td></tr>`).join('')}</tbody></table></div>
-    </div>
-  </section>`;
+      <td><input data-rate-value type="number" min="0" value="${rate.default_rate_vat}"></td></tr>`).join('')}</tbody></table></div>`,
+      { span: 's7', flush: true, hint: `${routeRates.length} маршрутов` })
+  ]);
   byId('saveDictionaries').onclick = saveDictionaries;
 }
 
 function renderFleet() {
   const vehicles = state.admin.vehicles;
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Состав транспортных средств</h1>
-      <p>Сцепки, водители, текущая зона и доступность.</p></div>
-      <button class="button" id="newVehicle">+ Добавить ТС</button></div>
-    <div class="card"><div class="table-wrap"><table><thead><tr><th>Тягач</th><th>Прицеп</th><th>Тип</th><th>Водитель</th><th>Зона</th><th>Статус</th><th></th></tr></thead>
+  content.innerHTML = biPage(biHead('Состав транспортных средств',
+    'Сцепки, водители, текущая зона и доступность.',
+    '<button class="button" id="newVehicle">+ Добавить ТС</button>'), [
+    biSec('Сцепки', `<div class="table-wrap bi-scroll"><table class="bi-table"><thead><tr><th>Тягач</th><th>Прицеп</th><th>Тип</th><th>Водитель</th><th>Зона</th><th>Статус</th><th></th></tr></thead>
       <tbody>${vehicles.map(vehicle => `<tr><td class="mono"><strong>${escapeHtml(vehicle.plate)}</strong></td>
         <td class="mono">${escapeHtml(vehicle.trailer_plate || '—')}</td><td>${escapeHtml(vehicle.type_name)}</td>
         <td>${escapeHtml(vehicle.driver_name || '—')}</td><td>${escapeHtml(vehicle.zone_name || '—')}</td>
         <td>${statusBadge(vehicle.status)}${vehicle.status === 'out' && vehicle.out_since
           ? ` <span class="hint" title="дата вывода из эксплуатации">с ${vehicle.out_since.slice(8, 10)}.${vehicle.out_since.slice(5, 7)}.${vehicle.out_since.slice(0, 4)}</span>` : ''}</td>
         <td><button class="button ghost small" data-edit-vehicle="${vehicle.id}">Изменить</button></td>
-      </tr>`).join('')}</tbody></table></div></div>
-    <div class="section-head" style="margin-top:18px"><div><h1>Прицепы</h1>
-      <p>Реестр прицепов: тип, на каком тягаче, вывод из эксплуатации.
-         Двигать прицепы — только перецепкой в «Ресурсе».</p></div></div>
-    <div class="card"><div class="table-wrap" id="trailerRegistry">Загрузка…</div></div>
-  </section>`;
+      </tr>`).join('')}</tbody></table></div>`,
+      { flush: true, hint: `${vehicles.length} ТС · в работе ${vehicles.filter(vehicle => vehicle.status === 'work').length}` }),
+    biSec('Прицепы', '<div class="table-wrap bi-scroll" id="trailerRegistry">Загрузка…</div>', { flush: true,
+      hint: 'реестр: тип, на каком тягаче, вывод из эксплуатации. Двигать прицепы — только перецепкой в «Ресурсе»' })
+  ]);
   byId('newVehicle').onclick = () => editVehicle();
   document.querySelectorAll('[data-edit-vehicle]').forEach(button =>
     button.onclick = () => editVehicle(vehicles.find(vehicle => vehicle.id === button.dataset.editVehicle)));
@@ -225,7 +232,7 @@ async function renderTrailerRegistry() {
   try {
     const data = await api('/api/trailers-registry');
     const rows = data.trailers || [];
-    box.innerHTML = `<table><thead><tr><th>Прицеп</th><th>Тип</th><th>Где</th><th>Статус</th><th></th></tr></thead>
+    box.innerHTML = `<table class="bi-table"><thead><tr><th>Прицеп</th><th>Тип</th><th>Где</th><th>Статус</th><th></th></tr></thead>
       <tbody>${rows.map(item => `<tr>
         <td class="mono"><strong>${escapeHtml(item.plate)}</strong></td>
         <td><select data-trailer-type="${escapeHtml(item.plate)}" title="Тип кузова живёт на прицепе: смена сразу выравнивает сцепку-держателя">
@@ -314,20 +321,19 @@ function editVehicle(vehicle = null) {
 
 function renderCustomers() {
   const customers = state.admin.customers || [];
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Заказчики</h1>
-      <p>Маршруты, средняя ставка и плановая частота перевозок.</p></div>
-      <button class="button" id="newCustomer">+ Добавить</button></div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Заказчик</th><th>Маршрут</th><th>Рейсов</th><th>Средняя ставка</th><th>Рейсов/мес.</th><th></th></tr></thead>
+  content.innerHTML = biPage(biHead('Заказчики',
+    'Маршруты, средняя ставка и плановая частота перевозок.',
+    '<button class="button" id="newCustomer">+ Добавить</button>'), [
+    biSec('Справочник заказчиков', `<div class="table-wrap bi-scroll"><table class="bi-table">
+      <thead><tr><th>Заказчик</th><th>Маршрут</th><th class="r">Рейсов</th><th class="r">Средняя ставка</th><th class="r">Рейсов/мес.</th><th></th></tr></thead>
       <tbody>${customers.map(item => `<tr>
         <td><strong>${escapeHtml(item.name)}</strong></td>
         <td>${escapeHtml(item.from_name || '—')} → ${escapeHtml(item.to_name || '—')}</td>
-        <td>${item.trip_count}</td><td>${Number(item.average_rate_vat).toLocaleString('ru-RU')} ₽</td>
-        <td>${item.trips_per_month}</td>
+        <td class="num">${item.trip_count}</td><td class="num">${Number(item.average_rate_vat).toLocaleString('ru-RU')} ₽</td>
+        <td class="num">${item.trips_per_month}</td>
         <td><button class="button ghost small" data-edit-customer="${item.id}">Изменить</button></td>
-      </tr>`).join('')}</tbody></table></div></div>
-  </section>`;
+      </tr>`).join('')}</tbody></table></div>`, { flush: true, hint: `${customers.length} заказчиков` })
+  ]);
   byId('newCustomer').onclick = () => editCustomer();
   document.querySelectorAll('[data-edit-customer]').forEach(button =>
     button.onclick = () => editCustomer(customers.find(item => item.id === button.dataset.editCustomer)));
@@ -403,11 +409,10 @@ async function ensureUsers() {
 async function renderUsers() {
   await ensureUsers();
   if (!state.admin) await loadAdmin();
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Пользователи</h1>
-      <p>Создание учетных записей, изменение ролей и блокировка доступа.</p></div>
-      <button class="button" id="newUser">+ Создать</button></div>
-    <div class="card"><div class="table-wrap"><table>
+  content.innerHTML = biPage(biHead('Пользователи',
+    'Создание учетных записей, изменение ролей и блокировка доступа.',
+    '<button class="button" id="newUser">+ Создать</button>'), [
+    biSec('Учётные записи', `<div class="table-wrap bi-scroll"><table class="bi-table">
       <thead><tr><th>Пользователь</th><th>Логин</th><th>Роли</th><th>Состояние</th><th>Создан</th><th></th></tr></thead>
       <tbody>${state.users.items.map(user => `<tr>
         <td><strong>${escapeHtml(user.full_name)}</strong><br><small class="muted">${escapeHtml(user.email || '')}</small></td>
@@ -419,8 +424,9 @@ async function renderUsers() {
         <td style="white-space:nowrap"><button class="button ghost small" data-edit-user="${user.id}">Изменить</button>
           <button class="button ghost small danger" data-delete-user="${user.id}"
             title="Удалить пользователя: учётка без истории удаляется совсем, с историей — скрывается с сохранением всех записей и отчётов">✕</button></td>
-      </tr>`).join('')}</tbody></table></div></div>
-    <h2 style="margin-top:18px">Справочник «Сотрудники»</h2>
+      </tr>`).join('')}</tbody></table></div>`, { flush: true,
+      hint: `${state.users.items.length} · активных ${state.users.items.filter(user => user.active).length}` }),
+    biSec('Справочник «Сотрудники»', `
     <p class="muted">Карточки, приём/увольнение и графики смен живут во вкладке
       «Сотрудники» планера. Здесь — кто имеет к ней полный доступ помимо
       руководителя и администратора, и часы смен для графиков.</p>
@@ -438,8 +444,8 @@ async function renderUsers() {
           value="${escapeHtml(state.admin?.settings?.staff?.nightHours || '20:00–08:00')}"></label>
       </div>
       <button class="button">Сохранить</button>
-    </form>
-  </section>`;
+    </form>`)
+  ]);
   byId('staffSettingsForm').onsubmit = async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -536,11 +542,10 @@ function mappingData(mapping) {
 function renderIntegration() {
   const cfg = state.admin.integration;
   const mappings = state.admin.mappings;
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Интеграция с 1С</h1>
-      <p>Загрузка по OData и управляемая обратная запись через очередь.</p></div>
-      <button class="button" id="saveIntegration">Сохранить</button></div>
-    <div class="card"><h2>Подключение OData</h2>
+  content.innerHTML = biPage(biHead('Интеграция с 1С',
+    'Загрузка по OData и управляемая обратная запись через очередь.',
+    '<button class="button" id="saveIntegration">Сохранить</button>'), [
+    biSec('Подключение OData', `
       <div class="fields">
         <label class="field">URL публикации OData<input id="baseUrl" type="url" placeholder="https://1c.example.ru/base/odata/standard.odata" value="${escapeHtml(cfg.baseUrl)}"></label>
         <label class="field">Пользователь 1С<input id="odataUsername" value="${escapeHtml(cfg.username)}" autocomplete="off"></label>
@@ -550,18 +555,18 @@ function renderIntegration() {
       <label class="check"><input id="integrationEnabled" type="checkbox" ${cfg.enabled ? 'checked' : ''}> Включить фоновую загрузку</label>
       <div class="actions"><button class="button ghost" id="testIntegration" type="button">Проверить подключение</button>
         <button class="button secondary" id="runSync" type="button">Загрузить сейчас</button>
-        <span class="muted">Последняя успешная: ${cfg.lastSuccessAt ? formatDate(cfg.lastSuccessAt, { dateStyle: 'short', timeStyle: 'short' }) : 'еще не выполнялась'}</span></div>
-    </div>
-    <div class="card"><h2>Телематика / мониторинг</h2>
+        <span class="muted">Последняя успешная: ${cfg.lastSuccessAt ? formatDate(cfg.lastSuccessAt, { dateStyle: 'short', timeStyle: 'short' }) : 'еще не выполнялась'}</span></div>`,
+      { span: 's6' }),
+    biSec('Телематика / мониторинг', `
       <div class="fields">
         <label class="field">URL API<input id="telematicsUrl" type="url" value="${escapeHtml(cfg.telematics?.baseUrl || '')}"></label>
         <label class="field">Токен ${cfg.telematics?.hasToken ? '(сохранен)' : ''}<input id="telematicsToken" type="password"
           placeholder="${cfg.telematics?.hasToken ? 'оставьте пустым, чтобы не менять' : ''}" autocomplete="new-password"></label>
       </div>
       <label class="check"><input id="telematicsEnabled" type="checkbox" ${cfg.telematics?.enabled ? 'checked' : ''}> Включить коннектор</label>
-      <p class="muted">Контракт входных данных: rideId, km, status, unloadedAt. Фактический пробег сохраняется отдельно и участвует в рейсе.</p>
-    </div>
-    <div class="card"><h2>Дорожная сеть (Dornet) — затраты</h2>
+      <p class="muted">Контракт входных данных: rideId, km, status, unloadedAt. Фактический пробег сохраняется отдельно и участвует в рейсе.</p>`,
+      { span: 's6' }),
+    biSec('Дорожная сеть (Dornet) — затраты', `
       <div class="fields">
         <label class="field">Токен API ${cfg.dornet?.hasToken ? '(сохранен)' : ''}<input id="dornetToken" type="password"
           placeholder="${cfg.dornet?.hasToken ? 'оставьте пустым, чтобы не менять' : 'из окна «Для разработчиков»'}" autocomplete="new-password"></label>
@@ -576,9 +581,8 @@ function renderIntegration() {
         <label class="field">по <input id="dornetTo" type="date"></label>
         <button class="button secondary" id="dornetSync" type="button">Загрузить период</button>
         <span class="muted">Бэкафилл истории: введите токен и CID, выберите период (до года) и жмите — кнопка сохранит настройки сама.</span>
-      </div>
-    </div>
-    <div class="card"><h2>РН-Карт (Роснефть) — топливо</h2>
+      </div>`, { span: 's6' }),
+    biSec('РН-Карт (Роснефть) — топливо', `
       <div class="fields">
         <label class="field">Логин ЛК (лучше отдельная учётка для API)
           <input id="rncardLogin" value="${escapeHtml(cfg.rncard?.login || '')}" autocomplete="off"></label>
@@ -598,18 +602,25 @@ function renderIntegration() {
         <label class="field">по <input id="rncardTo" type="date"></label>
         <button class="button secondary" id="rncardSync" type="button">Загрузить период</button>
         <span class="muted">Кнопка сохранит настройки сама и загрузит период (до года, кусками по 2 месяца).</span>
-      </div>
-    </div>
-    <div class="card"><h2>Импорт по контракту обмена v1.0</h2>
+      </div>`, { span: 's6' }),
+    biSec('Импорт по контракту обмена v1.0', `
       <p class="muted">Для 1С поддерживаются геозоны или города из справочника. Повторная передача того же id обновляет рейс и не создает дубль.</p>
       <label class="field">JSON-массив<textarea id="contractImport" rows="8"
         placeholder='[{"id":"1С-0001","zoneFrom":"Пенза","zoneTo":"Москва","truck":"а001аа58","client":"ЧМПЗ АО","depDate":"2026-07-05","doneDate":"2026-07-06","revenue":95000,"status":"plan"}]'></textarea></label>
       <div class="actions">
         <button class="button secondary" id="import1c" type="button">Импортировать из 1С</button>
         <button class="button ghost" id="importTelematics" type="button">Импортировать телематику</button>
-      </div>
-    </div>
-    <div class="card"><h2>Сопоставление сущностей</h2>
+      </div>`, { span: 's6' }),
+    biSec('Обратная запись в 1С', `
+      <div class="code">UI → SQLite (транзакция) → outbox → подтверждение → OData → аудит</div>
+      <label class="check"><input id="writeEnabled" type="checkbox" ${cfg.writeEnabled ? 'checked' : ''}> Разрешить обработчику отправлять одобренные изменения</label>
+      <label class="field">Политика отправки<select id="writePolicy">
+        <option value="manual" ${cfg.writePolicy === 'manual' ? 'selected' : ''}>Только после подтверждения администратором</option>
+        <option value="automatic" ${cfg.writePolicy === 'automatic' ? 'selected' : ''}>Автоматически (после приемочных испытаний)</option>
+      </select></label>
+      <p class="muted">Рекомендуется оставить ручной режим до настройки регистра IntegrationKey в 1С и проверки прав сервисного пользователя.</p>`,
+      { span: 's6' }),
+    biSec('Сопоставление сущностей', `
       <p class="muted">Имена наборов и полей зависят от конфигурации 1С. Поля задаются JSON: локальное поле → поле OData.</p>
       ${mappings.map(mapping => `<div class="mapping" data-mapping="${mapping.entity}">
         <label class="field">Сущность<input value="${escapeHtml(mapping.entity)}" disabled></label>
@@ -620,19 +631,9 @@ function renderIntegration() {
         <label class="check"><input data-key="enabled" type="checkbox" ${mapping.enabled ? 'checked' : ''}> активно</label>
         <label class="field">Фильтр OData<input data-key="filterQuery" value="${escapeHtml(mapping.filter_query)}"></label>
         <label class="field">Карта полей JSON<textarea data-key="fieldMap">${escapeHtml(JSON.stringify(mappingData(mapping), null, 2))}</textarea></label>
-      </div>`).join('')}
-    </div>
-    <div class="card"><h2>Обратная запись в 1С</h2>
-      <div class="code">UI → SQLite (транзакция) → outbox → подтверждение → OData → аудит</div>
-      <label class="check"><input id="writeEnabled" type="checkbox" ${cfg.writeEnabled ? 'checked' : ''}> Разрешить обработчику отправлять одобренные изменения</label>
-      <label class="field">Политика отправки<select id="writePolicy">
-        <option value="manual" ${cfg.writePolicy === 'manual' ? 'selected' : ''}>Только после подтверждения администратором</option>
-        <option value="automatic" ${cfg.writePolicy === 'automatic' ? 'selected' : ''}>Автоматически (после приемочных испытаний)</option>
-      </select></label>
-      <p class="muted">Рекомендуется оставить ручной режим до настройки регистра IntegrationKey в 1С и проверки прав сервисного пользователя.</p>
-    </div>
-    <div class="card"><h2>Последние задания</h2>${jobsTable(state.admin.jobs)}</div>
-  </section>`;
+      </div>`).join('')}`, { hint: `${mappings.length} сущностей` }),
+    biSec('Последние задания', jobsTable(state.admin.jobs), { flush: state.admin.jobs.length > 0 })
+  ]);
   byId('saveIntegration').onclick = saveIntegration;
   byId('dornetSync').onclick = async () => {
     try {
@@ -698,7 +699,7 @@ async function runContractImport(kind) {
 
 function jobsTable(jobs) {
   if (!jobs.length) return '<p class="muted">Заданий еще не было.</p>';
-  return `<div class="table-wrap"><table><thead><tr><th>Запуск</th><th>Тип</th><th>Статус</th><th>Загружено</th><th>Ошибка</th></tr></thead>
+  return `<div class="table-wrap bi-scroll"><table class="bi-table"><thead><tr><th>Запуск</th><th>Тип</th><th>Статус</th><th>Загружено</th><th>Ошибка</th></tr></thead>
     <tbody>${jobs.map(job => `<tr><td>${formatDate(job.started_at, { dateStyle: 'short', timeStyle: 'short' })}</td>
     <td>${escapeHtml(job.kind)}</td><td>${statusBadge(job.status)}</td><td>${job.pulled}</td>
     <td class="danger">${escapeHtml(job.error_text || '')}</td></tr>`).join('')}</tbody></table></div>`;
@@ -750,11 +751,10 @@ async function saveIntegration() {
 
 function renderOutbox() {
   const items = state.admin.outbox;
-  content.innerHTML = `<section>
-    <div class="section-head"><div><h1>Исходящие изменения</h1>
-      <p>Контролируемая очередь будущей записи в 1С.</p></div></div>
-    <div class="card">
-      ${items.length ? `<div class="table-wrap"><table><thead><tr><th>Создано</th><th>Сущность</th><th>Операция</th><th>Статус</th><th>Попытки</th><th>Ошибка</th><th></th></tr></thead>
+  content.innerHTML = biPage(biHead('Исходящие изменения',
+    'Контролируемая очередь будущей записи в 1С.'), [
+    biSec('Очередь outbox', `
+      ${items.length ? `<div class="table-wrap bi-scroll"><table class="bi-table"><thead><tr><th>Создано</th><th>Сущность</th><th>Операция</th><th>Статус</th><th>Попытки</th><th>Ошибка</th><th></th></tr></thead>
       <tbody>${items.map(item => `<tr><td>${formatDate(item.created_at, { dateStyle: 'short', timeStyle: 'short' })}</td>
         <td>${escapeHtml(item.entity)}<br><small class="mono muted">${escapeHtml(item.entity_id)}</small></td>
         <td>${escapeHtml(item.operation)}</td><td>${statusBadge(item.status)}</td><td>${item.attempts}</td>
@@ -762,9 +762,9 @@ function renderOutbox() {
           ${item.status === 'pending_approval' ? `<button class="button small" data-outbox="${item.id}" data-action="approve">Одобрить</button>` : ''}
           ${item.status === 'failed' ? `<button class="button small" data-outbox="${item.id}" data-action="retry">Повторить</button>` : ''}
           ${!['sent', 'cancelled'].includes(item.status) ? `<button class="button ghost small" data-outbox="${item.id}" data-action="cancel">Отменить</button>` : ''}
-        </div></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Очередь пуста.</p>'}
-    </div>
-  </section>`;
+        </div></td></tr>`).join('')}</tbody></table></div>` : '<div class="bi-empty">Очередь пуста.</div>'}`,
+      { flush: true, hint: `${items.length} записей` })
+  ]);
   document.querySelectorAll('[data-outbox]').forEach(button => button.onclick = async () => {
     try {
       await api(`/api/admin/outbox/${button.dataset.outbox}/${button.dataset.action}`, { method: 'POST' });
@@ -816,13 +816,11 @@ async function renderNotifications() {
   const sms = state.admin.settings?.sms || {};
   const smtp = state.admin.settings?.smtp || {};
   const channels = state.admin.settings?.notifyChannels || {};
-  byId('settingsContent').innerHTML = `
-    <section>
-    <div class="section-head"><div><h1>Уведомления и оповещения</h1>
-      <p class="muted">Каналы: лента планера (всегда) · Telegram · SMS (smsc.ru) · почта (SMTP reg.ru).
-        Сценарии ниже задают уровень и каналы каждой категории.</p></div></div>
-
-    <h2>🔔 Telegram</h2>
+  byId('settingsContent').innerHTML = biPage(biHead('Уведомления и оповещения',
+    `Каналы: лента планера (всегда) · Telegram · SMS (smsc.ru) · почта (SMTP reg.ru).
+        Сценарии ниже задают уровень и каналы каждой категории.${notifyCfg.outboundLive ? ''
+    : ' <b>Исходящие SMS/SMTP/Telegram на этом экземпляре подавлены (не production).</b>'}`), [
+    biSec('🔔 Telegram', `
     <p class="muted">Создайте бота у @BotFather, вставьте токен — сотрудники привяжут чаты
       кнопкой «🔔» в шапке. Режимы у каждого: только аварии или все уведомления роли.</p>
     <form id="telegramForm" class="fields">
@@ -837,9 +835,8 @@ async function renderNotifications() {
         <input name="webhookBase" value="${escapeHtml(state.admin.settings?.telegram?.webhookBase || '')}"
         placeholder="https://planner.pegasavto.ru" autocomplete="off"></label>
       <button class="button">Сохранить</button>
-    </form>
-
-    <h2 style="margin-top:18px">📱 SMS-центр (smsc.ru)</h2>
+    </form>`, { span: 's4' }),
+    biSec('📱 SMS-центр (smsc.ru)', `
     <p class="muted">Секрет <code>.secrets/smsc_apikey</code> — три строки:
       пароль, логин, имя отправителя
       ${notifyCfg.sms?.passwordSet || notifyCfg.sms?.apikeySet
@@ -856,9 +853,8 @@ async function renderNotifications() {
       <button class="button">Сохранить</button>
       <button class="button ghost" type="button" id="smsBalance">Баланс SMSC</button>
       <button class="button ghost" type="button" id="smsTest">Тест SMS</button>
-    </form>
-
-    <h2 style="margin-top:18px">✉️ SMTP (reg.ru)</h2>
+    </form>`, { span: 's4' }),
+    biSec('✉️ SMTP (reg.ru)', `
     <p class="muted">Ящик исходящей почты. Пароль — только
       <code>.secrets/smtp_password</code>
       ${notifyCfg.smtp?.passwordSet ? '— <b>пароль на месте ✓</b>' : '— <b>пароль не задан</b>'}.</p>
@@ -875,16 +871,14 @@ async function renderNotifications() {
         placeholder="info@pegasavto.ru" autocomplete="off"></label>
       <button class="button">Сохранить</button>
       <button class="button ghost" type="button" id="smtpTest">Тест письма</button>
-    </form>
-    ${notifyCfg.outboundLive ? '' : '<p class="muted" style="margin-top:8px">Исходящие SMS/SMTP/Telegram на этом экземпляре подавлены (не production).</p>'}
-
-    <h2 style="margin-top:18px">Сценарии оповещений</h2>
+    </form>`, { span: 's4' }),
+    biSec('Сценарии оповещений', `
     <p class="muted"><b>Уровень:</b> Выкл — внешние каналы молчат (лента планера остаётся);
       Аварийное — все привязанные (и «только аварии», и «все»);
       Обычное — только режим «все уведомления».
       <b>Каналы:</b> кому уходит текст роли/рассылки. SMS — на рабочий/личный телефон,
       почта — на e-mail сотрудника.</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="bi-table">
       <thead><tr>
         <th>Категория</th><th style="width:130px">Уровень</th>
         <th style="width:70px">TG</th><th style="width:70px">SMS</th><th style="width:70px">E-mail</th>
@@ -908,8 +902,9 @@ async function renderNotifications() {
         </tr>`;
       }).join('')}</tbody>
     </table></div>
-    <button class="button" id="saveNotifyRules" style="margin-top:8px">Сохранить сценарии</button>
-    </section>`;
+    <button class="button" id="saveNotifyRules" style="margin-top:8px">Сохранить сценарии</button>`,
+      { hint: `${NOTIFY_CATEGORIES.length} категорий` })
+  ]);
 
   byId('telegramForm').onsubmit = async event => {
     event.preventDefault();
@@ -1013,8 +1008,9 @@ async function renderTelephony() {
   const [config, points] = await Promise.all([
     api('/api/telephony/config'), api('/api/service-points')
   ]);
-  byId('settingsContent').innerHTML = `
-    <h2>🛰 Мониторинг Pilot-GPS</h2>
+  byId('settingsContent').innerHTML = biPage(biHead('Телефония и сервисы',
+    'Мониторинг Pilot-GPS, АТС, эскалация доски диспетчерской и точки сервиса для водителей.'), [
+    biSec('🛰 Мониторинг Pilot-GPS', `
     <p class="muted">Логин/пароль кабинета Пилота — планер сам получает токен (живёт 48 ч)
       и раз в минуту подтягивает позиции сцепок. После сохранения нажмите «Сопоставить парк» —
       трекеры привяжутся к сцепкам по госномерам (кириллица/латиница и пробелы выравниваются).</p>
@@ -1027,8 +1023,39 @@ async function renderTelephony() {
         title="Скачать список объектов из Пилота и привязать трекеры к сцепкам по госномерам">🔗 Сопоставить парк</button>
     </form>
     <p class="muted" style="margin-top:10px">Сценарии Telegram / SMS / почты —
-      в разделе <b>Уведомления</b>.</p>
-    <h2 style="margin-top:18px">Телефония</h2>
+      в разделе <b>Уведомления</b>.</p>`, { span: 's6' }),
+    biSec('Доска диспетчерской: эскалация', `
+    <p class="muted">Карточка без движения дольше норматива колонки × множитель уходит
+      старшему смены (должность со словом «старший»), ещё через указанные минуты —
+      руководителю диспетчерской службы. Нормативы живые: подготовка — медиана по факту,
+      погрузка/выгрузка — ворота, в пути — интервал промежуточного контроля.</p>
+    <form id="dispatchForm" class="fields">
+      <label class="field">Множитель просрочки (во сколько раз дольше норматива)
+        <input name="escalateFactor" type="number" min="0" step="0.5"
+          value="${state.admin.settings?.dispatch?.escalateFactor ?? 2}">
+        <small class="muted">0 — эскалация выключена.</small></label>
+      <label class="field">Минут у старшего смены до передачи руководителю службы
+        <input name="escalateHeadMin" type="number" min="0" step="5"
+          value="${state.admin.settings?.dispatch?.escalateHeadMin ?? 60}">
+        <small class="muted">0 — выше старшего смены не поднимать.</small></label>
+      <label class="field">Карточек за проход (каждые 10 минут)
+        <input name="escalateMaxPerTick" type="number" min="0" step="1"
+          value="${state.admin.settings?.dispatch?.escalateMaxPerTick ?? 5}">
+        <small class="muted">Поднимаются самые горящие, остальные ждут очереди —
+          чтобы накопленный хвост не упал на старшего залпом.</small></label>
+      <label class="field">Потолок эскалаций на человеке
+        <input name="escalateCapPerPerson" type="number" min="0" step="1"
+          value="${state.admin.settings?.dispatch?.escalateCapPerPerson ?? 10}">
+        <small class="muted">Больше этого числа ни старший, ни руководитель службы
+          не держат — очередь ждёт отработки. 0 — без потолка.</small></label>
+      <label class="field">«Мёртвый хвост»: суток без движения
+        <input name="escalateDeadDays" type="number" min="0" step="1"
+          value="${state.admin.settings?.dispatch?.escalateDeadDays ?? 7}">
+        <small class="muted">Старше порога — карточка выходит из эскалаций и попадает
+          списком зачистки в пятничный выпуск. 0 — выключено.</small></label>
+      <button class="button">Сохранить</button>
+    </form>`, { span: 's6' }),
+    biSec('Телефония', `
     <p class="muted">Когда АТС подключена, входящий звонок сам поднимает карточку водителя
       у сотрудника. До подключения та же карточка открывается кнопкой «📞 Звонок» в шапке —
       процесс работы не меняется.</p>
@@ -1072,39 +1099,8 @@ async function renderTelephony() {
       <code>{"from":"+79875105921","to":"+7495...","callId":"уникальный-id","at":"2026-08-27T10:00:00Z"}</code>.
       Система сама определит, кто звонит — водитель, сотрудник или контакт клиента, —
       и поднимет карточку. Повторная доставка того же callId не создаёт дубль.
-    </div>
-    <h2 style="margin-top:18px">Доска диспетчерской: эскалация</h2>
-    <p class="muted">Карточка без движения дольше норматива колонки × множитель уходит
-      старшему смены (должность со словом «старший»), ещё через указанные минуты —
-      руководителю диспетчерской службы. Нормативы живые: подготовка — медиана по факту,
-      погрузка/выгрузка — ворота, в пути — интервал промежуточного контроля.</p>
-    <form id="dispatchForm" class="fields">
-      <label class="field">Множитель просрочки (во сколько раз дольше норматива)
-        <input name="escalateFactor" type="number" min="0" step="0.5"
-          value="${state.admin.settings?.dispatch?.escalateFactor ?? 2}">
-        <small class="muted">0 — эскалация выключена.</small></label>
-      <label class="field">Минут у старшего смены до передачи руководителю службы
-        <input name="escalateHeadMin" type="number" min="0" step="5"
-          value="${state.admin.settings?.dispatch?.escalateHeadMin ?? 60}">
-        <small class="muted">0 — выше старшего смены не поднимать.</small></label>
-      <label class="field">Карточек за проход (каждые 10 минут)
-        <input name="escalateMaxPerTick" type="number" min="0" step="1"
-          value="${state.admin.settings?.dispatch?.escalateMaxPerTick ?? 5}">
-        <small class="muted">Поднимаются самые горящие, остальные ждут очереди —
-          чтобы накопленный хвост не упал на старшего залпом.</small></label>
-      <label class="field">Потолок эскалаций на человеке
-        <input name="escalateCapPerPerson" type="number" min="0" step="1"
-          value="${state.admin.settings?.dispatch?.escalateCapPerPerson ?? 10}">
-        <small class="muted">Больше этого числа ни старший, ни руководитель службы
-          не держат — очередь ждёт отработки. 0 — без потолка.</small></label>
-      <label class="field">«Мёртвый хвост»: суток без движения
-        <input name="escalateDeadDays" type="number" min="0" step="1"
-          value="${state.admin.settings?.dispatch?.escalateDeadDays ?? 7}">
-        <small class="muted">Старше порога — карточка выходит из эскалаций и попадает
-          списком зачистки в пятничный выпуск. 0 — выключено.</small></label>
-      <button class="button">Сохранить</button>
-    </form>
-    <h2 style="margin-top:18px">Точки сервиса</h2>
+    </div>`),
+    biSec('Точки сервиса', `
     <p class="muted">Мойки, шиномонтаж, стоянки, заправки — то, что водитель спрашивает на линии.
       В карточке звонка они показываются от ближайшей к машине.</p>
     <form id="servicePointForm" class="fields">
@@ -1120,7 +1116,7 @@ async function renderTelephony() {
       <label class="field">Комментарий<input name="note" placeholder="для наших — скидка, пропуск по номеру"></label>
       <button class="button">Добавить точку</button>
     </form>
-    <table class="grid" style="margin-top:12px"><thead><tr>
+    <div class="table-wrap bi-scroll" style="margin-top:12px"><table class="bi-table"><thead><tr>
       <th>Вид</th><th>Название</th><th>Адрес</th><th>Телефон</th><th>Часы</th><th></th></tr></thead>
       <tbody>${points.items.length ? points.items.map(point => `<tr>
         <td>${escapeHtml(SERVICE_KINDS.find(item => item.kind === point.kind)?.label || point.kind)}</td>
@@ -1130,7 +1126,8 @@ async function renderTelephony() {
         <td>${escapeHtml(point.work_hours || '—')}</td>
         <td><button class="button ghost small danger" data-point-del="${point.id}">✕</button></td>
       </tr>`).join('') : '<tr><td colspan="6" class="muted">Точек пока нет — водителю нечего подсказать.</td></tr>'}
-      </tbody></table>`;
+      </tbody></table></div>`, { hint: `${points.items.length} точек` })
+  ]);
   byId('monitoringForm').onsubmit = async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1224,7 +1221,28 @@ async function render() {
   }
 }
 
+// Оглавление-якоря раздела (BI-вид 04.11): под активной кнопкой слева —
+// ссылки на секции страницы. Строится наблюдателем за #settingsContent,
+// поэтому переживает любые перерисовки (сохранение, «добавить точку»).
+let tocTargets = [];
+function buildToc() {
+  byId('settingsNav').querySelector('.svc-toc')?.remove();
+  tocTargets = [...content.querySelectorAll('.section > .sec-h .st')];
+  const active = byId('settingsNav').querySelector('[data-section].active');
+  if (!active || tocTargets.length < 2) return;
+  active.insertAdjacentHTML('afterend', `<div class="svc-toc">${tocTargets.map((title, index) =>
+    `<a href="#" data-toc="${index}">${escapeHtml(title.textContent.trim())}</a>`).join('')}</div>`);
+}
+new MutationObserver(buildToc).observe(content, { childList: true });
+
 byId('settingsNav').onclick = event => {
+  const jump = event.target.closest('[data-toc]');
+  if (jump) {
+    event.preventDefault();
+    tocTargets[Number(jump.dataset.toc)]?.closest('.section')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
   const button = event.target.closest('[data-section]');
   if (!button) return;
   state.section = button.dataset.section;

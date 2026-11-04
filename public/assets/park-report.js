@@ -359,17 +359,23 @@ export async function buildReport(context, files, periodSel) {
   const pct = v => `${Math.round(v * 100)}%`;
   const hrs = v => `${Math.round(v).toLocaleString('ru-RU')} ч`;
   const enrichedIn = loaded.filter(o => o.factUnload).length;
-  return `${periodBar}<div class="summary-grid" style="grid-template-columns:repeat(5,1fr)">
-      <div class="metric"><span>Период · машин · погрузок</span><strong>${label} · ${plates.length} · ${loaded.length}</strong></div>
-      <div class="metric"><span>Выручка (погрузка в периоде) · с НДС, как в 1С</span><strong>${money(Math.round(rev))}
-        <small class="muted" style="display:block">≈ без НДС: ${money(Math.round(rev / 1.22))} · факт выгрузки из планера: ${enrichedIn} из ${loaded.length}</small></strong></div>
-      <div class="metric"><span>КТГ (ремонты)</span><strong>${repairs ? pct(ktg) : '— загрузите «Ремонты»'}</strong></div>
-      <div class="metric"><span>КВЛ (на линии)</span><strong>${pct(kvl)}${sheetHours ? '' : ' *'}</strong></div>
-      <div class="metric"><span>КИП по часам под грузом</span><strong>${pct(kip)}</strong></div>
+  // BI-вид: ряд плиток .metric (цвета отделов каскада) → сетка секций.
+  const sec = (title, hint = '') => `<div class="sec-h"><span class="st">${title}</span>${hint
+    ? `<span class="hint">${hint}</span>` : ''}</div>`;
+  return `${periodBar}<div class="bi-page boss-park">
+    <div class="bi-kpis">
+      <div class="metric"><span class="l">Период · машин · погрузок</span>
+        <span class="v boss-v-sm">${plates.length} · ${loaded.length}</span><span class="d">${label}</span></div>
+      <div class="metric dept-staff hero"><span class="l">Выручка (погрузка в периоде) · с НДС, как в 1С</span>
+        <span class="v">${money(Math.round(rev))}</span>
+        <span class="d">≈ без НДС: ${money(Math.round(rev / 1.22))} · факт выгрузки из планера: ${enrichedIn} из ${loaded.length}</span></div>
+      <div class="metric dept-toir"><span class="l">КТГ (ремонты)</span>
+        <span class="v ${repairs ? '' : 'boss-v-sm'}">${repairs ? pct(ktg) : '— загрузите «Ремонты»'}</span></div>
+      <div class="metric dept-drv"><span class="l">КВЛ (на линии)</span><span class="v">${pct(kvl)}${sheetHours ? '' : ' *'}</span></div>
+      <div class="metric dept-log"><span class="l">КИП по часам под грузом</span><span class="v">${pct(kip)}</span></div>
     </div>
-    ${sheetHours ? '' : '<p class="muted">* без «Путевых листов» линия оценена как «груз + ожидание между заказами» — КВЛ ориентировочный.</p>'}
-    <div class="salesboard"><div class="scol">
-      <div class="scolh">Куда уходят часы линии</div>
+    ${sheetHours ? '' : '<p class="muted" style="margin:0">* без «Путевых листов» линия оценена как «груз + ожидание между заказами» — КВЛ ориентировочный.</p>'}
+    <div class="bi-grid"><section class="section s6">${sec('Куда уходят часы линии', 'каскад по часам из выгрузок 1С')}<div class="sec-b">
       <div class="list">
         <div class="list-item"><span style="flex:1">📦 Под грузом</span><b>${hrs(loadH)} · ${pct(kip)}</b></div>
         <div class="list-item"><span style="flex:1">⏳ Ожидание следующего задания <small class="muted">— главная потеря и в 1С, и в планере (наша метрика «зазор стыковки»)</small></span><b>${hrs(waitH)} ≈ ${Math.round(waitH / 24)} маш-дн</b></div>
@@ -386,9 +392,8 @@ export async function buildReport(context, files, periodSel) {
       <p class="muted" style="margin:4px 0 0">Суммы сценариев — в деньгах 1С (с НДС). Прогнозы планера
         (дашборд, план 165 млн) считаются БЕЗ НДС — сравнивайте по строке «без НДС», иначе
         одинаковый прогноз выглядит расхождением на ~18%.</p>
-    </div>
-    <div class="scol">
-      <div class="scolh">Худшие по доле часов под грузом</div>
+    </div></section>
+    <section class="section s6">${sec('Худшие по доле часов под грузом', 'машины с 2+ рейсами')}<div class="sec-b">
       <div class="list">${worst.map(v => `<div class="list-item">
         <span style="flex:1"><b class="mono">${escapeHtml(v.plate)}</b>
           <small class="muted"> · ${escapeHtml(v.type)} · рейсов ${v.trips}</small></span>
@@ -409,5 +414,5 @@ export async function buildReport(context, files, periodSel) {
       <div class="list">${topCustomers.map(([name, c]) => `<div class="list-item">
         <span style="flex:1">${escapeHtml(name.slice(0, 40))}<small class="muted"> · ${c.n}</small></span>
         <b>${money(Math.round(c.rev))}</b></div>`).join('')}</div>
-    </div></div>`;
+    </div></section></div></div>`;
 }

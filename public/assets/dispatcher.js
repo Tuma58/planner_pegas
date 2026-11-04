@@ -1227,14 +1227,16 @@ export async function renderDispatcher(container, context, options = {}) {
     const waitLabel = overdue
       ? (row.kind === 'mid' ? 'пора' : `просрочен ${Math.max(1, Math.floor((Date.now() - row.at) / 3_600_000))} ч`)
       : formatDateTime(new Date(row.at).toISOString());
-    return `<div class="cq-row ${overdue ? 'overdue' : ''} ${row.kind === 'alarm' ? 'alarm' : ''}">
-      <span class="cq-time" title="${overdue ? 'Контроль просрочен — разобрать первым' : 'Когда диспетчер должен проверить'}">${waitLabel}</span>
-      <span class="cq-kind" title="${escapeHtml(row.kindHint || '')}">${row.kindLabel}</span>
-      <b class="mono cq-plate">${escapeHtml(trip.vehicle_plate || '')}</b>
-      <span class="cq-driver muted">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
+    // BI-вид 04.11: очередь — строка таблицы .bi-table (класс cq-tr,
+    // а не cq-row: у cq-row в styles.css сеточная раскладка карточки).
+    return `<tr class="cq-tr ${overdue ? 'overdue' : ''} ${row.kind === 'alarm' ? 'alarm' : ''}">
+      <td class="cq-time num" title="${overdue ? 'Контроль просрочен — разобрать первым' : 'Когда диспетчер должен проверить'}">${waitLabel}</td>
+      <td class="cq-kind" title="${escapeHtml(row.kindHint || '')}">${row.kindLabel}</td>
+      <td><b class="mono cq-plate">${escapeHtml(trip.vehicle_plate || '')}</b></td>
+      <td class="cq-main"><span class="cq-driver">${escapeHtml((trip.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
       <span class="cq-what" title="${escapeHtml(row.event.label)}">${row.silenceH
-    ? `<b class="cq-silence" title="Сколько часов с последнего касания рейса (отметки, заметки, контроль)">📵 ${row.silenceH} ч без связи</b> · ` : ''}${escapeHtml(row.event.label)}</span>
-      <span class="cq-actions">
+    ? `<b class="cq-silence" title="Сколько часов с последнего касания рейса (отметки, заметки, контроль)">📵 <span class="mono">${row.silenceH} ч</span> без связи</b> · ` : ''}${escapeHtml(row.event.label)}</span></td>
+      <td class="cq-acts"><span class="cq-actions">
         ${canAct && row.event.stopId && row.kind !== 'mid' ? `<button class="button small ctrl-quick"
           data-quick-stop="${row.event.stopId}" data-quick-field="${row.event.stepFields}"
           data-quick-label="${escapeHtml(row.event.stepLabel)}"
@@ -1246,8 +1248,8 @@ export async function renderDispatcher(container, context, options = {}) {
           title="Отложить контроль на час (макет: откладывание живёт до перезагрузки страницы)">⏰ +1 ч</button>` : ''}
         <button class="button ghost small" data-cq-card="${trip.id}"
           title="Карточка этого рейса: маршрут, этапы, отклонения">🗂</button>
-      </span>
-    </div>`;
+      </span></td>
+    </tr>`;
   };
   const inWork = state.dispatcherStaleOnly ? online.filter(touchStale) : online;
   // Секции по уровню внимания; порядок внутри — прежняя сортировка
@@ -1426,6 +1428,8 @@ export async function renderDispatcher(container, context, options = {}) {
     const tempBadCount = online.filter(tempBad).length;
     const ctrlOverCount = roadCol.filter(ctrlOverdue).length;
     const kbMeta = (text, bad) => `<div class="kbr kb4 ${bad ? 'bad' : ''}">${text}</div>`;
+    // BI-вид 04.11: числа на карточках — моно (ровные столбцы цифр).
+    const kbn = value => `<span class="kbn">${value}</span>`;
     const ownerRow = trip => {
       const a = assignments[trip.id];
       if (!a) return '<div class="kbr kb-own none">👤 не назначена</div>';
@@ -1468,8 +1472,8 @@ export async function renderDispatcher(container, context, options = {}) {
         : !trip.driver_notified_at ? ['driver_notified', '📨 Задание водителю']
         : ['on_line', '🚦 Вывести на линию'];
       return kbCard(trip, overdueStart ? 'over' : startIn <= 24 ? 'soon' : '',
-        kbMeta(overdueStart ? `выход просрочен на ${Math.abs(startIn).toFixed(0)} ч`
-          : `выход через ${startIn.toFixed(0)} ч`, overdueStart),
+        kbMeta(overdueStart ? `выход просрочен на ${kbn(`${Math.abs(startIn).toFixed(0)} ч`)}`
+          : `выход через ${kbn(`${startIn.toFixed(0)} ч`)}`, overdueStart),
         stepBtn(trip, step, label));
     };
     const waitCardKb = trip => kbCard(trip, '',
@@ -1482,7 +1486,7 @@ export async function renderDispatcher(container, context, options = {}) {
       const mark = [...workedMap.entries()].filter(([key]) => key.startsWith(`${trip.id}|`))
         .map(([, value]) => value).sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)))[0];
       const note = mark?.note ? ` · «${mark.note.slice(0, 40)}»` : '';
-      return `<div class="kbr kbc ${touched > midH ? 'bad' : ''}">📞 контроль ${touched.toFixed(0)} ч назад${escapeHtml(note)}</div>`;
+      return `<div class="kbr kbc ${touched > midH ? 'bad' : ''}">📞 контроль ${kbn(`${touched.toFixed(0)} ч`)} назад${escapeHtml(note)}</div>`;
     };
     const ctrlBtn = trip => canAct ? `<button class="button small kb-step"
       data-kb-ctrl="${trip.id}" data-kb-ctrl-label="${escapeHtml(nextControlEvent(trip).label).slice(0, 80)}">📞 Контроль пройден</button>` : '';
@@ -1734,7 +1738,7 @@ export async function renderDispatcher(container, context, options = {}) {
       const age = hoursSince(trip.on_line_at) || 0;
       const hot = age > 24 && !ctrlFresh(trip);
       return kbCard(trip, hot ? 'over' : '',
-        kbMeta(`на линии ${age.toFixed(0)} ч без убытия${hot ? ' — ожидание окна: сигнал логисту' : ''}`, hot)
+        kbMeta(`на линии ${kbn(`${age.toFixed(0)} ч`)} без убытия${hot ? ' — ожидание окна: сигнал логисту' : ''}`, hot)
         + ctrlRow(trip), ctrlBtn(trip));
     };
     // Время на доске (решение руководителя 04.11 по заявке Базуева):
@@ -1745,19 +1749,19 @@ export async function renderDispatcher(container, context, options = {}) {
       const stops = controlByTrip.get(trip.id)?.stops || [];
       const plan = stops[stops.length - 1]?.planned_arrival || null;
       const freeMs = Date.parse(trip.ends_at);
-      if (!plan) return `<div class="kbr kb4">📦 выгрузка ~ ${fmtKb(trip.ends_at)}</div>`;
+      if (!plan) return `<div class="kbr kb4">📦 выгрузка ~ ${kbn(fmtKb(trip.ends_at))}</div>`;
       const gapH = (freeMs - Date.parse(plan)) / 3.6e6;
-      return `<div class="kbr kb4">📦 выгрузка по плану <b>${fmtKb(plan)}</b></div>`
-        + (gapH > 1 ? `<div class="kbr kb4">🛌 освободится ~ ${fmtKb(trip.ends_at)} <small>с отдыхом водителя</small></div>` : '');
+      return `<div class="kbr kb4">📦 выгрузка по плану <b class="kbn">${fmtKb(plan)}</b></div>`
+        + (gapH > 1 ? `<div class="kbr kb4">🛌 освободится ~ ${kbn(fmtKb(trip.ends_at))} <small>с отдыхом водителя</small></div>` : '');
     };
     const roadCardKb = trip => {
       const t = tempOf(trip);
       const tRow = !t ? '<div class="kbr kbt muted">🌡 без датчика / не реф</div>'
-        : t.stale ? `<div class="kbr kbt bad">🌡 датчик молчит ${Math.round(t.silentMin / 60)} ч</div>`
-        : `<div class="kbr kbt ${t.ok ? '' : 'bad'}">🌡 ${Number(t.value).toFixed(1)}° <small>режим ${t.min}…${t.max}°</small>${t.ok ? ' ✓' : ' ⚠ ВНЕ РЕЖИМА'}</div>`;
+        : t.stale ? `<div class="kbr kbt bad">🌡 датчик молчит ${kbn(`${Math.round(t.silentMin / 60)} ч`)}</div>`
+        : `<div class="kbr kbt ${t.ok ? '' : 'bad'}">🌡 ${kbn(`${Number(t.value).toFixed(1)}°`)} <small>режим <span class="kbn">${t.min}…${t.max}°</span></small>${t.ok ? ' ✓' : ' ⚠ ВНЕ РЕЖИМА'}</div>`;
       const touched = (Date.now() - lastTouchMs(trip)) / 3.6e6;
       const over = ctrlOverdue(trip);
-      const cRow = `<div class="kbr kbc ${over ? 'bad' : ''}">📞 контроль ${touched.toFixed(0)} ч назад <small>норматив ${midH.toFixed(0)} ч</small>${over ? ' — ПРОСРОЧЕН' : ''}</div>`;
+      const cRow = `<div class="kbr kbc ${over ? 'bad' : ''}">📞 контроль ${kbn(`${touched.toFixed(0)} ч`)} назад <small>норматив <span class="kbn">${midH.toFixed(0)} ч</span></small>${over ? ' — ПРОСРОЧЕН' : ''}</div>`;
       const btn = canAct ? `<button class="button small kb-step ${over || tempBad(trip) ? 'alert' : ''}"
         data-kb-ctrl="${trip.id}" data-kb-ctrl-label="${escapeHtml(nextControlEvent(trip).label).slice(0, 80)}">📞 Контроль пройден</button>` : '';
       return kbCard(trip, tempBad(trip) || over ? 'over' : '', unloadPlanRows(trip) + tRow + cRow, btn);
@@ -1767,7 +1771,7 @@ export async function renderDispatcher(container, context, options = {}) {
       const over = age > gateNormH;
       const hot = over && !ctrlFresh(trip);
       return kbCard(trip, hot ? 'over' : '',
-        kbMeta(`на выгрузке ${age.toFixed(1)} ч <small>норматив ворот ${gateNormH} ч</small>${over ? ' — кандидат в простой/претензию' : ''}`, hot)
+        kbMeta(`на выгрузке ${kbn(`${age.toFixed(1)} ч`)} <small>норматив ворот <span class="kbn">${gateNormH} ч</span></small>${over ? ' — кандидат в простой/претензию' : ''}`, hot)
         + ctrlRow(trip), ctrlBtn(trip));
     };
     // Сошедшие с доски (ошибочная отметка): поиск находит свежевыгруженные
@@ -1782,7 +1786,7 @@ export async function renderDispatcher(container, context, options = {}) {
         <div class="kbr kb1"><b class="mono">${escapeHtml(item.vehicle_plate || '')}</b>
           <span class="kb-drv">${escapeHtml((item.driver_name || '').split(' ').slice(0, 2).join(' '))}</span></div>
         <div class="kbr kb2">${escapeHtml((item.customer_name || '').slice(0, 30))}</div>
-        <div class="kbr kb4">выгружен ${formatDateTime(item.unloaded_at)} — сошёл с доски</div>
+        <div class="kbr kb4">выгружен ${kbn(formatDateTime(item.unloaded_at))} — сошёл с доски</div>
         ${canAct ? `<button class="button small kb-step" data-kb-return="${item.id}">↩ Вернуть в контроль</button>` : ''}
       </div>`).join('');
     const prepLimit = planned.filter(trip =>
@@ -1804,7 +1808,7 @@ export async function renderDispatcher(container, context, options = {}) {
       const pct = Math.min(100, Math.round(person.today / Math.max(1, person.cap) * 100));
       return `<div class="kb-cap ${over ? 'red' : ''}" title="${person.onShift ? 'в смене по графику' : 'вне графика смен'}${person.dispatcherRole ? '' : ' · РОЛЬ НЕ ДИСПЕТЧЕР'}">
         <span class="nm">${escapeHtml(person.name.split(' ').slice(0, 2).join(' '))}${person.dispatcherRole ? '' : ' <small class="bad">не диспетчер!</small>'}</span>
-        <span class="bar"><i style="--w:${pct}%"></i></span>
+        <span class="bar bi-meter ${over ? 'neg' : ''}"><i style="--w:${pct}%;width:${pct}%"></i></span>
         <span class="val">${person.today} / ${person.cap}</span>
         ${canThank && person.name !== myFull ? `<button class="asgBtn kb-thank" data-kb-thank="${escapeHtml(person.name)}"
           title="Поблагодарить лично: сообщение всплывёт у сотрудника на экране">🙏</button>` : ''}
@@ -1821,10 +1825,10 @@ export async function renderDispatcher(container, context, options = {}) {
           <span class="kb-drv">${escapeHtml((transfer.driver_name || 'без водителя').split(' ').slice(0, 2).join(' '))}</span></div>
         ${ownerRow(transfer)}
         <div class="kbr kb-own">🚚 порожним · ${escapeHtml(transfer.purpose || '')}</div>
-        <div class="kbr kb3">${escapeHtml((transfer.from_label || '—').slice(0, 22))} → ${escapeHtml((transfer.to_name || '—').slice(0, 22))}${transfer.empty_km ? ` · ~${Math.round(transfer.empty_km)} км` : ''}</div>
+        <div class="kbr kb3">${escapeHtml((transfer.from_label || '—').slice(0, 22))} → ${escapeHtml((transfer.to_name || '—').slice(0, 22))}${transfer.empty_km ? ` · ${kbn(`~${Math.round(transfer.empty_km)} км`)}` : ''}</div>
         <div class="kbr kb4 ${late || departOverdue ? 'bad' : ''}">${stage.key === 'run'
-          ? `прибытие план ${formatDateTime(transfer.ends_at)}${late ? ` — ОПАЗДЫВАЕТ ${Math.floor(lateMs / 3.6e6)} ч` : ''}`
-          : `выезд план ${formatDateTime(transfer.starts_at)}${departOverdue ? ' — ВЫЕЗД ПРОСРОЧЕН' : ''}`}</div>
+          ? `прибытие план ${kbn(formatDateTime(transfer.ends_at))}${late ? ` — ОПАЗДЫВАЕТ ${kbn(`${Math.floor(lateMs / 3.6e6)} ч`)}` : ''}`
+          : `выезд план ${kbn(formatDateTime(transfer.starts_at))}${departOverdue ? ' — ВЫЕЗД ПРОСРОЧЕН' : ''}`}</div>
         ${canAct ? `<button class="button small kb-step ${late || departOverdue ? 'alert' : ''}"
           data-transfer-step="${transfer.id}" data-transfer-action="${escapeHtml(stage.step)}"
           data-transfer-label="${escapeHtml(stage.action)}">✔ ${escapeHtml(stage.action)}</button>
@@ -1832,15 +1836,17 @@ export async function renderDispatcher(container, context, options = {}) {
           title="Скопировать задание для водителя">📋 Задание</button>` : ''}${takeBtn(transfer)}
       </div>`;
     };
-    const kbCol = (title, cards, lim, over, note) => `<section class="kb-col">
-      <div class="kb-chead ${over ? 'bad' : ''}"><span>${title}</span>
-        <span class="kb-lim">${ownerActive ? `👤 ${cards.length} · ` : ''}${lim}</span></div>
+    // BI-вид 04.11: колонка = секция набора (.section + .sec-h), счётчик и
+    // лимит — .bi-tag (красный при превышении лимита).
+    const kbCol = (title, cards, lim, over, note) => `<section class="kb-col section ${over ? 'kb-over' : ''}">
+      <div class="kb-chead sec-h ${over ? 'bad' : ''}"><span class="st">${title}</span>
+        <span class="kb-lim bi-tag ${over ? 'neg' : ''}">${ownerActive ? `👤 ${cards.length} · ` : ''}${lim}</span></div>
       <div class="kb-note">${note}</div>
-      <div class="kb-cards">${cards.join('') || '<p class="muted" style="padding:6px">пусто</p>'}</div>
+      <div class="kb-cards">${cards.join('') || '<p class="bi-empty">пусто</p>'}</div>
     </section>`;
     const matchKb = trip => matches(trip) && ownMatch(trip);
-    const boardHtml = `<div class="saleswrap kb-wrap">
-      <div class="kb-top">
+    const boardHtml = `<div class="kb-wrap bi-page disp-bi">
+      <div class="kb-top bi-sub">
         <span class="resctl-group">
           <button class="button small" id="kbLayoutBoard">🗂 Доска</button>
           <button class="button small ghost" id="kbLayoutClassic" title="Классический вид: полные карточки контроля, перегоны, массовые инструменты">📋 Классика</button>
@@ -1862,26 +1868,32 @@ export async function renderDispatcher(container, context, options = {}) {
           title="Полуавтоматика руководителя службы: сбросить авто-назначения и раздать карточки заново по текущей смене и личным ёмкостям (взятые вручную «🖐 Беру» не трогаются)">⚖ Перераспределить</button>` : ''}
         <button class="button small ghost" id="kbArchive"
           title="Закрытые рейсы за 7 дней: вернуть в контроль или исправить ошибочно проставленное время точек — каждая правка в журнале">🗂 Архив</button>
-        <div class="kb-tiles">
-          <div class="kb-tile ${lateQuestions ? 'warn' : ''}"><span class="k">Вопросы водителей</span><b>${questions.length}</b><small>просрочено ${lateQuestions}</small></div>
-          <div class="kb-tile"><span class="k">Активных карточек</span><b>${preparing.length + waitingLogist.length + online.length}</b><small>подготовка · линия</small></div>
-          <div class="kb-tile ${tempBadCount ? 'warn' : ''}"><span class="k">🌡 вне режима / молчит</span><b>${tempBadCount}</b><small>холодовая цепь</small></div>
-          <div class="kb-tile ${ctrlOverCount ? 'warn' : ''}"><span class="k">📞 контроль просрочен</span><b>${ctrlOverCount}</b><small>норматив ${midH.toFixed(0)} ч</small></div>
-        </div>
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: ТС, водитель, заказчик, № — найдёт и сошедшие с доски"
           value="${escapeHtml(state.dispatcherQuery || '')}">
       </div>
-      ${shiftPeople.length ? `<div class="kb-shift">
-        <span class="kb-shift-t">${can('reports:read') ? 'Смена · ёмкость из факта (медиана за 14 дн, пересчёт ночью)' : 'Ваш темп сегодня · личная норма из вашего факта (14 дн)'}</span>
-        <div class="kb-shift-row">${shiftPeople.map(shiftBar).join('')}</div>
-      </div>` : ''}
+      <div class="bi-kpis disp-kpis">
+        <div class="metric ${lateQuestions ? 'neg' : questions.length ? 'warn' : 'dept-drv'}"><span class="l">Вопросы водителей</span>
+          <span class="v">${questions.length}</span><span class="d ${lateQuestions ? 'down' : ''}">просрочено ${lateQuestions} · норматив 10 мин</span></div>
+        <div class="metric dept-drv"><span class="l">Активных карточек</span>
+          <span class="v">${preparing.length + waitingLogist.length + online.length}</span><span class="d">подготовка · линия</span></div>
+        <div class="metric ${tempBadCount ? 'neg' : 'dept-drv'}"><span class="l">🌡 Вне режима / молчит</span>
+          <span class="v">${tempBadCount}</span><span class="d">холодовая цепь</span></div>
+        <div class="metric ${ctrlOverCount ? 'warn' : 'dept-drv'}"><span class="l">📞 Контроль просрочен</span>
+          <span class="v">${ctrlOverCount}</span><span class="d">норматив ${midH.toFixed(0)} ч</span></div>
+      </div>
+      ${shiftPeople.length ? `<section class="kb-shift section">
+        <div class="sec-h"><span class="kb-shift-t st">${can('reports:read') ? 'Смена · ёмкость из факта' : 'Ваш темп сегодня'}</span>
+          <span class="hint">${can('reports:read') ? 'медиана за 14 дн, пересчёт ночью' : 'личная норма из вашего факта (14 дн)'}</span></div>
+        <div class="kb-shift-row sec-b">${shiftPeople.map(shiftBar).join('')}</div>
+      </section>` : ''}
       ${questionCards ? `<details class="questions-strip compact" data-disp-questions ${questionsOpen ? 'open' : ''}>
         <summary>📞 Вопросы водителей <span class="scount ${lateQuestions ? 'late' : ''}">${questions.length}</span>
           ${lateQuestions ? `<span class="q-late">⏱ просрочено ${lateQuestions}</span>` : ''}
           <small class="muted">— норматив 10 минут; ✓ — отработано</small></summary>
         <div class="list">${questionCards}</div>
       </details>` : ''}
-      ${goneCards ? `<div class="kb-gone"><div class="kb-note">🔎 Сошли с доски за 48 ч (по вашему поиску) — ошибочную отметку можно откатить:</div><div class="kb-gone-row">${goneCards}</div></div>` : ''}
+      ${goneCards ? `<section class="kb-gone section"><div class="sec-h"><span class="st">🔎 Сошли с доски за 48 ч</span>
+        <span class="hint">по вашему поиску — ошибочную отметку можно откатить</span></div><div class="kb-gone-row sec-b">${goneCards}</div></section>` : ''}
       <div class="kb-board ${state.kbDense ? 'kb-dense' : ''}">
         ${kbCol('🧰 Подготовка выхода', [...trPrep.map(kbTransferCard), ...prepList.filter(matchKb).map(prepCardKb), ...waitingLogist.filter(matchKb).map(waitCardKb)],
     `${prepTotal} / ${prepLimit}${trPrep.length ? ` · 🚚 ${trPrep.length}` : ''}`, prepTotal > prepLimit,
@@ -2159,16 +2171,13 @@ export async function renderDispatcher(container, context, options = {}) {
   }
 
   const savedScrolls = captureScrolls(container);
-  const html = `<div class="saleswrap">
+  const html = `<div class="saleswrap disp-bi disp-classic">
     ${!canAct ? `<div class="view-only">👁 Режим просмотра: отметки контроля доступны роли «Диспетчер».
       Если вы ведёте рейсы на линии — попросите администратора добавить вам роль
       в «Настройки → Пользователи».</div>` : ''}
-    <div class="salekpis compact">
-      ${waitingLogist.length ? `<div class="skpi"><span class="skl">Ждут логиста</span><span class="skv">${waitingLogist.length}</span></div>` : ''}
-      ${preparing.length ? `<div class="skpi"><span class="skl">В подготовке</span><span class="skv">${preparing.length}</span></div>` : ''}
-      <div class="skpi"><span class="skl">На линии</span><span class="skv">${online.length}</span></div>
-      ${demurrageChipHtml(data)}
-      <div class="salesfilter">
+    <div class="bi-sub disp-cl-bar">
+      <p>Классика: полные карточки контроля, перегоны, массовые инструменты</p>
+      <div class="bi-actions">
         ${state.dispatcherReturnToBoard ? `<button class="button small" id="kbBackToBoard"
           title="Вернуться на доску — фильтр по борту снимется, поиск доски восстановится">← На доску</button>` : ''}
         <button class="button small ghost" id="kbLayoutBoard2"
@@ -2176,8 +2185,17 @@ export async function renderDispatcher(container, context, options = {}) {
         <button class="button ghost small" id="driverBroadcast"
           title="Объявление всем водителям, привязанным к боту: собрание, изменение порядка, срочная информация">📣 Всем водителям</button>
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: маршрут, ТС, водитель, заказчик, № заявки"
-          value="${escapeHtml(state.dispatcherQuery || '')}" style="flex:1">
+          value="${escapeHtml(state.dispatcherQuery || '')}">
       </div>
+    </div>
+    <div class="bi-kpis disp-kpis">
+      <div class="metric ${waitingLogist.length ? 'warn' : 'dept-drv'}"><span class="l">Ждут логиста</span>
+        <span class="v">${waitingLogist.length}</span><span class="d">подтверждение рейса</span></div>
+      <div class="metric dept-drv"><span class="l">В подготовке</span>
+        <span class="v">${preparing.length}</span><span class="d">1С · задание · выход</span></div>
+      <div class="metric dept-drv"><span class="l">На линии</span>
+        <span class="v">${online.length}</span><span class="d">контроль рейсов</span></div>
+      ${demurrageChipHtml(data)}
     </div>
     ${questionCards ? `<details class="questions-strip compact" data-disp-questions
       ${questionsOpen ? 'open' : ''}>
@@ -2186,24 +2204,28 @@ export async function renderDispatcher(container, context, options = {}) {
         <small class="muted">— строка на вопрос, норматив 10 минут; ✓ — отработано</small></summary>
       <div class="list">${questionCards}</div>
     </details>` : ''}
-    <div class="salesboard">
-      <div class="scol">
-        <div class="scolh">Подготовка выхода <span>${preparing.length}</span></div>
+    <div class="salesboard disp-cl-board">
+      <section class="disp-scol section">
+        <div class="sec-h"><span class="st">Подготовка выхода</span><span class="bi-tag">${preparing.length}</span></div>
+        <div class="sec-b">
         ${staleBlock}
         ${prepCards}
-        ${waitingLogist.length ? `<div class="scolh" style="margin-top:12px">Ждут подтверждения логиста <span>${waitingLogist.length}</span></div>
+        ${waitingLogist.length ? `<div class="sec-h disp-subh"><span class="st">Ждут подтверждения логиста</span><span class="bi-tag warn">${waitingLogist.length}</span></div>
           <div class="list">${waitCards}</div>` : ''}
         <div class="geohint">Чек-лист по каждому рейсу: заказ в учётную систему (1С — отдельно),
           задание водителю, вывод на контроль на линии. Шаги идут по порядку.</div>
-      </div>
-      <div class="scol">
-        ${transferCards ? `<div class="scolh">🚚 Перегоны порожним <span>${transfers.length}</span></div>
+        </div>
+      </section>
+      <section class="disp-scol section">
+        ${transferCards ? `<div class="sec-h"><span class="st">🚚 Перегоны порожним</span><span class="bi-tag">${transfers.length}</span></div>
+          <div class="sec-b">
           <div class="geohint" style="margin:0 0 6px">Машина идёт пустой туда, где нужна.
             Этапы: задание водителю → выехал → прибыл. После «Прибыл» сцепка числится
             в точке назначения и доступна логисту для следующего задания.</div>
-          <div class="list">${transferCards}</div>
-          <div class="scolh" style="margin-top:12px">Контроль на линии <span>${inWork.length}</span>${staleCount ? `<button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" style="margin-left:8px" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button>` : ''}</div>`
-    : `<div class="scolh">Контроль на линии <span>${inWork.length}</span>${staleCount ? `<button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" style="margin-left:8px" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button>` : ''}</div>`}
+          <div class="list">${transferCards}</div></div>
+          <div class="sec-h disp-subh"><span class="st">Контроль на линии</span><span class="bi-tag">${inWork.length}</span>${staleCount ? `<span class="sec-actions"><button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button></span>` : ''}</div>`
+    : `<div class="sec-h"><span class="st">Контроль на линии</span><span class="bi-tag">${inWork.length}</span>${staleCount ? `<span class="sec-actions"><button class="button small ${state.dispatcherStaleOnly ? '' : 'ghost'}" id="ctrlStale" title="Начавшиеся рейсы, точки которых никто не трогал больше 8 часов, — слепая зона контроля. Клик — показать только их">🕐 без касания 8 ч+: ${staleCount}</button></span>` : ''}</div>`}
+        <div class="sec-b">
         <div class="cq-switch">
           <button class="button small ${state.dispatcherCtrlView === 'queue' ? '' : 'ghost'}" id="ctrlViewQueue"
             title="МАКЕТ нового контроля: очередь задач по времени — что проверить и к какому часу">📋 Очередь (макет)</button>
@@ -2211,13 +2233,16 @@ export async function renderDispatcher(container, context, options = {}) {
         </div>
         ${state.dispatcherCtrlView === 'queue' ? (() => {
     const queue = buildControlQueue();
-    return `<div class="cq-head"><span>Время</span><span title="Вид контроля: 🅿 прибытие · 🚚 убытие · 📞 промежуточный · 🚨 вмешаться">Вид</span><span>Борт</span><span>Водитель · что проверяем</span><span></span></div>
-      <div class="list">${queue.active.map(queueRow).join('') || '<p class="muted">Очередь пуста — все контроли отработаны.</p>'}</div>
+    return `<div class="bi-scroll cq-scroll"><table class="bi-table cq-table"><thead><tr><th class="r">Время</th>
+        <th title="Вид контроля: 🅿 прибытие · 🚚 убытие · 📞 промежуточный · 🚨 вмешаться">Вид</th><th>Борт</th>
+        <th>Водитель · что проверяем</th><th></th></tr></thead>
+      <tbody>${queue.active.map(queueRow).join('') || '<tr><td colspan="5" class="bi-empty">Очередь пуста — все контроли отработаны.</td></tr>'}</tbody></table></div>
       <div class="geohint">Отработано: ${queue.done} · отложено: ${queue.snoozed} · «✓ Успевает» пишет ту же отметку, что «✓ Отработано» в карточках — виды согласованы. Промежуточный контроль — каждые ${Math.round(MID_CONTROL_MS / 3_600_000)} ч дальней дороги.</div>`;
   })() : `<div class="list">${onlineCards}</div>`}
         <div class="geohint">Внештатная ситуация: поломка (ремонт + пересадка или снятие),
           отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в продажи.</div>
-      </div>
+        </div>
+      </section>
     </div>
   </div>`;
 

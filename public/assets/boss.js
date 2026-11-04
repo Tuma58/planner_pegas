@@ -137,9 +137,10 @@ export async function renderBoss(container, context) {
     // перенос узла iframe перезагружает его содержимое).
     if (container.querySelector('#opsFrame')) return;
     container.dataset.bossTab = 'ops';
-    container.innerHTML = `${bossTabs(state, 'ops')}
+    container.innerHTML = `${bossTabs(state, 'ops')}<div class="bi-page boss-ops">
       <div class="ops-now" id="opsNow">⏳ прямо сейчас: считаю…</div>
-      <iframe id="opsFrame" title="Отчёт эксплуатации"></iframe>`;
+      <section class="section boss-frame"><div class="sec-b flush">
+        <iframe id="opsFrame" title="Отчёт эксплуатации"></iframe></div></section></div>`;
     wireBossTabs(container, context);
     const frame = container.querySelector('#opsFrame');
     const appTheme = document.documentElement.dataset.theme ||
@@ -232,25 +233,33 @@ export async function renderBoss(container, context) {
       p: `выгружено ${mln(report.netRevenueDone || 0)}${revenuePlan ? ` · план ${mln(revenuePlan)}` : ' · план не задан'}`,
       pill: planDev == null ? null : `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}%`,
       pc: planDev == null ? 'w' : (planDev >= 0 ? 'g' : 'b'),
-      g: revenuePlan ? report.netRevenue / revenuePlan : 0, c: 'var(--ok)' },
+      g: revenuePlan ? report.netRevenue / revenuePlan : 0, c: 'var(--ok)', cls: 'dept-staff hero' },
     { k: 'КТГ — техготовность', v: pct(u.ktg), p: 'план 97%',
       pill: `${devPP(u.ktg, PLAN.ktg) >= 0 ? '+' : ''}${devPP(u.ktg, PLAN.ktg).toFixed(1)} п.п.`,
-      pc: pillCls(devPP(u.ktg, PLAN.ktg)), g: u.ktg / PLAN.ktg, c: 'var(--warn)' },
+      pc: pillCls(devPP(u.ktg, PLAN.ktg)), g: u.ktg / PLAN.ktg, c: 'var(--toir)', cls: 'dept-toir' },
     { k: 'КВЛ — выпуск на линию', v: pct(u.kvl), p: 'план 99%',
       pill: `${devPP(u.kvl, PLAN.kvl) >= 0 ? '+' : ''}${devPP(u.kvl, PLAN.kvl).toFixed(1)} п.п.`,
-      pc: pillCls(devPP(u.kvl, PLAN.kvl)), g: u.kvl / PLAN.kvl, c: 'var(--teal)' },
+      pc: pillCls(devPP(u.kvl, PLAN.kvl)), g: u.kvl / PLAN.kvl, c: 'var(--drv)', cls: 'dept-drv' },
     { k: 'КИП — использование', v: pct(u.kip), p: `в работе ${n1(u.workDays / Math.max(1, u.days))} ед. из ${u.vehicles}`,
       pill: `${devPP(u.kip, PLAN.kip) >= 0 ? '+' : ''}${devPP(u.kip, PLAN.kip).toFixed(1)} п.п.`,
-      pc: pillCls(devPP(u.kip, PLAN.kip)), g: u.kip / PLAN.kip, c: '#7a6fb0' },
-    { k: 'Использование фонда', v: pct(fondUse), p: `${n0(u.workDays)} из ${n0(u.calendarDays)} машино-дней`,
+      pc: pillCls(devPP(u.kip, PLAN.kip)), g: u.kip / PLAN.kip, c: 'var(--log)', cls: 'dept-log' },
+    { k: 'Использование парка — итог каскада', v: pct(fondUse), p: `${n0(u.workDays)} из ${n0(u.calendarDays)} машино-дней`,
       pill: `${devPP(fondUse, u.utilizationTarget) >= 0 ? '+' : ''}${devPP(fondUse, u.utilizationTarget).toFixed(1)} п.п.`,
-      pc: pillCls(devPP(fondUse, u.utilizationTarget)), g: u.utilizationTarget ? fondUse / u.utilizationTarget : 0, c: '#5e87ad' }
+      pc: pillCls(devPP(fondUse, u.utilizationTarget)), g: u.utilizationTarget ? fondUse / u.utilizationTarget : 0, c: 'var(--staff)', cls: 'dept-staff' }
   ];
-  const kpiHtml = kpiCells.map(x => `<div>
-    <div class="k">${x.k}</div>
-    <div class="v ${x.pc === 'g' ? 'good' : x.pc === 'w' ? 'warn' : 'bad'}">${x.v}</div>
-    <div class="p">${x.p}${x.pill ? `<span class="brep-pill ${x.pc}">${x.pill}</span>` : ''}</div>
-    <div class="gauge"><i style="width:${Math.min(x.g * 100, 100)}%;background:${x.c}"></i></div>
+  // Плитка «Рейсы» — те же report.trips и средний чек, что в разделе 01.
+  kpiCells.splice(1, 0, { k: 'Рейсы завершено', v: n0(report.trips),
+    p: `${n1(report.trips / Math.max(1, u.days))} в сутки · ср. чек ${report.trips ? rub(report.netRevenue / report.trips) : '—'}`,
+    pill: null, pc: null, g: null, c: null, cls: '' });
+  // BI-плитки .metric: цвет отдела — полоса сверху, тон отклонения — цифра и тег.
+  const tone = pc => pc === 'g' ? 'good' : pc === 'w' ? 'warn' : pc === 'b' ? 'bad' : '';
+  const tagCls = pc => pc === 'g' ? 'pos' : pc === 'w' ? 'warn' : 'neg';
+  const kpiHtml = kpiCells.map(x => `<div class="metric ${x.cls}">
+    <span class="l">${x.k}</span>
+    <span class="v ${tone(x.pc)}">${x.v}</span>
+    <span class="d">${x.p}</span>
+    ${x.pill ? `<span class="bi-tag ${tagCls(x.pc)} boss-kpi-tag">${x.pill}</span>` : ''}
+    ${x.g != null ? `<div class="bi-meter"><i style="width:${Math.min(x.g * 100, 100)}%;background:${x.c}"></i></div>` : ''}
   </div>`).join('');
 
   // ── 01 Период: план/факт + кривая нарастающим итогом ──
@@ -275,46 +284,53 @@ export async function renderBoss(container, context) {
   const gap = revenuePlan ? booked - revenuePlan : 0;
   const needDaily = revenuePlan && report.remainingDays
     ? Math.max(0, revenuePlan - (report.netPast ?? report.netRevenue)) / report.remainingDays : null;
-  const periodSection = `<section id="brep-s1">
-    <div class="brep-shead"><span class="idx">01</span><h3>Отчётный период</h3>
-      <span class="note">${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн${u.futureDays
-        ? ` · учтено ${u.days} (будущие ${u.futureDays} в машино-дни не входят)` : ''} · выручка по дате выгрузки</span></div>
-    <div class="rcard">
-      <div class="brep-mrow">
-        <div><div class="k">План без НДС</div><div class="v">${revenuePlan ? mln(revenuePlan) : '—'}</div>
-          <div class="p">${revenuePlan ? `${rub(revenuePlan / dayCount)}/сут` : 'задайте в консоли'}</div></div>
-        <div><div class="k">Забито без НДС</div><div class="v">${mln(booked)}</div>
-          <div class="p">выгружено ${mln(report.netRevenue)} · факт ${rub(report.netRevenue / Math.max(1, u.days))}/сут в среднем</div></div>
-        <div><div class="k">Выполнение</div><div class="v ${done >= 1 ? 'good' : done >= 0.9 ? 'warn' : 'bad'}">${revenuePlan ? pct(done) : '—'}</div>
-          <div class="p">${revenuePlan ? `забито к плану · выгружено ${pct(report.netRevenue / revenuePlan)}` : ''}</div></div>
-        <div><div class="k">${gap >= 0 ? 'Запас' : 'Не забито'}</div><div class="v ${gap >= 0 ? 'good' : 'bad'}">${revenuePlan ? mln(Math.abs(gap)) : '—'}</div>
-          <div class="p">${revenuePlan && gap < 0 ? (needDaily != null
-    ? `нужно ${rub(needDaily)}/сут оставшиеся ${report.remainingDays} дн — как на дашборде`
-    : 'период прошёл — цель не добрана') : ''}</div></div>
-      </div>
-      ${revenuePlan ? `<div class="brep-pbar"><i style="width:${Math.min(100, done * 100).toFixed(1)}%"></i><em>план 100%</em></div>` : ''}
-      <div class="brep-ctitle" style="margin-top:14px">Выручка нарастающим итогом</div>
-      <div class="brep-csub">без НДС, по дате выполнения${revenuePlan ? ' · пунктир — план равномерно по дням' : ''}</div>
+  // Раздел 01 — две секции сетки: график (s8, несёт якорь) + план/факт (s4).
+  const secHead = (idx, title, hint, actions = '') => `<div class="sec-h">
+      ${idx ? `<span class="sn">${idx}</span>` : ''}<span class="st">${title}</span>
+      ${hint ? `<span class="hint">${hint}</span>` : ''}${actions ? `<div class="sec-actions">${actions}</div>` : ''}</div>`;
+  const kvRow = (k, v, sub = '', cls = '') => `<tr><td>${k}${sub ? `<div class="boss-sub">${sub}</div>` : ''}</td>
+    <td class="num ${cls}"><b>${v}</b></td></tr>`;
+  const periodSection = `<section id="brep-s1" class="section s8 dept-staff">
+    ${secHead('01', 'Выручка нарастающим итогом', `без НДС, по дате выполнения${revenuePlan ? ' · пунктир — план равномерно по дням' : ''}`,
+    `<span class="bi-tag">${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн</span>`)}
+    <div class="sec-b">
+      ${revenuePlan ? `<div class="brep-pbar boss-pbar"><i style="width:${Math.min(100, done * 100).toFixed(1)}%"></i><em>план 100%</em></div>` : ''}
       ${cumChart(cumFact, cumPlan, dayLabels)}
-      <table class="rtable" style="margin-top:10px"><tbody>
-        <tr><td>Рейсов завершено в периоде</td><td class="num">${report.trips}</td>
-          <td>Средний чек без НДС</td><td class="num">${report.trips ? rub(report.netRevenue / report.trips) : '—'}</td></tr>
-        <tr><td>Сцепок в работе (среднее)</td><td class="num">${n1(u.workDays / Math.max(1, u.days))}</td>
-          <td>Выручка на сцепку в сутки</td><td class="num">${u.workDays ? rub(report.netRevenue / u.workDays) : '—'}</td></tr>
-      </tbody></table>
+      <div class="boss-note">${u.futureDays
+    ? `Учтено ${u.days} дн из ${u.periodDays || u.days} (будущие ${u.futureDays} в машино-дни не входят) · ` : ''}выручка по дате выгрузки</div>
     </div>
+  </section>
+  <section class="section s4">
+    ${secHead('', 'План / факт периода', '')}
+    <div class="sec-b flush"><table class="bi-table rtable boss-kv"><tbody>
+      ${kvRow('План без НДС', revenuePlan ? mln(revenuePlan) : '—',
+    revenuePlan ? `${rub(revenuePlan / dayCount)}/сут` : 'задайте в консоли')}
+      ${kvRow('Забито без НДС', mln(booked),
+      `выгружено ${mln(report.netRevenue)} · факт ${rub(report.netRevenue / Math.max(1, u.days))}/сут в среднем`)}
+      ${kvRow('Выполнение', revenuePlan ? pct(done) : '—',
+        revenuePlan ? `забито к плану · выгружено ${pct(report.netRevenue / revenuePlan)}` : '',
+        done >= 1 ? 'good' : done >= 0.9 ? 'warn' : 'bad')}
+      ${kvRow(gap >= 0 ? 'Запас' : 'Не забито', revenuePlan ? mln(Math.abs(gap)) : '—',
+          revenuePlan && gap < 0 ? (needDaily != null
+            ? `нужно ${rub(needDaily)}/сут оставшиеся ${report.remainingDays} дн — как на дашборде`
+            : 'период прошёл — цель не добрана') : '', gap >= 0 ? 'good' : 'bad')}
+      ${kvRow('Рейсов завершено в периоде', report.trips)}
+      ${kvRow('Средний чек без НДС', report.trips ? rub(report.netRevenue / report.trips) : '—')}
+      ${kvRow('Сцепок в работе (среднее)', n1(u.workDays / Math.max(1, u.days)))}
+      ${kvRow('Выручка на сцепку в сутки', u.workDays ? rub(report.netRevenue / u.workDays) : '—')}
+    </tbody></table></div>
   </section>`;
 
   // ── 02 Каскад КТГ → КВЛ → КИП ──
   const perDay = value => value / Math.max(1, u.days);
   const steps = [
-    { n: 'Списочный парк', v: u.vehicles, loss: null, c: '#54626F' },
+    { n: 'Списочный парк', v: u.vehicles, loss: null, c: 'var(--faint)' },
     { n: 'Технически исправны', v: perDay(u.techDays), loss: u.vehicles - perDay(u.techDays),
-      c: 'var(--warn)', own: 'ТОиР', kn: 'КТГ', k: u.ktg, pl: PLAN.ktg },
+      c: 'var(--toir)', own: 'ТОиР', kn: 'КТГ', k: u.ktg, pl: PLAN.ktg },
     { n: 'Выпущены на линию', v: perDay(u.lineDays), loss: perDay(u.techDays) - perDay(u.lineDays),
-      c: 'var(--teal)', own: 'Водители', kn: 'КВЛ', k: u.kvl, pl: PLAN.kvl },
+      c: 'var(--drv)', own: 'Водители', kn: 'КВЛ', k: u.kvl, pl: PLAN.kvl },
     { n: 'В работе', v: perDay(u.workDays), loss: perDay(u.lineDays) - perDay(u.workDays),
-      c: '#7a6fb0', own: 'Логистика', kn: 'КИП', k: u.kip, pl: PLAN.kip }
+      c: 'var(--log)', own: 'Логистика', kn: 'КИП', k: u.kip, pl: PLAN.kip }
   ];
   const cascadeHtml = steps.map((s, i) => {
     const wv = s.v / u.vehicles * 100;
@@ -326,25 +342,25 @@ export async function renderBoss(container, context) {
       <div class="bar"><i style="width:${wv.toFixed(1)}%;background:${s.c}"></i>
         <em style="width:${Math.max(0, wl).toFixed(1)}%"></em></div>
       <div class="m"><span>${s.kn
-        ? `${s.kn} <b>${pct(s.k)}</b> · план ${pct(s.pl, 0)} <span class="brep-pill ${pillCls(d)}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</span>`
+        ? `${s.kn} <b>${pct(s.k)}</b> · план ${pct(s.pl, 0)} <span class="bi-tag ${({ g: 'pos', w: 'warn', b: 'neg' })[pillCls(d)]}">${d >= 0 ? '+' : ''}${d.toFixed(1)}</span>`
         : `база каскада · ${pct(perDay(u.workDays) / u.vehicles)} парка доходит до работы`}</span>
         <span>${s.own ? `${s.own} <b class="bad">−${n1(s.loss)}</b>` : ''}</span></div>
     </div>`;
   }).join('');
   const lossRows = [
-    ['ТОиР', u.vehicles - perDay(u.techDays), 'var(--warn)'],
-    ['Водители', perDay(u.techDays) - perDay(u.lineDays), 'var(--teal)'],
-    ['Логистика', perDay(u.lineDays) - perDay(u.workDays), '#7a6fb0']
+    ['ТОиР', u.vehicles - perDay(u.techDays), 'var(--toir)'],
+    ['Водители', perDay(u.techDays) - perDay(u.lineDays), 'var(--drv)'],
+    ['Логистика', perDay(u.lineDays) - perDay(u.workDays), 'var(--log)']
   ];
   const lossSum = lossRows.reduce((sum, row) => sum + row[1], 0);
-  const cascadeSection = `<section id="brep-s2">
-    <div class="brep-shead"><span class="idx">02</span><h3>Каскад КТГ → КВЛ → КИП</h3>
-      <span class="note">среднесуточные единицы парка · потери по владельцам процессов</span></div>
-    <div class="brep-casc">
-      <div class="rcard">${cascadeHtml}</div>
-      <div class="rcard"><div class="brep-ctitle">Куда уходит парк</div>
-        <div class="brep-csub">простой ${n1(lossSum)} ед./сут в среднем за период</div>
-        <table class="rtable"><thead><tr><th>Владелец</th><th class="num">Ед./сут</th><th class="num">Маш-дней</th><th class="num">Доля</th></tr></thead><tbody>
+  const cascadeSection = `<section id="brep-s2" class="section s7">
+    ${secHead('02', 'Каскад КТГ → КВЛ → КИП', 'среднесуточные единицы парка · потери по владельцам процессов')}
+    <div class="sec-b">${cascadeHtml}</div>
+  </section>
+  <section class="section s5">
+    ${secHead('', 'Куда уходит парк', `простой ${n1(lossSum)} ед./сут в среднем за период`)}
+    <div class="sec-b flush">
+        <table class="bi-table rtable"><thead><tr><th>Владелец</th><th class="num">Ед./сут</th><th class="num">Маш-дней</th><th class="num">Доля</th></tr></thead><tbody>
         ${lossRows.map(([name, value, color]) => `<tr>
           <td><span class="dotc" style="background:${color}"></span>${name}</td>
           <td class="num">${n1(value)}</td>
@@ -353,33 +369,33 @@ export async function renderBoss(container, context) {
         <tr class="tot"><td>Итого простой</td><td class="num">${n1(lossSum)}</td>
           <td class="num">${n0(lossSum * u.days)}</td><td class="num">100%</td></tr>
         </tbody></table>
-        <p class="brep-hint">Рейсов за период ${report.trips} · ${n1(report.trips / Math.max(1, u.days))} в сутки
+        <p class="brep-hint boss-pad">Рейсов за период ${report.trips} · ${n1(report.trips / Math.max(1, u.days))} в сутки
           · ${u.workDays ? n1(report.trips / u.workDays) : '—'} на работающую сцепку.</p>
-      </div>
     </div>
   </section>`;
 
   // ── 03 Машино-дни: баланс календарного фонда ──
   const fondParts = [
-    { n: 'В работе', v: md.work, c: '#7a6fb0', own: '—' },
-    { n: 'Без заказа', v: md.idle, c: '#8a7fb3', own: 'логистика' },
-    { n: 'Без водителя', v: md.noDriver, c: 'var(--teal)', own: 'водители' },
-    { n: 'Пересменка', v: md.shift, c: '#5e87ad', own: 'водители' },
-    { n: 'Ремонт', v: md.repair, c: 'var(--warn)', own: 'ТОиР' },
-    { n: 'Выведены', v: md.out, c: '#8f9aa6', own: '—' }
+    { n: 'В работе', v: md.work, c: 'var(--log)', own: '—' },
+    { n: 'Без заказа', v: md.idle, c: 'color-mix(in srgb, var(--log) 50%, var(--card))', own: 'логистика' },
+    { n: 'Без водителя', v: md.noDriver, c: 'var(--drv)', own: 'водители' },
+    { n: 'Пересменка', v: md.shift, c: 'color-mix(in srgb, var(--drv) 50%, var(--card))', own: 'водители' },
+    { n: 'Ремонт', v: md.repair, c: 'var(--toir)', own: 'ТОиР' },
+    { n: 'Выведены', v: md.out, c: 'var(--faint)', own: '—' }
   ].filter(part => part.v > 0);
   const stackHtml = fondParts.map(part =>
     `<div style="width:${(part.v / u.calendarDays * 100).toFixed(2)}%;background:${part.c}"
       title="${part.n}: ${n0(part.v)} м-дн">${part.v / u.calendarDays > 0.045 ? pct(part.v / u.calendarDays, 1) : ''}</div>`).join('');
   const lostVsNorm = Math.max(0, u.normDays - u.workDays);
-  const mdSection = `<section id="brep-s3">
-    <div class="brep-shead"><span class="idx">03</span><h3>Машино-дни</h3>
-      <span class="note">${u.vehicles} сцепок × ${u.days} дн = ${n0(u.calendarDays)} машино-дней · норма ${pct(u.utilizationTarget, 1)}</span></div>
-    <div class="rcard">
+  const mdSection = `<section id="brep-s3" class="section">
+    ${secHead('03', 'Машино-дни', `${u.vehicles} сцепок × ${u.days} дн = ${n0(u.calendarDays)} машино-дней · норма ${pct(u.utilizationTarget, 1)}`)}
+    <div class="sec-b">
       <div class="brep-stack">${stackHtml}</div>
       <div class="brep-slegend">${fondParts.map(part =>
         `<span><span class="dotc" style="background:${part.c}"></span>${part.n} — ${n0(part.v)} м-дн</span>`).join('')}</div>
-      <table class="rtable" style="margin-top:12px"><thead><tr><th>Статья</th><th>Владелец</th>
+    </div>
+    <div class="sec-b flush">
+      <table class="bi-table rtable"><thead><tr><th>Статья</th><th>Владелец</th>
         <th class="num">Маш-дней</th><th class="num">Доля фонда</th><th class="num">Ед./сут</th></tr></thead><tbody>
         ${fondParts.map(part => `<tr><td><span class="dotc" style="background:${part.c}"></span>${part.n}</td>
           <td class="muted">${part.own}</td><td class="num">${n0(part.v)}</td>
@@ -388,7 +404,7 @@ export async function renderBoss(container, context) {
         <tr class="tot"><td>Календарный фонд</td><td>—</td><td class="num">${n0(u.calendarDays)}</td>
           <td class="num">100%</td><td class="num">${n1(u.vehicles)}</td></tr>
       </tbody></table>
-      <p class="brep-hint">Потеря против нормы — <b>${n0(lostVsNorm)}</b> машино-дней
+      <p class="brep-hint boss-pad">Потеря против нормы — <b>${n0(lostVsNorm)}</b> машино-дней
         (${n1(lostVsNorm / Math.max(1, u.days))} сцепки в сутки). По марж. доходу
         ${rub(u.marginPerTripDay)} за машино-день это <b>${mln(u.lostProfit)} ₽</b> упущенного дохода за период.</p>
     </div>
@@ -397,22 +413,22 @@ export async function renderBoss(container, context) {
   // ── 04 Экономика ──
   const types = [...report.byVehicleType].sort((a, b) => b.netRevenue - a.netRevenue);
   const maxPerDay = Math.max(1, ...types.map(t => t.netRevenue / Math.max(1, u.days)));
-  const ecoSection = `<section id="brep-s4">
-    <div class="brep-shead"><span class="idx">04</span><h3>Экономика</h3>
-      <span class="note">выручка без НДС · переменные и постоянные по нормативам настроек</span></div>
-    <div class="brep-casc">
-      <div class="rcard"><div class="brep-ctitle">Операционная прибыль · P&L</div>
-        <div class="mdrow"><span>Выручка без НДС</span><b>${rub(report.netRevenue)}</b></div>
-        <div class="mdrow"><span>− Переменные (путевые, страх./дороги, водитель, ХОУ)</span><b>${rub(report.netRevenue - report.contribution)}</b></div>
-        <div class="mdrow"><span>= Маржинальный доход</span><b>${rub(report.contribution)}</b></div>
-        <div class="mdrow"><span>− Постоянные (лизинг + накладные · ${u.vehicles}×${u.days} маш-дней)</span><b>${rub(report.fixed)}</b></div>
-        <div class="mdrow big"><span>= Операционная прибыль</span><b class="${report.operationalProfit < 0 ? 'neg' : ''}">${rub(report.operationalProfit)}</b></div>
-        <div class="mdrow"><span>Операционная маржа</span><b>${pct(report.operationalMargin)}</b></div>
-        <div class="mdrow"><span>Марж. доход на машино-день</span><b>${rub(u.marginPerTripDay)}</b></div>
-      </div>
-      <div class="rcard"><div class="brep-ctitle">По типам ТС</div>
-        <div class="brep-csub">полоса — выручка в сутки</div>
-        <table class="rtable"><thead><tr><th>Тип</th><th class="num">Рейсов</th>
+  const ecoSection = `<section id="brep-s4" class="section s5 dept-staff">
+    ${secHead('04', 'Экономика · P&L', 'выручка без НДС · переменные и постоянные по нормативам настроек')}
+    <div class="sec-b"><div class="bi-list">
+        <div class="bi-row"><span class="k">Выручка без НДС</span><span class="v">${rub(report.netRevenue)}</span></div>
+        <div class="bi-row"><span class="k">− Переменные (путевые, страх./дороги, водитель, ХОУ)</span><span class="v">${rub(report.netRevenue - report.contribution)}</span></div>
+        <div class="bi-row"><span class="k">= Маржинальный доход</span><span class="v">${rub(report.contribution)}</span></div>
+        <div class="bi-row"><span class="k">− Постоянные (лизинг + накладные · ${u.vehicles}×${u.days} маш-дней)</span><span class="v">${rub(report.fixed)}</span></div>
+        <div class="bi-row boss-big"><span class="k">= Операционная прибыль</span><span class="v ${report.operationalProfit < 0 ? 'bad' : ''}">${rub(report.operationalProfit)}</span></div>
+        <div class="bi-row"><span class="k">Операционная маржа</span><span class="v">${pct(report.operationalMargin)}</span></div>
+        <div class="bi-row"><span class="k">Марж. доход на машино-день</span><span class="v">${rub(u.marginPerTripDay)}</span></div>
+    </div></div>
+  </section>
+  <section class="section s7">
+    ${secHead('', 'По типам ТС', 'полоса — выручка в сутки')}
+    <div class="sec-b flush">
+        <table class="bi-table rtable"><thead><tr><th>Тип</th><th class="num">Рейсов</th>
           <th class="num">Выручка б.НДС</th><th class="num">В сутки</th><th class="num">Опер. маржа</th></tr></thead><tbody>
         ${types.map(t => {
           const per = t.netRevenue / Math.max(1, u.days);
@@ -424,7 +440,6 @@ export async function renderBoss(container, context) {
           <td class="num ${margin < 0 ? 'bad' : margin < 0.1 ? 'warn' : 'good'}">${pct(margin)}</td></tr>`;
         }).join('')}
         </tbody></table>
-      </div>
     </div>
   </section>`;
 
@@ -441,11 +456,10 @@ export async function renderBoss(container, context) {
   const totalNet = clients.reduce((sum, client) => sum + client.net, 0);
   const topShare = totalNet ? top.reduce((sum, client) => sum + client.net, 0) / totalNet : 0;
   const maxClient = top[0]?.net || 1;
-  const clientsSection = `<section id="brep-s5">
-    <div class="brep-shead"><span class="idx">05</span><h3>Топ-10 клиентов</h3>
-      <span class="note">${clients.length} заказчиков за период · топ-10 дают ${pct(topShare, 0)} выручки</span></div>
-    <div class="rcard">
-      <table class="rtable"><thead><tr><th>Заказчик</th><th class="num">Рейсов</th>
+  const clientsSection = `<section id="brep-s5" class="section">
+    ${secHead('05', 'Топ-10 клиентов', `${clients.length} заказчиков за период · топ-10 дают ${pct(topShare, 0)} выручки`)}
+    <div class="sec-b flush">
+      <table class="bi-table rtable"><thead><tr><th>Заказчик</th><th class="num">Рейсов</th>
         <th class="num">Выручка б.НДС</th><th class="num">Доля</th><th class="num">Средний чек</th></tr></thead><tbody>
       ${top.map((client, i) => `<tr>
         <td><span class="muted mono" style="font-size:var(--fs-xs)">${String(i + 1).padStart(2, '0')}</span>
@@ -461,12 +475,13 @@ export async function renderBoss(container, context) {
   // ── Сборка ──
   const savedScrolls = captureScrolls(container);
   container.dataset.bossTab = 'classic';
-  container.innerHTML = `${bossTabs(state, 'classic')}<div class="bosswrap brep">
-    <div class="brep-title"><h2>Пегас-Авто · операционный отчёт</h2>
-      <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн · парк ${u.vehicles} сцепок
-        · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
-    <div class="brep-top">
-      <div class="console">
+  container.innerHTML = `${bossTabs(state, 'classic')}<div class="bi-page bosswrap boss-bi">
+    <div class="bi-sub"><h2>Операционный отчёт</h2>
+      <p>${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн · парк ${u.vehicles} сцепок
+        · НДС 22%, ИП 7% · рейс по дате выгрузки</p></div>
+    <section class="section boss-cabin">
+      ${secHead('', 'Кабина руководителя', 'период, план выручки, печатные отчёты и инструменты')}
+      <div class="sec-b flush"><div class="console">
         ${rangePickerHtml('bossFrom', 'bossTo', from, to, 'период')}
         <span class="cnl" style="margin-left:10px">План выручки</span>
         <input type="number" id="bossPlan" placeholder="цель, ₽" value="${revenuePlan || ''}" style="width:130px">
@@ -518,16 +533,16 @@ export async function renderBoss(container, context) {
           title="Пробеги парка за период до минуты: общий / гружёный / порожний, среднесуточный против цели — одометр CAN на границах периода, при сбое GPS-трек, затем дневной кэш">🛣 Пробеги</button>
         <button class="button ghost small" id="bossParkReport"
           title="СВЕРКА с выгрузками 1С (Заказы/Путевые листы/Ремонты): каскад по часам под грузом из внешнего источника — для сличения с планерным каноном, не для оперативной работы">🏭 Сверка эксплуатации с 1С</button>
-      </div>
-      <nav class="brep-nav" id="brepNav">
-        <a href="#brep-s1" class="on">01 Период</a><a href="#brep-s2">02 Каскад</a>
-        <a href="#brep-s3">03 Машино-дни</a><a href="#brep-s4">04 Экономика</a>
-        <a href="#brep-s5">05 Клиенты</a>
-      </nav>
-    </div>
-    <div class="brep-kpi">${kpiHtml}</div>
-    ${periodSection}${cascadeSection}${mdSection}${ecoSection}${clientsSection}
-    <div class="geohint" style="padding:8px 4px">Отклонения — в процентных пунктах к плану (КТГ 97, КВЛ 99, КИП 99,
+      </div></div>
+    </section>
+    <div class="bi-kpis">${kpiHtml}</div>
+    <nav class="boss-anchors" id="brepNav" aria-label="Разделы отчёта">
+      <a href="#brep-s1" class="on"><b>01</b> Период</a><a href="#brep-s2"><b>02</b> Каскад</a>
+      <a href="#brep-s3"><b>03</b> Машино-дни</a><a href="#brep-s4"><b>04</b> Экономика</a>
+      <a href="#brep-s5"><b>05</b> Клиенты</a>
+    </nav>
+    <div class="bi-grid">${periodSection}${cascadeSection}${mdSection}${ecoSection}${clientsSection}</div>
+    <div class="geohint boss-foot">Отклонения — в процентных пунктах к плану (КТГ 97, КВЛ 99, КИП 99,
       фонд ${pct(u.utilizationTarget, 1)}). Печатные формы — через «📄 Сформировать».</div>
   </div>`;
   restoreScrolls(container, savedScrolls);
@@ -803,7 +818,7 @@ async function shiftPlannerDialog(context) {
       пересменками за 60 суток). Зелёный — в норме, жёлтый — выше нормы, красный — пик (>×1,5).
       Наведите на бар — список машин в ремзоне. Заезды планируются недоступностями в карточке ТС —
       планировщик подсказывает дни, решение за человеком.</p>
-    <div class="table-wrap" style="max-height:52vh;overflow:auto"><table>
+    <div class="bi-scroll" style="max-height:52vh"><table class="bi-table">
       <thead><tr><th>День</th><th>Загрузка ремзоны</th>
         <th class="num" title="Заездов в этот день">Заезд</th>
         <th class="num" title="Выходов в строй (окончания «без водителя», пересменок, ремонтов)">Выход</th>
@@ -1056,20 +1071,20 @@ function renderMileage(context, d) {
     </tr>`).join('');
   context.showModal(`<h2>🛣 Пробеги · ${fmtDT(d.from)} — ${fmtDT(d.to)}
       <small class="muted">(${d.days.toFixed(2)} сут · парк ${d.fleet})</small></h2>
-    <div class="rsums">
-      <span class="rsum">Общий: <b>${km(d.totalKm)}</b></span>
-      <span class="rsum">Гружёный: <b>${km(d.loadedKm)}</b>
-        <small class="muted">${d.totalKm ? Math.round(d.loadedKm / d.totalKm * 100) : 0}%</small></span>
-      <span class="rsum">Порожний: <b>${km(d.emptyKm)}</b>
-        <small class="muted">${d.totalKm ? Math.round(d.emptyKm / d.totalKm * 100) : 0}%</small></span>
-      <span class="rsum">Среднесуточный на машину:
-        <b class="${okTarget ? 'good' : 'bad'}">${d.perDayPerVehicle} км/сут</b>
-        <small class="muted">цель ${d.target}</small></span>
+    <div class="bi-kpis boss-modal-kpis">
+      <div class="metric"><span class="l">Общий</span><span class="v">${km(d.totalKm)}</span></div>
+      <div class="metric"><span class="l">Гружёный</span><span class="v">${km(d.loadedKm)}</span>
+        <span class="d">${d.totalKm ? Math.round(d.loadedKm / d.totalKm * 100) : 0}%</span></div>
+      <div class="metric"><span class="l">Порожний</span><span class="v">${km(d.emptyKm)}</span>
+        <span class="d">${d.totalKm ? Math.round(d.emptyKm / d.totalKm * 100) : 0}%</span></div>
+      <div class="metric ${okTarget ? 'pos' : 'neg'}"><span class="l">Среднесуточный на машину</span>
+        <span class="v">${d.perDayPerVehicle}<small>км/сут</small></span>
+        <span class="d">цель ${d.target}</span></div>
     </div>
     <p class="muted">Источники данных по маш.: ${srcLine}. «Гружёный» — честные км рейсов
       (убытие с погрузки → выгрузка, CAN), частично попавшие рейсы — долей времени;
       порожний = общий − гружёный.</p>
-    <div style="max-height:55vh;overflow:auto"><table class="rtable">
+    <div class="bi-scroll" style="max-height:55vh"><table class="bi-table rtable">
       <thead><tr><th>Борт</th><th class="num">Общий, км</th><th class="num">Гружёный</th>
         <th class="num">Порожний</th><th class="num">км/сут</th><th>Источник</th></tr></thead>
       <tbody>${rows || '<tr><td colspan=6>нет данных</td></tr>'}</tbody></table></div>

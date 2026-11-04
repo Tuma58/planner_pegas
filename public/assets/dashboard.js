@@ -79,23 +79,30 @@ export function lateSlideRows(items, nowMs = Date.now()) {
     .slice(0, 12);
 }
 
+// Слайды табло в BI-виде (04.11): шапка-полоса секции + таблица данных
+// .bi-table; кромка факт/прогноз — на первой ячейке строки.
+const tabloSection = (head, body) => `<section class="section tablo-sec">
+    <div class="sec-h"><span class="st tablo-head">${head}</span></div>
+    <div class="sec-b flush">${body}</div></section>`;
+
 function lateSlideHtml(items, nowMs = Date.now()) {
   const late = lateSlideRows(items, nowMs);
   if (!late.length) {
-    return `<div class="tablo-head">⏰ Опоздания</div>
-      <div class="tablo-empty">Опозданий нет ✅</div>`;
+    return tabloSection('⏰ Опоздания', '<div class="bi-empty tablo-empty">Опозданий нет ✅</div>');
   }
   const facts = late.filter(row => row.isFact).length;
-  return `<div class="tablo-head">⏰ Опаздывают · ${facts}${late.length > facts
-    ? ` <span class="tablo-head-sub">· под угрозой · ${late.length - facts}</span>` : ''}</div>
-    <div class="tablo-rows">${late.map(({ item, final, plan, isFact, ms }) =>
-    `<div class="tablo-row ${isFact ? 'bad-edge' : 'warn-edge'}">
-      <b class="tablo-plate">${escapeHtml(item.vehicle_plate || '')}</b>
-      <span class="tablo-cell">${escapeHtml((item.driver_name || '').split(' ').slice(0, 2).join(' '))}</span>
-      <span class="tablo-cell grow">${escapeHtml(item.customer_name || '')} · → ${escapeHtml((final?.point || item.to_name || '').slice(0, 44))}</span>
-      <span class="tablo-cell muted">план ${Number.isFinite(plan) ? `${tabloDm(plan)} ${tabloHm(plan)}` : '—'}</span>
-      <b class="tablo-late ${isFact ? '' : 'fore'}">${isFact ? '+' : '≈ +'}${tabloDelay(ms)}</b>
-    </div>`).join('')}</div>`;
+  return tabloSection(`⏰ Опаздывают · ${facts}${late.length > facts
+    ? ` <span class="tablo-head-sub">· под угрозой · ${late.length - facts}</span>` : ''}`,
+  `<table class="bi-table tablo-table"><thead><tr><th>Госномер</th><th>Водитель</th>
+      <th>Клиент · → точка</th><th class="r">План</th><th class="r">Опоздание</th></tr></thead>
+    <tbody>${late.map(({ item, final, plan, isFact, ms }) =>
+    `<tr class="tablo-row ${isFact ? 'bad-edge' : 'warn-edge'}">
+      <td><b class="tablo-plate">${escapeHtml(item.vehicle_plate || '')}</b></td>
+      <td class="tablo-cell">${escapeHtml((item.driver_name || '').split(' ').slice(0, 2).join(' '))}</td>
+      <td class="tablo-cell grow">${escapeHtml(item.customer_name || '')} · → ${escapeHtml((final?.point || item.to_name || '').slice(0, 44))}</td>
+      <td class="num tablo-cell muted">план ${Number.isFinite(plan) ? `${tabloDm(plan)} ${tabloHm(plan)}` : '—'}</td>
+      <td class="num"><b class="tablo-late ${isFact ? '' : 'fore'}">${isFact ? '+' : '≈ +'}${tabloDelay(ms)}</b></td>
+    </tr>`).join('')}</tbody></table>`);
 }
 
 function todaySlideHtml(items, nowMs) {
@@ -122,33 +129,39 @@ function todaySlideHtml(items, nowMs) {
   events.sort((a, b) => a.ts - b.ts);
   const top = events.slice(0, 14);
   if (!top.length) {
-    return `<div class="tablo-head">📋 Ближайшие погрузки и выгрузки</div>
-      <div class="tablo-empty">В ближайшие часы точек нет</div>`;
+    return tabloSection('📋 Ближайшие погрузки и выгрузки',
+      '<div class="bi-empty tablo-empty">В ближайшие часы точек нет</div>');
   }
-  return `<div class="tablo-head">📋 Ближайшие погрузки и выгрузки</div>
-    <div class="tablo-rows">${top.map(event => `<div class="tablo-row ${event.late ? 'bad-edge' : ''}">
-      <b class="tablo-time">${new Date(event.planTs).getUTCDate() !== new Date(nowMs).getUTCDate()
-    ? `${tabloDm(event.planTs)} ` : ''}${tabloHm(event.planTs)}</b>
-      <span class="tablo-kind">${event.kind === 'P' ? '📦 погрузка' : '📥 выгрузка'}</span>
-      <b class="tablo-plate">${escapeHtml(event.plate || '')}</b>
-      <span class="tablo-cell grow">${escapeHtml((event.point || '').slice(0, 52))}</span>
-      <span class="tablo-cell muted">${escapeHtml((event.customer || '').slice(0, 24))}</span>
-    </div>`).join('')}</div>`;
+  return tabloSection('📋 Ближайшие погрузки и выгрузки',
+    `<table class="bi-table tablo-table"><thead><tr><th>Время (план)</th><th>Этап</th>
+      <th>Госномер</th><th>Точка</th><th>Клиент</th></tr></thead>
+    <tbody>${top.map(event => `<tr class="tablo-row ${event.late ? 'bad-edge' : ''}">
+      <td><b class="tablo-time">${new Date(event.planTs).getUTCDate() !== new Date(nowMs).getUTCDate()
+    ? `${tabloDm(event.planTs)} ` : ''}${tabloHm(event.planTs)}</b></td>
+      <td class="tablo-kind">${event.kind === 'P' ? '📦 погрузка' : '📥 выгрузка'}</td>
+      <td><b class="tablo-plate">${escapeHtml(event.plate || '')}</b></td>
+      <td class="tablo-cell grow">${escapeHtml((event.point || '').slice(0, 52))}</td>
+      <td class="tablo-cell muted">${escapeHtml((event.customer || '').slice(0, 24))}</td>
+    </tr>`).join('')}</tbody></table>`);
 }
 
 function paceSlideHtml(state) {
   const m = dashboardMetrics(state.data);
   const left = Math.max(0, m.monthPlan - m.monthPace.fact);
-  const tile = (label, value, cls = '', sub = '') => `<div class="tablo-tile ${cls}">
-    <small>${label}</small><b>${value}</b>${sub ? `<span>${sub}</span>` : ''}</div>`;
+  // Плитки BI-набора (.metric): good/bad/warn старой плитки → pos/neg/warn.
+  const TONE = { good: 'pos', bad: 'neg', warn: 'warn', '': 'dept-staff' };
+  const tile = (label, value, cls = '', sub = '') => `<div class="metric tablo-tile ${TONE[cls] ?? ''}">
+    <span class="l">${label}</span><span class="v">${value}</span>${sub ? `<span class="d">${sub}</span>` : ''}</div>`;
   const mln = value => `${(value / 1e6).toLocaleString('ru-RU',
+    { maximumFractionDigits: 1, minimumFractionDigits: 1 })}<small>млн</small>`;
+  const mlnText = value => `${(value / 1e6).toLocaleString('ru-RU',
     { maximumFractionDigits: 1, minimumFractionDigits: 1 })} млн`;
-  return `<div class="tablo-head">🏁 Темп месяца</div>
-    <div class="tablo-tiles">
+  return `<div class="sec-h tablo-sec-h"><span class="st tablo-head">🏁 Темп месяца</span></div>
+    <div class="bi-kpis tablo-tiles">
       ${tile('Цель месяца', mln(m.monthPlan))}
       ${tile('Выгружено', mln(m.monthPace.fact),
     m.monthPace.diff >= 0 ? 'good' : 'bad',
-    m.monthPace.diff >= 0 ? `опережение +${mln(m.monthPace.diff)}` : `отставание ${mln(-m.monthPace.diff)}`)}
+    m.monthPace.diff >= 0 ? `опережение +${mlnText(m.monthPace.diff)}` : `отставание ${mlnText(-m.monthPace.diff)}`)}
       ${tile('Прогноз', mln(m.forecast), m.forecast >= m.monthPlan ? 'good' : 'warn')}
       ${tile('Осталось до цели', mln(left), '', `дней: ${m.remainingDays}`)}
       ${tile('Нужно в день', mln(m.dayPlan))}
@@ -684,12 +697,15 @@ export async function renderDashboard(container, context) {
     .format(new Date());
   const gauge = (share, cls) => `<div class="dash-gauge"><i class="${cls}"
     style="width:${Math.min(100, share)}%"></i></div>`;
-  const roleCard = (title, rows) => `<div class="dash-role">
-    <div class="dash-role-title">${title}</div>
-    ${rows.map(row => `<div class="dash-row ${row.cls || ''} ${row.detail ? 'clickable' : ''}"
+  // Плашка роли = секция BI: шапка-полоса с цветом отдела + список k/v.
+  const roleCard = (title, rows, dept = '') => `<section class="section s3 dash-role ${dept}">
+    <div class="sec-h"><span class="st dash-role-title">${title}</span></div>
+    <div class="sec-b bi-list">
+    ${rows.map(row => `<div class="bi-row dash-row ${row.cls || ''} ${row.detail ? 'clickable' : ''}"
         ${row.detail ? `data-dash-detail="${row.detail}" title="Раскрыть список"` : ''}>
-      <span>${row.label}</span><b>${row.value}${row.detail ? ' <small class="dash-more">›</small>' : ''}</b></div>`).join('')}
-  </div>`;
+      <span class="k">${row.label}</span><b class="v">${row.value}${row.detail ? ' <small class="dash-more">›</small>' : ''}</b></div>`).join('')}
+    </div>
+  </section>`;
 
   const fmtDayShort = iso => new Intl.DateTimeFormat('ru-RU',
     { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
@@ -711,12 +727,18 @@ export async function renderDashboard(container, context) {
     } else {
       verdict = `✅ забит${day.booked - day.plan > 0 ? ` с запасом +${money(Math.round(day.booked - day.plan))}` : ''}`;
     }
-    return `<div class="dash-day ${mode === 'today' ? 'today' : ''} ${day.plan != null && (mode === 'past' ? !met : day.gap > 0) ? 'lack' : 'met'}">
-      <div class="dd-head"><b>${title}</b><span class="muted">${fmtDayShort(day.dateIso)}</span></div>
-      <div class="dd-plan"><span>план</span><b>${day.plan != null ? money(Math.round(day.plan)) : '—'}</b></div>
-      <div class="dd-fact"><span>${mode === 'past' ? 'факт выгрузок' : 'забито'}</span>
-        <b>${money(Math.round(factOf))}</b>
-        ${day.plan ? `<em>${pct}%</em>` : ''}</div>
+    // Карточка дня = секция BI: шапка (день · дата · % плана), пара
+    // мини-плиток «план / факт», ниже — полоса и раскладка текстом.
+    return `<section class="section s4 dash-day ${mode === 'today' ? 'today' : ''} ${day.plan != null && (mode === 'past' ? !met : day.gap > 0) ? 'lack' : 'met'}">
+      <div class="sec-h dd-head"><span class="st">${title}</span><span class="hint">${fmtDayShort(day.dateIso)}</span>
+        ${day.plan ? `<div class="sec-actions"><span class="bi-tag ${met ? 'pos' : 'neg'}">${pct}% плана</span></div>` : ''}</div>
+      <div class="sec-b">
+      <div class="dd-nums">
+        <div class="dd-plan"><span>план</span><b>${day.plan != null ? money(Math.round(day.plan)) : '—'}</b></div>
+        <div class="dd-fact"><span>${mode === 'past' ? 'факт выгрузок' : 'забито'}</span>
+          <b>${money(Math.round(factOf))}</b>
+          ${day.plan ? `<em>${pct}%</em>` : ''}</div>
+      </div>
       ${(() => {
         const base = day.plan || day.booked || 1;
         const donePart = Math.min(100, day.done / base * 100);
@@ -759,7 +781,8 @@ export async function renderDashboard(container, context) {
             : `⚠ отстаём на ${money(Math.round(-pace.diff))}`}</div>${goalLine}`;
       })() : ''}
       <div class="dd-verdict">${verdict}</div>
-    </div>`;
+      </div>
+    </section>`;
   };
 
   // Нормы «к этому часу» для главных счётчиков дня.
@@ -792,59 +815,106 @@ export async function renderDashboard(container, context) {
     Date.parse(String(item.opened_at).replace(' ', 'T') +
       (String(item.opened_at).includes('Z') ? '' : 'Z')) > 10 * 60_000).length;
   const savedScrolls = captureScrolls(container);
-  const html = `<div class="dashwrap" id="dashRoot">
-    <div class="dash-top">
-      <span class="dash-title">🏁 Пегас-Авто · план-факт</span>
+  // BI-вид (04.11, по образцу «Рабочей среды СТ»): ряд плиток с главными
+  // цифрами месяца → сетка секций (месяц по дням, вчера/сегодня/завтра,
+  // плашки ролей). Цифры и подсказки — прежние, из dashboardMetrics.
+  const paceOk = metrics.monthPace.diff >= 0;
+  const forecastTone = forecastPct >= 100 ? 'pos' : forecastPct >= 90 ? 'warn' : 'neg';
+  const inTripPct = pctOf(metrics.fleet.inTrip, canUse);
+  const html = `<div class="dashwrap bi-page" id="dashRoot">
+    <div class="bi-sub dash-top">
+      <h2 class="dash-title">🏁 Пегас-Авто · план-факт</h2>
       <span class="dash-clock" id="dashClock"></span>
-      <span class="dash-upd muted">обновлено ${new Date().toLocaleTimeString('ru-RU',
-        { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })} МСК · авто раз в 90 с</span>
+      <p class="dash-upd muted">обновлено ${new Date().toLocaleTimeString('ru-RU',
+        { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })} МСК · авто раз в 90 с</p>
+      <div class="bi-actions">
       ${context.can('settings:write') ? `<button class="button ghost small" id="dashBoard"
         title="Вывести объявление на общий экран: планёрка, сбой 1С, аврал">📢 На табло</button>` : ''}
       <button class="button ghost small" id="dashFull" title="Полноэкранный режим для общего экрана (выход — Esc)">⛶ На весь экран</button>
+      </div>
     </div>
     ${boardNotesHtml(context.state.data.boardNotes)}
     <div class="tablo-layer" id="tabloLayer" hidden></div>
     <div class="tablo-dots" id="tabloDots" hidden></div>
-    <div class="dash-goal dash-month">
-      <div class="dash-goal-head">
-        <span>Выручка без НДС · ${escapeHtml(monthLabel)} · <b>забито</b></span>
-        <b title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">${money(Math.round(metrics.monthFact))}</b>
-        <span class="muted">из ${shortMln(metrics.monthPlan)} · ${donePct}%
-          · <span class="dash-done" title="Фактически выгружено с начала месяца (статус «выгружен» и далее)">выгружено <b>${money(Math.round(metrics.monthDone))}</b></span></span>
-        <span class="dash-month-side" title="Прогноз по ПЛАНОВЫМ датам выгрузки (08.10): прошедшие дни месяца — что должно было выгрузиться по расчёту, оставшиеся — не меньше забитого и не меньше медианы того же дня недели за 5 недель. Отметки выгрузки на цифру не влияют — поздние отметки её не дёргают">Прогноз <small class="muted">(без НДС, по плановым датам)</small>: <b class="${forecastPct >= 100 ? 'good' : forecastPct >= 90 ? 'warn' : 'bad'}">
-          ${shortMln(metrics.forecast)} (${forecastPct}%)</b> · осталось дней: <b>${metrics.remainingDays}</b>
-          · средний чек: <b>${money(Math.round(metrics.avgDayCheck))}</b></span>
-      </div>
-      <div class="dash-pace" title="Гарантированная база месяца, НЕ прогноз: выгружено + уже назначенное доедет (минус риск отклонений по доле последних 14 дней). Заявки вносятся на 1–3 дня вперёд, поэтому в середине месяца эта цифра всегда сильно меньше прогноза — вторая половина месяца ещё не внесена">
-        💼 Уже в кармане: <b>${shortMln(metrics.forecastHonest)}</b> = выгружено ${shortMln(metrics.monthDone)}
-        + доедет ~${shortMln(metrics.monthBooked * (1 - metrics.rejShare))}
-        <span class="muted">(назначено до ${metrics.bookedUntil ? new Date(metrics.bookedUntil).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '—'}, риск отклонений −${Math.round(metrics.rejShare * 100)}%)</span>${metrics.carryOver > 100_000
-    ? ` · переходят в следующий месяц: <b>${shortMln(metrics.carryOver)}</b> <span class="muted">(выгрузка за пределами месяца — не в этой цели)</span>` : ''}</div>
-      <div class="dash-pace ${metrics.monthPace.diff >= 0 ? 'good' : 'bad'}">
-        ⏱ По графику к концу ${metrics.dayOfMonth}-го: <b>${shortMln(metrics.monthPace.schedule)}</b>
-        · выгружено: <b>${shortMln(metrics.monthPace.fact)}</b>
-        · ${metrics.monthPace.diff >= 0 ? `опережение +${shortMln(metrics.monthPace.diff)}`
-          : `отставание ${shortMln(-metrics.monthPace.diff)}`}
-        — чтобы успеть к цели, дальше нужно по <b>${money(Math.round(metrics.dayPlan))}</b> в день</div>
+    <div class="bi-kpis dash-kpis">
+      <div class="metric hero dept-staff" title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">
+        <span class="l">Выручка бНДС · ${escapeHtml(monthLabel)} · забито</span>
+        <span class="v">${money(Math.round(metrics.monthFact))}</span>
+        <span class="d">из ${shortMln(metrics.monthPlan)} · ${donePct}%</span></div>
+      <div class="metric dept-staff dash-done" title="Фактически выгружено с начала месяца (статус «выгружен» и далее)">
+        <span class="l">Выгружено</span>
+        <span class="v">${money(Math.round(metrics.monthDone))}</span>
+        <span class="d">с начала месяца</span></div>
+      <div class="metric ${forecastTone}" title="Прогноз по ПЛАНОВЫМ датам выгрузки (08.10): прошедшие дни месяца — что должно было выгрузиться по расчёту, оставшиеся — не меньше забитого и не меньше медианы того же дня недели за 5 недель. Отметки выгрузки на цифру не влияют — поздние отметки её не дёргают">
+        <span class="l">Прогноз <small>(без НДС, по плановым датам)</small></span>
+        <span class="v">${shortMln(metrics.forecast)}</span>
+        <span class="d">${forecastPct}% цели</span></div>
+      <div class="metric ${paceOk ? 'pos' : 'neg'}" title="По графику к концу ${metrics.dayOfMonth}-го: ${shortMln(metrics.monthPace.schedule)} · выгружено: ${shortMln(metrics.monthPace.fact)}">
+        <span class="l">${paceOk ? 'Опережение графика' : 'Отставание от графика'}</span>
+        <span class="v">${paceOk ? '+' : '−'}${shortMln(Math.abs(metrics.monthPace.diff))}</span>
+        <span class="d">график ${shortMln(metrics.monthPace.schedule)} · факт ${shortMln(metrics.monthPace.fact)}</span></div>
+      <div class="metric dept-staff" title="Чтобы успеть к цели, дальше нужно столько в день">
+        <span class="l">Нужно в день</span>
+        <span class="v">${money(Math.round(metrics.dayPlan))}</span>
+        <span class="d">осталось дней: ${metrics.remainingDays}</span></div>
+      <div class="metric" title="Гарантированная база месяца, НЕ прогноз: выгружено + уже назначенное доедет (минус риск отклонений по доле последних 14 дней). Заявки вносятся на 1–3 дня вперёд, поэтому в середине месяца эта цифра всегда сильно меньше прогноза — вторая половина месяца ещё не внесена">
+        <span class="l">💼 Уже в кармане</span>
+        <span class="v">${shortMln(metrics.forecastHonest)}</span>
+        <span class="d">риск отклонений −${Math.round(metrics.rejShare * 100)}%</span></div>
+      <div class="metric">
+        <span class="l">Средний чек</span>
+        <span class="v">${money(Math.round(metrics.avgDayCheck))}</span>
+        <span class="d">рейсов дня: ${metrics.dayTripsCount}</span></div>
+      <div class="metric dept-drv ${metrics.fleet.inTrip >= canUse * 0.85 ? '' : 'warn'}">
+        <span class="l">Парк задействован</span>
+        <span class="v">${inTripPct}<small>%</small></span>
+        <span class="d">${metrics.fleet.inTrip} из ${canUse} · простой ${metrics.fleet.idle}</span></div>
+      <div class="metric dept-drv">
+        <span class="l">На линии сейчас</span>
+        <span class="v">${metrics.dispatcher.online}<small>маш</small></span>
+        <span class="d">рейсов на контроле ${metrics.dispatcher.onlineTripCount}</span></div>
+    </div>
+    <div class="bi-grid">
+    <section class="section dash-goal dash-month dept-staff">
+      <div class="sec-h dash-goal-head"><span class="st">Выручка по дням · ${escapeHtml(monthLabel)}</span>
+        <span class="hint">столбики — выгрузки дня (бледные — забронировано), линия — нарастающий итог, пунктир — график к цели</span>
+        <div class="sec-actions"><span class="bi-tag ${donePct >= Math.round(metrics.dayOfMonth / metrics.daysInMonth * 100) ? 'pos' : 'warn'}">забито ${donePct}%</span></div></div>
+      <div class="sec-b">
       ${gauge(donePct, donePct >= Math.round(metrics.dayOfMonth / metrics.daysInMonth * 100) ? 'ok' : 'warn')}
       ${monthSpark(state.data, metrics, Date.now())}
-    </div>
-    <div class="dash-days">
+      <div class="bi-list dash-month-rows">
+      <div class="bi-row dash-pace ${paceOk ? 'good' : 'bad'}">
+        <span class="k">⏱ По графику к концу ${metrics.dayOfMonth}-го: <b>${shortMln(metrics.monthPace.schedule)}</b>
+        · выгружено: <b>${shortMln(metrics.monthPace.fact)}</b>
+        · ${paceOk ? `опережение +${shortMln(metrics.monthPace.diff)}`
+          : `отставание ${shortMln(-metrics.monthPace.diff)}`}
+        — чтобы успеть к цели, дальше нужно по</span><b class="v">${money(Math.round(metrics.dayPlan))} в день</b></div>
+      <div class="bi-row dash-pace" title="Гарантированная база месяца, НЕ прогноз: выгружено + уже назначенное доедет (минус риск отклонений по доле последних 14 дней). Заявки вносятся на 1–3 дня вперёд, поэтому в середине месяца эта цифра всегда сильно меньше прогноза — вторая половина месяца ещё не внесена">
+        <span class="k">💼 Уже в кармане = выгружено ${shortMln(metrics.monthDone)}
+        + доедет ~${shortMln(metrics.monthBooked * (1 - metrics.rejShare))}
+        <span class="muted">(назначено до ${metrics.bookedUntil ? new Date(metrics.bookedUntil).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '—'}, риск отклонений −${Math.round(metrics.rejShare * 100)}%)</span></span>
+        <b class="v">${shortMln(metrics.forecastHonest)}</b></div>
+      ${metrics.carryOver > 100_000
+    ? `<div class="bi-row dash-pace"><span class="k">Переходят в следующий месяц <span class="muted">(выгрузка за пределами месяца — не в этой цели)</span></span>
+        <b class="v">${shortMln(metrics.carryOver)}</b></div>` : ''}
+      </div>
+      </div>
+    </section>
       ${dayCard(metrics.days.yesterday, 'Вчера', 'past')}
       ${dayCard(metrics.days.today, 'Сегодня', 'today')}
       ${dayCard(metrics.days.tomorrow, 'Завтра', 'future')}
     </div>
     <div class="dash-roles">
-      ${showMyShift ? `<div class="dash-role my-shift" id="myShiftCard">
-      <div class="dash-role-title">🏅 Моя смена</div>
-      <div class="dash-row"><span>Загружаю личную сводку…</span></div>
-    </div>` : ''}
+      ${showMyShift ? `<section class="section s3 dash-role my-shift dept-staff" id="myShiftCard">
+      <div class="sec-h"><span class="st dash-role-title">🏅 Моя смена</span></div>
+      <div class="sec-b bi-list"><div class="bi-row dash-row"><span class="k">Загружаю личную сводку…</span></div></div>
+    </section>` : ''}
       ${roleCard('📦 Продажи', [
         { label: 'Внесено заявок сегодня', value: `${metrics.sales.createdToday}${normBadge(metrics.sales.createdToday, norms.created)}`, detail: 'salesCreated' },
         { label: 'Сумма внесённого (бНДС)', value: money(Math.round(metrics.sales.createdSum)) },
         { label: 'Средний чек внесённого', value: money(Math.round(metrics.sales.avgCheck)) },
         { label: 'Очередь без ТС', value: metrics.sales.queue, cls: metrics.sales.queue ? 'warn' : 'ok', detail: 'salesQueue' }
-      ])}
+      ], 'dept-log')}
       ${roleCard('🚚 Логист', [
         { label: 'Назначено рейсов сегодня', value: `${metrics.logist.assignedToday}${normBadge(metrics.logist.assignedToday, norms.assigned)}`, detail: 'logistAssigned' },
         { label: 'Очередь на назначение', value: metrics.logist.queue, cls: metrics.logist.queue ? 'warn' : 'ok', detail: 'salesQueue' },
@@ -854,7 +924,7 @@ export async function renderDashboard(container, context) {
         { label: '⏭ Ждут следующей погрузки', value: metrics.fleet.pending,
           cls: metrics.fleet.pending ? 'warn' : 'ok', detail: 'fleetPending' },
         { label: 'Простой без причины', value: metrics.fleet.idle, cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
-      ])}
+      ], 'dept-log')}
       ${roleCard('🎧 Диспетчер', [
         { label: 'Выведено на линию сегодня', value: `${metrics.dispatcher.onLineToday}${normBadge(metrics.dispatcher.onLineToday, norms.onLine)}`, detail: 'dispOnLine' },
         { label: 'Ждут выхода сегодня', value: metrics.dispatcher.startingToday,
@@ -869,7 +939,7 @@ export async function renderDashboard(container, context) {
         { label: 'Вопросы водителей', value: `${questions.length}${overdueQuestions
           ? ` · ⏱ ${overdueQuestions}` : ''}`,
         cls: overdueQuestions ? 'bad' : questions.length ? 'warn' : 'ok' }
-      ])}
+      ], 'dept-drv')}
       ${roleCard('🔧 Ресурс — воронка дня', [
         { label: 'Парк в работе', value: metrics.fleet.total },
         { label: '− Недоступны (ремонт, пересменка, без вод., резерв)', value: `−${metrics.fleet.unavailable}`, detail: 'fleetUnavailable' },
@@ -878,7 +948,7 @@ export async function renderDashboard(container, context) {
           cls: metrics.fleet.inTrip >= canUse * 0.85 ? 'ok' : 'warn', detail: 'fleetInTrip' },
         { label: 'НЕ задействовано — упущено', value: `${metrics.fleet.idle}${metrics.fleet.idle ? ` · ≈ −${money(unusedLoss)}` : ''}`,
           cls: metrics.fleet.idle ? 'bad' : 'ok', detail: 'fleetIdle' }
-      ])}
+      ], 'dept-drv')}
     </div>
 
   </div>`;
@@ -899,15 +969,17 @@ export async function renderDashboard(container, context) {
       const barPct = Math.min(100, my.normToNow ? Math.round(my.ops / my.normToNow * 100) : 100);
       const effCls = my.effPct >= 120 ? 'ok' : my.effPct < 70 ? 'bad' : '';
       card.innerHTML = `
-        <div class="dash-role-title">🏅 Моя смена <small class="muted">${escapeHtml(my.shiftLabel)}</small></div>
-        <div class="dash-row"><span>Операций за смену</span>
-          <b>${my.ops}${my.normToNow ? ` <small class="muted" title="Норма должности к этому часу (среднее за 7 дней)">· норма к часу ~${my.normToNow}</small>` : ''}</b></div>
+        <div class="sec-h"><span class="st dash-role-title">🏅 Моя смена</span><span class="hint">${escapeHtml(my.shiftLabel)}</span></div>
+        <div class="sec-b bi-list">
+        <div class="bi-row dash-row"><span class="k">Операций за смену</span>
+          <b class="v">${my.ops}${my.normToNow ? ` <small class="muted" title="Норма должности к этому часу (среднее за 7 дней)">· норма к часу ~${my.normToNow}</small>` : ''}</b></div>
         <div class="dash-gauge"><i class="${barPct >= 95 ? 'ok' : 'ride'}" style="width:${barPct}%"></i></div>
-        <div class="dash-row ${effCls}"><span>Эффективность</span>
-          <b title="60% нагрузка (×${my.loadIdx}) + 40% скорость (×${my.speedIdx}) к средней по должности «${escapeHtml(my.roleKey)}» за 7 дней">${my.effPct}%</b></div>
-        ${my.medianWaitMs ? `<div class="dash-row"><span>Обработка задания (медиана)</span>
-          <b>${Math.round(my.medianWaitMs / 60000)} мин${my.baseWaitMs ? ` <small class="muted">· по должности ${Math.round(my.baseWaitMs / 60000)} мин</small>` : ''}</b></div>` : ''}
-        <div class="dash-row"><span>Вклад в операции смены</span><b>${my.sharePct}%</b></div>`;
+        <div class="bi-row dash-row ${effCls}"><span class="k">Эффективность</span>
+          <b class="v" title="60% нагрузка (×${my.loadIdx}) + 40% скорость (×${my.speedIdx}) к средней по должности «${escapeHtml(my.roleKey)}» за 7 дней">${my.effPct}%</b></div>
+        ${my.medianWaitMs ? `<div class="bi-row dash-row"><span class="k">Обработка задания (медиана)</span>
+          <b class="v">${Math.round(my.medianWaitMs / 60000)} мин${my.baseWaitMs ? ` <small class="muted">· по должности ${Math.round(my.baseWaitMs / 60000)} мин</small>` : ''}</b></div>` : ''}
+        <div class="bi-row dash-row"><span class="k">Вклад в операции смены</span><b class="v">${my.sharePct}%</b></div>
+        </div>`;
     }).catch(() => {
       const card = document.getElementById('myShiftCard');
       if (card) card.remove();

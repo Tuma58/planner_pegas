@@ -59,12 +59,14 @@ export async function renderRemzona(container, context) {
   }
   const groups = { queued: [], in_progress: [], ready: [], released: [] };
   for (const item of payload.items) if (groups[item.status]) groups[item.status].push(item);
+  // BI-вид (04.11): колонка статуса = секция доски .bi-board.
   const columns = ['queued', 'in_progress', 'ready', 'released'].map(status => `
-    <div style="flex:1;min-width:230px">
-      <h3 style="margin:0 0 6px">${STATUS_LABEL[status]} <span class="badge">${groups[status].length}</span></h3>
-      ${groups[status].map(order => orderCardHtml(order, can)).join('')
-        || '<div class="muted" style="padding:8px 2px">пусто</div>'}
-    </div>`).join('');
+    <section class="section dept-toir rz-col">
+      <div class="sec-h"><span class="st">${STATUS_LABEL[status]}</span>
+        <div class="sec-actions"><span class="bi-tag">${groups[status].length}</span></div></div>
+      <div class="sec-b"><div class="list">${groups[status].map(order => orderCardHtml(order, can)).join('')
+        || '<div class="bi-empty">пусто</div>'}</div></div>
+    </section>`).join('');
   // Запросы выпуска от логистов (решение руководителя 04.11): борт в
   // ремонте не назначается на рейс — логист шлёт запрос, механик правит
   // заезд/диспозицию штатно и отвечает здесь; автор получает личное
@@ -85,18 +87,31 @@ export async function renderRemzona(container, context) {
           title="Сначала скорректируйте заезд/диспозицию, затем подтвердите — логист получит уведомление">✅ Выпускаю</button>
         <button class="button ghost small" data-rz-release="${item.id}" data-rz-action="declined">✖ Не выпущу</button>` : ''}
     </div>`).join('');
-  renderInto(container, `<div style="padding:10px 14px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-      <h2 style="margin:0">🔧 Ремзона</h2>
-      ${can('fleet:write') ? '<button class="button small" id="rzNew">🚚 Новый заезд</button>' : ''}
-      <small class="muted">блок автономен: на подбор машин и гант пока не влияет —
-        недоступность ТС по-прежнему ставится диспозицией в «Ресурсе»</small>
+  const openRequests = (payload.releaseRequests || []).filter(item => item.status === 'open').length;
+  const jobsLeft = [...groups.queued, ...groups.in_progress]
+    .reduce((sum, order) => sum + order.jobs.filter(job => job.status !== 'done').length, 0);
+  const tile = (label, value, unit, extra = '', note = '') => `<div class="metric ${extra}">
+    <span class="l">${label}</span><span class="v">${value}<small>${unit}</small></span>
+    ${note ? `<span class="d">${note}</span>` : ''}</div>`;
+  renderInto(container, `<div class="bi-page svc-rz">
+    <div class="bi-sub"><h2>Заказ-наряды механика</h2>
+      <p>блок автономен: на подбор машин и гант пока не влияет —
+        недоступность ТС по-прежнему ставится диспозицией в «Ресурсе»</p>
+      ${can('fleet:write') ? '<div class="bi-actions"><button class="button small" id="rzNew">🚚 Новый заезд</button></div>' : ''}
     </div>
-    ${releaseRows ? `<div style="margin-bottom:12px">
-      <h3 style="margin:0 0 6px">📨 Запросы выпуска от логистов</h3>
-      <div class="list">${releaseRows}</div>
-    </div>` : ''}
-    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">${columns}</div>
+    <div class="bi-kpis">
+      ${tile('В очереди', groups.queued.length, 'маш', 'dept-toir', 'ждут механика')}
+      ${tile('В работе', groups.in_progress.length, 'маш', 'dept-toir', `открытых работ ${jobsLeft}`)}
+      ${tile('Готовы', groups.ready.length, 'маш', groups.ready.length ? 'pos' : 'dept-toir', 'к выдаче')}
+      ${tile('Выданы', groups.released.length, 'маш', 'dept-toir', 'за 14 дней')}
+      ${tile('Запросы выпуска', openRequests, 'шт', openRequests ? 'warn' : 'dept-toir', 'ждут ответа механика')}
+    </div>
+    ${releaseRows ? `<section class="section dept-toir">
+      <div class="sec-h"><span class="st">📨 Запросы выпуска от логистов</span>
+        <span class="hint">ответ уходит логисту личным уведомлением</span></div>
+      <div class="sec-b"><div class="list">${releaseRows}</div></div>
+    </section>` : ''}
+    <div class="bi-board rz-board">${columns}</div>
   </div>`);
   container.querySelectorAll('[data-rz-release]').forEach(button =>
     button.addEventListener('click', async () => {

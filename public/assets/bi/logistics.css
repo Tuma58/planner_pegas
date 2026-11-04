@@ -1,1 +1,81 @@
-/* BI-дополнения группы «logistics» (реконструкция 04.11). */
+/* BI-дополнения группы «logistics» (реконструкция 04.11).
+   Экраны: Логист (.lg-logist), Конструктор (.lg-routes), Потоки (.lg-flows),
+   План вывоза (.lg-dpl). Всё — в пределах .lg-page, чужие экраны не задеты. */
+
+/* Общее: активная плитка-переключатель (фокус секции / фильтр «дыр») */
+.lg-page .metric.open, .lg-page .metric.act {
+  border-color: var(--accent); background: var(--accent-soft); }
+.lg-page .metric[data-kpi]:focus-visible, .lg-page .metric[data-act]:focus-visible { outline: 2px solid var(--accent); }
+/* Чип простоев П/В (чужой модуль demurrage.js, разметка .skpi) — в ряду
+   плиток выглядит как .metric */
+.lg-page .bi-kpis .skpi { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin: 0;
+  background: var(--card); border: 1px solid var(--line); border-top: 2px solid var(--log);
+  border-radius: 11px; padding: 11px 15px; box-shadow: var(--shadow); cursor: pointer; }
+.lg-page .bi-kpis .skpi.skpi-warn { border-top-color: var(--warn); }
+.lg-page .bi-kpis .skpi .skl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.lg-page .bi-kpis .skpi .skv { font-family: var(--mono-font); font-size: 23px; font-weight: 700; color: var(--ink); line-height: 1.15; }
+.lg-page .bi-kpis .skpi.skpi-warn .skv { color: var(--warn); }
+.lg-page .bi-kpis .skpi .skm { font-size: 11.5px; color: var(--faint); font-family: var(--mono-font); }
+.lg-page .bi-kpis .skpi:hover { border-color: var(--accent); }
+
+/* Таблицы группы: строки с действиями, акцент слева как у прежних карточек */
+.lg-table td { vertical-align: middle; }
+.lg-table td.lg-main { min-width: 200px; }
+.lg-table td.lg-act { text-align: right; white-space: normal; }
+.lg-table td.lg-act .button { margin: 2px 0 2px 4px; }
+.lg-table tr.lg-mine td:first-child { box-shadow: inset 3px 0 0 var(--log); }
+.lg-table tr.lg-returned td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+.lg-table tr.lg-click { cursor: pointer; }
+.lg-table td.lg-neg { color: var(--bad); font-weight: 700; }
+.lg-table td.lg-pos { color: var(--ok); font-weight: 700; }
+.lg-table .badge { white-space: nowrap; }
+
+/* Списки карточек внутри секций (кандидаты ТС, маршруты) */
+.lg-list { display: grid; gap: 7px; }
+.lg-list.bi-scroll { max-height: calc(100vh - 330px); min-height: 160px; }
+.lg-page .geohint.lg-foot { margin: 0; padding: 9px 15px; border-top: 1px solid var(--border2); background: var(--panel2); }
+
+/* ── Логист ── */
+.lg-filterbar .sec-b { padding: 8px 15px; }
+.lg-filters.salesfilter { margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.lg-filters #logistSearch { min-width: 220px; }
+.lg-subh { display: flex; align-items: center; gap: 8px; padding: 8px 15px; font-size: 12px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  background: var(--paper); border-bottom: 1px solid var(--border2); }
+.lg-subh .hint { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); font-size: 11.5px; }
+.lg-subb { border-bottom: 1px solid var(--border2); }
+.lg-subb .bi-scroll { max-height: 420px; }
+.lg-subb .stale-preps { margin: 8px 15px; }
+.lg-logist .lg-subb .bi-empty { padding: 14px; }
+
+/* ── Потоки ── */
+.lg-flowbar.salesfilter { margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
+.lg-flows .flow-grid { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); grid-auto-rows: auto;
+  height: auto; min-height: 0; }
+.lg-flows .flow-tile { max-height: 260px; }
+
+/* ── План вывоза: таблица-сетка с цветами стадий ── */
+.lg-dpl.lg-dpl-modal { padding: 0; }
+.lg-dpl .table-wrap { border: 0; border-radius: 0; margin: 0; }
+.lg-dpl-bar { row-gap: 6px; }
+.lg-dpl-bar select, .lg-dpl-bar input { width: auto; min-height: 30px; padding: 4px 8px; }
+.lg-plan tr.plan-sticky-head th { background: var(--th-bg); color: var(--u100); font-weight: 650;
+  font-size: 10.5px; letter-spacing: .03em; }
+.lg-plan tr.plan-sticky-head th.muted { color: var(--u300); }
+.lg-plan tr.plan-sticky-head th small { font-weight: 500; opacity: .85; }
+.lg-plan td { border-bottom: 1px solid var(--border2); border-right: 1px solid var(--border2); }
+.lg-plan tr.plan-totals td { font-family: var(--mono-font); }
+.lg-plan tr.plan-totals.total-key td { color: var(--bad); }
+.lg-plan tbody tr:not(.plan-totals):hover td.plan-fix,
+.lg-plan tbody tr:not(.plan-totals):hover td.plan-fix2 { background: var(--hover); }
+.lg-legend { display: inline-flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+.lg-sw { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.lg-sw > i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--border2); }
+.lg-sw > i.cell-plan { background: color-mix(in srgb, var(--warn) 18%, var(--card)); }
+/* Сегодняшний день подсвечен инлайн-фоном — текст шапки тёмный */
+.lg-plan tr.plan-sticky-head th[style*="--warn"] { color: var(--ink); }
+/* Карточка сцепки в узкой секции кандидатов: сведения сверху во всю
+   ширину, кнопки — строкой под ними (иначе текст сжимался в столбик). */
+.lg-page .bi-grid > .s5 .ordrow { flex-wrap: wrap; gap: 6px 10px; }
+.lg-page .bi-grid > .s5 .ordrow > span:first-child { flex: 1 1 100%; }
+.lg-page .bi-grid > .s5 .ordrow > span:last-child { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-start; }

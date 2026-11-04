@@ -10,7 +10,7 @@
 .bi-sub .bi-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Плитки показателей (metric) */
-.bi-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+.bi-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .metric { position: relative; display: flex; flex-direction: column; gap: 2px; min-width: 0;
   background: var(--card); border: 1px solid var(--line); border-top: 2px solid var(--accent);
   border-radius: 11px; padding: 11px 15px; box-shadow: var(--shadow); }
@@ -25,7 +25,7 @@
 .metric.warn { border-top-color: var(--warn); } .metric.warn .v { color: var(--warn); }
 .metric.dept-staff { border-top-color: var(--staff); } .metric.dept-log { border-top-color: var(--log); }
 .metric.dept-drv { border-top-color: var(--drv); } .metric.dept-toir { border-top-color: var(--toir); }
-.metric.hero { grid-column: span 2; } .metric.hero .v { font-size: 30px; }
+.metric.hero .v { font-size: 27px; }
 .metric.clickable { cursor: pointer; } .metric.clickable:hover { border-color: var(--accent); }
 
 /* Сетка секций */

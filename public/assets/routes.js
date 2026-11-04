@@ -446,39 +446,48 @@ export function renderRoutes(container, context) {
   };
 
   const savedScrolls = captureScrolls(container);
-  container.innerHTML = `<div class="saleswrap">
-    <div class="salekpis">
-      <div class="skpi"><span class="skl">Маршрутов в работе</span><span class="skv">${routes.length}</span></div>
-      <div class="skpi"><span class="skl">Черновики</span><span class="skv">${routes.filter(r => r.status === 'draft').length}</span></div>
-      <div class="skpi"><span class="skl">У логиста</span><span class="skv">${routes.filter(r => r.status === 'handed').length}</span></div>
-      <div class="skpi"><span class="skl">Свободных заявок</span><span class="skv">${freeOrders(data).length}</span></div>
-      <div class="salesfilter" style="flex:1;min-width:260px">
+  // BI-вид: плитки → секции; цифры — из уже посчитанных routes/freeOrders.
+  const freeList = freeOrders(data);
+  container.innerHTML = `<div class="bi-page lg-page lg-routes">
+    <div class="bi-sub"><h2>Кольцевые маршруты</h2>
+      <p>старт и финиш — в субъекте базирования сцепки</p>
+      <div class="bi-actions">
         ${canEdit ? `<button class="button" id="routeAuto"
           title="Полуавтомат: соберёт кольцо из свободных потребностей — от базы до базы, к плановой выручке">🧮 Собрать маршрут</button>
         <button class="button ghost small" id="routeBlank">+ Пустой</button>
         <button class="button ghost small" id="routeTemplates"
           title="Типовые круги парка из сентябрьской сетки: экономика каждого и создание маршрута-заготовки одним нажатием">📚 Шаблоны кругов</button>` : ''}
-      </div>
+      </div></div>
+    <div class="bi-kpis">
+      <div class="metric dept-log"><span class="l">Маршрутов в работе</span><span class="v">${routes.length}</span></div>
+      <div class="metric"><span class="l">Черновики</span><span class="v">${routes.filter(r => r.status === 'draft').length}</span></div>
+      <div class="metric dept-log"><span class="l">У логиста</span><span class="v">${routes.filter(r => r.status === 'handed').length}</span></div>
+      <div class="metric warn"><span class="l">Свободных заявок</span><span class="v">${freeList.length}</span>
+        <span class="d">не входят в маршруты</span></div>
     </div>
-    <div class="salesboard">
-      <div class="scol">
-        <div class="scolh">Маршруты <span>${routes.length}</span></div>
-        <div class="list">${routes.map(routeCard).join('')
-          || '<p class="muted">Маршрутов пока нет — соберите первый: «🧮 Собрать маршрут».</p>'}</div>
-      </div>
-      <div class="scol">
-        <div class="scolh">Свободные потребности <span>${freeOrders(data).length}</span></div>
-        <div class="list">${freeOrders(data).slice(0, 40).map(order => `<div class="list-item ordrow">
-          <span style="flex:1;min-width:0">
-            <b>№${escapeHtml(order.order_no || '—')}</b> ${escapeHtml(order.customer_name)}
-            <small class="muted" style="display:block">${escapeHtml(order.from_point || order.from_name)}
-              → ${escapeHtml(order.to_point || order.to_name)}
-              · окно ${formatDateTime(order.window_from)} · ${money(order.rate_vat)}</small>
-          </span>
-        </div>`).join('') || '<p class="muted">Свободных заявок нет.</p>'}</div>
-        <div class="geohint">Эти потребности не входят в маршруты — сырьё для конструктора.
-          Маршрут = кольцо: старт и финиш в субъекте базирования сцепки.</div>
-      </div>
+    <div class="bi-grid">
+      <section class="section s7 dept-log">
+        <div class="sec-h"><span class="st">Маршруты</span><span class="bi-tag">${routes.length}</span>
+          <span class="hint">выручка без НДС в сутки против плана</span></div>
+        <div class="sec-b"><div class="list lg-list">${routes.map(routeCard).join('')
+          || '<div class="bi-empty">Маршрутов пока нет — соберите первый: «🧮 Собрать маршрут».</div>'}</div></div>
+      </section>
+      <section class="section s5">
+        <div class="sec-h"><span class="st">Свободные потребности</span><span class="bi-tag">${freeList.length}</span>
+          <span class="hint">сырьё для конструктора${freeList.length > 40 ? ' · первые 40' : ''}</span></div>
+        <div class="sec-b flush">${freeList.length ? `<div class="bi-scroll"><table class="bi-table lg-table">
+          <thead><tr><th>№ · заказчик</th><th>Маршрут</th><th class="r">Окно</th><th class="r">Ставка</th></tr></thead>
+          <tbody>${freeList.slice(0, 40).map(order => `<tr>
+            <td><b class="mono">№${escapeHtml(order.order_no || '—')}</b>
+              <small class="muted" style="display:block">${escapeHtml(order.customer_name)}</small></td>
+            <td>${escapeHtml(order.from_point || order.from_name)}
+              <small class="muted" style="display:block">→ ${escapeHtml(order.to_point || order.to_name)}</small></td>
+            <td class="num">${formatDateTime(order.window_from)}</td>
+            <td class="num">${money(order.rate_vat)}</td>
+          </tr>`).join('')}</tbody></table></div>` : '<div class="bi-empty">Свободных заявок нет.</div>'}
+        <div class="geohint lg-foot">Эти потребности не входят в маршруты — сырьё для конструктора.
+          Маршрут = кольцо: старт и финиш в субъекте базирования сцепки.</div></div>
+      </section>
     </div>
   </div>`;
   restoreScrolls(container, savedScrolls);

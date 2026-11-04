@@ -199,18 +199,25 @@ function resultHtml(result) {
         · ${escapeHtml(order.driver)}</small></span>
     <span class="dmr-sum"><b>${rub(order.sum)}</b></span>
   </div>`;
-  const section = (title, count, sumLabel, rows) => `<details class="rejected-details" style="margin-top:8px">
-    <summary>${title} <span class="scount">${count}</span> ${sumLabel ? `· <b>${sumLabel}</b>` : ''}</summary>
-    <div class="dmr-list" style="max-height:36vh;overflow:auto;margin-top:6px">${rows || '<div class="muted" style="padding:6px 0">Пусто.</div>'}</div>
+  // BI-вид: раздел сверки — свёртка-секция (шапка-полоса .sec-h, тело .sec-b).
+  const section = (title, count, sumLabel, rows) => `<details class="rejected-details section boss-det">
+    <summary class="sec-h"><span class="st">${title}</span> <span class="scount">${count}</span>${sumLabel
+    ? `<span class="sec-actions"><b class="mono">${sumLabel}</b></span>` : ''}</summary>
+    <div class="sec-b"><div class="dmr-list" style="max-height:36vh;overflow:auto">${rows || '<div class="muted" style="padding:6px 0">Пусто.</div>'}</div></div>
   </details>`;
   return `<div id="reconcileResult">
-    <h3 style="margin:12px 0 6px">Сверка за ${escapeHtml(result.monthLabel)}</h3>
-    <div class="table-wrap"><table>
-      <tr><td>1С: заказов за месяц (истина)</td><td><b>${result.c1.n}</b></td><td><b>${rub(result.c1.sum)}</b> с НДС · ${rub(result.c1.net)} без НДС</td></tr>
-      <tr><td>Планер: рейсов с отправлением в месяце</td><td><b>${result.planner.n}</b></td><td>${rub(result.planner.sum)} с НДС</td></tr>
-      <tr><td>Сопоставлено пар (суммы совпали точно)</td><td><b>${result.pairs}</b> (${result.exact})</td><td></td></tr>
-      <tr><td><b>Итог: выручка месяца по 1С + ещё не занесённое</b></td><td></td><td><b>${rub(result.trueSum)}</b> с НДС</td></tr>
-    </table></div>
+    <div class="bi-sub boss-rec-sub"><h2>Сверка за ${escapeHtml(result.monthLabel)}</h2></div>
+    <div class="bi-kpis boss-modal-kpis">
+      <div class="metric"><span class="l">1С: заказов за месяц (истина)</span>
+        <span class="v">${result.c1.n}</span><span class="d">${rub(result.c1.sum)} с НДС · ${rub(result.c1.net)} без НДС</span></div>
+      <div class="metric"><span class="l">Планер: рейсов с отправлением в месяце</span>
+        <span class="v">${result.planner.n}</span><span class="d">${rub(result.planner.sum)} с НДС</span></div>
+      <div class="metric"><span class="l">Сопоставлено пар (суммы совпали точно)</span>
+        <span class="v">${result.pairs}<small>(${result.exact})</small></span></div>
+      <div class="metric dept-staff"><span class="l">Итог: выручка месяца по 1С + ещё не занесённое</span>
+        <span class="v">${rub(result.trueSum)}</span><span class="d">с НДС</span></div>
+    </div>
+    <div class="boss-det-list">
     ${section('🔺 Излишки планера — нет в 1С (до ' + escapeHtml(result.fileEdge) + ')', result.surplus.length,
     rub(result.surplusSum), result.surplus.map(tripRow).join(''))}
     ${section('🔻 Нет в планере — только в 1С', result.onlyC1.length,
@@ -223,6 +230,7 @@ function resultHtml(result) {
     result.oneRub.map(pair => pairRow(pair, '1 ₽ в 1С')).join(''))}
     ${section('⏳ Рейсы от ' + escapeHtml(result.fileEdge) + ' — в 1С ещё не занесены (не излишек)',
     result.notYet.length, rub(result.notYetSum), result.notYet.map(tripRow).join(''))}
+    </div>
   </div>`;
 }
 

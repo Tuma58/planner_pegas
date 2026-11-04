@@ -90,32 +90,50 @@ export async function renderStaff(container, context) {
     <td><span class="badge ok">работает</span></td>
   </tr>`;
 
-  const html = `<div class="resboard" id="staffBoard">
-    <div class="section-head" style="align-items:center;gap:10px;flex-wrap:wrap">
-      <h1 style="margin:0">Сотрудники</h1>
+  // BI-вид (04.11): плитки состава → секции «Офис»/«Водители» с .bi-table.
+  const activeUsers = payload.users.filter(person => person.active);
+  const firedAll = payload.users.length - activeUsers.length;
+  const withTg = activeUsers.filter(person => person.telegram).length;
+  const driversNoCar = payload.drivers.filter(person => !person.vehiclePlate).length;
+  const tile = (label, value, unit, extra, note = '') => `<div class="metric ${extra}">
+    <span class="l">${label}</span><span class="v">${value}<small>${unit}</small></span>
+    ${note ? `<span class="d">${note}</span>` : ''}</div>`;
+  const tableSection = (title, hint, head, rows, empty) => `<section class="section dept-staff">
+      <div class="sec-h"><span class="st">${title}</span>${hint ? `<span class="hint">${hint}</span>` : ''}</div>
+      <div class="sec-b flush"><div class="bi-scroll"><table class="bi-table"><thead><tr>${head}</tr></thead>
+        <tbody>${rows || `<tr><td colspan=5 class="muted">${empty}</td></tr>`}</tbody></table></div></div>
+    </section>`;
+  const html = `<div class="bi-page svc-staff" id="staffBoard">
+    <div class="bi-sub">
       <span class="staff-seg">
-        <button data-staff-sec="office" class="${section === 'office' ? 'active' : ''}">Офис · ${payload.users.filter(person => person.active).length}</button>
+        <button data-staff-sec="office" class="${section === 'office' ? 'active' : ''}">Офис · ${activeUsers.length}</button>
         <button data-staff-sec="drivers" class="${section === 'drivers' ? 'active' : ''}">Водители · ${payload.drivers.length}</button>
       </span>
       <input id="staffSearch" class="block-search" placeholder="Поиск по всем: ФИО, должность, телефон, сцепка"
         value="${escapeHtml(state.staffQuery || '')}" style="flex:1;min-width:180px;max-width:360px">
+      <div class="bi-actions">
       <button class="button small ghost" id="staffTimesheet"
         title="Общий план-график смен офиса на месяц: Д/Н/отпуск/болезнь, клик по клетке — цикл, печать">📅 Табель смен</button>
       <button class="button small ghost" id="staffAts"
         title="Абоненты АТС Билайн: кто из сотрудников на каком добавочном; несопоставленные номера — привязать или оставить незадействованными">☎ Сверка с АТС</button>
       <button class="button small" id="staffAddUser">+ Сотрудник</button>
       <button class="button small ghost" id="staffAddDriver" title="Водители заводятся в справочнике «Водители» — там же сцепка и вахта">+ Водитель</button>
+      </div>
     </div>
-    ${query && !users.length && !drivers.length ? '<p class="muted" style="margin-top:14px">Никого не найдено.</p>' : ''}
-    ${showOffice ? `${query ? `<h3 style="margin:14px 0 6px">Офис · найдено ${users.length}</h3>` : ''}
-    <div style="overflow:auto;margin-top:${query ? 0 : 12}px"><table class="rtable"><thead><tr>
-      <th>Сотрудник</th><th>Должность</th><th>Телефоны</th><th>TG</th><th>Статус</th>
-    </tr></thead><tbody>${users.map(userRow).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>
-    ${fired.length ? `<p class="muted" style="font-size:12px">Уволенные остаются в списке серыми — карточка и история доступны, восстановление из карточки.</p>` : ''}` : ''}
-    ${showDrivers ? `${query ? `<h3 style="margin:14px 0 6px">Водители · найдено ${drivers.length}</h3>` : ''}
-    <div style="overflow:auto;margin-top:${query ? 0 : 12}px"><table class="rtable"><thead><tr>
-      <th>Водитель</th><th>Должность</th><th>Телефон</th><th>Сцепка</th><th>Статус</th>
-    </tr></thead><tbody>${drivers.map(driverRow).join('') || '<tr><td colspan=5 class="muted">Никого не найдено</td></tr>'}</tbody></table></div>` : ''}
+    <div class="bi-kpis">
+      ${tile('Офис работает', activeUsers.length, 'чел', 'dept-staff', `гостей ${activeUsers.filter(person => person.guest).length}`)}
+      ${tile('Водители', payload.drivers.length, 'чел', 'dept-drv', `без сцепки ${driversNoCar}`)}
+      ${tile('Telegram привязан', withTg, `из ${activeUsers.length}`, 'dept-staff', 'офис, получают уведомления')}
+      ${tile('Уволенные', firedAll, 'чел', firedAll ? 'warn' : 'dept-staff', 'серыми в списке офиса')}
+    </div>
+    ${query && !users.length && !drivers.length ? '<div class="bi-empty">Никого не найдено.</div>' : ''}
+    ${showOffice ? tableSection(query ? `Офис · найдено ${users.length}` : 'Офис',
+    fired.length ? 'уволенные остаются в списке серыми — карточка и история доступны, восстановление из карточки' : '',
+    '<th>Сотрудник</th><th>Должность</th><th>Телефоны</th><th>TG</th><th>Статус</th>',
+    users.map(userRow).join(''), 'Никого не найдено') : ''}
+    ${showDrivers ? tableSection(query ? `Водители · найдено ${drivers.length}` : 'Водители', '',
+    '<th>Водитель</th><th>Должность</th><th>Телефон</th><th>Сцепка</th><th>Статус</th>',
+    drivers.map(driverRow).join(''), 'Никого не найдено') : ''}
   </div>`;
   if (!renderInto(container, html)) return;
 

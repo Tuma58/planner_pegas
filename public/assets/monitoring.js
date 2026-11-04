@@ -210,8 +210,10 @@ export async function renderMonitoring(container, context) {
     items = answer.items || [];
     trailers = answer.trailers || [];
   } catch (error) {
-    container.innerHTML = `<p class="muted" style="margin:20px">Мониторинг недоступен: ${escapeHtml(error.message)}.
-      Проверьте логин/пароль Пилота в Настройках → Телефония и сервисы.</p>`;
+    container.innerHTML = `<div class="bi-page mon-page"><section class="section dept-drv">
+      <div class="sec-h"><span class="st">Мониторинг недоступен</span></div>
+      <div class="bi-empty">${escapeHtml(error.message)}.
+      Проверьте логин/пароль Пилота в Настройках → Телефония и сервисы.</div></section></div>`;
     map = null; truckMarkers.clear(); trailerMarkers.clear();
     return;
   }
@@ -235,9 +237,18 @@ export async function renderMonitoring(container, context) {
   const mapNode = container.querySelector('#monMap');
   const alive = map && mapNode && map.getContainer() === mapNode;
   if (!alive) {
-    container.innerHTML = `<div class="mon-wrap">
-      <div class="mon-list"><div id="monListBody"></div></div>
-      <div id="monMap"></div>
+    // BI-каркас (04.11): ряд плиток → две секции (список | карта).
+    // Плитки и список перерисовываются каждый тик, карта — нет.
+    container.innerHTML = `<div class="bi-page mon-page">
+      <div class="bi-kpis" id="monKpis"></div>
+      <div class="mon-wrap">
+        <section class="section mon-list"><div class="sec-h"><span class="st">Парк на линии</span>
+          <span class="hint">клик — машина на карте</span></div>
+          <div class="sec-b" id="monListBody"></div></section>
+        <section class="section mon-map-sec"><div class="sec-h"><span class="st">Карта</span>
+          <span class="hint">Pilot-GPS · позиции раз в минуту · нет связи — дольше 30 мин</span></div>
+          <div id="monMap"></div></section>
+      </div>
     </div>`;
     truckMarkers.clear();
     trailerMarkers.clear();
@@ -274,11 +285,26 @@ export async function renderMonitoring(container, context) {
   // ── Список: перерисовывается каждый раз (лёгкий), карта не трогается. ──
   const filterButton = (key, label) => `<button class="button small ${filter === key ? '' : 'ghost'}"
     data-mon-filter="${key}">${label} ${key ? counts[key] : items.length}</button>`;
+  const onTrip = items.filter(item => item.trip).length;
+  const trailersOnline = trailers.filter(t => t.latitude).length;
+  const kpi = (key, cls, label, value, unit, note) => `<div class="metric ${cls}${key !== null ? ' clickable' : ''}"
+    ${key !== null ? `data-mon-filter="${key}" title="Показать в списке только эти машины"` : ''}>
+    <span class="l">${label}</span><span class="v">${value}<small>${unit}</small></span>
+    <span class="d">${note}</span></div>`;
+  const kpiNode = container.querySelector('#monKpis');
+  if (kpiNode) kpiNode.innerHTML = [
+    kpi('', 'dept-drv', 'На трекерах', items.length, 'маш', filter ? 'клик — показать всех' : 'весь парк с GPS'),
+    kpi('moving', 'pos', 'Едут', counts.moving, 'маш', 'скорость от 5 км/ч'),
+    kpi('stopped', 'dept-log', 'Стоят', counts.stopped, 'маш', 'GPS свежий'),
+    kpi('silent', counts.silent ? 'neg' : '', 'Нет связи', counts.silent, 'маш', 'молчат дольше 30 мин'),
+    kpi(null, 'dept-drv', 'В рейсе', onTrip, 'маш', 'статус рейса «в пути»'),
+    kpi(null, '', 'Прицепы с GPS', trailersOnline, 'шт', `из ${trailers.length} в Пилоте`)
+  ].join('');
   container.querySelector('#monListBody').innerHTML = `
     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">
       ${filterButton('', 'Все')}${filterButton('moving', '🟢')}${filterButton('stopped', '🔵')}${filterButton('silent', '🔴')}
       <button class="button small ${state.monTrailers ? '' : 'ghost'}" id="monTrailersToggle"
-        title="Показать прицепы отдельными маркерами: свободные, отцепленные, температуры и двери">▢ Прицепы ${trailers.filter(t => t.latitude).length}</button>
+        title="Показать прицепы отдельными маркерами: свободные, отцепленные, температуры и двери">▢ Прицепы ${trailersOnline}</button>
     </div>
     <input id="monSearch" class="block-search" placeholder="Поиск: госномер, водитель, прицеп"
       value="${escapeHtml(state.monQuery || '')}" style="width:100%;margin-bottom:6px">
@@ -296,7 +322,7 @@ export async function renderMonitoring(container, context) {
             ? escapeHtml(tempText(tr.tAvg)) : ''}${tr.door
             ? ` · 🚪 ${escapeHtml(String(tr.door.value).toLowerCase())}` : ''}</small>` : ''}
         </span></div>`;
-    }).join('') || '<p class="muted">Никого не найдено</p>'}</div>`;
+    }).join('') || '<div class="bi-empty">Никого не найдено</div>'}</div>`;
 
   // ── Маркеры: upsert без пересоздания, исчезнувшие убираются. ──
   if (typeof L === 'undefined' || !map) return;

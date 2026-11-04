@@ -97,60 +97,79 @@ function render(context, payload) {
   const planEffect = initiatives.filter(item => ['todo', 'doing'].includes(item.status))
     .reduce((sum, item) => sum + Number(item.effect_rub || 0), 0);
 
-  context.showModal(`<div class="p160">
-    <h2>🎯 Проект «160 млн» · ${escapeHtml(period.from.slice(0, 7))}</h2>
-    <p class="muted">Гипотеза проекта: деньги теряются на времени — на операциях и на передаче
-      данных между участниками перевозки. Здесь видно, где стоит время и что дали наши изменения.</p>
+  // BI-вид (04.11): плитки цели/факта/времени → секции с таблицами .bi-table.
+  const pctTone = pct >= 100 ? 'pos' : pct >= 85 ? 'warn' : 'neg';
+  const chainTone = (total?.medianHours || 0) > (total?.normHours || 8) ? 'warn' : 'pos';
+  const slaTone = operations.questionInSlaPct >= 80 ? 'pos' : 'warn';
+  context.showModal(`<div class="p160 bi-page">
+    <div class="bi-sub"><h2>🎯 Проект «160 млн» · ${escapeHtml(period.from.slice(0, 7))}</h2>
+      <p class="muted">Гипотеза проекта: деньги теряются на времени — на операциях и на передаче
+      данных между участниками перевозки. Здесь видно, где стоит время и что дали наши изменения.</p></div>
 
-    <div class="p160-kpis">
-      <div class="p160-kpi"><span>Цель месяца</span>
-        <strong>${goalNet ? money(goalNet) : '— не задана —'}</strong>
-        <small>без НДС${goalNet ? ` · ${money(Math.round(goalNet * (1 + (cash.vatRate || 0.22))))} с НДС` : ''}</small></div>
-      <div class="p160-kpi ${pct >= 100 ? 'ok' : pct >= 85 ? 'warn' : 'bad'}">
-        <span>Факт + в работе</span><strong>${money(factAllNet)}</strong>
-        <small>без НДС · ${pct}% цели · ${cash.trips} рейсов</small></div>
-      <div class="p160-kpi ${(total?.medianHours || 0) > (total?.normHours || 8) ? 'warn' : 'ok'}">
-        <span>Управляемое время заявки</span>
-        <strong>${hoursLabel(total?.medianHours || 0)}</strong>
-        <small>от внесения до задания водителю${deltaHtml(total?.medianHours || 0, prevHandoff('managed_chain'))}
-          · с ожиданием окна ${hoursLabel(withWait?.medianHours || 0)}</small></div>
-      <div class="p160-kpi ${operations.questionInSlaPct >= 80 ? 'ok' : 'warn'}">
-        <span>Вопросы водителей</span><strong>${operations.questionInSlaPct}%</strong>
-        <small>в норматив 10 мин · медиана ${operations.questionMedianMin} мин</small></div>
+    <div class="bi-kpis p160-kpis">
+      <div class="metric hero dept-staff"><span class="l">Цель месяца</span>
+        <span class="v">${goalNet ? money(goalNet) : '— не задана —'}</span>
+        <span class="d">без НДС${goalNet ? ` · ${money(Math.round(goalNet * (1 + (cash.vatRate || 0.22))))} с НДС` : ''}</span></div>
+      <div class="metric ${pctTone}">
+        <span class="l">Факт + в работе</span><span class="v">${money(factAllNet)}</span>
+        <span class="d">без НДС · ${pct}% цели · ${cash.trips} рейсов</span></div>
+      <div class="metric ${chainTone}">
+        <span class="l">Управляемое время заявки</span>
+        <span class="v">${hoursLabel(total?.medianHours || 0)}</span>
+        <span class="d">от внесения до задания водителю${deltaHtml(total?.medianHours || 0, prevHandoff('managed_chain'))}
+          · с ожиданием окна ${hoursLabel(withWait?.medianHours || 0)}</span></div>
+      <div class="metric dept-drv ${slaTone}">
+        <span class="l">Вопросы водителей</span><span class="v">${operations.questionInSlaPct}<small>%</small></span>
+        <span class="d">в норматив 10 мин · медиана ${operations.questionMedianMin} мин</span></div>
+      <div class="metric dept-staff"><span class="l">Эффект внедрённого</span>
+        <span class="v">${money(doneEffect)}</span><span class="d">сделанные инициативы</span></div>
+      <div class="metric"><span class="l">В работе и в очереди</span>
+        <span class="v">${money(planEffect)}</span><span class="d">ожидаемый эффект</span></div>
     </div>
 
-    <h3>Где стоит время между участниками</h3>
-    <p class="muted" style="margin:0 0 6px">Медиана по рейсам месяца. Ожидание планового окна
-      погрузки сюда не входит — только то, что зависит от нас. «Запас до подачи» —
-      наоборот: чем больше, тем лучше, норматив «не меньше» выучен из факта конвейера.</p>
-    <table class="grid p160-table"><thead><tr>
-      <th>Передача</th><th>Кто держит</th><th class="num">Медиана</th>
-      <th class="num">Норматив</th><th class="num">Вне нормы</th><th class="num">Рейсов</th>
-    </tr></thead><tbody>${handoffRows}</tbody></table>
+    <div class="bi-grid">
+    <section class="section">
+      <div class="sec-h"><span class="st">Где стоит время между участниками</span>
+        <span class="hint">медиана по рейсам месяца</span></div>
+      <div class="sec-b"><p class="muted" style="margin:0">Медиана по рейсам месяца. Ожидание планового окна
+        погрузки сюда не входит — только то, что зависит от нас. «Запас до подачи» —
+        наоборот: чем больше, тем лучше, норматив «не меньше» выучен из факта конвейера.</p></div>
+      <div class="sec-b flush bi-scroll"><table class="bi-table p160-table"><thead><tr>
+        <th>Передача</th><th>Кто держит</th><th class="num">Медиана</th>
+        <th class="num">Норматив</th><th class="num">Вне нормы</th><th class="num">Рейсов</th>
+      </tr></thead><tbody>${handoffRows}</tbody></table></div>
+    </section>
 
-    <h3>Сколько действий стоит работа</h3>
-    <div class="p160-ops">
-      <div><b>${operations.dispositionOps}</b> операций с интервалами ресурса
-        ${deltaHtml(operations.dispositionOps, prev?.operations?.dispositionOps, { unit: 'шт' })}</div>
-      <div><b>${operations.stopFactsPerTrip}</b> отметок этапов на рейс
-        ${deltaHtml(operations.stopFactsPerTrip, prev?.operations?.stopFactsPerTrip, { unit: 'шт' })}</div>
-      <div><b>${operations.trips}</b> рейсов выведено на линию</div>
-      <div><b>${operations.questions}</b> вопросов водителей, отвечено ${operations.questionsAnswered}</div>
-    </div>
+    <section class="section">
+      <div class="sec-h"><span class="st">Сколько действий стоит работа</span></div>
+      <div class="sec-b"><div class="bi-kpis">
+        <div class="metric"><span class="l">Операций с интервалами ресурса</span>
+          <span class="v">${operations.dispositionOps}</span>
+          <span class="d">${deltaHtml(operations.dispositionOps, prev?.operations?.dispositionOps, { unit: 'шт' })}</span></div>
+        <div class="metric"><span class="l">Отметок этапов на рейс</span>
+          <span class="v">${operations.stopFactsPerTrip}</span>
+          <span class="d">${deltaHtml(operations.stopFactsPerTrip, prev?.operations?.stopFactsPerTrip, { unit: 'шт' })}</span></div>
+        <div class="metric dept-drv"><span class="l">Рейсов выведено на линию</span>
+          <span class="v">${operations.trips}</span></div>
+        <div class="metric dept-drv"><span class="l">Вопросов водителей</span>
+          <span class="v">${operations.questions}</span><span class="d">отвечено ${operations.questionsAnswered}</span></div>
+      </div></div>
+    </section>
 
-    <h3>Что меняем в продукте</h3>
-    <p class="muted" style="margin:0 0 6px">🤖 продукт — веду я, статус меняется по факту
-      выката. 👥 команда — ведёте вы. Где есть метрика, «сейчас» считается из данных
-      автоматически: зелёная — цель достигнута, красная — ещё нет.</p>
-    <div class="p160-effect">
-      <span>Эффект внедрённого: <b>${money(doneEffect)}</b></span>
-      <span>В работе и в очереди: <b>${money(planEffect)}</b></span>
-    </div>
-    <table class="grid p160-table"><thead><tr>
-      <th>Инициатива</th><th>Область</th><th>Было</th><th>Сейчас / цель</th>
-      <th class="num">Эффект, ₽</th><th>Статус</th><th></th>
-    </tr></thead><tbody>${initiativeRows}</tbody></table>
-
+    <section class="section">
+      <div class="sec-h"><span class="st">Что меняем в продукте</span>
+        <div class="sec-actions p160-effect">
+          <span class="bi-tag pos">Эффект внедрённого: <b>${money(doneEffect)}</b></span>
+          <span class="bi-tag">В работе и в очереди: <b>${money(planEffect)}</b></span>
+        </div></div>
+      <div class="sec-b"><p class="muted" style="margin:0">🤖 продукт — веду я, статус меняется по факту
+        выката. 👥 команда — ведёте вы. Где есть метрика, «сейчас» считается из данных
+        автоматически: зелёная — цель достигнута, красная — ещё нет.</p></div>
+      <div class="sec-b flush bi-scroll"><table class="bi-table p160-table"><thead><tr>
+        <th>Инициатива</th><th>Область</th><th>Было</th><th>Сейчас / цель</th>
+        <th class="num">Эффект, ₽</th><th>Статус</th><th></th>
+      </tr></thead><tbody>${initiativeRows}</tbody></table></div>
+      <div class="sec-b">
     <form id="p160Add" class="p160-add">
       <input name="title" placeholder="Что улучшаем" required maxlength="200">
       <select name="area">${AREAS.map(area => `<option>${area}</option>`).join('')}</select>
@@ -159,6 +178,9 @@ function render(context, payload) {
       <input name="effectRub" type="number" min="0" step="10000" placeholder="эффект, ₽">
       <button class="button small">+ Добавить</button>
     </form>
+      </div>
+    </section>
+    </div>
 
     <div class="p160-snap">
       <button class="button ghost small" id="p160Snapshot"

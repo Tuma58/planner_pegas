@@ -850,16 +850,28 @@ export async function timesheetDialog(context) {
       <td class="num">${(row.totals['ОТ'] || 0) + (row.totals['Б'] || 0)}</td>
       <td class="num ${row.totals['ПР'] ? 'danger' : ''}">${row.totals['ПР'] || 0}</td>
     </tr>`).join('');
+    const sumCode = code => rows.reduce((sum, row) => sum + (row.totals[code] || 0), 0);
     context.showModal(`<div class="report printable-block">
       <h2 style="margin-bottom:6px">📋 Табель явки водителей</h2>
-      <div class="no-print" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        ${rangePickerHtml('tsFrom', 'tsTo', fromIso, toIso, 'период')}
-        <small class="muted">${Object.entries(codes).map(([code, label]) => `<b>${code}</b> ${label}`).join(' · ')}</small>
+      <div class="bi-page ts-page">
+      <div class="bi-kpis">
+        <div class="metric dept-drv"><span class="l">Водителей</span><span class="v">${rows.length}<small>чел</small></span>
+          <span class="d">${days.length} дн в периоде</span></div>
+        <div class="metric pos"><span class="l" title="${escapeHtml(codes['Я'] || '')}">Я${codes['Я'] ? ` · ${escapeHtml(codes['Я'])}` : ''}</span><span class="v">${sumCode('Я')}<small>чел·дн</small></span></div>
+        <div class="metric warn"><span class="l" title="${escapeHtml(codes['РВ'] || '')}">РВ${codes['РВ'] ? ` · ${escapeHtml(codes['РВ'])}` : ''}</span><span class="v">${sumCode('РВ')}<small>чел·дн</small></span></div>
+        <div class="metric"><span class="l">ОТ + Б</span><span class="v">${sumCode('ОТ') + sumCode('Б')}<small>чел·дн</small></span></div>
+        <div class="metric ${sumCode('ПР') ? 'neg' : ''}"><span class="l" title="${escapeHtml(codes['ПР'] || '')}">ПР${codes['ПР'] ? ` · ${escapeHtml(codes['ПР'])}` : ''}</span><span class="v">${sumCode('ПР')}<small>чел·дн</small></span></div>
       </div>
-      <div class="sched-wrap" style="max-height:60vh"><table class="sched-table ts-table">
+      <section class="section dept-drv">
+      <div class="sec-h no-print"><span class="st">Табель по дням</span>
+        <span class="hint">${Object.entries(codes).map(([code, label]) => `<b>${code}</b> ${label}`).join(' · ')}</span>
+        <div class="sec-actions">${rangePickerHtml('tsFrom', 'tsTo', fromIso, toIso, 'период')}</div>
+      </div>
+      <div class="sched-wrap" style="max-height:52vh"><table class="sched-table ts-table">
         <thead><tr><th class="sched-name">Водитель</th>${head}
           <th class="num">Я</th><th class="num">РВ</th><th class="num">ОТ+Б</th><th class="num">ПР</th></tr></thead>
         <tbody>${body}</tbody></table></div>
+      </section></div>
       <div class="modal-actions no-print">
         <button type="button" class="button ghost" id="tsPrint">Печать / PDF</button>
         <button type="button" class="button" data-close>Закрыть</button>
@@ -890,11 +902,13 @@ export async function attendanceDialog(context) {
       ? `<span class="badge ${item.status === 'present' ? (item.overwork ? 'warn' : 'ok') : ''}"
           title="Проставлено системой — ручная отметка перекроет">${item.overwork ? '⚡ ' : ''}авто: ${escapeHtml(item.auto)}${item.overwork ? ' · ↑ФОТ' : ''}</span>`
       : item.source === 'manual' ? '<span class="badge warn" title="Отмечено вручную">вручную</span>' : '';
-    const rows = sorted.map(item => `<div class="list-item ${item.source === null ? 'pipe-returned' : ''}" style="padding:5px 8px;gap:8px">
-      <span style="flex:1;min-width:0"><strong>${escapeHtml(item.full_name)}</strong>
-        <small class="muted" style="display:block">${escapeHtml(item.vehicle_plate || 'без сцепки')}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></span>
-      ${autoBadge(item)}
-      <button class="button small ${item.source === 'manual' && item.status === 'present' ? '' : 'ghost'}"
+    const rows = sorted.map(item => `<tr class="${item.source === null ? 'att-unmarked' : ''}">
+      <td><strong>${escapeHtml(item.full_name)}</strong>${item.source === null
+        ? ' <span class="bi-tag warn" title="Система не закрыла день — нужна отметка">нужна отметка</span>' : ''}</td>
+      <td><span class="mono">${escapeHtml(item.vehicle_plate || 'без сцепки')}</span>${item.note ? `
+        <small class="muted" style="display:block">${escapeHtml(item.note)}</small>` : ''}</td>
+      <td>${autoBadge(item)}</td>
+      <td class="att-acts"><button class="button small ${item.source === 'manual' && item.status === 'present' ? '' : 'ghost'}"
         data-att="present" data-driver="${item.driver_id}">✓ Вышел</button>
       <button class="button small ${item.source === 'manual' && item.status === 'absent' ? '' : 'ghost'}"
         data-att="absent" data-driver="${item.driver_id}">✗ Невыход</button>
@@ -902,23 +916,34 @@ export async function attendanceDialog(context) {
         <option value="">— причина —</option>
         ${Object.entries(reasons).map(([key, label]) =>
           `<option value="${key}" ${item.source === 'manual' && item.reason === key ? 'selected' : ''}>${label}</option>`).join('')}
-      </select>
-    </div>`).join('');
+      </select></td>
+    </tr>`).join('');
     context.showModal(`<h2 style="margin-bottom:6px">Явка водителей
       <small class="muted" style="font-weight:400;font-size:12px"> · рейсы, отпуска и межвахты проставляются сами — отмечайте только внештатное</small></h2>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        ${dayPickerHtml('attDay', day)}
-        <span class="badge ok">вышли: ${summary.present}</span>
-        <span class="badge ${summary.absent ? 'bad' : ''}">невыход: ${summary.absent}</span>
-        <span class="badge ${summary.unmarked ? 'warn' : 'ok'}" title="Рейсы, отпуска и межвахты система закрывает сама — отметьте только этих">требуют отметки: ${summary.unmarked}</span>
-        ${summary.unmarked > 3 ? `<button class="button small" id="attBulkPresent"
-          title="Отметить всех неотмеченных как «вышел» одним нажатием — исключения (невыходы) отметьте после поштучно">✓ Все неотмеченные вышли (${summary.unmarked})</button>` : ''}
-        ${summary.overwork ? `<span class="badge warn" title="Работа в выходной — повышенная оплата">⚡ в выходной: ${summary.overwork}</span>` : ''}
-        <span class="badge ${staffingOk ? 'ok' : 'bad'}"
-          title="Норматив укомплектованности — 1,45 водителя на сцепку">
-          укомплектованность: ${summary.staffing.toFixed(2)} / ${summary.staffingTarget}</span>
+      <div class="bi-page att-page">
+      <div class="bi-kpis">
+        <div class="metric pos"><span class="l">Вышли</span><span class="v">${summary.present}<small>вод</small></span></div>
+        <div class="metric ${summary.absent ? 'neg' : ''}"><span class="l">Невыход</span><span class="v">${summary.absent}<small>вод</small></span>
+          <span class="d">только с причиной</span></div>
+        <div class="metric ${summary.unmarked ? 'warn' : 'pos'}" title="Рейсы, отпуска и межвахты система закрывает сама — отметьте только этих">
+          <span class="l">Требуют отметки</span><span class="v">${summary.unmarked}<small>вод</small></span></div>
+        ${summary.overwork ? `<div class="metric warn" title="Работа в выходной — повышенная оплата"><span class="l">⚡ В выходной</span>
+          <span class="v">${summary.overwork}<small>вод</small></span><span class="d">↑ ФОТ</span></div>` : ''}
+        <div class="metric ${staffingOk ? 'pos' : 'neg'}" title="Норматив укомплектованности — 1,45 водителя на сцепку">
+          <span class="l">Укомплектованность</span><span class="v">${summary.staffing.toFixed(2)}<small>вод/сц</small></span>
+          <span class="d">норматив ${summary.staffingTarget}</span></div>
       </div>
-      <div class="list" style="max-height:56vh;overflow:auto">${rows}</div>
+      <section class="section dept-drv">
+        <div class="sec-h"><span class="st">Отметки дня</span>
+          <span class="hint">неотмеченные — сверху</span>
+          <div class="sec-actions">${dayPickerHtml('attDay', day)}
+          ${summary.unmarked > 3 ? `<button class="button small" id="attBulkPresent"
+            title="Отметить всех неотмеченных как «вышел» одним нажатием — исключения (невыходы) отметьте после поштучно">✓ Все неотмеченные вышли (${summary.unmarked})</button>` : ''}</div></div>
+        <div class="sec-b flush"><div class="bi-scroll" style="max-height:50vh"><table class="bi-table att-table">
+          <thead><tr><th>Водитель</th><th>Сцепка · примечание</th><th>Автоматика</th><th>Отметка</th></tr></thead>
+          <tbody>${rows}</tbody></table></div></div>
+      </section>
+      </div>
       <div class="modal-actions"><button type="button" class="button" data-close>Закрыть</button></div>`, 'wide');
     wireDayPicker(document, 'attDay', value => { day = value; render(); });
     const mark = async body => {
@@ -1159,9 +1184,11 @@ function renderResourceTasks(container, context, refDay, withState) {
   container.innerHTML = toggleBtn('⟩ Свернуть', 'Свернуть панель в плашку') +
     `<h2>Что требует решения</h2>
     <p class="muted">На ${refDay.split('-').reverse().join('.')} — по одному действию на строку.</p>
-    <div class="summary-grid">
-      <div class="metric"><span>Требуют внимания</span><strong>${tasks.length}</strong></div>
-      <div class="metric"><span>Всего в парке</span><strong>${withState.length}</strong></div>
+    <div class="bi-kpis res-side-kpis">
+      <div class="metric ${tasks.length ? 'warn' : 'pos'}"><span class="l">Требуют внимания</span>
+        <span class="v">${tasks.length}<small>маш</small></span></div>
+      <div class="metric dept-drv"><span class="l">Всего в парке</span>
+        <span class="v">${withState.length}<small>маш</small></span></div>
     </div>
     ${adminTasks.length ? `<div class="task-sec"><b>📌 Задания руководителя (${adminTasks.length})</b>
       <div class="list" style="margin-top:6px">${adminTasks.join('')}</div>
@@ -1341,8 +1368,9 @@ export function parkScheduleKeeper() {
 }
 function renderScheduleNative(container, context) {
   const { state } = context;
-  const html = `<div class="resboard schedwrap">
-    <div class="schedhead">
+  const html = `<div class="resboard schedwrap res-bi-sched">
+    <div class="schedhead sec-h">
+      <span class="st">График работы</span>
       <span class="resctl-group">
         <button class="button small" id="resViewSchedule">📋 График</button>
         <button class="button small ghost" id="resViewGantt"
@@ -1350,7 +1378,7 @@ function renderScheduleNative(container, context) {
       </span>
       ${context.openDrivers ? `<button class="button ghost small" id="schedDrivers"
         title="Справочник водителей: добавить и уволить, отпуска и больничные, закрепление за сцепками">Водители</button>` : ''}
-      <span class="muted schedhint">экипажи · план/факт · пересменки · сверхвахта к доплате — главный инструмент планирования людей</span>
+      <span class="hint schedhint">экипажи · план/факт · пересменки · сверхвахта к доплате — главный инструмент планирования людей</span>
     </div>
     <div id="schedSlot"><div class="muted" id="schedLoad">⏳ График загружается…</div></div>
   </div>`;
@@ -1417,8 +1445,9 @@ export async function renderResource(container, context) {
         .toLowerCase().includes(query));
 
   const badges = DISP_KINDS.map(item =>
-    `<button class="dbadge ${filter === item.kind ? 'on' : ''}" data-kind="${item.kind}" style="--dc:${item.color}">
-      <span class="dbn">${counts[item.kind] || 0}</span><span class="dbl">${item.short}</span></button>`).join('');
+    `<button class="dbadge ${filter === item.kind ? 'on' : ''}" data-kind="${item.kind}" style="--dc:${item.color}"
+      title="${escapeHtml(item.label)} на ${refDay.split('-').reverse().join('.')} — клик: показать только их">
+      <span class="dbl">${item.short}</span><span class="dbn">${counts[item.kind] || 0}</span></button>`).join('');
 
   const headerDays = Array.from({ length: days }, (_, index) => {
     const date = new Date(Date.UTC(state.month.getUTCFullYear(), state.month.getUTCMonth(), index + 1));
@@ -1526,39 +1555,44 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   const activeTransfers = (data.dispositions || [])
     .filter(item => item.kind === 'transfer' && !item.arrived_at)
     .sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
-  const transfersHtml = activeTransfers.length ? `<div class="res-transfers">
-    <div class="scolh">🚚 Перегоны порожним <span>${activeTransfers.length}</span></div>
-    <div class="list">${activeTransfers.map(item => {
+  const transfersHtml = activeTransfers.length ? `<section class="section res-transfers">
+    <div class="sec-h"><span class="st">🚚 Перегоны порожним</span><span class="bi-tag">${activeTransfers.length}</span>
+      <span class="hint">этапы отмечает диспетчер в «Контроле на линии»; после «Прибыл» машина числится в точке назначения</span></div>
+    <div class="sec-b flush"><div class="bi-scroll" style="max-height:190px"><table class="bi-table">
+      <thead><tr><th>Сцепка</th><th>Водитель</th><th>Маршрут</th><th class="r">км</th>
+        <th class="r">Выезд</th><th class="r">Прибытие</th><th>Этап</th><th></th></tr></thead>
+      <tbody>${activeTransfers.map(item => {
     const stage = !item.driver_notified_at ? '📋 задание не отправлено'
       : !item.departed_at ? '⏳ ждём выезда' : '🛣 в пути';
     const late = item.departed_at && Date.now() - Date.parse(item.ends_at) > 2 * 3_600_000;
-    return `<div class="list-item" style="flex-wrap:wrap">
-      <span style="flex:1;min-width:0">
-        <strong class="mono">${escapeHtml(item.vehicle_plate)}</strong>
-        <small class="muted"> · ${escapeHtml(item.driver_name || 'без водителя')}</small>
-        <small class="muted" style="display:block">${escapeHtml(item.from_label || '—')}
-          → <b>${escapeHtml(item.to_name || '—')}</b> · ${escapeHtml(item.purpose || '')}
-          ${item.empty_km ? ` · ~${Math.round(item.empty_km)} км` : ''}</small>
-        <small class="muted" style="display:block">выезд ${formatDateTime(item.starts_at)}
-          · прибытие ${formatDateTime(item.ends_at)}</small>
-      </span>
-      <span style="display:flex;gap:5px;align-items:center">
-        <span class="badge ${late ? 'bad' : 'warn'}">${stage}${late ? ' · опаздывает' : ''}</span>
-        <button class="button ghost small" data-vinfo="${item.vehicle_id}"
-          title="Карточка сцепки">🚛</button>
-      </span>
-    </div>`;
-  }).join('')}</div>
-    <div class="geohint">Этапы перегона отмечает диспетчер в «Контроле на линии».
-      После отметки «Прибыл» машина числится в точке назначения.</div>
-  </div>` : '';
+    return `<tr>
+      <td><strong class="mono">${escapeHtml(item.vehicle_plate)}</strong></td>
+      <td>${escapeHtml(item.driver_name || 'без водителя')}</td>
+      <td>${escapeHtml(item.from_label || '—')} → <b>${escapeHtml(item.to_name || '—')}</b>
+        ${item.purpose ? `<small class="muted" style="display:block">${escapeHtml(item.purpose)}</small>` : ''}</td>
+      <td class="num">${item.empty_km ? `~${Math.round(item.empty_km)}` : '—'}</td>
+      <td class="num">${formatDateTime(item.starts_at)}</td>
+      <td class="num">${formatDateTime(item.ends_at)}</td>
+      <td><span class="bi-tag ${late ? 'neg' : 'warn'}">${stage}${late ? ' · опаздывает' : ''}</span></td>
+      <td class="r"><button class="button ghost small" data-vinfo="${item.vehicle_id}"
+          title="Карточка сцепки">🚛</button></td>
+    </tr>`;
+  }).join('')}</tbody></table></div></div>
+  </section>` : '';
 
-  const html = `${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу', compact: true, open: state.resourceQuestionsOpen })}
+  const html = `<div class="resboard res-bi">
+    <div class="bi-kpis res-kpis">
+      <div class="metric dept-drv res-total"><span class="l">Сцепок в парке</span>
+        <span class="v">${withState.length}<small>маш</small></span>
+        <span class="d">${filter || query ? `показано ${visible.length}` : `на ${refDay.split('-').reverse().join('.')}`}</span></div>
+      ${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
+    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — ресурсу', compact: true, open: state.resourceQuestionsOpen })}
     ${transfersHtml}
-    <div class="resboard">
-    <div class="reshead">
-      <div class="dbadges">${badges}${filter ? '<button class="dbadge clear" data-kind="">✕ сброс</button>' : ''}</div>
-      <div class="resctl">
+    <section class="section dept-drv res-gantt">
+    <div class="sec-h reshead">
+      <span class="st">Гант ресурса</span>
+      <span class="hint">рейсы · интервалы · лента водителей — протяжка по треку оформляет диспозицию</span>
+      <div class="resctl sec-actions">
         <span class="resctl-group">
           ${dayPickerHtml('resourceDay', refDay, 'день')}
           ${state.resourceView !== 'gantt' ? dayPickerHtml('resSchedStart',
@@ -1604,6 +1638,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
     </div>` : `<div class="sched-wrap" id="resScheduleWrap" style="max-height:none">
       <p class="muted" style="padding:10px">⏳ Загружаю график работы…</p>
     </div>`}
+    </section>
   </div>`;
 
   // Разметка не изменилась — DOM не трогаем: без мигания и прыжков.

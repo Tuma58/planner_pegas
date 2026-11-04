@@ -38,14 +38,14 @@ export async function shiftDialog(context, day = '', kind = '') {
       `${person.baseLoad ? ` (средняя ${person.baseLoad} операций за смену)` : ''}, ` +
       `скорость ×${person.speedIdx}${person.baseWaitMs ? ` (средняя обработка ${waitLabel(person.baseWaitMs)})` : ''}. ` +
       'Формула: 60% нагрузка + 40% скорость.';
-    return `<td style="text-align:right" title="${escapeHtml(hint)}"><span class="badge ${cls}"><b>${value}%</b></span></td>`;
+    return `<td class="num" title="${escapeHtml(hint)}"><span class="badge ${cls}"><b>${value}%</b></span></td>`;
   };
   const staffRows = report.staff.map(person => `<tr>
     <td><b>${escapeHtml(person.name)}</b>${person.jobRole ? ` <small class="muted">· ${escapeHtml(person.jobRole)}</small>` : ''}
       ${person.planned ? '' : ' <span class="badge warn" title="Работал, но в график этой смены не назначен">⚡ вне графика</span>'}</td>
     ${effCell(person)}
-    <td style="text-align:right"><b>${person.total}</b></td>
-    <td style="text-align:right" title="Медиана по ${person.withTime} операциям с измеримым временем">${waitLabel(person.medianWaitMs)}</td>
+    <td class="num"><b>${person.total}</b></td>
+    <td class="num" title="Медиана по ${person.withTime} операциям с измеримым временем">${waitLabel(person.medianWaitMs)}</td>
     <td>${person.ops.map(([name, count]) => `${escapeHtml(name)} — ${count}`).join(' · ')}</td>
   </tr>`).join('');
 
@@ -63,12 +63,12 @@ export async function shiftDialog(context, day = '', kind = '') {
   };
   const roleRows = (report.roles || []).map(role => `<tr>
     <td><b>${escapeHtml(role.role)}</b></td>
-    <td style="text-align:right">${role.people}</td>
-    <td style="text-align:right"><b>${role.totalOps}</b></td>
-    <td style="text-align:right" title="${role.baseLoad ? `обычно ${role.baseLoad} операций на человеко-смену` : 'базы нет'}">${role.opsPerPerson}</td>
-    <td style="text-align:right" title="${role.baseWaitMs ? `обычно ${waitLabel(role.baseWaitMs)}` : 'нет измеримых операций'}">${waitLabel(role.medianWaitMs)}</td>
-    <td style="text-align:right" title="Нагрузка на человека к средней по должности за 7 дней">${idxBadge(role.loadIdx, true)}</td>
-    <td style="text-align:right" title="Скорость обработки к средней по должности за 7 дней (больше — быстрее)">${idxBadge(role.speedIdx, true)}</td>
+    <td class="num">${role.people}</td>
+    <td class="num"><b>${role.totalOps}</b></td>
+    <td class="num" title="${role.baseLoad ? `обычно ${role.baseLoad} операций на человеко-смену` : 'базы нет'}">${role.opsPerPerson}</td>
+    <td class="num" title="${role.baseWaitMs ? `обычно ${waitLabel(role.baseWaitMs)}` : 'нет измеримых операций'}">${waitLabel(role.medianWaitMs)}</td>
+    <td class="num" title="Нагрузка на человека к средней по должности за 7 дней">${idxBadge(role.loadIdx, true)}</td>
+    <td class="num" title="Скорость обработки к средней по должности за 7 дней (больше — быстрее)">${idxBadge(role.speedIdx, true)}</td>
   </tr>`).join('');
 
   // План-факт по людям: назначенные на смену — вышли или нет.
@@ -81,8 +81,8 @@ export async function shiftDialog(context, day = '', kind = '') {
 
   const operationRows = report.operations.map(operation => `<tr>
     <td><b>${escapeHtml(operation.name)}</b></td>
-    <td style="text-align:right"><b>${operation.total}</b></td>
-    <td style="text-align:right" title="Медианное время от передачи задания предыдущим звеном до выполнения">${waitLabel(operation.medianWaitMs)}</td>
+    <td class="num"><b>${operation.total}</b></td>
+    <td class="num" title="Медианное время от передачи задания предыдущим звеном до выполнения">${waitLabel(operation.medianWaitMs)}</td>
     <td>${operation.by.map(([name, count]) => `${escapeHtml(name)} — ${count}`).join(' · ')}</td>
   </tr>`).join('');
 
@@ -91,9 +91,9 @@ export async function shiftDialog(context, day = '', kind = '') {
     const end = report.queuesEnd[key];
     const delta = end - start;
     return `<tr><td>${escapeHtml(label)}</td>
-      <td style="text-align:right">${start}</td>
-      <td style="text-align:right"><b>${end}</b></td>
-      <td style="text-align:right"><b class="${delta > 0 ? 'danger' : ''}">${delta > 0 ? '+' : ''}${delta}</b></td></tr>`;
+      <td class="num">${start}</td>
+      <td class="num"><b>${end}</b></td>
+      <td class="num"><b class="${delta > 0 ? 'danger' : ''}">${delta > 0 ? '+' : ''}${delta}</b></td></tr>`;
   }).join('');
 
   // Смена ещё идёт: план пополняется по мере внесения заказов, операции и
@@ -104,11 +104,16 @@ export async function shiftDialog(context, day = '', kind = '') {
     : nowMs < Date.parse(report.toIso)
       ? '<span class="badge warn" title="План пополняется по мере внесения заказов, операции и очереди меняются — окончательные цифры после конца смены">⏳ смена идёт — данные предварительные</span>'
       : '<span class="badge ok" title="Смена завершена — операции и очереди зафиксированы">✓ смена завершена — итог</span>';
-  context.showModal(`<div class="report printable-block">
-    <h2 style="margin-bottom:2px">🕐 Отчёт за смену ${stateBadge}</h2>
-    <div class="geohint">${escapeHtml(report.label)} · операции с именами исполнителей по журналу системы
-      · «обработка» — медианное время от передачи задания предыдущим звеном до выполнения</div>
-    <div class="console no-print" style="margin:10px 0">
+  // BI-вид (04.11): плитки план-факта смены → секции с таблицами .bi-table.
+  const plannedCount = (report.plan?.planned || []).length;
+  const sla = report.assignSla;
+  const slaTone = sla ? (sla.pct >= 95 ? 'pos' : sla.pct >= 80 ? 'warn' : 'neg') : '';
+  const queueGrowth = QUEUE_LABELS.filter(([key]) => report.queuesEnd[key] - report.queuesStart[key] > 0).length;
+  context.showModal(`<div class="report printable-block bi-page shift-bi">
+    <div class="bi-sub"><h2 style="margin-bottom:2px">🕐 Отчёт за смену ${stateBadge}</h2>
+      <p class="geohint">${escapeHtml(report.label)} · операции с именами исполнителей по журналу системы
+      · «обработка» — медианное время от передачи задания предыдущим звеном до выполнения</p></div>
+    <div class="console no-print bi-actions-row">
       <input type="date" id="shiftDay" value="${report.day}">
       <select id="shiftKind">
         <option value="day" ${report.kind === 'day' ? 'selected' : ''}>дневная 08:00–20:00</option>
@@ -118,50 +123,80 @@ export async function shiftDialog(context, day = '', kind = '') {
       <button type="button" class="button ghost small" id="shiftSchedule">📅 График смен</button>
       <button type="button" class="button ghost small" id="shiftPrint" style="margin-left:auto">🖨 Печать</button>
     </div>
-    <h3 style="margin:10px 0 6px">План-факт по людям
-      <span class="badge">${(report.plan?.planned || []).length} в графике</span>
-      ${report.plan?.noShow ? `<span class="badge bad">⚠ не вышли: ${report.plan.noShow}</span>` : ''}
-      ${report.plan?.offPlan ? `<span class="badge warn">⚡ вне графика: ${report.plan.offPlan}</span>` : ''}</h3>
-    <div class="table-wrap"><table>
-      <tr><th>По графику на смене</th><th>Факт</th></tr>
-      ${planRows || `<tr><td colspan="2" class="muted">На эту смену никто не назначен —
-        заполните «📅 График смен», чтобы видеть план-факт.</td></tr>`}
-    </table></div>
-    ${signalRows ? `<h3 style="margin:14px 0 6px">Сигналы эффективности</h3>
-    <ul style="margin:0;padding-left:18px">${signalRows}</ul>` : ''}
-    <h3 style="margin:14px 0 6px">Сравнение должностей</h3>
-    <div class="table-wrap"><table>
-      <tr><th>Должность</th><th>Людей</th><th>Операций</th><th>На человека</th>
-        <th>Обработка (медиана)</th><th title="Нагрузка на человека к средней по должности за 7 дней">Нагрузка к норме</th>
-        <th title="Скорость обработки к средней по должности за 7 дней; больше — быстрее">Скорость к норме</th></tr>
-      ${roleRows || '<tr><td colspan="7" class="muted">Операций за смену нет.</td></tr>'}
-    </table></div>
-    <p class="muted" style="margin:4px 0 0">Между собой должности сравниваются по отклонению от
-      собственной нормы («к норме» — база 7 дней): операции у ролей разные по природе, поэтому
-      прямое сравнение штук и минут между должностями — только ориентир.</p>
-    <h3 style="margin:14px 0 6px">Сотрудники — фактически работали <span class="badge">${report.staff.length}</span></h3>
-    <div class="table-wrap"><table>
-      <tr><th>Сотрудник</th><th title="К среднему по должности за 7 дней: 60% нагрузка + 40% скорость обработки">Эффективность</th><th>Операций</th><th>Обработка (медиана)</th><th>Что делал</th></tr>
-      ${staffRows || '<tr><td colspan="5" class="muted">Операций за смену не зафиксировано.</td></tr>'}
-    </table></div>
-    ${report.assignSla ? `<p style="margin:8px 0 0">
-      <b>SLA назначения ТС:</b> вовремя (за ≥6 ч до погрузки) —
-      <span class="badge ${report.assignSla.pct >= 95 ? 'ok' : report.assignSla.pct >= 80 ? 'warn' : 'bad'}">
-        <b>${report.assignSla.onTime} из ${report.assignSla.total} · ${report.assignSla.pct}%</b></span>
-      <small class="muted">цель ≥95%</small></p>` : ''}
-    <h3 style="margin:14px 0 6px">Операции <span class="badge">${report.operations.length}</span></h3>
-    <div class="table-wrap"><table>
-      <tr><th>Операция</th><th>Всего</th><th>Обработка (медиана)</th><th>Кто выполнял</th></tr>
-      ${operationRows || '<tr><td colspan="4" class="muted">Пусто.</td></tr>'}
-    </table></div>
-    <h3 style="margin:14px 0 6px">Каскад: очереди звеньев (план от предыдущего)</h3>
-    <div class="table-wrap"><table>
-      <tr><th>Очередь</th><th>Начало смены</th><th>Конец смены</th><th>±</th></tr>
-      ${queueRows}
-    </table></div>
-    <p class="muted" style="margin-top:8px">Очередь на конец смены — это план следующей смены звена:
-      задания, переданные предыдущим по каскаду и ещё не обработанные. Рост очереди (+) — сигнал,
-      где конвейер копит задержку.${report.otherCount ? ` Служебных действий вне конвейера за смену: ${report.otherCount}.` : ''}</p>
+    <div class="bi-kpis">
+      <div class="metric dept-staff"><span class="l">В графике</span><span class="v">${plannedCount}<small>чел</small></span>
+        <span class="d">назначены на смену</span></div>
+      <div class="metric ${report.plan?.noShow ? 'neg' : 'pos'}"><span class="l">⚠ Не вышли</span>
+        <span class="v">${report.plan?.noShow || 0}</span><span class="d">в графике, операций нет</span></div>
+      <div class="metric ${report.plan?.offPlan ? 'warn' : ''}"><span class="l">⚡ Вне графика</span>
+        <span class="v">${report.plan?.offPlan || 0}</span><span class="d">работали без назначения</span></div>
+      <div class="metric dept-staff"><span class="l">Фактически работали</span>
+        <span class="v">${report.staff.length}<small>чел</small></span><span class="d">видов операций: ${report.operations.length}</span></div>
+      ${sla ? `<div class="metric ${slaTone}" title="Вовремя — за ≥6 ч до погрузки"><span class="l">SLA назначения ТС</span>
+        <span class="v">${sla.pct}<small>%</small></span><span class="d">${sla.onTime} из ${sla.total} · цель ≥95%</span></div>` : ''}
+      <div class="metric ${queueGrowth ? 'warn' : 'pos'}"><span class="l">Очереди растут</span>
+        <span class="v">${queueGrowth}<small>из ${QUEUE_LABELS.length}</small></span><span class="d">звеньев каскада с «+»</span></div>
+    </div>
+    <div class="bi-grid">
+    <section class="section ${signalRows ? 's6' : ''}">
+      <div class="sec-h"><span class="st">План-факт по людям</span>
+        <span class="bi-tag">${plannedCount} в графике</span>
+        ${report.plan?.noShow ? `<span class="bi-tag neg">⚠ не вышли: ${report.plan.noShow}</span>` : ''}
+        ${report.plan?.offPlan ? `<span class="bi-tag warn">⚡ вне графика: ${report.plan.offPlan}</span>` : ''}</div>
+      <div class="sec-b flush bi-scroll"><table class="bi-table">
+        <thead><tr><th>По графику на смене</th><th>Факт</th></tr></thead><tbody>
+        ${planRows || `<tr><td colspan="2" class="muted">На эту смену никто не назначен —
+          заполните «📅 График смен», чтобы видеть план-факт.</td></tr>`}
+      </tbody></table></div>
+    </section>
+    ${signalRows ? `<section class="section s6">
+      <div class="sec-h"><span class="st">Сигналы эффективности</span></div>
+      <div class="sec-b"><ul style="margin:0;padding-left:18px">${signalRows}</ul></div>
+    </section>` : ''}
+    <section class="section">
+      <div class="sec-h"><span class="st">Сравнение должностей</span>
+        <span class="hint">«к норме» — база 7 дней</span></div>
+      <div class="sec-b flush bi-scroll"><table class="bi-table">
+        <thead><tr><th>Должность</th><th class="r">Людей</th><th class="r">Операций</th><th class="r">На человека</th>
+          <th class="r">Обработка (медиана)</th><th class="r" title="Нагрузка на человека к средней по должности за 7 дней">Нагрузка к норме</th>
+          <th class="r" title="Скорость обработки к средней по должности за 7 дней; больше — быстрее">Скорость к норме</th></tr></thead><tbody>
+        ${roleRows || '<tr><td colspan="7" class="muted">Операций за смену нет.</td></tr>'}
+      </tbody></table></div>
+      <div class="sec-b"><p class="muted" style="margin:0">Между собой должности сравниваются по отклонению от
+        собственной нормы («к норме» — база 7 дней): операции у ролей разные по природе, поэтому
+        прямое сравнение штук и минут между должностями — только ориентир.</p></div>
+    </section>
+    <section class="section">
+      <div class="sec-h"><span class="st">Сотрудники — фактически работали</span>
+        <span class="bi-tag">${report.staff.length}</span></div>
+      <div class="sec-b flush bi-scroll"><table class="bi-table">
+        <thead><tr><th>Сотрудник</th><th class="r" title="К среднему по должности за 7 дней: 60% нагрузка + 40% скорость обработки">Эффективность</th><th class="r">Операций</th><th class="r">Обработка (медиана)</th><th>Что делал</th></tr></thead><tbody>
+        ${staffRows || '<tr><td colspan="5" class="muted">Операций за смену не зафиксировано.</td></tr>'}
+      </tbody></table></div>
+      ${sla ? `<div class="sec-b"><p style="margin:0">
+        <b>SLA назначения ТС:</b> вовремя (за ≥6 ч до погрузки) —
+        <span class="badge ${sla.pct >= 95 ? 'ok' : sla.pct >= 80 ? 'warn' : 'bad'}">
+          <b>${sla.onTime} из ${sla.total} · ${sla.pct}%</b></span>
+        <small class="muted">цель ≥95%</small></p></div>` : ''}
+    </section>
+    <section class="section s7">
+      <div class="sec-h"><span class="st">Операции</span><span class="bi-tag">${report.operations.length}</span></div>
+      <div class="sec-b flush bi-scroll"><table class="bi-table">
+        <thead><tr><th>Операция</th><th class="r">Всего</th><th class="r">Обработка (медиана)</th><th>Кто выполнял</th></tr></thead><tbody>
+        ${operationRows || '<tr><td colspan="4" class="muted">Пусто.</td></tr>'}
+      </tbody></table></div>
+    </section>
+    <section class="section s5">
+      <div class="sec-h"><span class="st">Каскад: очереди звеньев</span><span class="hint">план от предыдущего</span></div>
+      <div class="sec-b flush"><table class="bi-table">
+        <thead><tr><th>Очередь</th><th class="r">Начало смены</th><th class="r">Конец смены</th><th class="r">±</th></tr></thead><tbody>
+        ${queueRows}
+      </tbody></table></div>
+      <div class="sec-b"><p class="muted" style="margin:0">Очередь на конец смены — это план следующей смены звена:
+        задания, переданные предыдущим по каскаду и ещё не обработанные. Рост очереди (+) — сигнал,
+        где конвейер копит задержку.${report.otherCount ? ` Служебных действий вне конвейера за смену: ${report.otherCount}.` : ''}</p></div>
+    </section>
+    </div>
   </div>
   <div class="modal-actions no-print">
     <button type="button" class="button ghost" data-close>Закрыть</button>
@@ -216,9 +251,13 @@ export async function scheduleDialog(context, anchorDay = '') {
       <button type="button" class="button ghost small" id="schedulePrev">← неделя</button>
       <button type="button" class="button ghost small" id="scheduleNext">неделя →</button>
     </div>
-    <div class="table-wrap" style="max-height:60vh;overflow:auto"><table>
-      <tr><th>Сотрудник</th>${header}</tr>${rows}
-    </table></div>
+    <section class="section">
+      <div class="sec-h"><span class="st">Сотрудники × дни недели</span>
+        <span class="hint">Д — дневная · Н — ночная</span></div>
+      <div class="sec-b flush bi-scroll" style="max-height:60vh"><table class="bi-table shift-grid">
+        <thead><tr><th>Сотрудник</th>${header}</tr></thead><tbody>${rows}</tbody>
+      </table></div>
+    </section>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`,
   'wide');
 

@@ -140,13 +140,13 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Опер. маржа: <b>${pct(report.operationalMargin)}</b></span>
         <span class="rsum">Упущено: <b>${rub(u.lostProfit)}</b></span></div>
       <h4>Экономика по типам ТС</h4>
-      <table class="rtable"><thead><tr><th>Тип</th><th class="num">Рейсов</th><th class="num">Машин</th><th class="num">Выручка б.НДС</th><th class="num">Опер. прибыль</th><th class="num">Опер. маржа</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Тип</th><th class="num">Рейсов</th><th class="num">Машин</th><th class="num">Выручка б.НДС</th><th class="num">Опер. прибыль</th><th class="num">Опер. маржа</th></tr></thead>
         <tbody>${typeRows(row => `<tr><td>${escapeHtml(row.vehicleType)}</td><td class="num">${row.trips}</td><td class="num">${row.vehicles}</td>
           <td class="num">${rub(row.netRevenue)}</td><td class="num">${rub(row.operationalProfit)}</td>
           <td class="num">${row.netRevenue ? pct(row.operationalProfit / row.netRevenue) : '—'}</td></tr>`) ||
           '<tr><td colspan=6>Нет рейсов за период</td></tr>'}</tbody></table>
       <h4>Отклонённые рейсы за период: ${rejectedTrips.length}</h4>
-      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Причина</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Причина</th></tr></thead>
         <tbody>${rejectedTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
           <td>${escapeHtml(routeLabel(trip))}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.rejection_reason || '—')}</td></tr>`).join('') ||
@@ -160,7 +160,7 @@ export async function buildReport(kind, from, to, data) {
     const open = item => item ? '' : ' <span class="badge bad">не сделано до сих пор</span>';
     const section = (title, hint, rows, cols) => `<h4>${title} <span class="scount">${rows.length}</span></h4>
       <p class="geohint">${hint}</p>
-      ${rows.length ? `<table class="rtable"><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+      ${rows.length ? `<table class="rtable bi-table"><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
         <tbody>${rows.join('')}</tbody></table>` : '<p class="muted">Отклонений нет.</p>'}`;
     const total = d.confirmSlow.length + d.lateOnline.length + d.expiredNoVehicle.length +
       d.salesSlow.length + d.lateUnload.length;
@@ -230,7 +230,7 @@ export async function buildReport(kind, from, to, data) {
       const rows = staff.items.filter(row => row.jobRole === roleKey);
       if (!rows.length) return '';
       return `<h4>${plan.label} <span class="scount">${rows.length}</span></h4>
-        <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
+        <table class="rtable bi-table"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
           ${plan.metrics.map(([, label]) => `<th class="num" colspan="3">${label}</th>`).join('')}
           <th class="num">Всего действий</th>${isAdmin ? '<th></th>' : ''}</tr>
           <tr><th></th><th></th>${plan.metrics.map(() =>
@@ -263,7 +263,7 @@ export async function buildReport(kind, from, to, data) {
       <p class="geohint">План — график смен в карточке сотрудника («Сотрудники»),
         факт — вход в планер в день смены (ночная засчитывается и входом
         следующим утром). Пропуск ≠ прогул: сначала проверьте, вёлся ли график.</p>
-      <table class="rtable"><thead><tr><th>Сотрудник</th><th>Должность</th>
+      <table class="rtable bi-table"><thead><tr><th>Сотрудник</th><th>Должность</th>
         <th class="num">Смен (Д/Н)</th><th class="num">Подтверждено входом</th><th>Пропуски</th></tr></thead>
       <tbody>${staff.officeShifts.map(row => {
     const pct = row.planned ? Math.round(row.confirmed / row.planned * 100) : 0;
@@ -277,7 +277,7 @@ export async function buildReport(kind, from, to, data) {
       <p class="geohint">Разница между временем факта и моментом его внесения в планер.
         «В моменте» — до 30 минут: живой контроль. Большая медиана — факты
         оформляются задним числом, аварии и опоздания система видит с опозданием.</p>
-      <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Отметок</th>
+      <table class="rtable bi-table"><thead><tr><th>Сотрудник</th><th class="num">Отметок</th>
         <th class="num">В моменте</th><th class="num">Медиана запаздывания</th></tr></thead>
       <tbody>${freshRows.sort((a, b) => (b.factRealtime / b.factMarks) - (a.factRealtime / a.factMarks))
         .map(row => { const pctRt = Math.round(row.factRealtime / row.factMarks * 100);
@@ -289,7 +289,7 @@ export async function buildReport(kind, from, to, data) {
       <p class="geohint">«С первого раза» — заявка назначена одним действием, без переназначений
         (переделка = двойная работа всей цепочки). «Зазор стыковки» — медиана ожидания машины
         между предыдущим рейсом и назначенным: чем плотнее, тем больше маржи с машино-дня.</p>
-      <table class="rtable"><thead><tr><th>Логист</th><th class="num">Заявок</th>
+      <table class="rtable bi-table"><thead><tr><th>Логист</th><th class="num">Заявок</th>
         <th class="num">С первого раза</th><th class="num">Зазор стыковки (медиана)</th></tr></thead>
       <tbody>${logistRows.sort((a, b) => (b.assignFirstTryPct || 0) - (a.assignFirstTryPct || 0))
         .map(row => `<tr><td>${escapeHtml(row.name)}</td><td class="num">${row.assignOrders}</td>
@@ -299,7 +299,7 @@ export async function buildReport(kind, from, to, data) {
     // из табеля (работал, когда по плану графика — отдых).
     const overworkPanel = (staff.overworkDrivers || []).length
       ? `<h4>🚚 Водители: сверхвахта к доплате (РВ)</h4>
-        <table class="rtable"><thead><tr><th>Водитель</th><th>ТС</th>
+        <table class="rtable bi-table"><thead><tr><th>Водитель</th><th>ТС</th>
           <th class="num">Дней РВ</th><th class="num">Всего рабочих</th></tr></thead>
         <tbody>${staff.overworkDrivers.slice(0, 25).map(row => `<tr>
           <td>${escapeHtml(row.name.slice(0, 30))}</td><td class="mono">${escapeHtml(row.plate || '—')}</td>
@@ -314,7 +314,7 @@ export async function buildReport(kind, from, to, data) {
     const gapTargetPct = 85;
     const assignersPanel = (staff.nextAssigners || []).length
       ? `<h4>⏱ Стыковка по назначающим (кто создаёт следующий рейс)</h4>
-        <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Пар</th>
+        <table class="rtable bi-table"><thead><tr><th>Сотрудник</th><th class="num">Пар</th>
           <th class="num">До выгрузки</th><th class="num">Медиана стыка, ч</th>
           <th class="num">Опоздание назначения, ч</th></tr></thead>
         <tbody>${staff.nextAssigners.map(row => `<tr>
@@ -336,7 +336,7 @@ export async function buildReport(kind, from, to, data) {
       ${Object.entries(staff.plans).map(([key, plan]) => section(key, plan)).join('')}
       ${unassigned.length ? `<h4>Без должности <span class="scount">${unassigned.length}</span></h4>
         <p class="geohint">Назначьте должность — появится план/факт по её нормативам.</p>
-        <table class="rtable"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
+        <table class="rtable bi-table"><thead><tr><th>Сотрудник</th><th class="num">Дней</th>
           <th class="num">Заявок</th><th class="num">Назначено ТС</th><th class="num">Чек-лист</th>
           <th class="num">Факты на линии</th><th class="num">Отметки</th><th class="num">Всего действий</th>
           ${isAdmin ? '<th></th>' : ''}</tr></thead>
@@ -356,7 +356,7 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Опер. прибыль: <b>${rub(report.operationalProfit)}</b></span>
         <span class="rsum">Опер. маржа: <b>${pct(report.operationalMargin)}</b></span></div>
       <div class="geohint">Постоянные затраты (лизинг+накладные) отнесены на календарные машино-дни сцепок каждого типа за период.</div>
-      <table class="rtable"><thead><tr><th>Тип ТС</th><th class="num">Рейсов</th><th class="num">Машин</th><th class="num">Выручка б.НДС</th><th class="num">Марж. доход</th><th class="num">Постоянные</th><th class="num">Опер. прибыль</th><th class="num">Опер. маржа</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Тип ТС</th><th class="num">Рейсов</th><th class="num">Машин</th><th class="num">Выручка б.НДС</th><th class="num">Марж. доход</th><th class="num">Постоянные</th><th class="num">Опер. прибыль</th><th class="num">Опер. маржа</th></tr></thead>
         <tbody>${typeRows(row => `<tr><td>${escapeHtml(row.vehicleType)}</td><td class="num">${row.trips}</td><td class="num">${row.vehicles}</td>
           <td class="num">${rub(row.netRevenue)}</td><td class="num">${rub(row.contribution)}</td><td class="num">${rub(row.fixed)}</td>
           <td class="num ${row.operationalProfit < 0 ? 'danger' : ''}">${rub(row.operationalProfit)}</td>
@@ -378,7 +378,7 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Марж. доход: <b>${rub(totals.profit)}</b></span>
         <span class="rsum">Маржа: <b>${totals.revenue ? pct(totals.profit / totals.revenue) : '—'}</b></span></div>
       <div class="geohint">Сортировка по выручке${clients.length > 40 ? ' · показаны первые 40' : ''}. Выручка без НДС учитывает ставку по клиенту (ИП — 7%).</div>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th class="num">НДС</th><th class="num">Рейсов</th><th class="num">Выручка б.НДС</th><th class="num">Марж. доход</th><th class="num">Маржа</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Заказчик</th><th class="num">НДС</th><th class="num">Рейсов</th><th class="num">Выручка б.НДС</th><th class="num">Марж. доход</th><th class="num">Маржа</th></tr></thead>
         <tbody>${clients.slice(0, 40).map(row => `<tr><td>${escapeHtml(row.customer)}${isIP(row.customer) ? ' <span class="badge">ИП</span>' : isLowVat(row.customer, data.settings.calculation) ? ' <span class="badge">7%</span>' : ''}</td>
           <td class="num">${isLowVat(row.customer, data.settings.calculation) ? '7%' : '22%'}</td><td class="num">${row.trips}</td>
           <td class="num">${rub(row.revenue)}</td><td class="num">${rub(row.profit)}</td>
@@ -420,17 +420,17 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Рейсов на простое (критичных): <b>${criticalTrips.length}</b></span>
         <span class="rsum">Рейсов за период: <b>${periodTrips.length}</b></span></div>
       <h4>Наложения рейсов по одной сцепке (пересечение &gt; 6 ч)</h4>
-      <table class="rtable"><thead><tr><th>ТС</th><th>Рейс 1</th><th>Рейс 2</th><th class="num">Пересечение</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>ТС</th><th>Рейс 1</th><th>Рейс 2</th><th class="num">Пересечение</th></tr></thead>
         <tbody>${pairs.map(pair => `<tr><td class="mono">${escapeHtml(pair.a.vehicle_plate || '')}</td>
           <td>${escapeHtml(routeLabel(pair.a))} · ${formatDateTime(pair.a.starts_at)}</td>
           <td>${escapeHtml(routeLabel(pair.b))} · ${formatDateTime(pair.b.starts_at)}</td>
           <td class="num">${pair.hours} ч</td></tr>`).join('') ||
           '<tr><td colspan=4>Конфликтов за период не было</td></tr>'}</tbody></table>
       <h4>ТС с наибольшим числом конфликтов</h4>
-      <table class="rtable"><thead><tr><th>ТС</th><th class="num">Конфликтов</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>ТС</th><th class="num">Конфликтов</th></tr></thead>
         <tbody>${topRows || '<tr><td colspan=2>—</td></tr>'}</tbody></table>
       <h4>Рейсы, пересекавшиеся с простоями (ремонт/без водителя)</h4>
-      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th></tr></thead>
         <tbody>${criticalTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
           <td>${escapeHtml(routeLabel(trip))}</td>
           <td>${formatDateTime(trip.starts_at)}</td><td>${escapeHtml(trip.customer_name || '—')}</td></tr>`).join('') ||
@@ -445,7 +445,7 @@ export async function buildReport(kind, from, to, data) {
       .map(([reason, count]) => `<span class="rsum">${escapeHtml(reason)}: <b>${count}</b></span>`).join('');
     body = `<div class="geohint">Всего отклонено за период: <b>${rejectedTrips.length}</b></div>
       <div class="rsums">${summary || '—'}</div>
-      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th><th>Причина</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>ТС</th><th>Маршрут</th><th>Начало</th><th>Заказчик</th><th>Причина</th></tr></thead>
         <tbody>${rejectedTrips.map(trip => `<tr><td class="mono">${escapeHtml(trip.vehicle_plate || '')}</td>
           <td>${escapeHtml(routeLabel(trip))}</td><td>${formatDateTime(trip.starts_at)}</td>
           <td>${escapeHtml(trip.customer_name || '—')}</td><td>${escapeHtml(trip.rejection_reason || 'не указана')}</td></tr>`).join('') ||
@@ -483,7 +483,7 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Опозданий: <b>${late.length}</b></span>
         <span class="rsum">Средняя задержка: <b>${late.length ? waitingLabel(avgLate) : '—'}</b></span></div>
       <div class="geohint">Факты отмечает диспетчер на вкладке «Контроль»; рейсы без отметок в пунктуальности не участвуют.</div>
-      <table class="rtable"><thead><tr><th>ТС</th><th>Маршрут</th><th>Заказчик</th>
+      <table class="rtable bi-table"><thead><tr><th>ТС</th><th>Маршрут</th><th>Заказчик</th>
         <th>План прибытия</th><th>Факт прибытия</th><th class="num">Отклонение</th></tr></thead>
         <tbody>${rows.sort((a, b) => (b.delay ?? -1) - (a.delay ?? -1)).map(row => `<tr>
           <td class="mono">${escapeHtml(row.trip.vehicle_plate || '')}</td>
@@ -494,7 +494,7 @@ export async function buildReport(kind, from, to, data) {
           <td class="num">${deviation(row)}</td></tr>`).join('') ||
           '<tr><td colspan=6>Рейсов за период нет</td></tr>'}</tbody></table>
       <h4>Опоздания по направлениям</h4>
-      <table class="rtable"><thead><tr><th>Геозона назначения</th><th class="num">Опозданий</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Геозона назначения</th><th class="num">Опозданий</th></tr></thead>
         <tbody>${directionRows || '<tr><td colspan=2>Опозданий не было</td></tr>'}</tbody></table>`;
   } else if (kind === 'vehicles') {
     // Вклад каждой сцепки: тот же серверный расчёт, что и в модалке
@@ -507,7 +507,7 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Период: <b>${stats.days} дн</b></span>
         <span class="rsum">Худшие по использованию: <b>${escapeHtml(worst)}</b></span></div>
       <div class="geohint">Проблемные сверху. Машино-дни по состояниям (методика midpoint), выручка без НДС по дате выполнения.</div>
-      <table class="rtable"><thead><tr><th>Сцепка</th><th>Водитель</th><th>Тип</th>
+      <table class="rtable bi-table"><thead><tr><th>Сцепка</th><th>Водитель</th><th>Тип</th>
         <th class="num">Работа</th><th class="num">Ремонт</th><th class="num">Без вод.</th>
         <th class="num">Простой</th><th class="num">КТГ</th><th class="num">Использование</th>
         <th class="num">Рейсов</th><th class="num">Гружёные, км</th><th class="num">Порожние, км</th>
@@ -569,16 +569,16 @@ export async function buildReport(kind, from, to, data) {
         отклонено: <b>${rejected.length}</b> · вернулось из плана: <b>${returned.length}</b></div>
       <div class="rsums">${summary || '—'}</div>
       <h4>Где конвейер ждёт дольше всего</h4>
-      <table class="rtable"><thead><tr><th>Стадия</th><th>Заявок</th><th>Среднее ожидание</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Стадия</th><th>Заявок</th><th>Среднее ожидание</th></tr></thead>
         <tbody>${stageRows || '<tr><td colspan=3>Нет заявок в работе</td></tr>'}</tbody></table>
       <h4>Подтверждённые заявки в работе</h4>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th>№ заказа</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>ТС</th><th>Стадия</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Заказчик</th><th>№ заказа</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>ТС</th><th>Стадия</th></tr></thead>
         <tbody>${confirmedRows || '<tr><td colspan=6>Подтверждённых заявок нет</td></tr>'}</tbody></table>
       <h4>Отклонённые заявки</h4>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина</th></tr></thead>
         <tbody>${rows(rejected) || '<tr><td colspan=5>Отклонённых заявок нет</td></tr>'}</tbody></table>
       <h4>Вернулись из плана в продажи</h4>
-      <table class="rtable"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина возврата</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина возврата</th></tr></thead>
         <tbody>${rows(returned) || '<tr><td colspan=5>Возвратов нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'drivers') {
     // Профиль водителей (24.09): едет или стоит — по каждому за период.
@@ -619,7 +619,7 @@ export async function buildReport(kind, from, to, data) {
         низкая доля значит, что фактам по этим рейсам верить нельзя. Водитель рейса —
         по закреплению на момент старта; «В движении» считается по машино-дням
         закреплений — у водителя без закрепления в «Ресурсе» там прочерк.</p>
-      <table class="rtable"><thead><tr><th>Оценка</th><th>Водитель</th><th class="num">Рейсов</th>
+      <table class="rtable bi-table"><thead><tr><th>Оценка</th><th>Водитель</th><th class="num">Рейсов</th>
         <th class="num">км (с порожним)</th><th class="num">Рейс целиком, км/ч</th>
         <th class="num">В движении, км/ч</th><th class="num">КИП</th><th class="num">Опозд. П</th>
         <th class="num">Опозд. В</th><th class="num">Ворота В, ч</th><th class="num">Отметки</th></tr></thead>
@@ -669,7 +669,7 @@ export async function buildReport(kind, from, to, data) {
         кандидат на кольцевой маршрут или обратную загрузку. <b>«Замыкает»</b> —
         клиенты, чьи грузы фактически подхватываются в зоне выгрузки (доля от всех
         цепочек). ₽/км красным — ниже переменной себестоимости. Деньги — канон без НДС.</p>
-      <table class="rtable"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
+      <table class="rtable bi-table"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
         <th class="num">Выручка, млн</th><th class="num">т₽/сутки</th><th class="num">Чек, т₽</th>
         <th class="num">₽/км</th><th class="num">Машин</th><th class="num">из них стык</th>
         <th class="num">т₽/маш-день</th><th class="num">Стык, ч</th><th class="num">Круг</th>
@@ -683,7 +683,7 @@ export async function buildReport(kind, from, to, data) {
         <td class="num muted">${restVehicles.toLocaleString('ru-RU')}</td>
         <td colspan=5></td></tr>` : ''}</tbody></table>
       <h4>Где рвутся круги (следующий груз не в зоне выгрузки)</h4>
-      <table class="rtable"><thead><tr><th>Перегон</th><th class="num">Раз за период</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Перегон</th><th class="num">Раз за период</th></tr></thead>
       <tbody>${cf.brokenRings.map(b => `<tr><td>${escapeHtml(b.route)}</td>
         <td class="num">${b.count}</td></tr>`).join('') || '<tr><td colspan=2>Разрывов нет</td></tr>'}
       </tbody></table>
@@ -723,7 +723,7 @@ export async function buildReport(kind, from, to, data) {
       разложенные по личным ёмкостям), факт — отметки контроля и шаги подготовки человека.
       Зелёное — факт ≥ 70% плана, жёлтое — частично, красное — план был, факта нет.
       Расхождения кормят самообучение: ёмкости и профили пересчитываются ночью.</p>
-      <table class="rtable"><thead><tr><th>Час</th><th>нагрузка (к·п·в·?)</th>
+      <table class="rtable bi-table"><thead><tr><th>Час</th><th>нагрузка (к·п·в·?)</th>
         ${names.map(n => `<th class="num">${escapeHtml(n.split(' ').slice(0, 2).join(' '))}</th>`).join('')}</tr></thead>
       <tbody>${rowsHtml}</tbody>
       <tfoot><tr><td colspan="2"><b>Итог</b></td>${names.map(tot).join('')}</tr></tfoot></table>`;
@@ -773,7 +773,7 @@ export async function buildReport(kind, from, to, data) {
     const bestDrv = [...drivers].sort((a, b) => b.op - a.op).slice(0, 3);
     const slowCust = [...sp.byCustomer].sort((a, b) => (b.dwellH ?? 0) - (a.dwellH ?? 0)).slice(0, 5);
     const fastCust = [...sp.byCustomer].sort((a, b) => b.op - a.op).slice(0, 3);
-    const vtable = rows => `<table class="rtable"><thead><tr><th>ТС</th><th>Водитель</th>
+    const vtable = rows => `<table class="rtable bi-table"><thead><tr><th>ТС</th><th>Водитель</th>
       <th class="num">Экспл.</th><th class="num">Техн.</th><th class="num">Макс</th></tr></thead>
       <tbody>${rows.map(r => `<tr><td class="mono">${escapeHtml(r.plate)}</td><td>${escapeHtml((r.driver || '').slice(0, 24))}</td>
         <td class="num"><b>${r.op ?? '—'}</b></td><td class="num">${r.tech ?? '—'}</td>
@@ -802,7 +802,7 @@ export async function buildReport(kind, from, to, data) {
         const vTrip = wf.totH ? (wf.km / wf.totH).toFixed(1) : '—';
         const discipline = wf.total ? Math.round(wf.n / wf.total * 100) : 0;
         return `<h4>⏱ Куда уходит скорость — средний рейс за период (${wf.n} рейсов с чистой цепочкой отметок)</h4>
-        <table class="rtable"><thead><tr><th>Фаза рейса</th><th class="num">Часов</th><th class="num">Доля времени</th><th>Чей процесс</th></tr></thead><tbody>
+        <table class="rtable bi-table"><thead><tr><th>Фаза рейса</th><th class="num">Часов</th><th class="num">Доля времени</th><th>Чей процесс</th></tr></thead><tbody>
           <tr><td>Подача и ожидание погрузки</td><td class="num">${perTrip(wf.preH)}</td><td class="num">${pct(wf.preH)}%</td><td>логистика</td></tr>
           <tr><td>Ворота погрузки</td><td class="num">${perTrip(wf.loadH)}</td><td class="num">${pct(wf.loadH)}%</td><td>клиент/претензии</td></tr>
           <tr><td>Дорога (убыл с погрузки → прибыл на выгрузку)</td><td class="num">${perTrip(wf.roadH)}</td><td class="num">${pct(wf.roadH)}%</td><td>водитель + РТО</td></tr>
@@ -820,13 +820,13 @@ export async function buildReport(kind, from, to, data) {
       <h4>🚛 ТС: тянут скорость вниз</h4>${vtable(worstVeh)}
       <h4 style="margin-top:8px">🚛 ТС: лучшие</h4>${vtable(bestVeh)}
       <h4 style="margin-top:8px">👤 Водители: медленные рейсы</h4>
-      <table class="rtable"><thead><tr><th>Водитель</th><th>ТС</th><th class="num">Экспл.</th><th class="num">Техн.</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Водитель</th><th>ТС</th><th class="num">Экспл.</th><th class="num">Техн.</th></tr></thead>
       <tbody>${worstDrv.map(d => `<tr><td>${escapeHtml(d.name.slice(0, 28))}</td><td class="mono">${escapeHtml(d.plates)}</td>
         <td class="num"><b>${d.op.toFixed(1)}</b></td><td class="num">${d.tech ? d.tech.toFixed(0) : '—'}</td></tr>`).join('')}</tbody></table>
       <p class="muted" style="margin:2px 0 8px">Лучшие: ${bestDrv.map(d => `${escapeHtml(d.name.split(' ')[0])} ${d.op.toFixed(0)}`).join(' · ')} км/ч.
         Низкая эксплуатационная при нормальной технической — водитель долго стоит (загрузка/отдых/дисциплина), а не медленно едет.</p>
       <h4>🏭 Клиенты: где машины теряют время</h4>
-      <table class="rtable"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
+      <table class="rtable bi-table"><thead><tr><th>Клиент</th><th class="num">Рейсов</th>
         <th class="num">Ср. время на точке</th><th class="num">Экспл. скорость рейсов</th></tr></thead>
       <tbody>${slowCust.map(c => `<tr><td>${escapeHtml(c.name.slice(0, 30))}</td><td class="num">${c.trips}</td>
         <td class="num ${c.dwellH > (sp.gateTarget || 6) ? 'bad' : ''}"><b>${c.dwellH ?? '—'} ч</b></td><td class="num">${c.op}</td></tr>`).join('')}</tbody></table>
@@ -858,14 +858,18 @@ export async function buildReport(kind, from, to, data) {
     }).join('');
     body = `<div class="geohint">Завершённые периоды фиксируются кнопкой «🏁 Закрыть период» в кабине руководителя.
       «Заработано» — вся выручка без НДС по дате выгрузки; «Выполнено» — уже выгружено. Текущий период показан живым.</div>
-      <table class="rtable"><thead><tr><th>Период</th><th class="num">План</th><th class="num">Выполнено</th><th class="num">Заработано</th><th class="num">Вып. плана</th><th class="num">Опер. прибыль</th><th class="num">Опер. маржа</th><th class="num">КТГ/КВЛ/КИП</th><th class="num">Рейсов</th></tr></thead>
+      <table class="rtable bi-table"><thead><tr><th>Период</th><th class="num">План</th><th class="num">Выполнено</th><th class="num">Заработано</th><th class="num">Вып. плана</th><th class="num">Опер. прибыль</th><th class="num">Опер. маржа</th><th class="num">КТГ/КВЛ/КИП</th><th class="num">Рейсов</th></tr></thead>
         <tbody>${rows}</tbody></table>
       ${history.items.length ? '' : '<div class="geohint" style="margin-top:8px">Завершённых периодов пока нет.</div>'}`;
   }
 
-  return `<div class="report">
-    <h3><span style="color:var(--teal);font-weight:800">Пегас-Авто</span> · ${REPORT_TITLES[kind] || 'Отчёт'}</h3>
-    <div class="geohint">Период: ${fmtDay(from)} – ${fmtDay(to)} (${u.days} дн) · сформирован ${new Date().toLocaleDateString('ru-RU')}</div>
+  // Экранный вид — BI (шапка-полоса, плитки .rsum, таблицы .bi-table);
+  // печать идёт тем же модалом (window.print) — @media print в bi/boss.css.
+  return `<div class="report boss-report">
+    <div class="boss-report-h">
+      <h3><span style="color:var(--teal);font-weight:800">Пегас-Авто</span> · ${REPORT_TITLES[kind] || 'Отчёт'}</h3>
+      <div class="geohint">Период: ${fmtDay(from)} – ${fmtDay(to)} (${u.days} дн) · сформирован ${new Date().toLocaleDateString('ru-RU')}</div>
+    </div>
     ${body}
   </div>`;
 }

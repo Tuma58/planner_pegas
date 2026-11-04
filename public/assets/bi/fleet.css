@@ -1,1 +1,84 @@
 /* BI-дополнения группы «fleet» (реконструкция 04.11). */
+/* Экраны: «Ресурс» (Гант, шапка Графика, явка, табель, панель заданий),
+   «План парка», «Мониторинг», окно «Загрузка кругов». Только токены.
+   Цвета состояний машин/смен (--dc у .dbadge, коды табеля, клетки плана
+   парка, маркеры карты) — легенда данных, здесь не переопределяются. */
+
+/* ── Ресурс · Гант: плитки → вопросы/перегоны → секция ганта ── */
+.resboard.res-bi { gap: 12px; padding: 14px 18px 12px; }
+.res-bi > .bi-kpis, .res-bi > .questions-strip, .res-bi > .res-transfers { flex-shrink: 0; }
+.res-bi > .questions-strip { margin-bottom: 0; }
+.res-kpis { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 8px; }
+.res-kpis .metric { padding: 8px 12px; }
+.res-kpis .metric .v { font-size: 20px; }
+/* Плитка состояния = кнопка-фильтр .dbadge[data-kind]; верхняя кромка —
+   цвет состояния из DISP_KINDS (--dc), как в легенде ганта. */
+.res-bi .dbadge { align-items: flex-start; gap: 2px; min-width: 0; padding: 8px 12px; text-align: left;
+  background: var(--card); border: 1px solid var(--line); border-top: 2px solid var(--dc, var(--line));
+  border-radius: 11px; box-shadow: var(--shadow); }
+.res-bi .dbadge .dbl { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.res-bi .dbadge .dbn { font-family: var(--mono-font); font-size: 20px; font-weight: 700; line-height: 1.15;
+  letter-spacing: -.02em; color: var(--ink); }
+.res-bi .dbadge:hover { border-color: var(--accent); border-top-color: var(--dc, var(--accent)); }
+.res-bi .dbadge.on { background: var(--accent-soft); border-color: var(--accent);
+  border-top-color: var(--dc, var(--accent)); outline: 2px solid var(--accent); outline-offset: -1px; }
+.res-bi .dbadge.on .dbn { color: var(--ink); }
+.res-bi .dbadge.on .dbl { color: var(--accent); }
+.res-bi .dbadge.clear { align-items: center; justify-content: center; background: transparent;
+  border: 1px dashed var(--line); box-shadow: none; font-size: var(--fs-xs); color: var(--muted); }
+
+.res-gantt { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.res-gantt > .resscroll { flex: 1; min-height: 0; overflow: auto; }
+.res-bi .reshead.sec-h { flex-shrink: 0; margin: 0; padding: 8px 15px; row-gap: 6px; }
+.res-bi .reshead .resctl { margin-left: auto; gap: 6px 12px; justify-content: flex-end; }
+.res-bi .reshead .block-search { width: 210px; }
+.res-gantt .timeline-head { background: var(--panel2); }
+
+.res-bi .res-transfers { margin: 0; padding: 0; background: var(--card); border-radius: 12px; }
+.res-transfers .bi-table td { vertical-align: middle; }
+
+/* ── Ресурс · График: шапка встроенного графика как полоса секции ── */
+.resboard.res-bi-sched { margin: 12px 16px 0; height: calc(100vh - 130px); background: var(--card);
+  border: 1px solid var(--line); border-top: 2px solid var(--drv); border-radius: 12px; box-shadow: var(--shadow); }
+.res-bi-sched > .schedhead.sec-h { padding: 8px 15px; gap: 10px; border-radius: 10px 10px 0 0; }
+
+/* ── Ресурс · панель заданий справа ── */
+.res-side-kpis { grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+.res-side-kpis .metric { padding: 8px 11px; }
+.res-side-kpis .metric .v { font-size: 20px; }
+
+/* ── Окна: явка, табель, загрузка кругов ── */
+.att-page, .ts-page, .ring-page { padding: 4px 0 0; gap: 12px; }
+.att-table td { vertical-align: middle; }
+.att-table .att-acts { white-space: nowrap; }
+.att-table .att-acts > * { vertical-align: middle; }
+.att-table .att-acts select { width: 150px; }
+.att-table tr.att-unmarked td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+.ts-page .sched-wrap { border: 0; border-radius: 0; }
+.ring-page .bi-table td { vertical-align: middle; }
+
+/* ── План парка: плитки → секция с пультом и сеткой ── */
+.fp-page { padding: 0; gap: 12px; }
+.fp-page.fp-tab { padding: 14px 18px 8px; }
+.fp-sec > .table-wrap { border: 0; border-radius: 0; }
+/* Пульт сетки внутри секции — светлая полоса под шапкой (как .sec-actions) */
+.fp-sec > .console { background: var(--card); border-top: 0; border-bottom: 1px solid var(--border2); padding: 7px 15px; }
+.fp-sec > .console input, .fp-sec > .console select { background: var(--inp); color: var(--ink); border: 1px solid var(--line); }
+.fp-sec > .console .button.ghost { background: var(--card); color: var(--ink); border-color: var(--line); }
+.fp-sec > .console strong { color: var(--ink); }
+.fp-sec > .console .mchip { background: var(--card); border-color: var(--line); color: var(--muted); }
+.fp-sec > .console .mchip b { color: var(--ink); }
+.fp-sec > .console .mchip.warn { border-color: var(--warn); color: var(--warn); }
+.fp-sec > .console .mchip[data-act]:hover { border-color: var(--accent); }
+.fp-sec > .console .mchip.act { outline-color: var(--accent); }
+.fp-sec > .console .legend-tip { color: var(--muted); border-bottom-color: var(--muted); }
+
+/* ── Мониторинг: плитки → список | карта ── */
+.mon-page { padding: 14px 18px 12px; gap: 12px; }
+.mon-page .mon-wrap { gap: 12px; height: calc(100vh - 250px); min-height: 420px; }
+.mon-page .mon-list { display: flex; flex-direction: column; flex: 0 0 310px; width: 310px; overflow: hidden; }
+.mon-page .mon-list > #monListBody { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; }
+.mon-page .mon-map-sec { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mon-page .mon-map-sec > #monMap { flex: 1; min-height: 0; border-radius: 0; }
+.mon-page #monKpis .metric.clickable { user-select: none; }

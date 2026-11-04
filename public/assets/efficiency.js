@@ -45,7 +45,10 @@ export async function renderEfficiency(container, context, { issueId = null } = 
   const S = data.service || {};
   const issues = state.effIssues || (state.effIssues = (await api('/api/efficiency/issues').catch(() => ({ items: [] }))).items);
 
-  const kpi = (value, deltaHtml, label) => `<div class="kpi"><div class="v">${value}${deltaHtml}</div><div class="l">${label}</div></div>`;
+  // Плитка BI-набора: подпись .l, цифра .v, дельта к базе .d (delta() уже
+  // отдаёт <span class="d up|down|flat">), пояснение — мелкой строкой.
+  const kpi = (value, deltaHtml, label, cls = '', title = '') => `<div class="metric kpi ${cls}"${title ? ` title="${escapeHtml(title)}"` : ''}>
+    <span class="l">${title || label}</span><span class="v">${value}</span>${deltaHtml || ''}<span class="eff-note">${label}</span></div>`;
   const weShare = P.weekdayAvg ? Math.round(P.weekendAvg / P.weekdayAvg * 100) : null;
   const weShareB = B?.weekdayAvg ? Math.round(B.weekendAvg / B.weekdayAvg * 100) : null;
 
@@ -56,8 +59,8 @@ export async function renderEfficiency(container, context, { issueId = null } = 
   const planItems = issue ? issue.plan : (state.effDraftPlan || []);
   const review = issue?.review;
 
-  const html = `<div class="effwrap">
-    <div class="period">
+  const html = `<div class="effwrap bi-page">
+    <div class="period bi-sub"><div class="bi-actions eff-period">
       <b>Период:</b>
       ${issue ? `<span class="pill good">выпуск · ${issue.kind === 'week' ? 'неделя' : issue.kind === 'month' ? 'месяц' : 'период'}
           ${dd(from)}–${lastDay(to)}</span>
@@ -75,28 +78,31 @@ export async function renderEfficiency(container, context, { issueId = null } = 
           ${item.kind === 'week' ? '📊' : item.kind === 'month' ? '📅' : '🗂'} ${dd(item.period_start)}–${lastDay(item.period_end)}</option>`).join('')}
       </select>
       <button class="button ghost small" id="effPrint">🖨</button>
-    </div>
+    </div></div>
 
     ${review?.plan?.length ? `<div class="eff-review">
       <b>Сверка прошлой недели (${dd(review.periodStart)}–${lastDay(review.periodEnd)}):</b>
       ${review.plan.map(item => `<span class="pill ${item.done ? 'good' : 'bad'}" title="${escapeHtml(item.metric || '')}">${item.done ? '✓' : '✗'} ${escapeHtml(item.title)}</span>`).join(' ')}
     </div>` : ''}
 
-    <section class="eff-slide">
-      <div class="kicker">Эффективность · ${dd(from)}–${lastDay(to)}${B ? ` · база ${dd(data.baseFrom || B.from)}–${lastDay(data.baseTo || B.to)}` : ''}</div>
-      <div class="grid6">
-        ${kpi(`${num(P.revPerVd)} ₽`, delta(P.revPerVd, B?.revPerVd), `на машино-день парка${B ? ` (база: ${num(B.revPerVd)})` : ''} — главная цифра`)}
-        ${kpi(`${mln(P.rev)} млн`, delta(P.rev, B?.rev), `выручка бНДС за ${P.days} дн${B ? ` (база: ${mln(B.rev)})` : ''}`)}
-        ${kpi(P.koef != null ? `КОЭФ ${P.koef}%` : '—', delta(P.koef, B?.koef, { pp: true }), `КТГ ${P.ktg ?? '—'} × КВЛ ${P.kvl ?? '—'} × КИП ${P.kip ?? '—'}`)}
-        ${kpi(`${num(P.downtime.no_driver || 0)} м-д`, delta(P.downtime.no_driver || 0, B?.downtime?.no_driver, { invert: true }), 'простой «без водителя» за период')}
-        ${kpi(weShare != null ? `${weShare}%` : '—', delta(weShare, weShareB, { pp: true }), `выходной к буднему: ${mln(P.weekendAvg)}/${mln(P.weekdayAvg)} млн`)}
-        ${kpi(`${num(P.avgCheck)} ₽`, delta(P.avgCheck, B?.avgCheck), `средний чек · ₽/км ${P.rubKm}`)}
-      </div>
-    </section>
+    <div class="kicker">Эффективность · ${dd(from)}–${lastDay(to)}${B ? ` · база ${dd(data.baseFrom || B.from)}–${lastDay(data.baseTo || B.to)}` : ''}</div>
+    <div class="bi-kpis eff-kpis">
+      ${kpi(`${num(P.revPerVd)}<small>₽</small>`, delta(P.revPerVd, B?.revPerVd), `на машино-день парка${B ? ` (база: ${num(B.revPerVd)})` : ''} — главная цифра`, 'hero dept-staff', '₽ на машино-день')}
+      ${kpi(`${mln(P.rev)}<small>млн</small>`, delta(P.rev, B?.rev), `выручка бНДС за ${P.days} дн${B ? ` (база: ${mln(B.rev)})` : ''}`, 'dept-staff', 'Выручка бНДС')}
+      ${kpi(P.koef != null ? `${P.koef}<small>%</small>` : '—', delta(P.koef, B?.koef, { pp: true }), `КТГ ${P.ktg ?? '—'} × КВЛ ${P.kvl ?? '—'} × КИП ${P.kip ?? '—'}`, 'dept-staff', 'КОЭФ')}
+      ${kpi(`${P.ktg ?? '—'}<small>%</small>`, delta(P.ktg, B?.ktg, { pp: true }), `техготовность${B ? ` (база: ${B.ktg ?? '—'}%)` : ''}`, 'dept-toir', 'КТГ')}
+      ${kpi(`${P.kvl ?? '—'}<small>%</small>`, delta(P.kvl, B?.kvl, { pp: true }), `выход на линию${B ? ` (база: ${B.kvl ?? '—'}%)` : ''}`, 'dept-drv', 'КВЛ')}
+      ${kpi(`${P.kip ?? '—'}<small>%</small>`, delta(P.kip, B?.kip, { pp: true }), `работа экипажа, от потолка${B ? ` (база: ${B.kip ?? '—'}%)` : ''}`, 'dept-log', 'КИП')}
+      ${kpi(`${num(P.downtime.no_driver || 0)}<small>м-д</small>`, delta(P.downtime.no_driver || 0, B?.downtime?.no_driver, { invert: true }), 'простой «без водителя» за период', (P.downtime.no_driver || 0) > 0 ? 'warn' : '', 'Без водителя')}
+      ${kpi(weShare != null ? `${weShare}<small>%</small>` : '—', delta(weShare, weShareB, { pp: true }), `выходной к буднему: ${mln(P.weekendAvg)}/${mln(P.weekdayAvg)} млн`, '', 'Выходной к буднему')}
+      ${kpi(`${num(P.avgCheck)}<small>₽</small>`, delta(P.avgCheck, B?.avgCheck), `средний чек · ₽/км ${P.rubKm}`, '', 'Средний чек')}
+    </div>
 
-    <section class="eff-slide">
-      <h3>Деньги</h3>
-      <table class="rtable"><thead><tr><th></th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
+    <div class="bi-grid">
+    <section class="section s6 eff-slide dept-staff">
+      <div class="sec-h"><span class="st">Деньги</span><span class="hint">период · база · Δ</span></div>
+      <div class="sec-b flush">
+      <table class="bi-table rtable"><thead><tr><th></th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
         <tr><td>Выручка бНДС, млн</td><td class="num"><b>${mln(P.rev)}</b></td><td class="num">${B ? mln(B.rev) : '—'}</td><td class="num">${delta(P.rev, B?.rev)}</td></tr>
         <tr><td>₽ / машино-день</td><td class="num"><b>${num(P.revPerVd)}</b></td><td class="num">${B ? num(B.revPerVd) : '—'}</td><td class="num">${delta(P.revPerVd, B?.revPerVd)}</td></tr>
         <tr><td>Рейсов</td><td class="num"><b>${num(P.trips)}</b></td><td class="num">${B ? num(B.trips) : '—'}</td><td class="num">${delta(P.trips, B?.trips)}</td></tr>
@@ -105,26 +111,30 @@ export async function renderEfficiency(container, context, { issueId = null } = 
         <tr><td>Выходной день, млн</td><td class="num"><b>${mln(P.weekendAvg)}</b></td><td class="num">${B ? mln(B.weekendAvg) : '—'}</td><td class="num">${delta(P.weekendAvg, B?.weekendAvg)}</td></tr>
         <tr><td>₽ / км</td><td class="num"><b>${P.rubKm}</b></td><td class="num">${B ? B.rubKm : '—'}</td><td class="num">${delta(P.rubKm, B?.rubKm)}</td></tr>
       </tbody></table>
+      </div>
     </section>
 
-    <section class="eff-slide">
-      <h3>Парк</h3>
-      <table class="rtable"><thead><tr><th></th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
+    <section class="section s6 eff-slide dept-toir">
+      <div class="sec-h"><span class="st">Парк</span><span class="hint">КТГ · КВЛ · КИП · простои, м-д</span></div>
+      <div class="sec-b flush">
+      <table class="bi-table rtable"><thead><tr><th></th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
         <tr><td>КТГ — техготовность</td><td class="num"><b>${P.ktg ?? '—'}%</b></td><td class="num">${B?.ktg ?? '—'}%</td><td class="num">${delta(P.ktg, B?.ktg, { pp: true })}</td></tr>
         <tr><td>КВЛ — выход на линию</td><td class="num"><b>${P.kvl ?? '—'}%</b></td><td class="num">${B?.kvl ?? '—'}%</td><td class="num">${delta(P.kvl, B?.kvl, { pp: true })}</td></tr>
         <tr><td>КИП — работа экипажа <small class="muted">(от потолка)</small></td><td class="num"><b>${P.kip ?? '—'}%</b></td><td class="num">${B?.kip ?? '—'}%</td><td class="num">${delta(P.kip, B?.kip, { pp: true })}</td></tr>
         ${P.restDayAvg != null ? `<tr><td>Отдых/стояния в пути <small class="muted">(маш среднесуточно)</small></td><td class="num"><b>${P.restDayAvg}</b></td><td class="num">${B?.restDayAvg ?? '—'}</td><td class="num">${delta(P.restDayAvg, B?.restDayAvg, { pp: true, invert: true })}</td></tr>` : ''}
       </tbody></table>
-      <div style="margin-top:10px">
+      <div class="sec-b eff-down">
         ${downKinds.map(([key, label, invert]) => `<div class="bar"><span class="lbl">${label}</span>
-          <div class="track"><i class="fill" style="width:${Math.round((P.downtime[key] || 0) / maxDown * 100)}%"></i></div>
+          <div class="bi-meter ${invert ? 'warn' : ''}"><i style="width:${Math.round((P.downtime[key] || 0) / maxDown * 100)}%"></i></div>
           <span class="val"><b>${P.downtime[key] || 0}</b>${B ? ` ← ${B.downtime?.[key] || 0}` : ''} ${delta(P.downtime[key] || 0, B?.downtime?.[key], { invert })}</span></div>`).join('')}
+      </div>
       </div>
     </section>
 
-    <section class="eff-slide">
-      <h3>Люди и сервис</h3>
-      ${data.board ? `<table class="rtable"><thead><tr><th>🗂 Доска диспетчерской</th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
+    <section class="section s7 eff-slide dept-drv">
+      <div class="sec-h"><span class="st">Люди и сервис</span></div>
+      <div class="sec-b flush">
+      ${data.board ? `<table class="bi-table rtable"><thead><tr><th>🗂 Доска диспетчерской</th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
         <tr><td>Подготовка: подтверждён → на линию, ч</td><td class="num"><b>${data.board.leadPrepH ?? '—'}</b></td><td class="num">${data.boardBase?.leadPrepH ?? '—'}</td><td class="num">${delta(data.board.leadPrepH, data.boardBase?.leadPrepH, { invert: true })}</td></tr>
         <tr><td>Погрузка: на линии → убыл, ч</td><td class="num"><b>${data.board.leadLoadH ?? '—'}</b></td><td class="num">${data.boardBase?.leadLoadH ?? '—'}</td><td class="num">${delta(data.board.leadLoadH, data.boardBase?.leadLoadH, { invert: true })}</td></tr>
         <tr><td>В пути: убыл → прибыл, ч</td><td class="num"><b>${data.board.leadRoadH ?? '—'}</b></td><td class="num">${data.boardBase?.leadRoadH ?? '—'}</td><td class="num">${delta(data.board.leadRoadH, data.boardBase?.leadRoadH, { invert: true })}</td></tr>
@@ -137,16 +147,18 @@ export async function renderEfficiency(container, context, { issueId = null } = 
       ${data.board.hero ? `<p style="margin:4px 0 6px"><b>🏆 Герой недели:</b> ${escapeHtml(data.board.hero.name)} — ${data.board.hero.marks} отметок контроля за ${data.board.hero.days} дн, лучшая плотность к личной норме (${data.board.hero.cap}/день)</p>` : ''}
       ${data.board.deadTail?.cards?.length ? `<p style="margin:4px 0 10px"><b>💀 Мёртвый хвост (${data.board.deadTail.cards.length} карточек дольше ${data.board.deadTail.days} суток без движения)</b> — выведены из эскалаций, зачищаются постановкой забытых фактов:<br>
         <span class="muted">${data.board.deadTail.cards.slice(0, 12).map(c => `${escapeHtml(c.plate || '?')} — ${c.idleDays} дн`).join(' · ')}${data.board.deadTail.cards.length > 12 ? ` · … ещё ${data.board.deadTail.cards.length - 12}` : ''}</span></p>` : ''}` : ''}
-      <table class="rtable"><tbody>
+      <table class="bi-table rtable"><tbody>
         <tr><td>Адресность карточек звонка</td><td class="num"><b>${S.inTotal ? Math.round(S.inAddressed / S.inTotal * 100) + '%' : '—'}</b></td><td class="muted">цель > 60% · входящих ${num(S.inTotal || 0)}</td></tr>
         <tr><td>Перезвон по пропущенным, медиана</td><td class="num"><b>${S.callbackMedianMin ?? '—'} мин</b></td><td class="muted">норматив 10 мин</td></tr>
         <tr><td>Пропущенные → вопросы</td><td class="num"><b>${S.missedQuestions || 0}</b></td><td class="muted">закрыто ${S.missedClosed || 0}</td></tr>
       </tbody></table>
+      </div>
     </section>
 
-    <section class="eff-slide">
-      <h3>Клиенты · топ периода, млн бНДС</h3>
-      <table class="rtable"><thead><tr><th>Клиент</th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
+    <section class="section s5 eff-slide dept-log">
+      <div class="sec-h"><span class="st">Клиенты · топ периода</span><span class="hint">млн бНДС</span></div>
+      <div class="sec-b flush">
+      <table class="bi-table rtable"><thead><tr><th>Клиент</th><th class="num">период</th><th class="num">база</th><th class="num">Δ</th></tr></thead><tbody>
         ${P.clients.slice(0, 6).map(client => {
     const baseClient = B?.clients?.find(item => item.name === client.name);
     return `<tr><td>${escapeHtml(client.name)}</td><td class="num"><b>${mln(client.rev)}</b></td>
@@ -154,18 +166,22 @@ export async function renderEfficiency(container, context, { issueId = null } = 
       <td class="num">${delta(client.rev, baseClient?.rev)}</td></tr>`;
   }).join('')}
       </tbody></table>
+      </div>
     </section>
 
-    ${data.initiatives?.length ? `<section class="eff-slide">
-      <h3>Инициативы периода</h3>
-      <table class="rtable"><tbody>${data.initiatives.map(item => `<tr>
+    ${data.initiatives?.length ? `<section class="section eff-slide">
+      <div class="sec-h"><span class="st">Инициативы периода</span></div>
+      <div class="sec-b flush">
+      <table class="bi-table rtable"><tbody>${data.initiatives.map(item => `<tr>
         <td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.result || item.target || '')}</td>
         <td><span class="pill ${item.status === 'done' ? 'good' : 'warn'}">${item.status === 'done' ? 'сделано' : 'в работе'}</span></td>
       </tr>`).join('')}</tbody></table>
+      </div>
     </section>` : ''}
 
-    <section class="eff-slide">
-      <h3>План следующей недели <small class="muted">— задача · целевая метрика · ответственный</small></h3>
+    <section class="section eff-slide">
+      <div class="sec-h"><span class="st">План следующей недели</span><span class="hint">задача · целевая метрика · ответственный</span></div>
+      <div class="sec-b">
       <div id="effPlanList">${planItems.map((item, index) => `<div class="eff-plan-row" data-idx="${index}">
         <label><input type="checkbox" data-plan-done="${index}" ${item.done ? 'checked' : ''}></label>
         <div><b>${escapeHtml(item.title)}</b><div class="muted" style="font-size:12.5px">${escapeHtml(item.metric || '')}${item.owner ? ` · ${escapeHtml(item.owner)}` : ''}</div></div>
@@ -177,7 +193,9 @@ export async function renderEfficiency(container, context, { issueId = null } = 
         <input name="owner" placeholder="Ответственный" style="flex:1">
         <button class="button small">＋</button>
       </form>
+      </div>
     </section>
+    </div>
   </div>`;
   if (!renderInto(container, html)) return;
 

@@ -106,15 +106,18 @@ export function boardDialog(context) {
         <button class="button" type="submit">📢 Вывести на табло</button>
       </div>
     </form>
-    <div class="scolh" style="margin-top:10px">Сейчас на табло <span>${notes.length}</span></div>
-    <div class="list">${notes.length ? notes.map(note => `<div class="list-item ordrow">
+    <section class="section board-now">
+    <div class="sec-h"><span class="st">Сейчас на табло</span><span class="bi-tag">${notes.length}</span>
+      <span class="hint">снимается само по сроку или кнопкой «✕ Снять»</span></div>
+    <div class="sec-b flush"><div class="list">${notes.length ? notes.map(note => `<div class="list-item ordrow">
       <span style="flex:1;min-width:0">
         <strong>${escapeHtml((note.text || '🎬 файл без текста').slice(0, 70))}</strong>
         <small class="muted" style="display:block">${KIND_LABEL[note.kind] || note.kind}${note.media_id ? ' · 📎 файл' : ''}
           · ${untilLabel(note)} · ${escapeHtml(note.created_by_name || '')}</small>
       </span>
       <button class="button ghost small" data-board-remove="${note.id}">✕ Снять</button>
-    </div>`).join('') : '<p class="muted">Табло чистое — объявлений нет.</p>'}</div>`);
+    </div>`).join('') : '<p class="bi-empty">Табло чистое — объявлений нет.</p>'}</div></div>
+    </section>`);
 
   const form = document.getElementById('boardForm');
   form.querySelectorAll('[data-board-tpl]').forEach(button =>

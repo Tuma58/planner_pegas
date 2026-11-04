@@ -122,29 +122,50 @@ export async function renderExpenses(container, context) {
       <td>${canWrite ? `<button class="button ghost small" data-exp-del="${item.id}" title="Удалить запись (с аудитом)">✕</button>` : ''}</td>
     </tr>`).join('');
 
-  const html = `<div class="inc-page">
-    <div class="resctl" style="margin-bottom:8px">
-      <strong>💸 Затраты</strong>
+  // BI-вид (04.11): плитки итогов периода → секция структуры → журнал .bi-table.
+  const variable = kindSum('variable');
+  const fixed = kindSum('fixed');
+  const tile = (label, value, extra, note = '') => `<div class="metric ${extra}">
+    <span class="l">${label}</span><span class="v">${value}</span>
+    ${note ? `<span class="d">${note}</span>` : ''}</div>`;
+  const html = `<div class="bi-page svc-exp">
+    <div class="bi-sub">
       <label class="muted">с <input type="date" id="expFrom" value="${state.expFrom}"></label>
       <label class="muted">по <input type="date" id="expTo" value="${state.expTo}"></label>
+      <div class="bi-actions">
       ${canWrite ? `<button class="button small" id="expAdd">➕ Добавить</button>
         <button class="button ghost small" id="expImport" title="Выгрузка из личного кабинета поставщика: колонки сопоставляются при загрузке">📥 Импорт Excel/CSV</button>` : ''}
       ${canCategories ? `<button class="button ghost small" id="expCats" title="Справочник категорий затрат">🗂 Категории</button>` : ''}
-      <small class="muted">Итог периода: <b>${money(data.summary.total)}</b>
-        · без НДС <b>${money(data.summary.totalNet)}</b> · записей ${data.summary.count}</small>
+      </div>
     </div>
-    ${data.summary.count ? `<div class="exp-groups">
-      ${kindBlock('variable', 'Переменные затраты')}
-      ${kindBlock('fixed', 'Постоянные затраты')}
-      ${supplierBlock()}
-    </div>${filterNote}`
-    : '<div class="resctl" style="margin-bottom:8px"><small class="muted">Журнал пуст — добавьте первую запись или загрузите выгрузку поставщика.</small></div>'}
-    <table class="rtable">
-      <thead><tr><th>День</th><th>Категория</th><th class="num">Сумма</th><th>Машина</th>
-        <th>Поставщик</th><th>Документ / заметка</th><th>Кто</th><th></th></tr></thead>
-      <tbody>${tableRows || '<tr><td colspan="8" class="muted" style="padding:14px">Записей за период нет.</td></tr>'}</tbody>
-    </table>
-    ${items.length > 400 ? `<p class="muted" style="padding:6px">Показаны 400 из ${items.length} записей — сузьте период или категорию.</p>` : ''}
+    <div class="bi-kpis">
+      ${tile('Итог периода', money(data.summary.total), 'dept-staff hero', `без НДС ${money(data.summary.totalNet)}`)}
+      ${tile('Переменные', money(variable.sum), 'dept-staff', `${variable.count} шт · без НДС ${money(variable.net)}`)}
+      ${tile('Постоянные', money(fixed.sum), 'dept-staff', `${fixed.count} шт · без НДС ${money(fixed.net)}`)}
+      ${tile('Записей', data.summary.count, 'dept-staff', filterCat || filterSup ? `в таблице по фильтру ${items.length}` : 'за выбранный период')}
+    </div>
+    <div class="bi-grid">
+      <section class="section dept-staff">
+        <div class="sec-h"><span class="st">Структура затрат</span>
+          <span class="hint">группы разворачиваются; строка внутри — фильтр журнала</span></div>
+        <div class="sec-b">${data.summary.count ? `<div class="exp-groups">
+          ${kindBlock('variable', 'Переменные затраты')}
+          ${kindBlock('fixed', 'Постоянные затраты')}
+          ${supplierBlock()}
+        </div>${filterNote}`
+    : '<div class="bi-empty">Журнал пуст — добавьте первую запись или загрузите выгрузку поставщика.</div>'}</div>
+      </section>
+      <section class="section dept-staff">
+        <div class="sec-h"><span class="st">Журнал затрат</span>
+          <span class="hint">${items.length > 400 ? `показаны 400 из ${items.length} записей — сузьте период или категорию`
+    : `${items.length} записей`}</span></div>
+        <div class="sec-b flush"><div class="bi-scroll"><table class="bi-table">
+          <thead><tr><th>День</th><th>Категория</th><th class="r">Сумма</th><th>Машина</th>
+            <th>Поставщик</th><th>Документ / заметка</th><th>Кто</th><th></th></tr></thead>
+          <tbody>${tableRows || '<tr><td colspan="8" class="muted" style="padding:14px">Записей за период нет.</td></tr>'}</tbody>
+        </table></div></div>
+      </section>
+    </div>
   </div>`;
   if (!renderInto(container, html)) return;
 

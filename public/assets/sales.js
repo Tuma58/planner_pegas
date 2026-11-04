@@ -513,12 +513,12 @@ function salesTaskDialog(data, context) {
         } catch (error) { toast(error.message, 'error'); }
       }));
   };
-  context.showModal(`<h2 style="margin-bottom:6px">📋 Задание продажам</h2>
+  context.showModal(`<div class="sales-modal"><h2 style="margin-bottom:6px">📋 Задание продажам</h2>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
       ${dayPickerHtml('salesTaskDay', tomorrow, 'на дату')}
       <button class="button small" id="salesTaskCopy" style="margin-left:auto">📋 Скопировать</button>
     </div>
-    <div id="salesTaskBody" style="max-height:62vh;overflow:auto"></div>`);
+    <div id="salesTaskBody" style="max-height:62vh;overflow:auto"></div></div>`);
   const modal = document.querySelector('#modalRoot .modal');
   if (modal) modal.style.width = 'min(820px, 96vw)';
   render(tomorrow);
@@ -867,7 +867,7 @@ export async function renderSales(container, context) {
         <strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(routeLabel(order))}
         ${step.plate ? ` · <span class="mono">${escapeHtml(step.plate)}</span>` : ''}
         ${Number(order.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
-        <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')}${order.planned_km ? ` · 📏 ${Math.round(order.planned_km)} км` : ''}${(() => {
+        <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')}${order.planned_km ? ` · 📏 <span class="mono">${Math.round(order.planned_km)}</span> км` : ''}${(() => {
           try { const viaList = JSON.parse(order.via_json || '[]');
             return viaList.length ? ` · ⛳ ${viaList.length} пром.` : ''; } catch { return ''; } })()} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
@@ -876,9 +876,9 @@ export async function renderSales(container, context) {
         ${isHotUnconfirmed(order) ? `<small class="hot-note">🔥 Не подтверждена — ${hotLabel(order)}. Подтвердите или отклоните</small>` : ''}
         <div class="stepper-row">${stepper(step.stage)}<span class="pipe-inline">${waiting}${since}</span></div>
       </span>
-      <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
-        <b>${money(order.rate_vat)}</b>
-        <small class="muted">${Number(order.cash) ? 'наличные · без НДС'
+      <span class="ord-side" style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+        <b class="ord-rate">${money(order.rate_vat)}</b>
+        <small class="muted ord-net">${Number(order.cash) ? 'наличные · без НДС'
           : `б. НДС ${money(orderNet(order, data))}`}</small>
         ${reassign || action}
         <span style="display:flex;gap:5px">
@@ -903,7 +903,7 @@ export async function renderSales(container, context) {
         <strong>${escapeHtml(client.name)}</strong>
         <small class="muted" style="display:block">заказов ${client.orders.length}
           · ${fmtDay(client.first)}${client.first !== client.last ? ` — ${fmtDay(client.last)}` : ''}
-          · ${money(client.sum)}</small>
+          · <span class="mono">${money(client.sum)}</span></small>
         <span class="client-badges">
           ${(() => {
             const bday = (data.customerDates || []).find(item => item.kind === 'birthday' && item.customer === client.name);
@@ -981,7 +981,7 @@ export async function renderSales(container, context) {
         ${Number(order.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
         <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}
           ${trip ? ` · <span class="mono">${escapeHtml(trip.vehicle_plate || '')}</span>` : ''}</small></span>
-      <b>${money(order.rate_vat)}</b></div>`;
+      <b class="ord-rate">${money(order.rate_vat)}</b></div>`;
   };
   // Вопросы водителей, где сбой на стороне продаж: данные не ушли
   // грузоотправителю, не тот адрес, нужен телефон клиента.
@@ -1042,39 +1042,41 @@ export async function renderSales(container, context) {
     ${tomGap ? `<span class="sdb-gap">ДОБРАТЬ НА ЗАВТРА ${money(tomGap)}</span>`
     : '<span class="sdb-ok">✅ завтра забит</span>'}
     <small class="muted">сегодня: выгружено ${money(Math.round(dayM.dayDone || 0))} · едет ${money(Math.max(0, Math.round(dayM.dayExpected || 0)))}</small></div>`;
-  const html = `<div class="saleswrap">
+  const html = `<div class="saleswrap bi-page bi-sales">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам', compact: true, open: state.salesQuestionsOpen })}
     ${dayBannerHtml}${ringHolesHtml}
-    <div class="salekpis compact">
-      <div class="skpi clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
+    <div class="salekpis bi-kpis sales-kpis">
+      <div class="skpi metric dept-log clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
         title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">
-        <span class="skl">Клиенты</span><span class="skv">${clients.length}</span>
-        ${unconfirmedTotal ? `<small class="skm">ждут подтверждения ${unconfirmedTotal}${hotTotal ? ` · 🔥 ${hotTotal}` : ''}</small>` : ''}
+        <span class="skl l">Клиенты</span><span class="skv v">${clients.length}</span>
+        ${unconfirmedTotal ? `<small class="skm d">ждут подтверждения ${unconfirmedTotal}${hotTotal ? ` · 🔥 ${hotTotal}` : ''}</small>` : ''}
         ${kpiDrop('clients', clients.map(client => `<div class="skpi-row" data-kpi-client="${escapeHtml(client.name)}">
           <span style="flex:1;min-width:0"><strong>${escapeHtml(client.name)}</strong>
             <small class="muted" style="display:block">заказов ${client.orders.length} · ${fmtDay(client.first)}</small></span>
           ${client.hot ? '🔥' : client.unconfirmed ? '⏳' : ''}</div>`).join(''))}</div>
-      <div class="skpi clickable ${state.salesKpiOpen === 'portfolio' ? 'open' : ''}" data-kpi="portfolio"
+      <div class="skpi metric dept-log clickable ${state.salesKpiOpen === 'portfolio' ? 'open' : ''}" data-kpi="portfolio"
         title="Заявки портфеля — выбор открывает редактирование">
-        <span class="skl">Потребность клиента</span><span class="skv">${orders.length}${filterActive ? `<small class="muted"> / ${allOrders.length}</small>` : ''}</span>
+        <span class="skl l">Потребность клиента</span><span class="skv v">${orders.length}${filterActive ? `<small> / ${allOrders.length}</small>` : ''}</span>
         ${kpiDrop('portfolio', orders.map(orderRow).join(''))}</div>
-      <div class="skpi clickable ${state.salesKpiOpen === 'awaiting' ? 'open' : ''}" data-kpi="awaiting"
+      <div class="skpi metric dept-log clickable ${state.salesKpiOpen === 'awaiting' ? 'open' : ''}" data-kpi="awaiting"
         title="Подтверждённые без ТС — выбор открывает редактирование">
-        <span class="skl">Ждут назначения ТС</span><span class="skv">${awaitingAssign}</span>
+        <span class="skl l">Ждут назначения ТС</span><span class="skv v">${awaitingAssign}</span>
         ${kpiDrop('awaiting', orders.filter(order => orderStage(order, data).stage === 1).map(orderRow).join(''))}</div>
-      <div class="skpi clickable ${state.salesKpiOpen === 'logist' ? 'open' : ''}" data-kpi="logist"
+      <div class="skpi metric dept-log clickable ${state.salesKpiOpen === 'logist' ? 'open' : ''}" data-kpi="logist"
         title="Назначено, рейс ещё не выехал — выбор открывает редактирование; выгруженные и завершённые — в отчётах">
-        <span class="skl">В плане у логиста</span><span class="skv">${assigned}</span>
-        ${inRunCount ? `<small class="skm">в пути ${inRunCount}</small>` : ''}
+        <span class="skl l">В плане у логиста</span><span class="skv v">${assigned}</span>
+        ${inRunCount ? `<small class="skm d">в пути ${inRunCount}</small>` : ''}
         ${kpiDrop('logist', inPlanOrders.map(orderRow).join(''))}</div>
-      ${expiredOrders.length ? `<div class="skpi clickable ${state.salesKpiOpen === 'expired' ? 'open' : ''} skpi-hot"
+      ${expiredOrders.length ? `<div class="skpi metric neg clickable ${state.salesKpiOpen === 'expired' ? 'open' : ''} skpi-hot"
         data-kpi="expired" title="Окно погрузки истекло, ТС не назначено: передоговорите сроки («Изменить») или отклоните — в подбор такие заявки не встают">
-        <span class="skl">⚠ Окно истекло</span><span class="skv">${expiredOrders.length}</span>
+        <span class="skl l">⚠ Окно истекло</span><span class="skv v">${expiredOrders.length}</span>
         ${kpiDrop('expired', expiredOrders.map(orderRow).join(''))}</div>` : ''}
-      <div class="skpi" title="Выручка без НДС по рейсам, завершённым в текущем календарном месяце (не зависит от листания периода; НДС ИП — 7%)">
-        <span class="skl">Выручка б. НДС · ${escapeHtml(periodLabel)}</span><span class="skv">${money(periodNet)}</span>
-        <small class="skm">${periodTrips.length} рейсов завершено</small></div>
+      <div class="skpi metric dept-staff" title="Выручка без НДС по рейсам, завершённым в текущем календарном месяце (не зависит от листания периода; НДС ИП — 7%)">
+        <span class="skl l">Выручка б. НДС · ${escapeHtml(periodLabel)}</span><span class="skv v">${money(periodNet)}</span>
+        <small class="skm d">${periodTrips.length} рейсов завершено</small></div>
       ${demurrageChipHtml(data)}
+    </div>
+    <div class="bi-sub sales-toolbar">
       <div class="salesfilter">
         <input id="salesSearch" class="block-search" placeholder="Поиск: заказчик, маршрут, ТС"
           value="${escapeHtml(filter.q)}">
@@ -1112,16 +1114,18 @@ export async function renderSales(container, context) {
           · клиентов ${clients.length}</span>` : ''}
       </div>
     </div>
-    <div class="salesboard">
-      <div class="scol">
-        <div class="scolh">Клиенты <span>${clients.length}</span>${hotTotal
-          ? `<small class="muted" style="text-transform:none;font-weight:600">· 🔥 ${hotTotal} к подтверждению</small>` : ''}</div>
+    <div class="salesboard bi-board">
+      <div class="scol section dept-log">
+        <div class="scolh sec-h"><span class="st">Клиенты</span><span class="scount">${clients.length}</span>${hotTotal
+          ? `<span class="hint">🔥 ${hotTotal} к подтверждению</span>` : ''}</div>
+        <div class="sec-b">
         <div class="list">${clientsList}</div>
         <div class="geohint">Клик по клиенту — все его заказы в хронологическом порядке. Заказ попадает
           сюда сразу после внесения и ждёт подтверждения; ближе 8 часов к погрузке неподтверждённый горит,
           продажам идёт сигнал в чат каждые 30 минут.</div>
+        </div>
       </div>
-      <div class="scol">
+      <div class="scol sales-stack">
         ${(() => {
     // Споты — задания продажам: только настоящие 'sell' (гарантированные
     // плечи сетки закрывает логист — они тут только путали). Акцент плашки:
@@ -1143,8 +1147,8 @@ export async function renderSales(container, context) {
             <strong style="font-size:14px">🔍 ${escapeHtml(spot.from_label || '?')} → ${escapeHtml(spot.to_label || '?')}</strong>
             <small class="muted" style="display:block">погрузка ${spot.planned_load
     ? `${fmtDateTime(spot.planned_load)}${hoursLeft != null ? ` · через ${hoursLeft < 48 ? `${Math.max(0, hoursLeft)} ч` : `${Math.round(hoursLeft / 24)} дн`}` : ''}`
-    : 'дата не задана'} · ~${Math.round(spot.expected_km || 0)} км
-              · ориентир ${money(Math.round(spot.expected_rate || 0))} · маршрут ${escapeHtml(routeNo(spot.route_id))}</small>
+    : 'дата не задана'} · ~<span class="mono">${Math.round(spot.expected_km || 0)}</span> км
+              · ориентир <span class="mono">${money(Math.round(spot.expected_rate || 0))}</span> · маршрут ${escapeHtml(routeNo(spot.route_id))}</small>
           </span>
           <span style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
             ${loadMs ? `<span class="badge ${urgency}">${hoursLeft < 0 ? '⏰ срок вышел' : hoursLeft < 24 ? `🔥 ${Math.max(0, hoursLeft)} ч` : fmtDateTime(spot.planned_load).split(',')[0]}</span>` : ''}
@@ -1154,11 +1158,15 @@ export async function renderSales(container, context) {
         </div>
       </div>`;
     };
-    return `<div class="scolh">🔍 Нужен груз — споты маршрутов <span>${openSpots.length}</span>
-        <small class="muted" style="font-weight:400"> · пустые плечи кругов: продайте груз на плечо к сроку</small></div>
-      ${openSpots.map(spotCard).join('')}`;
+    return `<section class="section sales-spots">
+      <div class="scolh sec-h"><span class="st">🔍 Нужен груз — споты маршрутов</span><span class="scount">${openSpots.length}</span>
+        <span class="hint">пустые плечи кругов: продайте груз на плечо к сроку</span></div>
+      <div class="sec-b">${openSpots.map(spotCard).join('')}</div></section>`;
   })()}
-        <div class="scolh">Потребность клиента <span>${orders.length}</span></div>
+        <section class="section sales-form-sec">
+        <div class="scolh sec-h"><span class="st">Потребность клиента</span><span class="scount">${orders.length}</span>
+          <span class="hint">новая заявка</span></div>
+        <div class="sec-b">
         <form id="salesForm">
           <label class="field">Заказчик
             <input name="customerName" list="salesCustomers" placeholder="выберите из справочника или введите нового"
@@ -1224,9 +1232,13 @@ export async function renderSales(container, context) {
           <div id="salesFeas" class="feas"></div>
           <button class="button full">Забронировать</button>
         </form>
-        <div class="scolh" style="margin-top:14px">Портфель · потребности клиента <span>${orders.length}</span>
-          <button type="button" class="mine-toggle ${onlyMine ? 'on' : ''}" id="salesMyTasks"
-            title="Показать только заявки, ожидающие вашего действия">мои: ${tasks.length}</button></div>
+        </div>
+        </section>
+        <section class="section dept-log sales-portfolio">
+        <div class="scolh sec-h"><span class="st">Портфель · потребности клиента</span><span class="scount">${orders.length}</span>
+          <div class="sec-actions"><button type="button" class="mine-toggle ${onlyMine ? 'on' : ''}" id="salesMyTasks"
+            title="Показать только заявки, ожидающие вашего действия">мои: ${tasks.length}</button></div></div>
+        <div class="sec-b">
         <div class="list">${portfolio}</div>
         <div class="geohint">После назначения ТС заявка уходит к логисту в план (Гант) и в портфеле
           не показывается; вернётся как новая только при отклонении рейса.</div>
@@ -1236,6 +1248,8 @@ export async function renderSales(container, context) {
           <div class="geohint">Заявка попадает сюда, если ТС не назначено и указана причина отказа.
             «Вернуть в работу» переводит её обратно в портфель как новую.</div>
         </details>
+        </div>
+        </section>
       </div>
     </div>
   </div>`;
@@ -1806,7 +1820,7 @@ export function editOrderDialog(order, data, context) {
   // Диалог вызывается и из продаж, и из блока логиста (Гант) — datalist
   // пунктов встроен в модалку, чтобы не зависеть от разметки доски продаж.
   const trip = order.trip_id ? data.trips.find(item => item.id === order.trip_id) : null;
-  context.showModal(`<form id="editOrderForm">
+  context.showModal(`<form id="editOrderForm" class="sales-modal">
     <h2>Изменить потребность${order.order_no ? ` · № ${escapeHtml(order.order_no)}` : ''}</h2>
     <p class="muted">${escapeHtml(routeLabel(order))} · создана ${fmtDateTime(order.created_at)}
       · номер присвоен системой</p>
@@ -2016,7 +2030,7 @@ export function editOrderDialog(order, data, context) {
 export { rejectDialog as rejectOrderDialog };
 function rejectDialog(order, data, context) {
   const reasons = data.settings.rejectionReasons || [];
-  context.showModal(`<form id="rejectOrderForm">
+  context.showModal(`<form id="rejectOrderForm" class="sales-modal">
     <h2>Отклонить заявку</h2>
     <p class="muted">${escapeHtml(order.customer_name)} · ${escapeHtml(routeLabel(order))}
       · ${money(order.rate_vat)}</p>
@@ -2094,10 +2108,10 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
   const candidates = matchVehicles(data, order.from_name, order.window_from, orderFromAddress, order.from_point);
   const workFleet = data.vehicles.filter(vehicle => vehicle.status === 'work');
   const loadMs = Date.parse(order.window_from);
-  showModal(`<h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>
+  showModal(`<div class="sales-modal sales-assign"><h2>Назначить ТС · ${escapeHtml(routeLabel(order))}</h2>
     <p class="muted">${escapeHtml(order.customer_name)} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)} · ${escapeHtml(order.body_type || 'Реф')} ${escapeHtml(order.temperature_mode || '')}</p>
     ${order.comment ? `<p class="muted">💬 ${escapeHtml(order.comment)}</p>` : ''}
-    <div class="list" style="max-height:220px;overflow:auto;margin-bottom:10px">
+    <div class="list sales-cands" style="max-height:220px;overflow:auto;margin-bottom:10px">
       ${candidates.slice(0, 8).map(candidate => `<button type="button" class="list-item sugtruck" data-plate="${candidate.vehicle.id}">
         <span style="flex:1;min-width:0"><strong class="mono">${escapeHtml(candidate.vehicle.plate)}</strong>
         ${(data.vehicleHolds || []).some(hold => hold.vehicle_id === candidate.vehicle.id)
@@ -2153,7 +2167,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button type="button" class="button" id="assignOk">Назначить</button>
-    </div>`);
+    </div></div>`);
   const select = document.getElementById('assignVehicle');
   wireSelectSearch(document.getElementById('assignVehicleSearch'), select);
   const showNext = () => {

@@ -429,8 +429,37 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
   const isTab = !!context.planTarget;
   let totalsOpen = false;
   try { totalsOpen = localStorage.getItem('plDplTotals') === 'open'; } catch { /* приватный режим */ }
-  renderCanvas(`${isTab ? '' : `<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>`}
-    <div class="console compact" style="margin:${isTab ? '0' : '8px'} 0 6px;row-gap:6px">
+  // BI-вид (04.11): плитки месяца → секция-сетка. Цифры — уже посчитанные
+  // итоги (monthPlanN/Rv, monthFactN/Rv, gapN/Rv); чипы-действия «🕳» и
+  // «⚙» стали плитками с теми же data-act, «∑ сводка» — в шапке секции.
+  const stageSwatch = (style, label, cls = '') =>
+    `<span class="lg-sw"><i${cls ? ` class="${cls}"` : ''} style="${style}"></i>${label}</span>`;
+  renderCanvas(`<div class="bi-page lg-page lg-dpl${isTab ? '' : ' lg-dpl-modal'}">
+    ${isTab ? '' : `<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>`}
+    <div class="bi-kpis">
+      <div class="metric dept-log" title="Сетка слотов на месяц: рейсы и выручка по ставкам, с НДС">
+        <span class="l">План месяца · рейсов</span><span class="v">${Math.round(monthPlanN)}</span>
+        <span class="d">${money(Math.round(monthPlanRv))}</span></div>
+      ${targetVat ? `<div class="metric ${monthPlanRv < targetVat ? 'warn' : 'pos'}" title="Сетка целиком против цели месяца (цель без НДС приведена к ставкам с НДС)">
+        <span class="l">Сетка от цели</span><span class="v">${Math.round(monthPlanRv / targetVat * 100)}<small>%</small></span>
+        <span class="d">цель ${money(Math.round(targetVat))}</span></div>` : ''}
+      <div class="metric pos" title="Заявки, уже внесённые на этот месяц">
+        <span class="l">Факт · заявок</span><span class="v">${monthFactN}</span>
+        <span class="d">${money(Math.round(monthFactRv))}</span></div>
+      ${gapN > 0 ? `<div class="metric neg clickable ${flt.gapsOnly ? 'act' : ''}" data-act="gaps" role="button"
+        title="Не закрыто до конца месяца (будущие дни)${targetVat ? `; сетка целиком даёт ${money(Math.round(monthPlanRv))} из цели ${money(Math.round(targetVat))}${monthPlanRv < targetVat ? ' — даже полная сетка цель не закрывает: нужны новые клиенты или плечи' : ''}` : ''}. Клик — показать только плечи с дырами; пунктирные ячейки — список «кому звонить», клик по ячейке открывает заявку">
+        <span class="l">🕳 Дыра · не закрыто</span><span class="v">${gapN}<small>рейс.</small></span>
+        <span class="d">≈ ${money(Math.round(gapRv))}${flt.gapsOnly ? ' · фильтр включён' : ' · клик — фильтр'}</span></div>` : ''}
+      <div class="metric">
+        <span class="l">Плеч в сетке</span><span class="v">${shownRows.length}${shownRows.length !== allRows.length ? `<small>/ ${allRows.length}</small>` : ''}</span>
+        <span class="d">клиент + направление</span></div>
+      ${gridAgeDays != null && gridAgeDays > 10 ? `<div class="metric warn ${canEdit ? 'clickable' : ''}" ${canEdit ? 'data-act="seed" role="button"' : ''}
+        title="Сетка слотов давно не обновлялась из истории${canEdit ? ' — клик запустит «Заполнить из истории» (ручные плечи не тронет)' : ''}; пересев также идёт сам в ночь на понедельник">
+        <span class="l">⚙ Возраст сетки</span><span class="v">${gridAgeDays}<small>дн</small></span>
+        <span class="d">${canEdit ? 'клик — заполнить из истории' : 'пересев — в ночь на пн'}</span></div>` : ''}
+    </div>
+    <section class="section dept-log">
+      <div class="sec-h lg-dpl-bar">
       <button type="button" class="button ghost small" id="dplPrev">←</button>
       <strong style="font-size:var(--fs-sm);text-transform:capitalize;min-width:104px;text-align:center">${isTab ? `${MONTHS[monthNum - 1]} ${year}` : ''}</strong>
       <button type="button" class="button ghost small" id="dplNext">→</button>
@@ -442,17 +471,12 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
         ${[...new Set(slots.flatMap(slot => [slot.from_name, slot.to_name]))].sort()
     .map(name => `<option ${flt.zone === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
       </select>
-      <span class="mchip">плеч <b>${shownRows.length}${shownRows.length !== allRows.length ? ` / ${allRows.length}` : ''}</b></span>
-      <span class="mchip" title="Сетка слотов на месяц: рейсы и выручка по ставкам, с НДС">план <b>${Math.round(monthPlanN)}</b> · ${money(Math.round(monthPlanRv))}${targetVat ? ` · ${Math.round(monthPlanRv / targetVat * 100)}% цели` : ''}</span>
-      <span class="mchip" title="Заявки, уже внесённые на этот месяц">факт <b>${monthFactN}</b> · ${money(Math.round(monthFactRv))}</span>
-      ${gapN > 0 ? `<span class="mchip bad ${flt.gapsOnly ? 'act' : ''}" data-act="gaps" role="button"
-        title="Не закрыто до конца месяца (будущие дни)${targetVat ? `; сетка целиком даёт ${money(Math.round(monthPlanRv))} из цели ${money(Math.round(targetVat))}${monthPlanRv < targetVat ? ' — даже полная сетка цель не закрывает: нужны новые клиенты или плечи' : ''}` : ''}. Клик — показать только плечи с дырами; пунктирные ячейки — список «кому звонить», клик по ячейке открывает заявку">🕳 <b>${gapN}</b> ≈ ${money(Math.round(gapRv))}</span>` : ''}
-      ${gridAgeDays != null && gridAgeDays > 10 ? `<span class="mchip warn" ${canEdit ? 'data-act="seed" role="button"' : ''}
-        title="Сетка слотов давно не обновлялась из истории${canEdit ? ' — клик запустит «Заполнить из истории» (ручные плечи не тронет)' : ''}; пересев также идёт сам в ночь на понедельник">⚙ сетке <b>${gridAgeDays}</b> дн</span>` : ''}
-      <span class="mchip ${totalsOpen ? 'act' : ''}" data-act="totals" role="button"
-        title="Показать/спрятать сводные строки месяца (рейсов план, заявок факт, машин занято, выручка) — строка «🕳 Дыра» видна всегда">∑ сводка</span>
-      <span class="legend-tip" style="margin-left:auto" title="Ячейка: жёлтая — слот без заявки (задача продаж), синяя — заявка внесена, зелёная — ТС назначено, тёмная — выгружено, пунктирная — незакрытый слот будущего дня (клик — заявка с заполненными клиентом, плечом, днём и ставкой). Число — факт заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.">ⓘ легенда</span>
-      ${canEdit ? `<details class="tb-menu" id="dplTools">
+        <span class="mchip ${totalsOpen ? 'act' : ''}" data-act="totals" role="button"
+          title="Показать/спрятать сводные строки месяца (рейсов план, заявок факт, машин занято, выручка) — строка «🕳 Дыра» видна всегда">∑ сводка</span>
+        <div class="sec-actions">
+          <span class="lg-legend">${stageSwatch('', 'слот без заявки', 'cell-plan')}${stageSwatch('background:#3a57c4', 'внесена')}${stageSwatch('background:#1f8a5b', 'ТС назначено')}${stageSwatch('background:#176a46', 'выгружено')}</span>
+          <span class="legend-tip" title="Ячейка: жёлтая — слот без заявки (задача продаж), синяя — заявка внесена, зелёная — ТС назначено, тёмная — выгружено, пунктирная — незакрытый слот будущего дня (клик — заявка с заполненными клиентом, плечом, днём и ставкой). Число — факт заявок (или план, если заявок нет). «Машин занято» — оценка: рейсы × цикл плеча.">ⓘ легенда</span>
+        ${canEdit ? `<details class="tb-menu" id="dplTools">
         <summary class="button ghost small">⋯ Инструменты</summary>
         <div class="tb-menu-list">
           <button type="button" class="button small" id="dplBookWeek"
@@ -460,8 +484,10 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
           <button type="button" class="button small" id="dplSeed"
             title="Построить/обновить сетку слотов из регулярных плеч за 60 суток (клиент+направление ≥1 рейса в неделю)">⚙ Заполнить из истории</button>
         </div></details>` : ''}
-    </div>
-    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 168px)' : '62vh'};overflow:auto"><table style="font-size:11px" class="plan-grid${totalsOpen ? '' : ' totals-folded'}">
+        </div>
+      </div>
+      <div class="sec-b flush">
+    <div class="table-wrap" style="max-height:${isTab ? 'calc(100vh - 262px)' : '58vh'};overflow:auto"><table style="font-size:11px" class="plan-grid lg-plan${totalsOpen ? '' : ' totals-folded'}">
       <tr class="plan-sticky-head"><th class="plan-fix" style="min-width:150px">Клиент</th><th class="plan-fix2" style="left:150px">Плечо</th><th>Ставка</th>${dayHead}</tr>
       ${totalRow('Рейсов план', d => d.planN, undefined,
         'Сколько рейсов в этот день обещает сетка слотов (сумма по всем плечам)')}
@@ -475,7 +501,10 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
         'План минус внесённые заявки по БУДУЩИМ дням: сколько рейсов ещё не законтрактовано — задача продаж «кому звонить». Прошедшие дни не считаются — их уже не закрыть', true)}
       ${bodyRows || `<tr><td colspan="${daysInMonth + 3}" class="muted">Сетка пуста — нажмите «⚙ Заполнить из истории».</td></tr>`}
     </table></div>
-    ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}`);
+      </div>
+    </section>
+    ${context.planTarget ? '' : '<div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>'}
+  </div>`);
 
   if (canvasSame) return; // тихий тик: данные и разметка не менялись
   syncPlanStickyTops();
