@@ -80,7 +80,9 @@ function setupUser() {
   if (dept) {
     document.documentElement.dataset.dept = dept;
     byId('avatar').title = `Отдел: ${DEPT_LABELS[dept]}`;
+    try { localStorage.setItem('pl_dept', dept); } catch { /* приватный режим */ }
   }
+  renderCascade();
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
 }
 
@@ -806,12 +808,67 @@ const MAIN_VIEWS = [
   { id: 'dashboard', title: 'Дашборд', show: () => true }
 ];
 
+// Навигатор по структуре направления СТ (как в «Рабочей среде СТ»):
+// экраны — в группах отделов, у группы её коэффициент каскада.
+const NAV_GROUPS = [
+  { dept: 'staff', title: 'Штаб', coef: 'КЭИП', views: ['dashboard', 'boss', 'staff', 'expenses'] },
+  { dept: 'log', title: 'Логистика', coef: 'КИП', views: ['sales', 'logist', 'routes', 'gantt', 'flows', 'delivery'] },
+  { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', views: ['dispatcher', 'monitoring', 'resource', 'fleetplan', 'incidents'] },
+  { dept: 'toir', title: 'ТОиР', coef: 'КТГ', views: ['remzona'] }
+];
+const VIEW_META = {
+  dashboard: ['◧', 'План-факт предприятия на сегодня и прогноз месяца'],
+  boss: ['▤', 'Операционный отчёт: каскад, экономика, отклонения'],
+  staff: ['☰', 'Справочник сотрудников, смены и табель'],
+  expenses: ['₽', 'Учёт затрат по статьям и машинам'],
+  sales: ['✎', 'Заявки клиентов: приём, согласование, назначение'],
+  logist: ['⇄', 'Назначение рейсов на машины'],
+  routes: ['⌖', 'Конструктор маршрутов из точек'],
+  gantt: ['▦', 'Сцепки и рейсы на календаре'],
+  flows: ['⇶', 'Потоки грузов между зонами'],
+  delivery: ['▥', 'План вывоза по клиентам'],
+  dispatcher: ['◎', 'Доска контроля рейсов: выход, погрузка, путь, выгрузка'],
+  monitoring: ['⌁', 'Машины на карте по GPS'],
+  resource: ['▣', 'Экипажи, график, недоступность ТС'],
+  fleetplan: ['▧', 'Закрепление парка по кругам'],
+  incidents: ['⚠', 'Акты, возвраты, опоздания'],
+  remzona: ['⚙', 'Заезды в ремонт: очередь, работы, выпуск']
+};
+const CASCADE = [['КТГ', 'toir'], ['КВЛ', 'drv'], ['КИП', 'log'], ['КЭИП', 'staff']];
+
+function renderCascade() {
+  const mine = document.documentElement.dataset.dept;
+  byId('cascadeChips').innerHTML = CASCADE.map(([coef, dept], index) =>
+    `${index ? '<span class="casc-sep">→</span>' : ''}<span class="casc${dept === mine ? ' on' : ''}" title="${coef}: отдел ${NAV_GROUPS.find(group => group.dept === dept).title}">${coef}</span>`).join('');
+}
+
 function renderViewTabs() {
   const views = MAIN_VIEWS.filter(view => view.show());
+  const byIdView = new Map(views.map(view => [view.id, view]));
+  const query = (byId('navSearch')?.value || '').trim().toLowerCase();
+  const link = view => {
+    const [icon] = VIEW_META[view.id] || ['•'];
+    return `<button data-view="${view.id}" class="navlink${view.id === state.view ? ' active' : ''}" title="${view.title}">`
+      + `<span class="nav-ico">${icon}</span><span class="nav-t">${view.title}</span></button>`;
+  };
+  const placed = new Set();
+  const groups = NAV_GROUPS.map(group => {
+    const items = group.views.map(id => byIdView.get(id)).filter(Boolean)
+      .filter(view => !query || view.title.toLowerCase().includes(query));
+    items.forEach(view => placed.add(view.id));
+    return items.length ? `<div class="nav-block dept-${group.dept}"><div class="blocktitle"><span>${group.title}</span>`
+      + `<span class="owner-chip chip-${group.dept}">${group.coef}</span></div>${items.map(link).join('')}</div>` : '';
+  }).join('');
+  // Экран вне групп (новый, ещё не разнесённый по отделам) не теряется.
+  const rest = views.filter(view => !placed.has(view.id)
+    && !NAV_GROUPS.some(group => group.views.includes(view.id))
+    && (!query || view.title.toLowerCase().includes(query)));
   byId('viewTabs').innerHTML = views.length > 1
-    ? views.map(view =>
-        `<button data-view="${view.id}" class="${view.id === state.view ? 'active' : ''}">${view.title}</button>`).join('')
+    ? groups + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '')
     : '';
+  const current = byIdView.get(state.view);
+  byId('pageTitle').textContent = current?.title || '';
+  byId('pageHint').textContent = VIEW_META[state.view]?.[1] || '';
   byId('viewTabs').onclick = event => {
     const button = event.target.closest('[data-view]');
     if (!button) return;
@@ -820,6 +877,17 @@ function renderViewTabs() {
     renderViewTabs();
     renderMain();
   };
+  const search = byId('navSearch');
+  if (search && !search.dataset.bound) {
+    search.dataset.bound = '1';
+    search.oninput = () => renderViewTabs();
+    byId('navCollapse').onclick = () => {
+      const collapsed = document.documentElement.dataset.nav === 'collapsed';
+      if (collapsed) delete document.documentElement.dataset.nav;
+      else document.documentElement.dataset.nav = 'collapsed';
+      try { localStorage.setItem('pl_nav', collapsed ? '' : 'collapsed'); } catch { /* приватный режим */ }
+    };
+  }
 }
 
 function renderMain() {

@@ -19,7 +19,8 @@
   --staff: #8a5f1a; --staff-bg: #fbf1dd; --log: #1f54a8; --log-bg: #e7eefb;
   --drv: #1b744d; --drv-bg: #e3f3ea; --toir: #166b70; --toir-bg: #def0f1;
   --mono-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --topbar-ink: rgb(255 255 255 / 72%);
+  --topbar-ink: var(--muted);   /* шапка на панели (как в «Рабочей среде СТ») */
+  --nav-w: 236px;
   --radius: 12px;
 
   /* Мост «ТК 21» → бренд */
@@ -103,8 +104,8 @@ a { color: inherit; text-decoration: none; }
 }
 .brand-plate img { height: 32px; width: auto; display: block; }
 .brand-word { display: grid; line-height: 1.1; }
-.brand-word b { font-size: 16px; font-weight: 800; color: #fff; }
-.brand-word small { color: var(--topbar-ink); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+.brand-word b { font-size: 15.5px; font-weight: 800; color: var(--ink); }
+.brand-word small { color: var(--faint); font-size: 11px; font-family: var(--mono-font); }
 
 .login-page {
   display: grid;
@@ -174,26 +175,75 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .full { width: 100%; }
 .form-error { min-height: 20px; color: var(--bad); font-size: var(--fs-sm); }
 
-.shell { height: 100vh; height: 100dvh; display: grid; grid-template-rows: 54px auto 1fr 28px; }
-.topbar {
-  display: flex; align-items: center; gap: 24px; padding: 0 18px;
-  background: var(--navy); color: white;
-  border-bottom: 1px solid rgb(255 255 255 / 6%);
+.shell { height: 100vh; height: 100dvh; display: grid; grid-template-rows: 56px auto 1fr 28px; }
+/* Оболочка в стиле «Рабочей среды СТ» (реконструкция 04.11): шапка на
+   панели во всю ширину, слева навигатор по отделам, справа — страница. */
+.shell:has(> .sidenav) {
+  grid-template-columns: var(--nav-w) minmax(0, 1fr);
+  grid-template-areas: "top top" "nav bar" "nav main" "foot foot";
 }
-[data-theme="dark"] .topbar { border-bottom-color: var(--line); }
-/* Цвет отдела пользователя (Б4): полоска под шапкой и кольцо аватара.
-   Шапка тёмная в обеих темах — берём яркие (тёмной подачи) значения
-   отделов из платформы, светлые на ультрамарине не читаются. */
-[data-dept="staff"] { --dept: #e2ad46; }
-[data-dept="log"] { --dept: #6ab0ff; }
-[data-dept="drv"] { --dept: #45cf92; }
-[data-dept="toir"] { --dept: #38c6cd; }
-[data-dept] .topbar { box-shadow: inset 0 -3px var(--dept); }
-[data-dept] .avatar { box-shadow: 0 0 0 2px var(--navy), 0 0 0 4px var(--dept); }
+.shell:has(> .sidenav) > .topbar { grid-area: top; }
+.shell:has(> .sidenav) > .sidenav { grid-area: nav; }
+.shell:has(> .sidenav) > .toolbar { grid-area: bar; }
+.shell:has(> .sidenav) > main { grid-area: main; min-width: 0; }
+.shell:has(> .sidenav) > .footer { grid-area: foot; }
+[data-nav="collapsed"] { --nav-w: 52px; }
+.topbar {
+  display: flex; align-items: center; gap: 18px; padding: 0 18px;
+  background: var(--card); color: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+/* Цвет отдела пользователя (Б4): подсветка своего коэффициента в каскаде,
+   своей группы в навигаторе и кольцо аватара. */
+[data-dept="staff"] { --dept: var(--staff); --dept-bg: var(--staff-bg); }
+[data-dept="log"] { --dept: var(--log); --dept-bg: var(--log-bg); }
+[data-dept="drv"] { --dept: var(--drv); --dept-bg: var(--drv-bg); }
+[data-dept="toir"] { --dept: var(--toir); --dept-bg: var(--toir-bg); }
+[data-dept] .avatar { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--dept); }
+/* Каскад КТГ → КВЛ → КИП → КЭИП */
+.cascade { display: flex; align-items: center; gap: 6px; }
+.casc { font-family: var(--mono-font); font-size: 11px; padding: 3px 8px; border-radius: 6px;
+  background: var(--paper); color: var(--muted); border: 1px solid var(--border2); white-space: nowrap; }
+.casc.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 700; }
+.casc-sep { color: var(--faint); font-family: var(--mono-font); font-size: 11px; }
 .topnav { display: flex; align-self: stretch; gap: 3px; }
-.topnav a { display: flex; align-items: center; padding: 0 14px; color: var(--topbar-ink); font-weight: 650; }
-.topnav a:hover, .topnav a.active { color: white; background: rgb(255 255 255 / 8%); }
-.topnav a.active { box-shadow: inset 0 -3px var(--u400); }
+.topnav a { display: flex; align-items: center; padding: 0 12px; color: var(--muted); font-weight: 650; }
+.topnav a:hover, .topnav a.active { color: var(--accent); background: var(--accent-soft); }
+.topnav a.active { box-shadow: inset 0 -3px var(--accent); }
+/* Навигатор */
+.sidenav { position: relative; display: flex; flex-direction: column; min-height: 0;
+  background: var(--card); border-right: 1px solid var(--line); overflow: hidden; }
+.sidenav nav { flex: 1; overflow-y: auto; padding: 4px 0 40px; }
+.nav-search { padding: 10px 12px 6px; }
+.nav-search input { min-height: 32px; padding: 6px 10px; font-size: var(--fs-sm); background: var(--paper); border-color: var(--border2); }
+.blocktitle { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px 4px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 700; }
+.owner-chip { font-family: var(--mono-font); font-size: 10px; padding: 1px 6px; border-radius: 5px; letter-spacing: 0; }
+.chip-staff { background: var(--staff-bg); color: var(--staff); }
+.chip-log { background: var(--log-bg); color: var(--log); }
+.chip-drv { background: var(--drv-bg); color: var(--drv); }
+.chip-toir { background: var(--toir-bg); color: var(--toir); }
+.navlink { display: flex; align-items: center; gap: 9px; width: calc(100% - 16px); margin: 1px 8px; padding: 7px 10px;
+  border: 0; border-radius: 8px; background: none; color: var(--ink); font-size: 13.5px; text-align: left; white-space: nowrap; }
+.navlink:hover { background: var(--paper); }
+.navlink.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; box-shadow: inset 3px 0 0 var(--accent); }
+.nav-ico { width: 18px; text-align: center; font-family: var(--mono-font); color: var(--faint); }
+.navlink.active .nav-ico { color: var(--accent); }
+/* Своя группа отдела — лёгкая подложка его цвета у заголовка */
+[data-dept="staff"] .nav-block.dept-staff .blocktitle, [data-dept="log"] .nav-block.dept-log .blocktitle,
+[data-dept="drv"] .nav-block.dept-drv .blocktitle, [data-dept="toir"] .nav-block.dept-toir .blocktitle { color: var(--dept); }
+.nav-collapse { position: absolute; right: 8px; bottom: 8px; width: 28px; height: 28px; border: 1px solid var(--line);
+  border-radius: 7px; background: var(--card); color: var(--muted); }
+[data-nav="collapsed"] .nav-search, [data-nav="collapsed"] .blocktitle span:first-child,
+[data-nav="collapsed"] .nav-t { display: none; }
+[data-nav="collapsed"] .blocktitle { justify-content: center; padding: 10px 0 2px; }
+[data-nav="collapsed"] .navlink { justify-content: center; padding: 8px 0; }
+[data-nav="collapsed"] .nav-collapse { transform: rotate(180deg); right: 12px; }
+/* Заголовок страницы в тулбаре: название экрана + пояснение */
+.page-head { display: flex !important; align-items: baseline; gap: 10px; margin-right: 6px; }
+.page-head h1 { margin: 0; font-size: 18px; letter-spacing: -.02em; white-space: nowrap; }
+.page-head span { color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
+@media (max-width: 1500px) { .page-head span { display: none; } }
 .profile { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .profile-copy { display: grid; text-align: right; line-height: 1.25; }
 .profile-copy small { color: var(--topbar-ink); }
@@ -445,7 +495,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .trip.critical { box-shadow: 0 0 0 3px var(--bad), 0 5px 14px rgb(120 60 50 / 35%); }
 .trip.rejected { opacity: .6; background-image: repeating-linear-gradient(45deg, rgb(0 0 0 / 16%) 0 5px, transparent 5px 10px); }
 .empty-state { display: grid; place-items: center; min-height: 350px; color: var(--muted); }
-.footer { display: flex; align-items: center; gap: 8px; padding: 0 16px; background: var(--navy); color: var(--topbar-ink); font-size: var(--fs-xs); }
+.footer { display: flex; align-items: center; gap: 8px; padding: 0 16px; background: var(--card); border-top: 1px solid var(--line); color: var(--faint); font-size: var(--fs-xs); font-family: var(--mono-font); }
 
 .page { min-height: calc(100vh - 54px); }
 .settings-layout { display: grid; grid-template-columns: 240px 1fr; }
@@ -463,6 +513,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .section-head .button { margin-left: auto; }
 .card { padding: 18px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--card); box-shadow: var(--shadow); }
 .card h2 { margin: 0 0 12px; color: var(--ink); font-size: var(--fs-md); }
+/* Секция в стиле среды СТ: первый заголовок карточки — полоса-шапка */
+.card > h2:first-child { margin: -18px -18px 14px; padding: 11px 18px; background: var(--panel2);
+  border-bottom: 1px solid var(--border2); border-radius: 11px 11px 0 0; font-size: 14px; }
 .fields { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 2px 14px; }
 .fields.three { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
 .check { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
@@ -473,6 +526,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
 table { width: 100%; border-collapse: collapse; background: var(--card); }
 th { padding: 9px 10px; background: var(--soft); color: var(--muted); font-size: 10px; text-align: left; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+/* Таблицы данных — шапка ультрамарином, как в «Рабочей среде СТ» */
+.table-wrap th { background: var(--th-bg); color: #fff; font-size: 10.5px; font-weight: 650; }
+.table-wrap td.num, .table-wrap td.mono { font-family: var(--mono-font); text-align: right; }
 td { padding: 9px 10px; border-top: 1px solid var(--grid); vertical-align: middle; }
 tbody tr:hover td { background: var(--hover); }
 .badge { display: inline-flex; padding: 3px 8px; border-radius: 12px; color: white; background: var(--muted); font-size: 10px; font-weight: 750; }
@@ -1246,7 +1302,7 @@ details.sales-rings summary { cursor: pointer; list-style: none; font-weight: 70
 details.sales-rings summary::-webkit-details-marker { display: none; }
 details.sales-rings summary::after { content: ' ▾'; color: var(--muted); }
 details.sales-rings[open] summary::after { content: ' ▴'; }
-.skpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; display: flex; flex-direction: column; gap: 2px; }
+.skpi { background: var(--card); border: 1px solid var(--line); border-top: 2px solid var(--accent); border-radius: 11px; padding: 9px 14px; display: flex; flex-direction: column; gap: 2px; box-shadow: var(--shadow); }
 /* Операционный отчёт руководителя (вместо панели приборов) */
 .brep { display: flex; flex-direction: column; gap: 14px; padding: 12px 16px 40px; }
 .brep-top { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 0; z-index: 9;
@@ -1338,7 +1394,7 @@ details.sales-rings[open] summary::after { content: ' ▴'; }
 .skpi-row.muted { cursor: default; }
 .skpi-row.muted:hover { background: transparent; }
 .skl { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
-.skv { font-size: 18px; font-weight: 800; color: var(--ink); }
+.skv { font-family: var(--mono-font); font-size: 20px; font-weight: 700; letter-spacing: -.02em; color: var(--ink); }
 /* Конвейер заявки: цвет левой кромки говорит, чей сейчас ход */
 .ordrow.pipe-mine { border-left: 3px solid var(--teal); background: color-mix(in srgb, var(--teal) 6%, var(--card)); }
 .ordrow.pipe-wait { border-left: 3px solid var(--line); }
