@@ -71,14 +71,14 @@ function printClaim(claim, settings, context) {
       <tr><td><b>Сумма к оплате</b></td><td><b>${money(claim.amount)}</b></td></tr>
     </table></div>`;
   context.showModal(`<div class="report printable-block">
-    <h3><span style="color:var(--teal);font-weight:800">ООО «ПегасЛогистик»</span></h3>
+    <h3><span style="color:var(--teal);font-weight:800">ООО «Пегас-Авто»</span></h3>
     <h2 style="margin:8px 0 2px">ПРЕТЕНЗИЯ ${claim.reason ? 'по срыву заявки' : 'по простою'} № ${escapeHtml(claim.order_no || '—')}-${claim.reason ? 'С' : claim.stop_kind === 'load' ? 'П' : 'В'}</h2>
-    <div class="geohint">Сформирована ${formatDateTime(claim.updated_at || claim.created_at)} · система PegasLogistic</div>
+    <div class="geohint">Сформирована ${formatDateTime(claim.updated_at || claim.created_at)} · система «Пегас-Авто · Планер»</div>
     <p style="margin:12px 0 4px"><b>Кому:</b> ${escapeHtml(claim.customer_name || '—')}</p>
     ${body}
     <p style="margin-top:10px">Основание: ${claim.reason
-      ? 'фиксация снятия рейса в системе PegasLogistic (причина, время отказа и назначенное ТС)'
-      : `отметки контроля перевозки в системе PegasLogistic
+      ? 'фиксация снятия рейса в системе «Пегас-Авто · Планер» (причина, время отказа и назначенное ТС)'
+      : `отметки контроля перевозки в системе «Пегас-Авто · Планер»
       (факты прибытия и завершения операции, зафиксированные диспетчером)`}.
       Просим оплатить указанную сумму либо направить мотивированный ответ.</p>
   </div>

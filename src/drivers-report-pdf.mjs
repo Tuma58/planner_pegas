@@ -25,7 +25,7 @@ export function renderDriversReportPdf({ from, to, drivers, park }) {
 
   pdf.text(ML, y, 'Водители: профиль и дисциплина', { size: 15, font: 'B' });
   y += 16;
-  pdf.text(ML, y, `Период ${fmtDay(from)} — ${fmtDay(to)} (конец не включается) · ПегасЛогистик, планер`, { size: 8.5, color: C.sec });
+  pdf.text(ML, y, `Период ${fmtDay(from)} — ${fmtDay(to)} (конец не включается) · Пегас-Авто · Планер`, { size: 8.5, color: C.sec });
   y += 12;
   pdf.text(ML, y, `Медианы парка: рейс целиком ${park.ve ?? '—'} км/ч · в движении ${park.vt ?? '—'} км/ч · ворота выгрузки ${park.gateUnloadH ?? '—'} ч · КИП ${park.kip ?? '—'}%`, { size: 8.5, color: C.sec });
   y += 12;

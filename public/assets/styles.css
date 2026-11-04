@@ -1,45 +1,79 @@
+/* Пегас-Авто · бренд-платформа v1 (ребрендинг 04.11.2026).
+   Бренд-токены — канон платформы; старые имена «ТК 21» (--navy, --teal,
+   --paper, --card…) оставлены мостом и смотрят на бренд, поэтому весь
+   остальной файл перекрашивается без правок. Новое — только через
+   бренд-токены. Светлая тема — :root, тёмная (рабочая по платформе,
+   дефолт для новых пользователей) — [data-theme="dark"]. */
 :root {
-  /* Палитра ТК 21 — приглушённая «промышленная» */
-  --navy: #2b3a47;
-  --navy-2: #374752;
-  --teal: #3f8a78;
-  --ink: #2a343d;
-  --paper: #eef1f3;
+  /* Ультрамарин 100…900: ядро 600/500, акцент интерфейса 700 (светлая) / 400 (тёмная) */
+  --u900: #15265e; --u800: #1b2f7a; --u700: #24409c; --u600: #2a44a0;
+  --u500: #3a57c4; --u400: #5b7be6; --u300: #8aa4f2; --u200: #c3d0f7; --u100: #e7ecfb;
+  --brand: #2f49b0; --brand-deep: #1b2f7a; --brand-bright: #5b7be6;
+  --logo-ink: #294894;
+  --canvas: #eef1f8; --panel: #fff; --faint: #8793ad;
+  --border: #d9deec; --border2: #ebeef6;
+  --accent: #2a44a0; --accent-soft: #e7ecfb; --th-bg: #1b2f7a;
+  --pos: #1f8a5b; --neg: #c23b43;
+  /* Цвета отделов закреплены платформой: Штаб — янтарь, Логистика — синий,
+     Эксплуатация — зелёный, ТОиР — бирюза */
+  --staff: #8a5f1a; --staff-bg: #fbf1dd; --log: #1f54a8; --log-bg: #e7eefb;
+  --drv: #1b744d; --drv-bg: #e3f3ea; --toir: #166b70; --toir-bg: #def0f1;
+  --mono-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --topbar-ink: rgb(255 255 255 / 72%);
+  --radius: 12px;
+
+  /* Мост «ТК 21» → бренд */
+  --navy: #1b2f7a;
+  --navy-2: #24409c;
+  --teal: #2a44a0;
+  --ink: #141b2e;
+  --paper: #eef1f8;
   --card: #ffffff;
-  --line: #e1e5e9;
-  --muted: #7b8691;
-  --soft: #f4f6f8;
-  --ok: #3f8a78;
-  --warn: #bd8f42;
-  --bad: #b45f52;
-  --plan: #8b96a1;
-  --grid: #f0f2f5;
-  --gridwe: #e9ecf0;
-  --hover: #f5f7f9;
+  --line: #d9deec;
+  --muted: #525d78;
+  --soft: #f2f5fc;
+  --ok: #1f8a5b;
+  --warn: #b07a1e;
+  --bad: #c23b43;
+  --plan: #8793ad;
+  --grid: #f3f5fb;
+  --gridwe: #e8ecf6;
+  --hover: #f2f5fc;
   --inp: #ffffff;
-  --panel2: #f2f7f7;
-  --shadow: 0 1px 2px rgb(30 45 60 / 6%), 0 1px 1px rgb(30 45 60 / 4%);
-  /* Шкалы отступов и типографики ТК 21 */
+  --panel2: #f2f5fc;
+  --shadow: 0 1px 2px rgb(20 30 70 / 6%), 0 2px 6px rgb(20 30 70 / 5%);
+  /* Шкалы отступов и типографики */
   --sp1: 4px; --sp2: 8px; --sp3: 12px; --sp4: 16px; --sp5: 24px;
   --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-md: 14px; --fs-lg: 18px; --fs-xl: 22px;
   color-scheme: light;
 }
 [data-theme="dark"] {
-  --navy: #161f28;
-  --navy-2: #1e2832;
-  --teal: #55b09a;
-  --ink: #dfe6ec;
-  --paper: #111720;
-  --card: #1a232d;
-  --line: #2b3641;
-  --muted: #8b96a1;
-  --soft: #1e2833;
-  --grid: #19212b;
-  --gridwe: #151d26;
-  --hover: #212b35;
-  --inp: #1f2933;
-  --panel2: #222d38;
-  --shadow: 0 1px 3px rgb(0 0 0 / 35%), 0 1px 2px rgb(0 0 0 / 25%);
+  --canvas: #0d1220; --panel: #161d2e; --faint: #6a7694;
+  --border: #293249; --border2: #1e2740;
+  --accent: #5b7be6; --accent-soft: #1a2550; --th-bg: #243372;
+  --pos: #3ecf8e; --neg: #f2666e;
+  --staff: #e2ad46; --staff-bg: rgb(226 173 70 / 16%); --log: #6ab0ff; --log-bg: rgb(106 176 255 / 16%);
+  --drv: #45cf92; --drv-bg: rgb(69 207 146 / 16%); --toir: #38c6cd; --toir-bg: rgb(56 198 205 / 16%);
+
+  --navy: #111831;
+  --navy-2: #1f2840;
+  --teal: #5b7be6;
+  --ink: #e9edf8;
+  --paper: #0d1220;
+  --card: #161d2e;
+  --line: #293249;
+  --muted: #9aa6c2;
+  --soft: #1f2840;
+  --ok: #3ecf8e;
+  --warn: #e2ad46;
+  --bad: #f2666e;
+  --plan: #6a7694;
+  --grid: #131a2a;
+  --gridwe: #10162a;
+  --hover: #1f2840;
+  --inp: #1a2236;
+  --panel2: #1f2840;
+  --shadow: 0 1px 3px rgb(0 0 0 / 40%), 0 2px 8px rgb(0 0 0 / 25%);
   color-scheme: dark;
 }
 
@@ -56,32 +90,46 @@ button { cursor: pointer; }
 a { color: inherit; text-decoration: none; }
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
-.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.mono { font-family: var(--mono-font); }
 .danger { color: var(--bad); }
 
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: .03em; }
-.brand-mark { width: 28px; height: 28px; color: #7fd6c0; }
-.brand small { color: #9fb4c6; font-weight: 500; margin-left: 4px; }
+/* Знак «Пегас-Авто» — на белой подложке (правило платформы), рядом
+   словесная часть: имя + «Планер · роль-экран». */
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand-plate {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 38px; padding: 3px 7px; border-radius: 9px; background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 20%);
+}
+.brand-plate img { height: 32px; width: auto; display: block; }
+.brand-word { display: grid; line-height: 1.1; }
+.brand-word b { font-size: 16px; font-weight: 800; color: #fff; }
+.brand-word small { color: var(--topbar-ink); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
 
 .login-page {
   display: grid;
   min-height: 100vh;
   grid-template-columns: minmax(320px, 42%) 1fr;
-  background: var(--navy);
+  background: var(--brand-deep);
 }
 .login-visual {
   display: flex; flex-direction: column; justify-content: space-between;
   padding: clamp(28px, 5vw, 68px);
   color: white;
   background:
-    radial-gradient(circle at 25% 25%, rgb(95 139 128 / 30%), transparent 28%),
-    linear-gradient(150deg, var(--navy-2), #1b2731 75%);
+    radial-gradient(circle at 78% 18%, rgb(91 123 230 / 35%), transparent 34%),
+    linear-gradient(155deg, var(--u700), var(--u900) 72%);
 }
 .login-visual h1 { max-width: 570px; margin: auto 0 12px; font-size: clamp(34px, 4vw, 62px); line-height: 1.02; }
-.login-visual p { max-width: 520px; margin: 0 0 auto; color: #bcd0dd; font-size: 16px; }
-.login-visual footer { color: #7f98aa; }
+.login-visual p { max-width: 520px; margin: 0 0 auto; color: var(--u200); font-size: 16px; }
+.login-visual footer { color: var(--u300); }
+.login-logo {
+  display: inline-flex; padding: 10px 14px; border-radius: 14px; background: #fff;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 25%);
+}
+.login-logo img { height: 92px; width: auto; display: block; }
 .login-panel { display: grid; place-items: center; padding: 24px; background: var(--paper); }
-.login-card { width: min(420px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 34px; box-shadow: var(--shadow); }
+.login-card { width: min(420px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 34px; box-shadow: var(--shadow); }
 .login-card h2 { margin: 0 0 6px; font-size: 24px; color: var(--ink); }
 .login-card > p { margin: 0 0 24px; color: var(--muted); }
 
@@ -130,16 +178,18 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .topbar {
   display: flex; align-items: center; gap: 24px; padding: 0 18px;
   background: var(--navy); color: white;
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
 }
+[data-theme="dark"] .topbar { border-bottom-color: var(--line); }
 .topnav { display: flex; align-self: stretch; gap: 3px; }
-.topnav a { display: flex; align-items: center; padding: 0 14px; color: #b9cbd8; font-weight: 650; }
+.topnav a { display: flex; align-items: center; padding: 0 14px; color: var(--topbar-ink); font-weight: 650; }
 .topnav a:hover, .topnav a.active { color: white; background: rgb(255 255 255 / 8%); }
-.topnav a.active { box-shadow: inset 0 -3px #7fd6c0; }
+.topnav a.active { box-shadow: inset 0 -3px var(--u400); }
 .profile { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .profile-copy { display: grid; text-align: right; line-height: 1.25; }
-.profile-copy small { color: #9fb4c6; }
+.profile-copy small { color: var(--topbar-ink); }
 .avatar { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--teal); font-weight: 800; }
-.icon-button { border: 0; background: transparent; color: #b9cbd8; padding: 6px; }
+.icon-button { border: 0; background: transparent; color: var(--topbar-ink); padding: 6px; }
 .icon-button:hover { color: white; }
 
 .toolbar {
@@ -150,7 +200,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .period-nav strong { min-width: 110px; text-align: center; color: var(--ink); text-transform: capitalize; font-size: var(--fs-sm); }
 .segmented { display: flex; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; }
 .segmented button { border: 0; background: var(--card); color: var(--muted); padding: 5px 9px; font-weight: 650; white-space: nowrap; }
-.segmented button.active { background: var(--navy); color: white; }
+.segmented button.active { background: var(--accent); color: white; }
+[data-theme="dark"] .segmented button.active { background: var(--u600); }
 .panel-tabs { flex-wrap: wrap; margin-bottom: 12px; }
 .panel-tabs button { flex: 1 1 auto; }
 .toolbar-end { margin-left: auto; display: flex; gap: 8px; }
@@ -912,7 +963,7 @@ input.warn-border { border-color: #c99a2e; }
 .undo-btn:disabled { opacity: 0.5; cursor: wait; }
 
 /* Переключатель темы */
-.theme-toggle { border: 0; background: transparent; color: #b9cbd8; padding: 6px; font-size: 15px; border-radius: 7px; }
+.theme-toggle { border: 0; background: transparent; color: var(--topbar-ink); padding: 6px; font-size: 15px; border-radius: 7px; }
 .theme-toggle:hover { color: white; background: rgb(255 255 255 / 8%); }
 
 /* Легенда зон (ТК 21) */

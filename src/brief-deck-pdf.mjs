@@ -55,7 +55,7 @@ export function renderBriefDeckPdf(deck) {
     pdf.line(ML, 78, W - MR, 78, { color: C.blue, width: 1.8 });
   };
   const footer = () => {
-    pdf.text(ML, H - 22, `PegasLogistic · сводка периода · цифры = штатный отчёт «Сводка периода» на ${deck.generatedAt}`,
+    pdf.text(ML, H - 22, `Пегас-Авто · сводка периода · цифры = штатный отчёт «Сводка периода» на ${deck.generatedAt}`,
       { size: 6.5, color: C.sub });
     pdf.text(W - MR, H - 22, String(pageNo), { size: 6.5, color: C.sub, align: 'right' });
   };
@@ -103,7 +103,7 @@ export function renderBriefDeckPdf(deck) {
     (B.base === 'month' ? ' (те же числа месяца)' : ' (предыдущий период той же длины)'), { size: 11, color: '#3a4656' });
   pdf.text(ML + 10, 312, `Автопарк: ${B.fleet} ТС в работе · выручка без НДС · все итоги — из штатного отчёта «Сводка периода»`,
     { size: 11, color: '#3a4656' });
-  pdf.text(ML + 10, H - 60, `ООО «ТК Пегас» · подготовлено автоматически из данных PegasLogistic · ${deck.generatedAt}`,
+  pdf.text(ML + 10, H - 60, `ООО «Пегас-Авто» · подготовлено автоматически из данных «Пегас-Авто · Планер» · ${deck.generatedAt}`,
     { size: 8, color: C.sub });
 
   // ── 2. Ключевые цифры ──

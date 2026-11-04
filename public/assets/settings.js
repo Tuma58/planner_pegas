@@ -600,7 +600,7 @@ function renderIntegration() {
         <span class="muted">Кнопка сохранит настройки сама и загрузит период (до года, кусками по 2 месяца).</span>
       </div>
     </div>
-    <div class="card"><h2>Импорт по контракту PegasLogistic v1.0</h2>
+    <div class="card"><h2>Импорт по контракту обмена v1.0</h2>
       <p class="muted">Для 1С поддерживаются геозоны или города из справочника. Повторная передача того же id обновляет рейс и не создает дубль.</p>
       <label class="field">JSON-массив<textarea id="contractImport" rows="8"
         placeholder='[{"id":"1С-0001","zoneFrom":"Пенза","zoneTo":"Москва","truck":"а001аа58","client":"ЧМПЗ АО","depDate":"2026-07-05","doneDate":"2026-07-06","revenue":95000,"status":"plan"}]'></textarea></label>

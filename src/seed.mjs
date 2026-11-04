@@ -188,8 +188,8 @@ export const defaultSettings = {
   // задаётся отдельно в notifyRules. По умолчанию только Telegram.
   notifyChannels: {},
   general: {
-    companyName: 'PegasLogistic',
-    appName: 'Диспетчерская',
+    companyName: 'Пегас-Авто',
+    appName: 'Планер',
     timezone: 'Europe/Moscow',
     horizonStart: '2026-07-01',
     horizonMonths: 13,

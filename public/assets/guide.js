@@ -3204,7 +3204,7 @@ export function setupGuide({ views, activeView, showModal }) {
   const printGuide = (ids, heading, backTo) => {
     const parts = GUIDES.filter(guide => ids.includes(guide.id));
     showModal(`<div class="report guide-print">
-      <h3><span style="color:var(--teal);font-weight:800">PegasLogistic</span> · ${heading}</h3>
+      <h3><span style="color:var(--teal);font-weight:800">Пегас-Авто</span> · ${heading}</h3>
       <div class="geohint">Сформировано ${stamp()} · действующий порядок работы в системе</div>
       ${parts.map(guide => `<section class="guide-sheet">
         <h2>${guide.title}</h2>

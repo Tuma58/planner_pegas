@@ -918,7 +918,7 @@ export function setupChat(state) {
           } else {
             beep('other');
           }
-          desktopNotify(`PegasLogistic · ${title.replace(/^[📢⚙🔒👥] ?/, '')}`, message.text);
+          desktopNotify(`Пегас-Авто · ${title.replace(/^[📢⚙🔒👥] ?/, '')}`, message.text);
         }
       }
       allMessages.sort((a, b) => a.id - b.id);
@@ -990,7 +990,7 @@ export function setupChat(state) {
     if (permission !== 'granted') { toast('Разрешите уведомления в браузере', 'error'); return; }
     localStorage.setItem('pl_chat_desktop', '1');
     desktopButton.textContent = '🖥';
-    desktopNotify('PegasLogistic', 'Всплывающие уведомления включены ✅');
+    desktopNotify('Пегас-Авто', 'Всплывающие уведомления включены ✅');
     toast('Всплывающие уведомления включены');
   };
   el('chatForm').onsubmit = async event => {

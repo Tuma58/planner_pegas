@@ -462,7 +462,7 @@ export async function renderBoss(container, context) {
   const savedScrolls = captureScrolls(container);
   container.dataset.bossTab = 'classic';
   container.innerHTML = `${bossTabs(state, 'classic')}<div class="bosswrap brep">
-    <div class="brep-title"><h2>PegasLogistic · операционный отчёт</h2>
+    <div class="brep-title"><h2>Пегас-Авто · операционный отчёт</h2>
       <span class="muted">${fmtDay(from)} – ${fmtDay(to)} · ${u.periodDays || u.days} дн · парк ${u.vehicles} сцепок
         · НДС 22%, ИП 7% · рейс по дате выгрузки</span></div>
     <div class="brep-top">
@@ -982,7 +982,7 @@ function briefDialog(context) {
           @media print { body { margin: 10mm; } }
         </style></head><body>
         <h1>⚡ Сводка периода ${fd(r.from)} – ${fd(r.to)}</h1>
-        <div class="sub">PegasLogistic · сформировано ${new Date().toLocaleString('ru-RU')}</div>
+        <div class="sub">Пегас-Авто · Планер · сформировано ${new Date().toLocaleString('ru-RU')}</div>
         ${lines.map(line => `<div class="line">${esc(line)}</div>`).join('')}
         ${chart(`Выручка по дням, т₽ без НДС${r.planPerDay ? ' (пунктир — план в день)' : ''}`,
     s.net, { plan: r.planPerDay, unit: t })}

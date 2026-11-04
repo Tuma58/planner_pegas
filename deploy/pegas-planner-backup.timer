@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily PegasLogistic database backup
+Description=Daily Pegas-Avto Planner database backup
 
 [Timer]
 # Значение по умолчанию; при деплое переопределяется drop-in override

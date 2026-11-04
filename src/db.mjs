@@ -1398,6 +1398,24 @@ function migrateColumns(db) {
   ensure('vehicle_dispositions', 'purpose', "TEXT NOT NULL DEFAULT ''");
   ensure('vehicle_dispositions', 'empty_km', 'REAL NOT NULL DEFAULT 0');
   ensure('vehicle_dispositions', 'driver_notified_at', 'TEXT');
+  // Ребрендинг «Пегас-Авто» (решение руководителя 04.11.2026): рабочая
+  // тема по платформе — тёмная, но только для НОВЫХ пользователей. Метка
+  // фиксирует момент перехода один раз; кто создан раньше и тему не
+  // выбирал — остаётся в привычной светлой.
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value)
+    VALUES('brand_dark_default_from', datetime('now'))`).run();
+  // Имя компании в Настройках: прежнее «PegasLogistic» → «Пегас-Авто»
+  // (разово, по метке; осознанно введённое другое имя не трогаем).
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='brand_rename_v1'`).get()) {
+    const row = db.prepare(`SELECT value_json FROM settings WHERE key='general'`).get();
+    if (row) {
+      const general = JSON.parse(row.value_json);
+      if (general.companyName === 'PegasLogistic') general.companyName = 'Пегас-Авто';
+      if (general.appName === 'Диспетчерская') general.appName = 'Планер';
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='general'`).run(JSON.stringify(general));
+    }
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('brand_rename_v1','1')`).run();
+  }
   ensure('vehicle_dispositions', 'departed_at', 'TEXT');
   ensure('vehicle_dispositions', 'arrived_at', 'TEXT');
   // Перецепка с датой (решение руководителя 21.09): applied_at — момент

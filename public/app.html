@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Планер · PegasLogistic</title>
+  <title>Пегас-Авто · Планер</title>
+  <link rel="icon" href="/assets/brand/pegas-symbol.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/leaflet.css">
   <link rel="stylesheet" href="/assets/styles.css">
   <script>document.documentElement.dataset.theme = localStorage.getItem('pl_theme') || 'light';</script>
@@ -12,8 +13,7 @@
   <div class="shell">
     <header class="topbar">
       <a class="brand" href="/planner">
-        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 14c3.5-1 6-3 8-7 .4 3 .1 5-1 7 2 .3 4-.2 6-2-.5 2.4-2 4.2-4.3 5.2 1.3 1 3 1.4 5.3 1.1-2.6 1.9-5.6 2.4-8.6 1.3C6.2 18.9 4.3 16.9 3 14z"/></svg>
-        PegasLogistic <small>диспетчерская</small>
+        <span class="brand-plate"><img src="/assets/brand/pegas-logo.svg" alt="Пегас-Авто"></span><span class="brand-word"><b>Пегас-Авто</b><small>Планер · диспетчерская</small></span>
       </a>
       <nav class="topnav">
         <a class="active" href="/planner">Планер</a>
@@ -70,7 +70,7 @@
       <section class="board" aria-label="Календарь рейсов"><div class="timeline" id="timeline"></div></section>
       <aside class="sidepanel" id="sidepanel"></aside>
     </main>
-    <footer class="footer"><strong>PegasLogistic</strong><span>· планер холодовой цепи</span></footer>
+    <footer class="footer"><strong>Пегас-Авто · Планер</strong><span>· рефрижераторная логистика FTL</span></footer>
   </div>
   <div id="modalRoot"></div>
   <script src="/vendor/leaflet.js"></script>

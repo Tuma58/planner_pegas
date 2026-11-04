@@ -1,5 +1,5 @@
 [Unit]
-Description=Backup PegasLogistic SQLite database
+Description=Backup Pegas-Avto Planner SQLite database
 
 [Service]
 Type=oneshot

@@ -794,7 +794,7 @@ export async function renderDashboard(container, context) {
   const savedScrolls = captureScrolls(container);
   const html = `<div class="dashwrap" id="dashRoot">
     <div class="dash-top">
-      <span class="dash-title">🏁 ПегасLogistic · план-факт</span>
+      <span class="dash-title">🏁 Пегас-Авто · план-факт</span>
       <span class="dash-clock" id="dashClock"></span>
       <span class="dash-upd muted">обновлено ${new Date().toLocaleTimeString('ru-RU',
         { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })} МСК · авто раз в 90 с</span>

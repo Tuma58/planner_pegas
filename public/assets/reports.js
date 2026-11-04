@@ -864,7 +864,7 @@ export async function buildReport(kind, from, to, data) {
   }
 
   return `<div class="report">
-    <h3><span style="color:var(--teal);font-weight:800">PegasLogistic</span> · ${REPORT_TITLES[kind] || 'Отчёт'}</h3>
+    <h3><span style="color:var(--teal);font-weight:800">Пегас-Авто</span> · ${REPORT_TITLES[kind] || 'Отчёт'}</h3>
     <div class="geohint">Период: ${fmtDay(from)} – ${fmtDay(to)} (${u.days} дн) · сформирован ${new Date().toLocaleDateString('ru-RU')}</div>
     ${body}
   </div>`;

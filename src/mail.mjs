@@ -100,7 +100,7 @@ export async function sendMail({
   if (!recipients.length) return { ok: false, error: 'SMTP: нет получателей' };
   const fromAddr = from || user;
   const bodyText = String(text || '');
-  const subjectText = String(subject || 'PegasLogistic').slice(0, 200);
+  const subjectText = String(subject || 'Пегас-Авто · Планер').slice(0, 200);
 
   let socket;
   try {

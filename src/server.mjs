@@ -302,7 +302,7 @@ async function geocodeQuery(query) {
   const osm = await fetch('https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
     format: 'jsonv2', addressdetails: '1', countrycodes: 'ru', limit: '5', q: query
   }), {
-    headers: { 'User-Agent': 'PegasLogistic/1.0 (dispatch planner; tkpegasnigovorin@gmail.com)' },
+    headers: { 'User-Agent': 'Pegas-Avto-Planner/1.0 (dispatch planner; tkpegasnigovorin@gmail.com)' },
     signal: AbortSignal.timeout(7000)
   });
   if (!osm.ok) throw new Error(`Источник геокодинга недоступен (${osm.status})`);
@@ -688,7 +688,7 @@ async function dispatchMail(to, text, subject) {
     password,
     from: smtp.from || smtp.user,
     to,
-    subject: subject || 'PegasLogistic',
+    subject: subject || 'Пегас-Авто · Планер',
     text: String(text || '')
   });
 }
@@ -2604,7 +2604,7 @@ function verifyTgWebAppInitData(initData) {
 function driverAppAuth(body, response) {
   const tgUser = verifyTgWebAppInitData(body.initData);
   if (!tgUser?.id) {
-    errorJson(response, 401, 'Откройте приложение кнопкой из бота ПегасЛогистик');
+    errorJson(response, 401, 'Откройте приложение кнопкой из бота «Пегас-Авто»');
     return null;
   }
   const driver = db.prepare(`SELECT * FROM drivers WHERE telegram_chat_id=?`)
@@ -5448,7 +5448,7 @@ async function processDriverUpdate(update, token) {
       if (/^\/start/.test(text) || !driver) {
         tgApi('sendMessage', { chat_id: chatId,
           text: driver ? 'Вы привязаны. Вопрос диспетчеру — просто напишите его здесь.'
-            : 'Здравствуйте! Это бот водителей ПегасЛогистик. Нажмите кнопку ниже, чтобы привязаться.',
+            : 'Здравствуйте! Это бот водителей «Пегас-Авто». Нажмите кнопку ниже, чтобы привязаться.',
           reply_markup: driver ? undefined : { keyboard: [[{ text: '📱 Поделиться контактом',
             request_contact: true }]], resize_keyboard: true, one_time_keyboard: true } }, token);
         return;
@@ -7439,6 +7439,15 @@ function scheduleSmallRebuild() {
     try { rebuildSmallCache(); } catch (error) { console.error('small-кэш:', error.message); }
   }, 1_500);
 }
+// Тема по умолчанию (ребрендинг 04.11): тёмная — для пользователей,
+// созданных после перехода на бренд «Пегас-Авто»; прежние, не выбиравшие
+// тему, остаются в светлой.
+function defaultThemeFor(userId) {
+  const from = db.prepare(`SELECT value FROM app_meta WHERE key='brand_dark_default_from'`).get()?.value;
+  const created = db.prepare('SELECT created_at FROM users WHERE id=?').get(userId)?.created_at;
+  return from && created && created >= from ? 'dark' : 'light';
+}
+
 // Канон эксплуатации за период — вынесен из /api/park-report, чтобы теми же
 // цифрами жили отчёт руководителя /ops-report и ежедневная сводка в ТГ.
 function parkReportData(from, to) {
@@ -11445,7 +11454,7 @@ async function api(request, response, url) {
       return json(response, 200, { ok: false, error: 'Тест SMS только на production (NODE_ENV)' });
     }
     const result = await dispatchSms([phone],
-      String(body.text || 'PegasLogistic: тест SMS-канала').slice(0, 200));
+      String(body.text || 'Пегас-Авто: тест SMS-канала').slice(0, 200));
     audit(db, user, 'test', 'notify_sms', null, { phone: phoneDigits(phone), ok: result.ok },
       requestIp(request));
     return json(response, result.ok ? 200 : 422, result);
@@ -11461,8 +11470,8 @@ async function api(request, response, url) {
       return json(response, 200, { ok: false, error: 'Тест SMTP только на production (NODE_ENV)' });
     }
     const result = await dispatchMail(to,
-      String(body.text || 'PegasLogistic: тест SMTP-канала (reg.ru).'),
-      String(body.subject || 'PegasLogistic — тест почты').slice(0, 120));
+      String(body.text || 'Пегас-Авто: тест SMTP-канала (reg.ru).'),
+      String(body.subject || 'Пегас-Авто — тест почты').slice(0, 120));
     audit(db, user, 'test', 'notify_smtp', null, { to, ok: result.ok }, requestIp(request));
     return json(response, result.ok ? 200 : 422, result);
   }
@@ -14555,7 +14564,7 @@ async function api(request, response, url) {
     if (!user) return;
     const item = db.prepare('SELECT * FROM user_preferences WHERE user_id=?').get(user.id);
     return json(response, 200, {
-      theme: item?.theme || 'light',
+      theme: item?.theme || defaultThemeFor(user.id),
       preferences: item ? JSON.parse(item.preferences_json) : {}
     });
   }
@@ -15408,7 +15417,7 @@ export const server = http.createServer(async (request, response) => {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   server.listen(config.port, config.host, () => {
-    console.log(`PegasLogistic: http://${config.host}:${config.port}`);
+    console.log(`Пегас-Авто · Планер: http://${config.host}:${config.port}`);
     if (!config.isProduction && config.admin.password === 'ChangeMe-2026!') {
       console.warn('Первый вход: admin / ChangeMe-2026! — смените пароль в настройках.');
     }
@@ -15418,7 +15427,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const shutdown = signal => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`Получен ${signal}, штатная остановка PegasLogistic`);
+    console.log(`Получен ${signal}, штатная остановка «Пегас-Авто · Планер»`);
     closeServer().then(() => process.exit(0));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
