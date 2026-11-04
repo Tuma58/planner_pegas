@@ -15334,6 +15334,30 @@ export const server = http.createServer(async (request, response) => {
     if (!networkAccessAllowed(request, url.pathname)) {
       return errorJson(response, 403, 'Подключение из вашей сети запрещено администратором');
     }
+    // ── ЛАБОРАТОРИЯ: вход без пароля на время разработки (просьба
+    // руководителя 04.11). Живёт ТОЛЬКО в рабочей копии design-lab; при
+    // переносе в планер этот блок удаляется. Тройная защита: переменная
+    // LAB_AUTOLOGIN (логин), не продакшен, запрос с этой же машины.
+    // «/» входит, только если сессии нет (уже вошедший под другой ролью
+    // остаётся); /__lab-login — всегда под LAB_AUTOLOGIN.
+    if (request.method === 'GET'
+        && (url.pathname === '/__lab-login' || (url.pathname === '/' && !currentUser(request)))
+        && process.env.LAB_AUTOLOGIN && !config.isProduction
+        && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress)) {
+      const user = db.prepare('SELECT * FROM users WHERE username=? AND active=1')
+        .get(process.env.LAB_AUTOLOGIN);
+      if (user) {
+        const token = newSessionToken();
+        const expires = new Date(Date.now() + config.sessionTtlMs).toISOString();
+        db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
+          .run(tokenHash(token), user.id, expires);
+        response.writeHead(302, {
+          Location: '/planner',
+          'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
+        });
+        return response.end();
+      }
+    }
     if (url.pathname.startsWith('/api/')) await api(request, response, url);
     else if (url.pathname === '/ops-report') {
       const user = currentUser(request);
