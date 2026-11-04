@@ -1276,8 +1276,27 @@ export function demurrageCases(db, nowMs = Date.now()) {
       v.plate vehicle_plate,v.trailer_plate,v.driver_name
     FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
     WHERE t.status<>'rejected' AND t.ends_at>?`).all(since);
-  const orderStmt = db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL AND (trip_id=? OR id=?)`);
-  const stopsStmt = db.prepare(`SELECT * FROM trip_stops WHERE trip_id=? ORDER BY seq`);
+  // Батч вместо N+1 (04.11, находка Э0 «Скорости»): по запросу заказа и
+  // точек на КАЖДЫЙ из ~2,5 тыс. рейсов окна этот расчёт держал event
+  // loop ~1,5 с на каждой пересборке кэша — теперь три запроса на всех.
+  const ordersBatch = db.prepare(`SELECT * FROM orders
+    WHERE deleted_at IS NULL AND (
+      trip_id IN (SELECT id FROM trips WHERE status<>'rejected' AND ends_at>?)
+      OR id IN (SELECT order_id FROM trips
+        WHERE status<>'rejected' AND ends_at>? AND order_id IS NOT NULL))`).all(since, since);
+  const orderByTrip = new Map();
+  const orderById = new Map();
+  for (const order of ordersBatch) {
+    if (order.trip_id) orderByTrip.set(order.trip_id, order);
+    orderById.set(order.id, order);
+  }
+  const stopsByTrip = new Map();
+  for (const stop of db.prepare(`SELECT s.* FROM trip_stops s
+      JOIN trips t ON t.id=s.trip_id
+      WHERE t.status<>'rejected' AND t.ends_at>? ORDER BY s.trip_id, s.seq`).all(since)) {
+    if (!stopsByTrip.has(stop.trip_id)) stopsByTrip.set(stop.trip_id, []);
+    stopsByTrip.get(stop.trip_id).push(stop);
+  }
   const cases = [];
   const push = (trip, order, kind, point, planMs, arrivedMs, endMs, open) => {
     const customer = trip.customer_name || order?.customer_name || '';
@@ -1304,8 +1323,8 @@ export function demurrageCases(db, nowMs = Date.now()) {
     });
   };
   for (const trip of trips) {
-    const order = orderStmt.get(trip.id, trip.order_id || '');
-    const stops = stopsStmt.all(trip.id);
+    const order = orderByTrip.get(trip.id) || (trip.order_id ? orderById.get(trip.order_id) : null) || null;
+    const stops = stopsByTrip.get(trip.id) || [];
     const firstLoad = stops.find(stop => stop.kind === 'P');
     const lastUnload = [...stops].reverse().find(stop => stop.kind === 'D');
     // Погрузка: план — окно «с» заявки; факты — первая P-стоянка,

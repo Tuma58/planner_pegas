@@ -12,6 +12,10 @@ import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, help
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { expenseFingerprint, expensesAccess, expensesSummary, validateExpense } from './expenses.mjs';
+import { createPerfRegistry } from './perf.mjs';
+
+// ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
+const perf = createPerfRegistry();
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -1411,7 +1415,7 @@ function runForecastSnapshot() {
     const snapshot = forecastMonth(db);
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('dashboard_forecast',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(snapshot));
-    bootstrapCache.at = 0; // снимок едет в bootstrap — сбросить кэш
+    bootstrapCache.at = 0; heavyCache.at = 0; // снимок едет в bootstrap — сбросить кэш
     console.log(`снимок прогноза ${snapshot.date}: ${(snapshot.forecast / 1e6).toFixed(1)} млн`);
     if (prev?.recentDays) {
       // Те же дни сейчас: разница = отметки, поставленные задним числом.
@@ -7314,6 +7318,71 @@ function normalizeTrip(body) {
 }
 
 let bootstrapCache = { at: 0, shared: '', rev: '' };
+// Тяжёлые разделы полного снимка (trips/orders) — свой короткий кэш:
+// в тиках они едут дельтой, полный нужен входам и часовому рефрешу.
+let heavyCache = { at: 0, json: '' };
+
+// Сборка «мелких» секций снимка (всё, кроме trips/orders): стоит до
+// секунд (демередж), поэтому лёгкий rev-путь её НЕ зовёт — протухший
+// кэш пересобирается фоном с отложкой (scheduleSmallRebuild).
+function rebuildSmallCache() {
+  const shared = JSON.stringify({
+    settings: plannerSettings(), reference: allReferenceData(),
+    vehicles: listVehicles(), dispositions: listDispositions(),
+    drivers: db.prepare(`SELECT d.*,v.plate vehicle_plate FROM drivers d
+      LEFT JOIN vehicles v ON v.id=d.vehicle_id
+      WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
+    revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
+    // Утренний снимок прогноза (07:00 МСК) — устойчивая цифра дашборда.
+    forecastSnapshot: (() => {
+      try {
+        const row = db.prepare(`SELECT value FROM app_meta WHERE key='dashboard_forecast'`).get();
+        return row ? JSON.parse(row.value) : null;
+      } catch { return null; }
+    })(),
+    driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
+      FROM driver_assignments a
+      LEFT JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
+      WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
+    orderFiles: db.prepare(`SELECT f.id,f.order_id,f.file_name,f.mime,f.size,f.uploaded_at,
+        u.full_name uploaded_by
+      FROM order_files f LEFT JOIN users u ON u.id=f.uploaded_by
+      JOIN orders o ON o.id=f.order_id AND o.deleted_at IS NULL
+      ORDER BY f.uploaded_at`).all(),
+    routeSpots: db.prepare(`SELECT s.* FROM route_spots s JOIN routes r ON r.id=s.route_id
+      WHERE r.status IN ('draft','handed','assigned') ORDER BY s.seq`).all(),
+    routes: db.prepare(`SELECT r.*,v.plate vehicle_plate FROM routes r
+      LEFT JOIN vehicles v ON v.id=r.vehicle_id
+      WHERE r.status IN ('draft','handed','assigned')
+      ORDER BY r.created_at DESC`).all(),
+    demurrage: demurrageSummary(db),
+    customerDates: upcomingCustomerDates(db, Date.now(), 7),
+    vehicleHolds: db.prepare(`SELECT h.vehicle_id, h.until, h.note, h.held_by_name
+      FROM vehicle_holds h WHERE datetime(h.until) > datetime('now')`).all(),
+    boardNotes: activeBoardNotes(),
+    driverRatings: driverRatings(db),
+    attendanceLastDay: db.prepare('SELECT MAX(day) d FROM driver_attendance').get().d,
+    // Черновики ночного подбора: утром логист подтверждает одним кликом.
+    assignDrafts: db.prepare(`SELECT d.order_id, d.vehicle_id, d.empty_km, d.reason,
+        d.computed_at, v.plate vehicle_plate
+      FROM assign_drafts d JOIN vehicles v ON v.id=d.vehicle_id
+      JOIN orders o ON o.id=d.order_id
+      WHERE d.outcome IS NULL AND o.trip_id IS NULL`).all(),
+    // Закрепление машин по кругам («План парка»): «Потоки» помечают
+    // кандидатов чужого направления бейджем круга.
+    roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
+  });
+  bootstrapCache = { at: Date.now(), shared,
+    rev: createHash('sha1').update(shared).digest('hex').slice(0, 16) };
+}
+let smallRebuildTimer = null;
+function scheduleSmallRebuild() {
+  if (smallRebuildTimer) return;
+  smallRebuildTimer = setTimeout(() => {
+    smallRebuildTimer = null;
+    try { rebuildSmallCache(); } catch (error) { console.error('small-кэш:', error.message); }
+  }, 1_500);
+}
 // Канон эксплуатации за период — вынесен из /api/park-report, чтобы теми же
 // цифрами жили отчёт руководителя /ops-report и ежедневная сводка в ТГ.
 function parkReportData(from, to) {
@@ -7533,7 +7602,7 @@ function parkReportData(from, to) {
 
 async function api(request, response, url) {
   // Любая мутация делает кэш снимка устаревшим: следующий GET соберёт свежий.
-  if (request.method !== 'GET') bootstrapCache.at = 0;
+  if (request.method !== 'GET') { bootstrapCache.at = 0; heavyCache.at = 0; }
   if (!mutationOriginAllowed(request)) return errorJson(response, 403, 'Недопустимый Origin');
   const pathname = url.pathname;
 
@@ -7639,63 +7708,80 @@ async function api(request, response, url) {
   // 10 секунд на всех (любая мутация сбрасывает кэш мгновенно — свои действия
   // видны сразу), а лёгкий /api/bootstrap/rev позволяет тихому автообновлению
   // вообще не качать снимок, пока данные не изменились.
-  if (request.method === 'GET' && (pathname === '/api/bootstrap' || pathname === '/api/bootstrap/rev')) {
+  if (request.method === 'GET' && (pathname === '/api/bootstrap'
+    || pathname === '/api/bootstrap/rev' || pathname === '/api/bootstrap/delta')) {
     const user = requireUser(request, response);
     if (!user) return;
     const dateFilter = url.searchParams.get('date') || '';
-    if (!dateFilter && (!bootstrapCache.shared || Date.now() - bootstrapCache.at > 10_000)) {
-      const shared = JSON.stringify({
-      settings: plannerSettings(), reference: allReferenceData(),
-      vehicles: listVehicles(), trips: listTrips(''),
-      orders: listOrders(), dispositions: listDispositions(),
-      drivers: db.prepare(`SELECT d.*,v.plate vehicle_plate FROM drivers d
-        LEFT JOIN vehicles v ON v.id=d.vehicle_id
-        WHERE d.status<>'fired' ORDER BY d.full_name`).all(),
-      revenuePlans: db.prepare('SELECT * FROM revenue_plans ORDER BY period_start').all(),
-      // Утренний снимок прогноза (07:00 МСК) — устойчивая цифра дашборда.
-      forecastSnapshot: (() => {
-        try {
-          const row = db.prepare(`SELECT value FROM app_meta WHERE key='dashboard_forecast'`).get();
-          return row ? JSON.parse(row.value) : null;
-        } catch { return null; }
-      })(),
-      driverAssignments: db.prepare(`SELECT a.*,d.full_name driver_name,v.plate vehicle_plate
-        FROM driver_assignments a
-        LEFT JOIN drivers d ON d.id=a.driver_id JOIN vehicles v ON v.id=a.vehicle_id
-        WHERE a.ends_at > datetime('now','-30 days') ORDER BY a.starts_at`).all(),
-      orderFiles: db.prepare(`SELECT f.id,f.order_id,f.file_name,f.mime,f.size,f.uploaded_at,
-          u.full_name uploaded_by
-        FROM order_files f LEFT JOIN users u ON u.id=f.uploaded_by
-        JOIN orders o ON o.id=f.order_id AND o.deleted_at IS NULL
-        ORDER BY f.uploaded_at`).all(),
-      routeSpots: db.prepare(`SELECT s.* FROM route_spots s JOIN routes r ON r.id=s.route_id
-        WHERE r.status IN ('draft','handed','assigned') ORDER BY s.seq`).all(),
-      routes: db.prepare(`SELECT r.*,v.plate vehicle_plate FROM routes r
-        LEFT JOIN vehicles v ON v.id=r.vehicle_id
-        WHERE r.status IN ('draft','handed','assigned')
-        ORDER BY r.created_at DESC`).all(),
-      demurrage: demurrageSummary(db),
-      customerDates: upcomingCustomerDates(db, Date.now(), 7),
-      vehicleHolds: db.prepare(`SELECT h.vehicle_id, h.until, h.note, h.held_by_name
-        FROM vehicle_holds h WHERE datetime(h.until) > datetime('now')`).all(),
-      boardNotes: activeBoardNotes(),
-      driverRatings: driverRatings(db),
-      attendanceLastDay: db.prepare('SELECT MAX(day) d FROM driver_attendance').get().d,
-      // Черновики ночного подбора: утром логист подтверждает одним кликом.
-      assignDrafts: db.prepare(`SELECT d.order_id, d.vehicle_id, d.empty_km, d.reason,
-          d.computed_at, v.plate vehicle_plate
-        FROM assign_drafts d JOIN vehicles v ON v.id=d.vehicle_id
-        JOIN orders o ON o.id=d.order_id
-        WHERE d.outcome IS NULL AND o.trip_id IS NULL`).all(),
-      // Закрепление машин по кругам («План парка»): «Потоки» помечают
-      // кандидатов чужого направления бейджем круга.
-      roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
-      });
-      bootstrapCache = { at: Date.now(), shared,
-        rev: createHash('sha1').update(shared).digest('hex').slice(0, 16) };
+    const smallStale = !bootstrapCache.shared || Date.now() - bootstrapCache.at > 10_000;
+    if (!dateFilter && smallStale) {
+      // Лёгкий rev-путь никогда не собирает кэш сам: сборка мелких
+      // секций стоит до секунд (демередж), а rev зовётся каждым тиком
+      // каждого клиента. Протухший кэш пересобирается фоном, rev отдаёт
+      // прежний hash — клиент увидит смену минутой позже, это дешевле
+      // секундной блокировки всех на каждом тике (урок Э0: нашли
+      // demurrageCases 1,5 с внутри пересборки).
+      if (pathname === '/api/bootstrap/rev' && bootstrapCache.shared) {
+        scheduleSmallRebuild();
+      } else {
+        rebuildSmallCache();
+      }
     }
+    // Синхро-паспорт тяжёлых разделов: максимум updated_at и счётчик по
+    // тем же окнам, что отдают listTrips/listOrders. Композитный rev
+    // совместим со старым клиентом (любое изменение — новая строка).
+    const tripsSync = db.prepare(`SELECT COUNT(*) n, COALESCE(MAX(updated_at),'') at FROM trips t
+      WHERE t.status IN ('plan','run')
+        OR (t.status='rejected' AND datetime(t.updated_at) >= datetime('now','-30 days'))
+        OR (t.status IN ('unloaded','done','paid')
+          AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime('now','-92 days'))`).get();
+    const ordersSync = db.prepare(`SELECT COUNT(*) n, COALESCE(MAX(updated_at),'') at FROM orders o
+      WHERE o.deleted_at IS NULL
+        AND (o.status='new' OR o.trip_id IS NULL
+          OR datetime(o.window_to) >= datetime('now','-92 days'))`).get();
+    const syncInfo = {
+      small: bootstrapCache.rev,
+      trips: { n: tripsSync.n, at: tripsSync.at },
+      orders: { n: ordersSync.n, at: ordersSync.at }
+    };
+    const compositeRev = `${bootstrapCache.rev}:${tripsSync.at}·${tripsSync.n}:${ordersSync.at}·${ordersSync.n}`;
     if (pathname === '/api/bootstrap/rev') {
-      return json(response, 200, { rev: dateFilter ? '' : bootstrapCache.rev });
+      return json(response, 200, dateFilter ? { rev: '' } : { rev: compositeRev, sync: syncInfo });
+    }
+    // part=small: только мелкие секции + паспорт — тик забирает их,
+    // когда изменился их собственный hash, без 17 МБ рейсов и заявок.
+    if (!dateFilter && url.searchParams.get('part') === 'small') {
+      const body = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
+        `"sync":${JSON.stringify(syncInfo)},` + bootstrapCache.shared.slice(1);
+      response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
+      return response.end(body);
+    }
+    // Дельта тяжёлых разделов: только строки, изменённые с «since»
+    // клиента (>= и дедуп по id на клиенте — одновременные правки одной
+    // секунды не теряются). Удалённые заявки приходят с deleted_at —
+    // клиент их выкидывает. Это типовой тик: килобайты вместо 17 МБ.
+    if (pathname === '/api/bootstrap/delta') {
+      const tripsSince = String(url.searchParams.get('tripsSince') || '').slice(0, 30);
+      const ordersSince = String(url.searchParams.get('ordersSince') || '').slice(0, 30);
+      const trips = tripsSince ? db.prepare(`SELECT t.*,v.plate vehicle_plate,v.trailer_plate,
+          v.driver_name,vt.name vehicle_type,
+          f.name from_name,f.color from_color,d.name to_name,d.color to_color
+        FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+        JOIN vehicle_types vt ON vt.id=v.type_id JOIN zones f ON f.id=t.from_zone_id
+        JOIN zones d ON d.id=t.to_zone_id
+        WHERE t.updated_at >= ? AND (t.status IN ('plan','run')
+          OR (t.status='rejected' AND datetime(t.updated_at) >= datetime('now','-30 days'))
+          OR (t.status IN ('unloaded','done','paid')
+            AND datetime(COALESCE(t.unloaded_at, t.ends_at)) >= datetime('now','-92 days')))
+        ORDER BY t.starts_at`).all(tripsSince) : [];
+      const orders = ordersSince ? db.prepare(`SELECT o.*,f.name from_name,t.name to_name
+        FROM orders o JOIN zones f ON f.id=o.from_zone_id JOIN zones t ON t.id=o.to_zone_id
+        WHERE o.updated_at >= ? AND (o.deleted_at IS NOT NULL
+          OR o.status='new' OR o.trip_id IS NULL
+          OR datetime(o.window_to) >= datetime('now','-92 days'))
+        ORDER BY o.window_from`).all(ordersSince) : [];
+      return json(response, 200, { rev: compositeRev, sync: syncInfo, trips, orders });
     }
     if (dateFilter) {
       // Редкий путь с фильтром даты — без кэша, как раньше.
@@ -7741,7 +7827,15 @@ async function api(request, response, url) {
       roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
       });
     }
-    const body = `{"user":${JSON.stringify(publicUser(user))},"rev":"${bootstrapCache.rev}",` +
+    // Полный снимок (вход, смена справочников, плановый часовой рефреш):
+    // тяжёлые разделы собираются с коротким кэшем — вход утром у всех
+    // одновременно не перепечатывает 17 МБ по разу на человека.
+    if (!heavyCache.json || Date.now() - heavyCache.at > 10_000) {
+      heavyCache = { at: Date.now(),
+        json: `"trips":${JSON.stringify(listTrips(''))},"orders":${JSON.stringify(listOrders())}` };
+    }
+    const body = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
+      `"sync":${JSON.stringify(syncInfo)},${heavyCache.json},` +
       bootstrapCache.shared.slice(1);
     response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
       'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
@@ -13150,6 +13244,20 @@ async function api(request, response, url) {
   // канонические имена, что каждый учит, текущее выученное значение, кламп
   // здравого смысла и где смотреть дрейф. Руководитель обращается к
   // процессам по этим именам.
+  // ⚙ Скорость (Э0): срез таймингов API и клиентских маячков — читает
+  // руководитель; маячок шлёт любой залогиненный клиент раз в ~3 минуты.
+  if (request.method === 'GET' && pathname === '/api/perf') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    return json(response, 200, perf.snapshot());
+  }
+  if (request.method === 'POST' && pathname === '/api/perf-beacon') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request, 10_000);
+    perf.beacon(user.full_name || user.username, body || {});
+    return json(response, 200, { ok: true });
+  }
   if (request.method === 'GET' && pathname === '/api/self-tuning') {
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;
@@ -13286,6 +13394,18 @@ async function api(request, response, url) {
         })(),
         clamp: 'порог = цель ×1,5 · минимум 3 образца ворот · не чаще раза в сутки на человека по клиенту',
         drift: 'счётчики здесь; правило с перевесом 👎 отключается решением руководителя' },
+      { name: '⚙ Скорость планера (Э0, 04.11)',
+        learns: 'тайминги каждого API: p50/p95/максимум и отданные байты; клиентские маячки — сколько длится тик и где виснет. Полный срез — GET /api/perf',
+        value: (() => {
+          const snap = safe(() => perf.snapshot());
+          if (!snap || !snap.endpoints.length) return 'замеры копятся с рестарта';
+          const top = snap.endpoints.slice(0, 3).map(row =>
+            `${row.path}: p95 ${row.p95} мс · ${row.count} выз. · ${row.mb} МБ`);
+          const worst = snap.clients[0];
+          return top.join(' | ') + (worst ? ` || худший тик: ${worst.name} ${worst.tickMs} мс (${worst.view})` : '');
+        })(),
+        clamp: `порог «медленного» — настройка performance.slowMs (сейчас ${Number(settingsObject(db).performance?.slowMs ?? 500) || 500} мс)`,
+        drift: 'срез живёт с рестарта; деградация видна до жалоб' },
       { name: 'Норматив решения возврата (внештатки Э2)',
         learns: 'медиана дней «возврат создан → закрыт» по закрытым возвратам (мин 5 образцов); возврат старше норматива — напоминание продажам раз в сутки',
         value: (() => {
@@ -15011,6 +15131,30 @@ function staticFile(request, response, url) {
 
 export const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+  // ⚙ Скорость (Э0): каждый API-ответ меряется — время, байты, статус.
+  // Медленные (порог из настроек) попадают в лог с путём и длительностью.
+  if (url.pathname.startsWith('/api/')) {
+    const startedNs = process.hrtime.bigint();
+    let sentBytes = 0;
+    const plainWrite = response.write.bind(response);
+    const plainEnd = response.end.bind(response);
+    response.write = (chunk, ...rest) => {
+      if (chunk) sentBytes += Buffer.byteLength(chunk);
+      return plainWrite(chunk, ...rest);
+    };
+    response.end = (chunk, ...rest) => {
+      if (chunk && typeof chunk !== 'function') sentBytes += Buffer.byteLength(chunk);
+      return plainEnd(chunk, ...rest);
+    };
+    response.once('finish', () => {
+      const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
+      const key = perf.record(url.pathname, ms, sentBytes, response.statusCode);
+      const slowMs = Number(settingsObject(db).performance?.slowMs ?? 500) || 500;
+      if (ms >= slowMs) {
+        console.log(`⚙ медленный ответ: ${key} · ${Math.round(ms)} мс · ${Math.round(sentBytes / 1024)} КБ · ${response.statusCode}`);
+      }
+    });
+  }
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Referrer-Policy', 'same-origin');
   response.setHeader('X-Frame-Options', 'DENY');

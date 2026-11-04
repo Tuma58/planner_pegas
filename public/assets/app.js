@@ -2449,11 +2449,19 @@ async function autoRefreshTick(force = false) {
   // или водил мышью по списку, обновление ждёт следующего тика.
   if (!force && Date.now() - lastUserActivity < 8_000) return;
   // Лёгкая проверка версии: подавляющее большинство тиков заканчивается
-  // здесь — ни 10 МБ снимка, ни перерисовки, экран не шелохнётся.
+  // здесь — ни снимка, ни перерисовки, экран не шелохнётся.
+  const tickStarted = performance.now();
   if (state.dataRev) {
     try {
-      const { rev } = await api('/api/bootstrap/rev');
-      if (rev && rev === state.dataRev) { lastAutoRefresh = Date.now(); return; }
+      const info = await api('/api/bootstrap/rev');
+      if (info.rev && info.rev === state.dataRev) { lastAutoRefresh = Date.now(); return; }
+      // Э1 диеты тика (04.11): изменившееся доезжает дельтой (килобайты),
+      // полный снимок 21 МБ — входам и плановому часовому рефрешу
+      // (сходимость после пропущенных дельт и выпадения из окна истории).
+      if (info.sync && state.data?.sync && Date.now() - lastFullRefresh < 60 * 60_000) {
+        const applied = await applyDeltaTick(info, tickStarted);
+        if (applied) { lastAutoRefresh = Date.now(); return; }
+      }
     } catch {
       byId('syncState').textContent = '● нет связи — повторю через минуту';
       return;
@@ -2498,15 +2506,103 @@ async function autoRefreshTick(force = false) {
   // Восстанавливаем сразу: блоки, чья разметка не изменилась, вообще не
   // перерисовывались, остальным возвращаем позицию до кадра отрисовки.
   restoreViewScroll(viewScroll);
+  lastFullRefresh = Date.now();
+  sendPerfBeacon(tickStarted, 'full');
 }
 
+// Слияние дельты с локальным списком по id: изменённые заменяются,
+// новые добавляются, заявки с deleted_at выкидываются; порядок
+// восстанавливается сортировкой — потребители рассчитывают на неё.
+function mergeById(list, changed, sortKey, dropDeleted = false) {
+  if (!changed.length) return list;
+  const byId = new Map(list.map(item => [item.id, item]));
+  for (const item of changed) {
+    if (dropDeleted && item.deleted_at) byId.delete(item.id);
+    else byId.set(item.id, item);
+  }
+  return [...byId.values()]
+    .sort((a, b) => String(a[sortKey] || '').localeCompare(String(b[sortKey] || '')));
+}
+
+// Дельта-тик (Э1): сверив паспорт разделов, забирает только изменившееся.
+// true — тик обслужен (или отложен щитом ввода до следующего), false —
+// нужен полный снимок (слишком большая дельта или ошибка).
+async function applyDeltaTick(info, tickStarted) {
+  const sync = state.data.sync;
+  const tripsChanged = info.sync.trips.at !== sync.trips.at || info.sync.trips.n !== sync.trips.n;
+  const ordersChanged = info.sync.orders.at !== sync.orders.at || info.sync.orders.n !== sync.orders.n;
+  const smallChanged = info.sync.small !== sync.small;
+  if (!tripsChanged && !ordersChanged && !smallChanged) {
+    state.dataRev = info.rev;
+    state.data.rev = info.rev;
+    state.data.sync = info.sync;
+    return true;
+  }
+  let delta = null;
+  let small = null;
+  try {
+    if (tripsChanged || ordersChanged) {
+      delta = await api('/api/bootstrap/delta?' +
+        (tripsChanged ? `tripsSince=${encodeURIComponent(sync.trips.at)}` : '') +
+        (ordersChanged ? `&ordersSince=${encodeURIComponent(sync.orders.at)}` : ''));
+      // Гигантская дельта (массовый пересчёт, долгий сон вкладки) —
+      // дешевле и надёжнее забрать полный снимок.
+      if (delta.trips.length + delta.orders.length > 1500) return false;
+    }
+    if (smallChanged) small = await api('/api/bootstrap?part=small');
+  } catch { return false; }
+  // Щит ввода, как у полного пути: сотрудник начал печатать, пока дельта
+  // качалась — ничего не применяем, следующий тик повторит.
+  if (mouseHeld || byId('modalRoot').innerHTML.trim() ||
+      ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return true;
+  const viewScroll = captureViewScroll();
+  if (delta) {
+    state.data.trips = mergeById(state.data.trips, delta.trips, 'starts_at');
+    state.data.orders = mergeById(state.data.orders, delta.orders, 'window_from', true);
+    state.data.sync = delta.sync;
+    state.data.rev = delta.rev; // reload берёт dataRev отсюда
+  }
+  if (small) {
+    for (const [key, value] of Object.entries(small)) {
+      if (key === 'trips' || key === 'orders') continue;
+      state.data[key] = value;
+    }
+  }
+  await reload(state.data);
+  restoreViewScroll(viewScroll);
+  sendPerfBeacon(tickStarted, 'delta');
+  return true;
+}
+
+// ⚙ Маячок скорости (Э0): раз в ~3 минуты клиент сообщает, сколько
+// длился тик и сколько долгих задач заморозили вкладку — руководитель
+// видит в самонастройке, у кого и где виснет.
+let lastBeaconAt = 0;
+let longTaskCount = 0;
+try {
+  new PerformanceObserver(list => { longTaskCount += list.getEntries().length; })
+    .observe({ entryTypes: ['longtask'] });
+} catch { /* браузер без longtask — маячок просто без этого счётчика */ }
+function sendPerfBeacon(tickStarted, kind) {
+  if (Date.now() - lastBeaconAt < 3 * 60_000) return;
+  lastBeaconAt = Date.now();
+  const tickMs = Math.round(performance.now() - tickStarted);
+  api('/api/perf-beacon', { method: 'POST', body: JSON.stringify({
+    view: `${state.view || ''}·${kind}`, tickMs, renderMs: 0,
+    longTasks: longTaskCount }) }).catch(() => { /* маячок не мешает работе */ });
+  longTaskCount = 0;
+}
+
+let lastFullRefresh = Date.now();
 setInterval(() => autoRefreshTick(), 60_000);
 // Вернулись к вкладке после паузы — данные обновляются сразу, не дожидаясь тика.
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && Date.now() - lastAutoRefresh > 60_000) autoRefreshTick();
 });
-// Ручной вызов для диагностики (консоль): window.plRefresh().
+// Ручной вызов для диагностики (консоль): window.plRefresh();
+// window.plState — состояние для разбора (только чтение глазами).
 window.plRefresh = () => autoRefreshTick(true);
+window.plState = state;
 
 byId('logout').onclick = logout;
 // Звонок водителя доступен любому сотруднику: вопрос может прилететь кому
