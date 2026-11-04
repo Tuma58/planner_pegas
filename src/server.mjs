@@ -16,6 +16,29 @@ import { createPerfRegistry } from './perf.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
 const perf = createPerfRegistry();
+
+// Э3: каждый фоновый сторож меряется — «кто сколько ест» видно в
+// /api/perf; дольше секунды — в лог. 66 интервалов перестали быть
+// невидимой третью CPU.
+const watchTimings = new Map();
+function watchWrap(name, fn) {
+  return async (...args) => {
+    const startedNs = process.hrtime.bigint();
+    try { return await fn(...args); } finally {
+      const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
+      const row = watchTimings.get(name) || { count: 0, totalMs: 0, maxMs: 0 };
+      row.count += 1;
+      row.totalMs += ms;
+      if (ms > row.maxMs) row.maxMs = Math.round(ms);
+      watchTimings.set(name, row);
+      if (ms >= 1000) console.log(`⚙ долгий сторож: ${name} · ${Math.round(ms)} мс`);
+    }
+  };
+}
+const watchersSnapshot = () => [...watchTimings]
+  .map(([name, row]) => ({ name, count: row.count,
+    totalMs: Math.round(row.totalMs), avgMs: Math.round(row.totalMs / row.count), maxMs: row.maxMs }))
+  .sort((a, b) => b.totalMs - a.totalMs);
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
 import { collectDockPauses, dockGapDays, ringLoadData } from './rings.mjs';
 import { QUESTION_TOPICS, applyWorkPhone, checkQuestionSla, driverServiceStatus, identifyCaller,
@@ -780,7 +803,7 @@ function runUnloadWatch() {
     console.error('Сторож выгрузки:', error.message);
   }
 }
-setInterval(runUnloadWatch, 10 * 60_000);
+setInterval(watchWrap('runUnloadWatch', runUnloadWatch), 10 * 60_000);
 setTimeout(runUnloadWatch, 15_000);
 
 // Сторож-геокодер: адреса справочника без координат по одному подтягиваются
@@ -965,7 +988,7 @@ async function runGeocodeWatch() {
     }
   } catch { /* классификатор недоступен — попробуем следующим тиком */ }
 }
-setInterval(runGeocodeWatch, 90_000);
+setInterval(watchWrap('runGeocodeWatch', runGeocodeWatch), 90_000);
 setTimeout(runGeocodeWatch, 70_000);
 // Разово (23.10): каскад перегеокода научился перебирать варианты до
 // кандидата в своей зоне — адресам, помеченным старым каскадом как
@@ -1053,7 +1076,7 @@ function runResourceWatch() {
     console.error('Сторож ресурса:', error.message);
   }
 }
-setInterval(runResourceWatch, 60 * 60_000);
+setInterval(watchWrap('runResourceWatch', runResourceWatch), 60 * 60_000);
 // Автофакт нового графика (этап 2 перестройки Ресурса): рейсы и перегоны
 // планера подтверждают факт-слой — раз в час, окно «сегодня −3 дня».
 function runScheduleFactWatch() {
@@ -1102,7 +1125,7 @@ function runScheduleFactWatch() {
     }
   } catch (error) { console.error('график: автофакт упал', error); }
 }
-setInterval(runScheduleFactWatch, 60 * 60_000);
+setInterval(watchWrap('runScheduleFactWatch', runScheduleFactWatch), 60 * 60_000);
 setTimeout(runScheduleFactWatch, 90_000);
 // Ежедневный отчёт эксплуатации руководителю (заказ 21.09): 07:15 по
 // предприятию — текстовая сводка в Telegram и личную ленту, показатели
@@ -1130,7 +1153,7 @@ function runDailyOpsReport() {
     console.log('ежедневный отчёт эксплуатации отправлен руководителям:', bosses.length);
   } catch (error) { console.error('ежедневный отчёт эксплуатации упал', error); }
 }
-setInterval(runDailyOpsReport, 5 * 60_000);
+setInterval(watchWrap('runDailyOpsReport', runDailyOpsReport), 5 * 60_000);
 // Плановые перецепки (решение руководителя 21.09, вариант «автоматика с
 // уведомлением»): запись с applied_at IS NULL созревает в свой moved_at —
 // прицеп переезжает (тип кузова следом), уведомление в конвейер; если
@@ -1188,7 +1211,7 @@ function runPlannedTrailerMoves() {
     }
   } catch (error) { console.error('плановые перецепки:', error); }
 }
-setInterval(runPlannedTrailerMoves, 5 * 60_000);
+setInterval(watchWrap('runPlannedTrailerMoves', runPlannedTrailerMoves), 5 * 60_000);
 setTimeout(runPlannedTrailerMoves, 80_000);
 setTimeout(runResourceWatch, 25_000);
 
@@ -1350,7 +1373,7 @@ function runPastTransferWatch() {
     if (made) console.log(`перегоны: авто-записано свершившихся ${made}`);
   } catch (error) { console.error('авто-перегоны:', error.message); }
 }
-setInterval(runPastTransferWatch, 60 * 60_000);
+setInterval(watchWrap('runPastTransferWatch', runPastTransferWatch), 60 * 60_000);
 setTimeout(runPastTransferWatch, 70_000);
 
 // Строка «🤖 авто-факты» в Отчёте дня (05.10): сколько отметок за сутки
@@ -1437,7 +1460,7 @@ function runForecastSnapshot() {
     }
   } catch (error) { console.error('Снимок прогноза:', error.message); }
 }
-setInterval(runForecastSnapshot, 5 * 60_000);
+setInterval(watchWrap('runForecastSnapshot', runForecastSnapshot), 5 * 60_000);
 setTimeout(runForecastSnapshot, 45_000);
 
 function runDailyFleetReport() {
@@ -1551,7 +1574,7 @@ function runDailyFleetReport() {
     console.error('Ежедневный отчёт парка:', error.message);
   }
 }
-setInterval(runDailyFleetReport, 5 * 60_000);
+setInterval(watchWrap('runDailyFleetReport', runDailyFleetReport), 5 * 60_000);
 setTimeout(runDailyFleetReport, 40_000);
 
 // ── Ежедневное формирование документов по простою ──
@@ -1653,7 +1676,7 @@ function runDailyDemurrage() {
     console.error('Ежедневные претензии по простою:', error.message);
   }
 }
-setInterval(runDailyDemurrage, 10 * 60_000);
+setInterval(watchWrap('runDailyDemurrage', runDailyDemurrage), 10 * 60_000);
 setTimeout(runDailyDemurrage, 50_000);
 
 // ── Сторож неподтверждённых заявок ──
@@ -1692,7 +1715,7 @@ function runUnconfirmedOrdersWatch() {
     console.error('Сторож неподтверждённых заявок:', error.message);
   }
 }
-setInterval(runUnconfirmedOrdersWatch, 5 * 60_000);
+setInterval(watchWrap('runUnconfirmedOrdersWatch', runUnconfirmedOrdersWatch), 5 * 60_000);
 setTimeout(runUnconfirmedOrdersWatch, 45_000);
 
 // ── Сторож SLA назначения ТС: норматив — машина назначена за 6 часов до
@@ -1764,10 +1787,10 @@ function runDebt1cWatch() {
     console.error('Сторож долгов 1С:', error.message);
   }
 }
-setInterval(runDebt1cWatch, 10 * 60_000);
+setInterval(watchWrap('runDebt1cWatch', runDebt1cWatch), 10 * 60_000);
 setTimeout(runDebt1cWatch, 65_000);
 
-setInterval(runAssignWatch, 5 * 60_000);
+setInterval(watchWrap('runAssignWatch', runAssignWatch), 5 * 60_000);
 setTimeout(runAssignWatch, 55_000);
 
 // ── Вечерняя передача смены по заявкам ──
@@ -1877,7 +1900,7 @@ function runPastLoadWatch() {
     notify('logist', text, null, null, { category: 'order_deadlines' });
   } catch (error) { console.error('runPastLoadWatch:', error.message); }
 }
-setInterval(runPastLoadWatch, 3 * 3_600_000);
+setInterval(watchWrap('runPastLoadWatch', runPastLoadWatch), 3 * 3_600_000);
 setTimeout(runPastLoadWatch, 150_000);
 
 // ── Эскалация молчания контроля: рейс идёт, событие просрочено, а точек
@@ -1922,10 +1945,10 @@ function runControlSilenceWatch() {
     notify('dispatcher', text, null, null, { category: 'control_silence' });
   } catch (error) { console.error('runControlSilenceWatch:', error.message); }
 }
-setInterval(runControlSilenceWatch, 3_600_000);
+setInterval(watchWrap('runControlSilenceWatch', runControlSilenceWatch), 3_600_000);
 setTimeout(runControlSilenceWatch, 240_000);
 
-setInterval(runShiftDigestWatch, 10 * 60_000);
+setInterval(watchWrap('runShiftDigestWatch', runShiftDigestWatch), 10 * 60_000);
 setTimeout(runShiftDigestWatch, 90_000);
 
 // Разбор августа: заявки, подтверждённые после 16:00 МСК, ждали назначения
@@ -1965,7 +1988,7 @@ function runEveningHandoff() {
     console.error('Вечерняя передача смены:', error.message);
   }
 }
-setInterval(runEveningHandoff, 5 * 60_000);
+setInterval(watchWrap('runEveningHandoff', runEveningHandoff), 5 * 60_000);
 
 // ── Норматив ответа на вопрос водителя: 10 минут ──
 // Вопрос висит дольше — сигнал всей смене: водитель стоит на погрузке и
@@ -1994,7 +2017,7 @@ function runQuestionSlaWatch() {
     console.error('Сторож вопросов водителей:', error.message);
   }
 }
-setInterval(runQuestionSlaWatch, 60_000);
+setInterval(watchWrap('runQuestionSlaWatch', runQuestionSlaWatch), 60_000);
 setTimeout(runQuestionSlaWatch, 40_000);
 
 // ── Телефония Билайн: журнал звонков и подписка на события ──
@@ -2033,7 +2056,7 @@ function runBeelineWatch() {
   }
 }
 
-setInterval(runBeelineWatch, 60_000);
+setInterval(watchWrap('runBeelineWatch', runBeelineWatch), 60_000);
 setTimeout(runBeelineWatch, 20_000);
 
 // Звонок водителя → автоматический «Вопрос водителя» (решение руководителя
@@ -2111,7 +2134,7 @@ function runMissedCallWatch() {
     if (unworked.length) console.log(`отвеченные без комментария → вопросы: создано ${unworked.length}`);
   } catch (error) { console.error('Сторож пропущенных:', error.message); }
 }
-setInterval(runMissedCallWatch, 2 * 60_000);
+setInterval(watchWrap('runMissedCallWatch', runMissedCallWatch), 2 * 60_000);
 
 // Карточка ТС следует за графиком (решение руководителя 08.10, кейс
 // т726/с964: пересменка сместилась — гант и назначение рейсов видели
@@ -2172,7 +2195,7 @@ function runDriverNameSync() {
     }
   } catch (error) { console.error('Синхронизация водителей:', error.message); }
 }
-setInterval(runDriverNameSync, 60 * 60_000);
+setInterval(watchWrap('runDriverNameSync', runDriverNameSync), 60 * 60_000);
 setTimeout(runDriverNameSync, 30_000);
 
 // Автовыпуски «Повышения эффективности» (решение руководителя 09.10):
@@ -2237,7 +2260,7 @@ function runEfficiencyIssues() {
     }
   } catch (error) { console.error('Автовыпуск эффективности:', error.message); }
 }
-setInterval(runEfficiencyIssues, 5 * 60_000);
+setInterval(watchWrap('runEfficiencyIssues', runEfficiencyIssues), 5 * 60_000);
 setTimeout(runEfficiencyIssues, 70_000);
 
 // ── Напоминания по клиентам: дни рождения контактов, праздники, касания ──
@@ -2276,7 +2299,7 @@ function runCustomerRemindersWatch() {
     console.error('Напоминания по клиентам:', error.message);
   }
 }
-setInterval(runCustomerRemindersWatch, 15 * 60_000);
+setInterval(watchWrap('runCustomerRemindersWatch', runCustomerRemindersWatch), 15 * 60_000);
 setTimeout(runCustomerRemindersWatch, 55_000);
 
 // ── Сигнал логисту: выгрузка через ≤2 часа, следующий рейс не назначен ──
@@ -2507,7 +2530,7 @@ function runGapReviewWatch() {
     console.error('Ревизия зазоров:', error.message);
   }
 }
-setInterval(runGapReviewWatch, 10 * 60_000);
+setInterval(watchWrap('runGapReviewWatch', runGapReviewWatch), 10 * 60_000);
 
 // ── Ночной сторож «рейс не вышел в окно» ──
 // Кейс 01.09: рейс Черкизово с окном 23:00 ночью не вышел, ночью на это
@@ -2545,7 +2568,7 @@ function runEntered1cWatch() {
     console.error('Сторож стыка 1С:', error.message);
   }
 }
-setInterval(runEntered1cWatch, 30 * 60_000);
+setInterval(watchWrap('runEntered1cWatch', runEntered1cWatch), 30 * 60_000);
 
 // ── Бот водителей «Пегас Водитель» ──
 // Отдельный бот (settings.telegram.driverBotToken): водитель привязывается
@@ -2919,7 +2942,7 @@ async function runMonitoringPoll() {
     }
   } catch (error) { console.error('runMonitoringPoll:', error.message); }
 }
-setInterval(runMonitoringPoll, 60_000);
+setInterval(watchWrap('runMonitoringPoll', runMonitoringPoll), 60_000);
 setTimeout(runMonitoringPoll, 45_000);
 
 // ── Авто-факты (решение руководителя 05.10): GPS ставит промежуточные
@@ -2942,7 +2965,7 @@ function runAutoFactsWatch() {
     }
   } catch (error) { console.error('авто-факты:', error.message); }
 }
-setInterval(runAutoFactsWatch, 10 * 60_000);
+setInterval(watchWrap('runAutoFactsWatch', runAutoFactsWatch), 10 * 60_000);
 setTimeout(runAutoFactsWatch, 80_000);
 
 // ── GPS-контроль рейсов (этап 3 мониторинга) ──
@@ -3151,7 +3174,7 @@ function runGpsControlWatch() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(fresh));
   } catch (error) { console.error('runGpsControlWatch:', error.message); }
 }
-setInterval(runGpsControlWatch, 3 * 60_000);
+setInterval(watchWrap('runGpsControlWatch', runGpsControlWatch), 3 * 60_000);
 setTimeout(runGpsControlWatch, 100_000);
 
 // ── Сборщик дневных пробегов (сырьё отчёта «Скорости парка») ──
@@ -3362,7 +3385,7 @@ async function collectSegmentEconomy() {
     }
   } catch (error) { console.error('collectSegmentEconomy:', error.message); }
 }
-setInterval(collectDailyRuns, 3_600_000);
+setInterval(watchWrap('collectDailyRuns', collectDailyRuns), 3_600_000);
 // ── Журнал одометров (конструкция руководителя 20.10) ──
 // Снимок CAN-одометра каждой машины на 00:00 МСК: показание на момент T
 // берётся из /odo-fuel (stop_odo). Ежечасный прогон снимает пропущенные
@@ -3419,7 +3442,7 @@ async function collectOdoSnapshots() {
     if (asked) console.log(`одометры: снимков +${saved} из ${asked} запросов (журнал до ${todayMsk.toISOString().slice(0, 10)})`);
   } catch (error) { console.error('одометры:', error.message); }
 }
-setInterval(collectOdoSnapshots, 3_600_000);
+setInterval(watchWrap('collectOdoSnapshots', collectOdoSnapshots), 3_600_000);
 setTimeout(collectOdoSnapshots, 200_000);
 
 setTimeout(collectDailyRuns, 160_000);
@@ -3637,7 +3660,7 @@ function rebuildCustomerSegments() {
       ` · пороги A ≥${Math.round(thA / 1000)} B ≥${Math.round(thB / 1000)}`);
   } catch (error) { console.error('Сегменты клиентов:', error.message); }
 }
-setInterval(rebuildCustomerSegments, 3_600_000);
+setInterval(watchWrap('rebuildCustomerSegments', rebuildCustomerSegments), 3_600_000);
 setTimeout(rebuildCustomerSegments, 35_000);
 const customerSegment = name =>
   customerSegmentsCache.map.get(String(name || '').trim().toLowerCase()) || null;
@@ -4459,7 +4482,7 @@ function tightenEndsByArrival() {
     if (updated) console.log(`конец по прибытию: сжато рейсов ${updated}`);
   } catch (error) { console.error('tightenEndsByArrival:', error.message); }
 }
-setInterval(tightenEndsByArrival, 15 * 60_000);
+setInterval(watchWrap('tightenEndsByArrival', tightenEndsByArrival), 15 * 60_000);
 setTimeout(tightenEndsByArrival, 110_000);
 
 // ── Окно клиента физически недостижимо (анализ 22.10) ──
@@ -4499,7 +4522,7 @@ function unreachableWindowsWatch() {
     }
   } catch (error) { console.error('unreachableWindowsWatch:', error.message); }
 }
-setInterval(unreachableWindowsWatch, 6 * 3_600_000);
+setInterval(watchWrap('unreachableWindowsWatch', unreachableWindowsWatch), 6 * 3_600_000);
 setTimeout(unreachableWindowsWatch, 140_000);
 
 // Нормализация ФИО водителя для поиска дублей: регистр, ё, пробелы.
@@ -4686,7 +4709,7 @@ function nightDataAudit() {
     console.log(`ночная автопроверка: ${report.join(' · ') || 'чисто'}`);
   } catch (error) { console.error('nightDataAudit:', error.message); }
 }
-setInterval(nightDataAudit, 30 * 60_000);
+setInterval(watchWrap('nightDataAudit', nightDataAudit), 30 * 60_000);
 setTimeout(nightDataAudit, 170_000);
 
 // ── Накат заступившего водителя (заказ руководителя 24.10) ──
@@ -4770,7 +4793,7 @@ function rebuildDriverRunRates() {
       .run(JSON.stringify({ at: Date.now(), rates }));
   } catch (error) { console.error('rebuildDriverRunRates:', error.message); }
 }
-setInterval(rebuildDriverRunRates, 3_600_000);
+setInterval(watchWrap('rebuildDriverRunRates', rebuildDriverRunRates), 3_600_000);
 setTimeout(rebuildDriverRunRates, 190_000);
 
 // Лечение раздутых планов (кейс 10.09, «Пенза→Москва 1 055 км»): активные
@@ -5051,7 +5074,7 @@ function recalcSeptemberKm() {
     console.log(`recalcSeptemberKm: обновлено рейсов ${updated}`);
   } catch (error) { console.error('recalcSeptemberKm:', error.message); }
 }
-setInterval(rebuildLegFacts, 24 * 3_600_000);
+setInterval(watchWrap('rebuildLegFacts', rebuildLegFacts), 24 * 3_600_000);
 setTimeout(rebuildLegFacts, 200_000);
 // Разовая миграция 09.10 (сессия 2 «график — часть планера»): весь
 // план-слой JSON-графика проецируется в driver_plan_days — дальше
@@ -5320,7 +5343,7 @@ async function closeMissedUnloads() {
     }
   } catch (error) { console.error('closeMissedUnloads:', error.message); }
 }
-setInterval(closeMissedUnloads, 30 * 60_000);
+setInterval(watchWrap('closeMissedUnloads', closeMissedUnloads), 30 * 60_000);
 setTimeout(closeMissedUnloads, 130_000);
 
 // Обработка одного обновления бота водителей — общая для поллера и
@@ -5461,7 +5484,7 @@ async function runDriverBotPoll() {
     }
   } catch (error) { console.error('runDriverBotPoll:', error.message); }
 }
-setInterval(runDriverBotPoll, 20_000);
+setInterval(watchWrap('runDriverBotPoll', runDriverBotPoll), 20_000);
 setTimeout(runDriverBotPoll, 40_000);
 
 // Пинги по ходу рейса: расчётное прибытие прошло, а отметки нет — «вы у
@@ -5515,7 +5538,7 @@ function runDriverPingWatch() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(marks));
   } catch (error) { console.error('runDriverPingWatch:', error.message); }
 }
-setInterval(runDriverPingWatch, 15 * 60_000);
+setInterval(watchWrap('runDriverPingWatch', runDriverPingWatch), 15 * 60_000);
 setTimeout(runDriverPingWatch, 60_000);
 
 // Напоминание о выходе: за 2–3 часа до планового старта, раз на рейс.
@@ -5544,7 +5567,7 @@ function runDriverRemindWatch() {
       .run(JSON.stringify([...seen].slice(-500)));
   } catch (error) { console.error('runDriverRemindWatch:', error.message); }
 }
-setInterval(runDriverRemindWatch, 10 * 60_000);
+setInterval(watchWrap('runDriverRemindWatch', runDriverRemindWatch), 10 * 60_000);
 setTimeout(runDriverRemindWatch, 50_000);
 
 // ── Поллер Telegram: привязка чатов командой /start КОД ──
@@ -5638,7 +5661,7 @@ async function runTelegramPoll() {
     }
   } catch { /* сеть/телеграм недоступны — следующий тик */ }
 }
-setInterval(runTelegramPoll, 20_000);
+setInterval(watchWrap('runTelegramPoll', runTelegramPoll), 20_000);
 setTimeout(runTelegramPoll, 30_000);
 
 // ── Регулятор баланса парк↔сетка ──
@@ -5711,7 +5734,7 @@ function runBalanceWatch() {
     console.error('runBalanceWatch:', error.message);
   }
 }
-setInterval(runBalanceWatch, 30 * 60_000);
+setInterval(watchWrap('runBalanceWatch', runBalanceWatch), 30 * 60_000);
 setTimeout(runBalanceWatch, 90_000);
 
 function runMissedDepartureWatch() {
@@ -5747,7 +5770,7 @@ function runMissedDepartureWatch() {
     console.error('Сторож невыхода в окно:', error.message);
   }
 }
-setInterval(runMissedDepartureWatch, 20 * 60_000);
+setInterval(watchWrap('runMissedDepartureWatch', runMissedDepartureWatch), 20 * 60_000);
 setTimeout(runMissedDepartureWatch, 80_000);
 
 function runStaleTransfersWatch() {
@@ -5784,7 +5807,7 @@ function runStaleTransfersWatch() {
     console.error('Зависшие перегоны:', error.message);
   }
 }
-setInterval(runStaleTransfersWatch, 30 * 60_000);
+setInterval(watchWrap('runStaleTransfersWatch', runStaleTransfersWatch), 30 * 60_000);
 setTimeout(runStaleTransfersWatch, 70_000);
 
 // ── Напоминание продажам о невыставленных претензиях за простой ──
@@ -5809,7 +5832,7 @@ function runDemurrageNudge() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
   } catch (error) { console.error('Напоминание о простоях:', error.message); }
 }
-setInterval(runDemurrageNudge, 30 * 60_000);
+setInterval(watchWrap('runDemurrageNudge', runDemurrageNudge), 30 * 60_000);
 setTimeout(runDemurrageNudge, 80_000);
 
 // ── «⚖ Баланс выходов»: водители, грузы и ремзона на 5 дней вперёд ──
@@ -5910,7 +5933,7 @@ function runTrailerTypeSync() {
     if (fixed) console.log(`тип от прицепа: выровнено сцепок ${fixed}`);
   } catch (error) { console.error('runTrailerTypeSync:', error.message); }
 }
-setInterval(runTrailerTypeSync, 3_600_000);
+setInterval(watchWrap('runTrailerTypeSync', runTrailerTypeSync), 3_600_000);
 setTimeout(runTrailerTypeSync, 90_000);
 // ── Живые лимиты диспетчерской (канбан, этап 2): суточный пересчёт
 // личной ёмкости (медиана отметок за смену, 14 дн) с логом дрейфа;
@@ -5947,7 +5970,7 @@ function runDispatchLoadWatch() {
       .run(`disp_load_alert_${new Date(Date.now() - 3 * 864e5).toISOString().slice(0, 10)}`);
   } catch (error) { console.error('лимиты диспетчерской:', error.message); }
 }
-setInterval(runDispatchLoadWatch, 3_600_000);
+setInterval(watchWrap('runDispatchLoadWatch', runDispatchLoadWatch), 3_600_000);
 setTimeout(runDispatchLoadWatch, 110_000);
 // ── Авторазвод (этап 3б): балансировщик назначает карточки каждые
 // 10 минут (липко, manual неприкосновенен), профили наплывов — раз в
@@ -6003,7 +6026,7 @@ function runDispatchAssignWatch() {
     }
   } catch (error) { console.error('авторазвод:', error.message); }
 }
-setInterval(runDispatchAssignWatch, 10 * 60_000);
+setInterval(watchWrap('runDispatchAssignWatch', runDispatchAssignWatch), 10 * 60_000);
 setTimeout(runDispatchAssignWatch, 130_000);
 // Одометр борта — из датчика «пробег по CAN» последней позиции: репер
 // межсервисного пробега (диспозиции, заказ-наряды) и звеньев рейса.
@@ -6042,7 +6065,7 @@ function trailerDrivenTypeId(rawTrailerPlate, chosenTypeId, { explicit = false }
   return chosenTypeId;
 }
 
-setInterval(runCrewBalanceWatch, 20 * 60_000);
+setInterval(watchWrap('runCrewBalanceWatch', runCrewBalanceWatch), 20 * 60_000);
 setTimeout(runCrewBalanceWatch, 60_000);
 
 // ── Сторож зависаний в пути: стоянка ≥18 ч вне точек рейса ──
@@ -6089,7 +6112,7 @@ async function runHangWatch() {
     if (sent) console.log(`Сторож зависаний: сигналов ${sent}`);
   } catch (error) { console.error('Сторож зависаний:', error.message); }
 }
-setInterval(runHangWatch, 2 * 3_600_000);
+setInterval(watchWrap('runHangWatch', runHangWatch), 2 * 3_600_000);
 setTimeout(runHangWatch, 120_000);
 
 // ── Сторож доверия трекерам: GPS хронически противоречит фактам ──
@@ -6138,7 +6161,7 @@ function runTrackerTrustWatch() {
     }
   } catch (error) { console.error('Сторож доверия трекерам:', error.message); }
 }
-setInterval(runTrackerTrustWatch, 2 * 3_600_000);
+setInterval(watchWrap('runTrackerTrustWatch', runTrackerTrustWatch), 2 * 3_600_000);
 setTimeout(runTrackerTrustWatch, 140_000);
 
 function runMorningDirections() {
@@ -6182,7 +6205,7 @@ function runMorningDirections() {
     console.error('Утренние направления:', error.message);
   }
 }
-setInterval(runMorningDirections, 5 * 60_000);
+setInterval(watchWrap('runMorningDirections', runMorningDirections), 5 * 60_000);
 
 
 // ── Стыковка следующего плеча до выгрузки ──
@@ -6270,7 +6293,7 @@ function runDockingWatch() {
     console.error('Стыковка плеч:', error.message);
   }
 }
-setInterval(runDockingWatch, 30 * 60_000);
+setInterval(watchWrap('runDockingWatch', runDockingWatch), 30 * 60_000);
 setTimeout(runDockingWatch, 55_000);
 
 function runAssignDrafts() {
@@ -6320,7 +6343,7 @@ function runAssignDrafts() {
     console.error('Черновики назначений:', error.message);
   }
 }
-setInterval(runAssignDrafts, 60 * 60_000);
+setInterval(watchWrap('runAssignDrafts', runAssignDrafts), 60 * 60_000);
 setTimeout(runAssignDrafts, 50_000);
 
 // ── Недельная сводка качества автоподбора: причины замен как сырьё ──
@@ -6403,7 +6426,7 @@ function runAssignQualityReport() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
   } catch (error) { console.error('Сводка качества подбора:', error.message); }
 }
-setInterval(runAssignQualityReport, 10 * 60_000);
+setInterval(watchWrap('runAssignQualityReport', runAssignQualityReport), 10 * 60_000);
 
 // ── Зелёный коридор автоназначения ──
 // Черновики подбора с очевидно хорошими условиями назначаются БЕЗ логиста:
@@ -6515,7 +6538,7 @@ function runGreenAssign() {
     reportAutoAssignIssue(`сторож упал целиком: ${error.message}`);
   }
 }
-setInterval(runGreenAssign, 15 * 60_000);
+setInterval(watchWrap('runGreenAssign', runGreenAssign), 15 * 60_000);
 setTimeout(runGreenAssign, 100_000);
 
 // ── Недельный анализ дрейфа нормативов: «📐 Нормативы недели» ──
@@ -6699,7 +6722,7 @@ function runNormsDigest() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
   } catch (error) { console.error('Нормативы недели:', error.message); }
 }
-setInterval(runNormsDigest, 10 * 60_000);
+setInterval(watchWrap('runNormsDigest', runNormsDigest), 10 * 60_000);
 
 // ── Еженедельный «Вестник „Пегаса"» (решение руководителя 02.11) ──
 // Понедельник 08:00 МСК: газетная полоса по итогам недели (события +
@@ -6729,7 +6752,7 @@ async function runWeeklyBulletin() {
     console.log(`вестник недели ${data.from}–${data.to}: опубликован на табло (${(data.net / 1e6).toFixed(1)} млн)`);
   } catch (error) { console.error('вестник недели:', error.message); }
 }
-setInterval(runWeeklyBulletin, 10 * 60_000);
+setInterval(watchWrap('runWeeklyBulletin', runWeeklyBulletin), 10 * 60_000);
 
 // ── Плакат HELP DESK на табло (решение руководителя 02.11) ──
 // Пока сотрудники привыкают к заявкам, инструкция висит на табло каждый
@@ -6758,7 +6781,7 @@ function runHelpdeskPromo() {
     console.log(`плакат HELP DESK: на табло до 11:00 МСК (${due.day}, приучение до ${until})`);
   } catch (error) { console.error('плакат HELP DESK:', error.message); }
 }
-setInterval(runHelpdeskPromo, 10 * 60_000);
+setInterval(watchWrap('runHelpdeskPromo', runHelpdeskPromo), 10 * 60_000);
 
 // ── Сторож зависших возвратов (Э2, 03.11) ──
 // Возврат без решения дольше живого норматива (медиана «создан →
@@ -6778,7 +6801,40 @@ function runReturnsWatch() {
     }
   } catch (error) { console.error('сторож возвратов:', error.message); }
 }
-setInterval(runReturnsWatch, 30 * 60_000);
+setInterval(watchWrap('runReturnsWatch', runReturnsWatch), 30 * 60_000);
+
+// ── ⚙ Скорость Э4: ночной перенос старья в архив (04.11) ──
+// Сообщения и аудит старше N месяцев (настройка performance.archiveMonths,
+// дефолт 6) уезжают в *_archive: оперативные таблицы не разбухают,
+// история не теряется. Тихий час 03:xx МСК, метка дня — идемпотентно.
+function runArchiveSweep() {
+  try {
+    const mskHour = new Date(Date.now() + 3 * 3_600_000).getUTCHours();
+    if (mskHour !== 3) return;
+    const day = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+    if (db.prepare(`SELECT value FROM app_meta WHERE key='archive_sweep_day'`).get()?.value === day) return;
+    const months = Math.max(2, Number(settingsObject(db).performance?.archiveMonths ?? 6) || 6);
+    const cutoff = `-${months} months`;
+    const moved = { messages: 0, audit: 0 };
+    db.exec('BEGIN');
+    try {
+      moved.messages = db.prepare(`INSERT INTO messages_archive
+        SELECT * FROM messages WHERE datetime(created_at) < datetime('now', ?)`).run(cutoff).changes;
+      db.prepare(`DELETE FROM messages WHERE datetime(created_at) < datetime('now', ?)`).run(cutoff);
+      moved.audit = db.prepare(`INSERT INTO audit_log_archive
+        SELECT * FROM audit_log WHERE datetime(created_at) < datetime('now', ?)`).run(cutoff).changes;
+      db.prepare(`DELETE FROM audit_log WHERE datetime(created_at) < datetime('now', ?)`).run(cutoff);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('archive_sweep_day',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+    if (moved.messages || moved.audit) {
+      db.exec('ANALYZE');
+      console.log(`архив: сообщений ${moved.messages} · аудита ${moved.audit} (старше ${months} мес)`);
+    }
+  } catch (error) { console.error('runArchiveSweep:', error.message); }
+}
+setInterval(watchWrap('runArchiveSweep', runArchiveSweep), 30 * 60_000);
 
 // ── Коннектор «Дорожная сеть» (Dornet) — API-источник затрат (03.11) ──
 // Заказы по видам услуг (стоянки, мойки, шиномонтаж…) и оплаченные
@@ -6875,7 +6931,7 @@ function dornetSyncTick() {
   const from = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
   runDornetSync(from, to).catch(error => console.error('Dornet sync:', error.message));
 }
-setInterval(dornetSyncTick, 6 * 3_600_000);
+setInterval(watchWrap('dornetSyncTick', dornetSyncTick), 6 * 3_600_000);
 setTimeout(dornetSyncTick, 75_000);
 
 // ── Коннектор «РН-Карт» (Роснефть) — топливо в журнал затрат (03.11) ──
@@ -7019,7 +7075,7 @@ function rncardSyncTick() {
   const from = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
   runRncardSync(from, to).catch(error => console.error('РН-Карт sync:', error.message));
 }
-setInterval(rncardSyncTick, 6 * 3_600_000);
+setInterval(watchWrap('rncardSyncTick', rncardSyncTick), 6 * 3_600_000);
 setTimeout(rncardSyncTick, 105_000);
 
 // ── «Дорогие ворота» — понедельничное задание продажам (этап 3, 22.09) ──
@@ -7068,7 +7124,7 @@ function runGateCostDigest() {
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
   } catch (error) { console.error('Дорогие ворота:', error.message); }
 }
-setInterval(runGateCostDigest, 10 * 60_000);
+setInterval(watchWrap('runGateCostDigest', runGateCostDigest), 10 * 60_000);
 
 // Автопересев плана вывоза: сетку заполнили из истории один раз и забыли —
 // через месяц она врёт. Раз в неделю (в ночь на понедельник) пересеваем из
@@ -7088,7 +7144,7 @@ function runDeliverySeedWatch() {
     console.error('Автопересев плана вывоза:', error.message);
   }
 }
-setInterval(runDeliverySeedWatch, 30 * 60_000);
+setInterval(watchWrap('runDeliverySeedWatch', runDeliverySeedWatch), 30 * 60_000);
 
 function runEmptyKmWatch() {
   try {
@@ -7101,7 +7157,7 @@ function runEmptyKmWatch() {
     console.error('Сторож порожняка:', error.message);
   }
 }
-setInterval(runEmptyKmWatch, 6 * 3_600_000);
+setInterval(watchWrap('runEmptyKmWatch', runEmptyKmWatch), 6 * 3_600_000);
 setTimeout(runEmptyKmWatch, 40_000);
 
 // Живой лид поиска груза: сколько часов проходит от сигнала «🔎» до
@@ -7171,7 +7227,7 @@ function runNextTripWatch() {
     console.error('Сигнал «следующий рейс не назначен»:', error.message);
   }
 }
-setInterval(runNextTripWatch, 10 * 60_000);
+setInterval(watchWrap('runNextTripWatch', runNextTripWatch), 10 * 60_000);
 setTimeout(runNextTripWatch, 65_000);
 
 // Координаты пункта по тексту: точное имя адреса, затем начало, затем
@@ -13249,7 +13305,7 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/perf') {
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;
-    return json(response, 200, perf.snapshot());
+    return json(response, 200, { ...perf.snapshot(), watchers: watchersSnapshot() });
   }
   if (request.method === 'POST' && pathname === '/api/perf-beacon') {
     const user = requireUser(request, response);

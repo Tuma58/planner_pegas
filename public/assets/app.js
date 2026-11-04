@@ -2507,7 +2507,7 @@ async function autoRefreshTick(force = false) {
   // перерисовывались, остальным возвращаем позицию до кадра отрисовки.
   restoreViewScroll(viewScroll);
   lastFullRefresh = Date.now();
-  sendPerfBeacon(tickStarted, 'full');
+  sendPerfBeacon(tickStarted, 'full', 0);
 }
 
 // Слияние дельты с локальным списком по id: изменённые заменяются,
@@ -2568,9 +2568,10 @@ async function applyDeltaTick(info, tickStarted) {
       state.data[key] = value;
     }
   }
+  const renderStarted = performance.now();
   await reload(state.data);
   restoreViewScroll(viewScroll);
-  sendPerfBeacon(tickStarted, 'delta');
+  sendPerfBeacon(tickStarted, 'delta', Math.round(performance.now() - renderStarted));
   return true;
 }
 
@@ -2583,12 +2584,12 @@ try {
   new PerformanceObserver(list => { longTaskCount += list.getEntries().length; })
     .observe({ entryTypes: ['longtask'] });
 } catch { /* браузер без longtask — маячок просто без этого счётчика */ }
-function sendPerfBeacon(tickStarted, kind) {
+function sendPerfBeacon(tickStarted, kind, renderMs = 0) {
   if (Date.now() - lastBeaconAt < 3 * 60_000) return;
   lastBeaconAt = Date.now();
   const tickMs = Math.round(performance.now() - tickStarted);
   api('/api/perf-beacon', { method: 'POST', body: JSON.stringify({
-    view: `${state.view || ''}·${kind}`, tickMs, renderMs: 0,
+    view: `${state.view || ''}·${kind}`, tickMs, renderMs,
     longTasks: longTaskCount }) }).catch(() => { /* маячок не мешает работе */ });
   longTaskCount = 0;
 }

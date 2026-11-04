@@ -1522,6 +1522,17 @@ function migrateColumns(db) {
   );
   CREATE INDEX IF NOT EXISTS idx_assistant_hints
     ON assistant_hints(rule, context, user_id, action, created_at);`);
+  // ── ⚙ Скорость, Э4 (04.11, docs/performance-plan.md) ──
+  // Индексы горячих запросов: лента/счётчики чата и отчётные выборки по
+  // времени сканировали таблицы целиком (124 тыс. сообщений, 95 тыс.
+  // строк аудита). Архивные таблицы — приёмники ночного переноса
+  // старья (runArchiveSweep): той же формы, без ограничений.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+  CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id) WHERE chat_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id) WHERE recipient_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS messages_archive AS SELECT * FROM messages WHERE 0`);
+  db.exec(`CREATE TABLE IF NOT EXISTS audit_log_archive AS SELECT * FROM audit_log WHERE 0`);
   // ── Учёт затрат (03.11.2026, docs/costs-plan.md) ──
   // Категории — живой справочник (правит руководитель/админ, active
   // вместо удаления); kind — характер для будущего норматива ₽/км:

@@ -402,9 +402,24 @@ export function controlSnapshot(db, fromIso, toIso, nowMs = Date.now()) {
     JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
     WHERE t.status<>'rejected' AND (t.status='run' OR (t.starts_at<? AND t.ends_at>?))
     ORDER BY t.starts_at`).all(toIso, fromIso);
+  // Батч вместо N+1 (Э2 «Скорости», 04.11): по два запроса на каждый из
+  // ~115 рейсов окна давали ~0,5 с на каждый опрос доски диспетчера —
+  // теперь точки всех рейсов забираются одним запросом, досев стоянок
+  // (ensureTripStops) нужен только рейсам совсем без точек.
+  const stopsByTrip = new Map();
+  for (const stop of db.prepare(`SELECT s.* FROM trip_stops s JOIN trips t ON t.id=s.trip_id
+      WHERE t.status<>'rejected' AND (t.status='run' OR (t.starts_at<? AND t.ends_at>?))
+      ORDER BY s.trip_id, s.seq, s.planned_arrival`).all(toIso, fromIso)) {
+    if (!stopsByTrip.has(stop.trip_id)) stopsByTrip.set(stop.trip_id, []);
+    stopsByTrip.get(stop.trip_id).push(stop);
+  }
   return trips.map(trip => {
-    ensureTripStops(db, trip.id);
-    const stops = stopsWithEstimates(listTripStops(db, trip.id), trip.status, nowMs);
+    let rawStops = stopsByTrip.get(trip.id);
+    if (!rawStops) {
+      ensureTripStops(db, trip.id);
+      rawStops = listTripStops(db, trip.id);
+    }
+    const stops = stopsWithEstimates(rawStops, trip.status, nowMs);
     return { ...trip, stops, delay_ms: tripDelayMs(stops) };
   });
 }
