@@ -1,0 +1,80 @@
+/* BI-набор «Пегас-Авто» (реконструкция 04.11) — общие детали страниц в
+   стиле «Рабочей среды СТ»: ряд плиток → сетка секций → таблицы данных.
+   Только токены из styles.css; экранные дополнения — в bi/<группа>.css. */
+
+/* Страница экрана: отступы и вертикальный ритм */
+.bi-page { display: flex; flex-direction: column; gap: 16px; padding: 16px 22px 48px; min-width: 0; }
+.bi-sub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bi-sub h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+.bi-sub p { margin: 0; color: var(--muted); font-size: var(--fs-sm); }
+.bi-sub .bi-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Плитки показателей (metric) */
+.bi-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+.metric { position: relative; display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  background: var(--card); border: 1px solid var(--line); border-top: 2px solid var(--accent);
+  border-radius: 11px; padding: 11px 15px; box-shadow: var(--shadow); }
+.metric .v { font-family: var(--mono-font); font-size: 23px; font-weight: 700; letter-spacing: -.02em;
+  color: var(--ink); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric .v small { font-size: 13px; font-weight: 600; color: var(--muted); margin-left: 3px; }
+.metric .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.metric .d { font-size: 11.5px; color: var(--faint); font-family: var(--mono-font); }
+.metric .d.up { color: var(--ok); } .metric .d.down { color: var(--bad); }
+.metric.pos { border-top-color: var(--ok); } .metric.pos .v { color: var(--ok); }
+.metric.neg { border-top-color: var(--bad); } .metric.neg .v { color: var(--bad); }
+.metric.warn { border-top-color: var(--warn); } .metric.warn .v { color: var(--warn); }
+.metric.dept-staff { border-top-color: var(--staff); } .metric.dept-log { border-top-color: var(--log); }
+.metric.dept-drv { border-top-color: var(--drv); } .metric.dept-toir { border-top-color: var(--toir); }
+.metric.hero { grid-column: span 2; } .metric.hero .v { font-size: 30px; }
+.metric.clickable { cursor: pointer; } .metric.clickable:hover { border-color: var(--accent); }
+
+/* Сетка секций */
+.bi-grid { display: grid; gap: 14px; grid-template-columns: repeat(12, minmax(0, 1fr)); align-items: start; }
+.bi-grid > * { grid-column: span 12; min-width: 0; }
+.bi-grid > .s3 { grid-column: span 3; } .bi-grid > .s4 { grid-column: span 4; }
+.bi-grid > .s5 { grid-column: span 5; } .bi-grid > .s6 { grid-column: span 6; }
+.bi-grid > .s7 { grid-column: span 7; } .bi-grid > .s8 { grid-column: span 8; }
+.bi-grid > .s9 { grid-column: span 9; }
+@media (max-width: 1280px) { .bi-grid > .s3 { grid-column: span 6; } .bi-grid > .s4, .bi-grid > .s5 { grid-column: span 6; } }
+@media (max-width: 980px) { .bi-grid > * { grid-column: span 12 !important; } }
+
+/* Секция: шапка-полоса + тело */
+.section { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); overflow: hidden; min-width: 0; }
+.sec-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 15px;
+  background: var(--panel2); border-bottom: 1px solid var(--border2); }
+.sec-h .sn { font-family: var(--mono-font); font-size: 12px; color: var(--accent); font-weight: 700; }
+.sec-h .st { font-weight: 650; font-size: 14px; color: var(--ink); }
+.sec-h .hint { color: var(--faint); font-size: 11.5px; }
+.sec-h .sec-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sec-b { padding: 12px 15px; }
+.sec-b.flush { padding: 0; }
+.section.dept-staff { border-top: 2px solid var(--staff); } .section.dept-log { border-top: 2px solid var(--log); }
+.section.dept-drv { border-top: 2px solid var(--drv); } .section.dept-toir { border-top: 2px solid var(--toir); }
+
+/* Таблица данных */
+.bi-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--card); }
+.bi-table th { background: var(--th-bg); color: #fff; font-size: 10.5px; font-weight: 650; text-transform: uppercase;
+  letter-spacing: .04em; padding: 8px 10px; text-align: left; white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+.bi-table td { padding: 7px 10px; border-bottom: 1px solid var(--border2); vertical-align: top; }
+.bi-table tbody tr:hover td { background: var(--hover); }
+.bi-table .num, .bi-table td.r, .bi-table th.r { text-align: right; font-family: var(--mono-font); white-space: nowrap; }
+.bi-table tfoot td { font-weight: 700; background: var(--panel2); border-top: 1px solid var(--line); }
+.bi-scroll { overflow: auto; max-height: 520px; }
+
+/* Мелкие детали */
+.bi-meter { height: 6px; border-radius: 4px; background: var(--border2); overflow: hidden; }
+.bi-meter > i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.bi-meter.pos > i { background: var(--ok); } .bi-meter.neg > i { background: var(--bad); } .bi-meter.warn > i { background: var(--warn); }
+.bi-list { display: flex; flex-direction: column; }
+.bi-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border2); font-size: 13px; }
+.bi-row:last-child { border-bottom: 0; }
+.bi-row .k { color: var(--muted); } .bi-row .v { margin-left: auto; font-family: var(--mono-font); font-weight: 650; }
+.bi-empty { padding: 22px; text-align: center; color: var(--faint); font-size: 13px; }
+.bi-tag { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono-font); font-size: 11px;
+  padding: 2px 7px; border-radius: 6px; background: var(--paper); color: var(--muted); border: 1px solid var(--border2); }
+.bi-tag.pos { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--card)); background: color-mix(in srgb, var(--ok) 10%, var(--card)); }
+.bi-tag.neg { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--card)); background: color-mix(in srgb, var(--bad) 10%, var(--card)); }
+.bi-tag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--card)); background: color-mix(in srgb, var(--warn) 10%, var(--card)); }
+/* Колонки-доски (канбан диспетчерской, продажи): колонка = секция */
+.bi-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr); gap: 14px; align-items: start; overflow-x: auto; }
