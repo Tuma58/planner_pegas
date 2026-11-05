@@ -12,7 +12,7 @@ import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
-import { ensureTripStops, rescheduleTripStops } from '../src/trip-control.mjs';
+import { ensureTripStops, rescheduleTripStops, transitWindowWarning } from '../src/trip-control.mjs';
 import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
@@ -5644,4 +5644,23 @@ test('затраты: операции РН-Карт раскладываютс�
   assert.equal(rncardCategoryOf('SERVICE', 'gDorog'), 'tolls');
   assert.equal(rncardCategoryOf('GOODS', 'gMasla'), 'parts');
   assert.equal(rncardCategoryOf('GOODS', 'gAvtoakses'), 'parts');
+});
+
+test('мягкий сигнал: транзит не помещается в окно клиента', () => {
+  // Кейс №6146 (05.11): старт 04.11 23:00 МСК, срок по транзиту 05.11 17:00,
+  // окно клиента до 14:04 — прибытие (срок − 2 ч работ) позже окна на ~1 ч.
+  const trip = { starts_at: '2026-11-04T20:00:00.000Z', ends_at: '2026-11-05T14:00:00.000Z' };
+  const warn = transitWindowWarning(trip, '2026-11-05T11:04:00.000Z');
+  assert.ok(warn, 'сигнал должен появиться');
+  assert.ok(warn.includes('позже окна клиента'), warn);
+  assert.ok(warn.includes('11-05 15:00'), 'прибытие = срок минус окно работ, в МСК: ' + warn);
+  assert.ok(warn.includes('на ~1 ч'), 'опоздание 56 мин округляется к часу: ' + warn);
+  // Окно просторнее расчётного прибытия — сигнала нет.
+  assert.equal(transitWindowWarning(trip, '2026-11-05T13:00:00.000Z'), null);
+  // Окна у заявки нет — сигнала нет.
+  assert.equal(transitWindowWarning(trip, null), null);
+  // Короткое плечо: окно работ = четверть рейса (час), опоздание крупное — в часах.
+  const short = { starts_at: '2026-11-04T08:00:00.000Z', ends_at: '2026-11-04T12:00:00.000Z' };
+  const shortWarn = transitWindowWarning(short, '2026-11-04T08:30:00.000Z');
+  assert.ok(shortWarn.includes('на ~2,5 ч') || shortWarn.includes('на ~2.5 ч'), shortWarn);
 });

@@ -17,6 +17,24 @@ const tripWithNames = (db, tripId) => db.prepare(`SELECT t.*,f.name from_name,z.
   FROM trips t JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
   WHERE t.id=?`).get(tripId);
 
+// Мягкий сигнал «транзит не помещается в окно клиента» (заказ руководителя
+// 05.11, разбор заявки №6146: срок рейса считается выученным транзитом и
+// законно уехал за окно, но никто об этом не узнал). Прибытие на конечную
+// выгрузку берём так же, как его ставит контроль точек: конец рейса минус
+// окно работ. Назначение НЕ блокируется — сигнал для продаж (договориться
+// о новом окне) и логиста (сдвинуть старт). Любое положительное опоздание
+// честно называется, порогов-констант нет.
+export function transitWindowWarning(trip, windowTo) {
+  const winMs = Date.parse(windowTo || '');
+  const arrivalMs = Date.parse(trip.ends_at) - workWindowMs(trip);
+  if (!Number.isFinite(winMs) || !Number.isFinite(arrivalMs) || arrivalMs <= winMs) return null;
+  const msk = ms => new Date(ms + 3 * HOUR).toISOString().slice(5, 16).replace('T', ' ');
+  const lateMin = Math.round((arrivalMs - winMs) / 60_000 / 10) * 10;
+  const lateText = lateMin >= 60 ? `${Math.round(lateMin / 30) / 2} ч` : `${Math.max(10, lateMin)} мин`;
+  return `прибытие на выгрузку по транзиту ~${msk(arrivalMs)} МСК — позже окна клиента ` +
+    `(до ${msk(winMs)} МСК) на ~${lateText}. Договоритесь с клиентом о новом окне или сдвиньте старт`;
+}
+
 // Автогенерация каркаса: погрузка в пункте отправления и выгрузка в пункте
 // назначения с плановыми временами из рейса. Дальше диспетчер уточняет и
 // добавляет промежуточные стоянки.

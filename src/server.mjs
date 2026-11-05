@@ -75,7 +75,7 @@ import {
   ensureTripStops, gpsAutoMarks, syncTrailerTrackerLinks,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
-  stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
+  stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, transitWindowWarning, tripDelayMs
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
@@ -6507,7 +6507,7 @@ function runGreenAssign() {
           AND kind<>'reserve' AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
           .get(vehicle.id, order.window_to || order.window_from, order.window_from);
         if (blocked) continue;
-        const tripId = assignOrderCore(order, vehicle, { id: null }, {});
+        const { tripId } = assignOrderCore(order, vehicle, { id: null }, {});
         db.prepare(`UPDATE trips SET auto_assigned=1 WHERE id=?`).run(tripId);
         applyDispatchStep(db, tripId, 'logist_confirm', null);
         db.prepare(`UPDATE assign_drafts SET outcome='accepted', override_reason='auto',
@@ -10604,7 +10604,19 @@ async function api(request, response, url) {
     invalidateDraftsForVehicle(vehicle.id, order.id);
     queueOutbox(db, 'trips', tripId, order.trip_id ? 'update' : 'create', tripOutboxPayload(tripId),
       integrationPublic().writePolicy === 'automatic');
-    return tripId;
+    // Мягкий сигнал «транзит не помещается в окно клиента» (05.11, разбор
+    // №6146): срок считается выученным транзитом и может честно уехать за
+    // окно — тогда продажи договариваются о новом окне, логист может
+    // сдвинуть старт. Уведомление после успешного назначения, не блокирует.
+    const windowWarning = transitWindowWarning({ starts_at: startsAt, ends_at: endsAt },
+      order.window_to);
+    if (windowWarning) {
+      const text = `🤝 Транзит не помещается в окно клиента: заявка №${order.order_no || '—'} ` +
+        `(${order.from_point || '—'} → ${order.to_point || '—'}), ${vehicle.plate} — ${windowWarning}`;
+      notify('sales', text, 'trip', tripId, { category: 'transit_window' });
+      notify('logist', text, 'trip', tripId, { category: 'transit_window' });
+    }
+    return { tripId, windowWarning };
   }
   function confirmAssigned(tripId, order, vehicle, user) {
     applyDispatchStep(db, tripId, 'logist_confirm', user.id);
@@ -10650,7 +10662,7 @@ async function api(request, response, url) {
     const previousTrip = order.trip_id
       ? db.prepare('SELECT auto_assigned, vehicle_id, order_no FROM trips WHERE id=?').get(order.trip_id)
       : null;
-    const tripId = assignOrderCore(order, vehicle, user,
+    const { tripId, windowWarning } = assignOrderCore(order, vehicle, user,
       { distanceKm: body.distanceKm, dispoOverrideReason: body.dispoOverrideReason });
     if (previousTrip?.auto_assigned && previousTrip.vehicle_id !== vehicle.id) {
       reportAutoAssignIssue(`на рейсе №${previousTrip.order_no || '?'} человек заменил ТС `
@@ -10673,7 +10685,7 @@ async function api(request, response, url) {
         ...(draft && draft.vehicle_id !== vehicle.id
           ? { recommendedVehicleId: draft.vehicle_id, overrideReason } : {}) },
       requestIp(request));
-    return json(response, 201, { tripId });
+    return json(response, 201, { tripId, ...(windowWarning ? { windowWarning } : {}) });
   }
 
   // ── Конструктор маршрутов: кольцевые цепочки заявок от базы до базы ──
@@ -10730,7 +10742,7 @@ async function api(request, response, url) {
         continue;
       }
       const startsAt = new Date(Math.max(Date.parse(order.window_from), cursor || 0)).toISOString();
-      const tripId = assignOrderCore(order, vehicle, user, { startsAt });
+      const { tripId } = assignOrderCore(order, vehicle, user, { startsAt });
       confirmAssigned(tripId, order, vehicle, user);
       const created = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(tripId);
       cursor = Date.parse(created.ends_at);

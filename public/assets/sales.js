@@ -2223,14 +2223,15 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
       if (!overrideReason.trim()) { toast('Без причины замены назначение не принимается', 'error'); return; }
     }
     const submitAssign = async (dispoOverrideReason = '') => {
-      await api(`/api/orders/${order.id}/assign`, {
+      const created = await api(`/api/orders/${order.id}/assign`, {
         method: 'POST',
         body: JSON.stringify({ vehicleId: select.value, autoConfirm: Boolean(options.autoConfirm),
           ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}),
           ...(dispoOverrideReason ? { dispoOverrideReason } : {}) })
       });
       closeModal();
-      toast(options.autoConfirm
+      if (created.windowWarning) toast(`🤝 Назначено, но ${created.windowWarning}`, 'error');
+      else toast(options.autoConfirm
         ? 'ТС назначена и подтверждена — рейс у диспетчера'
         : 'ТС назначена — рейс проведён в план');
       await onReload();
