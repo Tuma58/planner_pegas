@@ -57,6 +57,10 @@ export function shiftWorsensWindow(order, before, after) {
 // ещё не была); пройденные точки с отметками диспетчера не трогаются.
 // Первая погрузка — от начала рейса, последняя выгрузка — к концу,
 // промежуточные — линейно по порядку между соседними якорями.
+// План, поставленный ЧЕЛОВЕКОМ (updated_by заполнен и время уже есть),
+// неприкосновенен (решение руководителя 05.11, заявка Базуева): план —
+// обязательство, по которому меряется опоздание; сдвиг рейса его не
+// переписывает. Точка от продаж БЕЗ времени (маршрут заявки) — заполняется.
 export function rescheduleTripStops(db, tripId) {
   const trip = tripWithNames(db, tripId);
   if (!trip || trip.status === 'rejected') return 0;
@@ -68,10 +72,20 @@ export function rescheduleTripStops(db, tripId) {
   const update = db.prepare(`UPDATE trip_stops SET planned_arrival=?,planned_departure=?,point=?,
     updated_at=CURRENT_TIMESTAMP WHERE id=?`);
   let changed = 0;
+  const updatePoint = db.prepare(`UPDATE trip_stops SET point=?,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`);
   stops.forEach((stop, index) => {
     if (stop.actual_arrival || stop.work_started_at || stop.work_finished_at || stop.actual_departure) return;
     const first = index === 0;
     const last = index === stops.length - 1;
+    if (stop.updated_by && stop.planned_arrival) {
+      // Времена человека не трогаем, но ПУНКТ крайних точек следует за
+      // рейсом: продажи правят адрес — карточка не должна везти в старый.
+      const freshPoint = first ? (trip.from_point || trip.from_name)
+        : last ? (trip.to_point || trip.to_name) : stop.point;
+      if (freshPoint !== stop.point) { updatePoint.run(freshPoint, stop.id); changed += 1; }
+      return;
+    }
     let arrival;
     let departure;
     if (first) { arrival = startMs; departure = startMs + windowMs; }

@@ -1576,6 +1576,25 @@ test('перепланирование стоянок: сдвиг рейса д�
   assert.equal(after[0].planned_arrival, '2026-08-25T06:00:00.000Z', 'пройденная погрузка не тронута');
   assert.equal(after[1].planned_departure, '2026-08-27T06:00:00.000Z', 'выгрузка следует за новым концом рейса');
   assert.equal(after[1].point, 'Софьино', 'пункт выгрузки обновлён из рейса');
+
+  // Вариант А (решение 05.11, заявка Базуева): план, поставленный человеком,
+  // при сдвиге рейса неприкосновенен — по нему меряется опоздание; точка
+  // от продаж БЕЗ плана заполняется; пункт крайней точки следует за рейсом.
+  const userId = db.prepare('SELECT id FROM users LIMIT 1').get().id;
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,planned_arrival,updated_by)
+    VALUES('rs1-mid','rs1',2,'D','Рязань распред',  '2026-08-26T18:00:00.000Z',?)`).run(userId);
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,updated_by)
+    VALUES('rs1-via','rs1',3,'D','Коломна склад',?)`).run(userId);
+  db.prepare(`UPDATE trip_stops SET seq=4, updated_by=? WHERE trip_id='rs1' AND point='Софьино'`).run(userId);
+  db.prepare(`UPDATE trips SET ends_at='2026-08-28T06:00:00.000Z', to_point='Белые Столбы' WHERE id='rs1'`).run();
+  rescheduleTripStops(db, 'rs1');
+  const final = db.prepare('SELECT point,planned_arrival,planned_departure FROM trip_stops WHERE trip_id=? ORDER BY seq').all('rs1');
+  assert.equal(final[1].planned_arrival, '2026-08-26T18:00:00.000Z',
+    'ручной план промежуточной точки не сдвинут рейсом');
+  assert.ok(final[2].planned_arrival, 'точка маршрута продаж без плана получила время');
+  assert.equal(final[3].planned_departure, '2026-08-27T06:00:00.000Z',
+    'ручной план конечной выгрузки не переписан сдвигом конца');
+  assert.equal(final[3].point, 'Белые Столбы', 'пункт конечной точки следует за правкой адреса');
 });
 
 test('подбор ТС: позиция по пункту выгрузки, а не по ошибочной геозоне (кейс р550ту58)', () => {
