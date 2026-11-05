@@ -382,7 +382,9 @@ function listVehicles() {
     rates = JSON.parse(db.prepare(`SELECT value FROM app_meta
       WHERE key='driver_run_rate'`).get()?.value || '{}').rates || {};
   } catch { /* кэш ещё не собран */ }
-  return db.prepare(`SELECT v.*,vt.name type_name,z.name zone_name,z.color zone_color
+  return db.prepare(`SELECT v.*,vt.name type_name,z.name zone_name,z.color zone_color,
+      (SELECT tr.model FROM trailers tr
+        WHERE tr.plate=TRIM(COALESCE(v.trailer_plate,''))) trailer_model
     FROM vehicles v JOIN vehicle_types vt ON vt.id=v.type_id
     LEFT JOIN zones z ON z.id=v.zone_id ORDER BY v.plate`).all()
     .map(vehicle => ({ ...vehicle, run_rate: rates[vehicle.plate] || null }));
@@ -11181,11 +11183,18 @@ async function api(request, response, url) {
     const createTrailer = canonTrailerPlate(body.trailerPlate || '');
     const createTypeId = trailerDrivenTypeId(createTrailer, body.typeId);
     const createStatus = body.status || 'work';
-    db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status,out_since)
-      VALUES(?,?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status,out_since,
+      model) VALUES(?,?,?,?,?,?,?,?,?)`).run(
       id, body.plate.trim(), createTrailer, createTypeId, body.driverName || '',
       body.zoneId || null, createStatus,
-      createStatus === 'out' ? String(body.outSince || new Date().toISOString()).slice(0, 10) : null);
+      createStatus === 'out' ? String(body.outSince || new Date().toISOString()).slice(0, 10) : null,
+      String(body.model || '').trim() || null);
+    // Модель прицепа живёт на прицепе (как тип): запись в справочнике уже
+    // создана trailerDrivenTypeId — дописываем модель.
+    if (createTrailer && String(body.trailerModel || '').trim()) {
+      db.prepare(`UPDATE trailers SET model=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+        .run(String(body.trailerModel).trim(), createTrailer);
+    }
     audit(db, user, 'create', 'vehicle', id, body, requestIp(request));
     return json(response, 201, { id });
   }
@@ -11220,13 +11229,21 @@ async function api(request, response, url) {
       ? String(body.outSince || current.out_since || new Date().toISOString()).slice(0, 10)
       : null;
     db.prepare(`UPDATE vehicles SET plate=?,trailer_plate=?,type_id=?,driver_name=?,zone_id=?,status=?,
-      unavailable_from=?,unavailable_to=?,out_since=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      unavailable_from=?,unavailable_to=?,out_since=?,model=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       body.plate ?? current.plate, patchTrailer,
       patchTypeId, body.driverName ?? current.driver_name,
       body.zoneId ?? current.zone_id, patchStatus,
       body.unavailableFrom ?? current.unavailable_from, body.unavailableTo ?? current.unavailable_to,
       patchOutSince,
+      body.model !== undefined ? (String(body.model).trim() || null) : current.model,
       match[0]);
+    // Модель прицепа — на прицепе (как тип): правка из формы ТС переучивает
+    // справочник, при перецепке модель уедет вместе с прицепом.
+    if (body.trailerModel !== undefined && patchTrailer) {
+      db.prepare(`UPDATE trailers SET model=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+        .run(String(body.trailerModel).trim() || null, patchTrailer);
+    }
     // Смена водителя из карточки/справочника ТС синхронизирует справочник
     // водителей: имя ищется без учёта регистра, новый — создаётся и
     // закрепляется, прежний водитель этой сцепки открепляется.
@@ -11888,7 +11905,7 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/trailers-registry') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
-    const list = db.prepare(`SELECT tr.plate, tr.out_since, vt.name type_name,
+    const list = db.prepare(`SELECT tr.plate, tr.out_since, tr.model, vt.name type_name,
         (SELECT v.plate FROM vehicles v WHERE TRIM(COALESCE(v.trailer_plate,''))=tr.plate
            AND v.status<>'out' LIMIT 1) holder_plate
       FROM trailers tr LEFT JOIN vehicle_types vt ON vt.id=tr.type_id
@@ -11911,6 +11928,11 @@ async function api(request, response, url) {
       // Сцепка-держатель выравнивается сразу, не ждёт ежечасный сторож.
       db.prepare(`UPDATE vehicles SET type_id=?, updated_at=CURRENT_TIMESTAMP
         WHERE TRIM(COALESCE(trailer_plate,''))=? AND status<>'out'`).run(typeRow.id, plate);
+      audit(db, user, 'update', 'trailer', plate, body, requestIp(request));
+    }
+    if (body.model !== undefined) {
+      db.prepare(`UPDATE trailers SET model=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+        .run(String(body.model).trim() || null, plate);
       audit(db, user, 'update', 'trailer', plate, body, requestIp(request));
     }
     if (body.outSince !== undefined) {

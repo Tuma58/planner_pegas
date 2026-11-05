@@ -1376,7 +1376,9 @@ function openVehicle(vehicle = null, after = null) {
   showModal(`<form id="vehicleForm"><h2>${vehicle ? 'Карточка ТС' : 'Новая сцепка'}</h2>
     <div class="fields">
       <label class="field">Госномер<input name="plate" value="${escapeHtml(vehicle?.plate || '')}" required></label>
+      <label class="field">Модель тягача<input name="model" value="${escapeHtml(vehicle?.model || '')}" placeholder="DAF FT XF 105 460"></label>
       <label class="field">Прицеп<input name="trailerPlate" value="${escapeHtml(vehicle?.trailer_plate || '')}"></label>
+      <label class="field">Модель прицепа<input name="trailerModel" value="${escapeHtml(vehicle?.trailer_model || '')}" placeholder="SKO24"></label>
       <label class="field">Тип<select name="typeId">${types}</select></label>
       <label class="field">Водитель<input name="driverName" value="${escapeHtml(vehicle?.driver_name || '')}"></label>
       <label class="field">Зона<select name="zoneId">${zoneOptions(vehicle?.zone_id)}</select></label>
