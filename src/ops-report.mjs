@@ -175,8 +175,8 @@ export function opsReportData(db, from, to, parkFn) {
   }
 
   // Динамика КТГ/КВЛ/КИП и выручки: по дням и понедельно (пн–вс).
-  // Методика та же, что в плитках: техготовность и «выведена» — из
-  // диспозиций, линия — живой ряд, КИП — по закрытым рейсам.
+  // Методика та же, что в плитках: техготовность, «без водителя» и
+  // «выведена» — из диспозиций, «с заданием» — живой ряд рейсов.
   const dayMs = days.map(d => Date.parse(`${d}T00:00:00Z`));
   const perDayHours = rows => {
     const out = days.map(() => 0);
@@ -194,30 +194,20 @@ export function opsReportData(db, from, to, parkFn) {
   const outDayH = perDayHours(db.prepare(`SELECT starts_at,ends_at FROM vehicle_dispositions
       WHERE kind='out' AND starts_at < ? AND ends_at > ?`).all(to, from));
   const techDay = days.map((d, i) => Math.max(0, T.fleet - remDayH[i] / 24 - outDayH[i] / 24));
-  const lineDayH = days.map(() => 0), prodDayH = days.map(() => 0);
-  for (const t of db.prepare(`SELECT t.on_line_at,t.starts_at,t.ends_at,t.unloaded_at,t.arrived_at,
-      (SELECT MIN(s.actual_departure) FROM trip_stops s WHERE s.trip_id=t.id AND s.kind='P'
-        AND s.actual_departure IS NOT NULL) dep
-      FROM trips t WHERE t.status IN ('unloaded','done','paid','run')
-        AND t.starts_at < ? AND COALESCE(t.unloaded_at,t.ends_at) > ?`).all(to, from)) {
-    const on = Date.parse(String(t.on_line_at || t.starts_at).replace(' ', 'T'));
-    const fin = Date.parse(String(t.unloaded_at || t.ends_at).replace(' ', 'T'));
-    const dp = t.dep ? Date.parse(String(t.dep).replace(' ', 'T')) : null;
-    const de = t.arrived_at ? Date.parse(String(t.arrived_at).replace(' ', 'T')) : fin;
-    days.forEach((d, i) => {
-      const a0 = dayMs[i], b0 = a0 + 86_400_000;
-      lineDayH[i] += Math.max(0, Math.min(fin, b0) - Math.max(on, a0)) / 3.6e6;
-      if (dp) prodDayH[i] += Math.max(0, Math.min(de, b0) - Math.max(dp, a0)) / 3.6e6;
-    });
-  }
+  // Каскад по «Рабочей среде СТ» (05.11): КВЛ = укомплектованные от
+  // исправных (вычет «без водителя» и пересменки), КИП = машины с
+  // заданием (живой ряд линии) от укомплектованных.
+  const noDrvDayH = perDayHours(db.prepare(`SELECT starts_at,ends_at FROM vehicle_dispositions
+      WHERE kind IN ('no_driver','shift') AND starts_at < ? AND ends_at > ?`).all(to, from));
+  const crewDay = days.map((d, i) => Math.max(0, techDay[i] - noDrvDayH[i] / 24));
   const pct1 = v => +Math.min(100, Math.max(0, v * 100)).toFixed(1);
   const trendDay = {
     labels: days.map(d => d.slice(8)),
     tips: days.map(d => `${d.slice(8)}.${d.slice(5, 7)}`),
     rev: revDays,
     ktg: techDay.map(v => pct1(v / Math.max(1, T.fleet))),
-    kvl: techDay.map((v, i) => pct1(online[i] / Math.max(0.001, v))),
-    kip: days.map((d, i) => lineDayH[i] > 0.5 ? pct1(prodDayH[i] / lineDayH[i]) : 0)
+    kvl: techDay.map((v, i) => pct1(crewDay[i] / Math.max(0.001, v))),
+    kip: days.map((d, i) => pct1(online[i] / Math.max(0.001, crewDay[i])))
   };
   const wkKey = d => {
     const t = Date.parse(`${d}T00:00:00Z`);
@@ -238,10 +228,10 @@ export function opsReportData(db, from, to, parkFn) {
     trendWeek.tips.push(`${d1.slice(8)}.${d1.slice(5, 7)}–${d2.slice(8)}.${d2.slice(5, 7)}`);
     trendWeek.rev.push(+idx.reduce((s, i) => s + revDays[i], 0).toFixed(2));
     const tech = avg(idx.map(i => techDay[i]));
+    const crew = avg(idx.map(i => crewDay[i]));
     trendWeek.ktg.push(pct1(tech / Math.max(1, T.fleet)));
-    trendWeek.kvl.push(pct1(avg(idx.map(i => online[i])) / Math.max(0.001, tech)));
-    const lh = idx.reduce((s, i) => s + lineDayH[i], 0);
-    trendWeek.kip.push(lh > 0.5 ? pct1(idx.reduce((s, i) => s + prodDayH[i], 0) / lh) : 0);
+    trendWeek.kvl.push(pct1(crew / Math.max(0.001, tech)));
+    trendWeek.kip.push(pct1(avg(idx.map(i => online[i])) / Math.max(0.001, crew)));
   }
   const trend = { day: trendDay, week: trendWeek };
 
@@ -315,9 +305,13 @@ export function dailyOpsText(db, parkFn) {
     `📊 Эксплуатация за ${y.slice(8, 10)}.${y.slice(5, 7)} (планер)`,
     `Выручка без НДС: ${fmtM(T.rev)} млн · рейсов ${T.trips} · месяц к дате: ${fmtM(M.rev)} млн`,
     (() => {
+      // Каскад по «Рабочей среде СТ» (05.11): КВЛ — укомплектованность
+      // исправных, КИП — машины с заданием от укомплектованных.
       const ktgCars = T.fleet - day.downtime.repair.avg;
-      const kvlDay = ktgCars ? Math.round(day.avgOnline / ktgCars * 100) : 0;
-      return `Парк ${T.fleet}: техготовность ${ktgCars.toFixed(0)} маш (КТГ ${Math.round(ktgCars / T.fleet * 100)}%) · на линии ${day.avgOnline} маш (КВЛ ${kvlDay}%) · в работе ~${(day.avgOnline * M.kip / 100).toFixed(0)} маш (линия × КИП мес ${M.kip}%)`;
+      const crewCars = Math.max(0, ktgCars - day.downtime.no_driver.avg - day.downtime.shift.avg);
+      const kvlDay = ktgCars ? Math.round(crewCars / ktgCars * 100) : 0;
+      const kipDay = crewCars ? Math.round(day.avgOnline / crewCars * 100) : 0;
+      return `Парк ${T.fleet}: техготовность ${ktgCars.toFixed(0)} маш (КТГ ${Math.round(ktgCars / T.fleet * 100)}%) · укомплектовано ${crewCars.toFixed(0)} маш (КВЛ ${kvlDay}%) · с заданием ${day.avgOnline} маш (КИП ${kipDay}%)`;
     })(),
     `Простой: ремонт ${day.downtime.repair.avg} · без водителя ${day.downtime.no_driver.avg} · пересменка ${day.downtime.shift.avg} · без причины ${day.downtime.no_reason.avg} маш/сут`,
     `Опоздания >1ч: погрузка ${day.late.P.late1}/${day.late.P.n} · выгрузка ${day.late.D.late1}/${day.late.D.n}` +
@@ -547,18 +541,18 @@ details{margin:2px 0 10px}summary{font-size:11.5px;color:var(--muted);cursor:poi
 <div class="tiles">
 <div class="tile"><span>Выручка без НДС</span><b>${(T.rev / 1e6).toFixed(1)} млн</b><small>${T.trips} рейсов за ${T.days} дн</small></div>
 <div class="tile"><span>Техготовность · КТГ</span><b>${(T.fleet - data.downtime.repair.avg).toFixed(1)} маш</b><small>КТГ ${T.ktg}% из ${T.fleet} списочных</small></div>
-<div class="tile"><span>На линии среднесуточно</span><b>${data.avgOnline} маш</b><small>машино-часы линии / 24 · КВЛ ${T.kvl}%</small></div>
-<div class="tile"><span>В работе · КИП</span><b>${(data.avgOnline * T.kip / 100).toFixed(1)} маш</b><small>на линии ${data.avgOnline} × КИП ${T.kip}% — столько машин отрабатывают полную норму (${T.kipCeiling ?? 67}% времени, ${Math.round((T.kipCeiling ?? 67) * 24 / 100)} ч/сут); раскладка — в водопаде фонда</small></div>
+<div class="tile"><span>Укомплектовано · КВЛ</span><b>${(T.fundH / 24 / T.days).toFixed(1)} маш</b><small>фонд экипажа / 24 · КВЛ ${T.kvl}% от исправных (потери — без водителя, пересменка)</small></div>
+<div class="tile"><span>С заданием · КИП</span><b>${data.avgOnline} маш</b><small>машино-часы линии / 24 · КИП ${T.kip}% от укомплектованных — простой укомплектованной машины без задания бьёт сюда</small></div>
 <div class="tile"><span>Прибытия на погрузку вовремя</span><b>${onP}%</b><small>${late.P.late1} опозд. &gt;1 ч из ${late.P.n}</small></div>
 <div class="tile"><span>Прибытия на выгрузку вовремя</span><b>${onD}%</b><small>${late.D.late1} опозд. &gt;1 ч из ${late.D.n}</small></div>
 </div>
 
 <h2>КТГ · КВЛ · КИП в динамике, %</h2>
-<div class="crow"><div class="legend"><span><i style="background:var(--s1)"></i>КТГ — техготовность</span><span><i style="background:var(--s2)"></i>КВЛ — выпуск на линию</span><span><i style="background:var(--s3)"></i>КИП — использование</span></div>${granSeg('kkk')}</div>
+<div class="crow"><div class="legend"><span><i style="background:var(--s1)"></i>КТГ — техготовность</span><span><i style="background:var(--s2)"></i>КВЛ — укомплектованность</span><span><i style="background:var(--s3)"></i>КИП — с заданием</span></div>${granSeg('kkk')}</div>
 ${granPair('kkk',
     linesSvg([D.ktg, D.kvl, D.kip], ['КТГ', 'КВЛ', 'КИП'], D.labels, D.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100),
     linesSvg([WK.ktg, WK.kvl, WK.kip], ['КТГ', 'КВЛ', 'КИП'], WK.labels, WK.tips, ['var(--s1)', 'var(--s2)', 'var(--s3)'], '%', 100, 1))}
-<p class="note">техготовность и линия — среднесуточно (ремонт/выведенные из диспозиций, линия — живой ряд рейсов и перегонов); КИП в динамике — грубый ряд «под грузом/линия» по дням, итоговый КИП периода — по канону работы от фонда экипажа (плитка и водопад); недели — пн–вс внутри периода.</p>
+<p class="note">каскад — по формулам «Рабочей среды СТ» (05.11): КТГ = исправные/списочные; КВЛ = укомплектованные/исправные (вычет — без водителя и пересменка из диспозиций); КИП = машины с заданием (живой ряд рейсов и перегонов) от укомплектованных; КТГ×КВЛ×КИП = доля календаря с заданием. Прежний измеритель «работа экипажа от потолка» остался в водопаде фонда ниже; недели — пн–вс внутри периода.</p>
 
 <h2>Простой парка по причинам — среднесуточно машин</h2>
 <div class="tiles">${dtRow}</div>
@@ -570,7 +564,7 @@ ${T.fundWaterfall ? `<h2>Куда уходит фонд экипажа</h2>
 <div class="chart">${fundBars()}</div>
 <p class="note">фонд экипажа = ${Math.round(T.fundH / 24)} м-д (время с водителем, минус ремонты/пересменки/выведенные);
  работа = дорога (км рейса / живая Vтех ${T.vtech} км/ч по CAN) + норматив ворот ${T.gateNormH} ч на операцию (живой из транзита, первая погрузка и финальная выгрузка включены); перегоны без груза не мерятся нормативом и в работу не входят;
- КИП = работа / фонд, потолок ${T.kipCeiling ?? 67}% = 100%; закладка на отдых ${100 - (T.kipCeiling ?? 67)}% = ${Math.round(T.fundH * (100 - (T.kipCeiling ?? 67)) / 100 / 24)} м-д.${T.fundOverlapH > 24 ? ` ⚠ ${Math.round(T.fundOverlapH / 24)} м-д рейсов шли поверх закрытых ремонтов/пересменок — время возвращено в фонд, диспозиции стоит подчистить.` : ''}</p>` : ''}
+ справочный измеритель «работа/фонд» = ${T.kipRaw}% (норма-потолок ${T.kipCeiling ?? 67}%; это НЕ КИП каскада — тот считается «с заданием/укомплектованные»); закладка на отдых ${100 - (T.kipCeiling ?? 67)}% = ${Math.round(T.fundH * (100 - (T.kipCeiling ?? 67)) / 100 / 24)} м-д.${T.fundOverlapH > 24 ? ` ⚠ ${Math.round(T.fundOverlapH / 24)} м-д рейсов шли поверх закрытых ремонтов/пересменок — время возвращено в фонд, диспозиции стоит подчистить.` : ''}</p>` : ''}
 
 <h2>Выручка, млн ₽ без НДС</h2>
 <div class="crow"><div class="legend"><span><i style="background:var(--s1)"></i>по дате выгрузки</span></div>${granSeg('rev')}</div>

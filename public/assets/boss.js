@@ -192,17 +192,20 @@ export async function renderBoss(container, context) {
     const fleetN = C.total.fleet || u.vehicles;
     const days = C.total.days || u.days || 1;
     const techAvg = Math.max(0, fleetN - C.downtime.repair.avg - C.downtime.out.avg);
-    const kipShare = (C.total.kip || 0) / 100;
+    // Каскад по «Рабочей среде СТ» (05.11): КВЛ — укомплектованность
+    // исправных (вычет без водителя/пересменки), КИП — с заданием от
+    // укомплектованных; произведение = доля календаря с заданием.
+    const crewAvg = Math.max(0, techAvg - C.downtime.no_driver.avg - C.downtime.shift.avg);
     u.vehicles = fleetN;
     u.days = days;
     u.futureDays = Math.max(0, (u.periodDays || days) - days);
     u.calendarDays = fleetN * days;
     u.techDays = techAvg * days;
-    u.lineDays = C.avgOnline * days;
-    u.workDays = C.avgOnline * kipShare * days;
+    u.lineDays = crewAvg * days;
+    u.workDays = C.avgOnline * days;
     u.ktg = fleetN ? techAvg / fleetN : 0;
-    u.kvl = techAvg ? C.avgOnline / techAvg : 0;
-    u.kip = kipShare;
+    u.kvl = techAvg ? crewAvg / techAvg : 0;
+    u.kip = crewAvg ? Math.min(1, C.avgOnline / crewAvg) : 0;
     u.machineDays = {
       work: Math.round(u.workDays),
       idle: Math.round(C.downtime.no_reason.avg * days),
@@ -236,10 +239,10 @@ export async function renderBoss(container, context) {
     { k: 'КТГ — техготовность', v: pct(u.ktg), p: 'план 97%',
       pill: `${devPP(u.ktg, PLAN.ktg) >= 0 ? '+' : ''}${devPP(u.ktg, PLAN.ktg).toFixed(1)} п.п.`,
       pc: pillCls(devPP(u.ktg, PLAN.ktg)), g: u.ktg / PLAN.ktg, c: 'var(--warn)' },
-    { k: 'КВЛ — выпуск на линию', v: pct(u.kvl), p: 'план 99%',
+    { k: 'КВЛ — укомплектованность', v: pct(u.kvl), p: 'план 99%',
       pill: `${devPP(u.kvl, PLAN.kvl) >= 0 ? '+' : ''}${devPP(u.kvl, PLAN.kvl).toFixed(1)} п.п.`,
       pc: pillCls(devPP(u.kvl, PLAN.kvl)), g: u.kvl / PLAN.kvl, c: 'var(--teal)' },
-    { k: 'КИП — использование', v: pct(u.kip), p: `в работе ${n1(u.workDays / Math.max(1, u.days))} ед. из ${u.vehicles}`,
+    { k: 'КИП — с заданием', v: pct(u.kip), p: `с заданием ${n1(u.workDays / Math.max(1, u.days))} ед. из ${u.vehicles}`,
       pill: `${devPP(u.kip, PLAN.kip) >= 0 ? '+' : ''}${devPP(u.kip, PLAN.kip).toFixed(1)} п.п.`,
       pc: pillCls(devPP(u.kip, PLAN.kip)), g: u.kip / PLAN.kip, c: '#7a6fb0' },
     { k: 'Использование фонда', v: pct(fondUse), p: `${n0(u.workDays)} из ${n0(u.calendarDays)} машино-дней`,

@@ -7579,16 +7579,26 @@ function parkReportData(from, to) {
     }
     let ghostH = 0;
     for (const [vid, downs] of downIv) {
-      const line = lineTripsIv.get(vid);
+      // Вся линия, включая перегоны (05.11): перегон поверх закрытой
+      // диспозиции — та же грязь, что рейс; без возврата этих часов
+      // октябрьский КИП по структуре вылезал за 100%.
+      const line = lineIv.get(vid);
       if (line) ghostH += intervalOverlapH(line, downs);
     }
     const ktg = Math.max(0, 1 - rem / adi);
-    const kvl = Math.min(1, line / Math.max(1, adi - rem));
-    // КИП — определение руководителя (09.10, уточнено): база — ФОНД
-    // ЭКИПАЖА: время, пока машина укомплектована водителем (от выхода
+    // ФОНД ЭКИПАЖА: время, пока машина укомплектована водителем (от выхода
     // на линию до пересменки), минус ТОЛЬКО ремонты; через диспозиции:
     // календарь − «без водителя» − «пересменка» − «выведена» − ремонт.
     const crewFund = Math.max(1, adi - rem - noDrv - outH + ghostH);
+    // Каскад по «Рабочей среде СТ» (решение руководителя 05.11, сверка с
+    // формулами структуры): КВЛ = укомплектованность исправного парка
+    // (фонд экипажа / исправные часы) — потери КВЛ: без водителя,
+    // пересменка, выведена; КИП = часы С ЗАДАНИЕМ (линия рейсов и
+    // перегонов) от укомплектованных — потеря КИП: простой
+    // укомплектованной машины без задания. Тождество: КТГ×КВЛ×КИП =
+    // линия/календарь. Прежний КИП «работа экипажа от потолка 67%»
+    // остался полем kipRaw/kipCeiling и в водопаде фонда.
+    const kvl = Math.min(1, crewFund / Math.max(1, adi - rem));
     // Числитель — РАБОТА ЭКИПАЖА (уточнение руководителя 09.10,
     // вариант «последовательно определению»): в 67% входят вождение,
     // погрузки/выгрузки (включая крайние — нормативом), перегоны;
@@ -7596,15 +7606,14 @@ function parkReportData(from, to) {
     // водопаде фонда, из КИП исключены (иначе отдых считался бы
     // дважды: тут и в 33% потолка).
     const workH = fund.work;
+    // kipRaw — прежний измеритель «работа экипажа от фонда» (норма — потолок
+    // kipCeilingPct): остаётся справочным для водопада и профиля водителей.
     const kipRaw = Math.min(1, workH / crewFund);
     const fundWait = Math.max(0, crewFund - fund.work - fund.restRoad
       - fund.loadOver - fund.unloadOver - transferNetH);
-    // КИП — от ПОТОЛКА (решение руководителя 09.10): физический максимум
-    // «под грузом» ~67% времени линии (погрузки/выгрузки/подгоны съедают
-    // треть) — берём его за 100%. Потолок — настройка калькуляции
-    // (kipCeilingPct, 0/пусто = без нормировки), не зашивка.
     const ceiling = Number(settingsObject(db).calculation?.kipCeilingPct ?? 67) / 100;
-    const kip = ceiling > 0 ? Math.min(1, kipRaw / ceiling) : kipRaw;
+    // КИП каскада — по структуре: часы с заданием от укомплектованных.
+    const kip = Math.min(1, line / crewFund);
     return { from: a, to: b, days, fleet, adi,
       rev: Math.round(rev), trips: n,
       lineH: Math.round(line), prodH: Math.round(prod), custH: Math.round(cust),
@@ -14124,6 +14133,14 @@ async function api(request, response, url) {
             WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
               AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
           series.online = series.days.map(day => touchDay.get(addDayIso(day), day).n);
+          // Без водителя/пересменка среднесуточно — для каскада КВЛ/КИП
+          // по формулам «Рабочей среды СТ» (05.11) в PDF-колоде.
+          const noDrvDay = db.prepare(`SELECT COALESCE(SUM(julianday(MIN(ends_at, :b)) -
+              julianday(MAX(starts_at, :a))), 0) v
+            FROM vehicle_dispositions WHERE kind IN ('no_driver','shift')
+              AND starts_at < :b AND ends_at > :a`);
+          series.noDrv = series.days.map(day =>
+            +noDrvDay.get({ a: day, b: addDayIso(day) }).v.toFixed(1));
           return series;
         })(),
         planNet: Math.round(planNet),

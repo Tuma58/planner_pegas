@@ -3568,9 +3568,13 @@ test('эксплуатация: динамика КТГ/КВЛ/КИП по дн�
   const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
   const zone = db.prepare('SELECT id FROM zones LIMIT 1').get();
   // День 1 (10.03): машина в ремонте сутки. День 2 (11.03): закрытый рейс
-  // с линией 24 ч и под грузом 12 ч (dep 06:00 → arrived 18:00).
+  // (машина с заданием). День 3 (12.03): сутки «без водителя» — по
+  // формулам «Рабочей среды СТ» это потеря КВЛ (укомплектованность).
   db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
     VALUES('dTR1', ?, 'repair', '2025-03-10T00:00:00.000Z', '2025-03-11T00:00:00.000Z')`)
+    .run(vehicle.id);
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('dTR2', ?, 'no_driver', '2025-03-12T00:00:00.000Z', '2025-03-13T00:00:00.000Z')`)
     .run(vehicle.id);
   db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,
       on_line_at,unloaded_at,arrived_at,distance_km,revenue_vat,cash)
@@ -3586,14 +3590,15 @@ test('эксплуатация: динамика КТГ/КВЛ/КИП по дн�
   assert.equal(D.labels.length, 4, 'четыре дня в периоде');
   assert.equal(D.ktg[0], 90, 'сутки ремонта: техготовность 9 из 10');
   assert.equal(D.ktg[1], 100, 'день без ремонта: КТГ 100');
-  assert.equal(D.kvl[1], 10, 'одна машина на линии из 10 готовых');
-  assert.equal(D.kip[1], 50, '12 ч под грузом из 24 ч линии');
+  assert.equal(D.kvl[1], 100, 'без водителя нет — все исправные укомплектованы (КВЛ по структуре)');
+  assert.equal(D.kip[1], 10, 'одна машина с заданием из 10 укомплектованных');
+  assert.equal(D.kvl[2], 90, 'сутки «без водителя»: укомплектовано 9 из 10 исправных');
   assert.ok(D.kip.every(v => v >= 0 && v <= 100) && D.kvl.every(v => v >= 0 && v <= 100));
   // Понедельная агрегация сходится с дневной.
   const sum = arr => arr.reduce((s, v) => s + v, 0);
   assert.ok(Math.abs(sum(W.rev) - sum(D.rev)) < 0.05, 'выручка недель = сумме дней');
   assert.equal(W.labels.length, 1, '10–14.03 — одна неделя (пн–вс)');
-  assert.equal(W.kip[0], 50, 'недельный КИП из тех же часов');
+  assert.equal(W.kip[0], 2.6, 'неделя: 0,25 машины с заданием от 9,5 укомплектованных');
   // PDF-версия отчёта: валидная структура, кириллический шрифт встроен.
   const { renderOpsReportPdf } = await import('../src/ops-report-pdf.mjs');
   const pdf = renderOpsReportPdf(data);
