@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { ROLE_LABELS, rolesOf, effectivePermissions } from './permissions.mjs';
 import { applyWorkPhone } from './telephony.mjs';
+import { positionById, positionOptions } from './structure.mjs';
 
 // Полный доступ к справочнику: право staff:write (руководитель, админ)
 // либо логин из «Настройки → Сотрудники → полный доступ» (решение 07.10:
@@ -21,14 +22,18 @@ export function staffAccess(user, settings) {
 
 // Единый список: офисные + водители, с должностями и телефонами.
 export function staffList(db) {
+  const positions = positionOptions(db);
+  const deptOf = new Map(positions.map(item => [item.id, item.dept]));
+  const driverPosition = positions.find(item => item.driverPool);
   const users = db.prepare(`SELECT id, username, full_name, email, role, roles, active,
       guest, phone, work_phone, ext_phone, job_role, hired_at, fired_at,
-      telegram_chat_id, created_at FROM users
+      telegram_chat_id, created_at, position_id, password_hash FROM users
     WHERE deleted_at IS NULL ORDER BY active DESC, full_name`).all()
     .map(user => ({
       kind: 'user', id: user.id, fullName: user.full_name,
       jobRole: user.job_role || roleLabel(user), username: user.username,
-      roles: rolesOf(user), phone: user.phone || '', extPhone: user.ext_phone || '',
+      positionId: user.position_id || '', dept: deptOf.get(user.position_id) || '',
+      roles: rolesOf(user).filter(Boolean), canLogin: canLogin(user), phone: user.phone || '', extPhone: user.ext_phone || '',
       workPhone: user.work_phone || '', email: user.email || '',
       telegram: Boolean(user.telegram_chat_id), guest: Boolean(user.guest),
       active: Boolean(user.active), hiredAt: user.hired_at || user.created_at,
@@ -40,17 +45,25 @@ export function staffList(db) {
     WHERE d.status<>'fired' ORDER BY d.full_name`).all()
     .map(driver => ({
       kind: 'driver', id: driver.id, fullName: driver.full_name,
-      jobRole: 'Водитель', phone: driver.phone || '',
+      jobRole: driverPosition?.title || 'Водитель', phone: driver.phone || '',
+      positionId: driverPosition?.id || '', dept: driverPosition?.dept || '',
       vehiclePlate: driver.vehicle_plate || '', status: driver.status,
       shift: driver.shift_on ? `${driver.shift_on}/${driver.shift_off}` : '',
       active: true, hiredAt: driver.created_at
     }));
-  return { users, drivers };
+  return { users, drivers, positions };
 }
 
 function roleLabel(user) {
-  const roles = rolesOf(user);
-  return roles.map(role => ROLE_LABELS[role] || role).join(' + ');
+  const roles = rolesOf(user).filter(Boolean);
+  return roles.length ? roles.map(role => ROLE_LABELS[role] || role).join(' + ') : 'без роли';
+}
+
+// Вход в планер — только с ролью и заданным паролем. Сотрудник без роли
+// (слесарь, охрана, склад или новый человек до назначения прав) есть в
+// справочнике и в штате, но войти не может (решение 05.11).
+export function canLogin(user) {
+  return Boolean(rolesOf(user).filter(Boolean).length && String(user?.password_hash || '').startsWith('scrypt$'));
 }
 
 // Карточка офисного сотрудника: данные + график месяца + история
@@ -58,7 +71,7 @@ function roleLabel(user) {
 export function staffUserCard(db, id, month) {
   const user = db.prepare(`SELECT id, username, full_name, email, role, roles, active,
       guest, phone, work_phone, ext_phone, job_role, hired_at, fired_at,
-      telegram_chat_id, created_at, dispatch_exempt, esc_role
+      telegram_chat_id, created_at, dispatch_exempt, esc_role, position_id, password_hash
     FROM users WHERE id=? AND deleted_at IS NULL`).get(id);
   if (!user) return null;
   const ack = db.prepare(`SELECT MAX(acked_at) at FROM guide_acks WHERE user_id=?`).get(id)?.at || null;
@@ -70,8 +83,9 @@ export function staffUserCard(db, id, month) {
   return {
     user: {
       id: user.id, username: user.username, fullName: user.full_name,
-      email: user.email || '', roles: rolesOf(user),
+      email: user.email || '', roles: rolesOf(user).filter(Boolean),
       roleLabel: roleLabel(user), jobRole: user.job_role || '',
+      positionId: user.position_id || '', canLogin: canLogin(user),
       dispatchExempt: !!user.dispatch_exempt,
       escRole: user.esc_role || '',
       phone: user.phone || '', extPhone: user.ext_phone || '',
@@ -169,31 +183,44 @@ export function restoreStaffUser(db, id) {
 // admin-учётки отсюда не меняются — полный доступ к справочнику не
 // равен администратору системы (защита от эскалации прав).
 export function createStaffUser(db, body, { allowAdmin = false, hashPassword }) {
-  const roles = Array.isArray(body.roles) ? [...new Set(body.roles)] : [];
-  if (!roles.length || !roles.every(role => ROLE_LABELS[role])) {
-    return { ok: false, error: 'Нужна хотя бы одна корректная роль' };
+  // Роли при приёме не обязательны (решение 05.11): права назначаются
+  // руками позже, а без роли и пароля сотрудник просто не входит.
+  const roles = Array.isArray(body.roles) ? [...new Set(body.roles)].filter(Boolean) : [];
+  if (!roles.every(role => ROLE_LABELS[role])) {
+    return { ok: false, error: 'Неизвестная роль' };
   }
   if (!allowAdmin && roles.includes('admin')) {
     return { ok: false, error: 'Роль «Администратор» назначает только администратор' };
   }
-  const username = String(body.username || '').trim();
   const fullName = String(body.fullName || '').trim();
-  if (!username || !fullName) return { ok: false, error: 'Логин и ФИО обязательны' };
-  if (typeof body.password !== 'string' || body.password.length < 10) {
+  if (!fullName) return { ok: false, error: 'ФИО обязательно' };
+  const position = body.positionId ? positionById(db, body.positionId) : null;
+  if (body.positionId && (!position || position.driver_pool)) {
+    return { ok: false, error: 'Должность не найдена в справочнике структуры' };
+  }
+  let username = String(body.username || '').trim();
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (roles.length && !username) return { ok: false, error: 'Для роли нужен логин' };
+  if (roles.length && password.length < 10) {
     return { ok: false, error: 'Пароль должен содержать не менее 10 символов' };
   }
+  if (!roles.length && password && password.length < 10) {
+    return { ok: false, error: 'Пароль должен содержать не менее 10 символов' };
+  }
+  // Без логина — служебный, по нему не войти (пароля нет).
+  if (!username) username = `emp-${randomUUID().slice(0, 8)}`;
   const taken = db.prepare(`SELECT 1 FROM users WHERE username=? COLLATE NOCASE
     AND deleted_at IS NULL`).get(username);
   if (taken) return { ok: false, error: 'Логин занят' };
   const id = randomUUID();
   db.prepare(`INSERT INTO users(id,username,full_name,email,password_hash,role,roles,active,
-      phone,ext_phone,job_role,hired_at)
-    VALUES(?,?,?,?,?,?,?,1,?,?,?,?)`).run(
-    id, username, fullName, body.email || null, hashPassword(body.password),
-    roles[0], JSON.stringify(roles),
+      phone,ext_phone,job_role,hired_at,position_id)
+    VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?)`).run(
+    id, username, fullName, body.email || null, password ? hashPassword(password) : '',
+    roles[0] || '', JSON.stringify(roles),
     String(body.phone || '').trim(), String(body.extPhone || '').trim(),
-    String(body.jobRole || '').trim(),
-    body.hiredAt || new Date().toISOString().slice(0, 10));
+    position ? position.title : String(body.jobRole || '').trim(),
+    body.hiredAt || new Date().toISOString().slice(0, 10), position?.id || null);
   return { ok: true, id };
 }
 
@@ -203,17 +230,30 @@ export function updateStaffUser(db, id, body, { allowAdmin = false }) {
   if (!allowAdmin && rolesOf(user).includes('admin')) {
     return { ok: false, error: 'Учётку администратора меняет только администратор' };
   }
+  // Должность — из справочника структуры; её название пишется и в
+  // job_role (на тексте должности стоят база нормы «Моей смены»,
+  // телефония, контакты водителю). '' — снять должность.
+  let positionId = user.position_id || null;
+  let jobRole = String(body.jobRole ?? user.job_role ?? '').trim();
+  if (body.positionId !== undefined) {
+    if (body.positionId) {
+      const position = positionById(db, body.positionId);
+      if (!position || position.driver_pool) return { ok: false, error: 'Должность не найдена в справочнике структуры' };
+      positionId = position.id;
+      jobRole = position.title;
+    } else positionId = null;
+  }
   db.prepare(`UPDATE users SET full_name=?, email=?, phone=?, ext_phone=?, job_role=?,
-      hired_at=?, dispatch_exempt=?, esc_role=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      hired_at=?, dispatch_exempt=?, esc_role=?, position_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
     String(body.fullName ?? user.full_name).trim() || user.full_name,
     body.email ?? user.email,
     String(body.phone ?? user.phone ?? '').trim(),
     String(body.extPhone ?? user.ext_phone ?? '').trim(),
-    String(body.jobRole ?? user.job_role ?? '').trim(),
+    jobRole,
     body.hiredAt ?? user.hired_at,
     body.dispatchExempt != null ? (body.dispatchExempt ? 1 : 0) : (user.dispatch_exempt || 0),
     ['', 'senior', 'head'].includes(body.escRole) ? body.escRole : (user.esc_role || ''),
-    id);
+    positionId, id);
   // Рабочий телефон смены — явной передачей (открепление дежурной
   // трубки руками руководителя; '' — снять).
   if (body.workPhone !== undefined) {

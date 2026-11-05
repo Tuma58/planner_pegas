@@ -87,7 +87,7 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
         · ставка ${money(active.revenue_vat)}${Number(active.cash) ? ' 💵 наличные'
           : order ? ` (без НДС ${money(orderNet(order, data))})` : ''}</div>
       <div class="vinfo-row">${tripStage(active)}</div>
-      ${order?.comment ? `<div class="sales-comment">💬 Продажи: ${escapeHtml(order.comment)}</div>` : ''}
+      ${order?.comment ? `<div class="sales-comment">💬 Планирование: ${escapeHtml(order.comment)}</div>` : ''}
       ${order ? orderFileLinks(data, order.id) : ''}
       <div class="vinfo-notes" id="vinfoNotes"><small class="muted">⏳ отметки контролёра…</small></div>
     </div>`;
@@ -102,7 +102,7 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
       <div class="vinfo-row"><b>⏸ Простой${idleDays != null && idleDays >= 1 ? ` ${idleDays} дн` : ''}</b>
         ${lastDone ? `— свободна с ${formatDateTime(lastDone.ends_at)} после выгрузки
           в «${escapeHtml(lastDone.to_point || lastDone.to_name || '—')}»` : '— рейсов ещё не было'}</div>
-      <div class="vinfo-row muted">Простой — прямые потери: предложите сцепку продажам.</div>
+      <div class="vinfo-row muted">Простой — прямые потери: предложите сцепку планированию.</div>
     </div>`;
   }
 

@@ -66,6 +66,11 @@ function renderGeneral() {
       <label class="field">Ставка НДС<input id="vatRate" type="number" min="0" max="1" step=".01" value="${calculation.vatRate}"></label>
       <label class="field">Потолок КИП, % <small class="muted">(физический максимум «под грузом»; КИП в отчётах показывается от него; 0 — сырой КИП)</small>
         <input id="kipCeilingPct" type="number" min="0" max="100" step="1" value="${calculation.kipCeilingPct ?? 67}"></label>
+      <label class="field">Цели каскада структуры СТ, % <small class="muted">(КТГ от списка · КВЛ от КТГ · КИП от КВЛ; итог — их произведение; видны на экране «Структура»)</small>
+        <span style="display:flex;gap:6px">
+          <input id="ktgTargetPct" type="number" min="0" max="100" step="0.5" value="${calculation.ktgTargetPct ?? 97}" title="КТГ — ТОиР">
+          <input id="kvlTargetPct" type="number" min="0" max="100" step="0.5" value="${calculation.kvlTargetPct ?? 99}" title="КВЛ — Эксплуатация">
+          <input id="kipTargetPct" type="number" min="0" max="100" step="0.5" value="${calculation.kipTargetPct ?? 99}" title="КИП — Логистика"></span></label>
       <label class="field">Цель среднесуточного пробега, км/сут на машину
         <input id="dailyKmTarget" type="number" min="0" step="10" value="${calculation.dailyKmTarget ?? 500}"></label>
       <label class="field">НДС для ИП<input id="individualEntrepreneurVatRate" type="number" min="0" max="1" step=".01" value="${calculation.individualEntrepreneurVatRate}"></label>
@@ -74,10 +79,10 @@ function renderGeneral() {
       <label class="field">Грузовая операция, ч<input id="handlingHoursPerOperation" type="number" min="0" step=".5" value="${calculation.handlingHoursPerOperation ?? 2}" title="Резерв на операцию, пока средние ворота не выучены"></label>
       <label class="field">Коэффициент транзита<input id="transitFactor" type="number" min="1" step=".1" value="${calculation.transitFactor ?? 1.5}" title="Резервный: применяется только в старой формуле (пока скорости не выучены); в живом транзите его сменил «Запас надёжности, %»"></label>
       <label class="field">Целевая утилизация<input id="utilizationTarget" type="number" min="0" max="1" step=".001" value="${calculation.utilizationTarget}"></label>
-      <label class="field">Целевой стык между рейсами, ч<input id="targetGapHours" type="number" min="1" max="48" step="1" value="${calculation.targetGapHours ?? 8}" title="Рычаг стыковки (24.09): сколько часов допустимо от выгрузки до старта следующего рейса. От цели живут сигналы продажам, строка в Отчёте дня и разбор «кто передержал» в Нормативах недели. 8 ч — стык лучших пар"></label>
+      <label class="field">Целевой стык между рейсами, ч<input id="targetGapHours" type="number" min="1" max="48" step="1" value="${calculation.targetGapHours ?? 8}" title="Рычаг стыковки (24.09): сколько часов допустимо от выгрузки до старта следующего рейса. От цели живут сигналы планированию, строка в Отчёте дня и разбор «кто передержал» в Нормативах недели. 8 ч — стык лучших пар"></label>
       <label class="field">Перегон требует оформления, км<input id="transferGapKm" type="number" min="0" max="2000" step="5" value="${calculation.transferGapKm ?? 100}" title="Инструмент отклонений (04.10): если следующая погрузка дальше этого порога от точки выгрузки, а порожний перегон не оформлен — пара попадает в «Требует решения» с кнопкой «Оформить». 0 — контроль выключен"></label>
-      <label class="field">Цель: следующий до выгрузки, %<input id="nextAssignTargetPct" type="number" min="0" max="100" step="1" value="${calculation.nextAssignTargetPct ?? 85}" title="Норматив стыковки (23.09): у какой доли рейсов следующий должен быть назначен ДО фактической выгрузки. Такой стык — 8 ч против 27,6 у назначенных после. Факт — в Отчёте дня и Нормативах недели; продажам приходит «🔎 Освобождаются без груза» за 6–24 ч до выгрузки"></label>
-      <label class="field">Цель: ворота выгрузки, ч<input id="gateTargetHours" type="number" min="1" step="1" value="${calculation.gateTargetHours ?? 6}" title="Цель руководителя (22.09): сколько часов машина должна проводить на выгрузке (прибыл → выгружен). Превышение у клиентов со ставкой простоя в карточке — претензия; у остальных — понедельничная аналитика «Дорогие ворота» продажам"></label>
+      <label class="field">Цель: следующий до выгрузки, %<input id="nextAssignTargetPct" type="number" min="0" max="100" step="1" value="${calculation.nextAssignTargetPct ?? 85}" title="Норматив стыковки (23.09): у какой доли рейсов следующий должен быть назначен ДО фактической выгрузки. Такой стык — 8 ч против 27,6 у назначенных после. Факт — в Отчёте дня и Нормативах недели; планированию приходит «🔎 Освобождаются без груза» за 6–24 ч до выгрузки"></label>
+      <label class="field">Цель: ворота выгрузки, ч<input id="gateTargetHours" type="number" min="1" step="1" value="${calculation.gateTargetHours ?? 6}" title="Цель руководителя (22.09): сколько часов машина должна проводить на выгрузке (прибыл → выгружен). Превышение у клиентов со ставкой простоя в карточке — претензия; у остальных — понедельничная аналитика «Дорогие ворота» планированию"></label>
       <label class="field">Простой: бесплатно, ч<input id="demurrageFreeHours" type="number" min="0" step="1" value="${calculation.demurrageFreeHours ?? 8}" title="Общий норматив бесплатного простоя от планового времени операции — применяется, когда в карточке клиента не заданы свои часы"></label>
       <label class="field">Простой: тариф, ₽/ч<input id="demurrageRatePerHour" type="number" min="0" step="50" value="${calculation.demurrageRatePerHour ?? 1000}" title="Ставка за каждый начатый час сверхнормативного простоя — попадает в документ претензии"></label>
     </div>`, { hint: 'цели руководителя и резервные формулы; живые нормативы — у руководителя' }),
@@ -104,6 +109,8 @@ async function saveGeneral() {
     calculation: {
       costPerKm: numeric('costPerKm'), vatRate: numeric('vatRate'),
       kipCeilingPct: numeric('kipCeilingPct'),
+      ktgTargetPct: numeric('ktgTargetPct'), kvlTargetPct: numeric('kvlTargetPct'),
+      kipTargetPct: numeric('kipTargetPct'),
       dailyKmTarget: numeric('dailyKmTarget'),
       insuranceAndRoadsPerKm: numeric('insuranceAndRoadsPerKm'),
       driverPerTripDay: numeric('driverPerTripDay'),
@@ -801,7 +808,7 @@ const NOTIFY_CATEGORIES = [
   ['order_deadlines', '⏳ Дедлайны заявок (подтвердить/назначить)', 'normal'],
   ['shift_handover', '🌙 Ночная передача смены', 'normal'],
   ['stale_transfers', '🚚 Зависшие перегоны', 'normal'],
-  ['sales_directions', '🧭 Утренние направления продажам', 'normal'],
+  ['sales_directions', '🧭 Утренние направления планированию', 'normal'],
   ['no_next', '⏭ Выгрузка близко, следующий рейс не назначен', 'normal'],
   ['resource_watch', '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', 'normal'],
   ['shift_digest', '📋 Сводка смены (18:00 на ночь / 06:00 на день)', 'normal'],

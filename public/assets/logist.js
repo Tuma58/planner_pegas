@@ -103,7 +103,7 @@ export function rejectTripDialog(trip, data, context) {
     <h2>Отклонить рейс</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
       · ${escapeHtml(trip.customer_name || 'без заказчика')}</p>
-    <p class="muted">Заявка вернётся в продажи как новая с указанной причиной${trip.order_id ? '' : ' (для рейса из 1С будет создана заявка-возврат)'}.</p>
+    <p class="muted">Заявка вернётся в планирование как новая с указанной причиной${trip.order_id ? '' : ' (для рейса из 1С будет создана заявка-возврат)'}.</p>
     <label class="field">Причина отклонения
       <select name="rejectionReason" required>
         <option value="">— выберите причину —</option>
@@ -123,7 +123,7 @@ export function rejectTripDialog(trip, data, context) {
         method: 'PATCH', body: JSON.stringify({ status: 'rejected', rejectionReason: reason })
       });
       context.closeModal();
-      toast('Рейс отклонён — заявка вернулась в продажи');
+      toast('Рейс отклонён — заявка вернулась в планирование');
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -170,9 +170,9 @@ function pickOrderDialog(request, queue, data, context) {
       в «${escapeHtml(request.zone.name)}»${request.idleMs > 0 ? ` · уже стоит ${Math.max(1, Math.floor(request.idleMs / 86_400_000))} дн` : ''}</p>
     ${rows ? `<div class="list" style="max-height:340px;overflow:auto;margin-bottom:10px">${rows}</div>`
       : `<p class="muted" style="margin:14px 0">Подходящих по времени заявок в очереди нет.
-         Отправьте запрос в продажи — сцепку предложат клиентам под дату освобождения.</p>`}
+         Отправьте запрос в планирование — сцепку предложат клиентам под дату освобождения.</p>`}
     <div class="modal-actions">
-      <button type="button" class="button ghost" id="pickAskSales">→ Запрос в продажи</button>
+      <button type="button" class="button ghost" id="pickAskSales">→ Запрос в планирование</button>
       <button type="button" class="button ghost" data-close>Закрыть</button>
     </div>`);
   document.querySelectorAll('[data-pick-order]').forEach(button =>
@@ -201,7 +201,7 @@ function pickOrderDialog(request, queue, data, context) {
     try {
       await api(`/api/vehicles/${request.vehicle.id}/request-load`, { method: 'POST' });
       context.closeModal();
-      toast('Запрос отправлен в продажи');
+      toast('Запрос отправлен в планирование');
     } catch (error) { toast(error.message, 'error'); }
   };
 }
@@ -248,7 +248,7 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
       `Парк в работе: ${workCount} · обеспечены рейсами: ${occupied} · требуют работы: ${needWork.length} · недоступны: ${task.unavailable.length}`,
       `Очередь на назначение: ${openQueue.length} заявок · ${money(queueSum)}`,
       uncovered > 0
-        ? `БАЛАНС: работы не хватает — ${uncovered} сцепок останутся без загрузки, запросите продажи`
+        ? `БАЛАНС: работы не хватает — ${uncovered} сцепок останутся без загрузки, запросите планирование`
         : `БАЛАНС: работы достаточно (заявок ${openQueue.length} на ${needWork.length} свободных)`, '',
       'ТРЕБУЮТ РАБОТЫ:'];
     cards.forEach(({ item, matches, state }) => {
@@ -258,7 +258,7 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
         matches.slice(0, 2).forEach(({ order, inZone }) => lines.push(`    подходит: №${order.order_no || '—'} ` +
           `${order.from_point || order.from_name} → ${order.to_point || order.to_name}, ` +
           `окно ${formatDateTime(order.window_from)}, ${money(order.rate_vat)}${inZone ? ' (в зоне)' : ''}`));
-      } else lines.push('    подходящих заявок в очереди нет — запросить продажи');
+      } else lines.push('    подходящих заявок в очереди нет — запросить планирование');
     });
     if (doneWork.length) {
       lines.push('', `Отработано (${doneWork.length}): ${doneWork.map(item => item.vehicle.plate).join(', ')}`);
@@ -278,7 +278,7 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
         <div class="task-kpi"><b>${openQueue.length}</b><span>очередь · ${money(queueSum)}</span></div>
       </div>
       <div class="task-balance-line ${uncovered > 0 ? 'bad' : 'ok'}">${uncovered > 0
-        ? `⛔ Работы не хватает: <b>${uncovered}</b> сцепок останутся без загрузки — запросите продажи`
+        ? `⛔ Работы не хватает: <b>${uncovered}</b> сцепок останутся без загрузки — запросите планирование`
         : `✅ Работы достаточно: заявок ${openQueue.length} на ${needWork.length} свободных сцепок`}</div>
       <div class="task-sec"><b>Требуют работы (${needWork.length})</b>
         ${cards.map(({ item, matches, state }) => `<div class="task-lane ${matches.length ? '' : 'lack'}">
@@ -289,7 +289,7 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
             <span style="margin-left:auto;display:flex;gap:5px">
               <button class="button small" data-task-pick="${item.vehicle.id}">Подобрать</button>
               <button class="button ghost small" data-task-ask="${item.vehicle.id}"
-                title="Запрос в продажи: сцепка без загрузки">→ Продажи</button>
+                title="Запрос в планирование: сцепка без загрузки">→ Планированию</button>
               <button class="button ghost small task-done-btn" data-task-mark="${item.vehicle.id}"
                 title="Отметить отработанной — уйдёт в «Отработанные», отметку видит вся команда">✓</button>
             </span>
@@ -298,7 +298,7 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
             📦 №${escapeHtml(order.order_no || '—')} ${escapeHtml(order.from_point || order.from_name)} →
             ${escapeHtml(order.to_point || order.to_name)} · окно ${formatDateTime(order.window_from)}
             · ${money(order.rate_vat)}${inZone ? ' <span class="tt-chip">в зоне</span>' : ''}</div>`).join('')
-            : '<div class="task-row danger">подходящих заявок в очереди нет — запросите продажи</div>'}
+            : '<div class="task-row danger">подходящих заявок в очереди нет — запросите планирование</div>'}
         </div>`).join('') || '<p class="muted">все сцепки обеспечены работой</p>'}</div>
       ${doneWork.length ? `<details class="task-fold task-done-list">
         <summary>✓ Отработанные сцепки (${doneWork.length})</summary>
@@ -330,7 +330,7 @@ function logistTaskDialog(data, context, allRequests, queueAll) {
       button.addEventListener('click', async () => {
         try {
           await api(`/api/vehicles/${button.dataset.taskAsk}/request-load`, { method: 'POST' });
-          toast('Запрос отправлен в продажи');
+          toast('Запрос отправлен в планирование');
         } catch (error) { toast(error.message, 'error'); }
       }));
   };
@@ -582,9 +582,9 @@ export async function renderLogist(container, context) {
         <span style="display:flex;gap:5px">
           <button class="button small" data-pick="${index}" title="Заявки очереди, подходящие по времени освобождения">Подобрать рейс</button>
           <button class="button ghost small" data-ask-sales="${request.vehicle.id}"
-            title="Уведомить продажи: сцепка свободна, нужна загрузка">→ Продажи</button>
+            title="Уведомить планирование: сцепка свободна, нужна загрузка">→ Планированию</button>
           <button class="button ghost small" data-hold-toggle="${request.vehicle.id}"
-            title="${hold ? `Снять бронь (${escapeHtml(hold.held_by_name)})` : 'Забронировать под свой план на 24 ч — продажи не продадут её под другую сделку'}">${hold ? '🔓 Снять' : '🔒 Бронь'}</button>
+            title="${hold ? `Снять бронь (${escapeHtml(hold.held_by_name)})` : 'Забронировать под свой план на 24 ч — планирование не продаст её под другую сделку'}">${hold ? '🔓 Снять' : '🔒 Бронь'}</button>
         </span>
       </span>
     </div>`;
@@ -648,7 +648,7 @@ export async function renderLogist(container, context) {
   const archiveBlock = archiveQueue.length ? `<details class="stale-preps" id="logistArchive"
       ${state.logistArchiveOpen ? 'open' : ''}>
     <summary>🗄 Архив · окно погрузки истекло <span class="scount">${archiveQueue.length}</span></summary>
-    <p class="geohint">Окно закрылось — заявка в этом виде невыполнима. Согласуйте с продажами:
+    <p class="geohint">Окно закрылось — заявка в этом виде невыполнима. Согласуйте с планированием:
       «Изменить» с новым окном вернёт её в очередь, «Отклонить» с причиной отправит в реестр отчёта.</p>
     ${queueTable(archiveQueue)}
   </details>` : '';
@@ -678,7 +678,7 @@ export async function renderLogist(container, context) {
             title="Проверить сцепку и сроки — рейс уйдёт диспетчеру на подготовку выхода">Подтвердить назначение</button>` : ''}
           <button class="button ${unconfirmed ? 'ghost ' : ''}small" data-replace="${trip.id}" title="Подобрать другую сцепку на этот маршрут">Заменить ТС</button>
           <button class="button ghost small" data-open="${trip.id}" title="Времена, статус, заявка">Карточка</button>
-          <button class="button ghost small" data-reject-trip="${trip.id}" title="Причина обязательна; заявка вернётся в продажи">Отклонить</button>
+          <button class="button ghost small" data-reject-trip="${trip.id}" title="Причина обязательна; заявка вернётся в планирование">Отклонить</button>
       </td>
     </tr>`;
   };
@@ -813,7 +813,7 @@ export async function renderLogist(container, context) {
         <div class="list lg-list bi-scroll">${stateFilter ? stateCards : vehicleCards}</div>
         <div class="geohint">${stateFilter
     ? 'Показаны машины парка в выбранном состоянии. Вернуться к потребности — «Кому нужна работа» в фильтре состояния.'
-    : '«Подобрать рейс» — заявки очереди, подходящие по времени освобождения; «→ Продажи» — запрос загрузки, если подходящего рейса нет.'}</div>
+    : '«Подобрать рейс» — заявки очереди, подходящие по времени освобождения; «→ Планированию» — запрос загрузки, если подходящего рейса нет.'}</div>
         </div>
       </section>
       <section class="section s7 dept-log">
@@ -837,7 +837,7 @@ export async function renderLogist(container, context) {
               ? confirmedTrips.filter(trip => trip.status === 'plan').length : confirmedTrips.length}</span></div>
         <div class="lg-subb">${focusTripCards}</div>` : ''}
         <div class="geohint lg-foot">Назначение создаёт рейс и передаёт его диспетчеру; «Заменить ТС» —
-          с проверкой занятости; отклонение возвращает заявку в продажи.</div>
+          с проверкой занятости; отклонение возвращает заявку в планирование.</div>
         </div>
       </section>
     </div>
@@ -967,7 +967,7 @@ export async function renderLogist(container, context) {
           const note = prompt('Бронь на 24 часа. Под что держите машину:', '') ?? null;
           if (note === null) return;
           await api('/api/vehicle-holds', { method: 'POST', body: JSON.stringify({ vehicleId, note, hours: 24 }) });
-          toast('Забронирована на 24 ч — продажи видят бронь в радаре и форме');
+          toast('Забронирована на 24 ч — планирование видит бронь в радаре и форме');
         }
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
@@ -976,7 +976,7 @@ export async function renderLogist(container, context) {
     button.addEventListener('click', async () => {
       try {
         await api(`/api/vehicles/${button.dataset.askSales}/request-load`, { method: 'POST' });
-        toast('Запрос отправлен в продажи');
+        toast('Запрос отправлен в планирование');
       } catch (error) { toast(error.message, 'error'); }
     }));
   container.querySelectorAll('[data-edit]').forEach(button =>

@@ -132,7 +132,7 @@ test('конвейер: каждая стадия ждёт свою роль и 
   const data = { trips: [] };
   const allow = permission => () => true && permission;
   const expected = [
-    [0, 'Продажи', 'orders:write'],
+    [0, 'Планирование', 'orders:write'],
     [1, 'Логист', 'trips:write'],
     [2, 'Диспетчер', 'trip-status:write'],
     [3, 'Диспетчер', 'trip-status:write'],
@@ -2403,7 +2403,7 @@ test('телефония: определение звонящего, темы в
 
   // Темы — фиксированный список: по нему считается, какой процесс сбоит.
   assert.ok(QUESTION_TOPICS.length >= 9, 'типовые вопросы водителей перечислены');
-  assert.ok(QUESTION_TOPICS.some(topic => topic.key === 'no_data_sent' && topic.owner === 'Продажи'));
+  assert.ok(QUESTION_TOPICS.some(topic => topic.key === 'no_data_sent' && topic.owner === 'Планирование'));
   assert.equal(QUESTION_SLA_MS, 10 * 60_000, 'норматив ответа — 10 минут');
 
   // Просрочка норматива поднимается один раз: карточка и так горит в списке.

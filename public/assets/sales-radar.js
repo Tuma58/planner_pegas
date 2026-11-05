@@ -154,7 +154,7 @@ export function salesRadarDialog(context) {
       <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
         <strong>${escapeHtml(group.zone)}</strong>
         <span class="badge ${group.idleDayPlus ? 'bad' : 'ok'}"
-          title="Без брони — доступно продажам; всего свободно вместе с забронированными">без брони ${group.freeNoHold} из ${group.list.length}${group.idleDayPlus ? ` · сутки+ ${group.idleDayPlus}` : ''}</span>
+          title="Без брони — доступно планированию; всего свободно вместе с забронированными">без брони ${group.freeNoHold} из ${group.list.length}${group.idleDayPlus ? ` · сутки+ ${group.idleDayPlus}` : ''}</span>
         ${group.lossPerDay ? `<b class="danger" title="Только по незабронированным, стоящим сутки и больше">−${money(group.lossPerDay)}/день простоя</b>` : ''}
       </div>
       <div style="margin:4px 0">${vehiclesHtml}</div>
@@ -273,7 +273,7 @@ export function salesRadarDialog(context) {
         const zoneId = name => data.reference.zones.find(zone => zone.name === name)?.id;
         context.closeModal();
         const fromSelect = document.querySelector('#salesFrom');
-        if (!fromSelect) { toast('Откройте вкладку «Продажи» — форма бронирования там'); return; }
+        if (!fromSelect) { toast('Откройте вкладку «Планирование» — форма бронирования там'); return; }
         if (zoneId(fromName)) fromSelect.value = zoneId(fromName);
         const toSelect = document.querySelector('#salesTo');
         if (zoneId(toName)) toSelect.value = zoneId(toName);

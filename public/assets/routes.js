@@ -523,7 +523,7 @@ export function renderRoutes(container, context) {
           <option value="14">Две недели</option>
         </select>
         <small class="muted">На неделю/две: где живой заявки нет — встанет спот из истории плеча,
-          его закрывают продажи.</small></label>
+          его закрывает планирование.</small></label>
       <button class="button full" id="rbGo">Собрать и открыть редактор</button>`);
     document.getElementById('rbGo').onclick = async () => {
       const baseRegion = document.getElementById('rbRegion').value;
@@ -734,9 +734,9 @@ export function renderRoutes(container, context) {
               ${spot.candidates ? `· кандидаты: ${escapeHtml(spot.candidates)}` : ''}</small></span>
           <span class="rt-lane-btns">
             ${spot.kind === 'sell'
-    ? `<span class="badge warn" title="Задание уже на доске продаж («🔍 Нужен груз»)">🔍 в продаже</span>`
+    ? `<span class="badge warn" title="Задание уже на доске планирования («🔍 Нужен груз»)">🔍 в планировании</span>`
     : `<button class="button ghost small" data-spot-sales="${spot.id}"
-        title="Отдать плечо продажам: появится заданием «🔍 Нужен груз» на их доске + уведомление в чат">→ Продажи</button>`}
+        title="Отдать плечо планированию: появится заданием «🔍 Нужен груз» на их доске + уведомление в чат">→ Планированию</button>`}
             <button class="button ghost small danger" data-spot-del="${spot.id}">✕</button>
           </span></div>`).join('')}</div>` : ''}
         <div class="rt-lane start">🏁 База: <b>${escapeHtml(route.base_region || HOME_REGION)}</b>
@@ -746,7 +746,7 @@ export function renderRoutes(container, context) {
             ? ` · 🔍 спот: поискать груз <b>${escapeHtml(leg.feedFromRegion || '?')}</b> → <b>${escapeHtml(leg.fromRegion || '?')}</b>
               <button class="button ghost small" data-spot-from="${escapeHtml(leg.feedFromRegion || '')}"
                 data-spot-to="${escapeHtml(leg.fromRegion || '')}" data-spot-km="${Math.round(leg.feed)}"
-                data-spot-at="${leg.feedAtIso}" title="Запрос продажам: найти груз на это пустое плечо">→ Продажи</button>`
+                data-spot-at="${leg.feedAtIso}" title="Запрос планированию: найти груз на это пустое плечо">→ Планированию</button>`
             : ''}</div>` : ''}
           <div class="rt-lane ${leg.lateStart ? 'late' : ''}">
             <span class="rt-idx">${index + 1}</span>
@@ -780,7 +780,7 @@ export function renderRoutes(container, context) {
             <button class="button ghost small" data-spot-from="${escapeHtml(metrics.lastRegion || '')}"
               data-spot-to="${escapeHtml(route.base_region || HOME_REGION)}" data-spot-km="${metrics.returnKm}"
               data-spot-at="${new Date(metrics.endMs).toISOString()}"
-              title="Запрос продажам: найти обратный груз к базе">→ Продажи</button>` : ''}</div>
+              title="Запрос планированию: найти обратный груз к базе">→ Планированию</button>` : ''}</div>
         <div class="rt-total ${perDayClass(metrics.targetShare)}">
           ${routeOrders.length} заявок · гружёные ${metrics.loadedKm} км · порожние ${metrics.emptyKm} км
           · ~${metrics.days.toFixed(1)} сут · без НДС ${money(Math.round(metrics.revenueNet))}
@@ -832,7 +832,7 @@ export function renderRoutes(container, context) {
               fromRegion: spot.from_label, toRegion: spot.to_label,
               aroundIso: spot.planned_load, km: spot.expected_km
             }) });
-            toast('Плечо отдано продажам: задание «🔍 Нужен груз» на их доске');
+            toast('Плечо отдано планированию: задание «🔍 Нужен груз» на их доске');
             await context.onReload();
             renderEditor();
           } catch (error) { toast(error.message, 'error'); }
@@ -850,7 +850,7 @@ export function renderRoutes(container, context) {
           await api(`/api/routes/${routeId}/spot-request`, { method: 'POST',
             body: JSON.stringify({ fromRegion: button.dataset.spotFrom, toRegion: button.dataset.spotTo,
               km: Number(button.dataset.spotKm), aroundIso: button.dataset.spotAt }) });
-          toast('Спот-запрос отправлен продажам');
+          toast('Спот-запрос отправлен планированию');
         } catch (error) { toast(error.message, 'error'); }
       });
     };

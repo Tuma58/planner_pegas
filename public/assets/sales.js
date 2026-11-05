@@ -1,4 +1,4 @@
-// Доска отдела продаж — перенос renderSalesBoard из прототипа ТК 21:
+// Доска группы планирования — перенос renderSalesBoard из прототипа ТК 21:
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
@@ -513,7 +513,7 @@ function salesTaskDialog(data, context) {
         } catch (error) { toast(error.message, 'error'); }
       }));
   };
-  context.showModal(`<div class="sales-modal"><h2 style="margin-bottom:6px">📋 Задание продажам</h2>
+  context.showModal(`<div class="sales-modal"><h2 style="margin-bottom:6px">📋 Задание планированию</h2>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
       ${dayPickerHtml('salesTaskDay', tomorrow, 'на дату')}
       <button class="button small" id="salesTaskCopy" style="margin-left:auto">📋 Скопировать</button>
@@ -985,7 +985,7 @@ export async function renderSales(container, context) {
   };
   // Вопросы водителей, где сбой на стороне продаж: данные не ушли
   // грузоотправителю, не тот адрес, нужен телефон клиента.
-  const questions = questionsForOwner(await loadOpenQuestions(), 'Продажи');
+  const questions = questionsForOwner(await loadOpenQuestions(), 'Планирование');
   const ringLoad = await loadRingHoles();
   // Дыры кругов — задание руководителя 15.09: продажам видно, КУДА
   // продавать объём (круг, недобор машин, цена дыры в марже за месяц).
@@ -1043,7 +1043,7 @@ export async function renderSales(container, context) {
     : '<span class="sdb-ok">✅ завтра забит</span>'}
     <small class="muted">сегодня: выгружено ${money(Math.round(dayM.dayDone || 0))} · едет ${money(Math.max(0, Math.round(dayM.dayExpected || 0)))}</small></div>`;
   const html = `<div class="saleswrap bi-page bi-sales">
-    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — продажам', compact: true, open: state.salesQuestionsOpen })}
+    ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — планированию', compact: true, open: state.salesQuestionsOpen })}
     ${dayBannerHtml}${ringHolesHtml}
     <div class="salekpis bi-kpis sales-kpis">
       <div class="skpi metric dept-log clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
@@ -1122,7 +1122,7 @@ export async function renderSales(container, context) {
         <div class="list">${clientsList}</div>
         <div class="geohint">Клик по клиенту — все его заказы в хронологическом порядке. Заказ попадает
           сюда сразу после внесения и ждёт подтверждения; ближе 8 часов к погрузке неподтверждённый горит,
-          продажам идёт сигнал в чат каждые 30 минут.</div>
+          планированию идёт сигнал в чат каждые 30 минут.</div>
         </div>
       </div>
       <div class="scol sales-stack">

@@ -1225,7 +1225,7 @@ function renderResourceTasks(container, context, refDay, withState) {
             <small class="muted" style="display:block">${row.item.kind === 'repair' ? 'из ремонта' : 'ждёт водителя'}
               до ${formatDateTime(row.item.ends_at)}${row.item.note ? ` · ${escapeHtml(row.item.note)}` : ''}</small></span>
           <button class="button small" data-task-load="${row.vehicle.id}"
-            title="Сообщить продажам: сцепка освобождается, нужна загрузка">Запросить загрузку</button>
+            title="Сообщить планированию: сцепка освобождается, нужна загрузка">Запросить загрузку</button>
         </div>`).join('')}</div></div>` : ''}
     ${restingDrivers.length ? `<div class="task-sec"><b>🛏 Водители на межвахте без подмены (${restingDrivers.length})</b>
       <div class="list" style="margin-top:6px">${restingDrivers.slice(0, 6).map(driver => {
@@ -1262,7 +1262,7 @@ function renderResourceTasks(container, context, refDay, withState) {
         </span>
         <span style="display:flex;gap:5px">
           ${stateNow.kind === 'idle' ? `<button class="button small" data-task-load="${vehicle.id}"
-            title="Авто-сообщение продажам: сцепка свободна, подберите заявку">Запросить загрузку</button>` : ''}
+            title="Авто-сообщение планированию: сцепка свободна, подберите заявку">Запросить загрузку</button>` : ''}
           <button class="button ghost small" data-task-transfer="${vehicle.id}"
             title="Перегон порожним: под погрузку, на базу, в ремонт, на пересменку">🚚 Перегон</button>
           <button class="button ghost small" data-task-disposition="${vehicle.id}">Диспозиция</button>
@@ -1308,7 +1308,7 @@ function renderResourceTasks(container, context, refDay, withState) {
       button.disabled = true;
       try {
         await api(`/api/vehicles/${button.dataset.taskLoad}/request-load`, { method: 'POST' });
-        toast('Продажи уведомлены — запрос загрузки отправлен');
+        toast('Планирование уведомлено — запрос загрузки отправлен');
       } catch (error) {
         button.disabled = false;
         toast(error.message, 'error');

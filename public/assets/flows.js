@@ -225,7 +225,7 @@ function tileHtml(tile) {
 function sendTabHtml(tile, data) {
   if (!tile.noVehicle.length) {
     return `<p class="muted">Незакрытых заявок нет.${tile.balance > 0
-      ? ` Свободный ресурс +${tile.balance} — сюда нужны грузы (задача продаж).` : ''}</p>`;
+      ? ` Свободный ресурс +${tile.balance} — сюда нужны грузы (задача планирования).` : ''}</p>`;
   }
   const addressById = id => id ? (data.reference.addresses || []).find(item => item.id === id) : null;
   return tile.noVehicle.map(order => {

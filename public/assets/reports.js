@@ -168,11 +168,11 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Всего отклонений: <b>${total}</b></span>
         <span class="rsum">Логист: <b>${d.confirmSlow.length + d.expiredNoVehicle.length}</b></span>
         <span class="rsum">Диспетчер: <b>${d.lateOnline.length}</b></span>
-        <span class="rsum">Продажи: <b>${d.salesSlow.length}</b></span>
+        <span class="rsum">Планирование: <b>${d.salesSlow.length}</b></span>
         <span class="rsum">Дорога/клиент: <b>${d.lateUnload.length}</b></span></div>
       <div class="geohint">Несвоевременная обработка на каждом этапе конвейера за период.
         Нормативы — из регламентов: подтверждение логиста 1 ч, вывод на линию — к плановому
-        времени (+30 мин), подтверждение продажами 4 ч.
+        времени (+30 мин), подтверждение планированием 4 ч.
         Для отчёта «за смену» задайте период в один день.</div>
       ${section('Логист · подтверждение назначения дольше 1 часа',
         'Пока назначение не подтверждено, диспетчер не готовит выход.',
@@ -195,7 +195,7 @@ export async function buildReport(kind, from, to, data) {
           <td>${formatDateTime(trip.starts_at)}</td>
           <td class="num danger">+${lagLabel(ms)}${open(trip.on_line_at)}</td></tr>`),
         ['Рейс', 'ТС', 'Плановый выход', 'Задержка'])}
-      ${section('Продажи · подтверждение заявки дольше 4 часов',
+      ${section('Планирование · подтверждение заявки дольше 4 часов',
         'Заявка внесена, но не подтверждена — конвейер не начинается (порог 4 ч).',
         d.salesSlow.map(({ order, ms }) => `<tr><td>${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.customer_name)}</td>
           <td>${escapeHtml(routeLabel(order))}</td>
@@ -577,7 +577,7 @@ export async function buildReport(kind, from, to, data) {
       <h4>Отклонённые заявки</h4>
       <table class="rtable bi-table"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина</th></tr></thead>
         <tbody>${rows(rejected) || '<tr><td colspan=5>Отклонённых заявок нет</td></tr>'}</tbody></table>
-      <h4>Вернулись из плана в продажи</h4>
+      <h4>Вернулись из плана в планирование</h4>
       <table class="rtable bi-table"><thead><tr><th>Заказчик</th><th>Маршрут</th><th>Окно с</th><th>Ставка</th><th>Причина возврата</th></tr></thead>
         <tbody>${rows(returned) || '<tr><td colspan=5>Возвратов нет</td></tr>'}</tbody></table>`;
   } else if (kind === 'drivers') {
@@ -687,7 +687,7 @@ export async function buildReport(kind, from, to, data) {
       <tbody>${cf.brokenRings.map(b => `<tr><td>${escapeHtml(b.route)}</td>
         <td class="num">${b.count}</td></tr>`).join('') || '<tr><td colspan=2>Разрывов нет</td></tr>'}
       </tbody></table>
-      <p class="muted" style="margin-top:6px">Самые частые перегоны — готовые задания продажам
+      <p class="muted" style="margin-top:6px">Самые частые перегоны — готовые задания планированию
         на обратную загрузку: груз из зоны слева превращает перегон в кольцо.</p>`;
   } else if (kind === 'dispatch-shift') {
     // Авторазвод против факта (этап 3б): план часа — снимок балансировщика

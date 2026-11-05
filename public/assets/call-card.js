@@ -255,7 +255,7 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
     ? `Заявка № ${escapeHtml(String(order.order_no || '—'))} · ${escapeHtml(order.customer_name || '')}
        <small class="muted" style="display:block">ставка ${money(order.rate_vat)}
          · ${escapeHtml(order.body_type || '')}${order.temperature_mode ? ` · ${escapeHtml(order.temperature_mode)}` : ''}</small>
-       ${order.comment ? `<small class="muted" style="display:block">💬 продажи: ${escapeHtml(order.comment)}</small>` : ''}`
+       ${order.comment ? `<small class="muted" style="display:block">💬 планирование: ${escapeHtml(order.comment)}</small>` : ''}`
     : '';
 
   const customerBody = (card.customerContacts || []).length
@@ -313,7 +313,7 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
       ${tile('⏭ Следующее задание', nextBody, 'следующий рейс не назначен — вопрос логисту')}
       ${tile('📌 Адреса и окно по заявке', addressBody, 'рейс без заявки — сверьте с диспетчером')}
       ${tile('📄 Данные заявки для документов', docsBody, 'заявки нет — данные только из 1С')}
-      ${tile('☎ Контакты клиента', customerBody, 'контакты клиента не заведены — вопрос продажам')}
+      ${tile('☎ Контакты клиента', customerBody, 'контакты клиента не заведены — вопрос планированию')}
       ${tile('🔧 Наши контакты', contactsBody, 'телефоны сотрудников не заполнены (Настройки → Пользователи)')}
       ${tile('🔁 Пересменка', shiftBody, 'пересменка не запланирована — вопрос ресурснику')}
       ${tile('🚿 Мойка, сервис, стоянка', servicesBody, 'справочник сервисов пуст (Настройки → Сервисы)')}

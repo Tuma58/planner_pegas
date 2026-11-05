@@ -48,8 +48,10 @@ import { createIssue, defaultBase, effReport, getIssue, listIssues, updateIssueP
 import { clientFleetData } from './client-fleet.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
-import { createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
+import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
+import { archivePosition, createPosition, positionById, saveGroup, structureData, updatePosition,
+  userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
   matchAtsAbonents, parseXsiEvent, resolveSubscriptionTarget, setAtsTracked, syncBeelineJournal } from './beeline-telephony.mjs';
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
@@ -194,6 +196,8 @@ function publicUser(user) {
   return { telegramLinked: Boolean(user.telegram_chat_id), telegramMode: user.telegram_mode || 'critical',
     id: user.id, username: user.username, fullName: user.full_name, email: user.email || '',
     role: user.role, roles, roleLabel: roleLabelsFor(roles), active: Boolean(user.active),
+    // Место в структуре СТ (блок 1 «Слияния»): отдел — по должности, не по роли.
+    dept: userDept(db, user), positionTitle: positionById(db, user.position_id)?.title || '',
     guest: Boolean(Number(user.guest)),
     permissions: effectivePermissions(user),
     // Вкладка «Сотрудники»: право staff:write или логин из настройки
@@ -526,7 +530,7 @@ const NOTIFY_CATEGORIES = {
   order_deadlines: { label: '⏳ Дедлайны заявок (подтвердить/назначить)', def: 'normal' },
   shift_handover: { label: '🌙 Ночная передача смены', def: 'normal' },
   stale_transfers: { label: '🚚 Зависшие перегоны', def: 'normal' },
-  sales_directions: { label: '🧭 Утренние направления продажам', def: 'normal' },
+  sales_directions: { label: '🧭 Утренние направления планированию', def: 'normal' },
   no_next: { label: '⏭ Выгрузка близко, следующий рейс не назначен', def: 'normal' },
   resource_watch: { label: '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', def: 'normal' },
   shift_digest: { label: '📋 Сводка смены (18:00 на ночь / 06:00 на день)', def: 'normal' },
@@ -1064,7 +1068,7 @@ function runResourceWatch() {
       if (noDriverDays >= 3) {
         text = `Сцепка ${vehicle.plate} без водителя уже ${noDriverDays} дн — закрепите водителя (справочник «Водители») или оформите вывод`;
       } else if (idleDays >= 3 && !covered) {
-        text = `Сцепка ${vehicle.plate} без заказа ${idleDays} дн — запросите загрузку у продаж или оформите причину простоя`;
+        text = `Сцепка ${vehicle.plate} без заказа ${idleDays} дн — запросите загрузку у планирования или оформите причину простоя`;
       }
       if (text) {
         notify('resource', text, 'vehicle', vehicle.id, { category: 'resource_watch' });
@@ -1708,7 +1712,7 @@ function runUnconfirmedOrdersWatch() {
         : `время погрузки прошло ${hours} ч ${minutes} мин назад`;
       notify('sales', `⏳ Заявка ${order.order_no ? `№ ${order.order_no} ` : ''}${order.customer_name}: ` +
         `${routeText(order)} не подтверждена — ${when}. Подтвердите или отклоните ` +
-        `(«Продажи → Клиенты»); сигнал повторится через 30 минут`, 'order', order.id, { category: 'order_deadlines' });
+        `(«Планирование → Клиенты»); сигнал повторится через 30 минут`, 'order', order.id, { category: 'order_deadlines' });
       stamp.run(new Date(nowMs).toISOString(), order.id);
     }
   } catch (error) {
@@ -2008,7 +2012,7 @@ function runQuestionSlaWatch() {
       'question', item.id, { category: 'driver_questions' });
       if (service) continue;
       if (topic?.owner === 'Логист') notify('logist', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
-      if (topic?.owner === 'Продажи') notify('sales', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
+      if (topic?.owner === 'Планирование') notify('sales', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
       if (topic?.owner === 'Ресурс') notify('resource', `⏱ Вопрос водителя ждёт больше 10 минут: ${topic.label}`, 'question', item.id, { category: 'driver_questions' });
       notify('manager', `⏱ Просрочен вопрос водителя (>10 мин): ${topic?.label || item.topic}` +
         `${item.vehicle_plate ? ` · ${item.vehicle_plate}` : ''}`, 'question', item.id, { category: 'driver_questions' });
@@ -2285,7 +2289,7 @@ function runCustomerRemindersWatch() {
         const active = db.prepare(`SELECT COUNT(DISTINCT customer_name) c FROM trips
           WHERE status<>'rejected' AND ends_at > datetime('now','-90 days')`).get().c;
         notify('sales', `🎉 ${item.name} ${when(item.daysLeft)} — поздравьте клиентов ` +
-          `(активных за 90 дней: ${active}); карточки клиентов — «Продажи → Клиенты → 📇»`, null, null, { category: 'crm' });
+          `(активных за 90 дней: ${active}); карточки клиентов — «Планирование → Клиенты → 📇»`, null, null, { category: 'crm' });
       }
     }
     for (const row of db.prepare(`SELECT customer_name, next_contact_at FROM customer_profiles
@@ -5208,11 +5212,11 @@ setTimeout(() => {
     if (db.prepare(`SELECT value FROM app_meta WHERE key='ring_sales_task_v1'`).get()) return;
     notify('sales', '🎯 Задание руководителя по кругам: 1) вернуть К3 «Питерская дуга» — лучший цикл парка' +
       ' (57 т₽/сут маржи в августе, в сентябре 0 рейсов); 2) вернуть «Планету Колбас» в восточный круг К5;' +
-      ' 3) расширить К4а «Черноземье» — лучшая маржа/день парка. Дыры по кругам — блок «⭕ Круги» во вкладке Продажи.',
+      ' 3) расширить К4а «Черноземье» — лучшая маржа/день парка. Дыры по кругам — блок «⭕ Круги» во вкладке «Планирование».',
       null, null, { category: 'sales_directions' });
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('ring_sales_task_v1','done')
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run();
-  } catch (error) { console.error('задание продажам по кругам:', error.message); }
+  } catch (error) { console.error('задание планированию по кругам:', error.message); }
 }, 90_000);
 
 // ── Автозакрытие упущенных выгрузок по GPS-истории ──
@@ -6619,7 +6623,7 @@ function runNormsDigest() {
       new Date(Date.now() - 7 * 86_400_000).toISOString(), new Date().toISOString());
     const nextTarget = Number((settingsObject(db).calculation || {}).nextAssignTargetPct ?? 85);
     if (nextShare.pct != null && nextShare.pct < nextTarget) {
-      hints.push(`стыковка ${nextShare.pct}% при цели ${nextTarget}% — продажам приходит «🔎 Освобождаются без груза» заранее`);
+      hints.push(`стыковка ${nextShare.pct}% при цели ${nextTarget}% — планированию приходит «🔎 Освобождаются без груза» заранее`);
     }
     // Целевой стык (рычаг 24.09): факт против цели + кто передержал —
     // адресная подсказка по большему из слагаемых.
@@ -6628,7 +6632,7 @@ function runNormsDigest() {
     if (gapWeek.medianH != null && gapWeek.medianH > gapTarget) {
       const excess = Math.round(gapWeek.gaps.reduce((s, g) => s + Math.max(0, g - gapTarget), 0));
       const owner = (gapWeek.waitOrderAvg || 0) >= (gapWeek.waitSlotAvg || 0)
-        ? `главное слагаемое — ждали заказ (${gapWeek.waitOrderAvg} ч/стык, продажи)`
+        ? `главное слагаемое — ждали заказ (${gapWeek.waitOrderAvg} ч/стык, планирование)`
         : `главное слагаемое — ждали окно клиента (${gapWeek.waitSlotAvg} ч/стык, слоты погрузки)`;
       hints.push(`стык ${gapWeek.medianH} ч при цели ${gapTarget} — сверх цели ${excess} маш-ч за неделю; ${owner}`);
     }
@@ -7683,7 +7687,9 @@ async function api(request, response, url) {
     const ipAttempts = (loginAttempts.get(ipKey) || []).filter(time => Date.now() - time < 15 * 60_000);
     if (ipAttempts.length >= 30) return errorJson(response, 429, 'Слишком много попыток. Повторите позже');
     const user = db.prepare('SELECT * FROM users WHERE username=? COLLATE NOCASE').get(String(body.username || '').trim());
-    if (!user || !user.active || !verifyPassword(String(body.password || ''), user.password_hash)) {
+    // Без роли входа нет (сотрудник из штата, права ещё не назначены).
+    if (!user || !user.active || !canLogin(user)
+        || !verifyPassword(String(body.password || ''), user.password_hash)) {
       recentAttempts.push(Date.now());
       loginAttempts.set(attemptKey, recentAttempts);
       ipAttempts.push(Date.now());
@@ -7958,7 +7964,7 @@ async function api(request, response, url) {
     const user = requireUser(request, response);
     if (!user) return;
     if (!hasPermission(user, 'orders:write') && !hasPermission(user, 'trip-status:write')) {
-      return errorJson(response, 403, 'Нужны права продаж или диспетчера');
+      return errorJson(response, 403, 'Нужны права планирования или диспетчера');
     }
     const body = await readJson(request);
     const name = String(body.customerName || '').trim();
@@ -8382,7 +8388,7 @@ async function api(request, response, url) {
     const user = requireUser(request, response);
     if (!user) return;
     if (!hasPermission(user, 'trips:write') && !hasPermission(user, 'orders:write')) {
-      return errorJson(response, 403, 'Запрос выпуска шлёт логист или продажи');
+      return errorJson(response, 403, 'Запрос выпуска шлёт логист или планирование');
     }
     const body = await readJson(request);
     const vehicle = db.prepare('SELECT id, plate FROM vehicles WHERE id=?')
@@ -9562,8 +9568,8 @@ async function api(request, response, url) {
           `(заявка ${windowOrder.order_no ? `№${windowOrder.order_no}` : ''}: ` +
           `${String(windowOrder.window_from).slice(0, 16).replace('T', ' ')} — ` +
           `${String(windowOrder.window_to).slice(0, 16).replace('T', ' ')} UTC). ` +
-          `Окно — договорённость с клиентом, его меняют только продажи правкой заявки. ` +
-          `Смените ТС или верните заявку продажам на передоговорённость`);
+          `Окно — договорённость с клиентом, его меняет только планирование правкой заявки. ` +
+          `Смените ТС или верните заявку планированию на передоговорённость`);
       }
     }
     // Перецеп на маршруте (29.10): замена ТС на реально ЕХАВШЕМ рейсе
@@ -9648,7 +9654,7 @@ async function api(request, response, url) {
         integrationPublic().writePolicy === 'automatic');
       audit(db, user, 'create', 'order', returnOrderId,
         { from: 'rejected-trip', tripId: match[0] }, requestIp(request));
-      notify('sales', `Рейс ${routeText(merged.fromPoint ? { from_point: merged.fromPoint, to_point: merged.toPoint } : current)} снят (${merged.rejectionReason}) — в продажах создана заявка-возврат`, 'order', returnOrderId);
+      notify('sales', `Рейс ${routeText(merged.fromPoint ? { from_point: merged.fromPoint, to_point: merged.toPoint } : current)} снят (${merged.rejectionReason}) — в планировании создана заявка-возврат`, 'order', returnOrderId);
     }
     if (merged.orderId) {
       if (merged.status === 'rejected') {
@@ -9657,7 +9663,7 @@ async function api(request, response, url) {
         db.prepare(`UPDATE orders SET status='new',stage=1,trip_id=NULL,assigned_vehicle_id=NULL,
           rejection_reason=?,returned_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
           WHERE id=?`).run(merged.rejectionReason || 'Отклонён без указания причины', merged.orderId);
-        notify('sales', `Рейс ${routeText(current)} отклонён (${merged.rejectionReason || 'без причины'}) — заявка вернулась в продажи`, 'order', merged.orderId);
+        notify('sales', `Рейс ${routeText(current)} отклонён (${merged.rejectionReason || 'без причины'}) — заявка вернулась в планирование`, 'order', merged.orderId);
       } else {
         // Статус рейса двигает стадию конвейера: отмечаем момент перехода,
         // чтобы следующая роль видела, сколько задача у неё ждёт.
@@ -9684,7 +9690,7 @@ async function api(request, response, url) {
     }
     // Сдвиг рейса (Гант, правка логиста): плановые времена стоянок без фактов
     // следуют за рейсом; если новые даты вышли за окно заявки клиента —
-    // продажи получают сигнал (окно — договорённость с клиентом, само не
+    // планирование получает сигнал (окно — договорённость с клиентом, само не
     // меняется: передоговорить или вернуть рейс в окно).
     if (merged.startsAt !== current.starts_at || merged.endsAt !== current.ends_at) {
       ensureTripStops(db, match[0]);
@@ -10369,7 +10375,7 @@ async function api(request, response, url) {
           queueOutbox(db, 'trips', trip.id, 'update', tripOutboxPayload(trip.id),
             integrationPublic().writePolicy === 'automatic');
           if (datesChanged) {
-            notify('logist', `📝 Продажи изменили заявку ${keptOrderNo ? `№ ${keptOrderNo} ` : ''}` +
+            notify('logist', `📝 Планирование изменило заявку ${keptOrderNo ? `№ ${keptOrderNo} ` : ''}` +
               `(${nextFromPoint || '—'} → ${nextToPoint || '—'}): рейс перепланирован — выход ` +
               `${newStart.slice(0, 16).replace('T', ' ')}, выгрузка ${newEnd.slice(0, 16).replace('T', ' ')} (UTC)`,
               'trip', trip.id);
@@ -10381,7 +10387,7 @@ async function api(request, response, url) {
         ensureTripStops(db, trip.id);
         const viaSync = syncTripStopsWithVia(db, trip.id, nextVia, user.id);
         if (viaSync.added || viaSync.removed) {
-          notify('dispatcher', `🧭 Продажи изменили маршрут заявки ${keptOrderNo ? `№ ${keptOrderNo} ` : ''}` +
+          notify('dispatcher', `🧭 Планирование изменило маршрут заявки ${keptOrderNo ? `№ ${keptOrderNo} ` : ''}` +
             `(${current.customer_name}): точки рейса обновлены (добавлено ${viaSync.added}, убрано ${viaSync.removed}). ` +
             `Проверьте карточку контроля`, 'trip', trip.id, { category: 'other' });
           // Водитель уже получил задание — досылаем обновлённое с новым маршрутом.
@@ -10404,7 +10410,7 @@ async function api(request, response, url) {
     }
     // Уведомление следующего участника: продажи подтвердили — ход логиста.
     if (stageChanged && nextStage === 1 && Number(current.stage) === 0) {
-      notify('logist', `Заявка «${current.customer_name}» ${routeText(current)} подтверждена продажами — назначьте ТС`, 'order', match[0]);
+      notify('logist', `Заявка «${current.customer_name}» ${routeText(current)} подтверждена планированием — назначьте ТС`, 'order', match[0]);
     }
     queueOutbox(db, 'orders', match[0], 'update', orderOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
@@ -10801,7 +10807,7 @@ async function api(request, response, url) {
     return json(response, 201, { id });
   }
   // Смена вида плеча: «в продажу» (sell — задание продажам найти груз) или
-  // обратно «плечо сетки» (attach — закрывает логист). Кнопка «→ Продажи»
+  // обратно «плечо сетки» (attach — закрывает логист). Кнопка «→ Планированию»
   // в редакторе раньше слала только сообщение в чат — задание не рождалось.
   match = route(/^\/api\/routes\/([^/]+)\/spots\/([^/]+)$/, pathname);
   if (match && request.method === 'PATCH') {
@@ -10916,7 +10922,7 @@ async function api(request, response, url) {
       body.comment != null ? String(body.comment).slice(0, 500) : routeRow.comment,
       user.id, routeRow.id);
     if (status === 'handed' && routeRow.status === 'draft') {
-      notify('logist', `Продажи передали маршрут ${routeRow.route_no}: назначьте ТС в «Конструкторе»`, 'route', routeRow.id);
+      notify('logist', `Планирование передало маршрут ${routeRow.route_no}: назначьте ТС в «Конструкторе»`, 'route', routeRow.id);
     }
     audit(db, user, 'update', 'route', routeRow.id, { status }, requestIp(request));
     return json(response, 200, { ok: true });
@@ -12700,7 +12706,7 @@ async function api(request, response, url) {
   // Суммы заявок зачастую предварительные; перед внесением заказа в учётную
   // систему диспетчер сверяет ставку с клиентской заявкой: подтверждает
   // текущую или вносит точную. Новая сумма каскадом уходит в заявку и 1С,
-  // продажи получают уведомление.
+  // планирование получает уведомление.
   match = route(/^\/api\/trips\/([^/]+)\/confirm-sum$/, pathname);
   if (match && request.method === 'POST') {
     const user = requirePermission(request, response, 'trip-status:write');
@@ -12709,7 +12715,7 @@ async function api(request, response, url) {
       JOIN vehicles v ON v.id=t.vehicle_id WHERE t.id=?`).get(match[0]);
     if (!trip) return errorJson(response, 404, 'Рейс не найден');
     if (['paid', 'rejected'].includes(trip.status)) {
-      return errorJson(response, 422, 'Рейс закрыт — сумма меняется только через продажи');
+      return errorJson(response, 422, 'Рейс закрыт — сумма меняется только через планирование');
     }
     const body = await readJson(request);
     const oldSum = Number(trip.revenue_vat || 0);
@@ -13547,7 +13553,7 @@ async function api(request, response, url) {
         value: 'ночью + разово при вводе клампа', clamp: 'только сжатие',
         drift: 'лог ночной пересборки («транзит-санация №…»)' },
       { name: 'Подсказки помощника (ступень 2)',
-        learns: 'правило «ворота клиента»: при выборе заказчика в форме заявки предупреждает продажи, если выученные ворота клиента ≥ 1,5 цели (gateTargetHours) — простой закладывается в ставку ДО бронирования; каждая подсказка оценивается 👍/👎',
+        learns: 'правило «ворота клиента»: при выборе заказчика в форме заявки предупреждает планирование, если выученные ворота клиента ≥ 1,5 цели (gateTargetHours) — простой закладывается в ставку ДО бронирования; каждая подсказка оценивается 👍/👎',
         value: (() => {
           const stats = safe(() => hintStats(db, 14)) || {};
           const names = { 'customer-gates': 'ворота клиента', 'run-rate-balance': 'выравнивание наката' };
@@ -13570,7 +13576,7 @@ async function api(request, response, url) {
         clamp: `порог «медленного» — настройка performance.slowMs (сейчас ${Number(settingsObject(db).performance?.slowMs ?? 500) || 500} мс)`,
         drift: 'срез живёт с рестарта; деградация видна до жалоб' },
       { name: 'Норматив решения возврата (внештатки Э2)',
-        learns: 'медиана дней «возврат создан → закрыт» по закрытым возвратам (мин 5 образцов); возврат старше норматива — напоминание продажам раз в сутки',
+        learns: 'медиана дней «возврат создан → закрыт» по закрытым возвратам (мин 5 образцов); возврат старше норматива — напоминание планированию раз в сутки',
         value: (() => {
           const norm = safe(() => returnStuckDays(db));
           const open = safe(() => db.prepare(`SELECT COUNT(*) c FROM trip_incidents
@@ -13578,7 +13584,7 @@ async function api(request, response, url) {
           return `норматив ${norm ?? 5} дн · открытых возвратов ${open}`;
         })(),
         clamp: '2–14 дн (фолбэк 5, пока закрытых меньше 5)',
-        drift: 'напоминания в чате продаж («↩ Возврат завис»)' },
+        drift: 'напоминания в чате планирования («↩ Возврат завис»)' },
     ];
     return json(response, 200, { generatedAt: new Date().toISOString(), items });
   }
@@ -14639,6 +14645,58 @@ async function api(request, response, url) {
     }
     return user;
   };
+  // ── Структура направления СТ (проект «Слияние», блок 1, 05.11) ──
+  // Читают все (обзор структуры — первый экран Штаба); правят штат,
+  // группы и паспорта — те, у кого полный доступ к кадрам.
+  if (request.method === 'GET' && pathname === '/api/structure') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    // Живые коэффициенты отделов — канон parkReportData за 7 полных суток.
+    let park = null;
+    try {
+      const to = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
+      park = parkReportData(from, to).total;
+    } catch { /* канон не собрался — коэффициенты без значения */ }
+    const data = structureData(db, park);
+    data.canEdit = staffAccess(user, settingsObject(db));
+    // Цели каскада — из Настроек (ноль — осознанное значение, пустота → канон среды СТ).
+    const calc = settingsObject(db).calculation || {};
+    const pick = (value, fallback) => (value === '' || value == null || !Number.isFinite(Number(value))) ? fallback : Number(value);
+    const targets = { КТГ: pick(calc.ktgTargetPct, 97), КВЛ: pick(calc.kvlTargetPct, 99), КИП: pick(calc.kipTargetPct, 99) };
+    targets.КЭИП = +(targets.КТГ * targets.КВЛ * targets.КИП / 1e4).toFixed(1);
+    data.targets = targets;
+    return json(response, 200, data);
+  }
+  match = route(/^\/api\/structure\/positions\/([\w-]+)$/, pathname);
+  if (match && (request.method === 'PATCH' || request.method === 'DELETE')) {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const result = request.method === 'DELETE' ? archivePosition(db, match[0])
+      : updatePosition(db, match[0], await readJson(request));
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, request.method === 'DELETE' ? 'archive' : 'update', 'position', match[0],
+      result.after || { title: result.title }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  if (request.method === 'POST' && pathname === '/api/structure/positions') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = createPosition(db, body);
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, 'create', 'position', result.id, { title: body.title, headcount: body.headcount }, requestIp(request));
+    return json(response, 201, { id: result.id });
+  }
+  if (request.method === 'POST' && pathname === '/api/structure/groups') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = saveGroup(db, body);
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, body.id ? 'update' : 'create', 'org_group', result.id, { name: body.name }, requestIp(request));
+    return json(response, 200, { id: result.id });
+  }
   if (request.method === 'GET' && pathname === '/api/staff') {
     const user = requireStaffAccess(request, response);
     if (!user) return;
@@ -14871,7 +14929,7 @@ async function api(request, response, url) {
     db.prepare(`UPDATE users SET username=?,full_name=?,email=?,role=?,roles=?,active=?,guest=?,
       password_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       body.username ?? current.username, body.fullName ?? current.full_name,
-      body.email ?? current.email, finalRoles[0], JSON.stringify(finalRoles),
+      body.email ?? current.email, finalRoles[0] || '', JSON.stringify(finalRoles),
       body.active === undefined ? current.active : Number(Boolean(body.active)),
       body.guest === undefined ? Number(current.guest || 0) : Number(Boolean(body.guest)),
       body.password ? hashPassword(body.password) : current.password_hash, match[0]);

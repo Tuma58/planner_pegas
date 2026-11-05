@@ -58,6 +58,8 @@ export async function renderStaff(container, context) {
     container.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
     return;
   }
+  // Справочник должностей структуры СТ (блок 1 «Слияния») — для формы.
+  state.staffPositions = payload.positions || [];
   const query = (state.staffQuery || '').toLowerCase();
   const matches = person => !query ||
     `${person.fullName} ${person.jobRole} ${person.phone} ${person.extPhone || ''} ${person.username || ''} ${person.vehiclePlate || ''}`
@@ -75,7 +77,9 @@ export async function renderStaff(container, context) {
   const userRow = person => `<tr class="${person.active ? '' : 'staff-fired'}">
     <td><span class="vlink" data-staff-card="${person.id}">${escapeHtml(person.fullName)}</span>
       ${person.guest ? '<small class="muted" style="display:block">гость (только чтение)</small>' : ''}</td>
-    <td>${escapeHtml(person.jobRole || '—')}</td>
+    <td>${escapeHtml(person.jobRole || '—')}
+      ${person.positionId ? '' : '<small class="bi-tag warn" title="Должность не из справочника структуры — выберите в «✎ Данные»">вне структуры</small>'}
+      ${person.roles?.length ? '' : '<small class="muted" style="display:block" title="Права не назначены — в планер не входит">без роли · входа нет</small>'}</td>
     <td class="mono">${escapeHtml(person.extPhone || '')}${person.extPhone && person.phone ? ' · ' : ''}${escapeHtml(person.phone || '')}
       ${person.workPhone ? `<small class="muted" title="телефон текущей смены (вводится при входе)" style="display:block">смена: ${escapeHtml(person.workPhone)}</small>` : ''}</td>
     <td>${person.telegram ? '✓' : '<span class="muted">—</span>'}</td>
@@ -125,6 +129,7 @@ export async function renderStaff(container, context) {
       ${tile('Водители', payload.drivers.length, 'чел', 'dept-drv', `без сцепки ${driversNoCar}`)}
       ${tile('Telegram привязан', withTg, `из ${activeUsers.length}`, 'dept-staff', 'офис, получают уведомления')}
       ${tile('Уволенные', firedAll, 'чел', firedAll ? 'warn' : 'dept-staff', 'серыми в списке офиса')}
+      ${tile('Без роли', activeUsers.filter(person => !person.roles?.length).length, 'чел', 'dept-staff', 'в штате, но без входа в планер')}
     </div>
     ${query && !users.length && !drivers.length ? '<div class="bi-empty">Никого не найдено.</div>' : ''}
     ${showOffice ? tableSection(query ? `Офис · найдено ${users.length}` : 'Офис',
@@ -259,15 +264,16 @@ export async function staffCardDialog(context, id, after) {
         : `<span class="badge warn">уволен(а) ${fmtDate(person.firedAt)}</span>`}
     </div>
     <p class="muted" style="margin:4px 0 12px;font-size:12.5px">
-      в компании с ${fmtDate(person.hiredAt)} · учётка ${escapeHtml(person.username)}
-      · последний вход ${fmtDateTime(person.lastLoginAt)}</p>
+      в компании с ${fmtDate(person.hiredAt)} · ${person.canLogin
+    ? `учётка ${escapeHtml(person.username)} · последний вход ${fmtDateTime(person.lastLoginAt)}`
+    : 'без входа в планер — роль и пароль назначает администратор («⚙ Настройки» → Пользователи)'}</p>
     ${(() => {
     // Чек-лист приёма (этап 4, 09.10): виден первые 30 дней, пока не
     // закрыты все пункты — ничего не забыть при вводе человека в строй.
     const hiredMs = Date.parse(String(person.hiredAt || '').slice(0, 10));
     const fresh = Number.isFinite(hiredMs) && Date.now() - hiredMs < 30 * 86_400_000;
     const items = [
-      ['Учётка', true, ''],
+      ['Учётка', Boolean(person.canLogin), 'роль и пароль — «⚙ Настройки» → Пользователи'],
       ['Личный телефон', Boolean(person.phone), '«✎ Данные» → личный мобильный'],
       ['Добавочный АТС', Boolean(person.extPhone), '«☎ Сверка с АТС» или «✎ Данные» — без него карточка звонка не найдёт адресата'],
       ['Telegram', Boolean(person.telegram), 'сотрудник привязывает бота сам — инструкция в «?» раздел «Общее»'],
@@ -417,13 +423,37 @@ export async function staffCardDialog(context, id, after) {
   };
 }
 
+// Выбор должности из справочника структуры СТ, по отделам и группам.
+// Старый текст должности (до справочника) виден отдельной строкой, пока
+// человеку не назначат должность структуры.
+const DEPT_TITLES = { staff: 'Штаб', log: 'Логистика', drv: 'Эксплуатация', toir: 'ТОиР' };
+function positionSelect(positions, person) {
+  const office = positions.filter(item => !item.driverPool);
+  const groups = [];
+  for (const item of office) {
+    const key = `${DEPT_TITLES[item.dept] || item.dept} · ${item.group}`;
+    let group = groups.find(entry => entry.key === key);
+    if (!group) groups.push(group = { key, items: [] });
+    group.items.push(item);
+  }
+  const legacy = person && !person.positionId && person.jobRole;
+  return `<label class="field">Должность в структуре
+    <select name="positionId">
+      ${legacy ? `<option value="__keep" selected>прежняя: «${escapeHtml(person.jobRole)}» (вне структуры)</option>` : ''}
+      <option value="" ${!legacy && !person?.positionId ? 'selected' : ''}>— не назначена</option>
+      ${groups.map(group => `<optgroup label="${escapeHtml(group.key)}">${group.items.map(item =>
+    `<option value="${item.id}" ${person?.positionId === item.id ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</optgroup>`).join('')}
+    </select>
+    <small class="muted">справочник — экран «Структура»; роль (права) назначается отдельно</small></label>`;
+}
+
 // Данные сотрудника: приём нового (с учёткой) и правка существующего.
 function staffEditDialog(context, person, after) {
   const { showModal, closeModal, state } = context;
   const roles = state.data.user?.roles || [];
   const isAdmin = roles.includes('admin');
   const roleOptions = Object.entries({
-    sales: 'Отдел продаж', logist: 'Логист', dispatcher: 'Диспетчер', resource: 'Ресурс',
+    sales: 'Планирование', logist: 'Логист', dispatcher: 'Диспетчер-логист (контроль)', resource: 'Эксплуатация (учёт)',
     accountant: 'Бухгалтерия', mechanic: 'Механик', manager: 'Руководитель',
     ...(isAdmin ? { admin: 'Администратор' } : {})
   }).map(([value, label]) =>
@@ -431,7 +461,7 @@ function staffEditDialog(context, person, after) {
   showModal(`<form id="staffForm">
     <h2>${person ? 'Данные сотрудника' : 'Приём сотрудника'}</h2>
     <label class="field">ФИО <input name="fullName" required value="${escapeHtml(person?.fullName || '')}"></label>
-    <label class="field">Должность <input name="jobRole" placeholder="как в штатном расписании" value="${escapeHtml(person?.jobRole || '')}"></label>
+    ${positionSelect(state.staffPositions || [], person)}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <label class="field">Личный мобильный <input name="phone" value="${escapeHtml(person?.phone || '')}"></label>
       <label class="field">Добавочный АТС <input name="extPhone" value="${escapeHtml(person?.extPhone || '')}"></label>
@@ -441,9 +471,10 @@ function staffEditDialog(context, person, after) {
       <label class="field">В компании с <input name="hiredAt" type="date" value="${(person?.hiredAt || '').slice(0, 10)}"></label>
     </div>
     ${person ? '' : `
-    <label class="field">Логин в планер <input name="username" required autocomplete="off"></label>
-    <label class="field">Пароль (мин. 10 символов) <input name="password" required minlength="10" autocomplete="new-password"></label>
-    <div class="field"><span>Роли в планере</span><div style="margin-top:4px">${roleOptions}</div></div>`}
+    <details class="st-pp"><summary>🔐 Доступ в планер <small class="muted">— не обязательно: без роли сотрудник в штате, но не входит</small></summary>
+    <label class="field">Логин в планер <input name="username" autocomplete="off"></label>
+    <label class="field">Пароль (мин. 10 символов) <input name="password" minlength="10" autocomplete="new-password"></label>
+    <div class="field"><span>Роли в планере</span><div style="margin-top:4px">${roleOptions}</div></div></details>`}
     ${person ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
       <input type="checkbox" name="dispatchExempt" ${person?.dispatchExempt ? 'checked' : ''}>
       не участвует в автораспределении диспетчерской
@@ -466,8 +497,11 @@ function staffEditDialog(context, person, after) {
     event.preventDefault();
     const form = event.currentTarget;
     const values = new FormData(form);
-    const body = Object.fromEntries(['fullName', 'jobRole', 'phone', 'extPhone', 'email', 'hiredAt']
+    const body = Object.fromEntries(['fullName', 'phone', 'extPhone', 'email', 'hiredAt']
       .map(key => [key, String(values.get(key) || '').trim()]));
+    // Должность — из справочника структуры; «прежняя» — текст без изменений.
+    const position = String(values.get('positionId') || '');
+    if (position !== '__keep') body.positionId = position;
     if (person) body.dispatchExempt = form.querySelector('[name="dispatchExempt"]')?.checked || false;
     if (person) body.escRole = String(values.get('escRole') || '');
     try {

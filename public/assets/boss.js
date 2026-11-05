@@ -637,7 +637,7 @@ export async function renderBoss(container, context) {
         `КТГ ${pctOf(u.ktg)} · КВЛ ${pctOf(u.kvl)} · КИП ${pctOf(u.kip)}`,
         `Выручка без НДС (по выгрузкам дня): ${rub(snap.netRevenue || 0)} · рейсов завершено: ${dayTrips.length} · средний чек: ${rub(avgCheckDay)}`,
         `План дня: ${rub(dayPlan)} (остаток плана ${rub(monthPlan - factBefore)} на ${remainingFromDay} дн) — выполнение ${Math.round((snap.netRevenue || 0) / (dayPlan || 1) * 100)}%`,
-        `Смена продаж: внесено заявок ${createdDay.length} на ${rub(createdSum)} (ср. чек ${rub(createdDay.length ? createdSum / createdDay.length : 0)}) · назначено рейсов: ${assignedDay}`,
+        `Смена планирования: внесено заявок ${createdDay.length} на ${rub(createdSum)} (ср. чек ${rub(createdDay.length ? createdSum / createdDay.length : 0)}) · назначено рейсов: ${assignedDay}`,
         `Пробег: гружёный ${Math.round(snap.loadedKm || 0)} км · порожний ${Math.round(snap.emptyKm || 0)} км` +
           ` (${pctOf(snap.emptyRatio)}) · ремонтный ${Math.round(snap.repairKm || 0)} км`];
       box.dataset.text = lines.join('\n');
@@ -651,7 +651,7 @@ export async function renderBoss(container, context) {
             <span>без НДС · план дня ${rub(dayPlan)} (${Math.round((snap.netRevenue || 0) / (dayPlan || 1) * 100)}%)</span></div>
         </div>
         <div class="task-balance-line ${createdDay.length ? 'ok' : 'bad'}">
-          Смена продаж: внесено <b>${createdDay.length}</b> заявок на <b>${rub(createdSum)}</b>
+          Смена планирования: внесено <b>${createdDay.length}</b> заявок на <b>${rub(createdSum)}</b>
           (ср. чек ${rub(createdDay.length ? createdSum / createdDay.length : 0)})
           · назначено рейсов: <b>${assignedDay}</b>
           · средний чек выгрузок: <b>${rub(avgCheckDay)}</b></div>

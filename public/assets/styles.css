@@ -227,6 +227,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
   border: 0; border-radius: 8px; background: none; color: var(--ink); font-size: 13.5px; text-align: left; white-space: nowrap; }
 .navlink:hover { background: var(--paper); }
 .navlink.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; box-shadow: inset 3px 0 0 var(--accent); }
+/* Группа отдела в навигаторе (планирование / назначение / контроль) */
+.nav-sub { padding: 6px 18px 2px 46px; font-size: 10.5px; color: var(--faint); letter-spacing: .03em; }
+[data-nav="collapsed"] .nav-sub { display: none; }
 .nav-ico { width: 18px; text-align: center; font-family: var(--mono-font); color: var(--faint); }
 .navlink.active .nav-ico { color: var(--accent); }
 /* Своя группа отдела — лёгкая подложка его цвета у заголовка */

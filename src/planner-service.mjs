@@ -255,7 +255,7 @@ export function importTelematics(db, records, user) {
 // Факты прода 18–19.08: отправок 48–62, выгрузок 5,3–5,9 млн, шагов
 // чек-листа 356–371/день, фактов на линии до 381/день — цели достижимы.
 export const STAFF_PLANS = {
-  sales: { label: 'Продажи', metrics: [
+  sales: { label: 'Планирование', metrics: [
     ['orderCreate', 'Заявок внесено', 35],
     ['ordersSum', 'Сумма внесённого, ₽', 2_900_000],
     ['orderAssign', 'Назначено ТС', 8]

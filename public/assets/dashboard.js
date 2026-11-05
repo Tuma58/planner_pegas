@@ -644,7 +644,7 @@ function dashDetailDialog(key, metrics, data, context) {
     }).join('');
   }
   context.showModal(`<h2>${DETAIL_TITLES[key] || key} <span class="badge">${items.length}</span></h2>
-    ${key === 'logistNoNext' ? '<p class="muted">Правило: у машины на линии должен быть назначен следующий рейс — логист назначает из очереди, продажи ищут груз под освобождение.</p>' : ''}
+    ${key === 'logistNoNext' ? '<p class="muted">Правило: у машины на линии должен быть назначен следующий рейс — логист назначает из очереди, планирование ищет груз под освобождение.</p>' : ''}
     <div class="dash-detail-list">${rows || '<p class="muted">Пусто.</p>'}</div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');
 }
@@ -909,7 +909,7 @@ export async function renderDashboard(container, context) {
       <div class="sec-h"><span class="st dash-role-title">🏅 Моя смена</span></div>
       <div class="sec-b bi-list"><div class="bi-row dash-row"><span class="k">Загружаю личную сводку…</span></div></div>
     </section>` : ''}
-      ${roleCard('📦 Продажи', [
+      ${roleCard('📦 Планирование', [
         { label: 'Внесено заявок сегодня', value: `${metrics.sales.createdToday}${normBadge(metrics.sales.createdToday, norms.created)}`, detail: 'salesCreated' },
         { label: 'Сумма внесённого (бНДС)', value: money(Math.round(metrics.sales.createdSum)) },
         { label: 'Средний чек внесённого', value: money(Math.round(metrics.sales.avgCheck)) },

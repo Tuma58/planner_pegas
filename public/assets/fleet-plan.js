@@ -139,7 +139,7 @@ function balanceDialog(context, plan, day, ctx) {
     try {
       const { role } = await api('/api/fleet-plan/balance-task', {
         method: 'POST', body: JSON.stringify({ lever, text }) });
-      toast(`Задание отправлено: ${role === 'sales' ? 'Продажам' : 'Ресурсу'}`);
+      toast(`Задание отправлено: ${role === 'sales' ? 'Планированию' : 'Ресурсу'}`);
     } catch (error) { toast(error.message, 'error'); }
   };
   const dispRow = item => `<div class="list-item">
@@ -163,7 +163,7 @@ function balanceDialog(context, plan, day, ctx) {
         <button type="button" class="button small" id="balRep">→ задание: поджать</button></div>
       <div class="list">${repairsEnding.map(dispRow).join('')}</div>` : ''}
     <div class="scolh" style="margin-top:8px">📅 Сетка дня
-      <button type="button" class="button small ghost" id="balGrid">→ Продажам: разгрузить день</button></div>
+      <button type="button" class="button small ghost" id="balGrid">→ Планированию: разгрузить день</button></div>
     <p class="muted">Если день перегружен — предложить клиентам пиковых плеч соседний день
       (свободнее: ${bestDays.map(item => `${item.d}-е`).join(', ')}). Грузы и машины по зонам — вкладка «Потоки».</p>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`, 'wide');

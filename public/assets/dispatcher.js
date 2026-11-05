@@ -32,7 +32,7 @@ function demurrageDialog(trip, data, context, stuckMs) {
       <label class="field">Часы простоя<input name="hours" type="number" min="1" step="1" value="${prefillHours}" required></label>
       <label class="field">Ставка, ₽/ч с НДС<input name="ratePerHour" type="number" min="0" value="${rate}" required></label>
     </div>
-    <p class="muted">Сумма добавится к выручке рейса, продажи получат уведомление —
+    <p class="muted">Сумма добавится к выручке рейса, планирование получит уведомление —
       включить простой в счёт клиенту.</p>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
@@ -46,7 +46,7 @@ function demurrageDialog(trip, data, context, stuckMs) {
         method: 'POST', body: JSON.stringify(values)
       });
       context.closeModal();
-      toast(`Простой выставлен: ${amount.toLocaleString('ru-RU')} ₽ — продажи уведомлены`);
+      toast(`Простой выставлен: ${amount.toLocaleString('ru-RU')} ₽ — планирование уведомлено`);
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -88,7 +88,7 @@ function breakdownDialog(trip, data, context) {
       Поставить ${escapeHtml(trip.vehicle_plate)} в ремонт на сутки
     </label>
     <p class="muted">Дальше: пересадить рейс на другую сцепку или снять его —
-      заявка вернётся в продажи с причиной «Поломка на маршруте».</p>
+      заявка вернётся в планирование с причиной «Поломка на маршруте».</p>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
       <button type="button" class="button danger" id="breakReject">Снять рейс</button>
@@ -117,7 +117,7 @@ function breakdownDialog(trip, data, context) {
         method: 'PATCH', body: JSON.stringify({ status: 'rejected', rejectionReason: 'Поломка на маршруте' })
       });
       context.closeModal();
-      toast('Рейс снят — заявка вернулась в продажи (Поломка на маршруте)');
+      toast('Рейс снят — заявка вернулась в планирование (Поломка на маршруте)');
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -128,7 +128,7 @@ function customerRefusalDialog(trip, context) {
   context.showModal(`<h2>Отказ клиента</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
       · ${escapeHtml(trip.customer_name || 'без заказчика')}</p>
-    <p>Рейс будет снят, ТС освободится, заявка вернётся в продажи
+    <p>Рейс будет снят, ТС освободится, заявка вернётся в планирование
       с причиной «Отказ клиента»${trip.order_id ? '' : ' (для рейса из 1С будет создана заявка-возврат)'}.</p>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Отмена</button>
@@ -140,7 +140,7 @@ function customerRefusalDialog(trip, context) {
         method: 'PATCH', body: JSON.stringify({ status: 'rejected', rejectionReason: 'Отказ клиента' })
       });
       context.closeModal();
-      toast('Рейс снят — заявка вернулась в продажи (Отказ клиента)');
+      toast('Рейс снят — заявка вернулась в планирование (Отказ клиента)');
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };
@@ -206,7 +206,7 @@ function incidentDialog(trip, data, context) {
         <small class="muted" style="display:block">Ремонт сломанной сцепки, пересадка рейса или снятие</small></span></button>
       <button type="button" class="list-item" id="incRefusal">
         <span><strong>🚫 Отказ клиента</strong>
-        <small class="muted" style="display:block">Рейс снимается, заявка возвращается в продажи</small></span></button>
+        <small class="muted" style="display:block">Рейс снимается, заявка возвращается в планирование</small></span></button>
       <button type="button" class="list-item" id="incReassign">
         <span><strong>🔁 Переназначить ТС (перецеп)</strong>
         <small class="muted" style="display:block">Другая сцепка продолжает рейс с места передачи;
@@ -223,7 +223,7 @@ function incidentDialog(trip, data, context) {
       <div class="kb-note" style="margin-top:4px">Записать во «⚠ Внештатки» (рейс продолжается, учёт — отдельно):</div>
       <button type="button" class="list-item" id="incAct">
         <span><strong>📋 Акт на выгрузке</strong>
-        <small class="muted" style="display:block">Расхождение, бой, недостача — составлен акт; продажи и руководитель узнают сразу</small></span></button>
+        <small class="muted" style="display:block">Расхождение, бой, недостача — составлен акт; планирование и руководитель узнают сразу</small></span></button>
       <button type="button" class="list-item" id="incReturnRec">
         <span><strong>↩ Возврат продукции</strong>
         <small class="muted" style="display:block">Клиент вернул груз: паллеты/коробки берутся на учёт во вкладке «⚠ Внештатки»</small></span></button>
@@ -603,7 +603,7 @@ export async function renderDispatcher(container, context, options = {}) {
       Number(trip.cash)
         ? `Оплата: 💵 НАЛИЧНЫЕ — водителю забрать ${money(trip.revenue_vat)} после выгрузки`
         : 'Оплата: безналичный расчёт',
-      order?.comment ? `Комментарий продаж: ${order.comment}` : '',
+      order?.comment ? `Комментарий планирования: ${order.comment}` : '',
       trip.external_id ? `ID 1С: ${trip.external_id}` : ''
     ];
     return lines.filter(Boolean).join('\n');
@@ -618,7 +618,7 @@ export async function renderDispatcher(container, context, options = {}) {
       <p class="muted" style="margin:0 0 8px">Полные данные для учётной системы —
         «Скопировать всё» или выделите нужные строки.</p>
       ${comment ? `<div class="sales-comment" style="display:flex;gap:8px;align-items:flex-start;margin:0 0 8px">
-        <span style="flex:1;min-width:0">💬 Продажи: ${escapeHtml(comment)}</span>
+        <span style="flex:1;min-width:0">💬 Планирование: ${escapeHtml(comment)}</span>
         <button class="button ghost small" id="tripCardCopyComment" style="flex:none"
           title="Скопировать только комментарий">📋</button>
       </div>` : ''}
@@ -723,7 +723,7 @@ export async function renderDispatcher(container, context, options = {}) {
   };
   const salesCommentNote = trip => {
     const comment = orderOf(trip)?.comment;
-    return comment ? `<small class="sales-comment">💬 Продажи: ${escapeHtml(comment)}</small>` : '';
+    return comment ? `<small class="sales-comment">💬 Планирование: ${escapeHtml(comment)}</small>` : '';
   };
   const prepSorted = [...preparing].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
   // Карточка подготовки оформлена как в «Контроле на линии»: справа
@@ -748,7 +748,7 @@ export async function renderDispatcher(container, context, options = {}) {
     }
     return `<div class="sum-line warn">💰 ${money(trip.revenue_vat)} — предварительно.
       ${canAct ? `<button class="button small" data-confirm-sum="${trip.id}"
-        title="Сверить заказ с заявкой клиента: сумма, окно погрузки, пункты — от продаж данные иногда приходят неточными; в 1С должно уйти верное">✏ Корректировка заказа</button>`
+        title="Сверить заказ с заявкой клиента: сумма, окно погрузки, пункты — от планирования данные иногда приходят неточными; в 1С должно уйти верное">✏ Корректировка заказа</button>`
       : '<b>✏ Корректировка заказа</b> (диспетчер)'}</div>`;
   };
   // Данные водителя и ТС грузоотправителю: без них машину не пускают на
@@ -1035,7 +1035,7 @@ export async function renderDispatcher(container, context, options = {}) {
     let statusBlock;
     if (stuck) {
       const stuckHours = Math.floor(stuckMsOf(trip) / 3_600_000);
-      statusBlock = `<span class="badge bad" title="Прибыл ${formatDateTime(trip.arrived_at)}, выгрузка не отмечена более 6 часов — продажи и логисты уведомлены автоматически, диспетчерам пинг каждый час">🚨 не выгружают ${stuckHours} ч · особый контроль</span>
+      statusBlock = `<span class="badge bad" title="Прибыл ${formatDateTime(trip.arrived_at)}, выгрузка не отмечена более 6 часов — планирование и логисты уведомлены автоматически, диспетчерам пинг каждый час">🚨 не выгружают ${stuckHours} ч · особый контроль</span>
         ${Number(trip.demurrage_vat) > 0
           ? `<span class="badge warn" title="Простой добавлен к выручке рейса">простой выставлен: ${money(trip.demurrage_vat)}</span>`
           : (canAct ? `<button class="button small danger" data-demurrage="${trip.id}"
@@ -1049,9 +1049,9 @@ export async function renderDispatcher(container, context, options = {}) {
     } else if (late) {
       statusBlock = `<span class="badge bad" title="Расчётное прибытие позже плана — уведомите клиента о переносе">⏰ опоздание ${waitingLabel(delay)} · уведомите клиента</span>
         ${trip.delay_notified_at
-          ? `<span class="badge warn" title="Авто-сообщение продажам отправлено">продажи уведомлены ${formatDateTime(trip.delay_notified_at)}</span>`
+          ? `<span class="badge warn" title="Авто-сообщение планированию отправлено">планирование уведомлено ${formatDateTime(trip.delay_notified_at)}</span>`
           : (canAct ? `<button class="button small danger" data-notify-delay="${trip.id}"
-              title="Авто-сообщение сотруднику продаж: уведомить клиента о задержке">Уведомить продажи</button>` : '')}`;
+              title="Авто-сообщение сотруднику планирования: уведомить клиента о задержке">Уведомить планирование</button>` : '')}`;
     } else {
       statusBlock = `<span class="badge ok">на линии${trip.on_line_at ? ` с ${formatDateTime(trip.on_line_at)}` : ''}</span>`;
     }
@@ -1638,7 +1638,7 @@ export async function renderDispatcher(container, context, options = {}) {
           <button type="button" class="button ghost small" id="kbqFull"
             title="Где машина, заявка, окно, контакты, сервисы — карточка как при звонке">📞 Полная карточка</button>
           ${canAct ? `<button type="button" class="button ghost small" id="kbqFix"
-            title="Поменялись время, адрес или точки заказа — правка доступна и в пути; каждая правка в журнале, продажи получают список изменений">✏ Корректировка</button>` : ''}
+            title="Поменялись время, адрес или точки заказа — правка доступна и в пути; каждая правка в журнале, планирование получает список изменений">✏ Корректировка</button>` : ''}
           <button type="button" class="button ghost small" id="kbqClassic"
             title="Лента точек, правка времён, массовые инструменты">📋 Классика</button>
           <button type="button" class="button ghost" data-close>Закрыть</button>
@@ -2240,7 +2240,7 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="geohint">Отработано: ${queue.done} · отложено: ${queue.snoozed} · «✓ Успевает» пишет ту же отметку, что «✓ Отработано» в карточках — виды согласованы. Промежуточный контроль — каждые ${Math.round(MID_CONTROL_MS / 3_600_000)} ч дальней дороги.</div>`;
   })() : `<div class="list">${onlineCards}</div>`}
         <div class="geohint">Внештатная ситуация: поломка (ремонт + пересадка или снятие),
-          отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в продажи.</div>
+          отказ клиента, переназначение ТС. Снятый рейс возвращает заявку в планирование.</div>
         </div>
       </section>
     </div>
@@ -2426,7 +2426,7 @@ export async function renderDispatcher(container, context, options = {}) {
               ...(corrections.length ? { corrections } : {}) }) });
           context.closeModal();
           toast(corrections.length
-            ? `Заказ скорректирован (${corrections.length}) — продажи уведомлены`
+            ? `Заказ скорректирован (${corrections.length}) — планирование уведомлено`
             : 'Заказ сверен — всё верно');
           await context.onReload();
         } catch (error) { toast(error.message, 'error'); }
@@ -2754,7 +2754,7 @@ export async function renderDispatcher(container, context, options = {}) {
       button.disabled = true;
       try {
         await api(`/api/trips/${button.dataset.notifyDelay}/notify-delay`, { method: 'POST' });
-        toast('Продажи уведомлены — они предупредят клиента о задержке');
+        toast('Планирование уведомлено — клиента предупредят о задержке');
         await context.onReload();
       } catch (error) {
         button.disabled = false;

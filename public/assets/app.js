@@ -18,6 +18,7 @@ import { setupChat } from './chat.js';
 import { setupGuide } from './guide.js';
 import { attendanceDialog, DISP_KINDS, parkScheduleKeeper, renderResource, timesheetDialog } from './resource.js';
 import { fireReasonDialog, renderStaff } from './staff.js';
+import { renderStructure } from './structure.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -57,13 +58,16 @@ function monthDays(date) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
 }
 
-// Отдел структуры направления СТ по роли — цвет отдела закреплён
-// бренд-платформой (Штаб — янтарь, Логистика — синий, Эксплуатация —
-// зелёный, ТОиР — бирюза). При нескольких ролях — отдел первой.
+// Отдел структуры направления СТ — по должности сотрудника (блок 1
+// «Слияния», 05.11); роль — только фолбэк, пока должность не назначена.
+// Цвет отдела закреплён бренд-платформой (Штаб — янтарь, Логистика —
+// синий, Эксплуатация — зелёный, ТОиР — бирюза). Диспетчеры роли
+// dispatcher — диспетчеры-логисты группы контроля, это Логистика;
+// resource — диспетчер учёта и начальники колонн, это Эксплуатация.
 const ROLE_DEPT = {
   admin: 'staff', manager: 'staff', accountant: 'staff',
-  logist: 'log', sales: 'log',
-  dispatcher: 'drv', resource: 'drv',
+  logist: 'log', sales: 'log', dispatcher: 'log',
+  resource: 'drv',
   mechanic: 'toir'
 };
 const DEPT_LABELS = { staff: 'Штаб', log: 'Логистика', drv: 'Эксплуатация', toir: 'ТОиР' };
@@ -76,10 +80,10 @@ function setupUser() {
   byId('profileRole').textContent = user.guest ? `${user.roleLabel} · 👁 гостевой режим` : user.roleLabel;
   byId('profileRole').title = user.guest ? 'Только просмотр: права редактирования отключены администратором' : '';
   byId('avatar').textContent = user.fullName.trim().charAt(0).toUpperCase();
-  const dept = (user.roles || [user.role]).map(role => ROLE_DEPT[role]).find(Boolean);
+  const dept = user.dept || (user.roles || [user.role]).map(role => ROLE_DEPT[role]).find(Boolean);
   if (dept) {
     document.documentElement.dataset.dept = dept;
-    byId('avatar').title = `Отдел: ${DEPT_LABELS[dept]}`;
+    byId('avatar').title = `Отдел: ${DEPT_LABELS[dept]}${user.positionTitle ? ` · ${user.positionTitle}` : ''}`;
     try { localStorage.setItem('pl_dept', dept); } catch { /* приватный режим */ }
   }
   renderCascade();
@@ -783,7 +787,9 @@ function renderLegend() {
 // Главные экраны (перенос ролевых экранов ТК 21), доступ по правам.
 const MAIN_VIEWS = [
   { id: 'gantt', title: 'Гант', show: () => true },
-  { id: 'sales', title: 'Продажи', show: () => can('orders:write') },
+  // «Продажи» → «Планирование» (решение руководителя 05.11): это группа
+  // планирования и анализа отдела Логистики; код вида и роли — прежний.
+  { id: 'sales', title: 'Планирование', show: () => can('orders:write') },
   { id: 'logist', title: 'Логист', show: () => can('trips:write') },
   { id: 'routes', title: 'Конструктор', show: () => can('orders:write') || can('trips:write') },
   { id: 'dispatcher', title: 'Диспетчер', show: () => true },
@@ -805,23 +811,35 @@ const MAIN_VIEWS = [
   // Справочник сотрудников: staff:write (руководитель, админ) или логин
   // из настройки «полный доступ» — сервер считает флаг staffAccess сам.
   { id: 'staff', title: 'Сотрудники', show: () => Boolean(state.data?.user?.staffAccess) },
-  { id: 'dashboard', title: 'Дашборд', show: () => true }
+  { id: 'dashboard', title: 'Дашборд', show: () => true },
+  // Обзор структуры СТ (блок 1 «Слияния», 05.11) — видят все.
+  { id: 'structure', title: 'Структура', show: () => true }
 ];
 
 // Навигатор по структуре направления СТ (как в «Рабочей среде СТ»):
-// экраны — в группах отделов, у группы её коэффициент каскада.
+// экраны — в отделах и их группах (блок 1 «Слияния», 05.11), у отдела —
+// его коэффициент каскада. Диспетчер, Мониторинг и Внештатки — работа
+// группы контроля Логистики; Эксплуатации — Ресурс и План парка.
 const NAV_GROUPS = [
-  { dept: 'staff', title: 'Штаб', coef: 'КЭИП', views: ['dashboard', 'boss', 'staff', 'expenses'] },
-  { dept: 'log', title: 'Логистика', coef: 'КИП', views: ['sales', 'logist', 'routes', 'gantt', 'flows', 'delivery'] },
-  { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', views: ['dispatcher', 'monitoring', 'resource', 'fleetplan', 'incidents'] },
-  { dept: 'toir', title: 'ТОиР', coef: 'КТГ', views: ['remzona'] }
+  { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
+    { title: '', views: ['structure', 'dashboard', 'boss', 'staff', 'expenses'] }] },
+  { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
+    { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
+    { title: 'Назначение', views: ['logist', 'gantt'] },
+    { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
+  { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
+    { title: '', views: ['resource', 'fleetplan'] }] },
+  { dept: 'toir', title: 'ТОиР', coef: 'КТГ', sub: [
+    { title: '', views: ['remzona'] }] }
 ];
+NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
+  structure: ['◫', 'Отделы, группы и должности: штат, факт, вакансии, паспорта'],
   dashboard: ['◧', 'План-факт предприятия на сегодня и прогноз месяца'],
   boss: ['▤', 'Операционный отчёт: каскад, экономика, отклонения'],
   staff: ['☰', 'Справочник сотрудников, смены и табель'],
   expenses: ['₽', 'Учёт затрат по статьям и машинам'],
-  sales: ['✎', 'Заявки клиентов: приём, согласование, назначение'],
+  sales: ['✎', 'Группа планирования: заявки клиентов, согласование, план перевозок'],
   logist: ['⇄', 'Назначение рейсов на машины'],
   routes: ['⌖', 'Конструктор маршрутов из точек'],
   gantt: ['▦', 'Сцепки и рейсы на календаре'],
@@ -853,11 +871,14 @@ function renderViewTabs() {
   };
   const placed = new Set();
   const groups = NAV_GROUPS.map(group => {
-    const items = group.views.map(id => byIdView.get(id)).filter(Boolean)
-      .filter(view => !query || view.title.toLowerCase().includes(query));
-    items.forEach(view => placed.add(view.id));
-    return items.length ? `<div class="nav-block dept-${group.dept}"><div class="blocktitle"><span>${group.title}</span>`
-      + `<span class="owner-chip chip-${group.dept}">${group.coef}</span></div>${items.map(link).join('')}</div>` : '';
+    const subs = group.sub.map(sub => {
+      const items = sub.views.map(id => byIdView.get(id)).filter(Boolean)
+        .filter(view => !query || view.title.toLowerCase().includes(query));
+      items.forEach(view => placed.add(view.id));
+      return items.length ? (sub.title ? `<div class="nav-sub">${sub.title}</div>` : '') + items.map(link).join('') : '';
+    }).join('');
+    return subs ? `<div class="nav-block dept-${group.dept}"><div class="blocktitle"><span>${group.title}</span>`
+      + `<span class="owner-chip chip-${group.dept}">${group.coef}</span></div>${subs}</div>` : '';
   }).join('');
   // Экран вне групп (новый, ещё не разнесённый по отделам) не теряется.
   const rest = views.filter(view => !placed.has(view.id)
@@ -947,6 +968,8 @@ function renderMain() {
       showModal, closeModal, rerenderMain: renderMain,
       onReload: reload, taskContainer: byId('sidepanel')
     });
+  } else if (state.view === 'structure') {
+    renderStructure(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'staff') {
     renderStaff(byId('timeline'), {
       state, can, showModal, closeModal, onReload: reload,

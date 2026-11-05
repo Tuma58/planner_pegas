@@ -7,6 +7,7 @@ import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
 import { EXPENSE_CATEGORY_SEED } from './expenses.mjs';
+import { migrateOrgStructure } from './structure.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -820,7 +821,7 @@ function migrateColumns(db) {
   ensure('trips', 'entered_1c_at', 'TEXT');
   ensure('trips', 'driver_notified_at', 'TEXT');
   ensure('trips', 'on_line_at', 'TEXT');
-  // Отметка «продажи уведомлены об опоздании» — чтобы диспетчер видел,
+  // Отметка «планирование уведомлено об опоздании» — чтобы диспетчер видел,
   // что клиенту уже сообщили о переносе прибытия.
   ensure('trips', 'delay_notified_at', 'TEXT');
   // Отметка последнего авто-уведомления ресурснику по сцепке (без водителя /
@@ -1415,6 +1416,13 @@ function migrateColumns(db) {
       db.prepare(`UPDATE settings SET value_json=? WHERE key='general'`).run(JSON.stringify(general));
     }
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('brand_rename_v1','1')`).run();
+  }
+  migrateOrgStructure(db);
+  // «Продажи» → «Планирование» (решение руководителя 05.11): область
+  // инициатив проекта «160 млн» хранится текстом — разовый перенос.
+  if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='sales_rename_v1'`).get()) {
+    db.prepare(`UPDATE project_initiatives SET area='Планирование' WHERE area='Продажи'`).run();
+    db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('sales_rename_v1','1')`).run();
   }
   ensure('vehicle_dispositions', 'departed_at', 'TEXT');
   ensure('vehicle_dispositions', 'arrived_at', 'TEXT');

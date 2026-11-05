@@ -95,13 +95,13 @@ export function applyWorkPhone(db, userId, rawPhone) {
 export const QUESTION_TOPICS = [
   { key: 'next_task', label: 'Какое следующее задание', owner: 'Логист' },
   { key: 'no_poa', label: 'Нет доверенности', owner: 'Диспетчер' },
-  { key: 'no_data_sent', label: 'Данные на водителя и ТС не направлены грузоотправителю', owner: 'Продажи' },
-  { key: 'wrong_address', label: 'Не тот адрес', owner: 'Продажи' },
+  { key: 'no_data_sent', label: 'Данные на водителя и ТС не направлены грузоотправителю', owner: 'Планирование' },
+  { key: 'wrong_address', label: 'Не тот адрес', owner: 'Планирование' },
   { key: 'docs_mismatch', label: 'Данные в документах и в задании расходятся', owner: 'Диспетчер' },
   { key: 'service_point', label: 'Где мойка / сервис / стоянка', owner: 'Диспетчер' },
   { key: 'shift', label: 'Когда пересменка', owner: 'Ресурс' },
   { key: 'mechanic', label: 'Как связаться с механиком', owner: 'Ресурс' },
-  { key: 'customer_phone', label: 'Нужен телефон клиента', owner: 'Продажи' },
+  { key: 'customer_phone', label: 'Нужен телефон клиента', owner: 'Планирование' },
   { key: 'missed_call', label: 'Пропущенный звонок — перезвоните', owner: 'Диспетчер' },
   // Отвеченный звонок без комментария — не отработан: ждёт «Итог звонка».
   { key: 'call_note_needed', label: 'Отвечен — добавьте комментарий', owner: 'Диспетчер' },

@@ -11,7 +11,7 @@ import { GUIDES } from './guide.js';
 
 const POLL_MS = 20_000;
 const ROLE_LABELS = {
-  logist: 'Логист', dispatcher: 'Диспетчер', sales: 'Продажи',
+  logist: 'Логист', dispatcher: 'Диспетчер', sales: 'Планирование',
   accountant: 'Бухгалтерия', resource: 'Ресурс', manager: 'Руководитель',
   admin: 'Администратор', mechanic: 'Механик'
 };
@@ -525,7 +525,7 @@ export function setupChat(state) {
       <b>${existingId ? '✎ Правка статьи' : '📚 Новая статья базы знаний'}</b>
       <input name="question" maxlength="300" required placeholder="Вопрос — как его задал бы сотрудник"
         value="${escapeHtml(prefill.question || '')}">
-      <input name="section" maxlength="60" placeholder="Раздел (например: Логист, Продажи, Общее)"
+      <input name="section" maxlength="60" placeholder="Раздел (например: Логист, Планирование, Общее)"
         value="${escapeHtml(prefill.section || '')}">
       <textarea name="answer" rows="6" maxlength="2000" required
         placeholder="Ответ — по шагам, с настоящими названиями кнопок">${escapeHtml(prefill.answer || '')}</textarea>

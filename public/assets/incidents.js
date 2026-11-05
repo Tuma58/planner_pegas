@@ -57,7 +57,7 @@ export async function renderIncidents(container, context) {
       ${item.closed_at ? `<div class="kbr inc-note">✓ ${escapeHtml(item.resolution)}
         <small class="muted">· ${escapeHtml(item.closed_by_name)} · ${tsf(item.closed_at)}</small></div>`
     : canAct && isReturn ? `<div class="kb-btns inc-ret-btns">
-        ${item.status !== 'wait_decision' ? `<button class="button ghost small" data-inc-ret="wait_decision" data-inc-id="${item.id}" title="Решение за клиентом — сторож напомнит продажам, если зависнет">⏳ Ждём решения</button>` : ''}
+        ${item.status !== 'wait_decision' ? `<button class="button ghost small" data-inc-ret="wait_decision" data-inc-id="${item.id}" title="Решение за клиентом — сторож напомнит планированию, если зависнет">⏳ Ждём решения</button>` : ''}
         <button class="button ghost small" data-inc-wh="${item.id}" title="Груз выгружен на склад LTL — выбрать из справочника">📦 На склад…</button>
         <button class="button ghost small" data-inc-ret="returned" data-inc-id="${item.id}" title="Груз вернулся клиенту/получателю — в архив с итогом">✅ Осуществлён</button>
         <button class="button ghost small" data-inc-ret="utilized" data-inc-id="${item.id}" title="Груз утилизирован — в архив с итогом">🗑 Утилизация</button>
@@ -267,7 +267,7 @@ export function tripIncidentDialog(trip, kind, context) {
       await api(`/api/trips/${trip.id}/incidents`, { method: 'POST', body: JSON.stringify({
         kind, qty: form.qty?.value.trim() || '', comment: form.comment.value.trim() }) });
       context.closeModal();
-      toast('Записано — продажи и руководитель получили уведомление');
+      toast('Записано — планирование и руководитель получили уведомление');
       context.onReload?.();
     } catch (error) { toast(error.message, 'error'); }
   };

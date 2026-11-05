@@ -8,7 +8,7 @@ export const STAGES = ['Заявка принята', 'Подтверждена'
 // assign — модалка подбора ТС, trip-status — PATCH статуса рейса.
 const STEPS = [
   {
-    stage: 0, waitingRole: 'Продажи', permission: 'orders:write',
+    stage: 0, waitingRole: 'Планирование', permission: 'orders:write',
     action: { label: 'Подтвердить', kind: 'confirm', hint: 'Согласовано с клиентом — передать логисту' }
   },
   {
