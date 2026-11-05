@@ -10610,7 +10610,11 @@ async function api(request, response, url) {
     // сдвинуть старт. Уведомление после успешного назначения, не блокирует.
     const windowWarning = transitWindowWarning({ starts_at: startsAt, ends_at: endsAt },
       order.window_to);
-    if (windowWarning) {
+    // Решение руководителя 05.11: назначавшему человеку сигнал показывается
+    // ВСПЛЫВАЮЩИМ ОКНОМ на месте (windowWarning в ответе API), чат не
+    // дёргаем. В чат продаж и логиста уведомление уходит только когда
+    // человека нет — автоназначение зелёного коридора.
+    if (windowWarning && !user?.id) {
       const text = `🤝 Транзит не помещается в окно клиента: заявка №${order.order_no || '—'} ` +
         `(${order.from_point || '—'} → ${order.to_point || '—'}), ${vehicle.plate} — ${windowWarning}`;
       notify('sales', text, 'trip', tripId, { category: 'transit_window' });
@@ -10735,6 +10739,7 @@ async function api(request, response, url) {
     // после предыдущей и не раньше своего окна.
     let cursor = routeRow.planned_start ? Date.parse(routeRow.planned_start) : 0;
     const tripIds = [];
+    const windowWarnings = [];
     for (const order of routeOrders) {
       if (order.stage >= 2 && order.trip_id) {
         const existing = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(order.trip_id);
@@ -10742,7 +10747,8 @@ async function api(request, response, url) {
         continue;
       }
       const startsAt = new Date(Math.max(Date.parse(order.window_from), cursor || 0)).toISOString();
-      const { tripId } = assignOrderCore(order, vehicle, user, { startsAt });
+      const { tripId, windowWarning } = assignOrderCore(order, vehicle, user, { startsAt });
+      if (windowWarning) windowWarnings.push(`№${order.order_no || '—'}: ${windowWarning}`);
       confirmAssigned(tripId, order, vehicle, user);
       const created = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(tripId);
       cursor = Date.parse(created.ends_at);
@@ -10752,7 +10758,8 @@ async function api(request, response, url) {
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(vehicle.id, user.id, routeRow.id);
     audit(db, user, 'assign', 'route', routeRow.id,
       { vehicleId: vehicle.id, trips: tripIds.length }, requestIp(request));
-    return json(response, 201, { tripIds });
+    return json(response, 201, { tripIds,
+      ...(windowWarnings.length ? { windowWarnings } : {}) });
   }
   // Общий спот-запрос (из Ганта): найти груз на порожний подгон сцепки.
   if (request.method === 'POST' && pathname === '/api/spot-request') {

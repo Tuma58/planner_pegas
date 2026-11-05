@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, apiConfirmable } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, apiConfirmable, windowWarningModal } from './api.js';
 import { driverRatingOf, driverRatingBadge } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
@@ -2230,7 +2230,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
           ...(dispoOverrideReason ? { dispoOverrideReason } : {}) })
       });
       closeModal();
-      if (created.windowWarning) toast(`🤝 Назначено, но ${created.windowWarning}`, 'error');
+      if (created.windowWarning) windowWarningModal(showModal, created.windowWarning);
       else toast(options.autoConfirm
         ? 'ТС назначена и подтверждена — рейс у диспетчера'
         : 'ТС назначена — рейс проведён в план');

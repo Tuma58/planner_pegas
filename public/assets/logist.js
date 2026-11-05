@@ -3,7 +3,7 @@
 // отклонение рейса с возвратом заявки в продажи, создание рейса вручную.
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, windowWarningModal } from './api.js';
 import { fleetPlanDialog } from './fleet-plan.js';
 import { vehicleZoneAt } from './transfer.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
@@ -193,7 +193,7 @@ function pickOrderDialog(request, queue, data, context) {
             ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}) })
         });
         context.closeModal();
-        if (created.windowWarning) toast(`🤝 Назначено, но ${created.windowWarning}`, 'error');
+        if (created.windowWarning) windowWarningModal(context.showModal, created.windowWarning);
         else toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
@@ -907,7 +907,7 @@ export async function renderLogist(container, context) {
           method: 'POST',
           body: JSON.stringify({ vehicleId: button.dataset.draftVehicle, autoConfirm: true })
         });
-        if (created.windowWarning) toast(`🤝 Назначено, но ${created.windowWarning}`, 'error');
+        if (created.windowWarning) windowWarningModal(context.showModal, created.windowWarning);
         else toast('Назначено по ночному подбору — рейс ушёл диспетчеру');
         context.onReload();
       } catch (error) {
