@@ -820,12 +820,16 @@ const MAIN_VIEWS = [
 // экраны — в отделах и их группах (блок 1 «Слияния», 05.11), у отдела —
 // его коэффициент каскада. Диспетчер, Мониторинг и Внештатки — работа
 // группы контроля Логистики; Эксплуатации — Ресурс и План парка.
+// Гант и Дашборд — общие для всех отделов (решение руководителя 05.11):
+// отдельный блок «Общее» над отделами, без коэффициента.
 const NAV_GROUPS = [
+  { dept: '', title: 'Общее', coef: '', sub: [
+    { title: '', views: ['dashboard', 'gantt'] }] },
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: '', views: ['structure', 'dashboard', 'boss', 'staff', 'expenses'] }] },
+    { title: '', views: ['structure', 'boss', 'staff', 'expenses'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
-    { title: 'Назначение', views: ['logist', 'gantt'] },
+    { title: 'Назначение', views: ['logist'] },
     { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
   { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
     { title: '', views: ['resource', 'fleetplan'] }] },
@@ -877,8 +881,8 @@ function renderViewTabs() {
       items.forEach(view => placed.add(view.id));
       return items.length ? (sub.title ? `<div class="nav-sub">${sub.title}</div>` : '') + items.map(link).join('') : '';
     }).join('');
-    return subs ? `<div class="nav-block dept-${group.dept}"><div class="blocktitle"><span>${group.title}</span>`
-      + `<span class="owner-chip chip-${group.dept}">${group.coef}</span></div>${subs}</div>` : '';
+    return subs ? `<div class="nav-block${group.dept ? ` dept-${group.dept}` : ' nav-common'}"><div class="blocktitle"><span>${group.title}</span>`
+      + (group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '') + `</div>${subs}</div>` : '';
   }).join('');
   // Экран вне групп (новый, ещё не разнесённый по отделам) не теряется.
   const rest = views.filter(view => !placed.has(view.id)
