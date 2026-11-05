@@ -1,0 +1,78 @@
+/* Тон «Спокойный» (замечание руководителя 05.11: «цвета слишком яркие
+   и режут глаз»). Слой поверх бренд-палитры, включается атрибутом
+   data-tone="calm" на <html>; без атрибута — прежний «Яркий» тон.
+   Три шага: 1) меньше акцентов, 2) приглушённая палитра тех же оттенков,
+   3) мягкие фоны. Подключается последним. */
+
+/* ── Шаг 2 + 3. Светлая тема ─────────────────────────────────────────── */
+:root[data-tone="calm"]:not([data-theme="dark"]) {
+  --accent: #3b4f86; --teal: #3b4f86; --u600: #3b4f86; --u700: #34467a; --u400: #6f7fae;
+  --accent-soft: #eceef4; --brand-deep: #2c3a63; --navy: #2c3a63; --navy-2: #3b4f86;
+  --paper: #f1f2f4; --canvas: #f1f2f4;
+  --card: #fbfbfa; --panel: #fbfbfa;
+  --soft: #f4f5f6; --panel2: #f4f5f6; --hover: #f1f2f4; --inp: #fdfdfc;
+  --line: #dfe1e5; --border: #dfe1e5; --border2: #e9eaed;
+  --grid: #f6f6f7; --gridwe: #eceef1;
+  --ink: #23272f; --muted: #5d6470; --faint: #8a909b; --plan: #8a909b;
+  --ok: #3f7d5f; --pos: #3f7d5f; --bad: #b04a4f; --neg: #b04a4f; --warn: #a87a32;
+  --staff: #8c6a33; --log: #3d5f8f; --drv: #3e7258; --toir: #3a6e70;
+  --staff-bg: #f4eee3; --log-bg: #e9eef5; --drv-bg: #e7f0eb; --toir-bg: #e6f0f0;
+  --th-bg: #f4f5f6;
+  --shadow: 0 1px 2px rgb(30 35 45 / 5%);
+}
+
+/* ── Шаг 2 + 3. Тёмная тема ──────────────────────────────────────────── */
+[data-theme="dark"][data-tone="calm"] {
+  --accent: #8394c8; --teal: #8394c8; --u600: #56659a; --u700: #4b5a8c; --u400: #8394c8;
+  --accent-soft: #252c40; --brand-deep: #252c40; --navy: #181c25; --navy-2: #232833;
+  --paper: #15181f; --canvas: #15181f;
+  --card: #1c2029; --panel: #1c2029;
+  --soft: #232833; --panel2: #232833; --hover: #232833; --inp: #20242d;
+  --line: #2d323d; --border: #2d323d; --border2: #262b35;
+  --grid: #191d25; --gridwe: #171a21;
+  --ink: #d6dae2; --muted: #9399a6; --faint: #6c7280; --plan: #6c7280;
+  --ok: #6fae8d; --pos: #6fae8d; --bad: #d07a7d; --neg: #d07a7d; --warn: #c9a368;
+  --staff: #c4a26a; --log: #7f9cc6; --drv: #7bae92; --toir: #79acad;
+  --staff-bg: rgb(196 162 106 / 12%); --log-bg: rgb(127 156 198 / 12%);
+  --drv-bg: rgb(123 174 146 / 12%); --toir-bg: rgb(121 172 173 / 12%);
+  --th-bg: #232833;
+  --shadow: 0 1px 2px rgb(0 0 0 / 30%);
+}
+
+/* ── Шаг 1. Меньше акцентов ──────────────────────────────────────────── */
+/* Плитки: полоса сверху нейтральная; цвет — только у сигналов
+   (отклонение/тревога), отдел — тонкой меткой, а не заливкой кромки. */
+[data-tone="calm"] .metric, [data-tone="calm"] .skpi { border-top: 1px solid var(--line); box-shadow: none; }
+[data-tone="calm"] .metric.pos, [data-tone="calm"] .skpi.pos { border-top: 2px solid var(--ok); }
+[data-tone="calm"] .metric.neg, [data-tone="calm"] .skpi.neg { border-top: 2px solid var(--bad); }
+[data-tone="calm"] .metric.warn, [data-tone="calm"] .skpi.warn,
+[data-tone="calm"] .skpi.skpi-warn { border-top: 2px solid var(--warn); }
+[data-tone="calm"] .section.dept-staff, [data-tone="calm"] .section.dept-log,
+[data-tone="calm"] .section.dept-drv, [data-tone="calm"] .section.dept-toir { border-top: 1px solid var(--line); }
+
+/* Таблицы: светлая шапка с серым текстом вместо заливки синим */
+[data-tone="calm"] .bi-table th, [data-tone="calm"] .table-wrap th, [data-tone="calm"] .rtable th {
+  background: var(--panel2); color: var(--muted); border-bottom: 1px solid var(--line);
+}
+
+/* Кнопки: заливка — у главной; вторичные и сегменты — контурные/мягкие */
+[data-tone="calm"] .button.secondary { background: var(--card); color: var(--ink); border: 1px solid var(--line); }
+[data-tone="calm"] .button.secondary:hover { border-color: var(--accent); color: var(--accent); filter: none; }
+[data-tone="calm"] .segmented button.active { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+[data-tone="calm"] .avatar { background: var(--accent-soft); color: var(--accent); }
+
+/* Бейджи статусов: мягкая подложка вместо сплошной заливки */
+[data-tone="calm"] .badge { background: var(--soft); color: var(--muted); }
+[data-tone="calm"] .badge.ok { background: color-mix(in srgb, var(--ok) 14%, var(--card)); color: var(--ok); }
+[data-tone="calm"] .badge.warn { background: color-mix(in srgb, var(--warn) 16%, var(--card)); color: var(--warn); }
+[data-tone="calm"] .badge.bad { background: color-mix(in srgb, var(--bad) 14%, var(--card)); color: var(--bad); }
+
+/* Стадии плана парка/вывоза — приглушённые оттенки тех же смыслов
+   (в плане вывоза стадии стоят инлайн-стилем — перекрываем по значению). */
+[data-tone="calm"] .fleet-plan .fp-plan, [data-tone="calm"] [style*="background:#3a57c4"] { background: #56659a !important; }
+[data-tone="calm"] .fleet-plan .fp-run, [data-tone="calm"] [style*="background:#1f8a5b"] { background: #4f8a6d !important; }
+[data-tone="calm"] .fleet-plan .fp-done, [data-tone="calm"] [style*="background:#176a46"] { background: #3f6b56 !important; }
+
+/* Переключатель тона в шапке */
+.tone-toggle { border: 0; background: transparent; color: var(--topbar-ink); padding: 6px; font-size: 13px; border-radius: 7px; white-space: nowrap; }
+.tone-toggle:hover { background: var(--soft); }
