@@ -193,8 +193,12 @@ function pickOrderDialog(request, queue, data, context) {
             ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}) })
         });
         context.closeModal();
-        if (created.windowWarning) windowWarningModal(context.showModal, created.windowWarning);
-        else toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);
+        const warns = [created.windowWarning
+          && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
+        created.trailerWarning];
+        if (!windowWarningModal(context.showModal, warns)) {
+          toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);
+        }
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
     }));
@@ -907,8 +911,12 @@ export async function renderLogist(container, context) {
           method: 'POST',
           body: JSON.stringify({ vehicleId: button.dataset.draftVehicle, autoConfirm: true })
         });
-        if (created.windowWarning) windowWarningModal(context.showModal, created.windowWarning);
-        else toast('Назначено по ночному подбору — рейс ушёл диспетчеру');
+        const warns = [created.windowWarning
+          && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
+        created.trailerWarning];
+        if (!windowWarningModal(context.showModal, warns)) {
+          toast('Назначено по ночному подбору — рейс ушёл диспетчеру');
+        }
         context.onReload();
       } catch (error) {
         button.disabled = false;

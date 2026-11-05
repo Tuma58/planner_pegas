@@ -24,6 +24,19 @@ const tripWithNames = (db, tripId) => db.prepare(`SELECT t.*,f.name from_name,z.
 // окно работ. Назначение НЕ блокируется — сигнал для продаж (договориться
 // о новом окне) и логиста (сдвинуть старт). Любое положительное опоздание
 // честно называется, порогов-констант нет.
+// Сторож «рейс без прицепа» (заказ руководителя 05.11, находка ревизии
+// моделей: 6 тягачей возили рейсы с пустым прицепом в планере, а тип
+// кузова живёт на прицепе — подбор опирался на устаревший тип).
+// Предупреждение в момент назначения, не блокирует: фактический прицеп
+// знает водитель, перецепку проводит Ресурс.
+export function noTrailerWarning(vehicle) {
+  const plate = String(vehicle?.trailer_plate || '').trim();
+  if (plate && !['без прицепа', 'нет', '-', '—'].includes(plate.toLowerCase())) return null;
+  return `🔗 У сцепки ${vehicle?.plate || '—'} в планере нет прицепа — тип кузова рейса ` +
+    'не проверен. Уточните у водителя фактический прицеп и проведите перецепку ' +
+    '(«Ресурс → 🔗 Перецепка»)';
+}
+
 export function transitWindowWarning(trip, windowTo) {
   const winMs = Date.parse(windowTo || '');
   const arrivalMs = Date.parse(trip.ends_at) - workWindowMs(trip);

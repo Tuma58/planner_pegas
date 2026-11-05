@@ -75,7 +75,8 @@ import {
   ensureTripStops, gpsAutoMarks, syncTrailerTrackerLinks,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
-  stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, transitWindowWarning, tripDelayMs
+  noTrailerWarning, stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia,
+  transitWindowWarning, tripDelayMs
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
@@ -10622,7 +10623,15 @@ async function api(request, response, url) {
       notify('sales', text, 'trip', tripId, { category: 'transit_window' });
       notify('logist', text, 'trip', tripId, { category: 'transit_window' });
     }
-    return { tripId, windowWarning };
+    // Сторож «рейс без прицепа» (05.11): тип кузова живёт на прицепе —
+    // сцепка без прицепа возит рейс с непроверенным типом. Назначившему —
+    // модалкой (поле в ответе), автоназначению — в чат логиста.
+    const trailerWarning = noTrailerWarning(vehicle);
+    if (trailerWarning && !user?.id) {
+      notify('logist', `${trailerWarning} (заявка №${order.order_no || '—'})`, 'trip', tripId,
+        { category: 'no_trailer' });
+    }
+    return { tripId, windowWarning, trailerWarning };
   }
   function confirmAssigned(tripId, order, vehicle, user) {
     applyDispatchStep(db, tripId, 'logist_confirm', user.id);
@@ -10668,7 +10677,7 @@ async function api(request, response, url) {
     const previousTrip = order.trip_id
       ? db.prepare('SELECT auto_assigned, vehicle_id, order_no FROM trips WHERE id=?').get(order.trip_id)
       : null;
-    const { tripId, windowWarning } = assignOrderCore(order, vehicle, user,
+    const { tripId, windowWarning, trailerWarning } = assignOrderCore(order, vehicle, user,
       { distanceKm: body.distanceKm, dispoOverrideReason: body.dispoOverrideReason });
     if (previousTrip?.auto_assigned && previousTrip.vehicle_id !== vehicle.id) {
       reportAutoAssignIssue(`на рейсе №${previousTrip.order_no || '?'} человек заменил ТС `
@@ -10691,7 +10700,8 @@ async function api(request, response, url) {
         ...(draft && draft.vehicle_id !== vehicle.id
           ? { recommendedVehicleId: draft.vehicle_id, overrideReason } : {}) },
       requestIp(request));
-    return json(response, 201, { tripId, ...(windowWarning ? { windowWarning } : {}) });
+    return json(response, 201, { tripId, ...(windowWarning ? { windowWarning } : {}),
+      ...(trailerWarning ? { trailerWarning } : {}) });
   }
 
   // ── Конструктор маршрутов: кольцевые цепочки заявок от базы до базы ──
@@ -10749,8 +10759,12 @@ async function api(request, response, url) {
         continue;
       }
       const startsAt = new Date(Math.max(Date.parse(order.window_from), cursor || 0)).toISOString();
-      const { tripId, windowWarning } = assignOrderCore(order, vehicle, user, { startsAt });
-      if (windowWarning) windowWarnings.push(`№${order.order_no || '—'}: ${windowWarning}`);
+      const { tripId, windowWarning, trailerWarning } = assignOrderCore(order, vehicle, user, { startsAt });
+      if (windowWarning) windowWarnings.push(`🤝 №${order.order_no || '—'}: ${windowWarning}`);
+      // Сцепка у маршрута одна — предупреждение о прицепе не повторяем.
+      if (trailerWarning && !windowWarnings.some(w => w.startsWith('🔗'))) {
+        windowWarnings.unshift(trailerWarning);
+      }
       confirmAssigned(tripId, order, vehicle, user);
       const created = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(tripId);
       cursor = Date.parse(created.ends_at);

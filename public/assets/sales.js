@@ -2230,10 +2230,14 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
           ...(dispoOverrideReason ? { dispoOverrideReason } : {}) })
       });
       closeModal();
-      if (created.windowWarning) windowWarningModal(showModal, created.windowWarning);
-      else toast(options.autoConfirm
-        ? 'ТС назначена и подтверждена — рейс у диспетчера'
-        : 'ТС назначена — рейс проведён в план');
+      const warns = [created.windowWarning
+        && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
+      created.trailerWarning];
+      if (!windowWarningModal(showModal, warns)) {
+        toast(options.autoConfirm
+          ? 'ТС назначена и подтверждена — рейс у диспетчера'
+          : 'ТС назначена — рейс проведён в план');
+      }
       await onReload();
     };
     try {

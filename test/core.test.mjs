@@ -12,7 +12,7 @@ import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
-import { ensureTripStops, rescheduleTripStops, transitWindowWarning } from '../src/trip-control.mjs';
+import { ensureTripStops, noTrailerWarning, rescheduleTripStops, transitWindowWarning } from '../src/trip-control.mjs';
 import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
@@ -5663,4 +5663,14 @@ test('мягкий сигнал: транзит не помещается в о�
   const short = { starts_at: '2026-11-04T08:00:00.000Z', ends_at: '2026-11-04T12:00:00.000Z' };
   const shortWarn = transitWindowWarning(short, '2026-11-04T08:30:00.000Z');
   assert.ok(shortWarn.includes('на ~2,5 ч') || shortWarn.includes('на ~2.5 ч'), shortWarn);
+});
+
+test('сторож «рейс без прицепа» предупреждает только пустую сцепку', () => {
+  // Находка 05.11: 6 тягачей возили рейсы с пустым прицепом в планере —
+  // тип кузова живёт на прицепе, подбор опирался на устаревший тип.
+  assert.equal(noTrailerWarning({ plate: 'т487ве58', trailer_plate: 'АН3471 58' }), null);
+  const warn = noTrailerWarning({ plate: 'т487ве58', trailer_plate: '' });
+  assert.ok(warn && warn.includes('т487ве58') && warn.includes('Перецепка'), warn);
+  assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: 'без прицепа' }), 'заглушка = нет прицепа');
+  assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: '  ' }), 'пробелы = нет прицепа');
 });

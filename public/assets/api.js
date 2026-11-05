@@ -320,19 +320,17 @@ export function escapeHtml(value = '') {
   return element.innerHTML;
 }
 
-// Всплывающее окно «транзит не помещается в окно клиента» (решение
-// руководителя 05.11: вместо чат-уведомления). Показывается тому, кто
-// назначал; modalFn — showModal вызывающей вкладки (модальная
-// инфраструктура живёт в app.js и приходит через context).
+// Всплывающее окно предупреждений назначения (решение руководителя 05.11:
+// вместо чат-уведомления): окно клиента, сцепка без прицепа — каждая
+// строка самодостаточна. Показывается тому, кто назначал; modalFn —
+// showModal вызывающей вкладки (модальная инфраструктура живёт в app.js
+// и приходит через context).
 export function windowWarningModal(modalFn, warnings) {
   const list = (Array.isArray(warnings) ? warnings : [warnings]).filter(Boolean);
   if (!list.length || typeof modalFn !== 'function') return false;
-  modalFn(`<h2>🤝 Транзит не помещается в окно клиента</h2>
-    <p class="muted">ТС назначена, рейс проведён — план оставлен честным,
-      ничего не заблокировано.</p>
+  modalFn(`<h2>⚠ Рейс проведён — проверьте</h2>
+    <p class="muted">Назначение выполнено, ничего не заблокировано.</p>
     ${list.map(text => `<p>${escapeHtml(text)}</p>`).join('')}
-    <p class="muted">Варианты: договориться с клиентом о новом окне
-      (правится в заявке у продаж) или сдвинуть старт рейса раньше.</p>
     <div class="form-actions"><button type="button" class="button full" data-close>Понятно</button></div>`);
   return true;
 }
