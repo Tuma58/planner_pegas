@@ -48,6 +48,39 @@ export function transitWindowWarning(trip, windowTo) {
     `(до ${msk(winMs)} МСК) на ~${lateText}. Договоритесь с клиентом о новом окне или сдвиньте старт`;
 }
 
+// Сторож «перегон поверх диспозиции» (заказ руководителя 06.11, разбор
+// грязных диспозиций: за 01.10–04.11 перегоны шли поверх закрытых
+// «без водителя»/ремонтов на 168 машино-дней — машина едет и стоит
+// одновременно, отчёты занижают фонд). Предупреждение создающему
+// перегон, не блокирует: аналог сторожа окна клиента при назначении.
+const IDLE_DISPO_LABELS = { repair: 'в ремонте', no_driver: 'без водителя',
+  shift: 'на пересменке', out: 'выведена' };
+export function idleDispoWarning(dispositions, startsAt, endsAt) {
+  const s = Date.parse(startsAt);
+  const e = Date.parse(endsAt);
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return null;
+  const hits = (dispositions || []).filter(d => IDLE_DISPO_LABELS[d.kind]
+    && Date.parse(d.starts_at) < e && Date.parse(d.ends_at) > s);
+  if (!hits.length) return null;
+  const until = value => String(value).slice(0, 16).replace('T', ' ');
+  const list = hits.map(d => `${IDLE_DISPO_LABELS[d.kind]} до ${until(d.ends_at)} UTC`).join(', ');
+  return `по планеру машина ${list} — перегон идёт поверх. Если сцепка реально поедет, ` +
+    'закройте или подрежьте диспозицию в Ресурсе; отметка выезда сама подрежет ' +
+    '«без водителя» и пересменку, ремонт закрывает ремзона';
+}
+
+// Какие диспозиции подрезает ФАКТ выхода машины на линию (вторая половина
+// того же заказа: диспозиции ставят «с запасом до конца недели», водитель
+// выходит раньше — хвост никто не снимает). Подрезаются только
+// «без водителя» и «пересменка», накрывающие момент выезда; ремонт — зона
+// ремзоны (запрос выпуска), будущие диспозиции — планы, их не трогаем.
+export function dispositionsToTrim(dispositions, atIso) {
+  const at = Date.parse(atIso);
+  if (!Number.isFinite(at)) return [];
+  return (dispositions || []).filter(d => ['no_driver', 'shift'].includes(d.kind)
+    && Date.parse(d.starts_at) < at && Date.parse(d.ends_at) > at);
+}
+
 // Автогенерация каркаса: погрузка в пункте отправления и выгрузка в пункте
 // назначения с плановыми временами из рейса. Дальше диспетчер уточняет и
 // добавляет промежуточные стоянки.

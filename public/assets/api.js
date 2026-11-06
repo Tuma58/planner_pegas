@@ -325,11 +325,11 @@ export function escapeHtml(value = '') {
 // строка самодостаточна. Показывается тому, кто назначал; modalFn —
 // showModal вызывающей вкладки (модальная инфраструктура живёт в app.js
 // и приходит через context).
-export function windowWarningModal(modalFn, warnings) {
+export function windowWarningModal(modalFn, warnings, title = '⚠ Рейс проведён — проверьте') {
   const list = (Array.isArray(warnings) ? warnings : [warnings]).filter(Boolean);
   if (!list.length || typeof modalFn !== 'function') return false;
-  modalFn(`<h2>⚠ Рейс проведён — проверьте</h2>
-    <p class="muted">Назначение выполнено, ничего не заблокировано.</p>
+  modalFn(`<h2>${title}</h2>
+    <p class="muted">Действие выполнено, ничего не заблокировано.</p>
     ${list.map(text => `<p>${escapeHtml(text)}</p>`).join('')}
     <div class="form-actions"><button type="button" class="button full" data-close>Понятно</button></div>`);
   return true;

@@ -12,7 +12,7 @@ import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
-import { ensureTripStops, noTrailerWarning, rescheduleTripStops, transitWindowWarning } from '../src/trip-control.mjs';
+import { ensureTripStops, noTrailerWarning, rescheduleTripStops, transitWindowWarning, idleDispoWarning, dispositionsToTrim } from '../src/trip-control.mjs';
 import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
@@ -5678,4 +5678,30 @@ test('сторож «рейс без прицепа» предупреждает
   assert.ok(warn && warn.includes('т487ве58') && warn.includes('Перецепка'), warn);
   assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: 'без прицепа' }), 'заглушка = нет прицепа');
   assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: '  ' }), 'пробелы = нет прицепа');
+});
+
+test('сторож «перегон поверх диспозиции» и авто-подрезка фактом выезда', () => {
+  // Разбор 06.11: за месяц перегоны шли поверх закрытых диспозиций на
+  // 168 МД (кейс в327ак797: «без водителя» 09–19.10, а машина ехала).
+  const dispos = [
+    { kind: 'no_driver', starts_at: '2026-10-09T00:00:00.000Z', ends_at: '2026-10-19T00:00:00.000Z' },
+    { kind: 'repair', starts_at: '2026-10-01T00:00:00.000Z', ends_at: '2026-10-07T00:00:00.000Z' },
+    { kind: 'reserve', starts_at: '2026-10-10T00:00:00.000Z', ends_at: '2026-10-20T00:00:00.000Z' }
+  ];
+  // Перегон пересекает «без водителя» — предупреждение с видом и сроком.
+  const warn = idleDispoWarning(dispos, '2026-10-12T08:00:00.000Z', '2026-10-12T20:00:00.000Z');
+  assert.ok(warn && warn.includes('без водителя до 2026-10-19 00:00'), warn);
+  assert.ok(!warn.includes('в ремонте'), 'ремонт закончился до перегона: ' + warn);
+  // Резерв перегону не мешает («обещана заказу» — не простой).
+  assert.equal(idleDispoWarning(dispos, '2026-10-20T00:00:00.000Z', '2026-10-21T00:00:00.000Z'), null);
+  // Подрезка фактом выезда: накрывающие «без водителя»/пересменка — да,
+  // ремонт (зона ремзоны) и будущие диспозиции — нет.
+  const toTrim = dispositionsToTrim([...dispos,
+    { kind: 'shift', starts_at: '2026-10-12T00:00:00.000Z', ends_at: '2026-10-13T00:00:00.000Z' },
+    { kind: 'no_driver', starts_at: '2026-10-15T00:00:00.000Z', ends_at: '2026-10-16T00:00:00.000Z' },
+    { kind: 'repair', starts_at: '2026-10-12T00:00:00.000Z', ends_at: '2026-10-14T00:00:00.000Z' }],
+  '2026-10-12T08:00:00.000Z');
+  assert.deepEqual(toTrim.map(d => d.kind).sort(), ['no_driver', 'shift'],
+    'подрезаются только накрывающие момент «без водителя» и пересменка');
+  assert.deepEqual(dispositionsToTrim(dispos, 'не дата'), []);
 });

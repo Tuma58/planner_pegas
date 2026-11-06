@@ -76,7 +76,7 @@ import {
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   noTrailerWarning, stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia,
-  transitWindowWarning, tripDelayMs
+  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
@@ -765,6 +765,35 @@ function notifyUserByName(fullName, text, entity = null, entityId = null) {
     }
   } catch { /* не критично */ }
   return true;
+}
+
+// Авто-подрезка хвоста «без водителя»/«пересменки» фактом выхода машины
+// на линию (решение руководителя 06.11, разбор грязных диспозиций: 280
+// машино-дней пересечений за месяц — диспозиции ставят с запасом, машина
+// уезжает раньше, хвост не снимают). Факт ставит человек (отметка выезда
+// диспетчером) — автоматика лишь согласует данные с ним; след остаётся
+// в аудите и уведомлением ресурснику. Ремонт не трогаем: его закрывает
+// ремзона через запрос выпуска.
+function trimIdleDispositions(vehicleId, atIso, user, source) {
+  const active = db.prepare(`SELECT id, kind, starts_at, ends_at FROM vehicle_dispositions
+    WHERE vehicle_id=? AND kind IN ('no_driver','shift')
+      AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+    .all(vehicleId, atIso, atIso);
+  const toTrim = dispositionsToTrim(active, atIso);
+  if (!toTrim.length) return;
+  const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(vehicleId)?.plate || '';
+  const labels = { no_driver: 'без водителя', shift: 'пересменка' };
+  const short = value => String(value).slice(0, 16).replace('T', ' ');
+  for (const dispo of toTrim) {
+    db.prepare(`UPDATE vehicle_dispositions SET ends_at=?, updated_by=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(atIso, user?.id || null, dispo.id);
+    audit(db, user || null, 'dispo_autotrim', 'disposition', dispo.id,
+      { kind: dispo.kind, was: dispo.ends_at, now: atIso, source }, '');
+    notify('resource', `✂ Диспозиция «${labels[dispo.kind]}» по ${plate} подрезана до ` +
+      `${short(atIso)} UTC — ${source}, а диспозиция стояла до ${short(dispo.ends_at)}. ` +
+      'Хвост снят автоматически; если машина вышла ошибочно — поправьте в Ресурсе',
+      'vehicle', vehicleId);
+  }
 }
 
 // ── Объявления на табло ──
@@ -12431,9 +12460,20 @@ async function api(request, response, url) {
     // 05.10): машина уже переехала — этапы закрываются сразу, задание
     // диспетчеру не создаётся (передавать водителю нечего).
     const pastFact = body.pastFact === true && endsAt.getTime() <= Date.now();
+    // Сторож «перегон поверх диспозиции»: машина числится в ремонте или
+    // без водителя, а её отправляют перегоном — создающий видит модалку
+    // (не блокирует; при подтверждённом прошлом факте выезд подрезает
+    // «без водителя»/пересменку сразу).
+    const idleDispos = db.prepare(`SELECT kind, starts_at, ends_at FROM vehicle_dispositions
+      WHERE vehicle_id=? AND kind IN ('repair','no_driver','shift','out')
+        AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+      .all(body.vehicleId, endsAt.toISOString(), startsAt.toISOString());
+    const dispoWarning = idleDispoWarning(idleDispos, startsAt.toISOString(), endsAt.toISOString());
     if (pastFact) {
       db.prepare(`UPDATE vehicle_dispositions SET departed_at=?, arrived_at=? WHERE id=?`)
         .run(startsAt.toISOString(), endsAt.toISOString(), id);
+      trimIdleDispositions(body.vehicleId, startsAt.toISOString(), user,
+        'перегон подтверждён задним числом');
     } else {
       notify('dispatcher', `🚚 Перегон порожним ${plate}: ${fromLabel || '—'} → ${target.name} ` +
         `(${purpose}). Передайте задание водителю и отметьте выезд`, 'vehicle', body.vehicleId);
@@ -12442,7 +12482,7 @@ async function api(request, response, url) {
     audit(db, user, 'create', 'transfer', id, { vehicleId: body.vehicleId, to: target.name, purpose },
       requestIp(request));
     return json(response, 201, { id, km: Number.isFinite(km) ? Math.round(km) : null,
-      endsAt: endsAt.toISOString() });
+      endsAt: endsAt.toISOString(), dispoWarning });
   }
   match = route(/^\/api\/transfers\/([^/]+)\/step$/, pathname);
   if (match && request.method === 'POST') {
@@ -12460,6 +12500,11 @@ async function api(request, response, url) {
     if (transfer[column]) return json(response, 200, { ok: true });
     db.prepare(`UPDATE vehicle_dispositions SET ${column}=?,updated_by=?,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(at, user.id, match[0]);
+    // Факт выезда перегоном: машина поехала — накрывающие «без водителя»
+    // и пересменка подрезаются до этого момента (разбор 06.11).
+    if (body.step === 'departed') {
+      trimIdleDispositions(transfer.vehicle_id, at, user, 'машина выехала перегоном');
+    }
     // Прибытие закрывает перегон фактическим временем: с этого момента сцепка
     // стоит в точке назначения и доступна для следующего задания.
     if (body.step === 'arrived') {
@@ -12859,6 +12904,12 @@ async function api(request, response, url) {
       if (statusChanged) {
         queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
           integrationPublic().writePolicy === 'automatic');
+      }
+      // Факт выхода рейса на линию подрезает накрывающие «без водителя»
+      // и пересменку (разбор 06.11): машина не может ехать и стоять разом.
+      if (body.step === 'on_line') {
+        trimIdleDispositions(trip.vehicle_id, factAt || new Date().toISOString(), user,
+          'рейс выведен на линию');
       }
       // Задание водителю уходит в Telegram (если водитель привязан) —
       // в момент отметки шага «Задание водителю».
