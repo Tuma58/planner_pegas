@@ -15615,10 +15615,13 @@ export const server = http.createServer(async (request, response) => {
     // руководителя 04.11). Живёт ТОЛЬКО в рабочей копии design-lab; при
     // переносе в планер этот блок удаляется. Тройная защита: переменная
     // LAB_AUTOLOGIN (логин), не продакшен, запрос с этой же машины.
-    // «/» входит, только если сессии нет (уже вошедший под другой ролью
-    // остаётся); /__lab-login — всегда под LAB_AUTOLOGIN.
+    // Любая страница (/, /login, /planner, /settings) входит, только если
+    // сессии нет (уже вошедший под другой ролью остаётся); /__lab-login —
+    // всегда под LAB_AUTOLOGIN. Просьба руководителя 07.11: форма пароля
+    // в лаборатории не показывается вовсе (протухшая кука, новая база).
+    const labPages = ['/', '/login', '/login.html', '/planner', '/settings'];
     if (request.method === 'GET'
-        && (url.pathname === '/__lab-login' || (url.pathname === '/' && !currentUser(request)))
+        && (url.pathname === '/__lab-login' || (labPages.includes(url.pathname) && !currentUser(request)))
         && process.env.LAB_AUTOLOGIN && !config.isProduction
         && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress)) {
       const user = db.prepare('SELECT * FROM users WHERE username=? AND active=1')
@@ -15629,7 +15632,7 @@ export const server = http.createServer(async (request, response) => {
         db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
           .run(tokenHash(token), user.id, expires);
         response.writeHead(302, {
-          Location: '/planner',
+          Location: ['/planner', '/settings'].includes(url.pathname) ? url.pathname : '/planner',
           'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
         });
         return response.end();
