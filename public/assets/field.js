@@ -3,7 +3,8 @@
 // отделе на одном экране, каждая секция ведёт в рабочий экран. Штаб
 // (область «всё направление») переключает отдел и видит ровно то же
 // поле, что его руководитель.
-import { api, escapeHtml } from './api.js';
+import { api, escapeHtml, toast } from './api.js';
+import { kpiCard } from './kpi.js';
 
 const DEPT_TABS = [['direction', 'Направление'], ['log', 'Логистика'], ['drv', 'Эксплуатация'], ['toir', 'ТОиР']];
 const TONE = { ok: 'pos', near: 'warn', miss: 'neg' };
@@ -39,10 +40,10 @@ export async function renderField(container, context) {
       ${joint.pending ? `<div class="muted">◌ нет источника — блок «${escapeHtml(joint.pending)}»</div>`
     : `<div class="fd-jv"><b class="${joint.count ? 'fd-warn' : 'fd-ok'}">${joint.count}</b> ${escapeHtml(joint.label)}
           ${joint.maxH != null && joint.count ? `<span class="muted">· дольше всех ${joint.maxH} ч</span>` : ''}</div>
-        ${joint.items?.length ? `<div class="fd-plates">${joint.items.map(item =>
-    `<span class="bi-tag">${escapeHtml(item.plate)}${item.hours != null ? ` · ${Math.round(item.hours)} ч` : ''}</span>`).join('')}</div>` : ''}`}
+        ${joint.items?.length ? `<div class="fd-cases">${joint.items.map(item => caseRow(joint, item)).join('')}</div>` : ''}`}
     </div>`;
 
+  const leading = data.leading || [];
   container.innerHTML = `<div class="bi-page fd-page">
     <div class="bi-sub"><h2>${data.canSwitch ? 'Поле отдела' : 'Моё поле'} · ${escapeHtml(data.name)}</h2>
       <p>Коэффициент, потери, задачи и деньги — за выбранный месяц; стыки и очереди — сейчас. Стрелка «→» — в рабочий экран.</p>
@@ -70,6 +71,8 @@ export async function renderField(container, context) {
         <div class="sec-h"><span class="st">Стыки с соседями</span><span class="hint">процессы «Рабочей среды СТ»: мерим, что висит на передаче</span></div>
         <div class="sec-b fd-list">${data.joints.map(jointRow).join('') || '<div class="bi-empty">стыков нет</div>'}</div>
       </section>
+      ${data.kpi ? kpiCard(data.kpi, { compact: true }) : ''}
+      ${leading.length ? leadingSection(leading, data.dept) : ''}
       <section class="section s6 dept-${data.dept}">
         <div class="sec-h"><span class="st">Очереди сейчас</span><span class="hint">живые списки рабочих экранов</span></div>
         <div class="sec-b flush"><table class="bi-table"><tbody>${data.queues.map(queue => `<tr>
@@ -121,12 +124,49 @@ export async function renderField(container, context) {
     state.fieldMonth = event.currentTarget.value || null;
     renderField(container, context);
   };
-  container.onclick = event => {
-    const switcher = event.target.closest('[data-fd-dept]');
-    if (switcher) { state.fieldDept = switcher.dataset.fdDept; renderField(container, context); return; }
-    const goto = event.target.closest('[data-goto]');
-    if (goto) document.querySelector(`#viewTabs [data-view="${goto.dataset.goto}"]`)?.click();
-  };
+  container.onclick = event => fieldClick(event, container, context);
+}
+
+// Кнопки сквозного контроля (блок 4): контролёр — «⚑ Сигнал», владелец —
+// «✓ Принять»; случай закрывается сам, когда устранено.
+async function fieldClick(event, container, context) {
+  const { state } = context;
+  const switcher = event.target.closest('[data-fd-dept]');
+  if (switcher) { state.fieldDept = switcher.dataset.fdDept; renderField(container, context); return; }
+  const goto = event.target.closest('[data-goto]');
+  if (goto) { document.querySelector(`#viewTabs [data-view="${goto.dataset.goto}"]`)?.click(); return; }
+  const action = event.target.closest('[data-signal]');
+  if (!action) return;
+  action.disabled = true;
+  try {
+    await api(`/api/signals/${action.dataset.signal}/${action.dataset.act}`, { method: 'POST' });
+    toast(action.dataset.act === 'raise' ? 'Сигнал подан — владелец стыка получил уведомление' : 'Сигнал принят');
+    renderField(container, context);
+  } catch (error) { toast(error.message); action.disabled = false; }
+}
+
+function caseRow(joint, item) {
+  const hours = item.hours != null ? `${Math.round(item.hours)} ч` : '';
+  if (!item.id) return `<span class="bi-tag">${escapeHtml(item.plate)}${hours ? ` · ${hours}` : ''}</span>`;
+  const state = item.acceptedAt ? `<span class="bi-tag pos" title="Принял ${escapeHtml(item.acceptedBy)}">✓ принято</span>`
+    : item.signaledAt ? `<span class="bi-tag warn" title="Подал ${escapeHtml(item.signaledBy)}">⚑ сигнал подан</span>`
+      : '<span class="bi-tag neg">сигнала нет</span>';
+  const button = !item.signaledAt && joint.canSignal
+    ? `<button class="button small" data-signal="${item.id}" data-act="raise" title="Подать сигнал отделу-владельцу: он получит уведомление">⚑ Сигнал</button>`
+    : item.signaledAt && !item.acceptedAt && joint.canAccept
+      ? `<button class="button small" data-signal="${item.id}" data-act="accept" title="Принять сигнал в работу">✓ Принять</button>` : '';
+  return `<div class="fd-case"><b>${escapeHtml(item.plate)}</b><span class="muted">${hours}</span>${state}${button}</div>`;
+}
+
+function leadingSection(leading, dept) {
+  return `<section class="section s6 dept-${dept}">
+    <div class="sec-h"><span class="st">Опережающие сигналы</span><span class="hint">не дать коэффициенту упасть — до того, как он просел</span></div>
+    <div class="sec-b flush"><table class="bi-table"><tbody>${leading.map(item => `<tr>
+      <td><span class="owner-chip chip-${item.dept}">${escapeHtml(item.coef)}</span> ${escapeHtml(item.label)}
+        ${item.note ? `<div class="muted fd-note">${escapeHtml(item.note)}</div>` : ''}</td>
+      <td class="num"><b class="${item.count ? 'fd-warn' : 'fd-ok'}">${item.count}</b></td>
+      <td>${go(item.screen)}</td></tr>`).join('')}</tbody></table></div>
+  </section>`;
 }
 
 const tabsHtml = current => `<span class="segmented">${DEPT_TABS.map(([key, label]) =>
@@ -182,9 +222,11 @@ function renderDirection(container, context, data) {
           <div class="fd-jh"><span class="owner-chip chip-${joint.from}">${FIELD_SHORT[joint.from]}</span> → <span class="owner-chip chip-${joint.to}">${FIELD_SHORT[joint.to]}</span>
             <b>«${escapeHtml(joint.risk)}»</b></div>
           ${joint.pending || joint.count == null ? `<div class="muted">◌ нет источника — блок «${escapeHtml(joint.pending || 'Процессы и контроль')}»</div>`
-    : `<div class="fd-jv"><b class="${joint.count ? 'fd-warn' : 'fd-ok'}">${joint.count}</b> ${escapeHtml(joint.label)}${joint.maxH != null && joint.count ? ` <span class="muted">· дольше всех ${joint.maxH} ч</span>` : ''}</div>`}
+    : `<div class="fd-jv"><b class="${joint.count ? 'fd-warn' : 'fd-ok'}">${joint.count}</b> ${escapeHtml(joint.label)}${joint.maxH != null && joint.count ? ` <span class="muted">· дольше всех ${joint.maxH} ч</span>` : ''}
+          ${joint.waiting != null ? `<span class="muted">· без сигнала ${joint.waiting} · ждут принятия ${joint.signaled}</span>` : ''}</div>`}
         </div>`).join('')}</div>
       </section>
+      ${data.leading?.length ? leadingSection(data.leading, 'staff') : ''}
       <section class="section s6 dept-staff">
         <div class="sec-h"><span class="st">Задачи Штаба</span>${go('goals')}</div>
         <div class="sec-b fd-list">${data.staff.tasks.map(task => `<div class="fd-task ${task.kind === 'dept' ? 'goal' : ''}">
@@ -206,12 +248,7 @@ function renderDirection(container, context, data) {
     state.fieldMonth = event.currentTarget.value || null;
     renderField(container, context);
   };
-  container.onclick = event => {
-    const switcher = event.target.closest('[data-fd-dept]');
-    if (switcher) { state.fieldDept = switcher.dataset.fdDept; renderField(container, context); return; }
-    const goto = event.target.closest('[data-goto]');
-    if (goto) document.querySelector(`#viewTabs [data-view="${goto.dataset.goto}"]`)?.click();
-  };
+  container.onclick = event => fieldClick(event, container, context);
 }
 
 const FIELD_SHORT = { log: 'Логистика', drv: 'Эксплуатация', toir: 'ТОиР', staff: 'Штаб' };

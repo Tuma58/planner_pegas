@@ -54,7 +54,9 @@ import { directionGoals } from '../public/assets/goals-core.js';
 import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
 import { accessOf, assignRoleSets, roleSets, stripOrders, stripSmall, stripTrips } from './access.mjs';
-import { FIELD_META, directionData, fieldData, fieldLive } from './field.mjs';
+import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
+import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
+import { KPI_DEPTS, kpiDept } from './kpi.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -549,6 +551,7 @@ const NOTIFY_CATEGORIES = {
   shift_handover: { label: '🌙 Ночная передача смены', def: 'normal' },
   stale_transfers: { label: '🚚 Зависшие перегоны', def: 'normal' },
   sales_directions: { label: '🧭 Утренние направления планированию', def: 'normal' },
+  joint_signals: { label: '⚑ Сигналы на стыках отделов', def: 'normal' },
   no_next: { label: '⏭ Выгрузка близко, следующий рейс не назначен', def: 'normal' },
   resource_watch: { label: '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', def: 'normal' },
   shift_digest: { label: '📋 Сводка смены (18:00 на ночь / 06:00 на день)', def: 'normal' },
@@ -855,6 +858,9 @@ function runUnloadWatch() {
   }
 }
 setInterval(watchWrap('runUnloadWatch', runUnloadWatch), 10 * 60_000);
+// Сквозной контроль (блок 4 «Слияния», 07.11): детектор стыков открывает
+// случаи и сам закрывает устранённые — каждые 5 минут.
+setInterval(watchWrap('runJointSignals', () => detectSignals(db)), 5 * 60_000);
 setTimeout(runUnloadWatch, 15_000);
 
 // Сторож-геокодер: адреса справочника без координат по одному подтягиваются
@@ -7309,6 +7315,78 @@ function learnedSearchLeadH() {
   } catch { /* остаёмся на прежнем */ }
   searchLeadCache = { at: Date.now(), value: lead };
   return lead;
+}
+
+// ── Опережающие сигналы отдела (блок 4 «Слияния», 07.11) ──
+// «Не собрать факт, а не дать показателю упасть»: сигналы, которые
+// предупреждают просадку коэффициента ДО того, как она случится. Только
+// готовые каноны и живые нормативы (горизонт поиска груза — выученный
+// learnedSearchLeadH), без новых порогов.
+function fieldLeading(dept) {
+  const out = [];
+  const now = new Date();
+  const at = now.toISOString();
+  const day = iso => iso.slice(0, 10);
+  const tomorrow = new Date(now.getTime() + 864e5).toISOString().slice(0, 10);
+  const tomorrowEnd = new Date(Date.parse(`${tomorrow}T00:00:00Z`) + 864e5).toISOString();
+  const safe = fn => { try { return fn(); } catch { return null; } };
+  if (dept === 'log' || dept === 'staff') {
+    const leadH = safe(() => learnedSearchLeadH()) || 8;
+    const withoutNext = safe(() => tripsWithoutNext(db, now.getTime(), leadH * 3.6e6, false)) || [];
+    out.push({ key: 'without_next', dept: 'log', coef: 'КИП', screen: 'logist',
+      label: `Выгрузка в ближайшие ${leadH} ч без следующего задания`, count: withoutNext.length,
+      note: withoutNext.slice(0, 5).map(trip => trip.plate).join(', ') });
+    const ordersTomorrow = db.prepare(`SELECT COUNT(*) n FROM orders WHERE deleted_at IS NULL AND trip_id IS NULL
+      AND status NOT IN ('rejected','cancelled') AND substr(window_from,1,10)=?`).get(tomorrow).n;
+    const free = safe(() => idleVehicles(db, at).length) || 0;
+    out.push({ key: 'portfolio', dept: 'log', coef: 'КИП', screen: 'sales',
+      label: 'Заявок на завтра без ТС против свободных машин', count: Math.max(0, free - ordersTomorrow),
+      note: `заявок ${ordersTomorrow} · свободных ${free}${free > ordersTomorrow ? ' — портфеля не хватает' : ''}` });
+    const risky = db.prepare(`SELECT COUNT(DISTINCT o.customer_name) n FROM orders o
+      WHERE o.deleted_at IS NULL AND substr(o.window_from,1,10)=? AND o.customer_name IN
+        (SELECT customer_name FROM demurrage_claims WHERE created_day>=date(?, '-60 day'))`).get(tomorrow, day(at)).n;
+    out.push({ key: 'demurrage_clients', dept: 'log', coef: 'КИП', screen: 'sales',
+      label: 'Клиенты с историей простоя в завтрашнем плане', count: risky });
+  }
+  if (dept === 'drv' || dept === 'staff') {
+    const noDriverTomorrow = db.prepare(`SELECT COUNT(DISTINCT d.vehicle_id) n FROM vehicle_dispositions d
+      JOIN vehicles v ON v.id=d.vehicle_id WHERE v.status='work' AND d.kind='no_driver'
+        AND d.starts_at<? AND d.ends_at>?`).get(tomorrowEnd, `${tomorrow}T00:00:00.000Z`).n;
+    out.push({ key: 'no_driver_tomorrow', dept: 'drv', coef: 'КВЛ', screen: 'resource',
+      label: 'Исправные ТС без водителя на завтра', count: noDriverTomorrow });
+  }
+  if (dept === 'toir' || dept === 'staff') {
+    const noDate = db.prepare(`SELECT COUNT(*) n FROM repair_orders WHERE status IN ('queued','in_progress')
+      AND (planned_out IS NULL OR planned_out='')`).get().n;
+    out.push({ key: 'repair_no_date', dept: 'toir', coef: 'КТГ', screen: 'remzona',
+      label: 'Заезды без плановой даты выпуска', count: noDate });
+    const term = (fromDays, toDays) => {
+      const list = db.prepare(`SELECT arrived_at, released_at FROM repair_orders WHERE status='released'
+        AND released_at>=datetime('now', ?) AND released_at<datetime('now', ?) AND arrived_at IS NOT NULL`)
+        .all(`-${fromDays} day`, `-${toDays} day`)
+        .map(row => (Date.parse(row.released_at) - Date.parse(row.arrived_at)) / 864e5)
+        .filter(Number.isFinite).sort((a, b) => a - b);
+      return list.length ? list[Math.floor(list.length / 2)] : null;
+    };
+    const week = term(7, 0);
+    const base = term(35, 7);
+    out.push({ key: 'repair_term', dept: 'toir', coef: 'КТГ', screen: 'remzona',
+      label: 'Срок ремонта: неделя против прошлых 4 недель',
+      count: week != null && base != null && week > base ? 1 : 0,
+      note: week != null ? `медиана ${week.toFixed(1)} сут${base != null ? ` · база ${base.toFixed(1)}` : ''}` : 'выпусков за неделю нет' });
+  }
+  if (dept === 'staff') {
+    // Дневной светофор: вчерашний каскад против целей направления.
+    const y = new Date(now.getTime() - 864e5).toISOString().slice(0, 10);
+    const park = safe(() => parkReportData(y, day(at)).total);
+    const goals = directionGoals(settingsObject(db).calculation);
+    const misses = park ? [['КТГ', park.ktg, goals.ktg], ['КВЛ', park.kvl, goals.kvl], ['КИП', park.kip, goals.kip]]
+      .filter(([, value, target]) => value != null && value < target) : [];
+    out.push({ key: 'daily_light', dept: 'staff', coef: 'КЭИП', screen: 'field',
+      label: 'Вчера ниже цели', count: misses.length,
+      note: misses.length ? misses.map(([coef, value, target]) => `${coef} ${value}% / ${target}%`).join(' · ') : 'все три коэффициента в цели' });
+  }
+  return out;
 }
 
 function runNextTripWatch() {
@@ -15102,6 +15180,72 @@ async function api(request, response, url) {
     if (to < from) return errorJson(response, 422, 'Период задан неверно');
     return json(response, 200, cfoReportFor(scope, from, to));
   }
+  // ── ⚑ Сигнал на стыке (блок 4, 07.11): контролёр подаёт, владелец принимает ──
+  match = route(/^\/api\/signals\/([\w-]+)\/(raise|accept)$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const row = db.prepare('SELECT joint_key FROM joint_signals WHERE id=?').get(match[0]);
+    const joint = row && JOINTS.find(item => item.key === row.joint_key);
+    if (!joint) return errorJson(response, 404, 'Случай не найден');
+    const rights = signalRights(accessOf(db, user), joint);
+    const raise = match[1] === 'raise';
+    if (raise ? !rights.canSignal : !rights.canAccept) {
+      return errorJson(response, 403, raise ? 'Сигнал подаёт отдел-контролёр стыка' : 'Сигнал принимает отдел-владелец');
+    }
+    const name = user.full_name || user.username;
+    const result = raise ? raiseSignal(db, match[0], name) : acceptSignal(db, match[0], name);
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, raise ? 'signal' : 'signal_accept', 'joint_signal', match[0], { joint: joint.key, plate: result.row.plate }, requestIp(request));
+    if (raise) {
+      // Владелец стыка узнаёт сразу — ролями, на которых держатся экраны.
+      const roles = joint.to === 'drv' ? ['resource'] : joint.to === 'log' ? ['logist', 'sales'] : ['mechanic'];
+      for (const role of roles) {
+        notify(role, `⚑ Сигнал «${joint.risk}»: ${result.row.plate} — ${joint.label}. Подал ${name}; примите в «Моём поле»`,
+          'vehicle', result.row.vehicle_id, { category: 'joint_signals' });
+      }
+    }
+    return json(response, 200, { ok: true });
+  }
+  // ── ◎ KPI и каскад (блок 4, 07.11) — KPI отделов по области ──
+  const kpiFor = (user, access, depts, month) => {
+    const gctx = goalsContext(month, mileageData);
+    let park = null;
+    try { park = parkReportData(gctx.from, gctx.to).total; } catch { park = null; }
+    const goalsCfg = directionGoals(settingsObject(db).calculation);
+    const targets = { КТГ: goalsCfg.ktg, КВЛ: goalsCfg.kvl, КИП: goalsCfg.kip, КЭИП: goalsCfg.use };
+    const toIncl = new Date(Date.parse(`${gctx.to}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
+    const cfoView = cfoScope(db, user, expensesAccess(user, settingsObject(db)));
+    const cfo = cfoView ? cfoReportFor(cfoView, gctx.from, toIncl) : null;
+    // Сигналы — живой процесс: текущий месяц считается до «сейчас»
+    // (каноны дней — до начала сегодняшних суток).
+    const signalTo = gctx.month === new Date().toISOString().slice(0, 7)
+      ? new Date().toISOString() : `${gctx.to}T00:00:00.000Z`;
+    const signals = Object.fromEntries(['toir_drv', 'drv_log'].map(key =>
+      [key, signalKpi(db, key, `${gctx.from}T00:00:00.000Z`, signalTo, goalsCfg.signalTargetH)]));
+    const structure = structureData(db);
+    return {
+      month: gctx.month, from: gctx.from, to: gctx.to, targets, ownPct: goalsCfg.kpiOwnPct,
+      signalTargetH: goalsCfg.signalTargetH,
+      cascade: access.scope.all ? { ktg: park?.ktg ?? null, kvl: park?.kvl ?? null, kip: park?.kip ?? null, koef: park?.koef ?? null } : null,
+      depts: depts.filter(dept => KPI_DEPTS[dept]).map(dept => {
+        const center = cfo?.centers?.find(item => item.key === dept) || null;
+        const item = kpiDept({ dept, park, snap: gctx.snap, targets, signals, ownPct: goalsCfg.kpiOwnPct,
+          cfoCenter: dept === 'log' && access.money !== 'full' ? null : center,
+          positions: structure.positions.filter(position => position.dept === dept) });
+        return item;
+      })
+    };
+  };
+  if (request.method === 'GET' && pathname === '/api/kpi') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    if (access.legacy ? !hasPermission(user, 'reports:read') : !access.views.includes('kpi')) {
+      return errorJson(response, 403, 'Панель вне вашей роли');
+    }
+    return json(response, 200, kpiFor(user, access, access.scope.depts, url.searchParams.get('month')));
+  }
   // ── ◉ Моё поле — поле управления отдела (Э1, 07.11) ──
   // Отдел — из области пользователя; у области «всё направление» отдел
   // выбирается параметром (провал Штаба в поле любого отдела).
@@ -15113,6 +15257,7 @@ async function api(request, response, url) {
       return errorJson(response, 403, 'Поле вне вашей роли');
     }
     const asked = url.searchParams.get('dept');
+    try { detectSignals(db); } catch { /* детектор подождёт тика */ }
     // Штаб без явного отдела — поле направления (Э2): свод и провал.
     if (access.scope.all && (!asked || asked === 'direction')) {
       const gctx = goalsContext(url.searchParams.get('month'), mileageData);
@@ -15134,7 +15279,10 @@ async function api(request, response, url) {
         cfo: cfoView?.all ? cfoReportFor(cfoView, gctx.from, toIncl) : null,
         shifts: [],
         targets: { КТГ: goalsCfg.ktg, КВЛ: goalsCfg.kvl, КИП: goalsCfg.kip, КЭИП: goalsCfg.use }
-      }, { log: fieldLive(db, 'log'), drv: fieldLive(db, 'drv'), toir: fieldLive(db, 'toir'), staff: fieldLive(db, 'staff') });
+      }, { log: fieldLive(db, 'log'), drv: fieldLive(db, 'drv'), toir: fieldLive(db, 'toir'),
+        staff: { ...fieldLive(db, 'staff'), leading: fieldLeading('staff') } });
+      data.joints = data.joints.map(joint => ({ ...joint, ...signalRights(access, joint) }));
+      data.leading = fieldLeading('staff');
       for (const card of data.depts) if (card.people) card.people.onShift = shiftsOf(card.dept);
       data.canSwitch = true;
       if (access.money !== 'full') data.revenue = null;
@@ -15162,11 +15310,16 @@ async function api(request, response, url) {
       cfo: cfoView && (cfoView.all || cfoView.depts.includes(dept))
         ? cfoReportFor({ all: false, depts: [dept] }, gctx.from,
           new Date(Date.parse(`${gctx.to}T00:00:00Z`) - 864e5).toISOString().slice(0, 10)) : null,
-      live: fieldLive(db, dept), shifts,
+      live: { ...fieldLive(db, dept), leading: fieldLeading(dept) }, shifts,
       targets: { КТГ: goalsCfg.ktg, КВЛ: goalsCfg.kvl, КИП: goalsCfg.kip, КЭИП: goalsCfg.use }
     });
     data.canSwitch = access.scope.all;
     data.money = access.money === 'none' && dept === 'log' ? null : data.money;
+    data.joints = data.joints.map(joint => ({ ...joint, ...signalRights(access, joint) }));
+    // «Мои KPI» (блок 4): KPI отдела в его поле.
+    if (KPI_DEPTS[dept]) {
+      try { data.kpi = kpiFor(user, access, [dept], url.searchParams.get('month')).depts[0]; } catch { data.kpi = null; }
+    }
     return json(response, 200, data);
   }
   if (request.method === 'GET' && pathname === '/api/structure') {

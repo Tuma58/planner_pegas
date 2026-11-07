@@ -281,3 +281,18 @@
 .fd-wf-bar i { display: block; height: 100%; background: var(--accent); }
 .fd-wf-bar i.dept-toir { background: var(--toir); } .fd-wf-bar i.dept-drv { background: var(--drv); } .fd-wf-bar i.dept-log { background: var(--log); }
 .fd-wf-row.total .fd-wf-bar i { background: var(--ok); }
+/* Сквозной контроль (блок 4) */
+.fd-cases { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; }
+.fd-case { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.fd-case b { font-family: var(--mono-font); min-width: 84px; }
+.fd-case .button { margin-left: auto; padding: 2px 8px; }
+
+/* ── «◎ KPI и каскад» (Слияние, блок 4, 07.11) ── */
+.kp-rows { display: flex; flex-direction: column; gap: 9px; font-size: 12.5px; }
+.kp-rows b { font-family: var(--mono-font); font-size: 15px; }
+.kp-rows b.pos { color: var(--ok); } .kp-rows b.warn { color: var(--warn); } .kp-rows b.neg { color: var(--bad); }
+.kp-l { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
+.kp-index { display: flex; align-items: center; gap: 10px; }
+.kp-index b { font-size: 30px !important; }
+.kp-index.pos b { color: var(--ok); } .kp-index.warn b { color: var(--warn); } .kp-index.neg b { color: var(--bad); }
+.kp-index span { font-size: 12px; line-height: 1.3; }

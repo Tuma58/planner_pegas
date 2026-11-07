@@ -22,6 +22,7 @@ import { renderStructure } from './structure.js';
 import { renderGoals } from './goals.js';
 import { renderCfo } from './cfo.js';
 import { renderField } from './field.js';
+import { renderKpi } from './kpi.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -854,6 +855,11 @@ const MAIN_VIEWS = [
     const access = state.data?.user?.access;
     return Boolean(access?.views?.includes('field') || (access?.legacy && can('reports:read')));
   } },
+  // «◎ KPI и каскад» (блок 4, 07.11) — Штаб и руководители отделов.
+  { id: 'kpi', title: 'KPI и каскад', show: () => {
+    const access = state.data?.user?.access;
+    return Boolean(access?.views?.includes('kpi') || (access?.legacy && can('reports:read')));
+  } },
   { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
 ];
 
@@ -871,7 +877,7 @@ const NAV_GROUPS = [
   // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
   // блоков. Ниже — рабочие экраны Штаба.
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo'] },
+    { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi'] },
     { title: 'Работа Штаба', views: ['boss', 'staff', 'expenses'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
@@ -885,6 +891,7 @@ const NAV_GROUPS = [
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
   field: ['◉', 'Поле управления отдела: коэффициент, потери, стыки, очереди, люди, деньги'],
+  kpi: ['◎', 'Каскад, два KPI отдела, сквозной контроль соседа, KPI должностей'],
   cfo: ['₽', 'Затраты по центрам ответственности, ₽ на машино-день, управляемые потери'],
   goals: ['◉', 'Миссия, цели направления и задачи отделов — на живых показателях'],
   structure: ['◫', 'Отделы, группы и должности: штат, факт, вакансии, паспорта'],
@@ -919,7 +926,7 @@ function viewAllowed(id) {
   const access = state.data?.user?.access;
   return !access || access.legacy || access.views.includes(id);
 }
-const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo'];
+const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];
 // У области «всё направление» поле — «Поле направления» (Э2, 07.11).
 function viewTitle(view) {
   const access = state.data?.user?.access;
@@ -1060,6 +1067,8 @@ function renderMain() {
     });
   } else if (state.view === 'field') {
     renderField(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'kpi') {
+    renderKpi(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'cfo') {
     renderCfo(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'goals') {

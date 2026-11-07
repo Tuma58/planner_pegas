@@ -75,6 +75,10 @@ function renderGeneral() {
       <label class="field">Цель среднесуточного пробега, км/сут на машину
         <input id="dailyKmTarget" type="number" min="0" step="10" value="${goals.kmDay}"></label>
       <label class="field">Списочный парк, ТС<input id="fleetTarget" type="number" min="0" step="1" value="${goals.fleet}"></label>
+      <label class="field">Вес своего KPI, % <small class="muted">остальное — сквозной контроль соседа (среда СТ: 70–80 / 20–30)</small>
+        <input id="kpiOwnSharePct" type="number" min="0" max="100" step="5" value="${goals.kpiOwnPct}"></label>
+      <label class="field">Сигнал на стыке вовремя, ч <small class="muted">цель бдительности: от возникновения случая до «⚑ Сигнал»</small>
+        <input id="signalTargetHours" type="number" min="0" step="0.5" value="${goals.signalTargetH}"></label>
       <label class="field">Норматив ФОТ управления, % выручки <small class="muted">пусто — не задан (блок «ФОТ»)</small>
         <input id="fotNormPct" type="number" min="0" max="100" step="0.1" value="${goals.fotPct ?? ''}"></label>
     </div>`, { span: 's12' }),
@@ -126,6 +130,7 @@ async function saveGeneral() {
       ktgTargetPct: numeric('ktgTargetPct'), kvlTargetPct: numeric('kvlTargetPct'),
       kipTargetPct: numeric('kipTargetPct'),
       goalRevenueMln: numeric('goalRevenueMln'), fleetTarget: numeric('fleetTarget'),
+      kpiOwnSharePct: numeric('kpiOwnSharePct'), signalTargetHours: numeric('signalTargetHours'),
       fotNormPct: byId('fotNormPct').value === '' ? '' : numeric('fotNormPct'),
       dailyKmTarget: numeric('dailyKmTarget'),
       insuranceAndRoadsPerKm: numeric('insuranceAndRoadsPerKm'),

@@ -13,11 +13,11 @@
 
 import { ROLE_LABELS, rolesOf } from './permissions.mjs';
 
-export const ALL_VIEWS = ['field', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+export const ALL_VIEWS = ['field', 'kpi', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
   'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
   'resource', 'fleetplan', 'remzona'];
 // «Моё поле» — первым: поле управления руководителя отдела (Э1, 07.11).
-const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo'];
+const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];
 // Уровни денег: full — выручка, планы, прогноз, претензии; rates —
 // ставки рейсов и заявок (работа логиста/планирования), без итогов
 // направления; none — без денег вовсе.
@@ -62,6 +62,7 @@ export function migrateAccess(db) {
   if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_v1'`).get()) {
     migrateFieldView(db);
     migrateColumnHead(db);
+    migrateKpiView(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -71,6 +72,7 @@ export function migrateAccess(db) {
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_v1','1')`).run();
   migrateFieldView(db);
   migrateColumnHead(db);
+  migrateKpiView(db);
 }
 
 // Уточнение 07.11: четыре руководителя — направления, логистики, ремзоны
@@ -88,6 +90,17 @@ function migrateColumnHead(db) {
 
 // Э1 (07.11): «Моё поле» добавляется в наборы руководителей (у кого есть
 // панели отдела) и в наборы всего направления — разово, правки целы.
+// Блок 4 (07.11): панель «KPI и каскад» — тем, у кого есть панели отдела.
+function migrateKpiView(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_kpi_v1'`).get()) return;
+  for (const row of db.prepare(`SELECT id, views_json FROM role_sets`).all()) {
+    const views = parse(row.views_json, []);
+    if (views.includes('kpi') || !views.includes('structure')) continue;
+    db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, 'kpi']), row.id);
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_kpi_v1','1')`).run();
+}
+
 function migrateFieldView(db) {
   if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_field_v1'`).get()) return;
   for (const row of db.prepare(`SELECT id, views_json FROM role_sets`).all()) {

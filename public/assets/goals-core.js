@@ -10,7 +10,10 @@
 
 export const GOAL_DEFAULTS = {
   ktgTargetPct: 97, kvlTargetPct: 99, kipTargetPct: 99,
-  goalRevenueMln: 175, dailyKmTarget: 500, fleetTarget: 128, fotNormPct: null
+  goalRevenueMln: 175, dailyKmTarget: 500, fleetTarget: 128, fotNormPct: null,
+  // Блок 4 «KPI и каскад»: вес своего KPI (остальное — контроль соседа,
+  // коридор среды 70–80 / 20–30) и цель «сигнал вовремя», часов.
+  kpiOwnSharePct: 75, signalTargetHours: 2
 };
 
 const pick = (value, fallback) =>
@@ -27,6 +30,8 @@ export function directionGoals(calculation = {}) {
     revenueMln: pick(c.goalRevenueMln, GOAL_DEFAULTS.goalRevenueMln),
     kmDay: pick(c.dailyKmTarget, GOAL_DEFAULTS.dailyKmTarget),
     fleet: pick(c.fleetTarget, GOAL_DEFAULTS.fleetTarget),
-    fotPct: pick(c.fotNormPct, GOAL_DEFAULTS.fotNormPct)
+    fotPct: pick(c.fotNormPct, GOAL_DEFAULTS.fotNormPct),
+    kpiOwnPct: pick(c.kpiOwnSharePct, GOAL_DEFAULTS.kpiOwnSharePct),
+    signalTargetH: pick(c.signalTargetHours, GOAL_DEFAULTS.signalTargetHours)
   };
 }

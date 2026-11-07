@@ -10,6 +10,7 @@ import { CATEGORY_CFO_SEED, EXPENSE_CATEGORY_SEED } from './expenses.mjs';
 import { migrateOrgStructure } from './structure.mjs';
 import { migrateGoals } from './goals.mjs';
 import { migrateAccess } from './access.mjs';
+import { migrateSignals } from './signals.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -1428,6 +1429,7 @@ function migrateColumns(db) {
   migrateOrgStructure(db);
   migrateGoals(db);
   migrateAccess(db);
+  migrateSignals(db);
   // «Продажи» → «Планирование» (решение руководителя 05.11): область
   // инициатив проекта «160 млн» хранится текстом — разовый перенос.
   if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='sales_rename_v1'`).get()) {

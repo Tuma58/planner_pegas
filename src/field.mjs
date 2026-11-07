@@ -58,12 +58,21 @@ export function fieldLive(db, dept, at = nowIso()) {
   const joints = JOINTS.map(joint => {
     const base = { ...joint, side: joint.from === dept ? 'out' : joint.to === dept ? 'in' : null };
     if (joint.pending) return { ...base, count: null };
-    const list = joint.key === 'toir_drv'
-      ? fromRepair.map(row => ({ plate: row.plate, hours: hoursSince(row.starts_at) }))
-      : idle.map(row => ({ plate: row.plate, hours: row.idleH }));
+    // Случаи журнала сквозного контроля (блок 4): у каждого — сигнал
+    // контролёра и принятие владельцем; пока детектор не открыл случай
+    // (первый тик), показываем сырой список условия.
+    const cases = db.prepare(`SELECT * FROM joint_signals WHERE joint_key=? AND closed_at IS NULL
+      ORDER BY signaled_at IS NOT NULL, opened_at`).all(joint.key);
+    const list = cases.length ? cases.map(row => ({ id: row.id, plate: row.plate, hours: hoursSince(row.opened_at),
+      signaledAt: row.signaled_at, signaledBy: row.signaled_by_name, acceptedAt: row.accepted_at, acceptedBy: row.accepted_by_name }))
+      : joint.key === 'toir_drv'
+        ? fromRepair.map(row => ({ plate: row.plate, hours: hoursSince(row.starts_at) }))
+        : idle.map(row => ({ plate: row.plate, hours: row.idleH }));
     const hours = list.map(row => row.hours).filter(Number.isFinite);
     return { ...base, count: list.length, maxH: hours.length ? Math.round(Math.max(...hours)) : null,
-      items: list.slice(0, 8) };
+      waiting: list.filter(row => row.id && !row.signaledAt).length,
+      signaled: list.filter(row => row.signaledAt && !row.acceptedAt).length,
+      items: list.slice(0, 12) };
   }).filter(joint => dept === 'staff' || joint.side);
   const queues = [];
   if (dept === 'log' || dept === 'staff') {
