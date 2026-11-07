@@ -57,6 +57,7 @@ import { accessOf, assignRoleSets, broadcastTextFor, roleSets, stripOrders, stri
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
+import { RELEASE_ITEMS, releaseBoard, techFail, techPass } from './release.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -15239,6 +15240,42 @@ async function api(request, response, url) {
       ? url.searchParams.get('from') : `${to.slice(0, 7)}-01`;
     if (to < from) return errorJson(response, 422, 'Период задан неверно');
     return json(response, 200, cfoReportFor(scope, from, to));
+  }
+  // ── 🛫 Выпуск на линию (П2, 07.11) — контролёр техсостояния и Эксплуатация ──
+  if (pathname === '/api/release' || pathname.startsWith('/api/release/')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    const canRead = hasPermission(user, 'release:write') || (access.legacy ? hasPermission(user, 'users:write') : access.views.includes('release'));
+    if (!canRead) return errorJson(response, 403, '«Выпуск» — рабочее место эксплуатации');
+    if (request.method === 'GET' && pathname === '/api/release') {
+      return json(response, 200, { ...releaseBoard(db), items_meta: RELEASE_ITEMS,
+        canWrite: hasPermission(user, 'release:write') });
+    }
+    if (request.method === 'POST' && !hasPermission(user, 'release:write')) {
+      return errorJson(response, 403, 'Техконтроль отмечает контролёр техсостояния или эксплуатация');
+    }
+    const name = user.full_name || user.username;
+    if (request.method === 'POST' && pathname === '/api/release/tech') {
+      const body = await readJson(request);
+      if (body.result === 'ok') {
+        const result = techPass(db, body, name);
+        if (!result.ok) return errorJson(response, 422, result.error);
+        audit(db, user, 'tech_ok', 'vehicle', body.vehicleId, { tripId: body.tripId }, requestIp(request));
+        return json(response, 200, { ok: true });
+      }
+      const result = techFail(db, body, name, (() => { try { return canOdometerKm(body.vehicleId); } catch { return null; } })());
+      if (!result.ok) return errorJson(response, 422, result.error);
+      audit(db, user, 'tech_fail', 'vehicle', body.vehicleId, { defect: body.defect, repairOrderId: result.repairOrderId }, requestIp(request));
+      // Неисправный ТС к выпуску не допускается: ремзона и эксплуатация узнают сразу.
+      const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(body.vehicleId)?.plate || '';
+      notify('mechanic', `🛫 Выпуск: ${plate} не прошёл техконтроль — ${String(body.defect).trim()}. ${result.existed ? 'Дефект добавлен к открытому заказ-наряду' : 'Заведён заезд в Ремзону'} (${name}).`,
+        'vehicle', body.vehicleId, { category: 'other' });
+      notify('resource', `🛫 Выпуск: ${plate} не допущен на линию (техконтроль) — нужна замена или перенос рейса.`,
+        'vehicle', body.vehicleId, { category: 'other' });
+      return json(response, 200, { ok: true, repairOrderId: result.repairOrderId });
+    }
+    return errorJson(response, 404, 'Нет такого действия выпуска');
   }
   // ── 🚧 КПП стоянки базы (Пенза) — рабочее место охранника-парковщика (07.11) ──
   // Пишет — право gate:write (охранник, вошедший по своей учётке);

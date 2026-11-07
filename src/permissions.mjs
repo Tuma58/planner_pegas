@@ -10,20 +10,23 @@ export const ROLE_LABELS = {
   manager: 'Руководитель',
   mechanic: 'Механик',
   // Охранник-парковщик (журнал КПП стоянки, 07.11): пост на базе в Пензе.
-  guard: 'Охранник-парковщик'
+  guard: 'Охранник-парковщик',
+  // Контролёр техсостояния (экран «Выпуск», 07.11): техконтроль перед
+  // выпуском, «В ремонт» при неисправности.
+  techctl: 'Контролёр техсостояния'
 };
 
 const ALL = [
   'planner:read', 'trips:write', 'trip-status:write', 'orders:write',
   'fleet:write', 'payments:write', 'reports:read', 'customers:read',
   'settings:write', 'users:write', 'integration:write', 'audit:read',
-  'shifts:write', 'staff:write', 'expenses:write', 'gate:write'
+  'shifts:write', 'staff:write', 'expenses:write', 'gate:write', 'release:write'
 ];
 
 export const ROLE_PERMISSIONS = {
   admin: ALL,
   logist: ['planner:read', 'trips:write', 'orders:read', 'customers:read'],
-  resource: ['planner:read', 'fleet:write', 'customers:read'],
+  resource: ['planner:read', 'fleet:write', 'customers:read', 'release:write'],
   dispatcher: ['planner:read', 'trip-status:write', 'customers:read'],
   sales: ['planner:read', 'orders:write', 'customers:read'],
   // Учёт затрат: доступ ПЕРСОНАЛЬНЫЙ (решение 03.11 «пока только у
@@ -39,7 +42,9 @@ export const ROLE_PERMISSIONS = {
   mechanic: ['planner:read', 'fleet:write'],
   // КПП (07.11): въезд/выезд в журнале — факт рейса НЕ ставит, только
   // подсказывает диспетчеру (решение руководителя).
-  guard: ['gate:write']
+  guard: ['gate:write'],
+  // «Выпуск» (П2, 07.11): отметка техконтроля в путевой лист и «В ремонт».
+  techctl: ['release:write']
 };
 
 export function permissionsFor(role) {

@@ -24,6 +24,7 @@ import { renderCfo } from './cfo.js';
 import { renderField } from './field.js';
 import { renderKpi } from './kpi.js';
 import { renderGate } from './gate.js';
+import { renderRelease } from './release.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -866,6 +867,11 @@ const MAIN_VIEWS = [
     const access = state.data?.user?.access;
     return Boolean(can('gate:write') || access?.views?.includes('gate') || (access?.legacy && can('users:write')));
   } },
+  // «🛫 Выпуск» (П2, 07.11) — контролёр техсостояния и Эксплуатация.
+  { id: 'release', title: 'Выпуск', show: () => {
+    const access = state.data?.user?.access;
+    return Boolean(can('release:write') || access?.views?.includes('release') || (access?.legacy && can('users:write')));
+  } },
   { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
 ];
 
@@ -890,13 +896,14 @@ const NAV_GROUPS = [
     { title: 'Назначение', views: ['logist'] },
     { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
   { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
-    { title: '', views: ['resource', 'fleetplan'] }] },
+    { title: '', views: ['release', 'resource', 'fleetplan'] }] },
   { dept: 'toir', title: 'ТОиР', coef: 'КТГ', sub: [
     { title: '', views: ['remzona'] }] }
 ];
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
   field: ['◉', 'Поле управления отдела: коэффициент, потери, стыки, очереди, люди, деньги'],
+  release: ['🛫', 'Выпуск на линию: чек-лист выхода, техконтроль, «В ремонт»'],
   gate: ['🚧', 'Журнал КПП стоянки базы: въезд и выезд одной кнопкой'],
   kpi: ['◎', 'Каскад, два KPI отдела, сквозной контроль соседа, KPI должностей'],
   cfo: ['₽', 'Затраты по центрам ответственности, ₽ на машино-день, управляемые потери'],
@@ -1091,6 +1098,8 @@ function renderMain() {
     });
   } else if (state.view === 'field') {
     renderField(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'release') {
+    renderRelease(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'gate') {
     renderGate(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'kpi') {

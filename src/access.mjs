@@ -13,7 +13,7 @@
 
 import { ROLE_LABELS, rolesOf } from './permissions.mjs';
 
-export const ALL_VIEWS = ['field', 'kpi', 'gate', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+export const ALL_VIEWS = ['field', 'kpi', 'gate', 'release', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
   'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
   'resource', 'fleetplan', 'remzona'];
 // «Моё поле» — первым: поле управления руководителя отдела (Э1, 07.11).
@@ -47,6 +47,7 @@ const SEED = [
   ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona'], ['mechanic'], 'none', ''],
   ['accountant', 'Бухгалтерия', '', ['gantt'], ['accountant'], 'rates', ''],
   ['guard', 'Охранник-парковщик', 'staff', ['gate'], ['guard'], 'none', ''],
+  ['drv_tech', 'Контролёр техсостояния', 'drv', ['release'], ['techctl'], 'none', ''],
   ['admin', 'Администратор', 'all', ALL_VIEWS, ['admin'], 'full', 'all']
 ];
 
@@ -65,6 +66,7 @@ export function migrateAccess(db) {
     migrateColumnHead(db);
     migrateKpiView(db);
     migrateGuard(db);
+    migrateRelease(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -76,6 +78,7 @@ export function migrateAccess(db) {
   migrateColumnHead(db);
   migrateKpiView(db);
   migrateGuard(db);
+  migrateRelease(db);
 }
 
 // Уточнение 07.11: четыре руководителя — направления, логистики, ремзоны
@@ -107,11 +110,12 @@ function migrateKpiView(db) {
 // КПП (07.11): роль «Охранник-парковщик» (код guard) и экран «КПП» у
 // Штаба. Код guard добавляется в CHECK роли users пересозданием таблицы —
 // как при вводе роли «Механик».
-function migrateGuard(db) {
+// Новый код роли в CHECK users — пересозданием таблицы по её же схеме.
+function ensureRoleCode(db, code) {
   const usersSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='users'`).get()?.sql || '';
-  if (usersSql && !usersSql.includes("'guard'")) {
+  if (usersSql && !usersSql.includes(`'${code}'`)) {
     const rebuilt = usersSql.replace(/CREATE TABLE\s+"?users"?/i, 'CREATE TABLE users_new')
-      .replace(/role IN \(/i, "role IN ('guard',");
+      .replace(/role IN \(/i, `role IN ('${code}',`);
     db.exec(`PRAGMA foreign_keys=OFF;
       BEGIN IMMEDIATE;
       ${rebuilt};
@@ -121,6 +125,10 @@ function migrateGuard(db) {
       COMMIT;
       PRAGMA foreign_keys=ON;`);
   }
+}
+
+function migrateGuard(db) {
+  ensureRoleCode(db, 'guard');
   if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_guard_v1'`).get()) return;
   db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
     VALUES('guard','Охранник-парковщик','staff','["gate"]','["guard"]','none','',11)`).run();
@@ -129,6 +137,21 @@ function migrateGuard(db) {
     if (!views.includes('gate')) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, 'gate']), row.id);
   }
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_guard_v1','1')`).run();
+}
+
+// «Выпуск» (П2, 07.11): роль «Контролёр техсостояния» (код techctl) и
+// экран у Эксплуатации и Штаба.
+function migrateRelease(db) {
+  ensureRoleCode(db, 'techctl');
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_release_v1'`).get()) return;
+  db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
+    VALUES('drv_tech','Контролёр техсостояния','drv','["release"]','["techctl"]','none','',9)`).run();
+  for (const row of db.prepare(`SELECT id, views_json FROM role_sets
+      WHERE id IN ('dir_head','admin','drv_head','drv_column','drv_acc')`).all()) {
+    const views = parse(row.views_json, []);
+    if (!views.includes('release')) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, 'release']), row.id);
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_release_v1','1')`).run();
 }
 
 function migrateFieldView(db) {

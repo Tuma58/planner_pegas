@@ -12,6 +12,7 @@ import { migrateGoals } from './goals.mjs';
 import { migrateAccess } from './access.mjs';
 import { migrateSignals } from './signals.mjs';
 import { migrateGate } from './gate.mjs';
+import { migrateRelease } from './release.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -1432,6 +1433,7 @@ function migrateColumns(db) {
   migrateAccess(db);
   migrateSignals(db);
   migrateGate(db);
+  migrateRelease(db);
   // «Продажи» → «Планирование» (решение руководителя 05.11): область
   // инициатив проекта «160 млн» хранится текстом — разовый перенос.
   if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='sales_rename_v1'`).get()) {

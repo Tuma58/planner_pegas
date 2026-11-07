@@ -82,3 +82,15 @@
 .mon-page .mon-map-sec { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .mon-page .mon-map-sec > #monMap { flex: 1; min-height: 0; border-radius: 0; }
 .mon-page #monKpis .metric.clickable { user-select: none; }
+
+/* ── «🛫 Выпуск» (П2, 07.11) ── */
+.rl-table .rl-c { text-align: center; width: 64px; font-size: 11px; }
+.rl-ok { color: var(--ok); } .rl-no { color: var(--bad); }
+.rl-table tr.rl-late td { background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
+.rl-table tr.rl-risk td { background: color-mix(in srgb, var(--warn) 7%, var(--card)); }
+.rl-acts { white-space: nowrap; text-align: right; }
+.rl-acts .button { margin-left: 4px; }
+.rl-table td, .rl-table th { padding: 6px 8px; }
+.rl-table .bi-tag { white-space: nowrap; }
+.rl-acts { width: 1%; }
+.rl-acts .button { display: block; width: 100%; margin: 2px 0; }
