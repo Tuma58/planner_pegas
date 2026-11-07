@@ -70,6 +70,9 @@ import { dailyOpsText, dailySeries, lateUnloadByDay, opsReportData, renderOpsRep
 import { renderBriefDeckPdf } from './brief-deck-pdf.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
+// Местное время точек (этап 2 поясов, 07.11): один источник правды с
+// фронтом — модуль без браузерных зависимостей, импортируется и сервером.
+import { localTimeHint } from '../public/assets/tz.js';
 import {
   DISPATCH_STEPS, applyDispatchStep, chainAutoClose, checkStuckUnloading, controlSnapshot,
   ensureTripStops, gpsAutoMarks, syncTrailerTrackerLinks,
@@ -2715,12 +2718,15 @@ function driverAssignmentText(trip) {
   const stops = db.prepare(`SELECT kind, point, planned_arrival FROM trip_stops
     WHERE trip_id=? ORDER BY seq`).all(trip.id);
   const mskTime = iso => iso ? mskStamp(iso) : '—';
+  // Местное время точек (этап 2 поясов, 07.11): водитель в Сибири живёт
+  // по местным часам — рядом с планом МСК подсказка «18:00 местн. (+4)».
   const lines = [`🚚 Задание на рейс${trip.order_no ? ` (заказ № ${trip.order_no})` : ''}`,
     `${trip.from_point || ''} → ${trip.to_point || ''}`.trim(),
-    `Выход: ${mskTime(trip.starts_at)} (МСК)`];
+    `Выход: ${mskTime(trip.starts_at)} (МСК)${localTimeHint(trip.from_point, trip.starts_at)}`];
   for (const stop of stops) {
     lines.push(`${stop.kind === 'P' ? '📦 Погрузка' : stop.kind === 'D' ? '📥 Выгрузка' : '📍 Точка'}: `
-      + `${stop.point || '—'}${stop.planned_arrival ? ` · план ${mskTime(stop.planned_arrival)}` : ''}`);
+      + `${stop.point || '—'}${stop.planned_arrival
+        ? ` · план ${mskTime(stop.planned_arrival)}${localTimeHint(stop.point, stop.planned_arrival)}` : ''}`);
   }
   if (trip.temperature_mode) lines.push(`🌡 Режим: ${trip.temperature_mode}`);
   if (trip.body_type) lines.push(`🚛 Кузов: ${trip.body_type}`);

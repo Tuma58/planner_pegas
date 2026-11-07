@@ -1,6 +1,7 @@
 // Мини-приложение водителя «Мой рейс»: карточка рейса, этапность кнопкой,
 // прогноз прибытия. Открывается из Telegram-бота (web_app-кнопка задания).
 /* global Telegram */
+import { localTimeHint } from './tz.js';
 (() => {
   const tg = window.Telegram && Telegram.WebApp;
   const initData = tg ? tg.initData : '';
@@ -37,7 +38,9 @@
       const here = Boolean(stop.actual_arrival) && !done;
       const mark = done ? '✅' : here ? '📍' : '⬜';
       const facts = [
-        stop.actual_arrival ? `прибыл ${msk(stop.actual_arrival)}` : (stop.planned_arrival ? `план ${msk(stop.planned_arrival)} МСК` : ''),
+        stop.actual_arrival ? `прибыл ${msk(stop.actual_arrival)}`
+          : (stop.planned_arrival
+            ? `план ${msk(stop.planned_arrival)} МСК${localTimeHint(stop.point, stop.planned_arrival)}` : ''),
         stop.actual_departure ? `убыл ${msk(stop.actual_departure)}` : '',
         !stop.actual_arrival && stop.driver_eta ? `ваш прогноз ${msk(stop.driver_eta)} МСК` : ''
       ].filter(Boolean).join(' · ');
@@ -54,7 +57,8 @@
         <h1>Рейс ${trip.orderNo ? '№' + esc(trip.orderNo) : ''}</h1>
         <div class="muted">${esc(state.driver.name)} · ${esc(trip.plate)}${trip.trailer ? ' + ' + esc(trip.trailer) : ''}${trip.temperature ? ' · 🌡 ' + esc(trip.temperature) : ''}</div>
         <div class="route">${esc(trip.from)} → ${esc(trip.to)}</div>
-        <div class="muted">погрузка ${msk(trip.startsAt)} МСК · выгрузка план ${msk(trip.endsAt)} МСК</div>
+        <div class="muted">погрузка ${msk(trip.startsAt)} МСК${localTimeHint(trip.from, trip.startsAt)}
+          · выгрузка план ${msk(trip.endsAt)} МСК${localTimeHint(trip.to, trip.endsAt)}</div>
       </div>
       <div class="card">${stopsHtml}</div>
       ${state.next ? `<button class="bigbtn" id="stepBtn"
