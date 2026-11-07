@@ -77,7 +77,8 @@ import {
   ensureTripStops, gpsAutoMarks, syncTrailerTrackerLinks,
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
-  stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia, tripDelayMs
+  noTrailerWarning, stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia,
+  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
@@ -386,7 +387,9 @@ function listVehicles() {
     rates = JSON.parse(db.prepare(`SELECT value FROM app_meta
       WHERE key='driver_run_rate'`).get()?.value || '{}').rates || {};
   } catch { /* кэш ещё не собран */ }
-  return db.prepare(`SELECT v.*,vt.name type_name,z.name zone_name,z.color zone_color
+  return db.prepare(`SELECT v.*,vt.name type_name,z.name zone_name,z.color zone_color,
+      (SELECT tr.model FROM trailers tr
+        WHERE tr.plate=TRIM(COALESCE(v.trailer_plate,''))) trailer_model
     FROM vehicles v JOIN vehicle_types vt ON vt.id=v.type_id
     LEFT JOIN zones z ON z.id=v.zone_id ORDER BY v.plate`).all()
     .map(vehicle => ({ ...vehicle, run_rate: rates[vehicle.plate] || null }));
@@ -766,6 +769,35 @@ function notifyUserByName(fullName, text, entity = null, entityId = null) {
     }
   } catch { /* не критично */ }
   return true;
+}
+
+// Авто-подрезка хвоста «без водителя»/«пересменки» фактом выхода машины
+// на линию (решение руководителя 06.11, разбор грязных диспозиций: 280
+// машино-дней пересечений за месяц — диспозиции ставят с запасом, машина
+// уезжает раньше, хвост не снимают). Факт ставит человек (отметка выезда
+// диспетчером) — автоматика лишь согласует данные с ним; след остаётся
+// в аудите и уведомлением ресурснику. Ремонт не трогаем: его закрывает
+// ремзона через запрос выпуска.
+function trimIdleDispositions(vehicleId, atIso, user, source) {
+  const active = db.prepare(`SELECT id, kind, starts_at, ends_at FROM vehicle_dispositions
+    WHERE vehicle_id=? AND kind IN ('no_driver','shift')
+      AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+    .all(vehicleId, atIso, atIso);
+  const toTrim = dispositionsToTrim(active, atIso);
+  if (!toTrim.length) return;
+  const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(vehicleId)?.plate || '';
+  const labels = { no_driver: 'без водителя', shift: 'пересменка' };
+  const short = value => String(value).slice(0, 16).replace('T', ' ');
+  for (const dispo of toTrim) {
+    db.prepare(`UPDATE vehicle_dispositions SET ends_at=?, updated_by=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(atIso, user?.id || null, dispo.id);
+    audit(db, user || null, 'dispo_autotrim', 'disposition', dispo.id,
+      { kind: dispo.kind, was: dispo.ends_at, now: atIso, source }, '');
+    notify('resource', `✂ Диспозиция «${labels[dispo.kind]}» по ${plate} подрезана до ` +
+      `${short(atIso)} UTC — ${source}, а диспозиция стояла до ${short(dispo.ends_at)}. ` +
+      'Хвост снят автоматически; если машина вышла ошибочно — поправьте в Ресурсе',
+      'vehicle', vehicleId);
+  }
 }
 
 // ── Объявления на табло ──
@@ -6511,7 +6543,7 @@ function runGreenAssign() {
           AND kind<>'reserve' AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
           .get(vehicle.id, order.window_to || order.window_from, order.window_from);
         if (blocked) continue;
-        const tripId = assignOrderCore(order, vehicle, { id: null }, {});
+        const { tripId } = assignOrderCore(order, vehicle, { id: null }, {});
         db.prepare(`UPDATE trips SET auto_assigned=1 WHERE id=?`).run(tripId);
         applyDispatchStep(db, tripId, 'logist_confirm', null);
         db.prepare(`UPDATE assign_drafts SET outcome='accepted', override_reason='auto',
@@ -7589,16 +7621,26 @@ function parkReportData(from, to) {
     }
     let ghostH = 0;
     for (const [vid, downs] of downIv) {
-      const line = lineTripsIv.get(vid);
+      // Вся линия, включая перегоны (05.11): перегон поверх закрытой
+      // диспозиции — та же грязь, что рейс; без возврата этих часов
+      // октябрьский КИП по структуре вылезал за 100%.
+      const line = lineIv.get(vid);
       if (line) ghostH += intervalOverlapH(line, downs);
     }
     const ktg = Math.max(0, 1 - rem / adi);
-    const kvl = Math.min(1, line / Math.max(1, adi - rem));
-    // КИП — определение руководителя (09.10, уточнено): база — ФОНД
-    // ЭКИПАЖА: время, пока машина укомплектована водителем (от выхода
+    // ФОНД ЭКИПАЖА: время, пока машина укомплектована водителем (от выхода
     // на линию до пересменки), минус ТОЛЬКО ремонты; через диспозиции:
     // календарь − «без водителя» − «пересменка» − «выведена» − ремонт.
     const crewFund = Math.max(1, adi - rem - noDrv - outH + ghostH);
+    // Каскад по «Рабочей среде СТ» (решение руководителя 05.11, сверка с
+    // формулами структуры): КВЛ = укомплектованность исправного парка
+    // (фонд экипажа / исправные часы) — потери КВЛ: без водителя,
+    // пересменка, выведена; КИП = часы С ЗАДАНИЕМ (линия рейсов и
+    // перегонов) от укомплектованных — потеря КИП: простой
+    // укомплектованной машины без задания. Тождество: КТГ×КВЛ×КИП =
+    // линия/календарь. Прежний КИП «работа экипажа от потолка 67%»
+    // остался полем kipRaw/kipCeiling и в водопаде фонда.
+    const kvl = Math.min(1, crewFund / Math.max(1, adi - rem));
     // Числитель — РАБОТА ЭКИПАЖА (уточнение руководителя 09.10,
     // вариант «последовательно определению»): в 67% входят вождение,
     // погрузки/выгрузки (включая крайние — нормативом), перегоны;
@@ -7606,15 +7648,14 @@ function parkReportData(from, to) {
     // водопаде фонда, из КИП исключены (иначе отдых считался бы
     // дважды: тут и в 33% потолка).
     const workH = fund.work;
+    // kipRaw — прежний измеритель «работа экипажа от фонда» (норма — потолок
+    // kipCeilingPct): остаётся справочным для водопада и профиля водителей.
     const kipRaw = Math.min(1, workH / crewFund);
     const fundWait = Math.max(0, crewFund - fund.work - fund.restRoad
       - fund.loadOver - fund.unloadOver - transferNetH);
-    // КИП — от ПОТОЛКА (решение руководителя 09.10): физический максимум
-    // «под грузом» ~67% времени линии (погрузки/выгрузки/подгоны съедают
-    // треть) — берём его за 100%. Потолок — настройка калькуляции
-    // (kipCeilingPct, 0/пусто = без нормировки), не зашивка.
     const ceiling = Number(settingsObject(db).calculation?.kipCeilingPct ?? 67) / 100;
-    const kip = ceiling > 0 ? Math.min(1, kipRaw / ceiling) : kipRaw;
+    // КИП каскада — по структуре: часы с заданием от укомплектованных.
+    const kip = Math.min(1, line / crewFund);
     return { from: a, to: b, days, fleet, adi,
       rev: Math.round(rev), trips: n,
       lineH: Math.round(line), prodH: Math.round(prod), custH: Math.round(cust),
@@ -10619,7 +10660,31 @@ async function api(request, response, url) {
     invalidateDraftsForVehicle(vehicle.id, order.id);
     queueOutbox(db, 'trips', tripId, order.trip_id ? 'update' : 'create', tripOutboxPayload(tripId),
       integrationPublic().writePolicy === 'automatic');
-    return tripId;
+    // Мягкий сигнал «транзит не помещается в окно клиента» (05.11, разбор
+    // №6146): срок считается выученным транзитом и может честно уехать за
+    // окно — тогда продажи договариваются о новом окне, логист может
+    // сдвинуть старт. Уведомление после успешного назначения, не блокирует.
+    const windowWarning = transitWindowWarning({ starts_at: startsAt, ends_at: endsAt },
+      order.window_to);
+    // Решение руководителя 05.11: назначавшему человеку сигнал показывается
+    // ВСПЛЫВАЮЩИМ ОКНОМ на месте (windowWarning в ответе API), чат не
+    // дёргаем. В чат продаж и логиста уведомление уходит только когда
+    // человека нет — автоназначение зелёного коридора.
+    if (windowWarning && !user?.id) {
+      const text = `🤝 Транзит не помещается в окно клиента: заявка №${order.order_no || '—'} ` +
+        `(${order.from_point || '—'} → ${order.to_point || '—'}), ${vehicle.plate} — ${windowWarning}`;
+      notify('sales', text, 'trip', tripId, { category: 'transit_window' });
+      notify('logist', text, 'trip', tripId, { category: 'transit_window' });
+    }
+    // Сторож «рейс без прицепа» (05.11): тип кузова живёт на прицепе —
+    // сцепка без прицепа возит рейс с непроверенным типом. Назначившему —
+    // модалкой (поле в ответе), автоназначению — в чат логиста.
+    const trailerWarning = noTrailerWarning(vehicle);
+    if (trailerWarning && !user?.id) {
+      notify('logist', `${trailerWarning} (заявка №${order.order_no || '—'})`, 'trip', tripId,
+        { category: 'no_trailer' });
+    }
+    return { tripId, windowWarning, trailerWarning };
   }
   function confirmAssigned(tripId, order, vehicle, user) {
     applyDispatchStep(db, tripId, 'logist_confirm', user.id);
@@ -10665,7 +10730,7 @@ async function api(request, response, url) {
     const previousTrip = order.trip_id
       ? db.prepare('SELECT auto_assigned, vehicle_id, order_no FROM trips WHERE id=?').get(order.trip_id)
       : null;
-    const tripId = assignOrderCore(order, vehicle, user,
+    const { tripId, windowWarning, trailerWarning } = assignOrderCore(order, vehicle, user,
       { distanceKm: body.distanceKm, dispoOverrideReason: body.dispoOverrideReason });
     if (previousTrip?.auto_assigned && previousTrip.vehicle_id !== vehicle.id) {
       reportAutoAssignIssue(`на рейсе №${previousTrip.order_no || '?'} человек заменил ТС `
@@ -10688,7 +10753,8 @@ async function api(request, response, url) {
         ...(draft && draft.vehicle_id !== vehicle.id
           ? { recommendedVehicleId: draft.vehicle_id, overrideReason } : {}) },
       requestIp(request));
-    return json(response, 201, { tripId });
+    return json(response, 201, { tripId, ...(windowWarning ? { windowWarning } : {}),
+      ...(trailerWarning ? { trailerWarning } : {}) });
   }
 
   // ── Конструктор маршрутов: кольцевые цепочки заявок от базы до базы ──
@@ -10738,6 +10804,7 @@ async function api(request, response, url) {
     // после предыдущей и не раньше своего окна.
     let cursor = routeRow.planned_start ? Date.parse(routeRow.planned_start) : 0;
     const tripIds = [];
+    const windowWarnings = [];
     for (const order of routeOrders) {
       if (order.stage >= 2 && order.trip_id) {
         const existing = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(order.trip_id);
@@ -10745,7 +10812,12 @@ async function api(request, response, url) {
         continue;
       }
       const startsAt = new Date(Math.max(Date.parse(order.window_from), cursor || 0)).toISOString();
-      const tripId = assignOrderCore(order, vehicle, user, { startsAt });
+      const { tripId, windowWarning, trailerWarning } = assignOrderCore(order, vehicle, user, { startsAt });
+      if (windowWarning) windowWarnings.push(`🤝 №${order.order_no || '—'}: ${windowWarning}`);
+      // Сцепка у маршрута одна — предупреждение о прицепе не повторяем.
+      if (trailerWarning && !windowWarnings.some(w => w.startsWith('🔗'))) {
+        windowWarnings.unshift(trailerWarning);
+      }
       confirmAssigned(tripId, order, vehicle, user);
       const created = db.prepare('SELECT ends_at FROM trips WHERE id=?').get(tripId);
       cursor = Date.parse(created.ends_at);
@@ -10755,7 +10827,8 @@ async function api(request, response, url) {
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(vehicle.id, user.id, routeRow.id);
     audit(db, user, 'assign', 'route', routeRow.id,
       { vehicleId: vehicle.id, trips: tripIds.length }, requestIp(request));
-    return json(response, 201, { tripIds });
+    return json(response, 201, { tripIds,
+      ...(windowWarnings.length ? { windowWarnings } : {}) });
   }
   // Общий спот-запрос (из Ганта): найти груз на порожний подгон сцепки.
   if (request.method === 'POST' && pathname === '/api/spot-request') {
@@ -11177,11 +11250,18 @@ async function api(request, response, url) {
     const createTrailer = canonTrailerPlate(body.trailerPlate || '');
     const createTypeId = trailerDrivenTypeId(createTrailer, body.typeId);
     const createStatus = body.status || 'work';
-    db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status,out_since)
-      VALUES(?,?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO vehicles(id,plate,trailer_plate,type_id,driver_name,zone_id,status,out_since,
+      model) VALUES(?,?,?,?,?,?,?,?,?)`).run(
       id, body.plate.trim(), createTrailer, createTypeId, body.driverName || '',
       body.zoneId || null, createStatus,
-      createStatus === 'out' ? String(body.outSince || new Date().toISOString()).slice(0, 10) : null);
+      createStatus === 'out' ? String(body.outSince || new Date().toISOString()).slice(0, 10) : null,
+      String(body.model || '').trim() || null);
+    // Модель прицепа живёт на прицепе (как тип): запись в справочнике уже
+    // создана trailerDrivenTypeId — дописываем модель.
+    if (createTrailer && String(body.trailerModel || '').trim()) {
+      db.prepare(`UPDATE trailers SET model=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+        .run(String(body.trailerModel).trim(), createTrailer);
+    }
     audit(db, user, 'create', 'vehicle', id, body, requestIp(request));
     return json(response, 201, { id });
   }
@@ -11216,13 +11296,21 @@ async function api(request, response, url) {
       ? String(body.outSince || current.out_since || new Date().toISOString()).slice(0, 10)
       : null;
     db.prepare(`UPDATE vehicles SET plate=?,trailer_plate=?,type_id=?,driver_name=?,zone_id=?,status=?,
-      unavailable_from=?,unavailable_to=?,out_since=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      unavailable_from=?,unavailable_to=?,out_since=?,model=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       body.plate ?? current.plate, patchTrailer,
       patchTypeId, body.driverName ?? current.driver_name,
       body.zoneId ?? current.zone_id, patchStatus,
       body.unavailableFrom ?? current.unavailable_from, body.unavailableTo ?? current.unavailable_to,
       patchOutSince,
+      body.model !== undefined ? (String(body.model).trim() || null) : current.model,
       match[0]);
+    // Модель прицепа — на прицепе (как тип): правка из формы ТС переучивает
+    // справочник, при перецепке модель уедет вместе с прицепом.
+    if (body.trailerModel !== undefined && patchTrailer) {
+      db.prepare(`UPDATE trailers SET model=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+        .run(String(body.trailerModel).trim() || null, patchTrailer);
+    }
     // Смена водителя из карточки/справочника ТС синхронизирует справочник
     // водителей: имя ищется без учёта регистра, новый — создаётся и
     // закрепляется, прежний водитель этой сцепки открепляется.
@@ -11884,7 +11972,7 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/trailers-registry') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
-    const list = db.prepare(`SELECT tr.plate, tr.out_since, vt.name type_name,
+    const list = db.prepare(`SELECT tr.plate, tr.out_since, tr.model, vt.name type_name,
         (SELECT v.plate FROM vehicles v WHERE TRIM(COALESCE(v.trailer_plate,''))=tr.plate
            AND v.status<>'out' LIMIT 1) holder_plate
       FROM trailers tr LEFT JOIN vehicle_types vt ON vt.id=tr.type_id
@@ -11907,6 +11995,11 @@ async function api(request, response, url) {
       // Сцепка-держатель выравнивается сразу, не ждёт ежечасный сторож.
       db.prepare(`UPDATE vehicles SET type_id=?, updated_at=CURRENT_TIMESTAMP
         WHERE TRIM(COALESCE(trailer_plate,''))=? AND status<>'out'`).run(typeRow.id, plate);
+      audit(db, user, 'update', 'trailer', plate, body, requestIp(request));
+    }
+    if (body.model !== undefined) {
+      db.prepare(`UPDATE trailers SET model=?, updated_at=CURRENT_TIMESTAMP WHERE plate=?`)
+        .run(String(body.model).trim() || null, plate);
       audit(db, user, 'update', 'trailer', plate, body, requestIp(request));
     }
     if (body.outSince !== undefined) {
@@ -12382,9 +12475,20 @@ async function api(request, response, url) {
     // 05.10): машина уже переехала — этапы закрываются сразу, задание
     // диспетчеру не создаётся (передавать водителю нечего).
     const pastFact = body.pastFact === true && endsAt.getTime() <= Date.now();
+    // Сторож «перегон поверх диспозиции»: машина числится в ремонте или
+    // без водителя, а её отправляют перегоном — создающий видит модалку
+    // (не блокирует; при подтверждённом прошлом факте выезд подрезает
+    // «без водителя»/пересменку сразу).
+    const idleDispos = db.prepare(`SELECT kind, starts_at, ends_at FROM vehicle_dispositions
+      WHERE vehicle_id=? AND kind IN ('repair','no_driver','shift','out')
+        AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+      .all(body.vehicleId, endsAt.toISOString(), startsAt.toISOString());
+    const dispoWarning = idleDispoWarning(idleDispos, startsAt.toISOString(), endsAt.toISOString());
     if (pastFact) {
       db.prepare(`UPDATE vehicle_dispositions SET departed_at=?, arrived_at=? WHERE id=?`)
         .run(startsAt.toISOString(), endsAt.toISOString(), id);
+      trimIdleDispositions(body.vehicleId, startsAt.toISOString(), user,
+        'перегон подтверждён задним числом');
     } else {
       notify('dispatcher', `🚚 Перегон порожним ${plate}: ${fromLabel || '—'} → ${target.name} ` +
         `(${purpose}). Передайте задание водителю и отметьте выезд`, 'vehicle', body.vehicleId);
@@ -12393,7 +12497,7 @@ async function api(request, response, url) {
     audit(db, user, 'create', 'transfer', id, { vehicleId: body.vehicleId, to: target.name, purpose },
       requestIp(request));
     return json(response, 201, { id, km: Number.isFinite(km) ? Math.round(km) : null,
-      endsAt: endsAt.toISOString() });
+      endsAt: endsAt.toISOString(), dispoWarning });
   }
   match = route(/^\/api\/transfers\/([^/]+)\/step$/, pathname);
   if (match && request.method === 'POST') {
@@ -12411,6 +12515,11 @@ async function api(request, response, url) {
     if (transfer[column]) return json(response, 200, { ok: true });
     db.prepare(`UPDATE vehicle_dispositions SET ${column}=?,updated_by=?,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(at, user.id, match[0]);
+    // Факт выезда перегоном: машина поехала — накрывающие «без водителя»
+    // и пересменка подрезаются до этого момента (разбор 06.11).
+    if (body.step === 'departed') {
+      trimIdleDispositions(transfer.vehicle_id, at, user, 'машина выехала перегоном');
+    }
     // Прибытие закрывает перегон фактическим временем: с этого момента сцепка
     // стоит в точке назначения и доступна для следующего задания.
     if (body.step === 'arrived') {
@@ -12810,6 +12919,12 @@ async function api(request, response, url) {
       if (statusChanged) {
         queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
           integrationPublic().writePolicy === 'automatic');
+      }
+      // Факт выхода рейса на линию подрезает накрывающие «без водителя»
+      // и пересменку (разбор 06.11): машина не может ехать и стоять разом.
+      if (body.step === 'on_line') {
+        trimIdleDispositions(trip.vehicle_id, factAt || new Date().toISOString(), user,
+          'рейс выведен на линию');
       }
       // Задание водителю уходит в Telegram (если водитель привязан) —
       // в момент отметки шага «Задание водителю».
@@ -14084,6 +14199,14 @@ async function api(request, response, url) {
             WHERE status<>'rejected' AND datetime(starts_at) < datetime(?)
               AND datetime(COALESCE(unloaded_at, ends_at)) > datetime(?)`);
           series.online = series.days.map(day => touchDay.get(addDayIso(day), day).n);
+          // Без водителя/пересменка среднесуточно — для каскада КВЛ/КИП
+          // по формулам «Рабочей среды СТ» (05.11) в PDF-колоде.
+          const noDrvDay = db.prepare(`SELECT COALESCE(SUM(julianday(MIN(ends_at, :b)) -
+              julianday(MAX(starts_at, :a))), 0) v
+            FROM vehicle_dispositions WHERE kind IN ('no_driver','shift')
+              AND starts_at < :b AND ends_at > :a`);
+          series.noDrv = series.days.map(day =>
+            +noDrvDay.get({ a: day, b: addDayIso(day) }).v.toFixed(1));
           return series;
         })(),
         planNet: Math.round(planNet),

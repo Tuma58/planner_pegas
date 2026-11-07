@@ -117,6 +117,8 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
         ? `<b>${escapeHtml(sub.driver_name || '🚫 водителя нет (назначено пустым)')}</b> <span class="badge warn">${sub.driver_name ? 'подменный' : 'пусто'} до ${String(sub.ends_at).slice(0, 10).split('-').reverse().slice(0, 2).join('.')}</span>
            · постоянный: ${escapeHtml(vehicle.driver_name || '—')}`
         : escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')} ${driverRatingBadge(rating, { small: true })}
+      ${vehicle.model ? ` · тягач ${escapeHtml(vehicle.model)}` : ''}${vehicle.trailer_model
+        ? ` · прицеп ${escapeHtml(vehicle.trailer_model)}` : ''}
       · приписка: ${escapeHtml(vehicle.zone_name || '—')}
       ${vehicle.status !== 'work' ? ' · <b class="danger">выведена из работы</b>' : ''}</p>`;
     })()}

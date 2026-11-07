@@ -372,7 +372,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
         if (tailWidth > 3) {
           emptyTail = `<span class="empty-tail" data-empty-trip="${trip.id}" style="left:${Math.max(0,
             daysBetween(viewStart, tailStart) * dayWidth)}px;width:${tailWidth}px"
-            title="Порожний подгон ~${Math.round(emptyKm)} км (~${Math.round(tailMs / 3_600_000)} ч)&#10;Клик — спот-запрос продажам: найти груз на это плечо"></span>`;
+            title="Порожний подгон ~${Math.round(emptyKm)} км (~${Math.round(tailMs / 3_600_000)} ч)&#10;Клик — спот-запрос планированию: найти груз на это плечо"></span>`;
         }
       }
       return `${emptyTail}<button class="trip ${conflicts.has(trip.id) ? 'conflict' : ''} ${laneOf(trip)} ${critical.has(trip.id) ? 'critical' : ''} ${trip.status === 'rejected' ? 'rejected' : ''} ${trip.status === 'plan' ? 'plan' : ''} ${width < 70 ? 'tiny' : ''}"
@@ -429,7 +429,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
     if (!hasFuture && lastEndMs > 0 && nowMoment - lastEndMs > 24 * 3_600_000) {
       const idleDays = Math.floor((nowMoment - lastEndMs) / 86_400_000);
       gapBars += gapBar(lastEndMs, nowMoment, 'gap-idle',
-        `Простой ${idleDays} дн с ${formatDateTime(new Date(lastEndMs).toISOString())} — работы нет&#10;Клик — запрос загрузки в продажи`,
+        `Простой ${idleDays} дн с ${formatDateTime(new Date(lastEndMs).toISOString())} — работы нет&#10;Клик — запрос загрузки в планирование`,
         `data-request-load="${vehicle.id}"`);
     }
     return `<div class="vehicle-row">
@@ -486,15 +486,15 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       }
       openDisposition(item);
     }));
-  // Клик по полосе простоя: запрос загрузки в продажи по сцепке.
+  // Клик по полосе простоя: запрос загрузки в планирование по сцепке.
   document.querySelectorAll('[data-request-load]').forEach(bar =>
     bar.addEventListener('click', async () => {
       const vehicle = state.data.vehicles.find(item => item.id === bar.dataset.requestLoad);
       if (!vehicle) return;
-      if (!confirm(`Запросить продажи: сцепка ${vehicle.plate} простаивает — нужна загрузка?`)) return;
+      if (!confirm(`Запросить планирование: сцепка ${vehicle.plate} простаивает — нужна загрузка?`)) return;
       try {
         await api(`/api/vehicles/${vehicle.id}/request-load`, { method: 'POST' });
-        toast('Запрос загрузки отправлен продажам');
+        toast('Запрос загрузки отправлен планированию');
       } catch (error) { toast(error.message, 'error'); }
     }));
   // Клик по порожнему хвосту: спот-запрос продажам — найти груз на пустое
@@ -513,13 +513,13 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
             .find(vehicle => vehicle.id === trip.vehicle_id)?.zone_name);
       const toRegion = regionOfPlace(state.data, trip.from_point, trip.from_name);
       if (!fromRegion || !toRegion) { toast('Субъекты плеча не распознаны', 'error'); return; }
-      if (!confirm(`Спот-запрос продажам: найти груз ${fromRegion} → ${toRegion}` +
+      if (!confirm(`Спот-запрос планированию: найти груз ${fromRegion} → ${toRegion}` +
         ` (~${Math.round(trip.empty_km)} км порожним, ${trip.vehicle_plate})?`)) return;
       try {
         await api('/api/spot-request', { method: 'POST', body: JSON.stringify({
           fromRegion, toRegion, km: trip.empty_km, aroundIso: trip.starts_at,
           vehicleId: trip.vehicle_id, vehiclePlate: trip.vehicle_plate }) });
-        toast('Спот-запрос отправлен продажам');
+        toast('Спот-запрос отправлен планированию');
       } catch (error) { toast(error.message, 'error'); }
     }));
   enableTripDrag(dayWidth);
@@ -1115,7 +1115,7 @@ function openExceptions() {
 
   const criticalActions = trip => `
     ${can('trips:write') ? `<button class="button ghost small" data-ex-shift="${trip.id}"
-      title="Перенести начало рейса на конец интервала недоступности. Сработает, только если рейс остаётся в окне клиента — окно меняют продажи правкой заявки; иначе смените ТС или верните заявку продажам">Сдвинуть после простоя</button>` : ''}
+      title="Перенести начало рейса на конец интервала недоступности. Сработает, только если рейс остаётся в окне клиента — окно меняет планирование правкой заявки; иначе смените ТС или верните заявку планированию">Сдвинуть после простоя</button>` : ''}
     <button class="button ghost small" data-ex-open="${trip.id}">Открыть</button>`;
   const conflictActions = trip => `
     <button class="button ghost small" data-ex-open="${trip.id}"
@@ -1140,7 +1140,7 @@ function openExceptions() {
   // архивируются с причиной в «Отклонённых заявках» доски продаж
   // (оттуда же возвращаются в работу) и в отчёте «Реестр заявок».
   const returnedOrderActions = () => `<button class="button ghost small" data-ex-to-sales
-    title="Перейти в продажи и назначить ТС заново">В продажи</button>`;
+    title="Перейти в планирование и назначить ТС заново">В планирование</button>`;
 
   // Неоформленные порожние перегоны (04.10; подача переработана 05.10 —
   // «надо идти в сторону интуитивного инструмента»): строка говорит,
@@ -1487,7 +1487,9 @@ function openVehicle(vehicle = null, after = null) {
   showModal(`<form id="vehicleForm"><h2>${vehicle ? 'Карточка ТС' : 'Новая сцепка'}</h2>
     <div class="fields">
       <label class="field">Госномер<input name="plate" value="${escapeHtml(vehicle?.plate || '')}" required></label>
+      <label class="field">Модель тягача<input name="model" value="${escapeHtml(vehicle?.model || '')}" placeholder="DAF FT XF 105 460"></label>
       <label class="field">Прицеп<input name="trailerPlate" value="${escapeHtml(vehicle?.trailer_plate || '')}"></label>
+      <label class="field">Модель прицепа<input name="trailerModel" value="${escapeHtml(vehicle?.trailer_model || '')}" placeholder="SKO24"></label>
       <label class="field">Тип<select name="typeId">${types}</select></label>
       <label class="field">Водитель<input name="driverName" value="${escapeHtml(vehicle?.driver_name || '')}"></label>
       <label class="field">Зона<select name="zoneId">${zoneOptions(vehicle?.zone_id)}</select></label>

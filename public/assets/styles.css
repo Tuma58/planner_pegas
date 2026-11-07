@@ -2205,6 +2205,8 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .kbq-feed { margin: 6px 0; max-height: 160px; overflow: auto; }
 .kbq-note { padding: 3px 0; font-size: var(--fs-sm); border-top: 1px dashed color-mix(in srgb, var(--line) 50%, transparent); }
 .kbq-note:first-child { border-top: 0; }
+/* Записи ленты старше часа — приглушённые: свежие цепляют глаз (04.11). */
+.kbq-note.kbq-old, .kbq-note.kbq-old b { color: var(--muted); }
 .kbq-stop-row { display: flex; align-items: center; gap: 8px; }
 
 /* 📞 Сворачивание карточки звонка (заявка Базуева, 04.11) */

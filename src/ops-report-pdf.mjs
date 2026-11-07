@@ -153,8 +153,8 @@ export function renderOpsReportPdf(data) {
   const tiles = [
     ['Выручка без НДС', `${(T.rev / 1e6).toFixed(1)} млн`, `${T.trips} рейсов за ${T.days} дн`],
     ['Техготовность · КТГ', `${(T.fleet - downtime.repair.avg).toFixed(1)} маш`, `КТГ ${T.ktg}% из ${T.fleet} списочных`],
-    ['На линии среднесуточно', `${data.avgOnline} маш`, `КВЛ ${T.kvl}% по закрытым рейсам`],
-    ['Под грузом · КИП', `${(data.avgOnline * T.kip / 100).toFixed(1)} маш`, `КИП ${T.kip}% времени линии`],
+    ['Укомплектовано · КВЛ', `${(T.fundH / 24 / T.days).toFixed(1)} маш`, `КВЛ ${T.kvl}% от исправных`],
+    ['С заданием · КИП', `${data.avgOnline} маш`, `КИП ${T.kip}% от укомплектованных`],
     ['Погрузка вовремя', `${onP}%`, `${late.P.late1} опозд. >1 ч из ${late.P.n}`],
     ['Выгрузка вовремя', `${onD}%`, `${late.D.late1} опозд. >1 ч из ${late.D.n}`]
   ];
@@ -170,7 +170,7 @@ export function renderOpsReportPdf(data) {
 
   // ── Секции ──
   h2('КТГ · КВЛ · КИП в динамике, % — по дням');
-  chartLines([D.ktg, D.kvl, D.kip], ['КТГ — техготовность', 'КВЛ — выпуск на линию', 'КИП — использование'],
+  chartLines([D.ktg, D.kvl, D.kip], ['КТГ — техготовность', 'КВЛ — укомплектованность', 'КИП — с заданием'],
     [C.ktg, C.kvl, C.kip], D.labels, 100, 2);
   h2('КТГ · КВЛ · КИП — по неделям (пн–вс)');
   chartLines([WK.ktg, WK.kvl, WK.kip], ['КТГ', 'КВЛ', 'КИП'], [C.ktg, C.kvl, C.kip], WK.labels, 100, 1);

@@ -3,7 +3,7 @@
 // настройка каждого маршрута). Полуавтомат: «🧮 Собрать» предлагает цепочку
 // из свободных потребностей, дальше — ручная правка. Готовый маршрут
 // передаётся логисту и назначается на сцепку целиком (рейсы цепочкой).
-import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch, captureScrolls, restoreScrolls } from './api.js';
+import { api, escapeHtml, formatDateTime, money, toast, transitHours , wireSelectSearch, captureScrolls, restoreScrolls, windowWarningModal } from './api.js';
 import { driverRatingBadge, driverRatingOf } from './api.js';
 import { DAY_MARGIN, ROUND_TEMPLATES, roundByKey, roundKm, roundRevenue, roundVehicles } from './rounds.js';
 import { orderStage } from './pipeline.js';
@@ -914,8 +914,9 @@ export function renderRoutes(container, context) {
       try {
         const result = await api(`/api/routes/${routeId}/assign`, { method: 'POST',
           body: JSON.stringify({ vehicleId: document.getElementById('routeVehicle').value }) });
-        toast(`Маршрут назначен: рейсов ${result.tripIds.length}`);
         context.closeModal();
+        if (result.windowWarnings?.length) windowWarningModal(context.showModal, result.windowWarnings);
+        else toast(`Маршрут назначен: рейсов ${result.tripIds.length}`);
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
     };

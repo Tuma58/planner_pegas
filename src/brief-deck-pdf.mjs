@@ -18,7 +18,7 @@ const FONT_B = fs.readFileSync(path.join(fontsDir, 'DejaVuSans-Bold.ttf'));
 const C = { ink: BRAND.ink, sub: BRAND.muted, blue: BRAND.accent, green: BRAND.pos,
   red: BRAND.neg, orange: BRAND.warn, gray: BRAND.faint, bar: BRAND.u500,
   grid: BRAND.border2, card: BRAND.panel2, line: BRAND.border, base: BRAND.faint,
-  text2: BRAND.muted, ktg: BRAND.repair, kvl: BRAND.ops, band: BRAND.u800 };
+  text2: BRAND.muted, ktg: BRAND.repair, kvl: BRAND.ops, kip: BRAND.logistics, band: BRAND.u800 };
 const W = 841.89, H = 595.28, ML = 48, MR = 48;
 const PEGAS_RATIO = PEGAS_LOGO.w / PEGAS_LOGO.h; // пропорция знака
 const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
@@ -143,28 +143,43 @@ export function renderBriefDeckPdf(deck) {
     { size: 7.5, color: C.sub });
   footer();
 
-  // ── 3. КТГ · КВЛ · КИП ──
+  // ── 3. КТГ · КВЛ · КИП (формулы «Рабочей среды СТ», 05.11) ──
+  // КВЛ = укомплектованные/исправные (вычет — без водителя/пересменка),
+  // КИП = машины с заданием от укомплектованных, КЭИП = произведение.
   const repAvg = X.repairCur.reduce((s, v) => s + v, 0) / Math.max(1, X.repairCur.length);
   const repAvgPrev = (P.repairMd || 0) / Math.max(1, X.prevDays);
+  const noDrvAvg = (S.noDrv && S.noDrv.length)
+    ? S.noDrv.reduce((s, v) => s + v, 0) / S.noDrv.length
+    : (B.noDriverMd || 0) / Math.max(1, B.days);
+  const noDrvAvgPrev = (P.noDriverMd || 0) / Math.max(1, X.prevDays);
+  const crewAvg = Math.max(0, B.fleet - repAvg - noDrvAvg);
+  const crewAvgPrev = Math.max(0, B.fleet - repAvgPrev - noDrvAvgPrev);
   const ktg = (B.fleet - repAvg) / B.fleet * 100;
   const ktgPrev = (B.fleet - repAvgPrev) / B.fleet * 100;
-  const kvl = B.onLineAvg / Math.max(1, B.fleet - repAvg) * 100;
-  const kvlPrev = (P.onLineAvg || 0) / Math.max(1, B.fleet - repAvgPrev) * 100;
-  header('КТГ · КВЛ · КИП', 'коэффициенты парка за период; средние — из машино-дней штатной сводки');
+  const kvl = crewAvg / Math.max(1, B.fleet - repAvg) * 100;
+  const kvlPrev = crewAvgPrev / Math.max(1, B.fleet - repAvgPrev) * 100;
+  const kip = B.onLineAvg / Math.max(0.1, crewAvg) * 100;
+  const kipPrev = (P.onLineAvg || 0) / Math.max(0.1, crewAvgPrev) * 100;
+  const keip = ktg * kvl * kip / 1e4;
+  header('КТГ · КВЛ · КИП', 'каскад по формулам «Рабочей среды СТ»: готовность → укомплектованность → задание');
   cardRow(104, [
     ['КТГ — техническая готовность', `${comma(ktg.toFixed(1))}%`,
       `база ${comma(ktgPrev.toFixed(1))}% · ремонт ${B.repairMd} м-дн`, ktg < ktgPrev ? C.red : C.ink],
-    ['КВЛ — выпуск на линию', `${comma(kvl.toFixed(1))}%`,
-      `база ${comma(kvlPrev.toFixed(1))}% · на линии ${B.onLineAvg} из ${B.fleet}`],
-    ['КИП — использование пробега', `${B.loadedPct}%`, `база ${P.loadedPct ?? '—'}% · гружёный км / общий`],
+    ['КВЛ — укомплектованность', `${comma(kvl.toFixed(1))}%`,
+      `база ${comma(kvlPrev.toFixed(1))}% · укомплектовано ${crewAvg.toFixed(0)} из ${(B.fleet - repAvg).toFixed(0)} исправных`],
+    ['КИП — с заданием', `${comma(kip.toFixed(1))}%`,
+      `база ${comma(kipPrev.toFixed(1))}% · с заданием ${B.onLineAvg} из ${crewAvg.toFixed(0)} · КЭИП ${comma(keip.toFixed(1))}%`],
     ['Резерв по готовности', `${repAvg.toFixed(0)} ТС/сут`, 'в ремонте в среднем каждый день', C.orange]
   ]);
   {
     const top = 240, ch = 270;
     const ktgD = X.repairCur.map(r => (B.fleet - r) / B.fleet * 100);
-    const kvlD = S.online.map((o, i) => o / Math.max(1, B.fleet - X.repairCur[i]) * 100);
-    const maxv = Math.max(100, ...kvlD) + 2;
-    const minv = Math.min(70, ...ktgD, ...kvlD) - 2;
+    const kvlD = X.repairCur.map((r, i) =>
+      Math.max(0, B.fleet - r - (S.noDrv?.[i] || 0)) / Math.max(1, B.fleet - r) * 100);
+    const kipD = S.online.map((o, i) =>
+      o / Math.max(0.1, B.fleet - X.repairCur[i] - (S.noDrv?.[i] || 0)) * 100);
+    const maxv = Math.max(100, ...kvlD, ...kipD) + 2;
+    const minv = Math.min(70, ...ktgD, ...kvlD, ...kipD) - 2;
     const yAt = value => top + ch - ch * (value - minv) / (maxv - minv);
     for (let g = 0; g <= 4; g += 1) {
       const val = minv + (maxv - minv) * g / 4;
@@ -174,9 +189,11 @@ export function renderBriefDeckPdf(deck) {
     const xAt = i => ML + 34 + (W - MR - ML - 34) * i / Math.max(1, n - 1);
     pdf.poly(ktgD.map((v, i) => [xAt(i), yAt(v)]), { color: C.ktg, width: 1.6 });
     pdf.poly(kvlD.map((v, i) => [xAt(i), yAt(v)]), { color: C.kvl, width: 1.6, dash: [4, 2.5] });
+    pdf.poly(kipD.map((v, i) => [xAt(i), yAt(v)]), { color: C.kip, width: 1.6 });
     dayTicks(top, ch, S.days, xAt);
-    pdf.text(ML + 40, top + 14, `— КТГ по дням · ср. ${comma(ktg.toFixed(1))}%`, { size: 8, color: C.ktg });
-    pdf.text(ML + 190, top + 14, `— КВЛ по дням · ср. ${comma(kvl.toFixed(1))}%`, { size: 8, color: C.kvl });
+    pdf.text(ML + 40, top + 14, `— КТГ · ср. ${comma(ktg.toFixed(1))}%`, { size: 8, color: C.ktg });
+    pdf.text(ML + 165, top + 14, `— КВЛ · ср. ${comma(kvl.toFixed(1))}%`, { size: 8, color: C.kvl });
+    pdf.text(ML + 290, top + 14, `— КИП · ср. ${comma(kip.toFixed(1))}%`, { size: 8, color: C.kip });
   }
   footer();
 

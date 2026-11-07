@@ -3,7 +3,7 @@
 // выручки нет: рейс исказил бы выручку, план-факт и сверку с 1С), а вид
 // диспозиции с заданием водителю и контролем прибытия. Факт прибытия
 // становится местоположением сцепки для следующего назначения.
-import { api, escapeHtml, formatDateTime, toast, tripBusyUntilMs, wireSelectSearch } from './api.js';
+import { api, escapeHtml, formatDateTime, toast, tripBusyUntilMs, wireSelectSearch, windowWarningModal } from './api.js';
 
 export const TRANSFER_PURPOSES = ['под погрузку', 'на базу', 'в ремонт', 'на пересменку', 'к месту стоянки'];
 
@@ -266,7 +266,12 @@ export function transferDialog(vehicle, data, context, options = {}) {
         note: values.note
       }) });
       context.closeModal();
-      toast(`Перегон создан${result.km ? `: ~${result.km} км порожним` : ''} — диспетчер получил задание`);
+      // Перегон поверх диспозиции: создавший видит модалку — машина по
+      // планеру стоит (ремонт/без водителя), а её отправляют в дорогу.
+      if (!windowWarningModal(context.showModal, [result.dispoWarning],
+        '⚠ Перегон создан — проверьте')) {
+        toast(`Перегон создан${result.km ? `: ~${result.km} км порожним` : ''} — диспетчер получил задание`);
+      }
       await context.onReload();
     } catch (error) { toast(error.message, 'error'); }
   };

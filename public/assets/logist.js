@@ -3,7 +3,7 @@
 // отклонение рейса с возвратом заявки в продажи, создание рейса вручную.
 // Гант остаётся информационным пространством: там смотрят план,
 // здесь — управляют им.
-import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto } from './api.js';
+import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, windowWarningModal } from './api.js';
 import { fleetPlanDialog } from './fleet-plan.js';
 import { vehicleZoneAt } from './transfer.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
@@ -187,13 +187,18 @@ function pickOrderDialog(request, queue, data, context) {
         if (!overrideReason.trim()) { toast('Без причины замены назначение не принимается', 'error'); return; }
       }
       try {
-        await api(`/api/orders/${button.dataset.pickOrder}/assign`, {
+        const created = await api(`/api/orders/${button.dataset.pickOrder}/assign`, {
           method: 'POST',
           body: JSON.stringify({ vehicleId: request.vehicle.id, autoConfirm: true,
             ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}) })
         });
         context.closeModal();
-        toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);
+        const warns = [created.windowWarning
+          && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
+        created.trailerWarning];
+        if (!windowWarningModal(context.showModal, warns)) {
+          toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);
+        }
         await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
     }));
@@ -925,11 +930,16 @@ export async function renderLogist(container, context) {
     button.addEventListener('click', async () => {
       button.disabled = true;
       try {
-        await api(`/api/orders/${button.dataset.draftAssign}/assign`, {
+        const created = await api(`/api/orders/${button.dataset.draftAssign}/assign`, {
           method: 'POST',
           body: JSON.stringify({ vehicleId: button.dataset.draftVehicle, autoConfirm: true })
         });
-        toast('Назначено по ночному подбору — рейс ушёл диспетчеру');
+        const warns = [created.windowWarning
+          && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
+        created.trailerWarning];
+        if (!windowWarningModal(context.showModal, warns)) {
+          toast('Назначено по ночному подбору — рейс ушёл диспетчеру');
+        }
         context.onReload();
       } catch (error) {
         button.disabled = false;

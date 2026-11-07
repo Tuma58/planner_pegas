@@ -17,6 +17,70 @@ const tripWithNames = (db, tripId) => db.prepare(`SELECT t.*,f.name from_name,z.
   FROM trips t JOIN zones f ON f.id=t.from_zone_id JOIN zones z ON z.id=t.to_zone_id
   WHERE t.id=?`).get(tripId);
 
+// Мягкий сигнал «транзит не помещается в окно клиента» (заказ руководителя
+// 05.11, разбор заявки №6146: срок рейса считается выученным транзитом и
+// законно уехал за окно, но никто об этом не узнал). Прибытие на конечную
+// выгрузку берём так же, как его ставит контроль точек: конец рейса минус
+// окно работ. Назначение НЕ блокируется — сигнал для продаж (договориться
+// о новом окне) и логиста (сдвинуть старт). Любое положительное опоздание
+// честно называется, порогов-констант нет.
+// Сторож «рейс без прицепа» (заказ руководителя 05.11, находка ревизии
+// моделей: 6 тягачей возили рейсы с пустым прицепом в планере, а тип
+// кузова живёт на прицепе — подбор опирался на устаревший тип).
+// Предупреждение в момент назначения, не блокирует: фактический прицеп
+// знает водитель, перецепку проводит Ресурс.
+export function noTrailerWarning(vehicle) {
+  const plate = String(vehicle?.trailer_plate || '').trim();
+  if (plate && !['без прицепа', 'нет', '-', '—'].includes(plate.toLowerCase())) return null;
+  return `🔗 У сцепки ${vehicle?.plate || '—'} в планере нет прицепа — тип кузова рейса ` +
+    'не проверен. Уточните у водителя фактический прицеп и проведите перецепку ' +
+    '(«Ресурс → 🔗 Перецепка»)';
+}
+
+export function transitWindowWarning(trip, windowTo) {
+  const winMs = Date.parse(windowTo || '');
+  const arrivalMs = Date.parse(trip.ends_at) - workWindowMs(trip);
+  if (!Number.isFinite(winMs) || !Number.isFinite(arrivalMs) || arrivalMs <= winMs) return null;
+  const msk = ms => new Date(ms + 3 * HOUR).toISOString().slice(5, 16).replace('T', ' ');
+  const lateMin = Math.round((arrivalMs - winMs) / 60_000 / 10) * 10;
+  const lateText = lateMin >= 60 ? `${Math.round(lateMin / 30) / 2} ч` : `${Math.max(10, lateMin)} мин`;
+  return `прибытие на выгрузку по транзиту ~${msk(arrivalMs)} МСК — позже окна клиента ` +
+    `(до ${msk(winMs)} МСК) на ~${lateText}. Договоритесь с клиентом о новом окне или сдвиньте старт`;
+}
+
+// Сторож «перегон поверх диспозиции» (заказ руководителя 06.11, разбор
+// грязных диспозиций: за 01.10–04.11 перегоны шли поверх закрытых
+// «без водителя»/ремонтов на 168 машино-дней — машина едет и стоит
+// одновременно, отчёты занижают фонд). Предупреждение создающему
+// перегон, не блокирует: аналог сторожа окна клиента при назначении.
+const IDLE_DISPO_LABELS = { repair: 'в ремонте', no_driver: 'без водителя',
+  shift: 'на пересменке', out: 'выведена' };
+export function idleDispoWarning(dispositions, startsAt, endsAt) {
+  const s = Date.parse(startsAt);
+  const e = Date.parse(endsAt);
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return null;
+  const hits = (dispositions || []).filter(d => IDLE_DISPO_LABELS[d.kind]
+    && Date.parse(d.starts_at) < e && Date.parse(d.ends_at) > s);
+  if (!hits.length) return null;
+  const until = value => String(value).slice(0, 16).replace('T', ' ');
+  const list = hits.map(d => `${IDLE_DISPO_LABELS[d.kind]} до ${until(d.ends_at)} UTC`).join(', ');
+  return `по планеру машина ${list} — перегон идёт поверх. Если сцепка реально поедет, ` +
+    'закройте или подрежьте диспозицию в Ресурсе; отметка выезда сама подрежет ' +
+    '«без водителя» и пересменку, ремонт закрывает ремзона';
+}
+
+// Какие диспозиции подрезает ФАКТ выхода машины на линию (вторая половина
+// того же заказа: диспозиции ставят «с запасом до конца недели», водитель
+// выходит раньше — хвост никто не снимает). Подрезаются только
+// «без водителя» и «пересменка», накрывающие момент выезда; ремонт — зона
+// ремзоны (запрос выпуска), будущие диспозиции — планы, их не трогаем.
+export function dispositionsToTrim(dispositions, atIso) {
+  const at = Date.parse(atIso);
+  if (!Number.isFinite(at)) return [];
+  return (dispositions || []).filter(d => ['no_driver', 'shift'].includes(d.kind)
+    && Date.parse(d.starts_at) < at && Date.parse(d.ends_at) > at);
+}
+
 // Автогенерация каркаса: погрузка в пункте отправления и выгрузка в пункте
 // назначения с плановыми временами из рейса. Дальше диспетчер уточняет и
 // добавляет промежуточные стоянки.
@@ -57,6 +121,10 @@ export function shiftWorsensWindow(order, before, after) {
 // ещё не была); пройденные точки с отметками диспетчера не трогаются.
 // Первая погрузка — от начала рейса, последняя выгрузка — к концу,
 // промежуточные — линейно по порядку между соседними якорями.
+// План, поставленный ЧЕЛОВЕКОМ (updated_by заполнен и время уже есть),
+// неприкосновенен (решение руководителя 05.11, заявка Базуева): план —
+// обязательство, по которому меряется опоздание; сдвиг рейса его не
+// переписывает. Точка от продаж БЕЗ времени (маршрут заявки) — заполняется.
 export function rescheduleTripStops(db, tripId) {
   const trip = tripWithNames(db, tripId);
   if (!trip || trip.status === 'rejected') return 0;
@@ -68,10 +136,20 @@ export function rescheduleTripStops(db, tripId) {
   const update = db.prepare(`UPDATE trip_stops SET planned_arrival=?,planned_departure=?,point=?,
     updated_at=CURRENT_TIMESTAMP WHERE id=?`);
   let changed = 0;
+  const updatePoint = db.prepare(`UPDATE trip_stops SET point=?,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`);
   stops.forEach((stop, index) => {
     if (stop.actual_arrival || stop.work_started_at || stop.work_finished_at || stop.actual_departure) return;
     const first = index === 0;
     const last = index === stops.length - 1;
+    if (stop.updated_by && stop.planned_arrival) {
+      // Времена человека не трогаем, но ПУНКТ крайних точек следует за
+      // рейсом: продажи правят адрес — карточка не должна везти в старый.
+      const freshPoint = first ? (trip.from_point || trip.from_name)
+        : last ? (trip.to_point || trip.to_name) : stop.point;
+      if (freshPoint !== stop.point) { updatePoint.run(freshPoint, stop.id); changed += 1; }
+      return;
+    }
     let arrival;
     let departure;
     if (first) { arrival = startMs; departure = startMs + windowMs; }

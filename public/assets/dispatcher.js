@@ -1639,6 +1639,8 @@ export async function renderDispatcher(container, context, options = {}) {
             title="Где машина, заявка, окно, контакты, сервисы — карточка как при звонке">📞 Полная карточка</button>
           ${canAct ? `<button type="button" class="button ghost small" id="kbqFix"
             title="Поменялись время, адрес или точки заказа — правка доступна и в пути; каждая правка в журнале, планирование получает список изменений">✏ Корректировка</button>` : ''}
+          ${canAct ? `<button type="button" class="button ghost small" id="kbqIncident"
+            title="Поломка, отказ клиента, переназначение, акт, возврат, опоздание">⚠ Внештатная</button>` : ''}
           <button type="button" class="button ghost small" id="kbqClassic"
             title="Лента точек, правка времён, массовые инструменты">📋 Классика</button>
           <button type="button" class="button ghost" data-close>Закрыть</button>
@@ -1667,11 +1669,15 @@ export async function renderDispatcher(container, context, options = {}) {
           const mine = lists.flat().filter(item => String(item.item_key).includes(trip.id))
             .sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));
           const mark = key => key.startsWith('prepnote|') ? '💬' : key.startsWith('claim|') ? '🖐' : '✓';
+          // Свежесть (заявка Токаловой 04.11): запись младше часа — обычным
+          // цветом (глаз цепляется за новое), старше — приглушённым серым.
+          const doneIso = item => String(item.done_at).includes('Z')
+            ? item.done_at : String(item.done_at).replace(' ', 'T') + 'Z';
           feedBox.innerHTML = mine.length
-            ? mine.slice(0, 12).map(item => `<div class="kbq-note">${mark(item.item_key)}
+            ? mine.slice(0, 12).map(item => `<div class="kbq-note${
+              Date.now() - Date.parse(doneIso(item)) > 3_600_000 ? ' kbq-old' : ''}">${mark(item.item_key)}
                 <b>${escapeHtml(item.done_by || '')}</b>
-                <small class="muted">${formatDateTime(String(item.done_at).includes('Z')
-    ? item.done_at : String(item.done_at).replace(' ', 'T') + 'Z')}</small>
+                <small class="muted">${formatDateTime(doneIso(item))}</small>
                 ${item.note ? ` — ${escapeHtml(item.note)}` : ''}</div>`).join('')
             : '<small class="muted">Комментариев по рейсу за 5 дней нет.</small>';
         } catch { feedBox.innerHTML = ''; }
@@ -1697,6 +1703,13 @@ export async function renderDispatcher(container, context, options = {}) {
       if (kbqFix) kbqFix.onclick = () => {
         const full = data.trips.find(item => item.id === trip.id) || trip;
         orderFixDialog(full);
+      };
+      // «⚠ Внештатная» и с канбан-доски (заявка Базуева 04.11): то же меню,
+      // что в классике и таблице, — поломка/отказ/акт/возврат/опоздание.
+      const kbqIncident = document.getElementById('kbqIncident');
+      if (kbqIncident) kbqIncident.onclick = () => {
+        const full = data.trips.find(item => item.id === trip.id) || trip;
+        incidentDialog(full, data, context);
       };
       document.getElementById('kbqClassic').onclick = () => {
         context.closeModal();

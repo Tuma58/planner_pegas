@@ -375,6 +375,9 @@ export async function buildReport(context, files, periodSel) {
       <div class="metric dept-log"><span class="l">КИП по часам под грузом</span><span class="v">${pct(kip)}</span></div>
     </div>
     ${sheetHours ? '' : '<p class="muted" style="margin:0">* без «Путевых листов» линия оценена как «груз + ожидание между заказами» — КВЛ ориентировочный.</p>'}
+    <p class="muted" style="margin:0">Каскад здесь — по ЧАСАМ рейсов из выгрузки 1С (линия = часы с заданием): укомплектованность
+      в данных 1С не видна, поэтому с КВЛ/КИП опер-отчёта планера (формулы «Рабочей среды СТ»:
+      укомплектованные/исправные и с заданием/укомплектованные) напрямую не сравнивать.</p>
     <div class="bi-grid"><section class="section s6">${sec('Куда уходят часы линии', 'каскад по часам из выгрузок 1С')}<div class="sec-b">
       <div class="list">
         <div class="list-item"><span style="flex:1">📦 Под грузом</span><b>${hrs(loadH)} · ${pct(kip)}</b></div>

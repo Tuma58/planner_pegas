@@ -2,7 +2,7 @@
 // слева «Потребность от логистики» (освобождающиеся сцепки с предложением обратного груза),
 // справа форма бронирования с оценкой осуществимости и портфель заявок со стадиями.
 // Назначение ТС — через POST /api/orders/:id/assign (право trips:write).
-import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, apiConfirmable } from './api.js';
+import { api, attachSearch, escapeHtml, formatDateTime, formValues, money, parseMoney, routeLabel, toLocalInput, toast, transitHours, tripBusyUntilMs, wireSelectSearch, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, apiConfirmable, windowWarningModal } from './api.js';
 import { driverRatingOf, driverRatingBadge } from './api.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
@@ -582,9 +582,14 @@ export function autoRequests(data, monthStartDate, monthEndDate) {
     // Блокирующие интервалы (ремонт, без водителя, резерв под заказ),
     // заканчивающиеся позже рейса: сцепка реально доступна после самого
     // позднего из них. Резерв — сцепка обещана, продажам не предлагается.
+    // Блокирует только интервал, НАКРЫВАЮЩИЙ момент освобождения: ремонт,
+    // запланированный на будущее, машину из потребности не прячет — у неё
+    // есть свободное окно до заезда, и его надо продавать (кейс т508ве58:
+    // освобождалась в среду, а ТО с воскресенья прятало её из списка).
     const blocking = (data.dispositions || []).filter(item =>
       item.vehicle_id === vehicle.id && ['repair', 'no_driver', 'reserve'].includes(item.kind) &&
-      Date.parse(item.ends_at) > Math.max(tripFreeMs, nowMs - 86_400_000));
+      Date.parse(item.ends_at) > Math.max(tripFreeMs, nowMs - 86_400_000) &&
+      Date.parse(item.starts_at) <= Math.max(tripFreeMs, nowMs));
     const blockEndMs = blocking.length ? Math.max(...blocking.map(item => Date.parse(item.ends_at))) : 0;
     // До выхода из ремонта/появления водителя больше суток — не потребность.
     if (blockEndMs > nowMs + 86_400_000) return;
@@ -2232,16 +2237,21 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
       if (!overrideReason.trim()) { toast('Без причины замены назначение не принимается', 'error'); return; }
     }
     const submitAssign = async (dispoOverrideReason = '') => {
-      await api(`/api/orders/${order.id}/assign`, {
+      const created = await api(`/api/orders/${order.id}/assign`, {
         method: 'POST',
         body: JSON.stringify({ vehicleId: select.value, autoConfirm: Boolean(options.autoConfirm),
           ...(overrideReason ? { overrideReason: overrideReason.trim() } : {}),
           ...(dispoOverrideReason ? { dispoOverrideReason } : {}) })
       });
       closeModal();
-      toast(options.autoConfirm
-        ? 'ТС назначена и подтверждена — рейс у диспетчера'
-        : 'ТС назначена — рейс проведён в план');
+      const warns = [created.windowWarning
+        && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
+      created.trailerWarning];
+      if (!windowWarningModal(showModal, warns)) {
+        toast(options.autoConfirm
+          ? 'ТС назначена и подтверждена — рейс у диспетчера'
+          : 'ТС назначена — рейс проведён в план');
+      }
       await onReload();
     };
     try {

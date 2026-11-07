@@ -12,7 +12,7 @@ import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
-import { ensureTripStops, rescheduleTripStops } from '../src/trip-control.mjs';
+import { ensureTripStops, noTrailerWarning, rescheduleTripStops, transitWindowWarning, idleDispoWarning, dispositionsToTrim } from '../src/trip-control.mjs';
 import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
@@ -298,12 +298,13 @@ test('потребность от логистики: ремонт и «без �
     starts_at: iso(endMs - 86_400_000), ends_at: iso(endMs) });
   const data = {
     reference: { zones, routeRates: [] },
-    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3'), vehicle('А4'), vehicle('А5'), vehicle('А6')],
+    vehicles: [vehicle('А1'), vehicle('А2'), vehicle('А3'), vehicle('А4'), vehicle('А5'), vehicle('А6'),
+      vehicle('А7')],
     // А4 — «июльский хвост»: последний рейс закончился до начала месяца,
     // сцепка простаивает дольше всех и обязана быть в потребности.
     trips: [trip('А1', now - 3_600_000), trip('А2', now - 3_600_000), trip('А3', now - 3_600_000),
       trip('А4', monthStart.getTime() - 5 * 86_400_000),
-      trip('А5', now - 3_600_000), trip('А6', now - 3_600_000)],
+      trip('А5', now - 3_600_000), trip('А6', now - 3_600_000), trip('А7', now - 3_600_000)],
     dispositions: [
       // А2: в ремонте ещё 3 дня — в потребность не попадает
       { vehicle_id: 'А2', kind: 'repair', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
@@ -312,7 +313,11 @@ test('потребность от логистики: ремонт и «без �
       // А5: в резерве под заказ ещё 3 дня — обещана, продажам не предлагается
       { vehicle_id: 'А5', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 3 * 86_400_000) },
       // А6: резерв истекает через 10 часов — видна с пометкой «выйдет из резерва»
-      { vehicle_id: 'А6', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) }
+      { vehicle_id: 'А6', kind: 'reserve', starts_at: iso(now - 86_400_000), ends_at: iso(now + 10 * 3_600_000) },
+      // А7: свободна уже сейчас, а ремонт только ЗАПЛАНИРОВАН через 4 дня —
+      // будущий заезд не прячет машину, свободное окно до него продаётся
+      // (кейс т508ве58: ТО с воскресенья скрывало борт со среды).
+      { vehicle_id: 'А7', kind: 'repair', starts_at: iso(now + 4 * 86_400_000), ends_at: iso(now + 5 * 86_400_000) }
     ]
   };
   const requests = autoRequests(data, monthStart, monthEnd);
@@ -323,6 +328,10 @@ test('потребность от логистики: ремонт и «без �
   assert.ok(!plates.includes('А5'), 'в резерве под заказ — скрыта из потребности');
   assert.equal(requests.find(request => request.vehicle.plate === 'А6')?.blockedKind,
     'reserve', 'резерв истекает за сутки — пометка «выйдет из резерва»');
+  const a7 = requests.find(request => request.vehicle.plate === 'А7');
+  assert.ok(a7, 'ремонт, запланированный на будущее, машину из потребности не прячет');
+  assert.equal(a7.blockedKind, null, 'будущий ремонт — не блокировка, а событие горизонта');
+  assert.ok(a7.idleMs > 0, 'до запланированного ремонта машина простаивает — приоритет загрузки');
   const a3 = requests.find(request => request.vehicle.plate === 'А3');
   assert.equal(a3.blockedKind, 'no_driver', 'пометка «получит водителя»');
   assert.equal(a3.freeAt, data.dispositions[1].ends_at, 'момент освобождения — конец диспозиции');
@@ -1567,6 +1576,25 @@ test('перепланирование стоянок: сдвиг рейса д�
   assert.equal(after[0].planned_arrival, '2026-08-25T06:00:00.000Z', 'пройденная погрузка не тронута');
   assert.equal(after[1].planned_departure, '2026-08-27T06:00:00.000Z', 'выгрузка следует за новым концом рейса');
   assert.equal(after[1].point, 'Софьино', 'пункт выгрузки обновлён из рейса');
+
+  // Вариант А (решение 05.11, заявка Базуева): план, поставленный человеком,
+  // при сдвиге рейса неприкосновенен — по нему меряется опоздание; точка
+  // от продаж БЕЗ плана заполняется; пункт крайней точки следует за рейсом.
+  const userId = db.prepare('SELECT id FROM users LIMIT 1').get().id;
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,planned_arrival,updated_by)
+    VALUES('rs1-mid','rs1',2,'D','Рязань распред',  '2026-08-26T18:00:00.000Z',?)`).run(userId);
+  db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,updated_by)
+    VALUES('rs1-via','rs1',3,'D','Коломна склад',?)`).run(userId);
+  db.prepare(`UPDATE trip_stops SET seq=4, updated_by=? WHERE trip_id='rs1' AND point='Софьино'`).run(userId);
+  db.prepare(`UPDATE trips SET ends_at='2026-08-28T06:00:00.000Z', to_point='Белые Столбы' WHERE id='rs1'`).run();
+  rescheduleTripStops(db, 'rs1');
+  const final = db.prepare('SELECT point,planned_arrival,planned_departure FROM trip_stops WHERE trip_id=? ORDER BY seq').all('rs1');
+  assert.equal(final[1].planned_arrival, '2026-08-26T18:00:00.000Z',
+    'ручной план промежуточной точки не сдвинут рейсом');
+  assert.ok(final[2].planned_arrival, 'точка маршрута продаж без плана получила время');
+  assert.equal(final[3].planned_departure, '2026-08-27T06:00:00.000Z',
+    'ручной план конечной выгрузки не переписан сдвигом конца');
+  assert.equal(final[3].point, 'Белые Столбы', 'пункт конечной точки следует за правкой адреса');
 });
 
 test('подбор ТС: позиция по пункту выгрузки, а не по ошибочной геозоне (кейс р550ту58)', () => {
@@ -3540,9 +3568,13 @@ test('эксплуатация: динамика КТГ/КВЛ/КИП по дн�
   const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
   const zone = db.prepare('SELECT id FROM zones LIMIT 1').get();
   // День 1 (10.03): машина в ремонте сутки. День 2 (11.03): закрытый рейс
-  // с линией 24 ч и под грузом 12 ч (dep 06:00 → arrived 18:00).
+  // (машина с заданием). День 3 (12.03): сутки «без водителя» — по
+  // формулам «Рабочей среды СТ» это потеря КВЛ (укомплектованность).
   db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
     VALUES('dTR1', ?, 'repair', '2025-03-10T00:00:00.000Z', '2025-03-11T00:00:00.000Z')`)
+    .run(vehicle.id);
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('dTR2', ?, 'no_driver', '2025-03-12T00:00:00.000Z', '2025-03-13T00:00:00.000Z')`)
     .run(vehicle.id);
   db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,status,starts_at,ends_at,
       on_line_at,unloaded_at,arrived_at,distance_km,revenue_vat,cash)
@@ -3558,14 +3590,15 @@ test('эксплуатация: динамика КТГ/КВЛ/КИП по дн�
   assert.equal(D.labels.length, 4, 'четыре дня в периоде');
   assert.equal(D.ktg[0], 90, 'сутки ремонта: техготовность 9 из 10');
   assert.equal(D.ktg[1], 100, 'день без ремонта: КТГ 100');
-  assert.equal(D.kvl[1], 10, 'одна машина на линии из 10 готовых');
-  assert.equal(D.kip[1], 50, '12 ч под грузом из 24 ч линии');
+  assert.equal(D.kvl[1], 100, 'без водителя нет — все исправные укомплектованы (КВЛ по структуре)');
+  assert.equal(D.kip[1], 10, 'одна машина с заданием из 10 укомплектованных');
+  assert.equal(D.kvl[2], 90, 'сутки «без водителя»: укомплектовано 9 из 10 исправных');
   assert.ok(D.kip.every(v => v >= 0 && v <= 100) && D.kvl.every(v => v >= 0 && v <= 100));
   // Понедельная агрегация сходится с дневной.
   const sum = arr => arr.reduce((s, v) => s + v, 0);
   assert.ok(Math.abs(sum(W.rev) - sum(D.rev)) < 0.05, 'выручка недель = сумме дней');
   assert.equal(W.labels.length, 1, '10–14.03 — одна неделя (пн–вс)');
-  assert.equal(W.kip[0], 50, 'недельный КИП из тех же часов');
+  assert.equal(W.kip[0], 2.6, 'неделя: 0,25 машины с заданием от 9,5 укомплектованных');
   // PDF-версия отчёта: валидная структура, кириллический шрифт встроен.
   const { renderOpsReportPdf } = await import('../src/ops-report-pdf.mjs');
   const pdf = renderOpsReportPdf(data);
@@ -5616,4 +5649,59 @@ test('затраты: операции РН-Карт раскладываютс�
   assert.equal(rncardCategoryOf('SERVICE', 'gDorog'), 'tolls');
   assert.equal(rncardCategoryOf('GOODS', 'gMasla'), 'parts');
   assert.equal(rncardCategoryOf('GOODS', 'gAvtoakses'), 'parts');
+});
+
+test('мягкий сигнал: транзит не помещается в окно клиента', () => {
+  // Кейс №6146 (05.11): старт 04.11 23:00 МСК, срок по транзиту 05.11 17:00,
+  // окно клиента до 14:04 — прибытие (срок − 2 ч работ) позже окна на ~1 ч.
+  const trip = { starts_at: '2026-11-04T20:00:00.000Z', ends_at: '2026-11-05T14:00:00.000Z' };
+  const warn = transitWindowWarning(trip, '2026-11-05T11:04:00.000Z');
+  assert.ok(warn, 'сигнал должен появиться');
+  assert.ok(warn.includes('позже окна клиента'), warn);
+  assert.ok(warn.includes('11-05 15:00'), 'прибытие = срок минус окно работ, в МСК: ' + warn);
+  assert.ok(warn.includes('на ~1 ч'), 'опоздание 56 мин округляется к часу: ' + warn);
+  // Окно просторнее расчётного прибытия — сигнала нет.
+  assert.equal(transitWindowWarning(trip, '2026-11-05T13:00:00.000Z'), null);
+  // Окна у заявки нет — сигнала нет.
+  assert.equal(transitWindowWarning(trip, null), null);
+  // Короткое плечо: окно работ = четверть рейса (час), опоздание крупное — в часах.
+  const short = { starts_at: '2026-11-04T08:00:00.000Z', ends_at: '2026-11-04T12:00:00.000Z' };
+  const shortWarn = transitWindowWarning(short, '2026-11-04T08:30:00.000Z');
+  assert.ok(shortWarn.includes('на ~2,5 ч') || shortWarn.includes('на ~2.5 ч'), shortWarn);
+});
+
+test('сторож «рейс без прицепа» предупреждает только пустую сцепку', () => {
+  // Находка 05.11: 6 тягачей возили рейсы с пустым прицепом в планере —
+  // тип кузова живёт на прицепе, подбор опирался на устаревший тип.
+  assert.equal(noTrailerWarning({ plate: 'т487ве58', trailer_plate: 'АН3471 58' }), null);
+  const warn = noTrailerWarning({ plate: 'т487ве58', trailer_plate: '' });
+  assert.ok(warn && warn.includes('т487ве58') && warn.includes('Перецепка'), warn);
+  assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: 'без прицепа' }), 'заглушка = нет прицепа');
+  assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: '  ' }), 'пробелы = нет прицепа');
+});
+
+test('сторож «перегон поверх диспозиции» и авто-подрезка фактом выезда', () => {
+  // Разбор 06.11: за месяц перегоны шли поверх закрытых диспозиций на
+  // 168 МД (кейс в327ак797: «без водителя» 09–19.10, а машина ехала).
+  const dispos = [
+    { kind: 'no_driver', starts_at: '2026-10-09T00:00:00.000Z', ends_at: '2026-10-19T00:00:00.000Z' },
+    { kind: 'repair', starts_at: '2026-10-01T00:00:00.000Z', ends_at: '2026-10-07T00:00:00.000Z' },
+    { kind: 'reserve', starts_at: '2026-10-10T00:00:00.000Z', ends_at: '2026-10-20T00:00:00.000Z' }
+  ];
+  // Перегон пересекает «без водителя» — предупреждение с видом и сроком.
+  const warn = idleDispoWarning(dispos, '2026-10-12T08:00:00.000Z', '2026-10-12T20:00:00.000Z');
+  assert.ok(warn && warn.includes('без водителя до 2026-10-19 00:00'), warn);
+  assert.ok(!warn.includes('в ремонте'), 'ремонт закончился до перегона: ' + warn);
+  // Резерв перегону не мешает («обещана заказу» — не простой).
+  assert.equal(idleDispoWarning(dispos, '2026-10-20T00:00:00.000Z', '2026-10-21T00:00:00.000Z'), null);
+  // Подрезка фактом выезда: накрывающие «без водителя»/пересменка — да,
+  // ремонт (зона ремзоны) и будущие диспозиции — нет.
+  const toTrim = dispositionsToTrim([...dispos,
+    { kind: 'shift', starts_at: '2026-10-12T00:00:00.000Z', ends_at: '2026-10-13T00:00:00.000Z' },
+    { kind: 'no_driver', starts_at: '2026-10-15T00:00:00.000Z', ends_at: '2026-10-16T00:00:00.000Z' },
+    { kind: 'repair', starts_at: '2026-10-12T00:00:00.000Z', ends_at: '2026-10-14T00:00:00.000Z' }],
+  '2026-10-12T08:00:00.000Z');
+  assert.deepEqual(toTrim.map(d => d.kind).sort(), ['no_driver', 'shift'],
+    'подрезаются только накрывающие момент «без водителя» и пересменка');
+  assert.deepEqual(dispositionsToTrim(dispos, 'не дата'), []);
 });

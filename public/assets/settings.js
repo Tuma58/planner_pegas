@@ -239,9 +239,11 @@ async function renderTrailerRegistry() {
   try {
     const data = await api('/api/trailers-registry');
     const rows = data.trailers || [];
-    box.innerHTML = `<table class="bi-table"><thead><tr><th>Прицеп</th><th>Тип</th><th>Где</th><th>Статус</th><th></th></tr></thead>
+    box.innerHTML = `<table class="bi-table"><thead><tr><th>Прицеп</th><th>Модель</th><th>Тип</th><th>Где</th><th>Статус</th><th></th></tr></thead>
       <tbody>${rows.map(item => `<tr>
         <td class="mono"><strong>${escapeHtml(item.plate)}</strong></td>
+        <td><input data-trailer-model="${escapeHtml(item.plate)}" value="${escapeHtml(item.model || '')}"
+          placeholder="SKO24" style="width:150px" title="Модель живёт на прицепе: при перецепке уедет вместе с ним"></td>
         <td><select data-trailer-type="${escapeHtml(item.plate)}" title="Тип кузова живёт на прицепе: смена сразу выравнивает сцепку-держателя">
           <option value="">—</option>
           ${state.admin.reference.vehicleTypes.map(type =>
@@ -256,6 +258,14 @@ async function renderTrailerRegistry() {
           : `<button class="button ghost small" data-trailer-out="${escapeHtml(item.plate)}"
                ${item.holder_plate ? `title="прицеп висит на ${escapeHtml(item.holder_plate)} — сначала отцепите перецепкой" disabled` : 'title="продажа или списание — с датой, можно задним числом"'}>Вывести</button>`}</td>
       </tr>`).join('')}</tbody></table>`;
+    box.querySelectorAll('[data-trailer-model]').forEach(input => input.onchange = async () => {
+      try {
+        await api(`/api/trailers/${encodeURIComponent(input.dataset.trailerModel)}`, {
+          method: 'PATCH', body: JSON.stringify({ model: input.value.trim() })
+        });
+        toast('Модель прицепа сохранена');
+      } catch (error) { toast(error.message, 'error'); renderTrailerRegistry(); }
+    });
     box.querySelectorAll('[data-trailer-type]').forEach(select => select.onchange = async () => {
       if (!select.value) { renderTrailerRegistry(); return; }
       try {
@@ -298,7 +308,9 @@ function editVehicle(vehicle = null) {
   showModal(`<form id="vehicleForm"><h2>${vehicle ? 'Редактирование ТС' : 'Новое ТС'}</h2>
     <div class="fields">
       <label class="field">Госномер<input name="plate" value="${escapeHtml(vehicle?.plate || '')}" required></label>
+      <label class="field">Модель тягача<input name="model" value="${escapeHtml(vehicle?.model || '')}" placeholder="DAF FT XF 105 460"></label>
       <label class="field">Прицеп<input name="trailerPlate" value="${escapeHtml(vehicle?.trailer_plate || '')}"></label>
+      <label class="field">Модель прицепа<input name="trailerModel" value="${escapeHtml(vehicle?.trailer_model || '')}" placeholder="SKO24"></label>
       <label class="field">Тип<select name="typeId">${types}</select></label>
       <label class="field">Водитель<input name="driverName" value="${escapeHtml(vehicle?.driver_name || '')}"></label>
       <label class="field">Зона<select name="zoneId">${zones}</select></label>
