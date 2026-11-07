@@ -15324,6 +15324,12 @@ async function api(request, response, url) {
     if (await partsApi(ctx)) return;
     // АРМ: адресное уведомление по задаче (лента + внешний канал по режиму).
     ctx.accessOf = accessOf;
+    // Канон периода для коэффициентов АРМ (как у «Моего поля»): месяц к дате.
+    ctx.parkMonth = () => {
+      const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+      const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 864e5).toISOString().slice(0, 10);
+      return parkReportData(`${today.slice(0, 7)}-01`, tomorrow);
+    };
     ctx.notifyUser = (userId, text) => {
       const target = db.prepare('SELECT full_name FROM users WHERE id=?').get(userId);
       if (target) notifyUserByName(target.full_name, text, 'arm_task', null);

@@ -19,6 +19,14 @@ import { fieldLive } from './field.mjs';
 import { docsBoard } from './trip-docs.mjs';
 import { toStatusAll } from './vehicle-card.mjs';
 import { randomUUID } from 'node:crypto';
+import { directionGoals } from '../public/assets/goals-core.js';
+import { signalKpi } from './signals.mjs';
+import { safetyBoard } from './safety.mjs';
+import { releaseBoard } from './release.mjs';
+import { gateOnsite } from './gate.mjs';
+import { partsStock } from './parts.mjs';
+import { driverTurnover } from './turnover.mjs';
+import { leadStats } from './crm.mjs';
 
 const DAY = 86_400_000;
 const MSK = 3 * 3_600_000;
@@ -203,11 +211,151 @@ const W = {
       tone: '', source: 'helpdesk_tickets' }))
 };
 
+// ── Э3: виджеты остальных должностей (07.11) ──
+// Коэффициенты — канон периода parkReportData (тот же, что у «Моего
+// поля»), сервер даёт его лениво через ctx.park(); цели — Настройки.
+const COEF = { ktg: ['КТГ', 'ktg', 'ktg'], kvl: ['КВЛ', 'kvl', 'kvl'], kip: ['КИП', 'kip', 'kip'], use: ['КЭИП', 'koef', 'use'] };
+const CONTROL = { log: 'log_toir', drv: 'drv_log', toir: 'toir_drv' };
+Object.assign(W, {
+  coef: ({ park, settings }, key) => {
+    const total = park?.()?.total;
+    if (!total) return null;
+    const [label, field, goal] = COEF[key];
+    const target = directionGoals(settings.calculation)[goal];
+    return { kind: 'metric', label: `${label}, месяц`, value: total[field], unit: '%', norm: target,
+      tone: toneVsNorm(total[field], target), note: `цель ${target}%`, source: 'parkReportData · цель — Настройки' };
+  },
+  revenue: ({ park, money }) => {
+    if (money !== 'full') return null;
+    const total = park?.()?.total;
+    if (!total) return null;
+    return { kind: 'metric', label: 'Выручка месяца, млн', value: Math.round(total.rev / 1e5) / 10, unit: '',
+      note: `${total.trips} выгрузок · план — «Цели и задачи»`, tone: '', source: 'parkReportData (без НДС)' };
+  },
+  vigilance: ({ db, nowMs, settings }, dept) => {
+    const joint = CONTROL[dept];
+    const from = new Date(nowMs - 30 * DAY).toISOString();
+    const k = safe(() => signalKpi(db, joint, from, new Date(nowMs).toISOString(), directionGoals(settings.calculation).signalTargetH));
+    if (!k) return null;
+    return { kind: 'metric', label: 'Сигналы стыка вовремя, 30 дн', value: k.onTimePct, unit: '%',
+      note: k.cases ? `${k.cases} случаев · цель ≤ ${k.targetH} ч` : 'случаев не было', tone: '', source: `signalKpi (${JOINT_TITLE[joint]})` };
+  },
+  dept_queues: ({ db }, dept) => queuesOf(db, dept, null),
+  dir_plan: ctx => [...(W.log_plan(ctx) || []).slice(1), ...(W.drv_plan(ctx) || []).slice(1), ...(W.toir_plan(ctx) || []).slice(1)],
+  turnover_month: ({ db, nowMs }) => {
+    const t = safe(() => driverTurnover(db, { from: `${mskDay(nowMs).slice(0, 7)}-01`, to: mskDay(nowMs), sync: false }));
+    if (!t) return null;
+    return { kind: 'metric', label: 'Текучесть водителей, месяц', value: t.turnoverPct, unit: '%', norm: t.targetPct,
+      tone: t.targetPct == null || t.turnoverPct == null ? '' : t.turnoverPct <= t.targetPct ? 'pos' : 'warn',
+      note: `уволено ${t.fired} · средняя численность ${Math.round(t.headcountAvg || 0)}`, source: 'driverTurnover · цель — Настройки' };
+  },
+  drv_shift_queue: ({ db }) => queuesOf(db, 'drv', ['no_driver', 'shift']),
+  leads: ({ db, nowMs }) => {
+    const stats = safe(() => leadStats(db.prepare('SELECT * FROM crm_leads').all(), new Date(nowMs).toISOString()));
+    if (!stats) return null;
+    return { kind: 'metric', label: 'Воронка: в работе', value: stats.open, unit: '',
+      note: stats.closed ? `конверсия ${Math.round((stats.winRate || 0) * 100)}% · шаг просрочен ${stats.overdueSteps}` : `шаг просрочен ${stats.overdueSteps}`,
+      tone: stats.overdueSteps ? 'warn' : '', source: 'CRM · crm_leads' };
+  },
+  lead_steps: ({ db, nowMs }) => {
+    const today = mskDay(nowMs);
+    const n = db.prepare(`SELECT COUNT(*) n FROM crm_leads WHERE stage NOT IN ('won','lost') AND next_at IS NOT NULL AND substr(next_at,1,10)<=?`).get(today).n;
+    return { kind: 'row', label: 'Шаги по лидам на сегодня и просроченные', value: n, tone: n ? 'warn' : 'pos', screen: 'crm', source: 'crm_leads' };
+  },
+  claims_new: ({ db }) => {
+    const n = safe(() => db.prepare(`SELECT COUNT(*) n FROM demurrage_claims WHERE status='new'`).get().n);
+    return n == null ? null : { kind: 'row', label: 'Претензии за простой ждут выставления', value: n, tone: n ? 'warn' : 'pos', screen: 'sales', source: 'demurrage_claims' };
+  },
+  orders_queue: ({ db }) => queuesOf(db, 'log', ['orders']),
+  release_today: ({ db, nowMs }) => {
+    const b = safe(() => releaseBoard(db, nowMs));
+    if (!b) return null;
+    return [
+      { kind: 'row', label: 'Выход сегодня и завтра', value: b.summary.total, screen: 'release', source: 'releaseBoard' },
+      { kind: 'row', label: 'Ждут техконтроля', value: b.summary.wait, tone: b.summary.wait ? 'warn' : 'pos', screen: 'release', source: 'releaseBoard' },
+      { kind: 'row', label: 'Риск не выйти вовремя', value: (b.summary.risk || 0) + (b.summary.late || 0), tone: (b.summary.risk || b.summary.late) ? 'neg' : 'pos', screen: 'release', source: 'releaseBoard' }
+    ];
+  },
+  release_stats: ({ db, nowMs }) => {
+    const from = new Date(nowMs - 7 * DAY).toISOString();
+    const row = safe(() => db.prepare(`SELECT SUM(result='ok') pass, SUM(result='fail') fail FROM release_checks WHERE checked_at>=?`).get(from)) || {};
+    return [
+      { kind: 'metric', label: 'Техконтроль пройден, 7 дн', value: row.pass || 0, unit: '', tone: '', source: 'release_checks' },
+      { kind: 'metric', label: '«В ремонт» с выпуска, 7 дн', value: row.fail || 0, unit: '', tone: '', source: 'release_checks' }
+    ];
+  },
+  parts: ({ db, settings, money }) => {
+    const st = safe(() => partsStock(db, { settings }));
+    if (!st) return null;
+    const items = st.items || [];
+    const below = items.filter(item => item.below).length;
+    const value = items.reduce((sum, item) => sum + (item.stockValue || 0), 0);
+    return [
+      { kind: 'metric', label: 'Позиций ниже минимума', value: below, unit: '', tone: below ? 'warn' : 'pos', note: `всего позиций ${items.length}`, source: 'partsStock' },
+      ...(money !== 'none' ? [{ kind: 'metric', label: 'Запас на складе, тыс ₽', value: Math.round(value / 100) / 10, unit: '', tone: '', source: 'partsStock (средняя цена)' }] : [])
+    ];
+  },
+  parts_plan: ({ db }) => {
+    const n = safe(() => db.prepare(`SELECT COUNT(*) n FROM parts_requests WHERE status='open'`).get().n);
+    return n == null ? null : { kind: 'row', label: 'Заявки поставщикам в пути', value: n, screen: 'parts', source: 'parts_requests' };
+  },
+  parts_buy: ({ db, settings }) => {
+    const st = safe(() => partsStock(db, { settings }));
+    if (!st) return null;
+    const n = (st.items || []).filter(item => item.toBuy > 0).length;
+    return { kind: 'row', label: 'К закупке, позиций', value: n, tone: n ? 'warn' : 'pos', screen: 'parts', source: 'partsStock' };
+  },
+  safety: ({ db, nowMs, settings }) => {
+    const b = safe(() => safetyBoard(db, { from: `${mskDay(nowMs).slice(0, 7)}-01`, to: mskDay(nowMs), warnDays: directionGoals(settings.calculation).docsWarnDays, nowMs }));
+    if (!b) return null;
+    return {
+      analysis: [
+        { kind: 'metric', label: 'ДТП за месяц', value: b.summary.dtp, unit: '', tone: b.summary.dtp ? 'neg' : 'pos', source: 'safetyBoard' },
+        { kind: 'metric', label: 'Нарушения ПДД и РТО', value: b.summary.pdd + b.summary.rto, unit: '', tone: '', note: `ПДД ${b.summary.pdd} · РТО ${b.summary.rto}`, source: 'safetyBoard' }],
+      plan: [{ kind: 'row', label: 'Допуски и инструктажи истекают', value: b.summary.termsDue, tone: b.summary.termsDue ? 'warn' : 'pos', screen: 'safety', source: 'safetyBoard · порог — Настройки' }],
+      exec: [
+        { kind: 'row', label: 'Открытые расследования', value: b.summary.open, tone: b.summary.open ? 'warn' : 'pos', screen: 'safety', source: 'safetyBoard' },
+        { kind: 'row', label: 'Водители без действующего допуска', value: b.withoutAdmission.length, tone: b.withoutAdmission.length ? 'neg' : 'pos', screen: 'safety', source: 'safetyBoard' }]
+    };
+  },
+  safety_analysis: ctx => W.safety(ctx)?.analysis,
+  safety_plan: ctx => W.safety(ctx)?.plan,
+  safety_exec: ctx => W.safety(ctx)?.exec,
+  gate: ({ db, nowMs, settings }) => {
+    const onsite = safe(() => gateOnsite(db)) || [];
+    const longH = directionGoals(settings.calculation).gateLongH;
+    const long = onsite.filter(row => hoursSince(row.entry_at, nowMs) >= longH).length;
+    return [
+      { kind: 'row', label: 'На территории сейчас', value: onsite.length, screen: 'gate', source: 'gate_log' },
+      { kind: 'row', label: `Стоят дольше ${longH} ч`, value: long, tone: long ? 'warn' : 'pos', screen: 'gate', source: 'gate_log · порог — Настройки' }
+    ];
+  },
+  gate_day: ({ db, nowMs }) => {
+    const from = dayStartIso(mskDay(nowMs));
+    const row = db.prepare(`SELECT SUM(entry_at>=?) inn, SUM(exit_at>=?) outn FROM gate_log WHERE status<>'cancelled'`).get(from, from);
+    return [
+      { kind: 'metric', label: 'Въездов сегодня', value: row.inn || 0, unit: '', tone: '', source: 'gate_log' },
+      { kind: 'metric', label: 'Выездов сегодня', value: row.outn || 0, unit: '', tone: '', source: 'gate_log' }
+    ];
+  },
+  helpdesk_new: ({ db }) => {
+    const n = db.prepare(`SELECT COUNT(*) n FROM helpdesk_tickets WHERE status IN ('new','review')`).get().n;
+    return { kind: 'row', label: 'Заявки HELP DESK без решения', value: n, tone: n ? 'warn' : 'pos', source: 'helpdesk_tickets' };
+  },
+  paid_week: ({ db, nowMs }) => {
+    const n = safe(() => db.prepare(`SELECT COUNT(*) n FROM trips WHERE paid_at>=?`).get(new Date(nowMs - 7 * DAY).toISOString()).n);
+    return { kind: 'metric', label: 'Отмечено оплат, 7 дн', value: n, unit: '', tone: '', source: 'trips.paid_at' };
+  },
+  receivables_off: ({ settings }) => settings.calculation?.crmReceivablesOn === true
+    ? { kind: 'row', label: 'Рейсы к оплате по сроку', value: null, note: 'см. экран', screen: 'payments', source: 'CRM' }
+    : { kind: 'row', label: 'Учёт долгов клиентов выключен', value: null, note: 'включается в Настройках', screen: 'payments', source: 'Настройки' }
+});
+
 const JOINT_TITLE = { drv_log: 'машина без задания', toir_drv: 'после ремонта без водителя', log_toir: 'ТО без заезда' };
 const HD_STATUS = { new: 'новая', review: 'на рассмотрении', work: 'в работе' };
 
 function queuesOf(db, dept, keys) {
-  return (safe(() => fieldLive(db, dept).queues) || []).filter(queue => keys.includes(queue.key))
+  return (safe(() => fieldLive(db, dept).queues) || []).filter(queue => !keys || keys.includes(queue.key))
     .map(queue => ({ kind: 'row', label: queue.label, value: queue.count, note: queue.note || '', tone: queue.count ? 'warn' : 'pos',
       screen: queue.screen, source: 'fieldLive (очереди поля)' }));
 }
@@ -222,8 +370,28 @@ export const ARM_ROLES = {
   drv_acc: { analysis: ['docs_norm', 'attendance_yesterday'], plan: ['drv_plan'], exec: ['docs_waiting', 'attendance_today', 'drv_queues'],
     tasks: [['joint_cases', 'toir_drv', 'resource'], 'my_helpdesk'] },
   toir_mech: { analysis: ['repair_on_time', 'jobs_done'], plan: ['toir_plan'], exec: ['toir_queues'],
-    tasks: ['release_requests', ['joint_cases', 'log_toir', 'toboard'], 'my_helpdesk'] }
+    tasks: ['release_requests', ['joint_cases', 'log_toir', 'toboard'], 'my_helpdesk'] },
+  // Э3 (07.11): остальные должности по таблице плана.
+  dir_head: { analysis: [['coef', 'ktg'], ['coef', 'kvl'], ['coef', 'kip'], ['coef', 'use'], 'revenue'], plan: ['dir_plan'],
+    exec: [['dept_queues', 'log'], ['dept_queues', 'drv'], ['dept_queues', 'toir']],
+    tasks: [['joint_cases', 'drv_log', 'field'], ['joint_cases', 'toir_drv', 'field'], ['joint_cases', 'log_toir', 'field'], 'my_helpdesk'] },
+  log_head: { analysis: [['coef', 'kip'], 'revenue', ['vigilance', 'log'], 'next_share'], plan: ['log_plan'], exec: [['dept_queues', 'log']],
+    tasks: [['joint_cases', 'drv_log', 'logist'], 'my_helpdesk'] },
+  log_plan: { analysis: ['my_shift', 'leads'], plan: ['lead_steps', 'log_plan'], exec: ['orders_queue', 'claims_new'], tasks: ['my_helpdesk'] },
+  drv_head: { analysis: [['coef', 'kvl'], ['vigilance', 'drv'], 'turnover_month'], plan: ['drv_plan', 'release_today'],
+    exec: [['dept_queues', 'drv']], tasks: [['joint_cases', 'toir_drv', 'resource'], 'my_helpdesk'] },
+  drv_column: { analysis: ['attendance_yesterday', 'turnover_month'], plan: ['drv_plan'], exec: ['drv_shift_queue', 'attendance_today'],
+    tasks: [['joint_cases', 'toir_drv', 'resource'], 'my_helpdesk'] },
+  drv_tech: { analysis: ['release_stats'], plan: ['release_today'], exec: ['toir_queues'], tasks: ['my_helpdesk'] },
+  toir_head: { analysis: [['coef', 'ktg'], ['vigilance', 'toir'], 'repair_on_time'], plan: ['toir_plan', 'parts_plan'],
+    exec: ['toir_queues', 'parts_buy'], tasks: ['release_requests', ['joint_cases', 'log_toir', 'toboard'], 'my_helpdesk'] },
+  toir_supply: { analysis: ['parts'], plan: ['parts_plan'], exec: ['parts_buy'], tasks: ['my_helpdesk'] },
+  staff_bdd: { analysis: ['safety_analysis'], plan: ['safety_plan'], exec: ['safety_exec'], tasks: ['my_helpdesk'] },
+  staff_aho: { analysis: ['gate_day'], plan: ['gate'], exec: ['helpdesk_new'], tasks: ['my_helpdesk'] },
+  guard: { analysis: ['gate_day'], plan: [], exec: ['gate'], tasks: ['my_helpdesk'] },
+  accountant: { analysis: ['paid_week', 'docs_norm'], plan: ['receivables_off'], exec: ['docs_waiting'], tasks: ['my_helpdesk'] }
 };
+ARM_ROLES.admin = ARM_ROLES.dir_head;
 export const ARM_ZONES = [['analysis', 'Анализ'], ['plan', 'План'], ['exec', 'Выполнение'], ['tasks', 'Задачи']];
 
 // Набор пользователя, у которого есть АРМ (первый из реестра).
@@ -382,9 +550,10 @@ W.tasks_on_time = ({ db, user, nowMs }) => {
 
 // Данные АРМ: шапка + четыре зоны. roleId — набор из реестра; нет его —
 // каркас тот же, зоны по должности пустые до Э3, задачи работают.
-export function armData(db, user, roleId, { nowMs = Date.now(), settings = {}, readOnly = false } = {}) {
+export function armData(db, user, roleId, { nowMs = Date.now(), settings = {}, readOnly = false, park = null, money = 'none' } = {}) {
   const spec = ARM_ROLES[roleId] || { analysis: [], plan: [], exec: [], tasks: ['my_helpdesk'] };
-  const ctx = { db, user, nowMs, settings };
+  let parkCache;
+  const ctx = { db, user, nowMs, settings, money, park: () => (parkCache === undefined ? (parkCache = safe(() => park?.()) || null) : parkCache) };
   const zones = Object.fromEntries(ARM_ZONES.map(([zone]) => [zone, (spec[zone] || []).flatMap(entry => {
     const [key, ...args] = Array.isArray(entry) ? entry : [entry];
     const out = safe(() => W[key](ctx, ...args));
@@ -413,7 +582,10 @@ export async function armApi(ctx) {
     if (!canView(db, user, access, target)) { errorJson(response, 403, 'Рабочее место сотрудника видит его руководитель'); return true; }
     const targetAccess = target.id === user.id ? access : ctx.accessOf?.(db, target);
     const roleId = targetAccess && !targetAccess.legacy ? armRoleOf(targetAccess.sets || []) : null;
-    json(response, 200, { ...armData(db, target, roleId, { settings: settingsObject(db), readOnly: target.id !== user.id }),
+    // Деньги — по уровню смотрящего (руководитель не видит больше своего).
+    const money = access?.legacy ? 'full' : access?.money || 'none';
+    json(response, 200, { ...armData(db, target, roleId, { settings: settingsObject(db), readOnly: target.id !== user.id,
+      park: ctx.parkMonth, money }),
       viewer: { id: user.id, self: target.id === user.id } });
     return true;
   }

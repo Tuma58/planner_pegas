@@ -113,9 +113,11 @@ function setupUser() {
     state.fieldLanded = true;
     state.view = 'field';
   }
-  // АРМ — стартовый экран у должностей с наполнением (Э1, 07.11): у них
-  // «arm» стоит первым в наборе; у остальных он есть ради задач (Э2).
-  else if (!state.fieldLanded && user.access && !user.access.legacy && user.access.views[0] === 'arm') {
+  // АРМ — стартовый экран у всех должностей с наполнением (Э3, 07.11),
+  // кроме руководителей (у них «Моё поле» до Э4) и поста КПП (охраннику
+  // сразу нужен журнал въезда — АРМ у него в меню).
+  else if (!state.fieldLanded && user.access && !user.access.legacy && user.access.views.includes('arm')
+      && !(user.access.sets.length === 1 && user.access.sets[0] === 'guard')) {
     state.fieldLanded = true;
     state.view = 'arm';
   }

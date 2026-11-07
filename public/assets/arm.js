@@ -14,7 +14,7 @@ const go = screen => screen ? `<button class="link-btn arm-go" data-goto="${esca
 
 const metric = item => `<div class="metric ${item.tone || ''}" title="${escapeHtml(item.source || '')}">
   <span class="l">${escapeHtml(item.label)}</span>
-  <span class="v">${num(item.value)}${item.unit ? `<small>${escapeHtml(item.unit)}</small>` : ''}</span>
+  <span class="v">${num(item.value)}${item.unit && item.value != null ? `<small>${escapeHtml(item.unit)}</small>` : ''}</span>
   ${item.note ? `<span class="d">${escapeHtml(item.note)}</span>` : ''}</div>`;
 
 const row = item => `<div class="arm-row ${item.tone || ''}" title="${escapeHtml(item.source || '')}">

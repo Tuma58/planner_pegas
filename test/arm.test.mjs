@@ -29,9 +29,9 @@ const userWith = (db, sets) => {
 
 test('пилот Э1: четыре должности, у каждой четыре зоны в одном порядке', t => {
   const db = freshDb(t);
-  assert.deepEqual(Object.keys(ARM_ROLES).sort(), ['drv_acc', 'log_assign', 'log_ctrl', 'toir_mech']);
+  for (const role of ['drv_acc', 'log_assign', 'log_ctrl', 'toir_mech']) assert.ok(ARM_ROLES[role], role);
   assert.deepEqual(ARM_ZONES.map(([key]) => key), ['analysis', 'plan', 'exec', 'tasks']);
-  for (const role of Object.keys(ARM_ROLES)) {
+  for (const role of ['drv_acc', 'log_assign', 'log_ctrl', 'toir_mech']) {
     const user = userWith(db, [role]);
     const data = armData(db, user, role);
     assert.deepEqual(Object.keys(data.zones), ['analysis', 'plan', 'exec', 'tasks'], role);
@@ -63,10 +63,11 @@ test('выполнение и задачи — из живых данных: р�
   assert.ok(request && request.tag.includes('Логистов'));
 });
 
-test('набор без наполнения — тот же каркас с задачами; набор из реестра — данные', async t => {
+test('API: каркас и данные набора; без входа — 401', async t => {
   const db = freshDb(t);
-  assert.equal(armRoleOf(['log_head', 'log_ctrl']), 'log_ctrl');
-  assert.equal(armRoleOf(['log_head']), null);
+  assert.equal(armRoleOf(['log_head', 'log_ctrl']), 'log_head'); // первый набор человека
+  assert.equal(armRoleOf(['log_head']), 'log_head');
+  assert.equal(armRoleOf(['unknown']), null);
   const call = async (user, search = '') => {
     const out = {};
     const handled = await armApi({ db, request: { method: 'GET' }, response: {}, pathname: '/api/arm',
@@ -78,7 +79,7 @@ test('набор без наполнения — тот же каркас с з�
   };
   assert.equal((await call(null)).status, 401);
   const head = await call(userWith(db, ['log_head']));
-  assert.equal(head.body.pilot, false);
+  assert.equal(head.body.pilot, true); // Э3: у руководителя тоже наполнено
   assert.deepEqual(Object.keys(head.body.zones), ['analysis', 'plan', 'exec', 'tasks']);
   const ctrl = await call(userWith(db, ['log_ctrl']));
   assert.equal(ctrl.body.pilot, true);
@@ -88,7 +89,7 @@ test('набор без наполнения — тот же каркас с з�
 
 test('экран АРМ — у пилотных наборов первым', t => {
   const db = freshDb(t);
-  for (const role of Object.keys(ARM_ROLES)) {
+  for (const role of ['drv_acc', 'log_assign', 'log_ctrl', 'toir_mech']) {
     const access = accessOf(db, userWith(db, [role]));
     assert.equal(access.views[0], 'arm', role);
   }
@@ -142,4 +143,26 @@ test('Э2: задачи ставят в своём отделе (руковод�
   assert.equal(taskAction(db, ctrl, created.id, 'done').status, 409);
   const onTime = armData(db, ctrl, 'log_ctrl').zones.analysis.find(row => row.label.startsWith('Задачи в срок'));
   assert.equal(onTime.value, 100);
+});
+
+test('Э3: АРМ у всех наборов ролей — четыре зоны, у каждого виджета подпись и источник', t => {
+  const db = freshDb(t);
+  const sets = db.prepare('SELECT id FROM role_sets').all().map(row => row.id);
+  const parkStub = () => ({ total: { ktg: 96, kvl: 92, kip: 80, koef: 70.7, rev: 41_500_000, trips: 300 } });
+  for (const role of sets) {
+    assert.ok(ARM_ROLES[role], `в реестре нет набора ${role}`);
+    const user = userWith(db, [role === 'admin' ? 'dir_head' : role]);
+    const data = armData(db, user, role, { park: parkStub, money: 'full' });
+    for (const [zone, items] of Object.entries(data.zones)) {
+      for (const item of items) assert.ok(item.label && item.source, `${role}/${zone}: ${JSON.stringify(item)}`);
+    }
+    const filled = ['analysis', 'plan', 'exec'].filter(zone => data.zones[zone].length).length;
+    assert.ok(filled >= 2, `${role}: наполнено зон ${filled}`);
+  }
+  // Коэффициент — из канона и против цели Настроек; выручка — только при деньгах «все».
+  const dir = armData(db, userWith(db, ['dir_head']), 'dir_head', { park: parkStub, money: 'full' });
+  assert.equal(dir.zones.analysis.find(item => item.label.startsWith('КТГ')).value, 96);
+  assert.ok(dir.zones.analysis.some(item => item.label.startsWith('Выручка')));
+  const noMoney = armData(db, userWith(db, ['drv_head']), 'log_head', { park: parkStub, money: 'none' });
+  assert.ok(!noMoney.zones.analysis.some(item => item.label.startsWith('Выручка')));
 });
