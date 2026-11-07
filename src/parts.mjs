@@ -41,7 +41,7 @@ const EPS = 1e-9;
 // — вырожденные данные (ошибка дат заявки), а не норма.
 export const PARTS_DEFAULTS = {
   windowDays: 90, minLeadSamples: 3, leadMinDays: 1, leadMaxDays: 60,
-  safetyFactor: 1, expenseOnIssue: false
+  safetyFactor: 1
 };
 
 export const MOVE_KIND_LABEL = { receipt: 'приход', issue: 'расход на наряд', adjust: 'инвентаризация' };
@@ -117,8 +117,7 @@ export function partsConfig(settings) {
     minLeadSamples: Math.round(num('minLeadSamples', n => n >= 1)),
     leadMinDays: num('leadMinDays', n => n >= 0),
     leadMaxDays: num('leadMaxDays', n => n > 0),
-    safetyFactor: num('safetyFactor', n => n >= 0),
-    expenseOnIssue: raw.expenseOnIssue === true
+    safetyFactor: num('safetyFactor', n => n >= 0)
   };
   if (cfg.leadMaxDays < cfg.leadMinDays) { cfg.leadMinDays = PARTS_DEFAULTS.leadMinDays; cfg.leadMaxDays = PARTS_DEFAULTS.leadMaxDays; }
   return cfg;
@@ -278,40 +277,12 @@ export function partsNormsReport(db, { settings = {}, today = partsToday(setting
   return report;
 }
 
-// ── Хук в журнал затрат ──
-// Расход запчасти на наряд по смыслу — затрата ТОиР на машину (статья
-// «Запчасти», ЦФО toir). Журнал НЕ дублируется: хук пишет ОДНУ строку
-// expenses на выдачу с отпечатком import_key 'parts:issue:<id>' (повтор
-// молча глотается уникальным индексом), сумма — без НДС (vat=0).
-// Включается целью settings.parts.expenseOnIssue: если журнал уже ведёт
-// закупку запчастей по счетам поставщиков (Dornet «store», ручной ввод),
-// включение даст двойной счёт — решает руководитель (см. отчёт).
-export const issueExpenseKey = moveId => `parts:issue:${moveId}`;
-
-export function partsIssueExpense(db, moveId, { userId = null } = {}) {
-  const move = db.prepare(`SELECT m.*, i.name item_name, i.unit FROM parts_moves m JOIN parts_items i ON i.id=m.item_id
-    WHERE m.id=? AND m.kind='issue'`).get(moveId);
-  if (!move) return { ok: false, reason: 'not_issue' };
-  if (move.cancelled_at) return { ok: false, reason: 'cancelled' };
-  if (move.unit_cost_net == null) return { ok: false, reason: 'no_cost' };
-  let category = null;
-  try { category = db.prepare(`SELECT id, active FROM expense_categories WHERE id='parts'`).get(); } catch { category = null; }
-  if (!category || !category.active) return { ok: false, reason: 'no_category' };
-  const key = issueExpenseKey(moveId);
-  const existing = db.prepare('SELECT id FROM expenses WHERE import_key=?').get(key);
-  if (existing) return { ok: true, expenseId: existing.id, existed: true };
-  const order = move.order_id ? db.prepare('SELECT purpose FROM repair_orders WHERE id=?').get(move.order_id) : null;
-  const id = randomUUID();
-  db.prepare(`INSERT INTO expenses(id,spent_on,category_id,amount,vat,vehicle_id,supplier,doc_ref,note,source,import_key,created_by)
-    VALUES(?,?,?,?,0,?,?,?,?,'api',?,?)`).run(id, move.day, 'parts', round2(move.qty * move.unit_cost_net),
-    move.vehicle_id || null, 'Склад запчастей', `наряд ${String(move.order_id || '').slice(0, 8)}${order ? ` · ${order.purpose}` : ''}`,
-    `${move.item_name} × ${move.qty} ${move.unit}`.slice(0, 300), key, userId);
-  return { ok: true, expenseId: id };
-}
-
-export function partsIssueExpenseRemove(db, moveId) {
-  try { return db.prepare('DELETE FROM expenses WHERE import_key=?').run(issueExpenseKey(moveId)).changes; } catch { return 0; }
-}
+// ── Учёт затрат (решение руководителя 07.11) ──
+// Затрата на запчасти признаётся ПРИ ЗАКУПКЕ — в журнале «Затраты» (счета
+// поставщиков, Dornet «store», ручной ввод). Выдача на наряд — только
+// списание штук со склада; в журнал затрат она НЕ пишется (иначе двойной
+// счёт). Себестоимость выдачи хранится в движении — для аналитики по
+// машине (partsCostByVehicle), не для ЦФО.
 
 // Запчасти наряда — для карточки наряда Ремзоны и карточки ТС.
 export function partsForOrder(db, orderId) {
@@ -563,7 +534,6 @@ export async function partsApi(ctx) {
     const lo = next.leadMinDays ?? PARTS_DEFAULTS.leadMinDays;
     const hi = next.leadMaxDays ?? PARTS_DEFAULTS.leadMaxDays;
     if (hi < lo || hi === 0) { errorJson(response, 422, 'Коридор срока поставки задан неверно'); return true; }
-    next.expenseOnIssue = body.expenseOnIssue === true;
     const before = settings.parts || {};
     db.prepare(`INSERT INTO settings(key,value_json,updated_by,updated_at) VALUES('parts',?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP`)
@@ -638,13 +608,7 @@ export async function partsApi(ctx) {
   if (rest === 'issues' && method === 'POST') {
     if (!needWrite()) return true;
     const body = await readJson(request) || {};
-    return reply(addIssue(db, body, actor), result => {
-      audit(db, user, 'issue', 'parts_move', result.id, body, ip);
-      // Сбой хука не отменяет выдачу: журнал затрат догоняется повтором (отпечаток).
-      if (cfg.expenseOnIssue) {
-        try { partsIssueExpense(db, result.id, { userId: user.id }); } catch (error) { console.error('склад → затраты:', error.message); }
-      }
-    });
+    return reply(addIssue(db, body, actor), result => audit(db, user, 'issue', 'parts_move', result.id, body, ip));
   }
   if (rest === 'adjust' && method === 'POST') {
     if (!needWrite()) return true;
@@ -658,7 +622,6 @@ export async function partsApi(ctx) {
     const body = await readJson(request) || {};
     const result = cancelMove(db, id, { user, reason: body.reason });
     if (result.error) { errorJson(response, result.status, result.error); return true; }
-    if (result.move.kind === 'issue') partsIssueExpenseRemove(db, id);
     audit(db, user, 'cancel', 'parts_move', id, { reason: str(body.reason), kind: result.move.kind }, ip);
     json(response, 200, { ok: true });
     return true;

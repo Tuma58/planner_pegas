@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
 import { hasPermission } from '../src/permissions.mjs';
 import { leadSamples, leadTimeOf, migrateParts, minStockOf, partsApi, partsConfig, partsForOrder,
-  partsIssueExpense, partsNormsReport, partsRights, partsStock, toBuyQty, PARTS_DEFAULTS } from '../src/parts.mjs';
+  partsNormsReport, partsRights, partsStock, toBuyQty, PARTS_DEFAULTS } from '../src/parts.mjs';
 
 const TODAY = '2026-11-07';
 
@@ -200,7 +200,7 @@ test('права: экран parts, запись по fleet:write, цены ск
   r = await call(db, userOf('admin'), legacy, { method: 'PUT', pathname: '/api/parts/settings', body: { windowDays: 30, safetyFactor: 0 } });
   assert.equal(r.status, 200);
   assert.deepEqual(JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='parts'`).get().value_json),
-    { windowDays: 30, safetyFactor: 0, expenseOnIssue: false });
+    { windowDays: 30, safetyFactor: 0 });
 });
 
 test('расход на наряд: только открытый наряд, не больше остатка; сторно; заявка закрывается приходом', async t => {
@@ -264,26 +264,17 @@ test('расход на наряд: только открытый наряд, н
   assert.equal(partsStock(db, { today: TODAY }).items[0].stock, 8);
 });
 
-test('хук журнала затрат: одна строка на выдачу, без НДС, на машину; сторно её снимает', async t => {
+test('затрата при закупке: выдача на наряд только списывает со склада, журнал затрат не трогает', async t => {
   const db = freshDb(t);
   const user = userOf('mechanic');
-  const settings = { parts: { expenseOnIssue: true } };
   const item = (await call(db, user, legacy, { method: 'POST', pathname: '/api/parts/items', body: { name: 'Фильтр топливный' } })).body.id;
   await call(db, user, legacy, { method: 'POST', pathname: '/api/parts/receipts', body: { itemId: item, qty: 5, price: 1200, vat: true } });
   const order = addOrder(db);
-  const r = await call(db, user, legacy, { method: 'POST', pathname: '/api/parts/issues', body: { itemId: item, qty: 2, orderId: order.id }, settings });
-  const expense = db.prepare(`SELECT * FROM expenses WHERE import_key=?`).get(`parts:issue:${r.body.id}`);
-  assert.equal(expense.category_id, 'parts');
-  assert.equal(expense.amount, 2000);
-  assert.equal(expense.vat, 0);
-  assert.equal(expense.vehicle_id, order.vehicle);
-  assert.equal(partsIssueExpense(db, r.body.id).existed, true); // повтор не плодит дублей
-  assert.equal(db.prepare(`SELECT COUNT(*) n FROM expenses WHERE import_key LIKE 'parts:%'`).get().n, 1);
-  await call(db, user, legacy, { method: 'POST', pathname: `/api/parts/moves/${r.body.id}/cancel`, body: { reason: 'возврат на склад' }, settings });
-  assert.equal(db.prepare(`SELECT COUNT(*) n FROM expenses WHERE import_key LIKE 'parts:%'`).get().n, 0);
-  // Выдача без известной цены в журнал не идёт — сумму не выдумываем.
-  const free = (await call(db, user, legacy, { method: 'POST', pathname: '/api/parts/items', body: { name: 'Хомут' } })).body.id;
-  await call(db, user, legacy, { method: 'POST', pathname: '/api/parts/receipts', body: { itemId: free, qty: 5 } });
-  const noCost = await call(db, user, legacy, { method: 'POST', pathname: '/api/parts/issues', body: { itemId: free, qty: 1, orderId: order.id }, settings });
-  assert.equal(partsIssueExpense(db, noCost.body.id).reason, 'no_cost');
+  const before = db.prepare('SELECT COUNT(*) n FROM expenses').get().n;
+  const r = await call(db, user, legacy, { method: 'POST', pathname: '/api/parts/issues', body: { itemId: item, qty: 2, orderId: order.id },
+    settings: { parts: { expenseOnIssue: true } } }); // старый флаг ничего не включает
+  assert.equal(r.status, 201);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM expenses').get().n, before);
+  assert.equal(partsStock(db, { today: TODAY }).items[0].stock, 3);
+  assert.equal(db.prepare('SELECT unit_cost_net FROM parts_moves WHERE id=?').get(r.body.id).unit_cost_net, 1000); // себестоимость для аналитики
 });

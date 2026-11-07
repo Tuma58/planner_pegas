@@ -168,9 +168,7 @@ function normsTab(data) {
           ${field('leadMinDays', 'Коридор срока: от, сут', 0.5, 'факты короче — ошибка дат, в медиану не идут')}
           ${field('leadMaxDays', 'Коридор срока: до, сут', 1, 'факты длиннее — ошибка дат, в медиану не идут')}
           ${field('safetyFactor', 'Коэффициент запаса', 0.1, '1 — ровно на срок поставки; 0 — держим только ручной минимум')}
-          <label class="parts-check"><input type="checkbox" name="expenseOnIssue" ${c.expenseOnIssue ? 'checked' : ''} ${data.canSettings ? '' : 'disabled'}>
-            Списывать выдачу на наряд в журнал затрат («Запчасти», на машину)</label>
-          <small class="muted">Не включайте, если в «Затраты» уже вносятся счета поставщиков запчастей — будет двойной счёт.</small>
+          <small class="muted">Затрата на запчасти — при закупке (журнал «Затраты»); выдача на наряд только списывает со склада.</small>
           ${data.canSettings ? '<div class="modal-actions"><button class="button primary">Сохранить цели</button></div>' : ''}
         </form></div></section>
       <section class="section s7"><div class="sec-h"><span class="st">Дрейф нормативов</span><span class="hint">строка для «📐 Нормативы недели»</span></div>
@@ -400,7 +398,6 @@ export async function renderParts(container, context) {
       cfgForm.onsubmit = async event => {
         event.preventDefault();
         const body = Object.fromEntries(['windowDays', 'minLeadSamples', 'leadMinDays', 'leadMaxDays', 'safetyFactor'].map(key => [key, cfgForm[key].value]));
-        body.expenseOnIssue = cfgForm.expenseOnIssue.checked;
         try { await api('/api/parts/settings', { method: 'PUT', body: JSON.stringify(body) }); toast('Цели склада сохранены'); reload(); }
         catch (error) { toast(error.message, 'error'); }
       };
