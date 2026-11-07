@@ -113,8 +113,9 @@ function setupUser() {
     state.fieldLanded = true;
     state.view = 'field';
   }
-  // АРМ — стартовый экран у должностей, где он есть (Э1, 07.11).
-  else if (!state.fieldLanded && user.access && !user.access.legacy && user.access.views.includes('arm')) {
+  // АРМ — стартовый экран у должностей с наполнением (Э1, 07.11): у них
+  // «arm» стоит первым в наборе; у остальных он есть ради задач (Э2).
+  else if (!state.fieldLanded && user.access && !user.access.legacy && user.access.views[0] === 'arm') {
     state.fieldLanded = true;
     state.view = 'arm';
   }

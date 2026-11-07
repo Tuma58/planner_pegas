@@ -15308,7 +15308,7 @@ async function api(request, response, url) {
   // по экрану роли — это ведомость руководителя направления.
   if (pathname.startsWith('/api/vehicle-card') || pathname === '/api/payroll' || pathname.startsWith('/api/crm/')
     || pathname === '/api/turnover' || pathname.startsWith('/api/turnover/')
-    || pathname === '/api/parts' || pathname.startsWith('/api/parts/') || pathname === '/api/arm') {
+    || pathname === '/api/parts' || pathname.startsWith('/api/parts/') || pathname === '/api/arm' || pathname.startsWith('/api/arm/')) {
     const user = requireUser(request, response);
     if (!user) return;
     const access = accessOf(db, user);
@@ -15322,7 +15322,13 @@ async function api(request, response, url) {
     if (await crmApi(ctx)) return;
     if (await turnoverApi(ctx)) return;
     if (await partsApi(ctx)) return;
-    if (armApi(ctx)) return;
+    // АРМ: адресное уведомление по задаче (лента + внешний канал по режиму).
+    ctx.accessOf = accessOf;
+    ctx.notifyUser = (userId, text) => {
+      const target = db.prepare('SELECT full_name FROM users WHERE id=?').get(userId);
+      if (target) notifyUserByName(target.full_name, text, 'arm_task', null);
+    };
+    if (await armApi(ctx)) return;
   }
   // ── 🛡 Безопасность движения (чек-лист 07.11) — специалист БДД ──
   if (pathname === '/api/safety' || pathname.startsWith('/api/safety/')) {

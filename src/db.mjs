@@ -19,6 +19,7 @@ import { migrateVehicleCards, migrateWaybillHou } from './vehicle-card.mjs';
 import { migrateCrm } from './crm.mjs';
 import { migrateTurnover, seedTurnoverSettings } from './turnover.mjs';
 import { migrateParts } from './parts.mjs';
+import { migrateArm } from './arm.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -1447,6 +1448,7 @@ function migrateColumns(db) {
   seedTurnoverSettings(db);
   migrateTurnover(db);
   migrateParts(db);
+  migrateArm(db);
   // «Продажи» → «Планирование» (решение руководителя 05.11): область
   // инициатив проекта «160 млн» хранится текстом — разовый перенос.
   if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='sales_rename_v1'`).get()) {

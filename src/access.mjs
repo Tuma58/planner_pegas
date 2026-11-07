@@ -80,6 +80,7 @@ export function migrateAccess(db) {
     migrateChecklistV3(db);
     migrateHeadReports(db);
     migrateArm(db);
+    migrateArmAll(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -255,6 +256,18 @@ function migrateArm(db) {
     if (!views.includes('arm')) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify(['arm', ...views]), id);
   }
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_arm_v1','1')`).run();
+}
+
+// АРМ, Э2 (07.11): задачи коллегам и от руководителя — у каждого, значит
+// «Моё рабочее место» есть во всех наборах (наполнение по должности —
+// по мере Э3; пока у непилотных работает зона «Задачи»).
+function migrateArmAll(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_arm_v2'`).get()) return;
+  for (const row of db.prepare(`SELECT id, views_json FROM role_sets`).all()) {
+    const views = parse(row.views_json, []);
+    if (!views.includes('arm')) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, 'arm']), row.id);
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_arm_v2','1')`).run();
 }
 
 function migrateFieldView(db) {

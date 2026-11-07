@@ -364,3 +364,9 @@
 .arm-next { font-size: 11.5px; margin-top: 4px; }
 .arm-go { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 4px; }
 .arm-go:hover { color: var(--accent); }
+.arm-task { flex-wrap: wrap; }
+.arm-body { font-size: 12px; margin-top: 2px; }
+.arm-sub { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; }
+.arm-who { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.arm-ro { margin-top: 6px; display: inline-block; }
+.arm-pending { margin-top: 8px; font-size: 12.5px; }

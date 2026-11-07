@@ -18,6 +18,7 @@ import { attendanceSummary, currentShift, myShiftStats, nextAssignedShare } from
 import { fieldLive } from './field.mjs';
 import { docsBoard } from './trip-docs.mjs';
 import { toStatusAll } from './vehicle-card.mjs';
+import { randomUUID } from 'node:crypto';
 
 const DAY = 86_400_000;
 const MSK = 3 * 3_600_000;
@@ -241,28 +242,207 @@ function personOf(db, user, nowMs) {
     deptTask: deptTask || '' };
 }
 
-// Данные АРМ: шапка + четыре зоны. roleId — набор из реестра.
-export function armData(db, user, roleId, { nowMs = Date.now(), settings = {} } = {}) {
-  const spec = ARM_ROLES[roleId];
-  if (!spec) return null;
+// ── Э2: задачи сотруднику (план 08-arm.md, решение руководителя 07.11) ──
+// Ставит руководитель направления — любому; внутри отдела — любой
+// сотрудник отдела любому коллеге своего отдела (руководитель — своим
+// подчинённым, коллеги — друг другу). Между отделами задачи не ставятся —
+// для этого стыки и «⚑ Сигнал». Статусы: новая → в работе → сделано /
+// не сделано (с причиной); автор может снять задачу.
+export const TASK_STATUS = { new: 'новая', work: 'в работе', done: 'сделано', failed: 'не сделано', cancelled: 'снята' };
+
+export function migrateArm(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS arm_tasks (
+    id TEXT PRIMARY KEY, from_user_id TEXT, from_name TEXT NOT NULL DEFAULT '',
+    to_user_id TEXT NOT NULL, to_name TEXT NOT NULL DEFAULT '', dept_key TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', about TEXT NOT NULL DEFAULT '', due_at TEXT,
+    status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','work','done','failed','cancelled')),
+    result TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, closed_at TEXT,
+    CHECK(status <> 'failed' OR length(trim(result)) > 0))`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_arm_tasks_to ON arm_tasks(to_user_id, status)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_arm_tasks_from ON arm_tasks(from_user_id, status)`);
+}
+
+const deptOf = (db, user) => user?.position_id
+  ? db.prepare('SELECT dept_key FROM org_positions WHERE id=?').get(user.position_id)?.dept_key || '' : '';
+const isDirection = access => Boolean(access && (access.legacy ? false : access.scope?.all));
+// Руководитель для «глазами сотрудника»: поле управления в наборе.
+const isHead = access => Boolean(access && !access.legacy && (access.views || []).includes('field'));
+
+// Можно ли поставить задачу: направление — любому; иначе — тот же отдел.
+export function canAssign(db, from, fromAccess, to) {
+  if (!from || !to || from.id === to.id || !to.active || to.deleted_at) return false;
+  if (isDirection(fromAccess)) return true;
+  const dept = deptOf(db, from);
+  return Boolean(dept) && dept === deptOf(db, to);
+}
+
+// Можно ли смотреть АРМ сотрудника: сам; руководитель направления — всех;
+// руководитель отдела — своего отдела.
+export function canView(db, viewer, viewerAccess, target) {
+  if (!viewer || !target) return false;
+  if (viewer.id === target.id) return true;
+  if (isDirection(viewerAccess)) return true;
+  return isHead(viewerAccess) && Boolean(deptOf(db, viewer)) && deptOf(db, viewer) === deptOf(db, target);
+}
+
+// Кому я могу поставить задачу (и чьё место посмотреть).
+export function peopleFor(db, user, access) {
+  const rows = db.prepare(`SELECT u.id, u.full_name, u.position_id, u.active, u.deleted_at, p.title position, p.dept_key
+    FROM users u LEFT JOIN org_positions p ON p.id=u.position_id
+    WHERE u.active=1 AND u.deleted_at IS NULL ORDER BY p.dept_key, u.full_name`).all();
+  return rows.filter(row => canAssign(db, user, access, row)).map(row => ({ id: row.id, name: row.full_name,
+    position: row.position || '', dept: row.dept_key || '', canView: canView(db, user, access, row) }));
+}
+
+export function addTask(db, from, fromAccess, body, nowMs = Date.now()) {
+  const to = body.toUserId ? db.prepare('SELECT * FROM users WHERE id=?').get(body.toUserId) : null;
+  if (!to) return { status: 422, error: 'Укажите, кому задача' };
+  if (!canAssign(db, from, fromAccess, to)) {
+    return { status: 403, error: 'Задачу можно поставить коллеге своего отдела; между отделами — стыки и «⚑ Сигнал»' };
+  }
+  const title = String(body.title || '').trim().slice(0, 300);
+  if (!title) return { status: 422, error: 'Опишите, что сделать' };
+  const due = body.dueAt && Number.isFinite(Date.parse(body.dueAt)) ? new Date(Date.parse(body.dueAt)).toISOString() : null;
+  if (!due) return { status: 422, error: 'Укажите срок' };
+  if (Date.parse(due) < nowMs - 60_000) return { status: 422, error: 'Срок уже прошёл' };
+  const id = randomUUID();
+  db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_name,dept_key,title,body,about,due_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', to.id, to.full_name || '',
+    deptOf(db, to), title, String(body.body || '').trim().slice(0, 2000), String(body.about || '').trim().slice(0, 200), due);
+  return { ok: true, id, to };
+}
+
+// Действие по задаче: take / done / fail — исполнитель; cancel — автор.
+export function taskAction(db, user, id, action, result = '', nowMs = Date.now()) {
+  const task = db.prepare('SELECT * FROM arm_tasks WHERE id=?').get(id);
+  if (!task) return { status: 404, error: 'Задача не найдена' };
+  const open = ['new', 'work'].includes(task.status);
+  const now = new Date(nowMs).toISOString();
+  const text = String(result || '').trim().slice(0, 2000);
+  if (action === 'cancel') {
+    if (task.from_user_id !== user.id) return { status: 403, error: 'Снять задачу может только тот, кто её поставил' };
+    if (!open) return { status: 409, error: 'Задача уже закрыта' };
+    db.prepare(`UPDATE arm_tasks SET status='cancelled', result=?, updated_at=?, closed_at=? WHERE id=?`).run(text, now, now, id);
+    return { ok: true, task, notify: task.to_user_id };
+  }
+  if (task.to_user_id !== user.id) return { status: 403, error: 'Отмечает исполнитель' };
+  if (!open) return { status: 409, error: 'Задача уже закрыта' };
+  if (action === 'take') {
+    db.prepare(`UPDATE arm_tasks SET status='work', updated_at=? WHERE id=?`).run(now, id);
+    return { ok: true, task };
+  }
+  if (action === 'done') {
+    db.prepare(`UPDATE arm_tasks SET status='done', result=?, updated_at=?, closed_at=? WHERE id=?`).run(text, now, now, id);
+    return { ok: true, task, notify: task.from_user_id };
+  }
+  if (action === 'fail') {
+    if (!text) return { status: 422, error: 'Укажите причину' };
+    db.prepare(`UPDATE arm_tasks SET status='failed', result=?, updated_at=?, closed_at=? WHERE id=?`).run(text, now, now, id);
+    return { ok: true, task, notify: task.from_user_id };
+  }
+  return { status: 422, error: 'Неизвестное действие' };
+}
+
+const dueLabel = (iso, nowMs) => {
+  if (!iso) return '';
+  const left = Date.parse(iso) - nowMs;
+  const at = new Date(Date.parse(iso) + MSK).toISOString().slice(5, 16).replace('T', ' ').split(' ');
+  const when = `${at[0].split('-').reverse().join('.')} ${at[1]}`;
+  return left < 0 ? `просрочена · срок ${when}` : `срок ${when}`;
+};
+
+// Задачи в АРМ: мне (с действиями) и поставленные мной (открытые).
+function tasksWidgets(db, user, nowMs, readOnly) {
+  const mine = db.prepare(`SELECT * FROM arm_tasks WHERE to_user_id=? AND status IN ('new','work') ORDER BY due_at`).all(user.id)
+    .map(task => {
+      const overdue = task.due_at && Date.parse(task.due_at) < nowMs;
+      return { kind: 'task', id: task.id, label: task.title, body: task.body, about: task.about,
+        tag: `от ${task.from_name} · ${dueLabel(task.due_at, nowMs)}`, tone: overdue ? 'neg' : task.status === 'work' ? '' : 'warn',
+        status: task.status, actions: readOnly ? [] : task.status === 'new' ? ['take', 'done', 'fail'] : ['done', 'fail'],
+        source: 'arm_tasks · поставлена мне' };
+    });
+  const given = db.prepare(`SELECT * FROM arm_tasks WHERE from_user_id=? AND status IN ('new','work') ORDER BY due_at`).all(user.id)
+    .map(task => ({ kind: 'task', id: task.id, label: `${task.to_name}: ${task.title}`, mineGiven: true,
+      tag: `${TASK_STATUS[task.status]} · ${dueLabel(task.due_at, nowMs)}`,
+      tone: task.due_at && Date.parse(task.due_at) < nowMs ? 'neg' : '', actions: readOnly ? [] : ['cancel'],
+      source: 'arm_tasks · поставлена мной' }));
+  return { mine, given };
+}
+
+// «Задачи в срок» за 30 дней — справочно (нормы нет; цель — в Э3, если
+// руководитель её задаст).
+W.tasks_on_time = ({ db, user, nowMs }) => {
+  const from = new Date(nowMs - 30 * DAY).toISOString();
+  const row = db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN status='done' AND (due_at IS NULL OR closed_at<=due_at) THEN 1 ELSE 0 END) ok
+    FROM arm_tasks WHERE to_user_id=? AND status IN ('done','failed') AND closed_at>=?`).get(user.id, from);
+  return { kind: 'metric', label: 'Задачи в срок, 30 дн', value: row.n ? Math.round((row.ok || 0) / row.n * 100) : null, unit: '%',
+    note: row.n ? `${row.ok || 0} из ${row.n} закрытых` : 'закрытых задач ещё нет', tone: '', source: 'arm_tasks' };
+};
+
+// Данные АРМ: шапка + четыре зоны. roleId — набор из реестра; нет его —
+// каркас тот же, зоны по должности пустые до Э3, задачи работают.
+export function armData(db, user, roleId, { nowMs = Date.now(), settings = {}, readOnly = false } = {}) {
+  const spec = ARM_ROLES[roleId] || { analysis: [], plan: [], exec: [], tasks: ['my_helpdesk'] };
   const ctx = { db, user, nowMs, settings };
   const zones = Object.fromEntries(ARM_ZONES.map(([zone]) => [zone, (spec[zone] || []).flatMap(entry => {
     const [key, ...args] = Array.isArray(entry) ? entry : [entry];
     const out = safe(() => W[key](ctx, ...args));
     return out == null ? [] : Array.isArray(out) ? out : [out];
   })]));
-  return { role: roleId, person: personOf(db, user, nowMs), zones, zoneTitles: Object.fromEntries(ARM_ZONES),
-    assignedNote: 'Задачи от руководителя — следующий этап (Э2)' };
+  const tasks = tasksWidgets(db, user, nowMs, readOnly);
+  zones.tasks = [...tasks.mine, ...zones.tasks];
+  zones.analysis = [...zones.analysis, W.tasks_on_time(ctx)];
+  return { role: roleId, pilot: Boolean(ARM_ROLES[roleId]), person: personOf(db, user, nowMs), zones,
+    zoneTitles: Object.fromEntries(ARM_ZONES), given: tasks.given, readOnly,
+    pendingNote: ARM_ROLES[roleId] ? '' : 'Наполнение по вашей должности — на следующем этапе; задачи уже работают' };
 }
 
-// GET /api/arm — АРМ текущего пользователя по его набору ролей.
-export function armApi(ctx) {
-  const { db, request, response, pathname, user, access, json, errorJson, settingsObject } = ctx;
-  if (pathname !== '/api/arm') return false;
-  if (request.method !== 'GET') { errorJson(response, 405, 'Только чтение'); return true; }
+// /api/arm — АРМ (свой или подчинённого: ?user=), люди, задачи.
+// ctx.notifyUser(userId, text) — адресное уведомление (лента + Telegram).
+export async function armApi(ctx) {
+  const { db, request, response, pathname, url, user, access, json, errorJson, readJson, audit, requestIp, settingsObject } = ctx;
+  if (pathname !== '/api/arm' && !pathname.startsWith('/api/arm/')) return false;
   if (!user) { errorJson(response, 401, 'Требуется вход'); return true; }
-  const roleId = access && !access.legacy ? armRoleOf(access.sets || []) : null;
-  if (!roleId) { json(response, 200, { pilot: false }); return true; }
-  json(response, 200, { pilot: true, ...armData(db, user, roleId, { settings: settingsObject(db) }) });
+  const method = request.method;
+  const notify = (userId, text) => { try { ctx.notifyUser?.(userId, text); } catch { /* не критично */ } };
+  if (pathname === '/api/arm' && method === 'GET') {
+    const targetId = url?.searchParams?.get('user') || user.id;
+    const target = targetId === user.id ? user : db.prepare('SELECT * FROM users WHERE id=? AND deleted_at IS NULL').get(targetId);
+    if (!target) { errorJson(response, 404, 'Сотрудник не найден'); return true; }
+    if (!canView(db, user, access, target)) { errorJson(response, 403, 'Рабочее место сотрудника видит его руководитель'); return true; }
+    const targetAccess = target.id === user.id ? access : ctx.accessOf?.(db, target);
+    const roleId = targetAccess && !targetAccess.legacy ? armRoleOf(targetAccess.sets || []) : null;
+    json(response, 200, { ...armData(db, target, roleId, { settings: settingsObject(db), readOnly: target.id !== user.id }),
+      viewer: { id: user.id, self: target.id === user.id } });
+    return true;
+  }
+  if (pathname === '/api/arm/people' && method === 'GET') {
+    json(response, 200, { people: peopleFor(db, user, access), canViewOthers: isHead(access) || isDirection(access) });
+    return true;
+  }
+  if (pathname === '/api/arm/tasks' && method === 'POST') {
+    const body = await readJson(request) || {};
+    const result = addTask(db, user, access, body);
+    if (!result.ok) { errorJson(response, result.status, result.error); return true; }
+    audit(db, user, 'create', 'arm_task', result.id, { to: result.to.id, title: body.title }, requestIp(request));
+    notify(result.to.id, `☑ Задача от ${user.full_name || user.username}: ${String(body.title).trim()} — срок ${dueLabel(new Date(Date.parse(body.dueAt)).toISOString(), Date.now()).replace('срок ', '')}. Открыть: «Моё рабочее место».`);
+    json(response, 201, { id: result.id });
+    return true;
+  }
+  const match = pathname.match(/^\/api\/arm\/tasks\/([^/]+)$/);
+  if (match && method === 'POST') {
+    const body = await readJson(request) || {};
+    const result = taskAction(db, user, decodeURIComponent(match[1]), body.action, body.result);
+    if (!result.ok) { errorJson(response, result.status, result.error); return true; }
+    audit(db, user, body.action, 'arm_task', result.task.id, { result: body.result || '' }, requestIp(request));
+    if (result.notify) {
+      const what = { done: '✓ сделано', fail: '✗ не сделано', cancel: 'снята' }[body.action];
+      notify(result.notify, `☑ Задача «${result.task.title}» — ${what}${body.result ? `: ${String(body.result).trim()}` : ''} (${user.full_name || user.username}).`);
+    }
+    json(response, 200, { ok: true });
+    return true;
+  }
+  errorJson(response, 404, 'Маршрут АРМ не найден');
   return true;
 }
