@@ -51,9 +51,10 @@ import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek
 import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { directionGoals } from '../public/assets/goals-core.js';
-import { archiveGoal, goalsData, goalsDigestLine, saveGoal } from './goals.mjs';
+import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
-import { archivePosition, createPosition, positionById, saveGroup, structureData, updatePosition,
+import { accessOf, assignRoleSets, roleSets, stripOrders, stripSmall, stripTrips } from './access.mjs';
+import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
   matchAtsAbonents, parseXsiEvent, resolveSubscriptionTarget, setAtsTracked, syncBeelineJournal } from './beeline-telephony.mjs';
@@ -209,6 +210,9 @@ function publicUser(user) {
     // доступ к затратам или должность «весь ЦФО»; руководителю отдела —
     // только его отдел. null — экран не показывается.
     cfoScope: cfoScope(db, user, expensesAccess(user, settingsObject(db))),
+    // Роль-набор (поле управления, 07.11): область, экраны, уровень денег.
+    access: accessOf(db, user),
+    labMode: Boolean(process.env.LAB_AUTOLOGIN && !config.isProduction),
     guest: Boolean(Number(user.guest)),
     permissions: effectivePermissions(user),
     // Вкладка «Сотрудники»: право staff:write или логин из настройки
@@ -7500,6 +7504,25 @@ let bootstrapCache = { at: 0, shared: '', rev: '' };
 // Тяжёлые разделы полного снимка (trips/orders) — свой короткий кэш:
 // в тиках они едут дельтой, полный нужен входам и часовому рефрешу.
 let heavyCache = { at: 0, json: '' };
+// Варианты стартовой выдачи по уровню денег роли-набора (поле управления,
+// 07.11): коммерческую тайну режет СЕРВЕР. Полный вариант — прежний кэш;
+// урезанные собираются из него лениво и живут, пока жив исходник.
+const moneyVariants = { smallAt: 0, small: {}, heavyAt: 0, heavy: {} };
+function smallFor(money) {
+  if (money === 'full') return bootstrapCache.shared;
+  if (moneyVariants.smallAt !== bootstrapCache.at) moneyVariants.small = {};
+  moneyVariants.smallAt = bootstrapCache.at;
+  return (moneyVariants.small[money] ||= JSON.stringify(stripSmall(JSON.parse(bootstrapCache.shared), money)));
+}
+function heavyFor(money) {
+  if (money !== 'none') return heavyCache.json;
+  if (moneyVariants.heavyAt !== heavyCache.at) moneyVariants.heavy = {};
+  moneyVariants.heavyAt = heavyCache.at;
+  return (moneyVariants.heavy[money] ||= (() => {
+    const parsed = JSON.parse(`{${heavyCache.json}}`);
+    return `"trips":${JSON.stringify(stripTrips(parsed.trips, money))},"orders":${JSON.stringify(stripOrders(parsed.orders, money))}`;
+  })());
+}
 
 // Сборка «мелких» секций снимка (всё, кроме trips/orders): стоит до
 // секунд (демередж), поэтому лёгкий rev-путь её НЕ зовёт — протухший
@@ -7951,7 +7974,7 @@ async function api(request, response, url) {
     // когда изменился их собственный hash, без 17 МБ рейсов и заявок.
     if (!dateFilter && url.searchParams.get('part') === 'small') {
       const body = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
-        `"sync":${JSON.stringify(syncInfo)},` + bootstrapCache.shared.slice(1);
+        `"sync":${JSON.stringify(syncInfo)},` + smallFor(accessOf(db, user).money).slice(1);
       response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
       return response.end(body);
@@ -7980,11 +8003,13 @@ async function api(request, response, url) {
           OR o.status='new' OR o.trip_id IS NULL
           OR datetime(o.window_to) >= datetime('now','-92 days'))
         ORDER BY o.window_from`).all(ordersSince) : [];
-      return json(response, 200, { rev: compositeRev, sync: syncInfo, trips, orders });
+      const money = accessOf(db, user).money;
+      return json(response, 200, { rev: compositeRev, sync: syncInfo,
+        trips: stripTrips(trips, money), orders: stripOrders(orders, money) });
     }
     if (dateFilter) {
       // Редкий путь с фильтром даты — без кэша, как раньше.
-      return json(response, 200, {
+      const filtered = {
         user: publicUser(user), rev: '',
       settings: plannerSettings(), reference: allReferenceData(),
       vehicles: listVehicles(), trips: listTrips(url.searchParams.get('date') || ''),
@@ -8024,7 +8049,11 @@ async function api(request, response, url) {
       // Закрепление машин по кругам («План парка»): «Потоки» помечают
       // кандидатов чужого направления бейджем круга.
       roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
-      });
+      };
+      const money = accessOf(db, user).money;
+      if (money === 'full') return json(response, 200, filtered);
+      return json(response, 200, { ...stripSmall(filtered, money),
+        trips: stripTrips(filtered.trips, money), orders: stripOrders(filtered.orders, money) });
     }
     // Полный снимок (вход, смена справочников, плановый часовой рефреш):
     // тяжёлые разделы собираются с коротким кэшем — вход утром у всех
@@ -8033,9 +8062,10 @@ async function api(request, response, url) {
       heavyCache = { at: Date.now(),
         json: `"trips":${JSON.stringify(listTrips(''))},"orders":${JSON.stringify(listOrders())}` };
     }
+    const money = accessOf(db, user).money;
     const body = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
-      `"sync":${JSON.stringify(syncInfo)},${heavyCache.json},` +
-      bootstrapCache.shared.slice(1);
+      `"sync":${JSON.stringify(syncInfo)},${heavyFor(money)},` +
+      smallFor(money).slice(1);
     response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
       'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
     return response.end(body);
@@ -14869,11 +14899,15 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/goals') {
     const user = requireUser(request, response);
     if (!user) return;
+    const access = accessOf(db, user);
+    if (!access.legacy && !access.views.includes('goals')) return errorJson(response, 403, 'Панель вне вашей роли');
     const ctx = goalsContext(url.searchParams.get('month'), mileageData);
-    const data = goalsData(db, ctx);
+    const data = scopeGoals(goalsData(db, ctx), access.scope, ctx);
+    const initiatives = goalsInitiatives();
     return json(response, 200, { ...data, month: ctx.month, from: ctx.from, to: ctx.to,
-      goals: ctx.goals, canEdit: staffAccess(user, settingsObject(db)),
-      initiatives: goalsInitiatives() });
+      goals: access.scope.all ? ctx.goals : null,
+      canEdit: staffAccess(user, settingsObject(db)) && access.scope.all,
+      initiatives: Object.fromEntries(Object.entries(initiatives).filter(([key]) => access.scope.depts.includes(key))) });
   }
   if ((request.method === 'POST' || request.method === 'DELETE') && pathname.startsWith('/api/goals/items')) {
     const user = requireStaffAccess(request, response);
@@ -14930,8 +14964,10 @@ async function api(request, response, url) {
       const from = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
       park = parkReportData(from, to).total;
     } catch { /* канон не собрался — коэффициенты без значения */ }
-    const data = structureData(db, park);
-    data.canEdit = staffAccess(user, settingsObject(db));
+    const access = accessOf(db, user);
+    if (!access.legacy && !access.views.includes('structure')) return errorJson(response, 403, 'Панель вне вашей роли');
+    const data = scopeStructure(structureData(db, park), access.scope);
+    data.canEdit = staffAccess(user, settingsObject(db)) && access.scope.all;
     // Цели каскада — из Настроек (ноль — осознанное значение, пустота → канон среды СТ).
     const goals = directionGoals(settingsObject(db).calculation);
     data.targets = { КТГ: goals.ktg, КВЛ: goals.kvl, КИП: goals.kip, КЭИП: goals.use };
@@ -14969,15 +15005,31 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/staff') {
     const user = requireStaffAccess(request, response);
     if (!user) return;
-    return json(response, 200, staffList(db));
+    const list = staffList(db);
+    // Роли-наборы (поле управления, 07.11): справочник для назначения и
+    // наборы каждого сотрудника.
+    const sets = roleSets(db);
+    const titleOf = new Map(sets.map(set => [set.id, set.title]));
+    const setsOf = new Map(db.prepare(`SELECT id, role_sets FROM users WHERE deleted_at IS NULL`).all()
+      .map(row => [row.id, (() => { try { return JSON.parse(row.role_sets || '[]'); } catch { return []; } })()]));
+    for (const item of list.users) {
+      item.roleSets = setsOf.get(item.id) || [];
+      item.roleSetTitles = item.roleSets.map(id => titleOf.get(id) || id);
+    }
+    return json(response, 200, { ...list, roleSets: sets });
   }
   if (request.method === 'POST' && pathname === '/api/staff/users') {
     const user = requireStaffAccess(request, response);
     if (!user) return;
     const body = await readJson(request);
-    const result = createStaffUser(db, body,
+    const result = createStaffUser(db, { ...body, roles: [] },
       { allowAdmin: hasPermission(user, 'users:write'), hashPassword });
     if (!result.ok) return errorJson(response, 422, result.error);
+    // Роль = набор под должность (07.11): коды прав пишет assignRoleSets.
+    if (Array.isArray(body.roleSets) && body.roleSets.length) {
+      const assigned = assignRoleSets(db, result.id, body.roleSets, { allowAdmin: hasPermission(user, 'users:write') });
+      if (!assigned.ok) return errorJson(response, 422, assigned.error);
+    }
     audit(db, user, 'create', 'staff', result.id, { ...body, password: undefined }, requestIp(request));
     return json(response, 201, { id: result.id });
   }
@@ -15073,6 +15125,10 @@ async function api(request, response, url) {
     const result = updateStaffUser(db, match[0], body,
       { allowAdmin: hasPermission(user, 'users:write') });
     if (!result.ok) return errorJson(response, 422, result.error);
+    if (Array.isArray(body.roleSets)) {
+      const assigned = assignRoleSets(db, match[0], body.roleSets, { allowAdmin: hasPermission(user, 'users:write') });
+      if (!assigned.ok) return errorJson(response, 422, assigned.error);
+    }
     audit(db, user, 'update', 'staff', match[0], body, requestIp(request));
     return json(response, 200, result);
   }
@@ -15674,8 +15730,14 @@ export const server = http.createServer(async (request, response) => {
         && (url.pathname === '/__lab-login' || (labPages.includes(url.pathname) && !currentUser(request)))
         && process.env.LAB_AUTOLOGIN && !config.isProduction
         && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress)) {
-      const user = db.prepare('SELECT * FROM users WHERE username=? AND active=1')
-        .get(process.env.LAB_AUTOLOGIN);
+      // «Войти как…» (поле управления, 07.11): /__lab-login?as=<id> —
+      // сессия под любым сотрудником, чтобы проверить его роль-набор
+      // глазами; без параметра — под LAB_AUTOLOGIN.
+      const asId = url.pathname === '/__lab-login' ? url.searchParams.get('as') : null;
+      const user = asId
+        ? db.prepare('SELECT * FROM users WHERE id=? AND active=1 AND deleted_at IS NULL').get(asId)
+        : db.prepare('SELECT * FROM users WHERE username=? AND active=1')
+          .get(process.env.LAB_AUTOLOGIN);
       if (user) {
         const token = newSessionToken();
         const expires = new Date(Date.now() + config.sessionTtlMs).toISOString();
@@ -15687,6 +15749,18 @@ export const server = http.createServer(async (request, response) => {
         });
         return response.end();
       }
+    }
+    // Список для «войти как…» — только лаборатория, только с этой машины.
+    if (request.method === 'GET' && url.pathname === '/__lab-users'
+        && process.env.LAB_AUTOLOGIN && !config.isProduction
+        && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress)) {
+      const sets = new Map(roleSets(db).map(set => [set.id, set.title]));
+      return json(response, 200, db.prepare(`SELECT id, full_name, username, role_sets FROM users
+        WHERE active=1 AND deleted_at IS NULL ORDER BY full_name`).all()
+        .map(row => ({ id: row.id, name: row.full_name, username: row.username,
+          sets: (() => { try { return JSON.parse(row.role_sets || '[]'); } catch { return []; } })()
+            .map(id => sets.get(id) || id) }))
+        .filter(row => row.sets.length || row.username === process.env.LAB_AUTOLOGIN));
     }
     if (url.pathname.startsWith('/api/')) await api(request, response, url);
     else if (url.pathname === '/ops-report') {

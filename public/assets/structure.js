@@ -45,7 +45,7 @@ export async function renderStructure(container, context) {
 
   const deptSection = dept => {
     const target = targets?.[dept.coef];
-    return `<section class="section s3 dept-${dept.key} st-dept">
+    return `<section class="section ${data.scoped ? 'st-wide' : 's3'} dept-${dept.key} st-dept">
       <div class="sec-h"><span class="st">${escapeHtml(dept.name)}</span>
         <span class="owner-chip chip-${dept.key}" title="${escapeHtml(dept.note)}">${dept.coef}</span>
         <div class="sec-actions">${edit ? `<button class="button ghost small" data-add-group="${dept.key}" title="Новая группа отдела">＋ группа</button>` : ''}</div></div>
@@ -66,11 +66,11 @@ export async function renderStructure(container, context) {
   };
 
   container.innerHTML = `<div class="bi-page st-page">
-    <div class="bi-sub"><h2>Структура направления СТ</h2>
+    <div class="bi-sub"><h2>${data.scoped ? `Структура · ${escapeHtml(data.depts.map(dept => dept.name).join(', '))}` : 'Структура направления СТ'}</h2>
       <p>Штат — цель структуры, факт — люди из «Сотрудников» и водители из «Ресурса». Коэффициенты — канон отчёта парка за 7 суток${park ? ` (${park.from.slice(8, 10)}.${park.from.slice(5, 7)}–${park.to.slice(8, 10)}.${park.to.slice(5, 7)})` : ''}.</p>
       <div class="bi-actions">${data.canEdit ? `<button class="button ${edit ? 'primary' : 'secondary'}" id="stEdit"
         title="Правка групп, должностей и штата — каждая правка пишется в журнал">${edit ? '✓ Готово' : '✎ Править структуру'}</button>` : ''}</div></div>
-    <div class="bi-kpis">
+    ${data.scoped ? scopedTiles(data, tone) : `<div class="bi-kpis">
       <div class="metric dept-toir"><span class="l">ТС в списке</span><span class="v">${park?.fleet ?? '—'}<small>ТС</small></span><span class="d">база КТГ</span></div>
       <div class="metric dept-drv ${totals.drivers < totals.driverHeadcount ? 'warn' : ''}"><span class="l">Водители</span>
         <span class="v">${totals.drivers}<small>из ${totals.driverHeadcount}</small></span>
@@ -82,7 +82,7 @@ export async function renderStructure(container, context) {
         <span class="v">${fmtPct(koef)}</span><span class="d">цель ${fmtPct(targets?.КЭИП)} · КТГ×КВЛ×КИП</span></div>
       <div class="metric ${totals.noRole ? 'warn' : ''}"><span class="l">Без роли в планере</span>
         <span class="v">${totals.noRole}<small>чел</small></span><span class="d">входа нет — роль назначается руками</span></div>
-    </div>
+    </div>`}
     <div class="bi-grid">
       ${data.depts.map(deptSection).join('')}
       ${data.unplaced.length ? `<section class="section">
@@ -125,6 +125,23 @@ export async function renderStructure(container, context) {
     }
     return undefined;
   };
+}
+
+// Мини-структура отдела (поле управления, 07.11): плитки СВОЕГО отдела —
+// его коэффициент против цели, штат, факт, вакансии; итогов направления
+// (весь парк, КЭИП) руководитель отдела не видит.
+function scopedTiles(data, tone) {
+  return `<div class="bi-kpis">${data.depts.map(dept => {
+    const target = data.targets?.[dept.coef];
+    return `<div class="metric hero dept-${dept.key} ${tone(dept.value, target)}"><span class="l">${dept.coef} · ${escapeHtml(dept.name)}</span>
+        <span class="v">${fmtPct(dept.value)}</span><span class="d">цель ${fmtPct(target)} · ${escapeHtml(dept.note)}</span></div>
+      <div class="metric dept-${dept.key} ${dept.vacancies ? 'warn' : ''}"><span class="l">Штат отдела</span>
+        <span class="v">${dept.fact}<small>из ${dept.headcount}</small></span>
+        <span class="d">${dept.vacancies ? `вакансий ${dept.vacancies}` : 'укомплектовано'}</span></div>`;
+  }).join('')}
+    <div class="metric ${data.totals.noRole ? 'warn' : ''}"><span class="l">Без роли в планере</span>
+      <span class="v">${data.totals.noRole}<small>чел</small></span><span class="d">входа нет — роль назначает руководитель</span></div>
+  </div>`;
 }
 
 async function save(call, message, after) {

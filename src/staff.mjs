@@ -71,7 +71,7 @@ export function canLogin(user) {
 export function staffUserCard(db, id, month) {
   const user = db.prepare(`SELECT id, username, full_name, email, role, roles, active,
       guest, phone, work_phone, ext_phone, job_role, hired_at, fired_at,
-      telegram_chat_id, created_at, dispatch_exempt, esc_role, position_id, password_hash
+      telegram_chat_id, created_at, dispatch_exempt, esc_role, position_id, password_hash, role_sets
     FROM users WHERE id=? AND deleted_at IS NULL`).get(id);
   if (!user) return null;
   const ack = db.prepare(`SELECT MAX(acked_at) at FROM guide_acks WHERE user_id=?`).get(id)?.at || null;
@@ -86,6 +86,7 @@ export function staffUserCard(db, id, month) {
       email: user.email || '', roles: rolesOf(user).filter(Boolean),
       roleLabel: roleLabel(user), jobRole: user.job_role || '',
       positionId: user.position_id || '', canLogin: canLogin(user),
+      roleSets: (() => { try { return JSON.parse(user.role_sets || '[]'); } catch { return []; } })(),
       dispatchExempt: !!user.dispatch_exempt,
       escRole: user.esc_role || '',
       phone: user.phone || '', extPhone: user.ext_phone || '',

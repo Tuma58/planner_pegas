@@ -180,6 +180,27 @@ export function structureData(db, park = null) {
   };
 }
 
+// Срез обзора по области (поле управления, 07.11): руководитель отдела
+// видит мини-структуру СВОЕГО отдела — чужие отделы сервер не отдаёт.
+export function scopeStructure(data, scope) {
+  if (!scope || scope.all) return data;
+  const keep = new Set(scope.depts);
+  const positions = data.positions.filter(item => keep.has(item.dept));
+  const sum = (list, key) => list.reduce((total, item) => total + item[key], 0);
+  const office = positions.filter(item => !item.driverPool);
+  const drivers = positions.filter(item => item.driverPool);
+  return { ...data,
+    depts: data.depts.filter(item => keep.has(item.key)),
+    groups: data.groups.filter(item => keep.has(item.dept)),
+    positions, unplaced: [],
+    totals: { headcount: sum(positions, 'headcount'), fact: sum(positions, 'fact'),
+      vacancies: sum(positions, 'vacancies'), officeHeadcount: sum(office, 'headcount'),
+      officeFact: sum(office, 'fact'), driverHeadcount: sum(drivers, 'headcount'),
+      drivers: drivers.length ? data.totals.drivers : 0,
+      noRole: office.reduce((n, p) => n + p.people.filter(person => !person.roles.length).length, 0) },
+    scoped: true };
+}
+
 const PASSPORT_KEYS = ['gen', 'qual', 'know', 'func', 'duties', 'rights', 'inter', 'resp', 'kpi'];
 
 // Правка должности руководителем: название, штат, группа, статус, паспорт.

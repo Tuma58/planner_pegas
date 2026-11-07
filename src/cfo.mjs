@@ -11,6 +11,7 @@
 // Логистика — выручка и маржа на МД под грузом.
 
 import { CFO_KEYS, expensesSummary } from './expenses.mjs';
+import { accessOf } from './access.mjs';
 
 export const CFO_META = {
   drv: { name: 'Отдел эксплуатации', coef: 'КВЛ', cls: 'центр затрат' },
@@ -25,6 +26,14 @@ export const CFO_META = {
 // — только свой отдел. Остальным экран не показывается.
 export function cfoScope(db, user, hasExpensesAccess) {
   if (hasExpensesAccess) return { all: true, depts: [...CFO_KEYS] };
+  // Роль-набор (поле управления, 07.11) решает первой: «весь ЦФО» или
+  // «ЦФО своего отдела»; без наборов — прежняя отметка должности.
+  const access = accessOf(db, user);
+  if (!access.legacy) {
+    if (access.cfo === 'all') return { all: true, depts: [...CFO_KEYS] };
+    if (access.cfo === 'dept' && access.scope.depts.length) return { all: false, depts: access.scope.depts };
+    return null;
+  }
   if (!user?.position_id) return null;
   const position = db.prepare(`SELECT dept_key, cfo_view FROM org_positions
     WHERE id=? AND archived_at IS NULL`).get(user.position_id);

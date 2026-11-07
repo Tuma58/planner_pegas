@@ -57,7 +57,7 @@ export async function renderGoals(container, context) {
   const s = data.summary;
 
   container.innerHTML = `<div class="bi-page gl-page">
-    <div class="bi-sub"><h2>Цели и задачи направления СТ</h2>
+    <div class="bi-sub"><h2>${data.scoped ? `Цели и задачи · ${DEPTS.filter(([key]) => data.items.some(item => item.dept === key)).map(([, name]) => name).join(', ')}` : 'Цели и задачи направления СТ'}</h2>
       <p>${mission ? `${escapeHtml(mission.body)} ${tools(mission)}` : ''}</p>
       <div class="bi-actions">
         <input type="month" id="glMonth" value="${month}" title="Месяц, за который считаются показатели">
@@ -69,7 +69,7 @@ export async function renderGoals(container, context) {
         <span class="d">близко ${s.near} · мимо ${s.miss} · справочно ${s.info} · без источника ${s.none}</span></div>
     </div>
     <div class="bi-grid">
-      <section class="section">
+      ${data.scoped ? '' : `<section class="section">
         <div class="sec-h"><span class="st">Стратегические цели</span>
           <span class="hint">показатели — ${ruDay(data.from)}–${ruDay(new Date(Date.parse(`${data.to}T00:00:00Z`) - 864e5).toISOString().slice(0, 10))}, цели — «⚙ Настройки → Цели направления СТ»</span>
           <div class="sec-actions">${edit ? '<button class="button ghost small" data-add="strategy">＋ цель</button>' : ''}</div></div>
@@ -77,12 +77,12 @@ export async function renderGoals(container, context) {
           <h3>${escapeHtml(item.title)} ${tools(item)}</h3>
           <p>${escapeHtml(item.body)}</p>
           <div class="gl-foot">${metricLine(item.metric)}</div></div>`).join('')}</div>
-      </section>
-      ${DEPTS.map(([key, name, center]) => {
+      </section>`}
+      ${DEPTS.filter(([key]) => !data.scoped || data.items.some(item => item.dept === key)).map(([key, name, center]) => {
     const goal = data.items.find(item => item.kind === 'dept' && item.dept === key);
     const tasks = data.items.filter(item => item.kind === 'task' && item.dept === key);
     const ini = data.initiatives?.[key] || { p160: 0, eff: 0 };
-    return `<section class="section s3 dept-${key} gl-dept">
+    return `<section class="section ${data.scoped ? 's12' : 's3'} dept-${key} gl-dept">
           <div class="sec-h"><span class="st">${name}</span><span class="hint">${center}</span>
             <div class="sec-actions">${edit ? `<button class="button ghost small" data-add="task" data-dept="${key}">＋ задача</button>` : ''}</div></div>
           <div class="sec-b">
@@ -95,12 +95,12 @@ export async function renderGoals(container, context) {
               в работе: «160 млн» — <b>${ini.p160}</b> · план эффективности — <b>${ini.eff}</b></div>
           </div></section>`;
   }).join('')}
-      <section class="section">
+      ${data.scoped ? '' : `<section class="section">
         <div class="sec-h"><span class="st">Как достигаем — принципы управления</span>
           <div class="sec-actions">${edit ? '<button class="button ghost small" data-add="principle">＋ принцип</button>' : ''}</div></div>
         <div class="sec-b flush">${byKind('principle').map(item => `<div class="gl-pr">
           <b>${escapeHtml(item.title)}</b> ${tools(item)}<div class="muted">${escapeHtml(item.body)}</div></div>`).join('')}</div>
-      </section>
+      </section>`}
     </div>
   </div>`;
 

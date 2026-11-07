@@ -150,6 +150,19 @@ export function goalsData(db, ctx) {
   };
 }
 
+// Срез по области (поле управления, 07.11): руководитель отдела видит
+// цель и задачи СВОЕГО отдела; миссия, стратегия и итоги направления —
+// у области «всё направление».
+export function scopeGoals(data, scope, ctx) {
+  if (!scope || scope.all) return data;
+  const keep = new Set(scope.depts);
+  const items = data.items.filter(item => ['dept', 'task'].includes(item.kind) && keep.has(item.dept));
+  const summary = { ok: 0, near: 0, miss: 0, info: 0, none: 0 };
+  for (const task of items.filter(item => item.kind === 'task')) summary[task.metric?.tone || 'none'] += 1;
+  const head = items.filter(item => item.kind === 'dept').map(item => item.metric).filter(Boolean);
+  return { ...data, items, head, summary, scoped: true };
+}
+
 // Правка руководителем: текст, показатель, порядок; новые задачи/цели.
 export function saveGoal(db, body = {}) {
   const title = String(body.title || '').trim();

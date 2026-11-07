@@ -60,6 +60,7 @@ export async function renderStaff(container, context) {
   }
   // Справочник должностей структуры СТ (блок 1 «Слияния») — для формы.
   state.staffPositions = payload.positions || [];
+  state.staffRoleSets = payload.roleSets || [];
   const query = (state.staffQuery || '').toLowerCase();
   const matches = person => !query ||
     `${person.fullName} ${person.jobRole} ${person.phone} ${person.extPhone || ''} ${person.username || ''} ${person.vehiclePlate || ''}`
@@ -79,7 +80,9 @@ export async function renderStaff(container, context) {
       ${person.guest ? '<small class="muted" style="display:block">гость (только чтение)</small>' : ''}</td>
     <td>${escapeHtml(person.jobRole || '—')}
       ${person.positionId ? '' : '<small class="bi-tag warn" title="Должность не из справочника структуры — выберите в «✎ Данные»">вне структуры</small>'}
-      ${person.roles?.length ? '' : '<small class="muted" style="display:block" title="Права не назначены — в планер не входит">без роли · входа нет</small>'}</td>
+      ${person.roleSetTitles?.length ? `<small class="muted" style="display:block" title="Роль-набор: область, экраны, права">роль: ${escapeHtml(person.roleSetTitles.join(' + '))}</small>`
+    : person.roles?.length ? '<small class="muted" style="display:block" title="Права по старым ролям — назначьте роль-набор">старые права · без набора</small>'
+      : '<small class="muted" style="display:block" title="Права не назначены — в планер не входит">без роли · входа нет</small>'}</td>
     <td class="mono">${escapeHtml(person.extPhone || '')}${person.extPhone && person.phone ? ' · ' : ''}${escapeHtml(person.phone || '')}
       ${person.workPhone ? `<small class="muted" title="телефон текущей смены (вводится при входе)" style="display:block">смена: ${escapeHtml(person.workPhone)}</small>` : ''}</td>
     <td>${person.telegram ? '✓' : '<span class="muted">—</span>'}</td>
@@ -301,7 +304,9 @@ export async function staffCardDialog(context, id, after) {
       </div>
       <div class="sec" style="background:var(--panel2);border-radius:10px;padding:10px 12px">
         <h3 style="margin:0 0 6px;font-size:12px;color:var(--muted)">🔐 ДОСТУП</h3>
-        <div class="dash-row"><span>Роли в планере</span><b>${escapeHtml(person.roleLabel)}</b></div>
+        <div class="dash-row"><span>Роль (набор)</span><b>${escapeHtml((person.roleSets || []).map(id =>
+    (context.state.staffRoleSets || []).find(set => set.id === id)?.title || id).join(' + ') || 'не назначена')}</b></div>
+        <div class="dash-row"><span>Права (коды)</span><b>${escapeHtml(person.roleLabel)}</b></div>
         <div class="dash-row"><span>Инструкции</span><b>${person.guideAckAt ? `✍ ${fmtDate(person.guideAckAt)}` : '—'}</b></div>
         <div class="dash-row"><span>Учётка</span><b>${person.active ? 'активна' : 'отключена'}${person.guest ? ' · гость' : ''}</b></div>
       </div>
@@ -447,17 +452,22 @@ function positionSelect(positions, person) {
     <small class="muted">справочник — экран «Структура»; роль (права) назначается отдельно</small></label>`;
 }
 
+// Роль-набор (поле управления, 07.11): одна роль = область + экраны +
+// права + уровень денег. Чекбоксы — для совмещения должностей.
+const MONEY_TITLE = { full: 'все деньги', rates: 'ставки', none: 'без денег' };
+function roleSetPicker(sets, current, isAdmin) {
+  return `<div class="field"><span>Роль в планере <small class="muted">— набор под должность: что видит и что может</small></span>
+    <div class="st-roles">${sets.filter(set => isAdmin || set.id !== 'admin').map(set => `<label>
+      <input type="checkbox" name="roleSets" value="${set.id}" ${current.includes(set.id) ? 'checked' : ''}>
+      <span><b>${escapeHtml(set.title)}</b> <small class="muted">${set.views.length} экр. · ${MONEY_TITLE[set.money] || ''}</small></span></label>`).join('')}</div>
+    <small class="muted">без роли — сотрудник в штате, но в планер не входит; пароль задаёт администратор</small></div>`;
+}
+
 // Данные сотрудника: приём нового (с учёткой) и правка существующего.
 function staffEditDialog(context, person, after) {
   const { showModal, closeModal, state } = context;
   const roles = state.data.user?.roles || [];
   const isAdmin = roles.includes('admin');
-  const roleOptions = Object.entries({
-    sales: 'Планирование', logist: 'Логист', dispatcher: 'Диспетчер-логист (контроль)', resource: 'Эксплуатация (учёт)',
-    accountant: 'Бухгалтерия', mechanic: 'Механик', manager: 'Руководитель',
-    ...(isAdmin ? { admin: 'Администратор' } : {})
-  }).map(([value, label]) =>
-    `<label style="display:inline-flex;gap:4px;margin-right:10px"><input type="checkbox" name="roles" value="${value}"> ${label}</label>`).join('');
   showModal(`<form id="staffForm">
     <h2>${person ? 'Данные сотрудника' : 'Приём сотрудника'}</h2>
     <label class="field">ФИО <input name="fullName" required value="${escapeHtml(person?.fullName || '')}"></label>
@@ -474,7 +484,8 @@ function staffEditDialog(context, person, after) {
     <details class="st-pp"><summary>🔐 Доступ в планер <small class="muted">— не обязательно: без роли сотрудник в штате, но не входит</small></summary>
     <label class="field">Логин в планер <input name="username" autocomplete="off"></label>
     <label class="field">Пароль (мин. 10 символов) <input name="password" minlength="10" autocomplete="new-password"></label>
-    <div class="field"><span>Роли в планере</span><div style="margin-top:4px">${roleOptions}</div></div></details>`}
+    ${roleSetPicker(state.staffRoleSets || [], [], isAdmin)}</details>`}
+    ${person ? roleSetPicker(state.staffRoleSets || [], person.roleSets || [], isAdmin) : ''}
     ${person ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
       <input type="checkbox" name="dispatchExempt" ${person?.dispatchExempt ? 'checked' : ''}>
       не участвует в автораспределении диспетчерской
@@ -504,13 +515,14 @@ function staffEditDialog(context, person, after) {
     if (position !== '__keep') body.positionId = position;
     if (person) body.dispatchExempt = form.querySelector('[name="dispatchExempt"]')?.checked || false;
     if (person) body.escRole = String(values.get('escRole') || '');
+    if (person) body.roleSets = [...form.querySelectorAll('[name="roleSets"]:checked')].map(input => input.value);
     try {
       if (person) {
         await api(`/api/staff/users/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       } else {
         body.username = String(values.get('username') || '').trim();
         body.password = String(values.get('password') || '');
-        body.roles = [...form.querySelectorAll('[name="roles"]:checked')].map(input => input.value);
+        body.roleSets = [...form.querySelectorAll('[name="roleSets"]:checked')].map(input => input.value);
         await api('/api/staff/users', { method: 'POST', body: JSON.stringify(body) });
       }
       toast(person ? 'Сохранено' : 'Сотрудник принят');

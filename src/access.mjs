@@ -1,0 +1,135 @@
+// Роли-наборы и область (проект «Слияние», «Поле управления», утверждено
+// руководителем 07.11.2026). Роль = НАБОР под должность: область (свой
+// отдел или всё направление) + экраны + коды прав + уровень денег +
+// видимость ЦФО. Набор собирается ПОВЕРХ прежних кодов ролей
+// (users.roles: sales/logist/dispatcher/resource/mechanic/manager/
+// accountant/admin) — на них держатся права, адресаты уведомлений
+// notify(...), отметки задач и автораздача доски; при назначении набора
+// его коды пишутся в users.roles, поэтому всё прежнее работает как было.
+// Чужие отделы скрыты полностью: коммерческую тайну охраняет СЕРВЕР —
+// сводные API отдают только область, стартовая выдача режет деньги по
+// уровню набора. Пользователь без наборов (переходный период, учётки
+// прода до назначения) живёт по-старому: права ролей, всё направление.
+
+import { ROLE_LABELS, rolesOf } from './permissions.mjs';
+
+export const ALL_VIEWS = ['dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+  'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
+  'resource', 'fleetplan', 'remzona'];
+const DEPT_PANELS = ['structure', 'goals', 'cfo'];
+// Уровни денег: full — выручка, планы, прогноз, претензии; rates —
+// ставки рейсов и заявок (работа логиста/планирования), без итогов
+// направления; none — без денег вовсе.
+export const MONEY_LEVELS = ['full', 'rates', 'none'];
+
+// Посев — утверждённая таблица 9.1 (00-pole-upravleniya.md).
+const SEED = [
+  ['dir_head', 'Руководитель направления', 'all', ALL_VIEWS.filter(v => v !== 'expenses'),
+    ['manager', 'sales', 'logist', 'dispatcher', 'resource', 'mechanic'], 'full', 'all'],
+  ['log_head', 'Руководитель отдела логистики', 'log',
+    [...DEPT_PANELS, 'sales', 'routes', 'delivery', 'flows', 'logist', 'gantt', 'dispatcher', 'monitoring', 'incidents'],
+    ['sales', 'logist', 'dispatcher'], 'full', 'dept'],
+  ['log_plan', 'Специалист группы планирования', 'log', ['sales', 'routes', 'delivery', 'flows', 'gantt'],
+    ['sales'], 'rates', ''],
+  ['log_assign', 'Логист-диспетчер', 'log', ['logist', 'gantt'], ['logist'], 'rates', ''],
+  ['log_ctrl', 'Диспетчер-контролёр', 'log', ['dispatcher', 'monitoring', 'incidents', 'gantt'],
+    ['dispatcher'], 'none', ''],
+  ['drv_head', 'Руководитель отдела эксплуатации', 'drv', [...DEPT_PANELS, 'resource', 'fleetplan', 'gantt'],
+    ['resource'], 'none', 'dept'],
+  ['drv_column', 'Начальник автоколонны', 'drv', [...DEPT_PANELS, 'resource', 'fleetplan', 'gantt'],
+    ['resource'], 'none', 'dept'],
+  ['drv_acc', 'Диспетчер учёта', 'drv', ['resource'], ['resource'], 'none', ''],
+  ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona'], ['mechanic'], 'none', 'dept'],
+  ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona'], ['mechanic'], 'none', ''],
+  ['accountant', 'Бухгалтерия', '', ['gantt'], ['accountant'], 'rates', ''],
+  ['admin', 'Администратор', 'all', ALL_VIEWS, ['admin'], 'full', 'all']
+];
+
+export function migrateAccess(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS role_sets (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '',
+    views_json TEXT NOT NULL DEFAULT '[]', codes_json TEXT NOT NULL DEFAULT '[]',
+    money TEXT NOT NULL DEFAULT 'none' CHECK(money IN ('full','rates','none')),
+    cfo TEXT NOT NULL DEFAULT '' CHECK(cfo IN ('','dept','all')),
+    sort INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+  const cols = db.prepare(`PRAGMA table_info(users)`).all().map(col => col.name);
+  if (!cols.includes('role_sets')) db.exec(`ALTER TABLE users ADD COLUMN role_sets TEXT NOT NULL DEFAULT ''`);
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_v1'`).get()) return;
+  const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
+    VALUES(?,?,?,?,?,?,?,?)`);
+  SEED.forEach(([id, title, scope, views, codes, money, cfo], index) =>
+    insert.run(id, title, scope, JSON.stringify(views), JSON.stringify(codes), money, cfo, index + 1));
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_v1','1')`).run();
+}
+
+const parse = (text, fallback) => { try { return JSON.parse(text || ''); } catch { return fallback; } };
+
+export function roleSets(db, { all = false } = {}) {
+  return db.prepare(`SELECT * FROM role_sets ${all ? '' : 'WHERE active=1'} ORDER BY sort`).all()
+    .map(row => ({ id: row.id, title: row.title, scope: row.scope, views: parse(row.views_json, []),
+      codes: parse(row.codes_json, []), money: row.money, cfo: row.cfo, active: Boolean(row.active) }));
+}
+
+export function userSetIds(user) {
+  const ids = parse(user?.role_sets, []);
+  return Array.isArray(ids) ? ids.filter(Boolean) : [];
+}
+
+const RANK = { full: 3, rates: 2, none: 1 };
+
+// Доступ пользователя: область, экраны, уровень денег, ЦФО. Наборов нет —
+// прежняя модель (всё направление, экраны по правам, деньги видны).
+export function accessOf(db, user) {
+  const ids = userSetIds(user);
+  if (!ids.length) {
+    return { sets: [], legacy: true, scope: { all: true, depts: ['staff', 'log', 'drv', 'toir'] },
+      views: null, money: rolesOf(user).filter(Boolean).length ? 'full' : 'none', cfo: '' };
+  }
+  const byId = new Map(roleSets(db).map(set => [set.id, set]));
+  const sets = ids.map(id => byId.get(id)).filter(Boolean);
+  const all = sets.some(set => set.scope === 'all');
+  const depts = all ? ['staff', 'log', 'drv', 'toir'] : [...new Set(sets.map(set => set.scope).filter(Boolean))];
+  const money = sets.reduce((best, set) => RANK[set.money] > RANK[best] ? set.money : best, 'none');
+  const cfo = sets.some(set => set.cfo === 'all') ? 'all' : sets.some(set => set.cfo === 'dept') ? 'dept' : '';
+  return { sets: sets.map(set => set.id), setTitles: sets.map(set => set.title), legacy: false,
+    scope: { all, depts }, views: [...new Set(sets.flatMap(set => set.views))], money, cfo };
+}
+
+// Назначение наборов сотруднику: коды прав набора пишутся в users.roles
+// (мост к прежней модели), набор — в users.role_sets. Пусто — без роли и
+// без входа. Набор с кодом admin назначает только администратор.
+export function assignRoleSets(db, userId, ids, { allowAdmin = false } = {}) {
+  const byId = new Map(roleSets(db).map(set => [set.id, set]));
+  const clean = [...new Set((Array.isArray(ids) ? ids : []).filter(id => byId.has(id)))];
+  if ((Array.isArray(ids) ? ids : []).some(id => !byId.has(id))) return { ok: false, error: 'Неизвестная роль' };
+  const codes = [...new Set(clean.flatMap(id => byId.get(id).codes))].filter(code => ROLE_LABELS[code]);
+  if (!allowAdmin && codes.includes('admin')) return { ok: false, error: 'Роль «Администратор» назначает только администратор' };
+  db.prepare(`UPDATE users SET role_sets=?, roles=?, role=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    .run(clean.length ? JSON.stringify(clean) : '', JSON.stringify(codes), codes[0] || '', userId);
+  return { ok: true, sets: clean, codes };
+}
+
+// ── Вырезка денег из стартовой выдачи (уровень набора) ──
+const TRIP_MONEY = ['revenue_vat', 'demurrage_vat', 'cash'];
+const ORDER_MONEY = ['rate_vat', 'cash'];
+export function stripTrips(rows, money) {
+  if (money !== 'none') return rows;
+  return rows.map(row => { const copy = { ...row }; for (const key of TRIP_MONEY) copy[key] = null; return copy; });
+}
+export function stripOrders(rows, money) {
+  if (money !== 'none') return rows;
+  return rows.map(row => { const copy = { ...row }; for (const key of ORDER_MONEY) copy[key] = null; return copy; });
+}
+// Мелкие секции: итоги направления (план выручки, прогноз) — только
+// full; претензии за простой выставляет планирование — у rates остаются;
+// у none нет ни претензий, ни денежной цели маршрута.
+export function stripSmall(shared, money) {
+  if (money === 'full') return shared;
+  const copy = { ...shared, revenuePlans: [], forecastSnapshot: null };
+  if (money === 'none') {
+    copy.demurrage = null;
+    copy.routes = (shared.routes || []).map(route => ({ ...route, target_per_day: null }));
+  }
+  return copy;
+}

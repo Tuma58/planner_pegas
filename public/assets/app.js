@@ -79,7 +79,9 @@ function setupUser() {
   const user = state.data.user;
   state.permissions = new Set(user.permissions);
   byId('profileName').textContent = user.fullName;
-  byId('profileRole').textContent = user.guest ? `${user.roleLabel} · 👁 гостевой режим` : user.roleLabel;
+  // Роль-набор (07.11) — подписью набора, а не перечнем кодов прав.
+  const roleTitle = user.access?.setTitles?.length ? user.access.setTitles.join(' + ') : user.roleLabel;
+  byId('profileRole').textContent = user.guest ? `${roleTitle} · 👁 гостевой режим` : roleTitle;
   byId('profileRole').title = user.guest ? 'Только просмотр: права редактирования отключены администратором' : '';
   byId('avatar').textContent = user.fullName.trim().charAt(0).toUpperCase();
   const dept = user.dept || (user.roles || [user.role]).map(role => ROLE_DEPT[role]).find(Boolean);
@@ -89,7 +91,25 @@ function setupUser() {
     try { localStorage.setItem('pl_dept', dept); } catch { /* приватный режим */ }
   }
   renderCascade();
+  if (user.labMode) setupLabSwitch(user);
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
+}
+
+// ЛАБОРАТОРИЯ (не переносить): «войти как…» — проверить роль-набор
+// глазами сотрудника. Сервер отдаёт список и сессию только с этой машины.
+async function setupLabSwitch(user) {
+  if (byId('labSwitch')) return;
+  const select = document.createElement('select');
+  select.id = 'labSwitch';
+  select.className = 'lab-switch';
+  select.title = 'Лаборатория: войти как сотрудник с ролью-набором';
+  try {
+    const people = await fetch('/__lab-users').then(response => response.json());
+    select.innerHTML = people.map(person => `<option value="${person.id}" ${person.id === user.id ? 'selected' : ''}>
+      ${escapeHtml(person.name)}${person.sets.length ? ` — ${escapeHtml(person.sets.join(' + '))}` : ''}</option>`).join('');
+  } catch { return; }
+  select.onchange = () => { location.href = `/__lab-login?as=${encodeURIComponent(select.value)}`; };
+  document.querySelector('.profile')?.prepend(select);
 }
 
 function setupFilters() {
@@ -873,8 +893,16 @@ function renderCascade() {
     `${index ? '<span class="casc-sep">→</span>' : ''}<span class="casc${dept === mine ? ' on' : ''}" title="${coef}: отдел ${NAV_GROUPS.find(group => group.dept === dept).title}">${coef}</span>`).join('');
 }
 
+// Роль-набор (поле управления, 07.11): экраны — только из набора; без
+// наборов (переходный период) — прежняя видимость по правам.
+function viewAllowed(id) {
+  const access = state.data?.user?.access;
+  return !access || access.legacy || access.views.includes(id);
+}
+const DEPT_PANELS = ['structure', 'goals', 'cfo'];
+
 function renderViewTabs() {
-  const views = MAIN_VIEWS.filter(view => view.show());
+  const views = MAIN_VIEWS.filter(view => view.show() && viewAllowed(view.id));
   const byIdView = new Map(views.map(view => [view.id, view]));
   const query = (byId('navSearch')?.value || '').trim().toLowerCase();
   const link = view => {
@@ -883,13 +911,20 @@ function renderViewTabs() {
       + `<span class="nav-ico">${icon}</span><span class="nav-t">${view.title}</span></button>`;
   };
   const placed = new Set();
-  // Руководителю отдела «ЦФО» — в блоке его отдела, не в Штабе.
-  const scope = state.data?.user?.cfoScope;
-  const ownCfo = scope && !scope.all ? scope.depts[0] : null;
+  // Мини-структура отдела (07.11): у руководителя отдела панели
+  // «Структура», «Цели и задачи», «ЦФО» стоят в блоке ЕГО отдела (сервер
+  // отдаёт их по области), а не в Штабе.
+  const access = state.data?.user?.access;
+  const cfoScope = state.data?.user?.cfoScope;
+  const ownDept = access && !access.legacy && !access.scope.all ? access.scope.depts[0]
+    : cfoScope && !cfoScope.all ? cfoScope.depts[0] : null;
+  const moved = access && !access.legacy && !access.scope.all ? DEPT_PANELS : ['cfo'];
   const groups = NAV_GROUPS.map(group => ({ ...group, sub: group.sub.map((sub, index) => {
     let viewsOf = sub.views;
-    if (ownCfo && group.dept === 'staff') viewsOf = viewsOf.filter(id => id !== 'cfo');
-    if (ownCfo && group.dept === ownCfo && index === 0) viewsOf = [...viewsOf, 'cfo'];
+    if (ownDept && group.dept === 'staff') viewsOf = viewsOf.filter(id => !moved.includes(id));
+    if (ownDept && group.dept === ownDept && index === 0) {
+      viewsOf = [...moved.filter(id => byIdView.has(id)), ...viewsOf];
+    }
     return { ...sub, views: viewsOf };
   }) })).map(group => {
     const subs = group.sub.map(sub => {
@@ -908,6 +943,13 @@ function renderViewTabs() {
   byId('viewTabs').innerHTML = views.length > 1
     ? groups + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '')
     : '';
+  // Экран вне набора (вход, смена роли) — первый экран из меню.
+  if (!byIdView.has(state.view) && views.length) {
+    const first = byId('viewTabs').querySelector('[data-view]')?.dataset.view;
+    state.view = first || views[0].id;
+    byId('viewTabs').querySelectorAll('[data-view]').forEach(button =>
+      button.classList.toggle('active', button.dataset.view === state.view));
+  }
   const current = byIdView.get(state.view);
   byId('pageTitle').textContent = current?.title || '';
   byId('pageHint').textContent = VIEW_META[state.view]?.[1] || '';

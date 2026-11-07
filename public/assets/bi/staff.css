@@ -238,3 +238,10 @@
 .cfo-detail { display: flex; flex-direction: column; gap: 1px; margin: 3px 0 0 10px; font-size: 11.5px; color: var(--muted); }
 .cfo-detail b { font-family: var(--mono-font); font-weight: 600; color: var(--ink); }
 .cfo-period { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; } .cfo-period input { width: auto; }
+.st-roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 12px; margin-top: 6px; }
+.st-roles label { display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; }
+/* Мини-структура отдела: группы колонками во всю ширину */
+.st-wide { grid-column: span 12; }
+.st-wide .sec-b { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 18px; }
+.st-wide .st-coef, .st-wide .st-staff { grid-column: 1 / -1; }
+.st-wide .st-group { border-top: 0; border-left: 2px solid var(--border2); padding: 0 0 0 10px; }
