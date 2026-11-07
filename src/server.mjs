@@ -65,6 +65,7 @@ import { payrollApi } from './payroll.mjs';
 import { crmApi, markTripPaid, syncContractDays } from './crm.mjs';
 import { turnoverApi } from './turnover.mjs';
 import { partsApi } from './parts.mjs';
+import { armApi } from './arm.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -15307,7 +15308,7 @@ async function api(request, response, url) {
   // по экрану роли — это ведомость руководителя направления.
   if (pathname.startsWith('/api/vehicle-card') || pathname === '/api/payroll' || pathname.startsWith('/api/crm/')
     || pathname === '/api/turnover' || pathname.startsWith('/api/turnover/')
-    || pathname === '/api/parts' || pathname.startsWith('/api/parts/')) {
+    || pathname === '/api/parts' || pathname.startsWith('/api/parts/') || pathname === '/api/arm') {
     const user = requireUser(request, response);
     if (!user) return;
     const access = accessOf(db, user);
@@ -15321,6 +15322,7 @@ async function api(request, response, url) {
     if (await crmApi(ctx)) return;
     if (await turnoverApi(ctx)) return;
     if (await partsApi(ctx)) return;
+    if (armApi(ctx)) return;
   }
   // ── 🛡 Безопасность движения (чек-лист 07.11) — специалист БДД ──
   if (pathname === '/api/safety' || pathname.startsWith('/api/safety/')) {

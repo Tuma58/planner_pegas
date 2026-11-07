@@ -13,7 +13,7 @@
 
 import { ROLE_LABELS, rolesOf } from './permissions.mjs';
 
-export const ALL_VIEWS = ['field', 'kpi', 'gate', 'release', 'docs', 'safety', 'logreports', 'reports', 'toboard', 'payroll', 'crm', 'payments', 'parts', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+export const ALL_VIEWS = ['arm', 'field', 'kpi', 'gate', 'release', 'docs', 'safety', 'logreports', 'reports', 'toboard', 'payroll', 'crm', 'payments', 'parts', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
   'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
   'resource', 'fleetplan', 'remzona'];
 // «Моё поле» — первым: поле управления руководителя отдела (Э1, 07.11).
@@ -32,10 +32,10 @@ const SEED = [
     ['sales', 'logist', 'dispatcher', 'reports'], 'full', 'dept'],
   ['log_plan', 'Специалист группы планирования', 'log', ['sales', 'routes', 'delivery', 'flows', 'gantt'],
     ['sales'], 'rates', ''],
-  ['log_assign', 'Логист-диспетчер', 'log', ['logist', 'gantt'], ['logist'], 'rates', ''],
+  ['log_assign', 'Логист-диспетчер', 'log', ['arm', 'logist', 'gantt'], ['logist'], 'rates', ''],
   // Уровень «ставки» (чек-лист 07.11): сверка суммы заказа перед 1С и сбор
   // наличных — прямая работа диспетчера-контролёра; итогов направления нет.
-  ['log_ctrl', 'Диспетчер-контролёр', 'log', ['dispatcher', 'monitoring', 'incidents', 'gantt'],
+  ['log_ctrl', 'Диспетчер-контролёр', 'log', ['arm', 'dispatcher', 'monitoring', 'incidents', 'gantt'],
     ['dispatcher'], 'rates', ''],
   ['drv_head', 'Руководитель отдела эксплуатации', 'drv', [...DEPT_PANELS, 'resource', 'fleetplan', 'gantt'],
     ['resource', 'reports'], 'none', 'dept'],
@@ -44,9 +44,9 @@ const SEED = [
   // без поля, панелей отдела и ЦФО.
   ['drv_column', 'Начальник автоколонны', 'drv', ['resource', 'fleetplan', 'gantt'],
     ['resource'], 'none', ''],
-  ['drv_acc', 'Диспетчер учёта', 'drv', ['resource', 'docs'], ['resource'], 'none', ''],
+  ['drv_acc', 'Диспетчер учёта', 'drv', ['arm', 'resource', 'docs'], ['resource'], 'none', ''],
   ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona', 'toboard', 'parts'], ['mechanic', 'reports'], 'none', 'dept'],
-  ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona', 'toboard', 'parts'], ['mechanic'], 'none', ''],
+  ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['arm', 'remzona', 'toboard', 'parts'], ['mechanic'], 'none', ''],
   // Снабжение ТОиР (закупщик, кладовщик, снабженец): склад и Ремзона,
   // цены прихода — уровень «ставки».
   ['toir_supply', 'Снабжение ТОиР', 'toir', ['parts', 'remzona'], ['mechanic'], 'rates', ''],
@@ -79,6 +79,7 @@ export function migrateAccess(db) {
     migrateChecklist(db);
     migrateChecklistV3(db);
     migrateHeadReports(db);
+    migrateArm(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -240,6 +241,20 @@ function migrateHeadReports(db) {
     if (sets.some(id => ['log_head', 'drv_head', 'toir_head'].includes(id))) assignRoleSets(db, user.id, sets, { allowAdmin: true });
   }
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_head_reports_v1','1')`).run();
+}
+
+// АРМ, этап Э1 (план 08-arm.md, утверждён 07.11): экран «Моё рабочее
+// место» — пилотным наборам (логист-диспетчер, диспетчер-контролёр,
+// диспетчер учёта, механик) первым экраном.
+function migrateArm(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_arm_v1'`).get()) return;
+  for (const id of ['log_assign', 'log_ctrl', 'drv_acc', 'toir_mech']) {
+    const row = db.prepare(`SELECT views_json FROM role_sets WHERE id=?`).get(id);
+    if (!row) continue;
+    const views = parse(row.views_json, []);
+    if (!views.includes('arm')) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify(['arm', ...views]), id);
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_arm_v1','1')`).run();
 }
 
 function migrateFieldView(db) {

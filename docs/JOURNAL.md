@@ -6,6 +6,14 @@
 
 ## 2026-11-07
 
+- АРМ, этап Э1 (план docs/merger/08-arm.md утверждён 07.11): экран
+  «🧭 Моё рабочее место» — шапка и четыре зоны (Анализ, План, Выполнение,
+  Задачи), реестр виджетов по должности (src/arm.mjs, GET /api/arm),
+  каркас public/assets/arm.js. Пилот: логист-диспетчер, диспетчер-
+  контролёр, диспетчер учёта, механик — стартовым экраном
+  (role_sets_arm_v1). Новых формул нет — обёртки над myShiftStats,
+  nextAssignedShare, fieldLive, docsBoard, attendanceSummary, toStatusAll.
+
 - Отчёты с ценами руководителям отделов (решение 07.11): код роли
   «reports» (reports:read) в наборы log_head, drv_head, toir_head
   (role_sets_head_reports_v1); деньги рабочих экранов — по уровню набора.

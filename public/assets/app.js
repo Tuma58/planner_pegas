@@ -32,6 +32,7 @@ import { renderPayroll } from './payroll.js';
 import { renderCrm, renderPayments } from './crm.js';
 import { renderParts } from './parts.js';
 import { renderReportsHub } from './reports-hub.js';
+import { renderArm } from './arm.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -111,6 +112,11 @@ function setupUser() {
       && user.access.views.includes('field')) {
     state.fieldLanded = true;
     state.view = 'field';
+  }
+  // АРМ — стартовый экран у должностей, где он есть (Э1, 07.11).
+  else if (!state.fieldLanded && user.access && !user.access.legacy && user.access.views.includes('arm')) {
+    state.fieldLanded = true;
+    state.view = 'arm';
   }
   if (user.labMode) setupLabSwitch(user);
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
@@ -854,6 +860,8 @@ const MAIN_VIEWS = [
   // Справочник сотрудников: staff:write (руководитель, админ) или логин
   // из настройки «полный доступ» — сервер считает флаг staffAccess сам.
   { id: 'staff', title: 'Сотрудники', show: () => Boolean(state.data?.user?.staffAccess) },
+  // АРМ «Моё рабочее место» (Э1, 07.11): пилотным должностям — первым.
+  { id: 'arm', title: 'Моё рабочее место', show: () => Boolean(viewInSet('arm')) },
   { id: 'dashboard', title: 'Дашборд', show: () => true },
   // Обзор структуры СТ (блок 1 «Слияния», 05.11) — видят все.
   { id: 'structure', title: 'Структура', show: () => true },
@@ -906,7 +914,7 @@ const MAIN_VIEWS = [
 // отдельный блок «Общее» над отделами, без коэффициента.
 const NAV_GROUPS = [
   { dept: '', title: 'Общее', coef: '', sub: [
-    { title: '', views: ['dashboard', 'gantt'] }] },
+    { title: '', views: ['arm', 'dashboard', 'gantt'] }] },
   // Штаб — «Панели» в порядке «Рабочей среды СТ» (скрин руководителя
   // 07.11): поле направления, обзор структуры, цели и задачи, ЦФО; новые
   // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
@@ -929,6 +937,7 @@ const VIEW_META = {
   docs: ['📄', 'Документы после выгрузки: что сдано, что ждём, просрочка по нормативу'],
   safety: ['🛡', 'Безопасность движения: ДТП, нарушения, режим труда и отдыха, допуски'],
   logreports: ['▤', 'Отчёты отдела логистики: сводный, экономика по клиентам и типам ТС'],
+  arm: ['🧭', 'Моё рабочее место: анализ, план, выполнение и задачи — по вашей должности'],
   reports: ['▤', 'Мои отчёты: отчёты по уровням — откуда цифры, кто видит, как открыть'],
   parts: ['🔩', 'Склад запчастей: остатки, приход, расход на наряды, неснижаемый запас, к закупке'],
   toboard: ['🔧', 'ТО по парку: остаток до ТО по нормам каждой машины, документы ТС'],
@@ -1169,6 +1178,8 @@ function renderMain() {
     renderTripDocs(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'safety') {
     renderSafety(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'arm') {
+    renderArm(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'reports') {
     renderReportsHub(byId('timeline'), { state, can, showModal, closeModal, onReload: reload, openReport, trackUsage,
       access: state.data?.user?.access,
