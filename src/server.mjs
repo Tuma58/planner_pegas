@@ -58,6 +58,11 @@ import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles }
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
 import { RELEASE_ITEMS, releaseBoard, techFail, techPass } from './release.mjs';
+import { DOC_KINDS, docsBoard, markDocs } from './trip-docs.mjs';
+import { SAFETY_KINDS, addSafetyEvent, closeSafetyEvent, safetyBoard } from './safety.mjs';
+import { docsDueAll, toStatusAll, vehicleCardApi } from './vehicle-card.mjs';
+import { payrollApi } from './payroll.mjs';
+import { crmApi } from './crm.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -251,6 +256,19 @@ function currentUser(request) {
     SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND datetime(s.expires_at)>CURRENT_TIMESTAMP AND u.active=1`
   ).get(tokenHash(token)) || null;
+}
+
+// Отчёты периода (сводный, экономика по типам и клиентам, машино-ёмкость
+// клиентов, «Сводка периода»): право reports:read или экран «Отчёты отдела»
+// в роли с уровнем денег «все» — руководитель логистики (чек-лист 07.11).
+function requireReports(request, response) {
+  const user = requireUser(request, response);
+  if (!user) return null;
+  if (hasPermission(user, 'reports:read')) return user;
+  const access = accessOf(db, user);
+  if (!access.legacy && access.views.includes('logreports') && access.money === 'full') return user;
+  errorJson(response, 403, 'Недостаточно прав');
+  return null;
 }
 
 function requireUser(request, response) {
@@ -1137,7 +1155,15 @@ function runResourceWatch() {
       if (noDriverDays >= 3) {
         text = `Сцепка ${vehicle.plate} без водителя уже ${noDriverDays} дн — закрепите водителя (справочник «Водители») или оформите вывод`;
       } else if (idleDays >= 3 && !covered) {
-        text = `Сцепка ${vehicle.plate} без заказа ${idleDays} дн — запросите загрузку у планирования или оформите причину простоя`;
+        // Сведение дублей (чек-лист 07.11): «без заказа» — стык
+        // «укомплектовали — не загрузили». Сигнал логистике уже подан —
+        // молчим (случай в работе у владельца); не подан — просим подать
+        // его, а не писать в чат мимо процесса.
+        const jointCase = db.prepare(`SELECT signaled_at FROM joint_signals
+          WHERE joint_key='drv_log' AND vehicle_id=? AND closed_at IS NULL`).get(vehicle.id);
+        if (!jointCase?.signaled_at) {
+          text = `Сцепка ${vehicle.plate} без заказа ${idleDays} дн — подайте «⚑ Сигнал» логистике в «Моём поле» (стык «укомплектовали — не загрузили») или оформите причину простоя`;
+        }
       }
       if (text) {
         notify('resource', text, 'vehicle', vehicle.id, { category: 'resource_watch' });
@@ -7390,10 +7416,23 @@ function fieldLeading(dept) {
         AND d.starts_at<? AND d.ends_at>?`).get(tomorrowEnd, `${tomorrow}T00:00:00.000Z`).n;
     out.push({ key: 'no_driver_tomorrow', dept: 'drv', coef: 'КВЛ', screen: 'resource',
       label: 'Исправные ТС без водителя на завтра', count: noDriverTomorrow });
+    // Сроки документов ТС (карточка ТС, 07.11): истёкшая страховка или
+    // техосмотр — машину нельзя выпускать; порог «скоро» — Настройки.
+    const docs = safe(() => docsDueAll(db)) || [];
+    out.push({ key: 'vehicle_docs', dept: 'drv', coef: 'КВЛ', screen: 'toboard',
+      label: 'Документы ТС истекают или истекли', count: docs.length,
+      note: docs.slice(0, 5).map(item => `${item.plate} ${item.label}`).join(', ') });
   }
   if (dept === 'toir' || dept === 'staff') {
     const noDate = db.prepare(`SELECT COUNT(*) n FROM repair_orders WHERE status IN ('queued','in_progress')
       AND (planned_out IS NULL OR planned_out='')`).get().n;
+    // ТО по пробегу (карточка ТС, нормы на каждую машину, 07.11).
+    const to = safe(() => toStatusAll(db)) || [];
+    const overdue = to.filter(row => row.status === 'overdue');
+    const soon = to.filter(row => row.status === 'soon');
+    out.push({ key: 'to_due', dept: 'toir', coef: 'КТГ', screen: 'toboard',
+      label: 'ТО просрочено / скоро по пробегу', count: overdue.length + soon.length,
+      note: `просрочено ${overdue.length} · скоро ${soon.length}${to.filter(row => row.status === 'no_norm').length ? ` · без нормы в карточке ${to.filter(row => row.status === 'no_norm').length}` : ''}` });
     out.push({ key: 'repair_no_date', dept: 'toir', coef: 'КТГ', screen: 'remzona',
       label: 'Заезды без плановой даты выпуска', count: noDate });
     const term = (fromDays, toDays) => {
@@ -14646,7 +14685,7 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/brief-report') {
     // «⚡ Сводка периода» (заказ руководителя 26.10): короткий отчёт для
     // коротких совещаний; расчёт — в briefReportData (общий с PDF-колодой).
-    const user = requirePermission(request, response, 'reports:read');
+    const user = requireReports(request, response);
     if (!user) return;
     const from = String(url.searchParams.get('from') || '').slice(0, 10);
     const to = String(url.searchParams.get('to') || '').slice(0, 10);
@@ -14876,7 +14915,7 @@ async function api(request, response, url) {
   // «Машино-ёмкость клиентов» (28.10): сколько машин занимает каждый клиент
   // (рейсы + стык после его выгрузки) и как складывается круг.
   if (request.method === 'GET' && pathname === '/api/reports/client-fleet') {
-    const user = requirePermission(request, response, 'reports:read');
+    const user = requireReports(request, response);
     if (!user) return;
     const from = String(url.searchParams.get('from') || '').slice(0, 10);
     const to = String(url.searchParams.get('to') || '').slice(0, 10);
@@ -14887,7 +14926,7 @@ async function api(request, response, url) {
       { ...clientFleetData(db, from, addDayIso(to)), varCostKm: variableCostPerKm() });
   }
   if (request.method === 'GET' && pathname === '/api/reports') {
-    const user = requirePermission(request, response, 'reports:read');
+    const user = requireReports(request, response);
     if (!user) return;
     const start = url.searchParams.get('from') || settingsObject(db).general.horizonStart;
     const from = /^\d{4}-\d{2}$/.test(start) ? `${start}-01` : start;
@@ -15241,6 +15280,88 @@ async function api(request, response, url) {
     if (to < from) return errorJson(response, 422, 'Период задан неверно');
     return json(response, 200, cfoReportFor(scope, from, to));
   }
+  // ── Модули чек-листа 07.11 по общему контракту: карточка ТС (паспорт и
+  // ТО по пробегу), ФОТ водителей. Права проверяют сами модули; ФОТ ещё и
+  // по экрану роли — это ведомость руководителя направления.
+  if (pathname.startsWith('/api/vehicle-card') || pathname === '/api/payroll' || pathname.startsWith('/api/crm/')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    if (pathname === '/api/payroll' && !access.legacy && !access.views.includes('payroll')) {
+      return errorJson(response, 403, 'Ведомость ФОТ — у руководителя направления');
+    }
+    const ctx = { db, request, response, url, pathname, user, access, json, errorJson, readJson, audit,
+      requestIp, settingsObject, hasPermission };
+    if (await vehicleCardApi(ctx)) return;
+    if (payrollApi(ctx)) return;
+    if (await crmApi(ctx)) return;
+  }
+  // ── 🛡 Безопасность движения (чек-лист 07.11) — специалист БДД ──
+  if (pathname === '/api/safety' || pathname.startsWith('/api/safety/')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    const canRead = hasPermission(user, 'safety:write') || (access.legacy ? hasPermission(user, 'users:write') : access.views.includes('safety'));
+    if (!canRead) return errorJson(response, 403, '«Безопасность движения» — рабочее место специалиста БДД');
+    const name = user.full_name || user.username;
+    if (request.method === 'GET' && pathname === '/api/safety') {
+      const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+      const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('from') || '') ? url.searchParams.get('from') : `${today.slice(0, 7)}-01`;
+      const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('to') || '') ? url.searchParams.get('to') : today;
+      const warnDays = directionGoals(settingsObject(db).calculation).docsWarnDays;
+      return json(response, 200, { ...safetyBoard(db, { from, to, warnDays }), kinds: SAFETY_KINDS,
+        canWrite: hasPermission(user, 'safety:write'),
+        drivers: db.prepare(`SELECT id, full_name name FROM drivers WHERE status<>'fired' ORDER BY full_name`).all(),
+        vehicles: db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' ORDER BY plate`).all() });
+    }
+    if (request.method === 'POST' && !hasPermission(user, 'safety:write')) return errorJson(response, 403, 'Журнал ведёт специалист БДД');
+    if (request.method === 'POST' && pathname === '/api/safety') {
+      const body = await readJson(request);
+      const result = addSafetyEvent(db, body, name);
+      if (!result.ok) return errorJson(response, 422, result.error);
+      audit(db, user, 'create', 'safety_event', result.id, { kind: body.kind }, requestIp(request));
+      // ДТП — руководителям эксплуатации и направления сразу.
+      if (body.kind === 'dtp') {
+        notify('resource', `🛡 ДТП: ${String(body.description || '').slice(0, 140)} — расследование открыто (${name})`, null, null, { category: 'other' });
+        notify('manager', `🛡 ДТП: ${String(body.description || '').slice(0, 140)} — расследование открыто (${name})`, null, null, { category: 'other' });
+      }
+      return json(response, 201, { id: result.id });
+    }
+    const safetyMatch = route(/^\/api\/safety\/([\w-]+)\/close$/, pathname);
+    if (safetyMatch && request.method === 'POST') {
+      const body = await readJson(request);
+      const result = closeSafetyEvent(db, safetyMatch[0], body.measures, name);
+      if (!result.ok) return errorJson(response, 422, result.error);
+      audit(db, user, 'close', 'safety_event', safetyMatch[0], { measures: body.measures }, requestIp(request));
+      return json(response, 200, { ok: true });
+    }
+    return errorJson(response, 404, 'Нет такого действия');
+  }
+  // ── 📄 Документы после выгрузки (П5, чек-лист 07.11) — диспетчер учёта ──
+  if (pathname === '/api/trip-docs' || pathname.startsWith('/api/trip-docs/')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    // В наборах ролей — по экрану «Документы» (ТОиР с fleet:write его не
+    // видит: отдел видит только своё); в старой модели — по кодам.
+    const canRead = access.legacy
+      ? hasPermission(user, 'fleet:write') || hasPermission(user, 'payments:write') || hasPermission(user, 'reports:read')
+      : access.views.includes('docs');
+    if (!canRead) return errorJson(response, 403, '«Документы» — учёт эксплуатации');
+    if (request.method === 'GET' && pathname === '/api/trip-docs') {
+      return json(response, 200, { ...docsBoard(db), kinds: DOC_KINDS, canWrite: hasPermission(user, 'fleet:write') && canRead });
+    }
+    const docsMatch = route(/^\/api\/trip-docs\/([\w-]+)$/, pathname);
+    if (docsMatch && request.method === 'POST') {
+      if (!hasPermission(user, 'fleet:write')) return errorJson(response, 403, 'Документы отмечает диспетчер учёта');
+      const body = await readJson(request);
+      const result = markDocs(db, docsMatch[0], body.kind, user.full_name || user.username);
+      if (!result.ok) return errorJson(response, 422, result.error);
+      audit(db, user, 'docs_returned', 'trip', docsMatch[0], { kind: body.kind }, requestIp(request));
+      return json(response, 200, { ok: true });
+    }
+    return errorJson(response, 404, 'Нет такого действия');
+  }
   // ── 🛫 Выпуск на линию (П2, 07.11) — контролёр техсостояния и Эксплуатация ──
   if (pathname === '/api/release' || pathname.startsWith('/api/release/')) {
     const user = requireUser(request, response);
@@ -15399,7 +15520,7 @@ async function api(request, response, url) {
     // (каноны дней — до начала сегодняшних суток).
     const signalTo = gctx.month === new Date().toISOString().slice(0, 7)
       ? new Date().toISOString() : `${gctx.to}T00:00:00.000Z`;
-    const signals = Object.fromEntries(['toir_drv', 'drv_log'].map(key =>
+    const signals = Object.fromEntries(['toir_drv', 'drv_log', 'log_toir'].map(key =>
       [key, signalKpi(db, key, `${gctx.from}T00:00:00.000Z`, signalTo, goalsCfg.signalTargetH)]));
     const structure = structureData(db);
     return {

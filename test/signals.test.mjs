@@ -72,8 +72,10 @@ test('KPI отдела: основной, второй, контроль с ве
   assert.equal(item.second.value, 210);
   assert.deepEqual(item.positions[0].kpi.map(row => row.bind), ['main', 'second', 'control', 'manual']);
   assert.match(item.positions[0].kpi[2].live, /50%/);
-  // Стык Логистика→ТОиР ждёт интервалов ТО — честно «ждёт», без нуля.
-  assert.equal(kpiDept({ dept: 'log', park: {}, targets: {}, signals: {} }).control.pending, true);
+  // Сигналы ещё не посчитаны — честно «ждёт», без нуля; посчитаны и
+  // случаев нет — не «ждёт» (стык Логистика→ТОиР живёт от норм ТО).
+  assert.equal(kpiDept({ dept: 'log', park: {}, targets: {} }).control.pending, true);
+  assert.equal(kpiDept({ dept: 'log', park: {}, targets: {}, signals: {} }).control.pending, false);
   assert.equal(kpiBinding(7, 0), 'personal');
   assert.equal(kpiBinding(20, 0), 'manual');
 });

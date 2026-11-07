@@ -25,6 +25,11 @@ import { renderField } from './field.js';
 import { renderKpi } from './kpi.js';
 import { renderGate } from './gate.js';
 import { renderRelease } from './release.js';
+import { renderTripDocs } from './trip-docs.js';
+import { renderSafety } from './safety.js';
+import { renderToBoard } from './vehicle-card.js';
+import { renderPayroll } from './payroll.js';
+import { renderCrm, renderPayments } from './crm.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -874,6 +879,17 @@ const MAIN_VIEWS = [
     const access = state.data?.user?.access;
     return Boolean(can('release:write') || access?.views?.includes('release') || (access?.legacy && can('users:write')));
   } },
+  // Чек-лист продукта 07.11: «Документы» (П5), «Безопасность движения»
+  // (БДД), «Отчёты отдела» (руководитель логистики).
+  { id: 'docs', title: 'Документы', show: () => Boolean(viewInSet('docs') || (legacyAccess() && can('fleet:write'))) },
+  { id: 'safety', title: 'Безопасность', show: () => Boolean(can('safety:write') || viewInSet('safety') || (legacyAccess() && can('users:write'))) },
+  { id: 'logreports', title: 'Отчёты отдела', show: () => Boolean(viewInSet('logreports')) },
+  // Модули чек-листа: «ТО по парку» (нормы ТО по каждой машине), ФОТ
+  // водителей (ведомость руководителя направления), CRM и «К оплате».
+  { id: 'toboard', title: 'ТО по парку', show: () => Boolean(viewInSet('toboard') || (legacyAccess() && (can('fleet:write') || can('release:write')))) },
+  { id: 'payroll', title: 'ФОТ водителей', show: () => Boolean(viewInSet('payroll') || (legacyAccess() && can('users:write'))) },
+  { id: 'crm', title: 'CRM', show: () => Boolean(viewInSet('crm') || (legacyAccess() && (can('orders:write') || can('reports:read')))) },
+  { id: 'payments', title: 'К оплате', show: () => Boolean(viewInSet('payments') || (legacyAccess() && can('payments:write'))) },
   { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
 ];
 
@@ -892,19 +908,26 @@ const NAV_GROUPS = [
   // блоков. Ниже — рабочие экраны Штаба.
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
     { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi'] },
-    { title: 'Работа Штаба', views: ['boss', 'staff', 'expenses', 'gate'] }] },
+    { title: 'Работа Штаба', views: ['boss', 'staff', 'payroll', 'expenses', 'safety', 'gate'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
-    { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
+    { title: 'Планирование и анализ', views: ['logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
     { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
   { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
-    { title: '', views: ['release', 'resource', 'fleetplan'] }] },
+    { title: '', views: ['release', 'docs', 'resource', 'fleetplan', 'toboard'] }] },
   { dept: 'toir', title: 'ТОиР', coef: 'КТГ', sub: [
-    { title: '', views: ['remzona'] }] }
+    { title: '', views: ['remzona', 'toboard'] }] }
 ];
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
   field: ['◉', 'Поле управления отдела: коэффициент, потери, стыки, очереди, люди, деньги'],
+  docs: ['📄', 'Документы после выгрузки: что сдано, что ждём, просрочка по нормативу'],
+  safety: ['🛡', 'Безопасность движения: ДТП, нарушения, режим труда и отдыха, допуски'],
+  logreports: ['▤', 'Отчёты отдела логистики: сводный, экономика по клиентам и типам ТС'],
+  toboard: ['🔧', 'ТО по парку: остаток до ТО по нормам каждой машины, документы ТС'],
+  payroll: ['₽', 'ФОТ водителей: начисление по км и гарантии за период'],
+  crm: ['🤝', 'CRM: клиенты, договоры, дебиторка, воронка продаж'],
+  payments: ['💳', 'К оплате: рейсы по сроку оплаты договора, просрочка'],
   release: ['🛫', 'Выпуск на линию: чек-лист выхода, техконтроль, «В ремонт»'],
   gate: ['🚧', 'Журнал КПП стоянки базы: въезд и выезд одной кнопкой'],
   kpi: ['◎', 'Каскад, два KPI отдела, сквозной контроль соседа, KPI должностей'],
@@ -943,6 +966,31 @@ function viewAllowed(id) {
   return !access || access.legacy || access.views.includes(id);
 }
 const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];
+const viewInSet = id => state.data?.user?.access?.views?.includes(id);
+const legacyAccess = () => !state.data?.user?.access || state.data.user.access.legacy;
+
+// «Отчёты отдела» руководителя логистики (чек-лист 07.11): те же отчёты
+// периода, что у руководителя направления, — сервер пускает по роли.
+function renderLogReports(container) {
+  const today = new Date().toISOString().slice(0, 10);
+  const from = state.logReportsFrom || `${today.slice(0, 7)}-01`;
+  const to = state.logReportsTo || today;
+  const kinds = [['summary', 'Сводный отчёт за период'], ['clients', 'Экономика по клиентам'], ['econ', 'Экономика по типам ТС'],
+    ['client-fleet', 'Машино-ёмкость клиентов'], ['rejected', 'Отклонённые рейсы'], ['rejected-orders', 'Реестр заявок'], ['execution', 'Контроль выполнения рейсов']];
+  container.innerHTML = `<div class="bi-page"><div class="bi-sub"><h2>Отчёты отдела логистики</h2>
+      <p>Отчёты периода по клиентам, экономике и исполнению — открываются окном с печатью и PDF.</p>
+      <div class="bi-actions"><input type="date" id="lrFrom" value="${from}"> — <input type="date" id="lrTo" value="${to}"></div></div>
+    <div class="bi-grid">${kinds.map(([kind, title]) => `<section class="section s4"><div class="sec-h"><span class="st">${escapeHtml(title)}</span></div>
+      <div class="sec-b"><button class="button primary" data-lr="${kind}">📄 Сформировать</button></div></section>`).join('')}</div></div>`;
+  container.querySelector('#lrFrom').onchange = event => { state.logReportsFrom = event.currentTarget.value; };
+  container.querySelector('#lrTo').onchange = event => { state.logReportsTo = event.currentTarget.value; };
+  container.onclick = event => {
+    const button = event.target.closest('[data-lr]');
+    if (!button) return;
+    trackUsage(`report:logreports:${button.dataset.lr}`);
+    openReport(button.dataset.lr, state.logReportsFrom || from, state.logReportsTo || to);
+  };
+}
 // У области «всё направление» поле — «Поле направления» (Э2, 07.11).
 function viewTitle(view) {
   const access = state.data?.user?.access;
@@ -1100,6 +1148,20 @@ function renderMain() {
     });
   } else if (state.view === 'field') {
     renderField(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'docs') {
+    renderTripDocs(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'safety') {
+    renderSafety(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'toboard') {
+    renderToBoard(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'payroll') {
+    renderPayroll(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'crm') {
+    renderCrm(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'payments') {
+    renderPayments(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'logreports') {
+    renderLogReports(byId('timeline'));
   } else if (state.view === 'release') {
     renderRelease(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'gate') {

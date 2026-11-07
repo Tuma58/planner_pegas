@@ -53,8 +53,8 @@ export function kpiDept(ctx) {
     dept: ctx.dept, name: meta.name, coef: meta.coef, ownPct,
     main: { value, target, lostMd: Math.round(lost), score: ownScore == null ? null : Math.round(ownScore) },
     second,
-    control: control ? { joint: meta.control, ...control } : { joint: meta.control, pending: meta.control === 'log_toir' },
-    owns: owns ? { joint: meta.owns, ...owns } : { joint: meta.owns, pending: meta.owns === 'log_toir' },
+    control: control ? { joint: meta.control, ...control } : { joint: meta.control, pending: !ctx.signals },
+    owns: owns ? { joint: meta.owns, ...owns } : { joint: meta.owns, pending: !ctx.signals },
     index,
     positions: (ctx.positions || []).map(position => ({
       n: position.n, title: position.title,

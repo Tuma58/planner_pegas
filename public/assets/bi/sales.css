@@ -135,3 +135,33 @@
 .sales-assign .sales-cands { border: 1px solid var(--border2); border-radius: 10px; padding: 6px; background: var(--panel2); }
 .sales-assign .sales-cands .sugtruck { border-radius: 9px; text-align: left; }
 .sales-modal .via-box .via-head { font-weight: 650; }
+
+/* ── CRM «деньги клиента» и «К оплате» (crm.js, 07.11) ── */
+.crm-page .bi-actions select { max-width: 280px; }
+.crm-page .sec-actions .block-search { min-width: 220px; }
+.crm-page .bi-table a { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--line); }
+.crm-page .bi-table a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.crm-page .bi-table td small { white-space: nowrap; }
+.crm-registry tr.crm-overdue td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+.crm-page tr.crm-expired td { color: var(--muted); }
+.crm-bad { color: var(--bad); font-weight: 650; }
+.crm-note { white-space: pre-line; font-size: 12px; color: var(--muted); max-width: 320px; }
+.crm-page .metric .v.crm-reason { font-family: inherit; font-size: 15px; white-space: normal; }
+/* Воронка: колонки-стадии */
+.crm-board { grid-auto-columns: minmax(220px, 1fr); }
+.crm-col .sec-b.crm-cards { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow: auto; padding: 10px; }
+.crm-col.crm-st-won { border-top: 2px solid var(--ok); }
+.crm-col.crm-st-lost { border-top: 2px solid var(--bad); }
+.crm-lead { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border: 1px solid var(--border2);
+  border-radius: 10px; background: var(--card); cursor: pointer; font-size: 12.5px; }
+.crm-lead:hover { border-color: var(--accent); }
+.crm-lead.late { border-left: 3px solid var(--warn); }
+.crm-lead b { font-weight: 650; }
+.crm-lead-foot { display: flex; gap: 8px; justify-content: space-between; font-size: 11.5px; }
+.crm-lead-foot .mono { font-family: var(--mono-font); }
+.crm-col .bi-empty { padding: 10px; }
+/* Окно сводной CRM-карточки */
+.crm-modal { display: flex; flex-direction: column; gap: 12px; min-width: min(920px, 90vw); }
+.crm-modal h2 { margin: 0; }
+.crm-modal .section .bi-scroll { max-height: 280px; }
+.crm-modal .bi-row .v { text-align: right; }

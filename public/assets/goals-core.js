@@ -15,7 +15,13 @@ export const GOAL_DEFAULTS = {
   // коридор среды 70–80 / 20–30) и цель «сигнал вовремя», часов.
   kpiOwnSharePct: 75, signalTargetHours: 2,
   // КПП (07.11): подсвечивать личный транспорт на стоянке дольше, ч.
-  gateLongHours: 24
+  gateLongHours: 24,
+  // Сроки документов (карточка ТС, допуски БДД): «истекает» раньше, дн.
+  docsWarnDays: 30,
+  // Горизонт плана, сут (расписание 19.10): «ТО скоро» по своему пробегу машины.
+  planHorizonDays: 3,
+  // ФОТ водителей (Положение среды СТ): ₽/км и гарантия ₽/сутки работы.
+  driverRatePerKm: 12, driverGuaranteePerDay: 4000
 };
 
 const pick = (value, fallback) =>
@@ -35,6 +41,11 @@ export function directionGoals(calculation = {}) {
     fotPct: pick(c.fotNormPct, GOAL_DEFAULTS.fotNormPct),
     kpiOwnPct: pick(c.kpiOwnSharePct, GOAL_DEFAULTS.kpiOwnSharePct),
     signalTargetH: pick(c.signalTargetHours, GOAL_DEFAULTS.signalTargetHours),
-    gateLongH: pick(c.gateLongHours, GOAL_DEFAULTS.gateLongHours)
+    gateLongH: pick(c.gateLongHours, GOAL_DEFAULTS.gateLongHours),
+    docsWarnDays: pick(c.docsWarnDays, GOAL_DEFAULTS.docsWarnDays),
+    planHorizonDays: pick(c.planHorizonDays, GOAL_DEFAULTS.planHorizonDays),
+    driverRatePerKm: pick(c.driverRatePerKm, GOAL_DEFAULTS.driverRatePerKm),
+    driverGuaranteePerDay: pick(c.driverGuaranteePerDay, GOAL_DEFAULTS.driverGuaranteePerDay),
+    driverOvertimePerDay: pick(c.driverOvertimePerDay, null)
   };
 }

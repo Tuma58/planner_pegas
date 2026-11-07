@@ -13,7 +13,7 @@
 
 import { ROLE_LABELS, rolesOf } from './permissions.mjs';
 
-export const ALL_VIEWS = ['field', 'kpi', 'gate', 'release', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+export const ALL_VIEWS = ['field', 'kpi', 'gate', 'release', 'docs', 'safety', 'logreports', 'toboard', 'payroll', 'crm', 'payments', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
   'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
   'resource', 'fleetplan', 'remzona'];
 // «Моё поле» — первым: поле управления руководителя отдела (Э1, 07.11).
@@ -44,12 +44,15 @@ const SEED = [
   // без поля, панелей отдела и ЦФО.
   ['drv_column', 'Начальник автоколонны', 'drv', ['resource', 'fleetplan', 'gantt'],
     ['resource'], 'none', ''],
-  ['drv_acc', 'Диспетчер учёта', 'drv', ['resource'], ['resource'], 'none', ''],
+  ['drv_acc', 'Диспетчер учёта', 'drv', ['resource', 'docs'], ['resource'], 'none', ''],
   ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona'], ['mechanic'], 'none', 'dept'],
   ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona'], ['mechanic'], 'none', ''],
-  ['accountant', 'Бухгалтерия', '', ['gantt'], ['accountant'], 'rates', ''],
+  ['accountant', 'Бухгалтерия', '', ['gantt', 'docs'], ['accountant'], 'rates', ''],
   ['guard', 'Охранник-парковщик', 'staff', ['gate'], ['guard'], 'none', ''],
   ['drv_tech', 'Контролёр техсостояния', 'drv', ['release'], ['techctl'], 'none', ''],
+  // Чек-лист 07.11: инструменты штата, которых не было.
+  ['staff_bdd', 'Специалист БДД', 'staff', ['safety', 'release', 'incidents'], ['safety'], 'none', ''],
+  ['staff_aho', 'Специалист АХО', 'staff', ['gate'], ['guard'], 'none', ''],
   ['admin', 'Администратор', 'all', ALL_VIEWS, ['admin'], 'full', 'all']
 ];
 
@@ -70,6 +73,7 @@ export function migrateAccess(db) {
     migrateGuard(db);
     migrateRelease(db);
     migrateCtrlRates(db);
+    migrateChecklist(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -83,6 +87,7 @@ export function migrateAccess(db) {
   migrateGuard(db);
   migrateRelease(db);
   migrateCtrlRates(db);
+  migrateChecklist(db);
 }
 
 // Уточнение 07.11: четыре руководителя — направления, логистики, ремзоны
@@ -164,6 +169,34 @@ function migrateCtrlRates(db) {
   if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_ctrl_rates_v1'`).get()) return;
   db.prepare(`UPDATE role_sets SET money='rates' WHERE id='log_ctrl' AND money='none'`).run();
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_ctrl_rates_v1','1')`).run();
+}
+
+// Чек-лист продукта 07.11: «Документы» (П5) — учёту эксплуатации и
+// бухгалтерии; «Безопасность движения» и роли БДД/АХО; «Отчёты отдела» —
+// руководителю логистики. Разово, правки руководителя в наборах целы.
+function migrateChecklist(db) {
+  ensureRoleCode(db, 'safety');
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_checklist_v2'`).get()) return;
+  const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
+    VALUES(?,?,?,?,?,?,?,?)`);
+  insert.run('staff_bdd', 'Специалист БДД', 'staff', '["safety","release","incidents"]', '["safety"]', 'none', '', 2);
+  insert.run('staff_aho', 'Специалист АХО', 'staff', '["gate"]', '["guard"]', 'none', '', 3);
+  const add = (id, view) => {
+    const row = db.prepare(`SELECT views_json FROM role_sets WHERE id=?`).get(id);
+    if (!row) return;
+    const views = parse(row.views_json, []);
+    if (!views.includes(view)) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, view]), id);
+  };
+  for (const id of ['drv_acc', 'drv_head', 'drv_column', 'dir_head', 'admin', 'accountant']) add(id, 'docs');
+  for (const id of ['dir_head', 'admin']) { add(id, 'safety'); add(id, 'logreports'); }
+  add('log_head', 'logreports');
+  // Карточка ТС и ТО по парку — ТОиР и эксплуатация; ФОТ — Штаб; CRM —
+  // планирование и руководитель логистики; «К оплате» — бухгалтерия.
+  for (const id of ['toir_head', 'toir_mech', 'drv_head', 'dir_head', 'admin']) add(id, 'toboard');
+  for (const id of ['dir_head', 'admin']) { add(id, 'payroll'); add(id, 'crm'); add(id, 'payments'); }
+  for (const id of ['log_head', 'log_plan']) add(id, 'crm');
+  add('accountant', 'payments');
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_checklist_v2','1')`).run();
 }
 
 function migrateFieldView(db) {

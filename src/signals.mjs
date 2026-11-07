@@ -11,6 +11,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { JOINTS, idleVehicles } from './field.mjs';
+import { toStatusAll } from './vehicle-card.mjs';
 
 export function migrateSignals(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS joint_signals (
@@ -42,7 +43,17 @@ export function jointConditions(db, at = new Date().toISOString()) {
     const id = db.prepare('SELECT id FROM vehicles WHERE plate=?').get(row.plate)?.id;
     return { vehicleId: id, plate: row.plate, since: (id && lastEnd.get(id, at)?.e) || at };
   }).filter(row => row.vehicleId);
-  return { toir_drv: fromRepair, drv_log: idle };
+  // Логистика → ТОиР: ТО по карточке машины «скоро» или «просрочено», а
+  // заезда на ТО в Ремзону нет — логистика даёт окно (норма ТО — на каждой
+  // машине вручную; без нормы машина сюда не попадает).
+  const hasToOrder = db.prepare(`SELECT 1 FROM repair_orders WHERE vehicle_id=? AND purpose='ТО'
+    AND status IN ('queued','in_progress','ready')`);
+  let toDue = [];
+  try {
+    toDue = toStatusAll(db).filter(row => ['soon', 'overdue'].includes(row.status) && !hasToOrder.get(row.vehicleId))
+      .map(row => ({ vehicleId: row.vehicleId, plate: row.plate, since: at }));
+  } catch { toDue = []; }
+  return { toir_drv: fromRepair, drv_log: idle, log_toir: toDue };
 }
 
 // Детектор (тик): открыть новые случаи, закрыть устранённые.
@@ -56,7 +67,7 @@ export function detectSignals(db, at = new Date().toISOString()) {
     for (const row of open) {
       if (now.has(row.vehicle_id)) continue;
       db.prepare(`UPDATE joint_signals SET closed_at=?, close_reason=? WHERE id=?`)
-        .run(at, joint === 'toir_drv' ? 'водитель назначен' : 'задание назначено', row.id);
+        .run(at, joint === 'toir_drv' ? 'водитель назначен' : joint === 'log_toir' ? 'ТО запланировано' : 'задание назначено', row.id);
       closed += 1;
     }
     const known = new Set(open.map(row => row.vehicle_id));

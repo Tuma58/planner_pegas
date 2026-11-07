@@ -94,3 +94,22 @@
 .rl-table .bi-tag { white-space: nowrap; }
 .rl-acts { width: 1%; }
 .rl-acts .button { display: block; width: 100%; margin: 2px 0; }
+.dc-page tr.dc-late td { background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
+
+/* ── «∑ ФОТ водителей» (П5, 07.11) ── */
+.pr-period input { background: var(--inp); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.pr-table td, .pr-table th { padding: 6px 8px; }
+.pr-table .pr-notes { font-size: 11px; margin-top: 2px; }
+.pr-table .pr-basis { font-size: 10.5px; font-family: var(--mono-font); }
+.pr-table tr.pr-guar td.pr-pay b { color: var(--warn); }
+.pr-scroll { max-height: 640px; }
+.pr-how p { font-size: 12px; margin: 10px 0 0; }
+.pr-q { margin-top: 12px; font-size: 12px; color: var(--ink); }
+.pr-q ol { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+.pr-q li { margin-bottom: 4px; }
+@media print {
+  .pr-noprint { display: none !important; }
+  .pr-page .bi-grid { display: block; }
+  .pr-page .section { margin-bottom: 10px; }
+  .pr-scroll { max-height: none; overflow: visible; }
+}

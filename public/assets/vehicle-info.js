@@ -2,6 +2,7 @@
 // открывает окно с полной картиной по сцепке — текущий рейс со ставкой и
 // этапом контроля, ремонт/недоступность, простой, ближайший план, комментарий
 // продаж с файлами заявки и отметки контролёра (диспетчера) по рейсу.
+import { openVehicleCard } from './vehicle-card.js';
 import { api, driverRatingBadge, driverRatingOf, escapeHtml, formatDateTime, money, routeLabel } from './api.js';
 import { orderFileLinks, orderNet } from './sales.js';
 import { shiftStateAt } from './resource.js';
@@ -142,12 +143,14 @@ export async function vehicleInfoDialog(vehicleId, data, context) {
       : `${KIND_LABEL[nextDispo.kind] || nextDispo.kind} с ${formatDateTime(nextDispo.starts_at)}`}</div>` : ''}
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Закрыть</button>
+      <button type="button" class="button" id="vinfoPassport" title="Паспорт ТС: реквизиты, документы со сроками, нормы ТО">🪪 Паспорт ТС</button>
       ${context.onReload ? `<button type="button" class="button" id="vinfoTransfer"
         title="Отправить сцепку порожним: под погрузку, на базу, в ремонт, на пересменку">🚚 Перегон</button>` : ''}
     </div>`);
 
   // Перегон прямо из карточки сцепки — самый короткий путь: увидел, где
   // машина стоит, и тут же отправил её туда, где она нужна.
+  document.getElementById('vinfoPassport')?.addEventListener('click', () => openVehicleCard(vehicle.id, context));
   document.getElementById('vinfoTransfer')?.addEventListener('click', () => {
     const place = vehiclePlace(data, vehicle.id, nowMs).pointName || vehicle.zone_name;
     transferDialog(vehicle, data, { ...context, state: { data } }, { fromLabel: place || '' });

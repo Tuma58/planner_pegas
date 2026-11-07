@@ -49,7 +49,7 @@ test('стыки и очереди: свободные без задания, и
   assert.equal(drv.queues.find(queue => queue.key === 'no_driver').count, 1);
   const toir = fieldLive(db, 'toir');
   assert.equal(toir.joints.find(joint => joint.key === 'toir_drv').side, 'out');
-  assert.equal(toir.joints.find(joint => joint.key === 'log_toir').count, null); // ждёт «Процессы и контроль»
+  assert.equal(toir.joints.find(joint => joint.key === 'log_toir').count, 0); // норм ТО в карточках нет — случаев нет
   assert.ok(!toir.queues.some(queue => queue.dept === 'log')); // чужих очередей нет
 });
 

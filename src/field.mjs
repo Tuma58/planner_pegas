@@ -24,8 +24,9 @@ export const JOINTS = [
     label: 'ТС из ремонта без водителя', screen: 'resource' },
   { key: 'drv_log', from: 'drv', to: 'log', risk: 'укомплектовали — не загрузили',
     label: 'укомплектованные ТС без задания', screen: 'logist' },
+  // Третий стык ожил с карточкой ТС (нормы ТО на каждую машину, 07.11).
   { key: 'log_toir', from: 'log', to: 'toir', risk: 'гоняем — довели до поломки',
-    label: 'окна ТО в провалах заявок', screen: 'remzona', pending: 'Процессы и контроль' }
+    label: 'ТО скоро или просрочено, заезд на ТО не запланирован', screen: 'toboard' }
 ];
 
 const nowIso = () => new Date().toISOString();
@@ -67,7 +68,7 @@ export function fieldLive(db, dept, at = nowIso()) {
       signaledAt: row.signaled_at, signaledBy: row.signaled_by_name, acceptedAt: row.accepted_at, acceptedBy: row.accepted_by_name }))
       : joint.key === 'toir_drv'
         ? fromRepair.map(row => ({ plate: row.plate, hours: hoursSince(row.starts_at) }))
-        : idle.map(row => ({ plate: row.plate, hours: row.idleH }));
+        : joint.key === 'drv_log' ? idle.map(row => ({ plate: row.plate, hours: row.idleH })) : [];
     const hours = list.map(row => row.hours).filter(Number.isFinite);
     return { ...base, count: list.length, maxH: hours.length ? Math.round(Math.max(...hours)) : null,
       waiting: list.filter(row => row.id && !row.signaledAt).length,
