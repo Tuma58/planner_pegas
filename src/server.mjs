@@ -11,7 +11,7 @@ import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
-import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, validateExpense } from './expenses.mjs';
+import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
@@ -12668,6 +12668,150 @@ async function api(request, response, url) {
     if (transfer.arrived_at) return errorJson(response, 409, 'Перегон завершён — отменить нельзя');
     db.prepare('DELETE FROM vehicle_dispositions WHERE id=?').run(match[0]);
     audit(db, user, 'delete', 'transfer', match[0], {}, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+
+  // ── Путевые листы, Э1 (07.11): база ПЛ, наполнение фактом планера ──
+  // Автозаполнение: водитель по графику, одометры из журнала снимков,
+  // топливо РН-Карт за период. Поля правит человек — факт главнее.
+  const waybillAutofill = (vehicleId, startsIso, endsIso) => {
+    const dayOf = iso => String(iso || '').slice(0, 10);
+    const odoAt = day => db.prepare(`SELECT odo_km FROM vehicle_odometers
+      WHERE vehicle_id=? AND day<=? ORDER BY day DESC LIMIT 1`).get(vehicleId, day)?.odo_km ?? null;
+    const active = activeDriverFor(db, vehicleId, startsIso || undefined);
+    const driver = active?.driverId
+      ? db.prepare('SELECT id, full_name FROM drivers WHERE id=?').get(active.driverId) : null;
+    const fuelRows = endsIso ? db.prepare(`SELECT note, amount FROM expenses
+      WHERE vehicle_id=? AND category_id='fuel' AND spent_on>=? AND spent_on<=?`)
+      .all(vehicleId, dayOf(startsIso), dayOf(endsIso)) : [];
+    const liters = fuelRows.reduce((sum, row) => sum + fuelLitersOf(row.note, row.amount), 0);
+    return {
+      driverId: driver?.id || null, driverName: driver?.full_name || '',
+      odoStart: odoAt(dayOf(startsIso)),
+      // Возврат: снимок утра СЛЕДУЮЩЕГО дня после конца периода (00:00 МСК).
+      odoEnd: endsIso ? odoAt(new Date(Date.parse(dayOf(endsIso)) + 86400000)
+        .toISOString().slice(0, 10)) : null,
+      fuelLiters: fuelRows.length ? Math.round(liters * 10) / 10 : null
+    };
+  };
+  const waybillRow = id => db.prepare(`SELECT w.*, v.plate, v.model vehicle_model,
+      v.trailer_plate, vt.name type_name,
+      (SELECT tr.model FROM trailers tr WHERE tr.plate=TRIM(COALESCE(v.trailer_plate,''))) trailer_model,
+      t.order_no, t.from_point, t.to_point
+    FROM waybills w JOIN vehicles v ON v.id=w.vehicle_id
+    JOIN vehicle_types vt ON vt.id=v.type_id
+    LEFT JOIN trips t ON t.id=w.trip_id WHERE w.id=?`).get(id);
+  if (request.method === 'POST' && pathname === '/api/waybills') {
+    const actor = currentUser(request);
+    const user = requirePermission(request, response,
+      hasPermission(actor, 'fleet:write') ? 'fleet:write' : 'trip-status:write');
+    if (!user) return;
+    const body = await readJson(request);
+    let vehicleId = body.vehicleId || null;
+    let startsAt = body.startsAt || null;
+    let endsAt = body.endsAt || null;
+    let tripId = body.tripId || null;
+    if (tripId) {
+      const trip = db.prepare('SELECT * FROM trips WHERE id=?').get(tripId);
+      if (!trip) return errorJson(response, 404, 'Рейс не найден');
+      // Повторный клик открывает существующий лист, дубль не создаётся.
+      const existing = db.prepare('SELECT id FROM waybills WHERE trip_id=?').get(tripId);
+      if (existing) return json(response, 200, { id: existing.id, existing: true });
+      vehicleId = trip.vehicle_id;
+      startsAt = trip.on_line_at || trip.starts_at;
+      endsAt = trip.unloaded_at || trip.ends_at;
+    }
+    if (!vehicleId || !startsAt) return errorJson(response, 422, 'Укажите ТС и начало периода');
+    const fill = waybillAutofill(vehicleId, startsAt, endsAt);
+    const year = Number(String(startsAt).slice(0, 4));
+    const number = (db.prepare('SELECT MAX(number) n FROM waybills WHERE year=?').get(year)?.n || 0) + 1;
+    const id = randomUUID();
+    db.prepare(`INSERT INTO waybills(id,year,number,vehicle_id,driver_id,driver_name,trip_id,
+        starts_at,ends_at,odo_start,odo_end,fuel_liters,created_by,updated_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, year, number, vehicleId, fill.driverId, fill.driverName, tripId,
+      startsAt, endsAt, fill.odoStart, fill.odoEnd, fill.fuelLiters, user.id, user.id);
+    // Каркас титулов подписей (фундамент этапов 2–3): четыре роли сразу,
+    // пока «бумага»; УКЭП/УНЭП и внешние ссылки проставят интеграции.
+    const seedSign = db.prepare(`INSERT INTO waybill_signatures(id,waybill_id,role,signer_name)
+      VALUES(?,?,?,?)`);
+    seedSign.run(randomUUID(), id, 'dispatcher', user.full_name || user.username || '');
+    seedSign.run(randomUUID(), id, 'medic', '');
+    seedSign.run(randomUUID(), id, 'mechanic', '');
+    seedSign.run(randomUUID(), id, 'driver', fill.driverName);
+    audit(db, user, 'create', 'waybill', id, { vehicleId, tripId, number: `${year}-${number}` },
+      requestIp(request));
+    return json(response, 201, { id, number, year });
+  }
+  if (request.method === 'GET' && pathname === '/api/waybills') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const from = url.searchParams.get('from') || new Date(Date.now() - 14 * 86400000).toISOString();
+    const to = url.searchParams.get('to') || '9999';
+    const rows = db.prepare(`SELECT w.*, v.plate, t.order_no FROM waybills w
+      JOIN vehicles v ON v.id=w.vehicle_id LEFT JOIN trips t ON t.id=w.trip_id
+      WHERE w.starts_at>=? AND w.starts_at<=? ORDER BY w.year DESC, w.number DESC LIMIT 400`)
+      .all(from, to);
+    return json(response, 200, { waybills: rows });
+  }
+  match = route(/^\/api\/waybills\/([^/]+)$/, pathname);
+  if (match && request.method === 'GET') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const row = waybillRow(match[0]);
+    if (!row) return errorJson(response, 404, 'Путевой лист не найден');
+    const company = settingsObject(db).general || {};
+    const signatures = db.prepare(`SELECT role, signer_name, sign_kind, status, signed_at
+      FROM waybill_signatures WHERE waybill_id=?`).all(match[0]);
+    return json(response, 200, { waybill: row, signatures,
+      companyName: company.companyName || '' });
+  }
+  if (match && request.method === 'PATCH') {
+    const actor = currentUser(request);
+    const user = requirePermission(request, response,
+      hasPermission(actor, 'fleet:write') ? 'fleet:write' : 'trip-status:write');
+    if (!user) return;
+    const row = db.prepare('SELECT * FROM waybills WHERE id=?').get(match[0]);
+    if (!row) return errorJson(response, 404, 'Путевой лист не найден');
+    const body = await readJson(request);
+    const iso = value => value && Number.isFinite(Date.parse(value))
+      ? new Date(Date.parse(value)).toISOString() : null;
+    const num = value => (value === '' || value == null ? null : Math.max(0, Math.round(Number(value))));
+    const next = {
+      driver_name: 'driverName' in body ? String(body.driverName || '').slice(0, 120) : row.driver_name,
+      starts_at: 'startsAt' in body ? (iso(body.startsAt) || row.starts_at) : row.starts_at,
+      ends_at: 'endsAt' in body ? iso(body.endsAt) : row.ends_at,
+      odo_start: 'odoStart' in body ? num(body.odoStart) : row.odo_start,
+      odo_end: 'odoEnd' in body ? num(body.odoEnd) : row.odo_end,
+      fuel_liters: 'fuelLiters' in body
+        ? (body.fuelLiters === '' || body.fuelLiters == null ? null : Number(body.fuelLiters)) : row.fuel_liters,
+      med_pre_at: 'medPreAt' in body ? iso(body.medPreAt) : row.med_pre_at,
+      med_post_at: 'medPostAt' in body ? iso(body.medPostAt) : row.med_post_at,
+      tech_pre_at: 'techPreAt' in body ? iso(body.techPreAt) : row.tech_pre_at,
+      tech_by: 'techBy' in body ? String(body.techBy || '').slice(0, 120) : row.tech_by,
+      status: ['draft', 'issued', 'closed'].includes(body.status) ? body.status : row.status,
+      note: 'note' in body ? String(body.note || '').slice(0, 300) : row.note
+    };
+    if (next.odo_start != null && next.odo_end != null && next.odo_end < next.odo_start) {
+      return errorJson(response, 422, 'Одометр возврата меньше одометра выезда — проверьте показания');
+    }
+    db.prepare(`UPDATE waybills SET driver_name=?,starts_at=?,ends_at=?,odo_start=?,odo_end=?,
+        fuel_liters=?,med_pre_at=?,med_post_at=?,tech_pre_at=?,tech_by=?,status=?,note=?,
+        updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+      next.driver_name, next.starts_at, next.ends_at, next.odo_start, next.odo_end,
+      next.fuel_liters, next.med_pre_at, next.med_post_at, next.tech_pre_at, next.tech_by,
+      next.status, next.note, user.id, match[0]);
+    audit(db, user, 'update', 'waybill', match[0], body, requestIp(request));
+    return json(response, 200, { waybill: waybillRow(match[0]) });
+  }
+  if (match && request.method === 'DELETE') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const row = db.prepare('SELECT status FROM waybills WHERE id=?').get(match[0]);
+    if (!row) return errorJson(response, 404, 'Путевой лист не найден');
+    if (row.status === 'closed') return errorJson(response, 409, 'Закрытый лист не удаляется');
+    db.prepare('DELETE FROM waybills WHERE id=?').run(match[0]);
+    audit(db, user, 'delete', 'waybill', match[0], {}, requestIp(request));
     return json(response, 200, { ok: true });
   }
 

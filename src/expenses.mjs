@@ -176,3 +176,15 @@ export function expensesSummary(items, vatRate, categories = new Map()) {
     byCfo: unpack(byCfo),
     byDetail: Object.fromEntries([...byDetail].map(([key, map]) => [key, unpack(map)])) };
 }
+
+// Литры топлива из текста операции РН-Карт («ДТ-Лет · 800 л по 86.7 ₽ …»):
+// сторно идёт отрицательной суммой — литры получают тот же знак, чтобы
+// сумма за период была честной (путевые листы, Э1 07.11).
+export function fuelLitersOf(note, amount = 1) {
+  // \b не работает с кириллицей — границу слова после «л» проверяем сами.
+  const match = /(\d+(?:[.,]\d+)?)\s*л(?![а-яёa-z])/iu.exec(String(note || ''));
+  if (!match) return 0;
+  const liters = Number(match[1].replace(',', '.'));
+  if (!Number.isFinite(liters)) return 0;
+  return Number(amount) < 0 ? -liters : liters;
+}

@@ -5682,6 +5682,28 @@ test('сторож «рейс без прицепа» предупреждает
   assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: '  ' }), 'пробелы = нет прицепа');
 });
 
+test('путевые листы Э1: литры из операции РН-Карт и таблица в базе', async t => {
+  // Решение руководителя 07.11: база ПЛ, наполнение фактом планера.
+  const { fuelLitersOf } = await import('../src/expenses.mjs');
+  assert.equal(fuelLitersOf('ДТ-Лет · 800 л по 86.7 ₽ · SHAKMAN: т942ат58', 69360), 800);
+  assert.equal(fuelLitersOf('ДТ-Лет · 383.66 л по 86.7 ₽', -33263.32), -383.66, 'сторно — минусом');
+  assert.equal(fuelLitersOf('мойка', 500), 0);
+  assert.equal(fuelLitersOf('', 1), 0);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-waybill-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO waybills(id,year,number,vehicle_id,starts_at)
+    VALUES('wb-1',2026,1,?,'2026-11-07T06:00:00.000Z')`).run(vehicle.id);
+  // Номер уникален в пределах года.
+  assert.throws(() => db.prepare(`INSERT INTO waybills(id,year,number,vehicle_id,starts_at)
+    VALUES('wb-2',2026,1,?,'2026-11-07T07:00:00.000Z')`).run(vehicle.id));
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM waybills').get().n, 1);
+});
+
 test('местное время точек: пояс из текста пункта, подсказка только востоку', async () => {
   // Этап 1 часовых поясов (заявка Базуева 05.11): планер в МСК, Сибирь
   // живёт по местным часам — пояс определяется по региону/городу пункта.

@@ -14,6 +14,7 @@ import { openTransfers, transferStage, transferTaskText, transferDialog } from '
 import { callCardDialog, closeQuestionDialog, questionDialog, setTopics, topicLabel } from './call-card.js';
 import { tripIncidentDialog } from './incidents.js';
 import { localTimeHint } from './tz.js';
+import { waybillFromTrip, waybillRegistry } from './waybill.js';
 
 const LATE_MS = 30 * 60_000;
 // «ТС не выгружают»: плановое прибытие прошло более 6 часов назад,
@@ -793,6 +794,8 @@ export async function renderDispatcher(container, context, options = {}) {
         <span style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
           ${prepStatusBadge(trip)}
           <button class="button ghost small" data-incident="${trip.id}" title="Поломка, отказ клиента, переназначение">⚠ Внештатная</button>
+          <button class="button ghost small" data-waybill-trip="${trip.id}"
+            title="Путевой лист рейса: автозаполнение из факта, печать по приказу № 390">🧾 Путевой</button>
         </span>
       </div>
       ${sumLine(trip)}
@@ -1116,6 +1119,8 @@ export async function renderDispatcher(container, context, options = {}) {
               <button class="button ghost small" data-question-new="${trip.id}"
                 title="Водитель позвонил с вопросом — зафиксировать (норматив ответа 10 минут)">📞 Вопрос</button>
               <button class="button ghost small" data-incident="${trip.id}">⚠ Внештатная</button>
+              <button class="button ghost small" data-waybill-trip="${trip.id}"
+                title="Путевой лист рейса: автозаполнение из факта, печать по приказу № 390">🧾 Путевой</button>
               <button class="button ghost small" data-prepnote="${trip.id}"
                 title="Комментарий по рейсу: виден всей смене и в карточке звонка водителя">💬 Заметка</button>
             </div>
@@ -1653,6 +1658,8 @@ export async function renderDispatcher(container, context, options = {}) {
             title="Поменялись время, адрес или точки заказа — правка доступна и в пути; каждая правка в журнале, планирование получает список изменений">✏ Корректировка</button>` : ''}
           ${canAct ? `<button type="button" class="button ghost small" id="kbqIncident"
             title="Поломка, отказ клиента, переназначение, акт, возврат, опоздание">⚠ Внештатная</button>` : ''}
+          ${canAct ? `<button type="button" class="button ghost small" id="kbqWaybill"
+            title="Путевой лист рейса: автозаполнение из факта (водитель, одометры, топливо), печать по приказу № 390">🧾 Путевой</button>` : ''}
           <button type="button" class="button ghost small" id="kbqClassic"
             title="Лента точек, правка времён, массовые инструменты">📋 Классика</button>
           <button type="button" class="button ghost" data-close>Закрыть</button>
@@ -1723,6 +1730,9 @@ export async function renderDispatcher(container, context, options = {}) {
         const full = data.trips.find(item => item.id === trip.id) || trip;
         incidentDialog(full, data, context);
       };
+      // Путевой лист рейса (Э1, 07.11): автозаполнение из факта планера.
+      const kbqWaybill = document.getElementById('kbqWaybill');
+      if (kbqWaybill) kbqWaybill.onclick = () => waybillFromTrip(trip.id, context);
       document.getElementById('kbqClassic').onclick = () => {
         context.closeModal();
         state.dispatcherReturnToBoard = { query: state.dispatcherQuery || '' };
@@ -1914,6 +1924,8 @@ export async function renderDispatcher(container, context, options = {}) {
           title="Полуавтоматика руководителя службы: сбросить авто-назначения и раздать карточки заново по текущей смене и личным ёмкостям (взятые вручную «🖐 Беру» не трогаются)">⚖ Перераспределить</button>` : ''}
         <button class="button small ghost" id="kbArchive"
           title="Закрытые рейсы за 7 дней: вернуть в контроль или исправить ошибочно проставленное время точек — каждая правка в журнале">🗂 Архив</button>
+        <button class="button small ghost" id="kbWaybills"
+          title="Путевые листы: реестр за 14 дней, выдача нового, печать по приказу № 390">🧾 Путевые</button>
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: ТС, водитель, заказчик, № — найдёт и сошедшие с доски"
           value="${escapeHtml(state.dispatcherQuery || '')}">
       </div>
@@ -2047,6 +2059,8 @@ export async function renderDispatcher(container, context, options = {}) {
       try { localStorage.setItem('pl_kb_dense', state.kbDense ? '1' : ''); } catch { /* ок */ }
       renderDispatcher(container, context);
     };
+    const kbWaybills = container.querySelector('#kbWaybills');
+    if (kbWaybills) kbWaybills.onclick = () => waybillRegistry(context, data);
     // Профиль смены: память рабочего места, как компакт-режим.
     container.querySelectorAll('[data-kb-role]').forEach(button =>
       button.addEventListener('click', () => {
@@ -2811,6 +2825,9 @@ export async function renderDispatcher(container, context, options = {}) {
       const trip = data.trips.find(item => item.id === button.dataset.incident);
       if (trip) incidentDialog(trip, data, context);
     }));
+  // Путевой лист из классической карточки (Э1, 07.11).
+  container.querySelectorAll('[data-waybill-trip]').forEach(button =>
+    button.addEventListener('click', () => waybillFromTrip(button.dataset.waybillTrip, context)));
   container.querySelectorAll('[data-notify-delay]').forEach(button =>
     button.addEventListener('click', async () => {
       button.disabled = true;

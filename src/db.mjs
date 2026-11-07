@@ -1523,6 +1523,64 @@ function migrateColumns(db) {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
   ensure('trip_incidents', 'reminded_at', 'TEXT');
+  // ── Путевые листы, Э1 (07.11, решение руководителя): база ПЛ внутри
+  // планера, наполнение фактом (водитель по графику, одометры из журнала,
+  // топливо РН-Карт), печатная форма по приказу Минтранса № 390. Без
+  // интеграций: подписи и ГИС ЭПД — этапы 2–3, поля заложены заранее.
+  db.exec(`CREATE TABLE IF NOT EXISTS waybills (
+    id TEXT PRIMARY KEY,
+    year INTEGER NOT NULL,
+    number INTEGER NOT NULL,
+    vehicle_id TEXT NOT NULL REFERENCES vehicles(id),
+    driver_id TEXT REFERENCES drivers(id),
+    driver_name TEXT NOT NULL DEFAULT '',
+    trip_id TEXT REFERENCES trips(id),
+    starts_at TEXT NOT NULL,
+    ends_at TEXT,
+    odo_start INTEGER,
+    odo_end INTEGER,
+    fuel_liters REAL,
+    med_pre_at TEXT,
+    med_post_at TEXT,
+    med_provider TEXT NOT NULL DEFAULT '',
+    med_external_id TEXT NOT NULL DEFAULT '',
+    tech_pre_at TEXT,
+    tech_by TEXT NOT NULL DEFAULT '',
+    tech_source TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','issued','closed')),
+    -- Фундамент обмена с ГИС ЭПД (этап 3): оператор ИС ЭПД, id документа
+    -- у оператора, статус обмена и журнал квитанций. Пока пусто.
+    epd_provider TEXT NOT NULL DEFAULT '',
+    epd_external_id TEXT NOT NULL DEFAULT '',
+    epd_status TEXT NOT NULL DEFAULT ''
+      CHECK(epd_status IN ('','queued','sent','signing','registered','rejected','error')),
+    epd_log_json TEXT NOT NULL DEFAULT '[]',
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT REFERENCES users(id),
+    updated_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_waybills_number ON waybills(year, number);
+  CREATE INDEX IF NOT EXISTS idx_waybills_vehicle ON waybills(vehicle_id, starts_at);
+  CREATE INDEX IF NOT EXISTS idx_waybills_trip ON waybills(trip_id);`);
+  // Титулы подписей листа по ролям — фундамент этапа 2 (УКЭП механика и
+  // организации, УНЭП водителя через Госключ, титул медика от поставщика):
+  // каркас из четырёх ролей рождается вместе с листом, этапы 2–3 только
+  // проставляют подписи и внешние ссылки, схему менять не придётся.
+  db.exec(`CREATE TABLE IF NOT EXISTS waybill_signatures (
+    id TEXT PRIMARY KEY,
+    waybill_id TEXT NOT NULL REFERENCES waybills(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('dispatcher','medic','mechanic','driver')),
+    signer_name TEXT NOT NULL DEFAULT '',
+    sign_kind TEXT NOT NULL DEFAULT 'paper' CHECK(sign_kind IN ('paper','ukep','unep','simple')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','signed','declined')),
+    signed_at TEXT,
+    external_ref TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(waybill_id, role)
+  );`);
   // Имя вложения HELP DESK (03.11): таблицы и тексты скачиваются со
   // своим именем и расширением, а не как безликий id.
   ensure('helpdesk_tickets', 'media_name', "TEXT NOT NULL DEFAULT ''");
