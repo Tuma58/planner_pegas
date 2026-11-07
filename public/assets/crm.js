@@ -50,7 +50,11 @@ function registryTable(rows, { canPay, showCustomer = true }) {
     </tr>`).join('')}</tbody></table></div>`;
 }
 
+const DEBT_OFF = `<div class="bi-empty crm-off">Учёт долгов клиентов пока выключен — включится, когда появятся сотрудник и процесс
+  (Настройки → «Учёт дебиторки CRM»). Договоры, отсрочка и отметки оплаты уже копятся.</div>`;
+
 function totalsKpis(t, money_) {
+  if (!t) return DEBT_OFF;
   return `<div class="bi-kpis">
     <div class="metric dept-staff hero"><span class="l">К оплате</span><span class="v">${money_ ? rub(t.net) : t.count}</span>
       <span class="d">${t.count} рейсов выгружено, не оплачено</span></div>
@@ -63,11 +67,11 @@ function totalsKpis(t, money_) {
   </div>`;
 }
 
-async function payTrip(id, label, after, context) {
-  if (!confirm(`Отметить рейс ${label} оплаченным?`)) return;
+async function payTrip(id, label, after, context, paid = true) {
+  if (!confirm(paid ? `Отметить рейс ${label} оплаченным?` : `Отменить отметку оплаты рейса ${label}? Рейс вернётся в «закрыт».`)) return;
   try {
-    await api(`/api/trips/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status: 'paid' }) });
-    toast('Рейс отмечен оплаченным');
+    await api(`/api/crm/trips/${encodeURIComponent(id)}/paid`, { method: 'POST', body: JSON.stringify({ paid }) });
+    toast(paid ? 'Рейс отмечен оплаченным' : 'Отметка оплаты снята');
     after();
     context.onReload?.();
   } catch (error) { toast(error.message, 'error'); }
@@ -79,25 +83,29 @@ async function customerDialog(name, context) {
   try { data = await api(`/api/crm/customer?name=${encodeURIComponent(name)}`); } catch (error) { toast(error.message, 'error'); return; }
   const c = data.contract;
   const t = data.totals;
+  const fact = data.factDays || { days: null, samples: 0 };
+  const factLine = `<div class="bi-row"><span class="k">Фактическая отсрочка</span><span class="v">${fact.days != null
+    ? `${fact.days} дн <small class="muted">медиана ${fact.samples} оплат за 180 дн</small>` : `копится <small class="muted">${fact.samples} из 5 оплат</small>`}</span></div>`;
   context.showModal(`<div class="crm-modal"><h2>${escapeHtml(name)}</h2>
-    <div class="bi-kpis">
+    ${!t ? DEBT_OFF : `<div class="bi-kpis">
       <div class="metric dept-staff"><span class="l">К оплате</span><span class="v">${data.money ? rub(t.net) : t.count}</span><span class="d">${t.count} рейсов</span></div>
       <div class="metric ${t.overdueCount ? 'neg' : 'pos'}"><span class="l">Просрочено</span><span class="v">${data.money ? rub(t.overdueNet) : t.overdueCount}</span>
         <span class="d">${t.overdueCount} рейсов${t.maxOverdueDays ? ` · до ${t.maxOverdueDays} дн` : ''}</span></div>
       <div class="metric"><span class="l">Самый старый долг</span><span class="v">${ruDay(t.oldestDay)}</span></div>
       ${data.money ? `<div class="metric ${data.claims.newSum ? 'warn' : ''}"><span class="l">Простой: ждёт выставления</span><span class="v">${rub(data.claims.newSum)}</span>
         <span class="d">выставлено ${rub(data.claims.billedSum)}</span></div>` : ''}
-    </div>
+    </div>`}
     <section class="section"><div class="sec-h"><span class="st">Договор</span>
       <div class="sec-actions"><button type="button" class="button small ghost" id="crmCardFull">📇 Карточка</button></div></div>
       <div class="sec-b">${c ? `<div class="bi-row"><span class="k">Номер</span><span class="v">${escapeHtml(c.number || 'б/н')}</span></div>
         <div class="bi-row"><span class="k">Подписан · действует до</span><span class="v">${ruDay(c.signed_on)} · ${ruDay(c.valid_to)}${c.outOfTerm ? ' <span class="bi-tag warn">не действует</span>' : ''}</span></div>
         <div class="bi-row"><span class="k">Отсрочка оплаты</span><span class="v">${c.payment_days != null ? `${c.payment_days} дн` : 'не указана'}</span></div>
+        ${factLine}
         ${c.tariff_note ? `<div class="bi-row"><span class="k">Тарифы</span><span class="v crm-note">${escapeHtml(c.tariff_note)}</span></div>` : ''}
         ${c.demurrage_note ? `<div class="bi-row"><span class="k">Простой</span><span class="v crm-note">${escapeHtml(c.demurrage_note)}</span></div>` : ''}`
-    : `<div class="bi-empty">Договор в CRM не заведён${data.profileDays != null ? ` — отсрочка из карточки клиента: ${data.profileDays} дн` : ' — срок оплаты рейсов неизвестен'}</div>`}</div></section>
-    <section class="section"><div class="sec-h"><span class="st">Рейсы к оплате</span><span class="hint">${t.count}</span></div>
-      <div class="sec-b flush">${registryTable(data.receivables, { canPay: false, showCustomer: false })}</div></section>
+    : `<div class="bi-empty">Договор в CRM не заведён${data.profileDays != null ? ` — отсрочка из карточки клиента: ${data.profileDays} дн` : ' — срок оплаты рейсов неизвестен'}</div>${factLine}`}</div></section>
+    ${t ? `<section class="section"><div class="sec-h"><span class="st">Рейсы к оплате</span><span class="hint">${t.count}</span></div>
+      <div class="sec-b flush">${registryTable(data.receivables, { canPay: false, showCustomer: false })}</div></section>` : ''}
     <section class="section"><div class="sec-h"><span class="st">Последние рейсы</span></div><div class="sec-b flush">
       ${data.lastTrips.length ? `<table class="bi-table"><thead><tr><th>Заявка</th><th>Маршрут</th><th>ТС</th><th>Статус</th><th>Выгрузка</th><th class="r">Без НДС</th></tr></thead>
         <tbody>${data.lastTrips.map(row => `<tr><td class="mono">${escapeHtml(row.orderNo || row.id.slice(0, 8))}</td><td>${escapeHtml(row.route)}</td>
@@ -227,6 +235,7 @@ function clientsTab(data, filter) {
 }
 
 function debtTab(data) {
+  if (!data.totals) return DEBT_OFF;
   return `${totalsKpis(data.totals, data.money)}
     <div class="bi-grid">
       <section class="section s12 dept-staff"><div class="sec-h"><span class="st">Свод по клиентам</span>
@@ -304,7 +313,7 @@ export async function renderCrm(container, context) {
       : tab === 'funnel' ? funnelTab(data) : contractsTab(data);
     renderInto(container, `<div class="bi-page crm-page">
       <div class="bi-sub"><h2>CRM · деньги клиента</h2>
-        <p>Договор → срок оплаты рейса → дебиторка. Суммы без НДС. Нет договора — срок неизвестен.</p>
+        <p>Договор → срок оплаты рейса → дебиторка. Отсрочка одна: договор и карточка клиента синхронны. Суммы без НДС.</p>
         <div class="bi-actions"><span class="segmented">${TABS.map(([id, label]) =>
     `<button type="button" data-crm-tab="${id}" class="${id === tab ? 'active' : ''}">${label}</button>`).join('')}</span>
           ${tab === 'funnel' && data.canWrite ? '<button type="button" class="button small primary" id="crmLeadNew">＋ Лид</button>' : ''}</div></div>
@@ -341,14 +350,29 @@ export async function renderPayments(container, context) {
     return;
   }
   const reload = () => renderPayments(container, context);
-  const filters = [['', `Все ${data.totals.count}`], ['overdue', `Просрочено ${data.totals.overdueCount}`],
-    ['noterms', `Нет договора ${data.totals.noTermsCount}`]];
+  const t = data.totals || { count: 0, overdueCount: 0, noTermsCount: 0 };
+  const filters = [['', `Все ${t.count}`], ['overdue', `Просрочено ${t.overdueCount}`],
+    ['noterms', `Нет договора ${t.noTermsCount}`]];
+  const paidList = () => `<section class="section s12"><div class="sec-h"><span class="st">Недавно оплачены</span>
+      <span class="hint">отметка ошибочна — «↩ Отменить»</span></div>
+      <div class="sec-b flush">${(data.paid || []).length ? `<table class="bi-table"><thead><tr><th>Заявка</th><th>Клиент</th><th>ТС</th><th>Оплачен</th><th>Кто отметил</th>${data.canPay ? '<th></th>' : ''}</tr></thead>
+      <tbody>${data.paid.map(row => `<tr><td class="mono">${escapeHtml(row.orderNo || row.id.slice(0, 8))}</td><td>${escapeHtml(row.customer)}</td>
+        <td class="mono">${escapeHtml(row.plate)}</td><td>${ruDay(String(row.paidAt).slice(0, 10))}</td><td>${escapeHtml(row.paidBy)}</td>
+        ${data.canPay ? `<td><button type="button" class="button small ghost" data-crm-unpay="${attr(row.id)}"
+          data-crm-pay-label="${attr(`${row.orderNo || row.id.slice(0, 8)} · ${row.customer}`)}">↩ Отменить</button></td>` : ''}</tr>`).join('')}</tbody></table>`
+    : '<div class="bi-empty">Отметок оплаты ещё нет</div>'}</div></section>`;
   const draw = () => {
     const mode = state.payFilter || '';
     const who = state.payCustomer || '';
     const rows = data.rows.filter(row => (mode === 'overdue' ? row.overdue : mode === 'noterms' ? !row.dueDay : true)
       && (!who || row.customer === who));
     const sum = rows.reduce((acc, row) => acc + (row.net || 0), 0);
+    if (!data.totals) {
+      renderInto(container, `<div class="bi-page crm-page crm-pay"><div class="bi-sub"><h2>Оплата рейсов</h2>
+        <p>Отметку «оплачен» ставят в карточке рейса; здесь — недавние отметки и их отмена.</p></div>
+        ${DEBT_OFF}<div class="bi-grid">${paidList()}</div></div>`);
+      return;
+    }
     renderInto(container, `<div class="bi-page crm-page crm-pay">
       <div class="bi-sub"><h2>Рейсы к оплате</h2>
         <p>Выгружен или закрыт, не оплачен. Срок = дата выгрузки + отсрочка договора; суммы без НДС.</p>
@@ -359,17 +383,18 @@ export async function renderPayments(container, context) {
       ${totalsKpis(data.totals, data.money)}
       <div class="bi-grid"><section class="section s12 dept-staff"><div class="sec-h"><span class="st">Реестр</span>
         <span class="hint">${rows.length} рейсов${data.money ? ` · ${rub(sum)}` : ''}</span></div>
-        <div class="sec-b flush">${registryTable(rows, { canPay: data.canPay })}</div></section></div></div>`);
+        <div class="sec-b flush">${registryTable(rows, { canPay: data.canPay })}</div></section>${paidList()}</div></div>`);
     const select = container.querySelector('#payCustomer');
-    select.onchange = event => { state.payCustomer = event.currentTarget.value; draw(); };
+    if (select) select.onchange = event => { state.payCustomer = event.currentTarget.value; draw(); };
   };
   draw();
   container.onclick = event => {
-    const el = event.target.closest('[data-pay-filter],[data-crm-pay],[data-crm-open]');
+    const el = event.target.closest('[data-pay-filter],[data-crm-pay],[data-crm-unpay],[data-crm-open]');
     if (!el) return;
     event.preventDefault();
     if (el.dataset.payFilter !== undefined) { state.payFilter = el.dataset.payFilter; draw(); return; }
     if (el.dataset.crmPay) { payTrip(el.dataset.crmPay, el.dataset.crmPayLabel, reload, context); return; }
+    if (el.dataset.crmUnpay) { payTrip(el.dataset.crmUnpay, el.dataset.crmPayLabel, reload, context, false); return; }
     if (el.dataset.crmOpen) customerDialog(el.dataset.crmOpen, context);
   };
 }

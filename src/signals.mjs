@@ -50,7 +50,9 @@ export function jointConditions(db, at = new Date().toISOString()) {
     AND status IN ('queued','in_progress','ready')`);
   let toDue = [];
   try {
-    toDue = toStatusAll(db).filter(row => ['soon', 'overdue'].includes(row.status) && !hasToOrder.get(row.vehicleId))
+    // ТО по пробегу или ТО ХОУ по моточасам — любое из двух «скоро/просрочено».
+    const due = row => ['soon', 'overdue'].includes(row.status) || ['soon', 'overdue'].includes(row.hou?.status);
+    toDue = toStatusAll(db).filter(row => due(row) && !hasToOrder.get(row.vehicleId))
       .map(row => ({ vehicleId: row.vehicleId, plate: row.plate, since: at }));
   } catch { toDue = []; }
   return { toir_drv: fromRepair, drv_log: idle, log_toir: toDue };

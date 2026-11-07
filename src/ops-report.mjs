@@ -341,6 +341,38 @@ export function dailyOpsText(db, parkFn) {
   return lines.join('\n');
 }
 
+// Хвост «Отчёта эксплуатации» для единого утреннего «📆 Отчёта дня»
+// (Система отчётов, 07.11: два утренних отчёта → один). Только то, чего
+// в «Отчёте дня» нет: месяц к дате, опоздания, машины без заказа сейчас,
+// внештатки. money — строки с деньгами (уровень «все»), plain — без них.
+export function dailyOpsTail(db, parkFn) {
+  const today = new Date().toISOString().slice(0, 10);
+  const y = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  const monthFrom = `${today.slice(0, 7)}-01`;
+  const day = opsReportData(db, y, today, parkFn);
+  const month = monthFrom < today ? opsReportData(db, monthFrom, today, parkFn) : day;
+  const idleBad = day.idleNow.filter(x => x.reason === 'без причины');
+  const plain = [
+    `Опоздания >1ч: погрузка ${day.late.P.late1}/${day.late.P.n} · выгрузка ${day.late.D.late1}/${day.late.D.n}` +
+      (day.late.D.top[0] ? ` · чаще всех ждал: ${day.late.D.top[0].name}` : ''),
+    idleBad.length
+      ? `⚠ Сейчас без заказа и причины: ${idleBad.slice(0, 6).map(x => `${x.plate} (${x.where}, с ${x.since})`).join(', ')}${idleBad.length > 6 ? ` и ещё ${idleBad.length - 6}` : ''}`
+      : '✅ Машин без заказа и причины сейчас нет',
+    (() => {
+      try {
+        const inc = incidentsSummary(db, `${y}T00:00:00Z`, `${today}T00:00:00Z`);
+        if (!inc.counts.act && !inc.counts.return && !inc.openReturns.length) return null;
+        return `⚠ Внештатки за сутки: актов ${inc.counts.act} · возвратов ${inc.counts.return}` +
+          (inc.openReturns.length ? ` · возвратов в работе ${inc.openReturns.length}` : '');
+      } catch { return null; }
+    })()
+  ].filter(Boolean);
+  return {
+    money: [`Месяц к дате: выручка без НДС ${(month.park.total.rev / 1e6).toFixed(1)} млн · рейсов ${month.park.total.trips}`, ...plain],
+    plain
+  };
+}
+
 const esc = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 
 // HTML-страница отчёта: самодостаточная, графики SVG с подсказками,

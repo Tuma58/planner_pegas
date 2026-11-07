@@ -82,3 +82,22 @@
 .vc-card .sec-b .fields .field { margin: 6px 0; }
 .vc-board .vc-row { cursor: pointer; }
 .vc-board .vc-row:hover td { background: var(--hover); }
+
+/* ── Склад запчастей ТОиР (07.11): остатки, журнал, карточка позиции ── */
+.svc-parts .parts-check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--muted); }
+.svc-parts .parts-row { cursor: pointer; }
+.svc-parts .parts-row:hover td { background: var(--hover); }
+.svc-parts .parts-below td:first-child { box-shadow: inset 2px 0 0 var(--warn); }
+.svc-parts .parts-acts { white-space: nowrap; }
+.svc-parts .parts-acts .button.small { margin-left: 0; }
+.svc-parts .parts-line { margin: 0 0 10px; font-size: var(--fs-sm); color: var(--muted); }
+.svc-parts #partsCfgForm.fields { grid-template-columns: 1fr; }
+.svc-parts #partsCfgForm .field small { display: block; margin-top: 2px; font-size: var(--fs-xs); }
+.parts-moves .parts-cancelled td { color: var(--faint); text-decoration: line-through; }
+.parts-moves .parts-cancelled td:last-child, .parts-moves .parts-cancelled .bi-tag { text-decoration: none; }
+.parts-card .parts-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.parts-card .parts-card-head h2 { margin: 0; }
+.parts-card .parts-card-head [data-pc="edit"] { margin-left: auto; }
+.parts-card .parts-card-acts { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.parts-card .section { margin-top: 12px; }
+.parts-form .field small { display: block; margin-top: 2px; font-size: var(--fs-xs); }

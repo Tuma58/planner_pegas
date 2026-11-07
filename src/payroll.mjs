@@ -17,19 +17,13 @@
 // км рейсов этой машины в отрезке (доля по времени, как «по координатам»
 // в «Пробегах»). Источник помечен по каждому отрезку и по строке.
 //
-// ФОРМУЛА (ВОПРОС РУКОВОДИТЕЛЮ — выбрано по смыслу положения):
-//   сдельно   = км × ставка ₽/км;
-//   гарантия  = дни работы × гарантия ₽/сутки;
-//   к выплате = max(сдельно, гарантия) ЗА ПЕРИОД, а не по каждым суткам.
-// Почему за период: рейс длится несколько суток, км по суткам ложатся
-// неровно (день погрузки и ожидания ворот — 0 км, день дороги — 700+),
-// а одометр точен только по суткам. Сравнение по суткам платило бы
-// гарантию за каждый «пустой» день рейса поверх полной сдельной за
-// дорожный — фактически надбавка, которой в положении нет. Гарантия по
-// смыслу — нижняя граница заработка за отработанное время.
-// Сверхвахта (дни «РВ») — ОТДЕЛЬНОЙ строкой, в «к выплате» не входит;
-// сумма — только если в Настройках задана ставка доплаты за день
-// (calculation.driverOvertimePerDay), иначе честно «ставка не задана».
+// ФОРМУЛА (решение руководителя 07.11.2026):
+//   за каждые сутки работы: max(км суток × ставка ₽/км, гарантия ₽/сутки);
+//   сверхвахта (дни «РВ») — доплата ₽/сутки, входит в «к выплате»;
+//   км — весь пробег (гружёный + порожний) по одной ставке, по положению.
+//   к выплате = Σ по суткам + сверхвахта.
+// Км суток — разность снимков одометра на 00:00 МСК этих суток; нет веры
+// снимкам — доля км рейсов, пришедшаяся на сутки.
 
 import { activeVehicleForDriver, attendanceTimesheet, driverPeriodMetrics } from './planner-service.mjs';
 import { settingsObject } from './db.mjs';
@@ -47,14 +41,14 @@ const isDay = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 const numOr = (value, fallback) => value === '' || value == null || !Number.isFinite(Number(value))
   ? fallback : Number(value);
 
-// Ставки из настроек калькуляции. Дефолты 12 ₽/км и 4 000 ₽/сутки —
-// по Положению среды СТ, правится в Настройках.
+// Ставки из настроек калькуляции. Дефолты 12 ₽/км, 4 000 ₽/сутки и
+// 2 000 ₽/сутки сверхвахты — по Положению среды СТ, правятся в Настройках.
 export function payrollRates(settings = {}) {
   const calc = settings.calculation || {};
   return {
     ratePerKm: numOr(calc.driverRatePerKm, 12),
     guaranteePerDay: numOr(calc.driverGuaranteePerDay, 4000),
-    overtimePerDay: numOr(calc.driverOvertimePerDay, null),
+    overtimePerDay: numOr(calc.driverOvertimePerDay, 2000),
     rateSource: calc.driverRatePerKm == null || calc.driverRatePerKm === '' ? 'положение СТ (по умолчанию)' : 'настройки',
     guaranteeSource: calc.driverGuaranteePerDay == null || calc.driverGuaranteePerDay === '' ? 'положение СТ (по умолчанию)' : 'настройки'
   };
@@ -100,7 +94,7 @@ export function payrollReport(db, { from, to, ratePerKm, guaranteePerDay, overti
   const defaults = payrollRates(settingsObject(db));
   const rate = numOr(ratePerKm, defaults.ratePerKm);
   const guaranteeRate = numOr(guaranteePerDay, defaults.guaranteePerDay);
-  const overtimeRate = numOr(overtimePerDay, null);
+  const overtimeRate = numOr(overtimePerDay, defaults.overtimePerDay);
   const toExcl = addDay(to);
   // Табель сам ограничивает период 62 днями (422) — ведомость наследует.
   const sheet = attendanceTimesheet(db, from, toExcl);
@@ -124,44 +118,69 @@ export function payrollReport(db, { from, to, ratePerKm, guaranteePerDay, overti
   for (const sheetRow of sheet.rows) {
     const workDays = sheet.days.filter(day => WORK_CODES.includes(sheetRow.days[day]));
     const overtimeDays = sheet.days.filter(day => sheetRow.days[day] === 'РВ').length;
-    // Непрерывные отрезки работы на одной машине.
+    // Отрезки работы на одной машине → км отрезка (одометр на краях →
+    // рейсы) → раскладка по суткам: сутки со своими снимками одометра —
+    // как есть, остаток отрезка — по доле км рейсов суток (рейсов нет —
+    // поровну). Затем по каждым суткам max(сдельно суток, гарантия).
     const segments = [];
     let noVehicleDays = 0;
+    const dayKm = new Map();
     for (const day of workDays) {
+      dayKm.set(day, 0);
       const vehicle = activeVehicleForDriver(db, sheetRow.driverId, day);
       if (!vehicle.vehicleId) { noVehicleDays += 1; continue; }
       const last = segments[segments.length - 1];
-      if (last && last.vehicleId === vehicle.vehicleId && last.toExcl === day) last.toExcl = addDay(day);
-      else segments.push({ vehicleId: vehicle.vehicleId, plate: vehicle.plate, from: day, toExcl: addDay(day) });
+      if (last && last.vehicleId === vehicle.vehicleId && last.toExcl === day) { last.toExcl = addDay(day); last.days.push(day); }
+      else segments.push({ vehicleId: vehicle.vehicleId, plate: vehicle.plate, from: day, toExcl: addDay(day), days: [day] });
     }
-    let km = 0;
     const why = new Set();
     for (const segment of segments) {
-      const result = segmentKm(db, stmts, segment.vehicleId, segment.from, segment.toExcl);
-      segment.km = Math.round(result.km);
-      segment.source = result.source;
+      const total = segmentKm(db, stmts, segment.vehicleId, segment.from, segment.toExcl);
+      if (total.why) why.add(total.why);
+      const perDay = segment.days.map(day => ({ day, own: segmentKm(db, stmts, segment.vehicleId, day, addDay(day)) }));
+      const known = perDay.filter(item => item.own.source === 'одометр');
+      const knownKm = known.reduce((sum, item) => sum + item.own.km, 0);
+      const rest = Math.max(0, total.km - knownKm);
+      const unknown = perDay.filter(item => item.own.source !== 'одометр');
+      const weight = unknown.reduce((sum, item) => sum + item.own.km, 0);
+      for (const item of known) dayKm.set(item.day, item.own.km);
+      for (const item of unknown) dayKm.set(item.day, weight > 0 ? rest * item.own.km / weight : rest / unknown.length);
+      segment.km = Math.round(total.km);
+      segment.source = total.source;
       segment.to = addDay(segment.toExcl, -1);
       delete segment.toExcl;
-      if (result.why) why.add(result.why);
-      km += result.km;
+      delete segment.days;
+    }
+    let km = 0;
+    let piece = 0;
+    let payDays = 0;
+    let guaranteeDays = 0;
+    for (const day of workDays) {
+      const dayPiece = dayKm.get(day) * rate;
+      km += dayKm.get(day);
+      piece += dayPiece;
+      payDays += Math.max(dayPiece, guaranteeRate);
+      if (guaranteeRate > dayPiece) guaranteeDays += 1;
     }
     const days = workDays.length;
     if (!days && !km) continue;
     const sources = new Set(segments.map(segment => segment.source));
     const kmSource = !sources.size ? '—' : sources.size > 1 ? 'смешанный' : [...sources][0];
-    const piece = Math.round(km * rate);
-    const guarantee = Math.round(days * guaranteeRate);
-    const payable = Math.max(piece, guarantee);
+    const overtimeAmount = Math.round(overtimeDays * overtimeRate);
     const notes = [];
     if (why.size) notes.push(`км по рейсам: ${[...why].join('; ')}`);
     if (noVehicleDays) notes.push(`дней без машины: ${noVehicleDays} (только гарантия)`);
     if (sheetRow.totals['·']) notes.push(`не отмечено в табеле: ${sheetRow.totals['·']} дн`);
+    piece = Math.round(piece);
+    const byDays = Math.round(payDays);
     rows.push({
       driverId: sheetRow.driverId, name: sheetRow.name, plate: sheetRow.plate || '',
       km: Math.round(km), kmSource, days, trips: tripsByName.get(String(sheetRow.name).trim()) ?? 0,
-      piece, guarantee, payable, basis: guarantee > piece ? 'гарантия' : 'сдельно',
-      topUp: Math.max(0, guarantee - piece),
-      overtime: { days: overtimeDays, amount: overtimeRate == null ? null : Math.round(overtimeDays * overtimeRate) },
+      piece, guarantee: Math.round(days * guaranteeRate), guaranteeDays,
+      payable: byDays + overtimeAmount,
+      basis: !guaranteeDays ? 'сдельно' : guaranteeDays === days ? 'гарантия' : `гарантия ${guaranteeDays} из ${days} сут`,
+      topUp: byDays - piece,
+      overtime: { days: overtimeDays, amount: overtimeAmount },
       segments, notes
     });
   }
@@ -170,9 +189,10 @@ export function payrollReport(db, { from, to, ratePerKm, guaranteePerDay, overti
   const totals = {
     drivers: rows.length, km: sum('km'), days: sum('days'),
     piece: sum('piece'), guarantee: sum('guarantee'), payable: sum('payable'), topUp: sum('topUp'),
-    byGuarantee: rows.filter(row => row.basis === 'гарантия').length,
+    byGuarantee: rows.filter(row => row.guaranteeDays > 0).length,
+    guaranteeDays: rows.reduce((total, row) => total + row.guaranteeDays, 0),
     overtimeDays: rows.reduce((total, row) => total + row.overtime.days, 0),
-    overtimeAmount: overtimeRate == null ? null : rows.reduce((total, row) => total + row.overtime.amount, 0),
+    overtimeAmount: rows.reduce((total, row) => total + row.overtime.amount, 0),
     kmSources: rows.reduce((acc, row) => ({ ...acc, [row.kmSource]: (acc[row.kmSource] || 0) + 1 }), {}),
     unassignedTrips
   };
@@ -180,15 +200,10 @@ export function payrollReport(db, { from, to, ratePerKm, guaranteePerDay, overti
     from, to, days: sheet.days.length,
     rates: { ratePerKm: rate, guaranteePerDay: guaranteeRate, overtimePerDay: overtimeRate,
       rateSource: defaults.rateSource, guaranteeSource: defaults.guaranteeSource },
-    method: 'period',
-    methodNote: 'К выплате = max(сдельно, гарантия) за период целиком; сверхвахта — отдельно, в «к выплате» не входит',
+    method: 'day',
+    methodNote: 'Каждые сутки работы: больший из «км суток × ставка» и гарантии; плюс сверхвахта за сутки «РВ». Порожние км — по той же ставке',
     rows, totals,
-    questions: [
-      'Сравнение «сдельно / гарантия» — за период (принято) или по каждым суткам?',
-      'Сверхвахта (работа в выходной по графику): ставка доплаты за день — задать в Настройках (calculation.driverOvertimePerDay)',
-      'Кто видит ведомость: сейчас только уровень денег «все»; руководителю эксплуатации — нужно ли?',
-      'Пробег по одометру — весь (гружёный + порожний); платить ли порожний по той же ставке?'
-    ]
+    questions: []
   };
 }
 
@@ -200,7 +215,9 @@ export function canSeePayroll(ctx) {
   const { access, user, hasPermission } = ctx;
   if (!user) return false;
   if (access?.legacy) return Boolean(hasPermission?.(user, 'reports:read'));
-  return access?.money === 'full';
+  // Ведомость видят по экрану «ФОТ водителей» (руководитель направления
+  // и руководитель эксплуатации — решение 07.11) или уровень денег «все».
+  return access?.money === 'full' || Boolean(access?.views?.includes('payroll'));
 }
 
 // GET /api/payroll?from&to — true, если маршрут обработан.

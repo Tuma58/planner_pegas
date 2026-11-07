@@ -30,6 +30,8 @@ import { renderSafety } from './safety.js';
 import { renderToBoard } from './vehicle-card.js';
 import { renderPayroll } from './payroll.js';
 import { renderCrm, renderPayments } from './crm.js';
+import { renderParts } from './parts.js';
+import { renderReportsHub } from './reports-hub.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -883,7 +885,10 @@ const MAIN_VIEWS = [
   // (БДД), «Отчёты отдела» (руководитель логистики).
   { id: 'docs', title: 'Документы', show: () => Boolean(viewInSet('docs') || (legacyAccess() && can('fleet:write'))) },
   { id: 'safety', title: 'Безопасность', show: () => Boolean(can('safety:write') || viewInSet('safety') || (legacyAccess() && can('users:write'))) },
-  { id: 'logreports', title: 'Отчёты отдела', show: () => Boolean(viewInSet('logreports')) },
+  { id: 'logreports', title: 'Отчёты отдела', show: () => Boolean(viewInSet('logreports') && !viewInSet('reports')) },
+  // «Мои отчёты» (Система отчётов, 07.11): реестр по уровням, у отдела — свои.
+  { id: 'reports', title: 'Мои отчёты', show: () => Boolean(viewInSet('reports') || (legacyAccess() && can('reports:read'))) },
+  { id: 'parts', title: 'Склад запчастей', show: () => Boolean(viewInSet('parts') || (legacyAccess() && (can('fleet:write') || can('reports:read')))) },
   // Модули чек-листа: «ТО по парку» (нормы ТО по каждой машине), ФОТ
   // водителей (ведомость руководителя направления), CRM и «К оплате».
   { id: 'toboard', title: 'ТО по парку', show: () => Boolean(viewInSet('toboard') || (legacyAccess() && (can('fleet:write') || can('release:write')))) },
@@ -907,16 +912,16 @@ const NAV_GROUPS = [
   // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
   // блоков. Ниже — рабочие экраны Штаба.
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi'] },
-    { title: 'Работа Штаба', views: ['boss', 'staff', 'payroll', 'expenses', 'safety', 'gate'] }] },
+    { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi', 'reports'] },
+    { title: 'Работа Штаба', views: ['boss', 'staff', 'payroll', 'payments', 'expenses', 'safety', 'gate'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
-    { title: 'Планирование и анализ', views: ['logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
+    { title: 'Планирование и анализ', views: ['reports', 'logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
     { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
   { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
-    { title: '', views: ['release', 'docs', 'resource', 'fleetplan', 'toboard'] }] },
+    { title: '', views: ['reports', 'release', 'docs', 'resource', 'fleetplan', 'toboard', 'payroll'] }] },
   { dept: 'toir', title: 'ТОиР', coef: 'КТГ', sub: [
-    { title: '', views: ['remzona', 'toboard'] }] }
+    { title: '', views: ['reports', 'remzona', 'toboard', 'parts'] }] }
 ];
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
@@ -924,6 +929,8 @@ const VIEW_META = {
   docs: ['📄', 'Документы после выгрузки: что сдано, что ждём, просрочка по нормативу'],
   safety: ['🛡', 'Безопасность движения: ДТП, нарушения, режим труда и отдыха, допуски'],
   logreports: ['▤', 'Отчёты отдела логистики: сводный, экономика по клиентам и типам ТС'],
+  reports: ['▤', 'Мои отчёты: отчёты по уровням — откуда цифры, кто видит, как открыть'],
+  parts: ['🔩', 'Склад запчастей: остатки, приход, расход на наряды, неснижаемый запас, к закупке'],
   toboard: ['🔧', 'ТО по парку: остаток до ТО по нормам каждой машины, документы ТС'],
   payroll: ['₽', 'ФОТ водителей: начисление по км и гарантии за период'],
   crm: ['🤝', 'CRM: клиенты, договоры, дебиторка, воронка продаж'],
@@ -1021,12 +1028,22 @@ function renderViewTabs() {
     let viewsOf = sub.views;
     if (ownDept && group.dept === 'staff') viewsOf = viewsOf.filter(id => !moved.includes(id));
     if (ownDept && group.dept === ownDept && index === 0) {
-      viewsOf = [...moved.filter(id => byIdView.has(id)), ...viewsOf];
+      viewsOf = [...new Set([...moved.filter(id => byIdView.has(id)), ...viewsOf])];
     }
     return { ...sub, views: viewsOf };
-  }) })).map(group => {
+  }) }));
+  // Один экран — одно место в меню: экран, перечисленный в нескольких
+  // группах («Мои отчёты», «ТО по парку», «ФОТ»), стоит в группе СВОЕГО
+  // отдела, у направления — в первой по порядку. Чужие отделы не видны.
+  const ownerOf = new Map();
+  const order = groups.map((group, index) => index)
+    .sort((a, b) => (groups[b].dept === ownDept) - (groups[a].dept === ownDept) || a - b);
+  for (const index of order) {
+    for (const sub of groups[index].sub) for (const id of sub.views) if (!ownerOf.has(id) && byIdView.has(id)) ownerOf.set(id, index);
+  }
+  const groupsHtml = groups.map((group, groupIndex) => {
     const subs = group.sub.map(sub => {
-      const items = sub.views.map(id => byIdView.get(id)).filter(Boolean)
+      const items = sub.views.filter(id => ownerOf.get(id) === groupIndex).map(id => byIdView.get(id)).filter(Boolean)
         .filter(view => !query || view.title.toLowerCase().includes(query));
       items.forEach(view => placed.add(view.id));
       return items.length ? (sub.title ? `<div class="nav-sub">${sub.title}</div>` : '') + items.map(link).join('') : '';
@@ -1039,7 +1056,7 @@ function renderViewTabs() {
     && !NAV_GROUPS.some(group => group.views.includes(view.id))
     && (!query || view.title.toLowerCase().includes(query)));
   byId('viewTabs').innerHTML = views.length > 1
-    ? groups + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '')
+    ? groupsHtml + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '')
     : '';
   // Экран вне набора (вход, смена роли) — первый экран из меню.
   if (!byIdView.has(state.view) && views.length) {
@@ -1152,6 +1169,12 @@ function renderMain() {
     renderTripDocs(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'safety') {
     renderSafety(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'reports') {
+    renderReportsHub(byId('timeline'), { state, can, showModal, closeModal, onReload: reload, openReport, trackUsage,
+      access: state.data?.user?.access,
+      setView: view => { state.view = view; trackUsage(`view:${view}`); renderViewTabs(); renderMain(); } });
+  } else if (state.view === 'parts') {
+    renderParts(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'toboard') {
     renderToBoard(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'payroll') {

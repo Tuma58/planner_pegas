@@ -8,8 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
 import { hasPermission } from '../src/permissions.mjs';
 import { calcSettings, tripNet } from '../src/money.mjs';
-import { contractFor, crmApi, crmCustomer, crmRights, crmSummary, leadError, leadStats, migrateCrm,
-  receivableRows, receivablesByCustomer, receivablesTotals } from '../src/crm.mjs';
+import { contractFor, crmApi, crmCustomer, crmRights, crmSummary, factPaymentDays, leadError, leadStats, markTripPaid, migrateCrm,
+  receivableRows, receivablesByCustomer, receivablesTotals, syncContractDays } from '../src/crm.mjs';
 
 function freshDb(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-crm-test-'));
@@ -156,7 +156,7 @@ test('воронка: отказ требует причину, конверси
 });
 
 // Обвязка маршрутов: ctx как у сервера, ответ пишется в объект.
-function makeCtx(db, user, access, { method = 'GET', pathname, search = '', body = {} } = {}) {
+function makeCtx(db, user, access, { method = 'GET', pathname, search = '', body = {}, debtOn = true } = {}) {
   const out = { status: 0, body: null, audits: [] };
   const ctx = {
     db, user, access, pathname, url: new URL(`http://x${pathname}${search}`),
@@ -165,7 +165,7 @@ function makeCtx(db, user, access, { method = 'GET', pathname, search = '', body
     errorJson: (_r, status, msg) => { out.status = status; out.body = { error: msg }; },
     readJson: async () => body,
     audit: (...args) => out.audits.push(args),
-    requestIp: () => '127.0.0.1', settingsObject: () => ({ general: { timezone: 'Europe/Moscow' } }), hasPermission
+    requestIp: () => '127.0.0.1', settingsObject: () => ({ general: { timezone: 'Europe/Moscow' }, calculation: { crmReceivablesOn: debtOn } }), hasPermission
   };
   return { ctx, out };
 }
@@ -251,4 +251,53 @@ test('права: чтение, запись, оплата, деньги', async
   await crmApi(r.ctx);
   assert.equal(r.out.status, 200);
   assert.equal('amount_estimate' in r.out.body.leads[0], false);
+});
+
+test('учёт долгов выключен: сумм и сроков долга нет, договоры и оплата работают', async t => {
+  const db = freshDb(t);
+  const trip = addTrip(db, { customer: 'Иней', status: 'unloaded', endsAt: '2026-10-01T10:00:00Z' });
+  let r = makeCtx(db, userOf('sales'), legacy, { pathname: '/api/crm/summary', debtOn: false });
+  await crmApi(r.ctx);
+  assert.equal(r.out.body.receivablesOn, false);
+  assert.equal(r.out.body.totals, null);
+  assert.ok(r.out.body.customers.every(item => item.debt === null));
+  r = makeCtx(db, userOf('accountant'), legacy, { pathname: '/api/crm/receivables', debtOn: false });
+  await crmApi(r.ctx);
+  assert.deepEqual(r.out.body.rows, []);
+  // Оплата и её отмена — бухгалтерия; время и кто — в рейсе.
+  r = makeCtx(db, userOf('sales'), legacy, { method: 'POST', pathname: `/api/crm/trips/${trip}/paid`, body: { paid: true }, debtOn: false });
+  await crmApi(r.ctx);
+  assert.equal(r.out.status, 403);
+  r = makeCtx(db, userOf('accountant'), legacy, { method: 'POST', pathname: `/api/crm/trips/${trip}/paid`, body: { paid: true }, debtOn: false });
+  await crmApi(r.ctx);
+  assert.equal(r.out.status, 200);
+  let row = db.prepare('SELECT status, paid_at, paid_by FROM trips WHERE id=?').get(trip);
+  assert.equal(row.status, 'paid');
+  assert.ok(row.paid_at);
+  assert.equal(row.paid_by, 'Тест accountant');
+  r = makeCtx(db, userOf('accountant'), legacy, { pathname: '/api/crm/receivables', debtOn: false });
+  await crmApi(r.ctx);
+  assert.equal(r.out.body.paid[0].id, trip);
+  r = makeCtx(db, userOf('accountant'), legacy, { method: 'POST', pathname: `/api/crm/trips/${trip}/paid`, body: { paid: false }, debtOn: false });
+  await crmApi(r.ctx);
+  row = db.prepare('SELECT status, paid_at FROM trips WHERE id=?').get(trip);
+  assert.deepEqual([row.status, row.paid_at], ['done', null]);
+});
+
+test('отсрочка одна: договор ↔ карточка клиента; факт отсрочки — медиана с 5 оплат', t => {
+  const db = freshDb(t);
+  addContract(db, { customer: 'Иней', signedOn: '2026-01-01', days: 14 });
+  syncContractDays(db, 'Иней', undefined, TODAY);
+  assert.equal(db.prepare('SELECT payment_days FROM customer_profiles WHERE customer_name=?').get('Иней').payment_days, 14);
+  syncContractDays(db, 'иней', 30, TODAY); // правка в карточке → в действующий договор
+  assert.equal(db.prepare(`SELECT payment_days FROM crm_contracts WHERE customer_name='Иней'`).get().payment_days, 30);
+  const nowMs = Date.parse('2026-11-07T12:00:00Z');
+  for (let i = 0; i < 4; i += 1) {
+    const id = addTrip(db, { customer: 'Иней', status: 'paid', endsAt: `2026-10-0${i + 1}T10:00:00Z` });
+    markTripPaid(db, id, true, 'бух', `2026-10-${String(i + 21).padStart(2, '0')}T10:00:00Z`);
+  }
+  assert.equal(factPaymentDays(db, 'Иней', { nowMs }).days, null);
+  const id = addTrip(db, { customer: 'Иней', status: 'paid', endsAt: '2026-10-05T10:00:00Z' });
+  markTripPaid(db, id, true, 'бух', '2026-10-25T10:00:00Z');
+  assert.deepEqual(factPaymentDays(db, 'Иней', { nowMs }), { days: 20, samples: 5 });
 });

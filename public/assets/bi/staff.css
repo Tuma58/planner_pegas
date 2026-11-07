@@ -319,3 +319,30 @@
 .gt-form { display: flex; flex-direction: column; gap: 8px; }
 .gt-h3 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 @media (max-width: 980px) { .gt-plate { font-size: 26px; } }
+
+/* ── «▤ Мои отчёты» — реестр системы отчётов (Слияние, 07.11) ── */
+.rh-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+@media (max-width: 1280px) { .rh-grid { grid-template-columns: minmax(0, 1fr); } }
+.rh-list { display: flex; flex-direction: column; padding: 0; }
+.rh-row { display: flex; align-items: flex-start; gap: 12px; padding: 9px 15px; border-bottom: 1px solid var(--border2); }
+.rh-row:last-child { border-bottom: 0; }
+.rh-row:hover { background: var(--hover); }
+.rh-row.is-drop b { text-decoration: line-through; text-decoration-color: var(--bad); }
+.rh-row.is-locked { opacity: .75; }
+.rh-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.rh-main > b { font-size: 13px; color: var(--ink); }
+.rh-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.rh-dept.dept-staff { color: var(--staff); border-color: var(--staff); }
+.rh-dept.dept-log { color: var(--log); border-color: var(--log); }
+.rh-dept.dept-drv { color: var(--drv); border-color: var(--drv); }
+.rh-dept.dept-toir { color: var(--toir); border-color: var(--toir); }
+.rh-dept.dept-all { color: var(--accent); border-color: var(--accent); }
+.rh-money.none { color: var(--faint); }
+.rh-how { font-size: 11.5px; color: var(--muted); }
+.rh-src { font-family: var(--mono-font); font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
+.rh-flag { font-size: 11.5px; padding: 5px 8px; border-radius: 8px; border: 1px dashed var(--border2); color: var(--muted); }
+.rh-flag span { display: block; color: var(--faint); margin-top: 2px; }
+.rh-flag.merge { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--card)); }
+.rh-flag.drop { border-color: var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
+.rh-act { flex: none; display: flex; align-items: center; padding-top: 1px; }
+.rh-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); }

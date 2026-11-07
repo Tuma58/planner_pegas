@@ -67,7 +67,7 @@ test('гарантия: мало км — к выплате гарантия з�
   assert.equal(row.payable, 12000);
   assert.equal(row.basis, 'гарантия');
   assert.equal(row.topUp, 6000);
-  assert.equal(data.method, 'period');
+  assert.equal(data.method, 'day');
   assert.ok(data.totals.payable >= 12000);
 });
 
@@ -82,7 +82,10 @@ test('нет одометров — км рейсов машины в дни р�
   assert.equal(row.km, 800);
   assert.equal(row.kmSource, 'рейсы');
   assert.equal(row.piece, 9600);
-  assert.equal(row.payable, 12000);
+  // По суткам МСК: 02 — 500 км (6 000), 03 — 300 км (3 600 → гарантия 4 000),
+  // 04 — без км (гарантия 4 000).
+  assert.equal(row.payable, 14000);
+  assert.equal(row.guaranteeDays, 2);
   assert.ok(row.notes.some(note => note.includes('нет снимков одометра')));
 });
 
@@ -91,7 +94,7 @@ test('ставки — из настроек; ноль — осознанное 
   const zero = payrollRates({ calculation: { driverRatePerKm: 0, driverGuaranteePerDay: '' } });
   assert.equal(zero.ratePerKm, 0);
   assert.equal(zero.guaranteePerDay, 4000);
-  assert.equal(zero.overtimePerDay, null);
+  assert.equal(zero.overtimePerDay, 2000);
 });
 
 function stubCtx(db, { access, user = { id: 'u1' }, perms = [], query = '' }) {
@@ -110,6 +113,21 @@ function stubCtx(db, { access, user = { id: 'u1' }, perms = [], query = '' }) {
   };
 }
 
+test('по суткам: дорожный день не гасит гарантию пустого; сверхвахта в итоге', t => {
+  const db = freshDb(t);
+  const { driverId, vehicleId } = setup(db);
+  odo(db, vehicleId, '2026-10-02', 100000);
+  odo(db, vehicleId, '2026-10-03', 100000);
+  odo(db, vehicleId, '2026-10-04', 100900);
+  odo(db, vehicleId, '2026-10-05', 100900);
+  markAttendance(db, { driverId, day: '2026-10-05', status: 'present' });
+  const row = rowOf(report(db, { overtimePerDay: 2000 }), driverId);
+  // 02 — 0 км → 4 000; 03 — 900 км → 10 800; 04 — 0 → 4 000; 05 — нет снимка на 06 → 0 → 4 000.
+  assert.equal(row.km, 900);
+  assert.equal(row.payable - row.overtime.amount, 22800);
+  assert.equal(row.overtime.amount, row.overtime.days * 2000);
+});
+
 test('права: ведомость только уровню денег «все» — иначе 403', t => {
   const db = freshDb(t);
   const { driverId } = setup(db);
@@ -125,6 +143,10 @@ test('права: ведомость только уровню денег «вс
   const legacyYes = stubCtx(db, { access: { legacy: true, money: 'full' }, perms: ['reports:read'], query });
   payrollApi(legacyYes.ctx);
   assert.equal(legacyYes.out.status, 200);
+  // Руководитель эксплуатации: денег «нет», но экран «ФОТ водителей» есть.
+  const drvHead = stubCtx(db, { access: { legacy: false, money: 'none', scope: { all: false, depts: ['drv'] }, views: ['payroll'] }, query });
+  payrollApi(drvHead.ctx);
+  assert.equal(drvHead.out.status, 200);
   const full = stubCtx(db, { access: { legacy: false, money: 'full', scope: { all: true, depts: [] }, views: [] }, query });
   payrollApi(full.ctx);
   assert.equal(full.out.status, 200);

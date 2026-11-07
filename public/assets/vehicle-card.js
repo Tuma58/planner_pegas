@@ -73,6 +73,9 @@ function viewHtml(data) {
         <div class="bi-list">
           ${row('Межсервисный интервал', c.to_interval_km ? km(c.to_interval_km) : '<span class="muted">не задан</span>')}
           ${row('ТО ХОУ', c.hou_interval_mh ? `${escapeHtml(String(c.hou_interval_mh))} м/ч` : '<span class="muted">не задано</span>')}
+          ${data.hou && data.hou.intervalMh ? row('Состояние ТО ХОУ', `${tag(TO_LABEL[data.hou.status])}${data.hou.sinceMh != null
+    ? ` с ТО ${data.hou.sinceMh} м/ч · осталось ${data.hou.leftMh} м/ч` : ''}${data.hou.avgDayMh != null ? ` · ${String(data.hou.avgDayMh).replace('.', ',')} м/ч в сутки` : ''}${data.hou.reason
+    ? `<div class="muted">${escapeHtml(data.hou.reason)}</div>` : ''}`) : ''}
           ${row('Шины', text(c.tires_note))}
         </div>${toBlock(to)}</div></section>
       <section class="section dept-drv"><div class="sec-h"><span class="st">Документы и сроки</span>
@@ -173,7 +176,8 @@ export async function renderToBoard(container, context) {
         <th class="r">Интервал</th><th class="r">С ТО</th><th class="r">Осталось</th><th class="r">Пробег/сут</th><th>Последний ТО</th></tr></thead>
       <tbody>${data.items.map(item => `<tr data-vc-open="${escapeHtml(item.vehicleId)}" class="vc-row">
         <td><b class="mono">${escapeHtml(item.plate)}</b></td>
-        <td>${tag(TO_LABEL[item.status])}${item.reason ? `<div class="muted">${escapeHtml(item.reason)}</div>` : ''}</td>
+        <td>${tag(TO_LABEL[item.status])}${item.reason ? `<div class="muted">${escapeHtml(item.reason)}</div>` : ''}${item.hou?.intervalMh
+    ? `<div>ХОУ: ${tag(TO_LABEL[item.hou.status])}${item.hou.leftMh != null ? ` осталось ${item.hou.leftMh} м/ч` : ''}</div>` : ''}</td>
         <td class="num">${km(item.intervalKm)}</td><td class="num">${km(item.sinceKm)}</td><td class="num">${km(item.leftKm)}</td>
         <td class="num">${km(item.avgDayKm)}</td><td class="mono">${dt(item.lastToAt)}</td></tr>`).join('')
         || '<tr><td colspan="7" class="muted">Машин нет</td></tr>'}</tbody></table></div></section>

@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
 import {
   migrateVehicleCards, toStatusOf, toStatusAll, docsDueAll, vehicleCard, saveVehicleCard,
-  odometerAtRelease, ownDailyKm, vehicleCardRights, vehicleCardApi, planHorizonOf, docsWarnOf
+  odometerAtRelease, ownDailyKm, vehicleCardRights, vehicleCardApi, planHorizonOf, docsWarnOf, houStatusOf, HOU_MIN_SAMPLES
 } from '../src/vehicle-card.mjs';
 
 function freshDb(t) {
@@ -194,4 +194,31 @@ test('права: читают Ремзона/Ресурс/Выпуск/руко
   assert.equal(list.status, 200);
   assert.equal(list.obj.horizonDays, 3);
   assert.ok(list.obj.items.some(item => item.vehicleId === v.id && item.status === 'no_data'));
+});
+
+test('ТО ХОУ: моточасы из закрытых ПЛ, скорость копится до 5 листов', t => {
+  const db = freshDb(t);
+  const v = vehicleOf(db);
+  const card = { hou_interval_mh: 1000 };
+  releasedTo(db, v.id, `${dayOf(-20)}T05:00:00Z`, `${dayOf(-20)}T12:00:00Z`);
+  let number = 9000;
+  const waybill = (startOff, endOff, mhStart, mhEnd, status = 'closed') => db.prepare(`INSERT INTO waybills(id,year,number,vehicle_id,
+      starts_at,ends_at,status,mh_start,mh_end) VALUES(?,?,?,?,?,?,?,?,?)`).run(randomUUID(), 2026, number++, v.id,
+    `${dayOf(startOff)}T06:00:00Z`, `${dayOf(endOff)}T06:00:00Z`, status, mhStart, mhEnd);
+  assert.equal(houStatusOf(db, v.id, {}, { nowMs: NOW }).status, 'no_norm');
+  assert.equal(houStatusOf(db, v.id, card, { nowMs: NOW }).status, 'no_data');
+  waybill(-19, -17, 5000, 5040);
+  let s = houStatusOf(db, v.id, card, { nowMs: NOW, horizonDays: 3 });
+  assert.equal(s.sinceMh, 40);
+  assert.equal(s.avgDayMh, null); // 1 из 5 — скорость копится
+  assert.match(s.reason, /копится/);
+  for (let i = 0; i < HOU_MIN_SAMPLES; i += 1) waybill(-16 + i * 3, -14 + i * 3, 5040 + i * 40, 5080 + i * 40);
+  waybill(-1, 0, 5900, 5960, 'issued'); // открытый лист не считается
+  s = houStatusOf(db, v.id, card, { nowMs: NOW, horizonDays: 3 });
+  assert.equal(s.avgDayMh, 20);
+  assert.equal(s.sinceMh, 240);
+  assert.equal(s.status, 'ok');
+  s = houStatusOf(db, v.id, { hou_interval_mh: 280 }, { nowMs: NOW, horizonDays: 3 });
+  assert.equal(s.status, 'soon'); // осталось 40 < 20 × 3
+  assert.equal(houStatusOf(db, v.id, { hou_interval_mh: 200 }, { nowMs: NOW }).status, 'overdue');
 });

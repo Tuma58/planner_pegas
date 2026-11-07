@@ -21,7 +21,7 @@ export const GOAL_DEFAULTS = {
   // Горизонт плана, сут (расписание 19.10): «ТО скоро» по своему пробегу машины.
   planHorizonDays: 3,
   // ФОТ водителей (Положение среды СТ): ₽/км и гарантия ₽/сутки работы.
-  driverRatePerKm: 12, driverGuaranteePerDay: 4000
+  driverRatePerKm: 12, driverGuaranteePerDay: 4000, driverOvertimePerDay: 2000
 };
 
 const pick = (value, fallback) =>
@@ -46,6 +46,6 @@ export function directionGoals(calculation = {}) {
     planHorizonDays: pick(c.planHorizonDays, GOAL_DEFAULTS.planHorizonDays),
     driverRatePerKm: pick(c.driverRatePerKm, GOAL_DEFAULTS.driverRatePerKm),
     driverGuaranteePerDay: pick(c.driverGuaranteePerDay, GOAL_DEFAULTS.driverGuaranteePerDay),
-    driverOvertimePerDay: pick(c.driverOvertimePerDay, null)
+    driverOvertimePerDay: pick(c.driverOvertimePerDay, GOAL_DEFAULTS.driverOvertimePerDay)
   };
 }

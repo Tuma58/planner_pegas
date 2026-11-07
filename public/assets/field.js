@@ -5,6 +5,7 @@
 // поле, что его руководитель.
 import { api, escapeHtml, toast } from './api.js';
 import { kpiCard } from './kpi.js';
+import { turnoverSection } from './turnover.js';
 
 const DEPT_TABS = [['direction', 'Направление'], ['log', 'Логистика'], ['drv', 'Эксплуатация'], ['toir', 'ТОиР']];
 const TONE = { ok: 'pos', near: 'warn', miss: 'neg' };
@@ -125,6 +126,16 @@ export async function renderField(container, context) {
     renderField(container, context);
   };
   container.onclick = event => fieldClick(event, container, context);
+  // Текучесть водителей — KPI паспорта руководителя эксплуатации (чек-лист
+  // Б1.3): за выбранный месяц, догружается отдельно, поле не ждёт.
+  if (data.dept === 'drv') {
+    const from = `${data.month}-01`;
+    const last = new Date(Date.UTC(Number(data.month.slice(0, 4)), Number(data.month.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+    api(`/api/turnover?from=${from}&to=${last < today ? last : today}`).then(turnover => {
+      container.querySelector('.fd-page .bi-grid')?.insertAdjacentHTML('beforeend', turnoverSection(turnover));
+    }).catch(() => { /* нет права или данных — секции нет */ });
+  }
 }
 
 // Кнопки сквозного контроля (блок 4): контролёр — «⚑ Сигнал», владелец —

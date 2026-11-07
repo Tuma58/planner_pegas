@@ -39,6 +39,57 @@ export function migrateCrm(db) {
     won_customer_name TEXT NOT NULL DEFAULT '',
     CHECK(stage <> 'lost' OR length(trim(lost_reason)) > 0))`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_crm_leads_stage ON crm_leads(stage)`);
+  // Факт оплаты рейса (решение 07.11): когда и кто отметил «оплачен» —
+  // из него потом выучивается фактическая отсрочка клиента.
+  const cols = db.prepare('PRAGMA table_info(trips)').all().map(col => col.name);
+  if (cols.length && !cols.includes('paid_at')) db.exec('ALTER TABLE trips ADD COLUMN paid_at TEXT');
+  if (cols.length && !cols.includes('paid_by')) db.exec("ALTER TABLE trips ADD COLUMN paid_by TEXT NOT NULL DEFAULT ''");
+}
+
+// Учёт дебиторки (долги клиентов) — выключен, пока нет сотрудника и
+// процесса (решение руководителя 07.11). Фундамент работает, включается
+// в Настройках: calculation.crmReceivablesOn.
+export const receivablesOn = settings => settings?.calculation?.crmReceivablesOn === true;
+
+// Отметка оплаты: paid=true — время и кто; false — снять.
+export function markTripPaid(db, tripId, paid, name = '', at = new Date().toISOString()) {
+  if (paid) db.prepare(`UPDATE trips SET paid_at=COALESCE(paid_at, ?), paid_by=? WHERE id=?`).run(at, name, tripId);
+  else db.prepare(`UPDATE trips SET paid_at=NULL, paid_by='' WHERE id=?`).run(tripId);
+}
+
+// Фактическая отсрочка клиента: медиана «выгрузка → оплата» за 180 дней,
+// минимум 5 оплат; меньше — null (копится). Дрейф против договора виден
+// в карточке клиента CRM.
+export function factPaymentDays(db, name, { nowMs = Date.now(), minSamples = 5 } = {}) {
+  const key = normCustomer(name);
+  const from = new Date(nowMs - 180 * DAY_MS).toISOString();
+  const list = db.prepare(`SELECT customer_name, unloaded_at, ends_at, paid_at FROM trips
+      WHERE paid_at IS NOT NULL AND paid_at>=?`).all(from)
+    .filter(row => normCustomer(row.customer_name) === key)
+    .map(row => (Date.parse(row.paid_at) - Date.parse(row.unloaded_at || row.ends_at)) / DAY_MS)
+    .filter(value => Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
+  return list.length >= minSamples ? { days: Math.round(list[Math.floor(list.length / 2)]), samples: list.length }
+    : { days: null, samples: list.length };
+}
+
+// Единая отсрочка: договор, действующий сегодня, ↔ карточка клиента.
+// Из договора → в карточку (после правки договора); из карточки → в
+// действующий договор (после правки карточки, days передан).
+export function syncContractDays(db, name, days, today = new Date().toISOString().slice(0, 10)) {
+  const key = normCustomer(name);
+  const contracts = db.prepare('SELECT * FROM crm_contracts').all().filter(row => normCustomer(row.customer_name) === key);
+  const active = contractFor(contracts, today);
+  if (!active) return;
+  if (days !== undefined) {
+    if (active.payment_days !== days) db.prepare('UPDATE crm_contracts SET payment_days=? WHERE id=?').run(days, active.id);
+    return;
+  }
+  try {
+    const profile = db.prepare('SELECT customer_name, payment_days FROM customer_profiles').all()
+      .find(row => normCustomer(row.customer_name) === key);
+    if (profile) db.prepare('UPDATE customer_profiles SET payment_days=? WHERE customer_name=?').run(active.payment_days, profile.customer_name);
+    else db.prepare('INSERT INTO customer_profiles(customer_name, payment_days) VALUES(?,?)').run(active.customer_name, active.payment_days);
+  } catch { /* нет таблицы профилей */ }
 }
 
 // ── Даты ──
@@ -378,20 +429,58 @@ export async function crmApi(ctx) {
     return false;
   };
 
+  const debtOn = receivablesOn(settingsObject(db));
+  flags.receivablesOn = debtOn;
+  // Учёт долгов выключен: суммы и сроки долга не отдаются вовсе.
+  const noDebt = body => debtOn ? body : { ...body, totals: null, receivables: [],
+    customers: body.customers?.map(item => ({ ...item, debt: null })) };
   if (pathname === '/api/crm/summary' && method === 'GET') {
-    send(200, { ...flags, ...crmSummary(db, { today }) });
+    send(200, noDebt({ ...flags, ...crmSummary(db, { today }) }));
+    return true;
+  }
+  // Отметка «оплачен» и её отмена — бухгалтерия (payments:write). Работает
+  // и при выключенном учёте долгов: время оплаты копит факт отсрочки.
+  let paidMatch = pathname.match(/^\/api\/crm\/trips\/([^/]+)\/paid$/);
+  if (paidMatch && method === 'POST') {
+    if (!rights.pay) { errorJson(response, 403, 'Оплату отмечает бухгалтерия'); return true; }
+    const id = decodeURIComponent(paidMatch[1]);
+    const body = await readJson(request);
+    const trip = db.prepare('SELECT id, status FROM trips WHERE id=?').get(id);
+    if (!trip) { errorJson(response, 404, 'Рейс не найден'); return true; }
+    const name = user.full_name || user.username || '';
+    if (body.paid) {
+      if (!RECEIVABLE_STATUSES.includes(trip.status)) { errorJson(response, 422, 'Оплату отмечают после выгрузки'); return true; }
+      db.prepare(`UPDATE trips SET status='paid', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
+      markTripPaid(db, id, true, name);
+    } else {
+      if (trip.status !== 'paid') { errorJson(response, 422, 'Рейс не отмечен оплаченным'); return true; }
+      db.prepare(`UPDATE trips SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
+      markTripPaid(db, id, false);
+    }
+    audit(db, user, body.paid ? 'paid' : 'unpaid', 'trip', id, { from: trip.status }, ip);
+    json(response, 200, { ok: true });
     return true;
   }
   if (pathname === '/api/crm/customer' && method === 'GET') {
     const name = str(url.searchParams.get('name'), 200);
     if (!name) { errorJson(response, 400, 'Не указан клиент'); return true; }
-    send(200, { ...flags, ...crmCustomer(db, name, { today }) });
+    send(200, noDebt({ ...flags, ...crmCustomer(db, name, { today }), factDays: factPaymentDays(db, name) }));
+    return true;
+  }
+  // Недавно оплаченные — для отмены ошибочной отметки (в обоих режимах).
+  const recentPaid = () => db.prepare(`SELECT t.id, t.order_no, t.customer_name, t.paid_at, t.paid_by, v.plate
+      FROM trips t LEFT JOIN vehicles v ON v.id=t.vehicle_id
+      WHERE t.status='paid' AND t.paid_at IS NOT NULL ORDER BY t.paid_at DESC LIMIT 50`).all()
+    .map(row => ({ id: row.id, orderNo: row.order_no || '', customer: row.customer_name, plate: row.plate || '',
+      paidAt: row.paid_at, paidBy: row.paid_by }));
+  if (pathname === '/api/crm/receivables' && method === 'GET' && !debtOn) {
+    send(200, { ...flags, today, rows: [], totals: null, byCustomer: [], paid: recentPaid() });
     return true;
   }
   if (pathname === '/api/crm/receivables' && method === 'GET') {
     const rows = receivableRows(db, { today, customer: str(url.searchParams.get('customer'), 200),
       from: str(url.searchParams.get('from'), 10) });
-    send(200, { ...flags, today, rows, totals: receivablesTotals(rows), byCustomer: receivablesByCustomer(rows) });
+    send(200, { ...flags, today, rows, totals: receivablesTotals(rows), byCustomer: receivablesByCustomer(rows), paid: recentPaid() });
     return true;
   }
 
@@ -410,6 +499,7 @@ export async function crmApi(ctx) {
     db.prepare(`INSERT INTO crm_contracts(id,customer_name,number,signed_on,valid_to,payment_days,demurrage_note,tariff_note,note,updated_by,updated_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, contract.customer_name, contract.number, contract.signed_on, contract.valid_to,
       contract.payment_days, contract.demurrage_note, contract.tariff_note, contract.note, user.id, new Date().toISOString());
+    syncContractDays(db, contract.customer_name);
     audit(db, user, 'create', 'crm_contract', id, contract, ip);
     json(response, 201, { id });
     return true;
@@ -422,6 +512,7 @@ export async function crmApi(ctx) {
     if (!current) { errorJson(response, 404, 'Договор не найден'); return true; }
     if (method === 'DELETE') {
       db.prepare('DELETE FROM crm_contracts WHERE id=?').run(id);
+      syncContractDays(db, current.customer_name);
       audit(db, user, 'delete', 'crm_contract', id, { ...current }, ip);
       json(response, 200, { ok: true });
       return true;
@@ -433,6 +524,7 @@ export async function crmApi(ctx) {
       tariff_note=?,note=?,updated_by=?,updated_at=? WHERE id=?`).run(contract.customer_name, contract.number, contract.signed_on,
       contract.valid_to, contract.payment_days, contract.demurrage_note, contract.tariff_note, contract.note, user.id,
       new Date().toISOString(), id);
+    syncContractDays(db, contract.customer_name);
     audit(db, user, 'update', 'crm_contract', id, { before: { ...current }, after: contract }, ip);
     json(response, 200, { ok: true });
     return true;

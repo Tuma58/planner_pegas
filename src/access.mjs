@@ -13,11 +13,11 @@
 
 import { ROLE_LABELS, rolesOf } from './permissions.mjs';
 
-export const ALL_VIEWS = ['field', 'kpi', 'gate', 'release', 'docs', 'safety', 'logreports', 'toboard', 'payroll', 'crm', 'payments', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+export const ALL_VIEWS = ['field', 'kpi', 'gate', 'release', 'docs', 'safety', 'logreports', 'reports', 'toboard', 'payroll', 'crm', 'payments', 'parts', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
   'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
   'resource', 'fleetplan', 'remzona'];
 // «Моё поле» — первым: поле управления руководителя отдела (Э1, 07.11).
-const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];
+const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi', 'reports'];
 // Уровни денег: full — выручка, планы, прогноз, претензии; rates —
 // ставки рейсов и заявок (работа логиста/планирования), без итогов
 // направления; none — без денег вовсе.
@@ -45,8 +45,11 @@ const SEED = [
   ['drv_column', 'Начальник автоколонны', 'drv', ['resource', 'fleetplan', 'gantt'],
     ['resource'], 'none', ''],
   ['drv_acc', 'Диспетчер учёта', 'drv', ['resource', 'docs'], ['resource'], 'none', ''],
-  ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona'], ['mechanic'], 'none', 'dept'],
-  ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona'], ['mechanic'], 'none', ''],
+  ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona', 'toboard', 'parts'], ['mechanic'], 'none', 'dept'],
+  ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona', 'toboard', 'parts'], ['mechanic'], 'none', ''],
+  // Снабжение ТОиР (закупщик, кладовщик, снабженец): склад и Ремзона,
+  // цены прихода — уровень «ставки».
+  ['toir_supply', 'Снабжение ТОиР', 'toir', ['parts', 'remzona'], ['mechanic'], 'rates', ''],
   ['accountant', 'Бухгалтерия', '', ['gantt', 'docs'], ['accountant'], 'rates', ''],
   ['guard', 'Охранник-парковщик', 'staff', ['gate'], ['guard'], 'none', ''],
   ['drv_tech', 'Контролёр техсостояния', 'drv', ['release'], ['techctl'], 'none', ''],
@@ -74,6 +77,7 @@ export function migrateAccess(db) {
     migrateRelease(db);
     migrateCtrlRates(db);
     migrateChecklist(db);
+    migrateChecklistV3(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -197,6 +201,25 @@ function migrateChecklist(db) {
   for (const id of ['log_head', 'log_plan']) add(id, 'crm');
   add('accountant', 'payments');
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_checklist_v2','1')`).run();
+}
+
+// Доведение 07.11 (вечер): «Мои отчёты» — руководителям отделов и
+// направления; «ФОТ водителей» — руководителю эксплуатации (решение
+// руководителя); склад запчастей — ТОиР и набор «Снабжение ТОиР».
+function migrateChecklistV3(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_checklist_v3'`).get()) return;
+  db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
+    VALUES(?,?,?,?,?,?,?,?)`).run('toir_supply', 'Снабжение ТОиР', 'toir', '["parts","remzona"]', '["mechanic"]', 'rates', '', 4);
+  const add = (id, view) => {
+    const row = db.prepare(`SELECT views_json FROM role_sets WHERE id=?`).get(id);
+    if (!row) return;
+    const views = parse(row.views_json, []);
+    if (!views.includes(view)) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, view]), id);
+  };
+  for (const id of ['dir_head', 'log_head', 'drv_head', 'toir_head', 'admin']) add(id, 'reports');
+  add('drv_head', 'payroll');
+  for (const id of ['toir_head', 'toir_mech', 'dir_head', 'admin']) add(id, 'parts');
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_checklist_v3','1')`).run();
 }
 
 function migrateFieldView(db) {

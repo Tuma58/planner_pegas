@@ -62,7 +62,9 @@ import { DOC_KINDS, docsBoard, markDocs } from './trip-docs.mjs';
 import { SAFETY_KINDS, addSafetyEvent, closeSafetyEvent, safetyBoard } from './safety.mjs';
 import { docsDueAll, toStatusAll, vehicleCardApi } from './vehicle-card.mjs';
 import { payrollApi } from './payroll.mjs';
-import { crmApi } from './crm.mjs';
+import { crmApi, markTripPaid, syncContractDays } from './crm.mjs';
+import { turnoverApi } from './turnover.mjs';
+import { partsApi } from './parts.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -82,7 +84,7 @@ import {
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
 import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
-import { dailyOpsText, dailySeries, lateUnloadByDay, opsReportData, renderOpsReportHtml, repairCarsByDay } from './ops-report.mjs';
+import { dailyOpsTail, dailyOpsText, dailySeries, lateUnloadByDay, opsReportData, renderOpsReportHtml, repairCarsByDay } from './ops-report.mjs';
 import { renderBriefDeckPdf } from './brief-deck-pdf.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
 import { renderDriversReportPdf } from './drivers-report-pdf.mjs';
@@ -266,7 +268,7 @@ function requireReports(request, response) {
   if (!user) return null;
   if (hasPermission(user, 'reports:read')) return user;
   const access = accessOf(db, user);
-  if (!access.legacy && access.views.includes('logreports') && access.money === 'full') return user;
+  if (!access.legacy && (access.views.includes('logreports') || access.views.includes('reports')) && access.money === 'full') return user;
   errorJson(response, 403, 'Недостаточно прав');
   return null;
 }
@@ -1252,7 +1254,9 @@ function runDailyOpsReport() {
     console.log('ежедневный отчёт эксплуатации отправлен руководителям:', bosses.length);
   } catch (error) { console.error('ежедневный отчёт эксплуатации упал', error); }
 }
-setInterval(watchWrap('runDailyOpsReport', runDailyOpsReport), 5 * 60_000);
+// Система отчётов (07.11): отдельная рассылка 07:15 снята — её строки
+// идут хвостом единого «📆 Отчёта дня» (runDailyFleetReport, dailyOpsTail).
+// Функция оставлена для ручного вызова и отката одной строкой.
 // Плановые перецепки (решение руководителя 21.09, вариант «автоматика с
 // уведомлением»): запись с applied_at IS NULL созревает в свой moved_at —
 // прицеп переезжает (тип кузова следом), уведомление в конвейер; если
@@ -1628,6 +1632,8 @@ function runDailyFleetReport() {
     // Версия без денег (поле управления, 07.11) — ролям «ставки» и «без
     // денег»: только парк, каскад, простои и явка; выручка, план дня, чек,
     // суммы заявок и претензий — тем, кому деньги положены.
+    let opsTail = { money: [], plain: [] };
+    try { opsTail = dailyOpsTail(db, parkReportData); } catch (error) { console.error('хвост отчёта эксплуатации:', error.message); }
     const dailyPlain = `📆 Отчёт дня за ${dayLabel}: парк ${T.fleet}` +
       ` · работали за день ${inTrip.size} машин · на линии среднесуточно ${ops.avgOnline}` +
       ` · простой без причины ${idlePlates.length}` +
@@ -1680,8 +1686,9 @@ function runDailyFleetReport() {
           ` (${share.pct}% при цели ${target}%)` +
           (gs.medianH != null ? `, стык медиана ${gs.medianH} ч (цель ${gapTarget})` : '');
       })() +
-      ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`, null, null,
-      { money: 'full', plain: dailyPlain });
+      ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»` +
+      (opsTail.money.length ? `\n${opsTail.money.join('\n')}` : ''), null, null,
+      { money: 'full', plain: dailyPlain + (opsTail.plain.length ? `\n${opsTail.plain.join('\n')}` : '') });
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
   } catch (error) {
@@ -7428,10 +7435,10 @@ function fieldLeading(dept) {
       AND (planned_out IS NULL OR planned_out='')`).get().n;
     // ТО по пробегу (карточка ТС, нормы на каждую машину, 07.11).
     const to = safe(() => toStatusAll(db)) || [];
-    const overdue = to.filter(row => row.status === 'overdue');
-    const soon = to.filter(row => row.status === 'soon');
+    const overdue = to.filter(row => row.status === 'overdue' || row.hou?.status === 'overdue');
+    const soon = to.filter(row => !overdue.includes(row) && (row.status === 'soon' || row.hou?.status === 'soon'));
     out.push({ key: 'to_due', dept: 'toir', coef: 'КТГ', screen: 'toboard',
-      label: 'ТО просрочено / скоро по пробегу', count: overdue.length + soon.length,
+      label: 'ТО просрочено / скоро (пробег или моточасы ХОУ)', count: overdue.length + soon.length,
       note: `просрочено ${overdue.length} · скоро ${soon.length}${to.filter(row => row.status === 'no_norm').length ? ` · без нормы в карточке ${to.filter(row => row.status === 'no_norm').length}` : ''}` });
     out.push({ key: 'repair_no_date', dept: 'toir', coef: 'КТГ', screen: 'remzona',
       label: 'Заезды без плановой даты выпуска', count: noDate });
@@ -8266,6 +8273,9 @@ async function api(request, response, url) {
         String(body.tags || '').trim().slice(0, 200),
         numOrNull(body.demurrageRate), numOrNull(body.demurrageFreeHours),
         body.vatLow ? 1 : 0, user.id);
+    // Отсрочка клиента одна (решение 07.11): правка в карточке переносится
+    // в действующий договор CRM, правка договора — в карточку.
+    syncContractDays(db, name, numOrNull(body.paymentDays));
     audit(db, user, 'update', 'customer-profile', name,
       { status, segment: body.segment, vatLow: body.vatLow ? 1 : 0 });
     return json(response, 200, { ok: true });
@@ -10065,6 +10075,10 @@ async function api(request, response, url) {
     }
     queueOutbox(db, 'trips', match[0], 'update', tripOutboxPayload(match[0]),
       integrationPublic().writePolicy === 'automatic');
+    // Факт оплаты (решение руководителя 07.11): время и кто отметил —
+    // из любого пути смены статуса; уход из «оплачен» отметку снимает.
+    if (merged.status === 'paid' && current.status !== 'paid') markTripPaid(db, match[0], true, user.full_name || user.username || '');
+    else if (current.status === 'paid' && merged.status !== 'paid') markTripPaid(db, match[0], false);
     audit(db, user, 'update', 'trip', match[0], body, requestIp(request));
     // 🤖 Правило «транзит короче физики» (ступень 2, 02.11): срок правят
     // из многих мест (карточка, Гант, доска) — подсказка уезжает в ответе,
@@ -12930,12 +12944,17 @@ async function api(request, response, url) {
     const iso = value => value && Number.isFinite(Date.parse(value))
       ? new Date(Date.parse(value)).toISOString() : null;
     const num = value => (value === '' || value == null ? null : Math.max(0, Math.round(Number(value))));
+    // Моточасы ХОУ — с десятыми (счётчик рефустановки).
+    const mh = value => (value === '' || value == null || !Number.isFinite(Number(value)) ? null
+      : Math.max(0, Math.round(Number(value) * 10) / 10));
     const next = {
       driver_name: 'driverName' in body ? String(body.driverName || '').slice(0, 120) : row.driver_name,
       starts_at: 'startsAt' in body ? (iso(body.startsAt) || row.starts_at) : row.starts_at,
       ends_at: 'endsAt' in body ? iso(body.endsAt) : row.ends_at,
       odo_start: 'odoStart' in body ? num(body.odoStart) : row.odo_start,
       odo_end: 'odoEnd' in body ? num(body.odoEnd) : row.odo_end,
+      mh_start: 'mhStart' in body ? mh(body.mhStart) : row.mh_start,
+      mh_end: 'mhEnd' in body ? mh(body.mhEnd) : row.mh_end,
       fuel_liters: 'fuelLiters' in body
         ? (body.fuelLiters === '' || body.fuelLiters == null ? null : Number(body.fuelLiters)) : row.fuel_liters,
       med_pre_at: 'medPreAt' in body ? iso(body.medPreAt) : row.med_pre_at,
@@ -12948,12 +12967,15 @@ async function api(request, response, url) {
     if (next.odo_start != null && next.odo_end != null && next.odo_end < next.odo_start) {
       return errorJson(response, 422, 'Одометр возврата меньше одометра выезда — проверьте показания');
     }
+    if (next.mh_start != null && next.mh_end != null && next.mh_end < next.mh_start) {
+      return errorJson(response, 422, 'Моточасы ХОУ при возврате меньше, чем при выезде — проверьте показания');
+    }
     db.prepare(`UPDATE waybills SET driver_name=?,starts_at=?,ends_at=?,odo_start=?,odo_end=?,
-        fuel_liters=?,med_pre_at=?,med_post_at=?,tech_pre_at=?,tech_by=?,status=?,note=?,
+        fuel_liters=?,med_pre_at=?,med_post_at=?,tech_pre_at=?,tech_by=?,status=?,note=?,mh_start=?,mh_end=?,
         updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
       next.driver_name, next.starts_at, next.ends_at, next.odo_start, next.odo_end,
       next.fuel_liters, next.med_pre_at, next.med_post_at, next.tech_pre_at, next.tech_by,
-      next.status, next.note, user.id, match[0]);
+      next.status, next.note, next.mh_start, next.mh_end, user.id, match[0]);
     audit(db, user, 'update', 'waybill', match[0], body, requestIp(request));
     return json(response, 200, { waybill: waybillRow(match[0]) });
   }
@@ -15283,7 +15305,9 @@ async function api(request, response, url) {
   // ── Модули чек-листа 07.11 по общему контракту: карточка ТС (паспорт и
   // ТО по пробегу), ФОТ водителей. Права проверяют сами модули; ФОТ ещё и
   // по экрану роли — это ведомость руководителя направления.
-  if (pathname.startsWith('/api/vehicle-card') || pathname === '/api/payroll' || pathname.startsWith('/api/crm/')) {
+  if (pathname.startsWith('/api/vehicle-card') || pathname === '/api/payroll' || pathname.startsWith('/api/crm/')
+    || pathname === '/api/turnover' || pathname.startsWith('/api/turnover/')
+    || pathname === '/api/parts' || pathname.startsWith('/api/parts/')) {
     const user = requireUser(request, response);
     if (!user) return;
     const access = accessOf(db, user);
@@ -15295,6 +15319,8 @@ async function api(request, response, url) {
     if (await vehicleCardApi(ctx)) return;
     if (payrollApi(ctx)) return;
     if (await crmApi(ctx)) return;
+    if (await turnoverApi(ctx)) return;
+    if (await partsApi(ctx)) return;
   }
   // ── 🛡 Безопасность движения (чек-лист 07.11) — специалист БДД ──
   if (pathname === '/api/safety' || pathname.startsWith('/api/safety/')) {

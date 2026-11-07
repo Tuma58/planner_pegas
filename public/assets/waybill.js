@@ -38,6 +38,9 @@ export async function waybillDialog(id, context) {
       <label class="field">Одометр при выезде, км<input name="odoStart" inputmode="numeric" value="${w.odo_start ?? ''}"
         title="Автозаполнение — снимок журнала одометров на утро дня выезда; поправьте по факту"></label>
       <label class="field">Одометр при возврате, км<input name="odoEnd" inputmode="numeric" value="${w.odo_end ?? ''}"></label>
+      <label class="field">Моточасы ХОУ при выезде<input name="mhStart" inputmode="decimal" value="${w.mh_start ?? ''}"
+        title="Счётчик рефустановки — из закрытых листов считается ТО ХОУ"></label>
+      <label class="field">Моточасы ХОУ при возврате<input name="mhEnd" inputmode="decimal" value="${w.mh_end ?? ''}"></label>
       <label class="field">Заправлено, л<input name="fuelLiters" inputmode="decimal" value="${w.fuel_liters ?? ''}"
         title="Сумма заправок РН-Карт за период (сторно учтено)"></label>
       <label class="field">Пробег по листу<input value="${km != null ? km + ' км' : '—'}" disabled></label>
@@ -67,6 +70,7 @@ export async function waybillDialog(id, context) {
         driverName: values.driverName, status: values.status,
         startsAt: isoOf(values.startsAt), endsAt: isoOf(values.endsAt),
         odoStart: values.odoStart, odoEnd: values.odoEnd, fuelLiters: values.fuelLiters,
+        mhStart: values.mhStart, mhEnd: values.mhEnd,
         medPreAt: isoOf(values.medPreAt), medPostAt: isoOf(values.medPostAt),
         techPreAt: isoOf(values.techPreAt), techBy: values.techBy, note: values.note
       }) });
@@ -148,6 +152,7 @@ function printWaybill(data) {
         · дата/время выезда: ${fmt(w.starts_at)}</td></tr>
       <tr><th>Одометр при возврате</th><td>${w.odo_end != null ? `<b>${w.odo_end}</b> км` : '__________ км'}
         · дата/время возврата: ${w.ends_at ? fmt(w.ends_at) : '«___» ________ ___:___'}</td></tr>
+      ${w.mh_start != null || w.mh_end != null ? `<tr><th>Моточасы ХОУ</th><td>выезд ${w.mh_start ?? '______'} · возврат ${w.mh_end ?? '______'}</td></tr>` : ''}
       <tr><th>Пробег по листу</th><td>${km != null ? `<b>${km}</b> км` : '__________ км'}</td></tr>
       <tr><th>Топливо (заправлено)</th><td>${w.fuel_liters != null ? `${w.fuel_liters} л (по данным топливного процессинга)` : '__________ л'}</td></tr>
       <tr><th>Предрейсовый медосмотр</th><td>${w.med_pre_at

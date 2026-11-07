@@ -89,8 +89,10 @@ function renderGeneral() {
         <input id="driverRatePerKm" type="number" min="0" step="0.5" value="${goals.driverRatePerKm}"></label>
       <label class="field">Водитель: гарантия, ₽/сутки работы
         <input id="driverGuaranteePerDay" type="number" min="0" step="100" value="${goals.driverGuaranteePerDay}"></label>
-      <label class="field">Водитель: доплата за день сверхвахты, ₽ <small class="muted">пусто — не задана</small>
+      <label class="field">Водитель: доплата за сутки сверхвахты, ₽ <small class="muted">Положение об оплате</small>
         <input id="driverOvertimePerDay" type="number" min="0" step="100" value="${goals.driverOvertimePerDay ?? ''}"></label>
+      <label class="check"><input id="crmReceivablesOn" type="checkbox" ${calculation.crmReceivablesOn === true ? 'checked' : ''}>
+        Учёт дебиторки CRM <small class="muted">долги клиентов; включить, когда есть сотрудник и процесс</small></label>
       <label class="field">Норматив ФОТ управления, % выручки <small class="muted">пусто — не задан (блок «ФОТ»)</small>
         <input id="fotNormPct" type="number" min="0" max="100" step="0.1" value="${goals.fotPct ?? ''}"></label>
     </div>`, { span: 's12' }),
@@ -147,6 +149,7 @@ async function saveGeneral() {
       planHorizonDays: numeric('planHorizonDays'), driverRatePerKm: numeric('driverRatePerKm'),
       driverGuaranteePerDay: numeric('driverGuaranteePerDay'),
       driverOvertimePerDay: byId('driverOvertimePerDay').value === '' ? '' : numeric('driverOvertimePerDay'),
+      crmReceivablesOn: byId('crmReceivablesOn').checked,
       fotNormPct: byId('fotNormPct').value === '' ? '' : numeric('fotNormPct'),
       dailyKmTarget: numeric('dailyKmTarget'),
       insuranceAndRoadsPerKm: numeric('insuranceAndRoadsPerKm'),

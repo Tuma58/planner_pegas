@@ -66,6 +66,61 @@ export function migrateVehicleCards(db) {
     glonass_id TEXT NOT NULL DEFAULT '', tracker TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
     to_interval_km REAL, hou_interval_mh REAL, tires_note TEXT NOT NULL DEFAULT '',
     updated_at TEXT, updated_by_name TEXT NOT NULL DEFAULT '')`);
+  migrateWaybillHou(db);
+}
+
+// Моточасы ХОУ (рефустановки) в путевом листе — источник ТО ХОУ
+// (решение руководителя 07.11: «данные из закрытых ПЛ»).
+export function migrateWaybillHou(db) {
+  if (hasTable(db, 'waybills')) {
+    const cols = db.prepare('PRAGMA table_info(waybills)').all().map(col => col.name);
+    if (!cols.includes('mh_start')) db.exec('ALTER TABLE waybills ADD COLUMN mh_start REAL');
+    if (!cols.includes('mh_end')) db.exec('ALTER TABLE waybills ADD COLUMN mh_end REAL');
+  }
+}
+
+// Минимум закрытых ПЛ с моточасами, после которого норма «моточасов в
+// сутки» считается выученной (как у других живых нормативов — 5).
+export const HOU_MIN_SAMPLES = 5;
+
+// ТО ХОУ по моточасам: показания счётчика ХОУ в закрытых ПЛ.
+// База — показание на ТО: первый закрытый ПЛ после выпуска с ТО (mh_start);
+// сейчас — последнее mh_end. Скорость — медиана моточасов в сутки по
+// закрытым ПЛ за 60 дней (минимум HOU_MIN_SAMPLES); пока меньше — «копится».
+export function houStatusOf(db, vehicleId, card, opts = {}) {
+  const nowMs = opts.nowMs ?? Date.now();
+  const horizonDays = opts.horizonDays ?? 3;
+  const intervalMh = Number(card?.hou_interval_mh) > 0 ? Number(card.hou_interval_mh) : null;
+  const result = { status: 'no_norm', intervalMh, sinceMh: null, leftMh: null, avgDayMh: null, samples: 0, reason: '' };
+  if (intervalMh == null) { result.reason = 'интервал ТО ХОУ не задан в карточке'; return result; }
+  result.status = 'no_data';
+  if (!hasTable(db, 'waybills')) { result.reason = 'нет путевых листов'; return result; }
+  const from = new Date(nowMs - 60 * 864e5).toISOString();
+  const rates = db.prepare(`SELECT starts_at, ends_at, mh_start, mh_end FROM waybills
+      WHERE vehicle_id=? AND status='closed' AND mh_start IS NOT NULL AND mh_end IS NOT NULL AND mh_end>=mh_start
+        AND ends_at IS NOT NULL AND starts_at>=?`).all(vehicleId, from)
+    .map(row => {
+      const days = (Date.parse(row.ends_at) - Date.parse(row.starts_at)) / 864e5;
+      return days > 0 ? (row.mh_end - row.mh_start) / Math.max(1, days) : null;
+    }).filter(value => value != null && Number.isFinite(value)).sort((a, b) => a - b);
+  result.samples = rates.length;
+  if (rates.length >= HOU_MIN_SAMPLES) result.avgDayMh = +rates[Math.floor(rates.length / 2)].toFixed(1);
+  const last = lastToOrder(db, vehicleId);
+  if (!last) { result.reason = 'в Ремзоне нет выпуска после ТО'; return result; }
+  const base = db.prepare(`SELECT mh_start FROM waybills WHERE vehicle_id=? AND status='closed' AND mh_start IS NOT NULL
+      AND starts_at>=? ORDER BY starts_at LIMIT 1`).get(vehicleId, last.released_at);
+  const now = db.prepare(`SELECT mh_end FROM waybills WHERE vehicle_id=? AND status='closed' AND mh_end IS NOT NULL
+      ORDER BY COALESCE(ends_at, starts_at) DESC LIMIT 1`).get(vehicleId);
+  if (!base || !now) { result.reason = `статистика копится: моточасов в закрытых ПЛ ${rates.length} из ${HOU_MIN_SAMPLES}`; return result; }
+  const since = now.mh_end - base.mh_start;
+  if (since < 0) { result.reason = 'счётчик моточасов меньше, чем на ТО — проверьте показания'; return result; }
+  result.sinceMh = Math.round(since);
+  result.leftMh = Math.round(intervalMh - since);
+  if (result.leftMh <= 0) result.status = 'overdue';
+  else if (result.avgDayMh == null) { result.status = 'ok'; result.reason = `скорость копится: ${rates.length} из ${HOU_MIN_SAMPLES} ПЛ`; }
+  else if (result.leftMh < result.avgDayMh * horizonDays) result.status = 'soon';
+  else result.status = 'ok';
+  return result;
 }
 
 const hasTable = (db, name) => Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name));
@@ -203,7 +258,8 @@ export function toStatusAll(db, opts = {}) {
     const s = toStatusOf(db, vehicle.id, cards.get(vehicle.id), o);
     return { vehicleId: vehicle.id, plate: vehicle.plate, status: s.status, sinceKm: s.sinceKm,
       intervalKm: s.intervalKm, leftKm: s.leftKm, avgDayKm: s.avgDayKm == null ? null : Math.round(s.avgDayKm),
-      lastToAt: s.lastToAt, reason: s.reason };
+      lastToAt: s.lastToAt, reason: s.reason, hou: (h => ({ status: h.status, leftMh: h.leftMh, sinceMh: h.sinceMh,
+        intervalMh: h.intervalMh, reason: h.reason }))(houStatusOf(db, vehicle.id, cards.get(vehicle.id), o)) };
   }).sort((a, b) => TO_ORDER[a.status] - TO_ORDER[b.status] || (a.leftKm ?? Infinity) - (b.leftKm ?? Infinity)
     || a.plate.localeCompare(b.plate, 'ru'));
 }
@@ -257,6 +313,7 @@ export function vehicleCard(db, vehicleId, opts = {}) {
     card: Object.fromEntries(Object.keys(CARD_FIELDS).map(key => [key, card?.[key] ?? null])),
     updatedAt: card?.updated_at || null, updatedBy: card?.updated_by_name || '',
     to: toStatusOf(db, vehicleId, card, { nowMs, horizonDays: o.horizonDays }),
+    hou: houStatusOf(db, vehicleId, card, { nowMs, horizonDays: o.horizonDays }),
     docs: docsOf(card, today, o.warnDays),
     warnDays: o.warnDays, horizonDays: o.horizonDays, history
   };
