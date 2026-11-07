@@ -568,7 +568,8 @@ export async function renderLogist(container, context) {
     })();
     return `<div class="list-item ordrow ${idleDays > 2 ? 'pipe-returned' : ''}">
       <span style="flex:1;min-width:0">
-        <strong class="mono">${escapeHtml(request.vehicle.plate)}</strong>
+        <strong class="mono" title="Тягач / полуприцеп">${escapeHtml(request.vehicle.plate)}${request.vehicle.trailer_plate
+    ? ` / ${escapeHtml(request.vehicle.trailer_plate)}` : ''}</strong>
         ${hold ? `<span class="badge warn" title="Забронирована: ${escapeHtml(hold.held_by_name)}${hold.note ? ` — ${escapeHtml(hold.note)}` : ''}">🔒 до ${formatDateTime(hold.until)}</span>` : ''}
         · ${escapeHtml(request.vehicle.type_name || '')} · ${escapeHtml(request.region || request.zone.name || 'субъект не определён')}${runRate}
         <span style="display:block;margin:2px 0 1px">${request.idleMs > 0

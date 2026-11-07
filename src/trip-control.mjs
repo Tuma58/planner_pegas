@@ -178,13 +178,24 @@ export function syncTripStopsWithVia(db, tripId, via, userId) {
   if (stops.length < 2) return { added: 0, removed: 0 };
   const middle = stops.slice(1, -1);
   const wanted = (Array.isArray(via) ? via : []).map(item => ({
-    kind: item.kind === 'P' ? 'P' : 'D', point: String(item.point || '').trim() })).filter(item => item.point);
+    kind: item.kind === 'P' ? 'P' : 'D', point: String(item.point || '').trim(),
+    at: item.at && Number.isFinite(Date.parse(item.at))
+      ? new Date(Date.parse(item.at)).toISOString() : null })).filter(item => item.point);
   const usedIdx = new Set();
   const orderOf = new Map();
   for (const stop of middle) {
     const idx = wanted.findIndex((item, i) => !usedIdx.has(i) &&
       item.kind === stop.kind && item.point === String(stop.point || '').trim());
-    if (idx >= 0) { usedIdx.add(idx); orderOf.set(stop.id, idx); }
+    if (idx >= 0) {
+      usedIdx.add(idx); orderOf.set(stop.id, idx);
+      // Время точки из заявки (Диденко 05.11): человек задал или сменил
+      // время — оно встаёт планом стоянки как «план человека» (авто-план
+      // перезаписывается; точка с фактом прибытия не трогается).
+      if (wanted[idx].at && !stop.actual_arrival && wanted[idx].at !== stop.planned_arrival) {
+        db.prepare(`UPDATE trip_stops SET planned_arrival=?,updated_by=?,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(wanted[idx].at, userId || null, stop.id);
+      }
+    }
   }
   let removed = 0;
   for (const stop of middle) {
@@ -200,8 +211,11 @@ export function syncTripStopsWithVia(db, tripId, via, userId) {
   wanted.forEach((item, index) => {
     if (usedIdx.has(index)) return;
     const id = randomUUID();
-    db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,updated_by)
-      VALUES(?,?,0,?,?,?)`).run(id, tripId, item.kind, item.point, userId || null);
+    // Автор ставится только при времени от человека: точка без времени —
+    // маршрут заявки, её план авто-заполняется и следует за рейсом.
+    db.prepare(`INSERT INTO trip_stops(id,trip_id,seq,kind,point,planned_arrival,updated_by)
+      VALUES(?,?,0,?,?,?,?)`).run(id, tripId, item.kind, item.point, item.at,
+      item.at ? (userId || null) : null);
     orderOf.set(id, index);
     added += 1;
   });

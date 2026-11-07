@@ -5682,6 +5682,62 @@ test('сторож «рейс без прицепа» предупреждает
   assert.ok(noTrailerWarning({ plate: 'х001хх58', trailer_plate: '  ' }), 'пробелы = нет прицепа');
 });
 
+test('местное время точек: пояс из текста пункта, подсказка только востоку', async () => {
+  // Этап 1 часовых поясов (заявка Базуева 05.11): планер в МСК, Сибирь
+  // живёт по местным часам — пояс определяется по региону/городу пункта.
+  const { tzOffsetHours, localTimeHint } = await import('../public/assets/tz.js');
+  assert.equal(tzOffsetHours('Новосибирск г, ул Станционная, 60'), 4);
+  assert.equal(tzOffsetHours('Тюменская обл, Голышманово'), 2);
+  assert.equal(tzOffsetHours('Омск, ул Труда 5'), 3);
+  assert.equal(tzOffsetHours('Самара г, Кировский р-н'), 1);
+  assert.equal(tzOffsetHours('Москва г, р-н Метрогородок'), 0, 'Москва — подсказка не нужна');
+  assert.equal(tzOffsetHours(''), 0);
+  const hint = localTimeHint('Красноярск, ул Калинина', '2026-11-07T14:00:00.000Z');
+  assert.ok(hint.includes('21:00') && hint.includes('(+4)'), '17:00 МСК = 21:00 местного: ' + hint);
+  assert.equal(localTimeHint('Воронеж г', '2026-11-07T14:00:00.000Z'), '', 'запад — без подсказки');
+  assert.equal(localTimeHint('Новосибирск', 'не дата'), '');
+});
+
+test('via-точка с временем: план встаёт в стоянку и неприкосновенен', async t => {
+  // Заявка Диденко 05.11: промежуточной точке — адрес И время.
+  const { syncTripStopsWithVia } = await import('../src/trip-control.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-via-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const zone = db.prepare('SELECT id FROM zones ORDER BY sort_order LIMIT 1').get();
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,customer_name,from_zone_id,to_zone_id,
+    from_point,to_point,starts_at,ends_at,distance_km,revenue_vat,status)
+    VALUES('via-1',?,'Клиент',?,?,'Москва','Пенза',
+    '2026-11-07T04:00:00.000Z','2026-11-08T04:00:00.000Z',650,100000,'plan')`)
+    .run(vehicle.id, zone.id, zone.id);
+  ensureTripStops(db, 'via-1');
+  const userId = db.prepare(`SELECT id FROM users LIMIT 1`).get().id;
+  const user2 = userId;
+  const { added } = syncTripStopsWithVia(db, 'via-1',
+    [{ point: 'Рязань, склад', kind: 'D', at: '2026-11-07T10:00:00.000Z' }], userId);
+  assert.equal(added, 1);
+  const stop = db.prepare(`SELECT * FROM trip_stops WHERE trip_id='via-1' AND point='Рязань, склад'`).get();
+  assert.equal(stop.planned_arrival, '2026-11-07T10:00:00.000Z');
+  assert.equal(stop.updated_by, userId, 'время человека — помечено автором');
+  // Перепланирование рейса не трогает план, поставленный человеком.
+  rescheduleTripStops(db, 'via-1');
+  const after = db.prepare('SELECT planned_arrival FROM trip_stops WHERE id=?').get(stop.id);
+  assert.equal(after.planned_arrival, '2026-11-07T10:00:00.000Z');
+  // Дописывание времени существующей точке, добавленной без плана.
+  syncTripStopsWithVia(db, 'via-1',
+    [{ point: 'Рязань, склад', kind: 'D', at: '2026-11-07T10:00:00.000Z' },
+      { point: 'Тула', kind: 'P', at: null }], userId);
+  syncTripStopsWithVia(db, 'via-1',
+    [{ point: 'Рязань, склад', kind: 'D', at: '2026-11-07T10:00:00.000Z' },
+      { point: 'Тула', kind: 'P', at: '2026-11-07T06:30:00.000Z' }], user2);
+  const tula = db.prepare(`SELECT * FROM trip_stops WHERE trip_id='via-1' AND point='Тула'`).get();
+  assert.equal(tula.planned_arrival, '2026-11-07T06:30:00.000Z', 'время дописано без пересоздания точки');
+});
+
 test('сторож «перегон поверх диспозиции» и авто-подрезка фактом выезда', () => {
   // Разбор 06.11: за месяц перегоны шли поверх закрытых диспозиций на
   // 168 МД (кейс в327ак797: «без водителя» 09–19.10, а машина ехала).
