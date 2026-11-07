@@ -214,3 +214,15 @@ test('Э5: АРМ водителя — тот же каркас; задачу с
   assert.equal(driverTaskAction(db, driver, second.id, 'cancel').status, 403);
   assert.ok(taskAction(db, column, second.id, 'cancel').ok);
 });
+
+test('чек-лист 07.11: снабжение — без выручки рейсов, но с ценами склада', async t => {
+  const db = freshDb(t);
+  const { partsRights } = await import('../src/parts.mjs');
+  const { hasPermission } = await import('../src/permissions.mjs');
+  const supply = userWith(db, ['toir_supply']);
+  const access = accessOf(db, supply);
+  assert.equal(access.money, 'none');
+  assert.equal(partsRights({ user: supply, access, hasPermission }).money, true);
+  const mech = userWith(db, ['toir_mech']);
+  assert.equal(partsRights({ user: mech, access: accessOf(db, mech), hasPermission }).money, false);
+});

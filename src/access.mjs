@@ -47,9 +47,9 @@ const SEED = [
   ['drv_acc', 'Диспетчер учёта', 'drv', ['arm', 'resource', 'docs'], ['resource'], 'none', ''],
   ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona', 'toboard', 'parts'], ['mechanic', 'reports'], 'none', 'dept'],
   ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['arm', 'remzona', 'toboard', 'parts'], ['mechanic'], 'none', ''],
-  // Снабжение ТОиР (закупщик, кладовщик, снабженец): склад и Ремзона,
-  // цены прихода — уровень «ставки».
-  ['toir_supply', 'Снабжение ТОиР', 'toir', ['parts', 'remzona'], ['mechanic'], 'rates', ''],
+  // Снабжение ТОиР (закупщик, кладовщик, снабженец): склад и Ремзона;
+  // цены склада — по набору (partsRights), выручки рейсов не видит.
+  ['toir_supply', 'Снабжение ТОиР', 'toir', ['parts', 'remzona'], ['mechanic'], 'none', ''],
   ['accountant', 'Бухгалтерия', '', ['gantt', 'docs'], ['accountant'], 'rates', ''],
   ['guard', 'Охранник-парковщик', 'staff', ['gate'], ['guard'], 'none', ''],
   ['drv_tech', 'Контролёр техсостояния', 'drv', ['release'], ['techctl'], 'none', ''],
@@ -81,6 +81,7 @@ export function migrateAccess(db) {
     migrateHeadReports(db);
     migrateArm(db);
     migrateArmAll(db);
+    migrateSupplyMoney(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -212,7 +213,7 @@ function migrateChecklist(db) {
 function migrateChecklistV3(db) {
   if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_checklist_v3'`).get()) return;
   db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
-    VALUES(?,?,?,?,?,?,?,?)`).run('toir_supply', 'Снабжение ТОиР', 'toir', '["parts","remzona"]', '["mechanic"]', 'rates', '', 4);
+    VALUES(?,?,?,?,?,?,?,?)`).run('toir_supply', 'Снабжение ТОиР', 'toir', '["parts","remzona"]', '["mechanic"]', 'none', '', 4);
   const add = (id, view) => {
     const row = db.prepare(`SELECT views_json FROM role_sets WHERE id=?`).get(id);
     if (!row) return;
@@ -261,6 +262,14 @@ function migrateArm(db) {
 // АРМ, Э2 (07.11): задачи коллегам и от руководителя — у каждого, значит
 // «Моё рабочее место» есть во всех наборах (наполнение по должности —
 // по мере Э3; пока у непилотных работает зона «Задачи»).
+// Чек-лист 07.11 (финальный): у снабжения уровень «ставки» открывал выручку
+// рейсов в стартовой выдаче — уровень «без денег», цены склада по набору.
+function migrateSupplyMoney(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_supply_money_v1'`).get()) return;
+  db.prepare(`UPDATE role_sets SET money='none' WHERE id='toir_supply'`).run();
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_supply_money_v1','1')`).run();
+}
+
 function migrateArmAll(db) {
   if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_arm_v2'`).get()) return;
   for (const row of db.prepare(`SELECT id, views_json FROM role_sets`).all()) {

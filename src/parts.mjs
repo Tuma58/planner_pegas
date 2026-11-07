@@ -340,8 +340,12 @@ export function partsRights({ user, access, hasPermission }) {
   const legacy = !access || access.legacy;
   const write = hasPermission(user, 'fleet:write');
   const read = legacy ? write || hasPermission(user, 'reports:read') : (access.views || []).includes('parts');
+  // Цены склада: уровень денег набора или должность снабжения (чек-лист
+  // 07.11: снабжению нужны цены запчастей, но не выручка рейсов — его
+  // уровень денег «без денег», цены склада открыты по набору).
+  const supply = Boolean(access && !access.legacy && (access.sets || []).includes('toir_supply'));
   return { read, write: read && write, settings: read && hasPermission(user, 'settings:write'),
-    money: (access?.money ?? 'full') !== 'none' };
+    money: supply || (access?.money ?? 'full') !== 'none' };
 }
 
 const MONEY_KEYS = new Set(['price', 'unit_cost_net', 'unitCost', 'avgCost', 'stockValue', 'buyCost', 'cost', 'amount', 'vat']);

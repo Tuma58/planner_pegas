@@ -286,7 +286,7 @@ Object.assign(W, {
       { kind: 'metric', label: '«В ремонт» с выпуска, 7 дн', value: row.fail || 0, unit: '', tone: '', source: 'release_checks' }
     ];
   },
-  parts: ({ db, settings, money }) => {
+  parts: ({ db, settings, money, user }, supply = Boolean(user?.role_sets?.includes('toir_supply'))) => {
     const st = safe(() => partsStock(db, { settings }));
     if (!st) return null;
     const items = st.items || [];
@@ -294,7 +294,7 @@ Object.assign(W, {
     const value = items.reduce((sum, item) => sum + (item.stockValue || 0), 0);
     return [
       { kind: 'metric', label: 'Позиций ниже минимума', value: below, unit: '', tone: below ? 'warn' : 'pos', note: `всего позиций ${items.length}`, source: 'partsStock' },
-      ...(money !== 'none' ? [{ kind: 'metric', label: 'Запас на складе, тыс ₽', value: Math.round(value / 100) / 10, unit: '', tone: '', source: 'partsStock (средняя цена)' }] : [])
+      ...(money !== 'none' || supply ? [{ kind: 'metric', label: 'Запас на складе, тыс ₽', value: Math.round(value / 100) / 10, unit: '', tone: '', source: 'partsStock (средняя цена)' }] : [])
     ];
   },
   parts_plan: ({ db }) => {
