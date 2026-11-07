@@ -13674,6 +13674,31 @@ async function api(request, response, url) {
     if (!user) return;
     return json(response, 200, { ...perf.snapshot(), watchers: watchersSnapshot() });
   }
+  // 📊 Счётчик использования (07.11, «удаляем только по данным»): клиент
+  // отмечает открытие экрана или отчёта; поведение планера не меняется.
+  if (request.method === 'POST' && pathname === '/api/usage') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request, 2_000);
+    const key = String(body?.key || '').slice(0, 80);
+    if (!/^[\w:.\-]+$/.test(key)) return errorJson(response, 422, 'Ключ экрана');
+    const day = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+    db.prepare(`INSERT INTO ui_usage(day,key,user_id,roles,opens) VALUES(?,?,?,?,1)
+      ON CONFLICT(day,key,user_id) DO UPDATE SET opens=opens+1, roles=excluded.roles`)
+      .run(day, key, user.id, rolesOf(user).join(','));
+    return json(response, 200, { ok: true });
+  }
+  // Сводка использования за N дней: открытия, сотрудники, дни, роли.
+  if (request.method === 'GET' && pathname === '/api/usage') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    const days = Math.min(120, Math.max(1, Number(url.searchParams.get('days')) || 28));
+    const from = new Date(Date.now() + 3 * 3_600_000 - days * 864e5).toISOString().slice(0, 10);
+    const rows = db.prepare(`SELECT key, SUM(opens) opens, COUNT(DISTINCT user_id) users,
+        COUNT(DISTINCT day) days, GROUP_CONCAT(DISTINCT roles) roles, MAX(day) last
+      FROM ui_usage WHERE day>=? GROUP BY key ORDER BY opens DESC`).all(from);
+    return json(response, 200, { from, days, items: rows });
+  }
   if (request.method === 'POST' && pathname === '/api/perf-beacon') {
     const user = requireUser(request, response);
     if (!user) return;

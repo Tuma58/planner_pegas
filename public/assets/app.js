@@ -801,10 +801,27 @@ function renderViewTabs() {
     if (!button) return;
     state.view = button.dataset.view;
     if (state.view === 'boss') state.bossWarm = true;
+    trackUsage(`view:${state.view}`);
     renderViewTabs();
     renderMain();
   };
 }
+
+// 📊 Счётчик использования (07.11): открытие экрана или отчёта — одна
+// отметка на сервер; ошибки молча глотаются, работе не мешают.
+function trackUsage(key) {
+  try {
+    fetch('/api/usage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }), credentials: 'same-origin' }).catch(() => {});
+  } catch { /* не мешаем работе */ }
+}
+// Отчёты руководителя — кнопки с id bossXxx; «Сформировать» — вид отчёта.
+document.addEventListener('click', event => {
+  const button = event.target.closest?.('button[id^="boss"]');
+  if (!button || ['bossSearch', 'bossDailyCopy', 'bossDailyBody'].includes(button.id)) return;
+  const kind = button.id === 'bossReport' ? `:${document.getElementById('bossReportKind')?.value || ''}` : '';
+  trackUsage(`report:${button.id}${kind}`);
+}, true);
 
 function renderMain() {
   const isGantt = state.view === 'gantt';
@@ -2390,6 +2407,7 @@ async function reload(prefetched = null) {
   renderLegend();
   renderViewTabs();
   renderMain();
+  trackUsage(`view:${state.view}`);
   refreshExceptions();
   // Темы вопросов и подписка на входящие звонки — после первой загрузки:
   // список тем приходит с сервера, чтобы форма и статистика не расходились.

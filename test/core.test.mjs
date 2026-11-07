@@ -5783,3 +5783,20 @@ test('сторож «перегон поверх диспозиции» и ав�
     'подрезаются только накрывающие момент «без водителя» и пересменка');
   assert.deepEqual(dispositionsToTrim(dispos, 'не дата'), []);
 });
+
+test('счётчик использования: таблица ui_usage копит открытия по дню, ключу и сотруднику', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-usage-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const upsert = db.prepare(`INSERT INTO ui_usage(day,key,user_id,roles,opens) VALUES(?,?,?,?,1)
+    ON CONFLICT(day,key,user_id) DO UPDATE SET opens=opens+1`);
+  upsert.run('2026-11-07', 'view:boss', 'u1', 'manager');
+  upsert.run('2026-11-07', 'view:boss', 'u1', 'manager');
+  upsert.run('2026-11-07', 'view:boss', 'u2', 'admin');
+  const row = db.prepare(`SELECT SUM(opens) opens, COUNT(DISTINCT user_id) users FROM ui_usage WHERE key='view:boss'`).get();
+  assert.equal(row.opens, 3);
+  assert.equal(row.users, 2);
+});
