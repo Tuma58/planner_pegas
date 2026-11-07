@@ -79,6 +79,8 @@ function renderGeneral() {
         <input id="kpiOwnSharePct" type="number" min="0" max="100" step="5" value="${goals.kpiOwnPct}"></label>
       <label class="field">Сигнал на стыке вовремя, ч <small class="muted">цель бдительности: от возникновения случая до «⚑ Сигнал»</small>
         <input id="signalTargetHours" type="number" min="0" step="0.5" value="${goals.signalTargetH}"></label>
+      <label class="field">КПП: личный транспорт стоит дольше, ч <small class="muted">подсветка в «🚧 КПП»</small>
+        <input id="gateLongHours" type="number" min="1" step="1" value="${goals.gateLongH}"></label>
       <label class="field">Норматив ФОТ управления, % выручки <small class="muted">пусто — не задан (блок «ФОТ»)</small>
         <input id="fotNormPct" type="number" min="0" max="100" step="0.1" value="${goals.fotPct ?? ''}"></label>
     </div>`, { span: 's12' }),
@@ -131,6 +133,7 @@ async function saveGeneral() {
       kipTargetPct: numeric('kipTargetPct'),
       goalRevenueMln: numeric('goalRevenueMln'), fleetTarget: numeric('fleetTarget'),
       kpiOwnSharePct: numeric('kpiOwnSharePct'), signalTargetHours: numeric('signalTargetHours'),
+      gateLongHours: numeric('gateLongHours'),
       fotNormPct: byId('fotNormPct').value === '' ? '' : numeric('fotNormPct'),
       dailyKmTarget: numeric('dailyKmTarget'),
       insuranceAndRoadsPerKm: numeric('insuranceAndRoadsPerKm'),

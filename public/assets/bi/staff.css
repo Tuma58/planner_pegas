@@ -296,3 +296,26 @@
 .kp-index b { font-size: 30px !important; }
 .kp-index.pos b { color: var(--ok); } .kp-index.warn b { color: var(--warn); } .kp-index.neg b { color: var(--bad); }
 .kp-index span { font-size: 12px; line-height: 1.3; }
+
+/* ── «🚧 КПП» — пост охранника-парковщика (07.11) ── */
+.gt-reg .sec-b { display: flex; flex-direction: column; gap: 10px; }
+.gt-plate { font-family: var(--mono-font); font-size: 30px; letter-spacing: .08em; text-transform: uppercase; padding: 12px 14px; text-align: center; }
+.gt-suggest { display: flex; flex-wrap: wrap; gap: 6px; }
+.gt-suggest button { border: 1px solid var(--border2); background: var(--panel2); border-radius: 8px; padding: 6px 10px; font-family: var(--mono-font); cursor: pointer; color: var(--ink); }
+.gt-suggest small { font-family: var(--ui-font, inherit); color: var(--muted); margin-left: 4px; }
+.gt-ctx { padding: 10px 12px; border-radius: 10px; font-size: 14px; border: 1px solid var(--border2); }
+.gt-ctx.out { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--card)); }
+.gt-ctx.in { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--card)); }
+.gt-ctx.new { border-style: dashed; color: var(--muted); }
+.gt-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.gt-types button { padding: 12px 6px; border-radius: 10px; border: 1px solid var(--border2); background: var(--card); font-size: 14px; cursor: pointer; color: var(--ink); }
+.gt-types button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+.gt-go { font-size: 20px; padding: 16px; }
+.gt-go.out { background: var(--warn); border-color: var(--warn); }
+.gt-check { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.gt-search { width: 140px; }
+.gt-list .gt-acts { white-space: nowrap; text-align: right; }
+.gt-list tr.gt-long td { background: color-mix(in srgb, var(--bad) 8%, var(--card)); }
+.gt-form { display: flex; flex-direction: column; gap: 8px; }
+.gt-h3 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+@media (max-width: 980px) { .gt-plate { font-size: 26px; } }

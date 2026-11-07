@@ -13,7 +13,7 @@
 
 import { ROLE_LABELS, rolesOf } from './permissions.mjs';
 
-export const ALL_VIEWS = ['field', 'kpi', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+export const ALL_VIEWS = ['field', 'kpi', 'gate', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
   'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
   'resource', 'fleetplan', 'remzona'];
 // «Моё поле» — первым: поле управления руководителя отдела (Э1, 07.11).
@@ -46,6 +46,7 @@ const SEED = [
   ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona'], ['mechanic'], 'none', 'dept'],
   ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona'], ['mechanic'], 'none', ''],
   ['accountant', 'Бухгалтерия', '', ['gantt'], ['accountant'], 'rates', ''],
+  ['guard', 'Охранник-парковщик', 'staff', ['gate'], ['guard'], 'none', ''],
   ['admin', 'Администратор', 'all', ALL_VIEWS, ['admin'], 'full', 'all']
 ];
 
@@ -63,6 +64,7 @@ export function migrateAccess(db) {
     migrateFieldView(db);
     migrateColumnHead(db);
     migrateKpiView(db);
+    migrateGuard(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -73,6 +75,7 @@ export function migrateAccess(db) {
   migrateFieldView(db);
   migrateColumnHead(db);
   migrateKpiView(db);
+  migrateGuard(db);
 }
 
 // Уточнение 07.11: четыре руководителя — направления, логистики, ремзоны
@@ -99,6 +102,33 @@ function migrateKpiView(db) {
     db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, 'kpi']), row.id);
   }
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_kpi_v1','1')`).run();
+}
+
+// КПП (07.11): роль «Охранник-парковщик» (код guard) и экран «КПП» у
+// Штаба. Код guard добавляется в CHECK роли users пересозданием таблицы —
+// как при вводе роли «Механик».
+function migrateGuard(db) {
+  const usersSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='users'`).get()?.sql || '';
+  if (usersSql && !usersSql.includes("'guard'")) {
+    const rebuilt = usersSql.replace(/CREATE TABLE\s+"?users"?/i, 'CREATE TABLE users_new')
+      .replace(/role IN \(/i, "role IN ('guard',");
+    db.exec(`PRAGMA foreign_keys=OFF;
+      BEGIN IMMEDIATE;
+      ${rebuilt};
+      INSERT INTO users_new SELECT * FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;
+      COMMIT;
+      PRAGMA foreign_keys=ON;`);
+  }
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_guard_v1'`).get()) return;
+  db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
+    VALUES('guard','Охранник-парковщик','staff','["gate"]','["guard"]','none','',11)`).run();
+  for (const row of db.prepare(`SELECT id, views_json FROM role_sets WHERE id IN ('dir_head','admin')`).all()) {
+    const views = parse(row.views_json, []);
+    if (!views.includes('gate')) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, 'gate']), row.id);
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_guard_v1','1')`).run();
 }
 
 function migrateFieldView(db) {

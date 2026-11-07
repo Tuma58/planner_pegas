@@ -23,6 +23,7 @@ import { renderGoals } from './goals.js';
 import { renderCfo } from './cfo.js';
 import { renderField } from './field.js';
 import { renderKpi } from './kpi.js';
+import { renderGate } from './gate.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -860,6 +861,11 @@ const MAIN_VIEWS = [
     const access = state.data?.user?.access;
     return Boolean(access?.views?.includes('kpi') || (access?.legacy && can('reports:read')));
   } },
+  // «🚧 КПП» (07.11) — пост охранника-парковщика; Штаб видит журнал.
+  { id: 'gate', title: 'КПП', show: () => {
+    const access = state.data?.user?.access;
+    return Boolean(can('gate:write') || access?.views?.includes('gate') || (access?.legacy && can('users:write')));
+  } },
   { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
 ];
 
@@ -878,7 +884,7 @@ const NAV_GROUPS = [
   // блоков. Ниже — рабочие экраны Штаба.
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
     { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi'] },
-    { title: 'Работа Штаба', views: ['boss', 'staff', 'expenses'] }] },
+    { title: 'Работа Штаба', views: ['boss', 'staff', 'expenses', 'gate'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
@@ -891,6 +897,7 @@ const NAV_GROUPS = [
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
   field: ['◉', 'Поле управления отдела: коэффициент, потери, стыки, очереди, люди, деньги'],
+  gate: ['🚧', 'Журнал КПП стоянки базы: въезд и выезд одной кнопкой'],
   kpi: ['◎', 'Каскад, два KPI отдела, сквозной контроль соседа, KPI должностей'],
   cfo: ['₽', 'Затраты по центрам ответственности, ₽ на машино-день, управляемые потери'],
   goals: ['◉', 'Миссия, цели направления и задачи отделов — на живых показателях'],
@@ -1067,6 +1074,8 @@ function renderMain() {
     });
   } else if (state.view === 'field') {
     renderField(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'gate') {
+    renderGate(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'kpi') {
     renderKpi(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'cfo') {

@@ -57,6 +57,7 @@ import { accessOf, assignRoleSets, roleSets, stripOrders, stripSmall, stripTrips
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
+import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -552,6 +553,7 @@ const NOTIFY_CATEGORIES = {
   stale_transfers: { label: '🚚 Зависшие перегоны', def: 'normal' },
   sales_directions: { label: '🧭 Утренние направления планированию', def: 'normal' },
   joint_signals: { label: '⚑ Сигналы на стыках отделов', def: 'normal' },
+  gate: { label: '🚧 КПП: выезд с базы и возврат', def: 'normal' },
   no_next: { label: '⏭ Выгрузка близко, следующий рейс не назначен', def: 'normal' },
   resource_watch: { label: '🔧 Сторож ресурса (без водителя/заказа 3+ дн)', def: 'normal' },
   shift_digest: { label: '📋 Сводка смены (18:00 на ночь / 06:00 на день)', def: 'normal' },
@@ -15179,6 +15181,87 @@ async function api(request, response, url) {
       ? url.searchParams.get('from') : `${to.slice(0, 7)}-01`;
     if (to < from) return errorJson(response, 422, 'Период задан неверно');
     return json(response, 200, cfoReportFor(scope, from, to));
+  }
+  // ── 🚧 КПП стоянки базы (Пенза) — рабочее место охранника-парковщика (07.11) ──
+  // Пишет — право gate:write (охранник, вошедший по своей учётке);
+  // смотрят журнал и отчёт — у кого экран «КПП» в роли (Штаб); справочник
+  // личного/стороннего транспорта — Штаб с доступом к кадрам.
+  const gateAccess = user => {
+    const access = accessOf(db, user);
+    return { write: hasPermission(user, 'gate:write'),
+      read: hasPermission(user, 'gate:write') || (access.legacy ? hasPermission(user, 'users:write') : access.views.includes('gate')),
+      dir: staffAccess(user, settingsObject(db)) };
+  };
+  if (pathname === '/api/gate' || pathname.startsWith('/api/gate/')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const rights = gateAccess(user);
+    if (!rights.read) return errorJson(response, 403, 'КПП — рабочее место охранника-парковщика');
+    const guardName = user.full_name || user.username;
+    if (request.method === 'GET' && pathname === '/api/gate') {
+      // Сутки поста — по московскому времени (база в Пензе, МСК).
+      const MSK = 3 * 3_600_000;
+      const today = new Date(Math.floor((Date.now() + MSK) / 864e5) * 864e5 - MSK).toISOString();
+      return json(response, 200, {
+        now: new Date().toISOString(), guard: guardName, rights,
+        onsite: gateOnsite(db), dir: gateDirectory(db),
+        longHours: directionGoals(settingsObject(db).calculation).gateLongH,
+        today: { entries: db.prepare(`SELECT COUNT(*) n FROM gate_log WHERE status<>'cancelled' AND entry_at>=?`).get(today).n,
+          exits: db.prepare(`SELECT COUNT(*) n FROM gate_log WHERE status='out' AND exit_at>=?`).get(today).n },
+        types: GATE_TYPES
+      });
+    }
+    if (request.method === 'GET' && pathname === '/api/gate/report') {
+      const from = String(url.searchParams.get('from') || '');
+      const to = String(url.searchParams.get('to') || '');
+      if (!Date.parse(from) || !Date.parse(to) || to <= from) return errorJson(response, 422, 'Период задан неверно');
+      return json(response, 200, gateReport(db, from, to));
+    }
+    if (pathname === '/api/gate/dir') {
+      if (!rights.dir) return errorJson(response, 403, 'Справочник ведёт Штаб');
+      if (request.method === 'POST') {
+        const body = await readJson(request);
+        const plate = normPlate(body.plate);
+        if (plate.length < 4) return errorJson(response, 422, 'Введите госномер полностью');
+        if (!['personal', 'other'].includes(body.type)) return errorJson(response, 422, 'Тип: личный или сторонний');
+        db.prepare(`INSERT INTO gate_dir(plate,type,model,person,dept) VALUES(?,?,?,?,?)
+          ON CONFLICT(plate) DO UPDATE SET type=excluded.type, model=excluded.model, person=excluded.person,
+            dept=excluded.dept, updated_at=CURRENT_TIMESTAMP`)
+          .run(plate, body.type, String(body.model || '').trim(), String(body.person || '').trim(), String(body.dept || '').trim());
+        audit(db, user, 'save', 'gate_dir', plate, { type: body.type }, requestIp(request));
+        return json(response, 200, { ok: true });
+      }
+      if (request.method === 'DELETE') {
+        const plate = normPlate(url.searchParams.get('plate'));
+        db.prepare('DELETE FROM gate_dir WHERE plate=?').run(plate);
+        audit(db, user, 'delete', 'gate_dir', plate, {}, requestIp(request));
+        return json(response, 200, { ok: true });
+      }
+    }
+    if (request.method === 'POST' && !rights.write) return errorJson(response, 403, 'Отмечает охранник-парковщик');
+    if (request.method === 'POST' && pathname === '/api/gate/register') {
+      const result = gateRegister(db, guardName, await readJson(request));
+      if (!result.ok) return errorJson(response, 422, result.error);
+      // Факт рейса НЕ ставится (решение 07.11) — только подсказка ролям.
+      const hints = gateHints(db, result, guardName);
+      for (const hint of hints) notify(hint.role, hint.text, hint.entity, hint.entityId, { category: 'gate' });
+      if (hints.length) db.prepare('UPDATE gate_log SET hint=? WHERE id=?').run(hints.map(hint => hint.text).join(' | '), result.record.id);
+      audit(db, user, result.kind === 'in' ? 'gate_in' : 'gate_out', 'gate_log', result.record.id, { plate: result.record.plate }, requestIp(request));
+      return json(response, 200, { kind: result.kind, plate: result.record.plate, hinted: hints.map(hint => hint.role) });
+    }
+    match = route(/^\/api\/gate\/([\w-]+)\/(exit|edit|cancel)$/, pathname);
+    if (match && request.method === 'POST') {
+      const body = await readJson(request);
+      const result = match[1] === 'exit' ? gateExitAt(db, match[0], guardName, body.at)
+        : match[1] === 'edit' ? gateEdit(db, match[0], guardName, body) : gateCancel(db, match[0], guardName, body.reason);
+      if (!result.ok) return errorJson(response, 422, result.error);
+      if (match[1] === 'exit') {
+        for (const hint of gateHints(db, result, guardName)) notify(hint.role, hint.text, hint.entity, hint.entityId, { category: 'gate' });
+      }
+      audit(db, user, `gate_${match[1]}`, 'gate_log', match[0], body, requestIp(request));
+      return json(response, 200, { ok: true });
+    }
+    return errorJson(response, 404, 'Нет такого действия КПП');
   }
   // ── ⚑ Сигнал на стыке (блок 4, 07.11): контролёр подаёт, владелец принимает ──
   match = route(/^\/api\/signals\/([\w-]+)\/(raise|accept)$/, pathname);

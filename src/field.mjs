@@ -90,6 +90,10 @@ export function fieldLive(db, dept, at = nowIso()) {
     queues.push({ key: 'no_driver', dept: 'drv', label: 'ТС без водителя', count: noDriver.length,
       note: noDriver.length ? noDriver.slice(0, 5).map(row => row.plate).join(', ') : '', screen: 'resource' });
     queues.push({ key: 'shift', dept: 'drv', label: 'На пересменке', count: activeDispo('shift').length, screen: 'resource' });
+    // КПП базы (07.11): грузовые на стоянке по журналу охраны.
+    const onBase = db.prepare(`SELECT plate FROM gate_log WHERE status='onsite' AND type='truck' ORDER BY entry_at`).all();
+    queues.push({ key: 'on_base', dept: 'drv', label: 'Грузовых на стоянке базы (КПП)', count: onBase.length,
+      note: onBase.slice(0, 6).map(row => row.plate).join(', '), screen: 'gate' });
   }
   if (dept === 'toir' || dept === 'staff') {
     const repair = db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN planned_out IS NOT NULL AND planned_out<? THEN 1 ELSE 0 END) late

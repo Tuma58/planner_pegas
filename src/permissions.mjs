@@ -8,14 +8,16 @@ export const ROLE_LABELS = {
   sales: 'Планирование',
   accountant: 'Бухгалтерия',
   manager: 'Руководитель',
-  mechanic: 'Механик'
+  mechanic: 'Механик',
+  // Охранник-парковщик (журнал КПП стоянки, 07.11): пост на базе в Пензе.
+  guard: 'Охранник-парковщик'
 };
 
 const ALL = [
   'planner:read', 'trips:write', 'trip-status:write', 'orders:write',
   'fleet:write', 'payments:write', 'reports:read', 'customers:read',
   'settings:write', 'users:write', 'integration:write', 'audit:read',
-  'shifts:write', 'staff:write', 'expenses:write'
+  'shifts:write', 'staff:write', 'expenses:write', 'gate:write'
 ];
 
 export const ROLE_PERMISSIONS = {
@@ -34,7 +36,10 @@ export const ROLE_PERMISSIONS = {
   manager: ['planner:read', 'reports:read', 'customers:read', 'shifts:write', 'staff:write'],
   // Механик (блок «Ремзона», старт 14.09.2026): видит парк и ведёт
   // недоступности — заезды в ремонт/ТО, их причины и закрытие.
-  mechanic: ['planner:read', 'fleet:write']
+  mechanic: ['planner:read', 'fleet:write'],
+  // КПП (07.11): въезд/выезд в журнале — факт рейса НЕ ставит, только
+  // подсказывает диспетчеру (решение руководителя).
+  guard: ['gate:write']
 };
 
 export function permissionsFor(role) {
