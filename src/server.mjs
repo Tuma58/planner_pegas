@@ -9817,7 +9817,11 @@ async function api(request, response, url) {
     return value.slice(0, 8).map(item => ({
       point: String(item?.point || '').trim().slice(0, 120),
       kind: item?.kind === 'P' ? 'P' : 'D',
-      addressId: item?.addressId || null
+      addressId: item?.addressId || null,
+      // План прибытия на точку (заявка Диденко 05.11): время, поставленное
+      // человеком, попадает в стоянку рейса и дальше неприкосновенно.
+      at: item?.at && Number.isFinite(Date.parse(item.at))
+        ? new Date(Date.parse(item.at)).toISOString() : null
     })).filter(item => item.point);
   }
   // Плановый километраж заявки: цепочка погрузка → промежуточные → выгрузка

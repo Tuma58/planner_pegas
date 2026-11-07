@@ -13,6 +13,7 @@ import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 import { openTransfers, transferStage, transferTaskText, transferDialog } from './transfer.js';
 import { callCardDialog, closeQuestionDialog, questionDialog, setTopics, topicLabel } from './call-card.js';
 import { tripIncidentDialog } from './incidents.js';
+import { localTimeHint } from './tz.js';
 
 const LATE_MS = 30 * 60_000;
 // «ТС не выгружают»: плановое прибытие прошло более 6 часов назад,
@@ -195,8 +196,10 @@ function returnCargoDialog(trip, data, context) {
 }
 
 // Меню внештатной ситуации: каждый сценарий продуман до конца —
-// переназначение, ремонт, возврат заявки в продажи.
-function incidentDialog(trip, data, context) {
+// переназначение, ремонт, возврат заявки в продажи. Экспорт — для
+// карточки звонка (заявка Базуева 06.11): внештатную оформляют, не
+// выходя из разговора с водителем.
+export function incidentDialog(trip, data, context) {
   context.showModal(`<h2>Внештатная ситуация</h2>
     <p class="muted">${escapeHtml(routeLabel(trip))} · <span class="mono">${escapeHtml(trip.vehicle_plate)}</span>
       · ${escapeHtml(trip.driver_name || 'без водителя')} · ${escapeHtml(trip.customer_name || '')}</p>
@@ -867,7 +870,8 @@ export async function renderDispatcher(container, context, options = {}) {
         <span style="flex:1;min-width:0">
           <strong>${stopKindLabel(stop)} · ${escapeHtml(stop.point || '—')}</strong>
           ${lateMs > 30 * 60_000 ? `<span class="badge bad" style="margin-left:6px">+${Math.round(lateMs / HOUR * 10) / 10} ч</span>` : ''}
-          <small class="muted" style="display:block">план ${fmtShort(stop.planned_arrival)}
+          <small class="muted" style="display:block">план ${fmtShort(stop.planned_arrival)}<span
+            title="Местное время точки — пояс определён по региону пункта">${localTimeHint(stop.point, stop.planned_arrival)}</span>
             ${!stop.actual_arrival && stop.driver_eta ? ` · 📱 водитель: к ${fmtShort(stop.driver_eta)}` : ''}
             ${!stop.actual_arrival && !stop.driver_eta && stop.estimated_arrival ? ` · расчёт ${fmtShort(new Date(stop.estimated_arrival).toISOString())}` : ''}
             · факт ${fmtShort(stop.actual_arrival)} → ${fmtShort(stop.actual_departure)}</small>
@@ -1354,6 +1358,13 @@ export async function renderDispatcher(container, context, options = {}) {
     try { state.kbDense = localStorage.getItem('pl_kb_dense') === '1'; }
     catch { state.kbDense = false; }
   }
+  // Профиль смены (заявка Базуева 05.11, решение 07.11): три функции
+  // диспетчерской — 1С/документы, контроль на линии, форс-мажоры.
+  // Это ФИЛЬТР доски на рабочем месте, права и конструкция не меняются.
+  if (state.kbRole === undefined) {
+    try { state.kbRole = localStorage.getItem('pl_kb_role') || ''; }
+    catch { state.kbRole = ''; }
+  }
   if (state.dispatcherLayout === 'board') {
     // Этап 2: живые лимиты — личная ёмкость смены (p50 отметок за 14 дн,
     // пересчёт сторожем) и лимит «Подготовки» = выходы ближайших суток.
@@ -1610,7 +1621,8 @@ export async function renderDispatcher(container, context, options = {}) {
       };
       const kbqStops = (controlByTrip.get(trip.id)?.stops || []).map(stop => `<div class="kbq-stop kbq-stop-row">
         <span style="flex:1;min-width:0"><b>${stop.kind === 'P' ? '📦' : '🏗'}</b> ${escapeHtml((stop.point || '').slice(0, 44))}
-        <small class="muted" style="display:block;margin-left:22px">план ${fmtKb(stop.planned_arrival)}${stop.actual_arrival
+        <small class="muted" style="display:block;margin-left:22px">план ${fmtKb(stop.planned_arrival)}<span
+          title="Местное время точки — пояс определён по региону пункта">${localTimeHint(stop.point, stop.planned_arrival)}</span>${stop.actual_arrival
     ? ` · прибыл ${fmtKb(stop.actual_arrival)}` : ''}${stop.actual_departure
     ? ` · убыл ${fmtKb(stop.actual_departure)}` : ''}</small></span>
         ${stopFactBtn(stop)}</div>`).join('');
@@ -1756,11 +1768,15 @@ export async function renderDispatcher(container, context, options = {}) {
     const fmtKb = iso => iso ? formatDateTime(iso) : '—';
     const unloadPlanRows = trip => {
       const stops = controlByTrip.get(trip.id)?.stops || [];
-      const plan = stops[stops.length - 1]?.planned_arrival || null;
+      const lastStop = stops[stops.length - 1];
+      const plan = lastStop?.planned_arrival || null;
+      // Местное время выгрузки (этап 1 поясов, заявка Базуева 05.11): для
+      // точек восточнее МСК рядом с планом — местные часы и смещение.
+      const localHint = localTimeHint(lastStop?.point || trip.to_point || trip.to_name, plan || trip.ends_at);
       const freeMs = Date.parse(trip.ends_at);
-      if (!plan) return `<div class="kbr kb4">📦 выгрузка ~ ${fmtKb(trip.ends_at)}</div>`;
+      if (!plan) return `<div class="kbr kb4">📦 выгрузка ~ ${fmtKb(trip.ends_at)}${localHint}</div>`;
       const gapH = (freeMs - Date.parse(plan)) / 3.6e6;
-      return `<div class="kbr kb4">📦 выгрузка по плану <b>${fmtKb(plan)}</b></div>`
+      return `<div class="kbr kb4">📦 выгрузка по плану <b>${fmtKb(plan)}</b>${localHint}</div>`
         + (gapH > 1 ? `<div class="kbr kb4">🛌 освободится ~ ${fmtKb(trip.ends_at)} <small>с отдыхом водителя</small></div>` : '');
     };
     const roadCardKb = trip => {
@@ -1852,6 +1868,17 @@ export async function renderDispatcher(container, context, options = {}) {
       <div class="kb-cards">${cards.join('') || '<p class="muted" style="padding:6px">пусто</p>'}</div>
     </section>`;
     const matchKb = trip => matches(trip) && ownMatch(trip);
+    // Фильтр профиля смены: «1С» — подготовка целиком + карточки с долгом
+    // учётной системы на линии; «Контроль» — только линия; «Форс-мажоры» —
+    // только карточки с болью (уровень внимания не «тихий»).
+    const kbRole = state.kbRole || '';
+    const needs1c = trip => Boolean(trip.needs_1c_update_at || trip.deferred_1c_at || !trip.entered_1c_at);
+    const roleMatch = (trip, col) => !kbRole
+      || (kbRole === '1c' ? (col === 'prep' || needs1c(trip))
+        : kbRole === 'road' ? col !== 'prep'
+          : levelOf(trip) === 'alarm' || tempBad(trip) || ctrlOverdue(trip));
+    const roleBtn = (value, label, hint) => `<button class="button small ${kbRole === value ? '' : 'ghost'}"
+      data-kb-role="${value}" title="${hint}">${label}</button>`;
     const boardHtml = `<div class="saleswrap kb-wrap">
       <div class="kb-top">
         <span class="resctl-group">
@@ -1870,6 +1897,12 @@ export async function renderDispatcher(container, context, options = {}) {
             ${[...new Set(Object.values(assignments).map(a => a.name))].sort().map(n =>
     `<option value="${escapeHtml(n)}" ${state.dispatcherOwner === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
           </select>` : ''}
+        </span>
+        <span class="resctl-group" title="Профиль смены: доска фильтруется под вашу функцию, права не меняются. Запоминается на этом рабочем месте">
+          ${roleBtn('', 'Все функции', 'Полная доска без фильтра профиля')}
+          ${roleBtn('1c', '🧾 1С и документы', 'Подготовка выхода целиком + карточки линии с долгом учётной системы (не внесено, отложено, требует правки)')}
+          ${roleBtn('road', '🛣 Контроль', 'Только линия: погрузка, в пути, выгрузка — без колонки подготовки')}
+          ${roleBtn('alarm', '⚠ Форс-мажоры', 'Только карточки с болью: стоит, просрочен контроль, вне температурного режима, опоздание, сигналы и долги')}
         </span>
         ${state.data.user.dispatchExempt || can('users:write') ? `<button class="button small ghost" id="kbRebalance"
           title="Полуавтоматика руководителя службы: сбросить авто-назначения и раздать карточки заново по текущей смене и личным ёмкостям (взятые вручную «🖐 Беру» не трогаются)">⚖ Перераспределить</button>` : ''}
@@ -1896,17 +1929,20 @@ export async function renderDispatcher(container, context, options = {}) {
       </details>` : ''}
       ${goneCards ? `<div class="kb-gone"><div class="kb-note">🔎 Сошли с доски за 48 ч (по вашему поиску) — ошибочную отметку можно откатить:</div><div class="kb-gone-row">${goneCards}</div></div>` : ''}
       <div class="kb-board ${state.kbDense ? 'kb-dense' : ''}">
-        ${kbCol('🧰 Подготовка выхода', [...trPrep.map(kbTransferCard), ...prepList.filter(matchKb).map(prepCardKb), ...waitingLogist.filter(matchKb).map(waitCardKb)],
-    `${prepTotal} / ${prepLimit}${trPrep.length ? ` · 🚚 ${trPrep.length}` : ''}`, prepTotal > prepLimit,
+        ${kbRole === 'road' ? '' : kbCol('🧰 Подготовка выхода', [...(kbRole ? [] : trPrep.map(kbTransferCard)),
+    ...prepList.filter(t => matchKb(t) && roleMatch(t, 'prep')).map(prepCardKb),
+    ...waitingLogist.filter(t => matchKb(t) && roleMatch(t, 'prep')).map(waitCardKb)],
+    `${prepTotal} / ${prepLimit}${trPrep.length && !kbRole ? ` · 🚚 ${trPrep.length}` : ''}`, prepTotal > prepLimit,
     'лимит = выходы ближайших 24 ч по плану: готовим больше, чем выходит, — проверьте окна; кнопка — следующий шаг; 🚚 — перегоны порожним')}
-        ${kbCol('📦 Погрузка', loadCol.filter(matchKb).map(loadCardKb),
+        ${kbCol('📦 Погрузка', loadCol.filter(t => matchKb(t) && roleMatch(t, 'load')).map(loadCardKb),
     `${loadCol.length}`, loadCol.filter(t => (hoursSince(t.on_line_at) || 0) > 24).length > 10,
     'на линии, убытия нет; красное — дольше суток И без свежего контроля; «📞 Контроль пройден» гасит и опускает')}
-        ${kbCol('🛣 В пути — контроль и холодовая цепь', [...trRoad.map(kbTransferCard), ...roadCol.filter(matchKb).map(roadCardKb)],
+        ${kbCol('🛣 В пути — контроль и холодовая цепь', [...(kbRole === '1c' || kbRole === 'alarm' ? [] : trRoad.map(kbTransferCard)),
+    ...roadCol.filter(t => matchKb(t) && roleMatch(t, 'road')).map(roadCardKb)],
     `${roadCol.length}${trRoad.length ? ` · 🚚 ${trRoad.length}` : ''} · 🌡/📞: ${roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length}`,
     roadCol.filter(t => tempBad(t) || ctrlOverdue(t)).length >= 5,
     `температура против режима рейса и контроль каждые ${midH.toFixed(0)} ч; GPS — помощь, не замена`)}
-        ${kbCol('🏗 Выгрузка', unloadCol.filter(matchKb).map(unloadCardKb),
+        ${kbCol('🏗 Выгрузка', unloadCol.filter(t => matchKb(t) && roleMatch(t, 'unload')).map(unloadCardKb),
     `${unloadCol.length} · сверх ворот: ${unloadCol.filter(t => unloadAge(t) > gateNormH).length}`,
     unloadCol.filter(t => unloadAge(t) > gateNormH).length >= 5,
     `красное — дольше живого норматива ворот (${gateNormH} ч) И без свежего контроля; «Выгружен» ставится в карточке`)}
@@ -1999,6 +2035,13 @@ export async function renderDispatcher(container, context, options = {}) {
       try { localStorage.setItem('pl_kb_dense', state.kbDense ? '1' : ''); } catch { /* ок */ }
       renderDispatcher(container, context);
     };
+    // Профиль смены: память рабочего места, как компакт-режим.
+    container.querySelectorAll('[data-kb-role]').forEach(button =>
+      button.addEventListener('click', () => {
+        state.kbRole = button.dataset.kbRole || '';
+        try { localStorage.setItem('pl_kb_role', state.kbRole); } catch { /* ок */ }
+        renderDispatcher(container, context);
+      }));
     // Клик по карточке — усечённое окно «следующее действие + комментарий»
     // (решение руководителя 13.10); классика — кнопкой внутри окна.
     container.querySelectorAll('[data-kb-open]').forEach(card => card.addEventListener('click', event => {
@@ -2319,12 +2362,14 @@ export async function renderDispatcher(container, context, options = {}) {
             добавляйте и убирайте по заявке клиента; стоянки рейса и километраж
             пересчитаются сами (до 8 точек).</small>
           <div id="corrViaChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0"></div>
-          <div style="display:flex;gap:6px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
             <select id="corrViaKind" style="width:auto">
               <option value="D">📥 выгрузка</option>
               <option value="P">📦 погрузка</option>
             </select>
-            <input id="corrViaPoint" placeholder="город, адрес точки" style="flex:1" autocomplete="off">
+            <input id="corrViaPoint" placeholder="город, адрес точки" style="flex:1;min-width:160px" autocomplete="off">
+            <input id="corrViaAt" type="datetime-local" style="width:auto"
+              title="План прибытия на точку по заявке клиента — встанет в контроль рейса и не будет сдвигаться автоматикой">
             <button type="button" class="button ghost small" id="corrViaAdd">+ Точка</button>
           </div>
         </div>` : '<p class="muted">Рейс без заявки — доступна только сумма.</p>'}
@@ -2344,7 +2389,8 @@ export async function renderDispatcher(container, context, options = {}) {
         const box = document.getElementById('corrViaChips');
         if (!box) return;
         box.innerHTML = editVia.map((item, index) => `<span class="via-chip">
-            ${item.kind === 'P' ? '📦' : '📥'} ${escapeHtml(String(item.point || '').slice(0, 34))}
+            ${item.kind === 'P' ? '📦' : '📥'} ${escapeHtml(String(item.point || '').slice(0, 34))}${item.at
+    ? ` · 🕐 ${escapeHtml(formatDateTime(item.at))}` : ''}
             <button type="button" data-corr-via-del="${index}" title="Убрать точку">×</button></span>`).join('')
           || '<span class="muted">точек нет</span>';
         box.querySelectorAll('[data-corr-via-del]').forEach(del =>
@@ -2360,9 +2406,12 @@ export async function renderDispatcher(container, context, options = {}) {
           const point = String(input?.value || '').trim();
           if (!point) { toast('Введите пункт точки', 'error'); return; }
           if (editVia.length >= 8) { toast('Максимум 8 промежуточных точек', 'error'); return; }
+          const atInput = document.getElementById('corrViaAt');
           editVia.push({ point, kind: document.getElementById('corrViaKind')?.value === 'P' ? 'P' : 'D',
-            addressId: null });
+            addressId: null,
+            at: atInput?.value ? new Date(atInput.value).toISOString() : null });
           input.value = '';
+          if (atInput) atInput.value = '';
           redrawVia();
         });
       }

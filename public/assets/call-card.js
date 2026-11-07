@@ -326,10 +326,22 @@ export async function callCardDialog(context, { vehicleId = '', phone = '', call
     </div>
     <div class="modal-actions">
       <button type="button" class="button ghost" data-close>Закрыть</button>
+      ${trip && (context.state?.data?.vehicles || []).length ? `<button type="button" class="button ghost danger"
+        id="callIncident" title="Поломка, отказ клиента, перецеп, акт, возврат, опоздание — то же меню, что у диспетчера">⚠ Внештатная</button>` : ''}
       <button type="button" class="button ghost" id="callNoteResult"
         title="Необязательно: одна строка о разговоре — попадёт в «Прошлые обращения»">📝 Итог звонка</button>
       <button type="button" class="button" id="callQuestion">📞 Поступил вопрос</button>
     </div>`);
+  // «⚠ Внештатная» из разговора (заявка Базуева 06.11): то же меню, что в
+  // карточке рейса у диспетчера; модуль диспетчера подгружается по клику.
+  document.getElementById('callIncident')?.addEventListener('click', async () => {
+    try {
+      const { incidentDialog } = await import('./dispatcher.js');
+      incidentDialog({ ...trip, vehicle_plate: vehicle.plate, trailer_plate: vehicle.trailer_plate,
+        driver_name: card.driver?.full_name || vehicle.driver_name || '' },
+      context.state.data, context);
+    } catch (error) { toast(error.message, 'error'); }
+  });
   document.getElementById('callNoteResult').onclick = () => callNoteDialog(context, {
     vehicleId: vehicle.id, driverName: card.driver?.full_name || vehicle.driver_name || '',
     phone: driverPhone || phone, callId });
