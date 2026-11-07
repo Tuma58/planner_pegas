@@ -211,3 +211,11 @@ export function stripSmall(shared, money) {
   }
   return copy;
 }
+
+// Текст рассылки для сотрудника по уровню денег его роли (утечка закрыта
+// 07.11): money 'full' — полный текст только уровню «все», остальным —
+// plain (версия без денег) или ничего (null).
+export function broadcastTextFor(db, user, text, { money = '', plain = null } = {}) {
+  if (money !== 'full') return text;
+  return accessOf(db, user).money === 'full' ? text : plain;
+}

@@ -53,7 +53,7 @@ import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShi
 import { directionGoals } from '../public/assets/goals-core.js';
 import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
-import { accessOf, assignRoleSets, roleSets, stripOrders, stripSmall, stripTrips } from './access.mjs';
+import { accessOf, assignRoleSets, broadcastTextFor, roleSets, stripOrders, stripSmall, stripTrips } from './access.mjs';
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
@@ -755,23 +755,36 @@ function notify(targetRole, text, entity = null, entityId = null, { category = '
 // Персональная рассылка всем действующим сотрудникам: каждому — своё
 // авто-сообщение (recipient_id), видно в его ленте «⚙ Конвейер» с тостом и
 // звуком как адресованное. Так уходит утренний отчёт дня.
-function notifyEveryone(text, entity = null, entityId = null) {
-  const users = db.prepare(`SELECT id FROM users WHERE active=1 AND deleted_at IS NULL`).all();
+// money: 'full' — текст с деньгами (выручка, маржа, ставки): уходит только
+// ролям с уровнем денег «все» (роли-наборы, поле управления 07.11);
+// остальным — plain (версия без денег) или ничего. Коммерческую тайну
+// охраняет сервер и в рассылках, не только на экранах.
+function notifyEveryone(text, entity = null, entityId = null, options = {}) {
+  const { money = '', plain = null } = options || {};
+  const users = db.prepare(`SELECT * FROM users WHERE active=1 AND deleted_at IS NULL`).all();
+  const textFor = user => broadcastTextFor(db, user, text, { money, plain });
   const insert = db.prepare(`INSERT INTO messages(author_name,kind,text,recipient_id,entity,entity_id)
     VALUES('Конвейер','auto',?,?,?,?)`);
-  for (const user of users) insert.run(text, user.id, entity, entityId);
+  let sent = 0;
+  for (const user of users) {
+    const body = textFor(user);
+    if (!body) continue;
+    insert.run(body, user.id, entity, entityId);
+    sent += 1;
+  }
   // Внешние каналы по уровню/каналам категории (Настройки → Уведомления).
   try {
-    const category = arguments[3]?.category || 'daily_report';
+    const category = options?.category || 'daily_report';
     const level = notifyLevelOf(category);
     if (level !== 'off') {
-      const recipients = db.prepare(`SELECT id, email, phone, work_phone, telegram_chat_id, telegram_mode
-        FROM users WHERE active=1 AND deleted_at IS NULL
-          AND (telegram_mode='all' OR ?)`).all(level === 'critical' ? 1 : 0);
-      deliverExternal(recipients, text, category, level);
+      const recipients = users.filter(user => user.telegram_mode === 'all' || level === 'critical');
+      const full = recipients.filter(user => textFor(user) === text);
+      const rest = recipients.filter(user => textFor(user) && textFor(user) !== text);
+      if (full.length) deliverExternal(full, text, category, level);
+      if (rest.length && plain) deliverExternal(rest, plain, category, level);
     }
   } catch { /* не критично */ }
-  return users.length;
+  return sent;
 }
 
 // Адресное авто-сообщение одному сотруднику по ФИО (эскалации доски):
@@ -1585,6 +1598,20 @@ function runDailyFleetReport() {
     const remainingFromDay = daysInMonth - dayDate.getUTCDate() + 1;
     const dayPlan = Math.max(0, (monthPlan - factBefore) / Math.max(1, remainingFromDay));
     const avgCheck = 0; // считается ниже от канонических выгрузок дня
+    // Версия без денег (поле управления, 07.11) — ролям «ставки» и «без
+    // денег»: только парк, каскад, простои и явка; выручка, план дня, чек,
+    // суммы заявок и претензий — тем, кому деньги положены.
+    const dailyPlain = `📆 Отчёт дня за ${dayLabel}: парк ${T.fleet}` +
+      ` · работали за день ${inTrip.size} машин · на линии среднесуточно ${ops.avgOnline}` +
+      ` · простой без причины ${idlePlates.length}` +
+      `${idlePlates.length ? ` (${idlePlates.slice(0, 6).join(', ')}${idlePlates.length > 6 ? '…' : ''})` : ''}` +
+      ` · простой ср-сут: ремонт ${ops.downtime.repair.avg}, пересм. ${ops.downtime.shift.avg},` +
+      ` без вод. ${ops.downtime.no_driver.avg}, резерв ${ops.downtime.reserve.avg}` +
+      ` · пробег ${Math.round(snap.loadedKm || 0)} км + ${Math.round(snap.emptyKm || 0)} порожних (${pctShort(snap.emptyRatio)})` +
+      ` · КТГ ${ktgCars.toFixed(1)} маш (${pctShort(ktgCars / T.fleet)})` +
+      ` · КВЛ ${ops.avgOnline} маш (${pctShort(kvlDay)})` +
+      ` · КИП ${(ops.avgOnline * T.kip / 100).toFixed(1)} маш (${T.kip}% по закрытым)` +
+      ` · назначено за смену ${assignedCount}`;
     notifyEveryone(`📆 Отчёт дня за ${dayLabel}: парк ${T.fleet}` +
       ` · работали за день ${inTrip.size} машин · на линии среднесуточно ${ops.avgOnline}` +
       ` · простой без причины ${idlePlates.length}` +
@@ -1626,7 +1653,8 @@ function runDailyFleetReport() {
           ` (${share.pct}% при цели ${target}%)` +
           (gs.medianH != null ? `, стык медиана ${gs.medianH} ч (цель ${gapTarget})` : '');
       })() +
-      ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`);
+      ` — детали в «Руководитель → 📆 Отчёт дня» и на «Дашборде»`, null, null,
+      { money: 'full', plain: dailyPlain });
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('daily_fleet_report_day',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayIso);
   } catch (error) {
@@ -2584,7 +2612,9 @@ function runGapReviewWatch() {
       `≈ ${Math.round(totalH * 770 / 1000)} т₽ маржи. ${lines.join('; ')}${gaps.length > 12
         ? ` и ещё ${gaps.length - 12}` : ''}. Сдвиньте следующий рейс раньше, вставьте локалку ` +
       `или спот — «Логист → Сцепки», «⏭ стыковка плеча»`;
-    notifyEveryone(text, null, null, { category: 'gap_review' });
+    // Маржа простоя — только ролям с деньгами; остальным — без суммы.
+    notifyEveryone(text, null, null, { category: 'gap_review', money: 'full',
+      plain: text.replace(/ ≈ \d+ т₽ маржи\./, '.') });
   } catch (error) {
     console.error('Ревизия зазоров:', error.message);
   }
@@ -6843,7 +6873,10 @@ function runNormsDigest() {
           return goalsDigestLine(summary, lastGoals);
         } catch { return ''; }
       })() +
-      (hints.length ? ` · 💡 ${hints.join('; ')}` : ' · без тревог'));
+      (hints.length ? ` · 💡 ${hints.join('; ')}` : ' · без тревог'),
+      // Маржа, ₽/км, пороги сегментов — коммерческая тайна: только ролям
+      // с уровнем денег «все» (утечка закрыта 07.11).
+      null, null, { money: 'full', category: 'daily_report' });
     db.prepare(`INSERT INTO app_meta(key,value) VALUES('norms_last',?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
       .run(JSON.stringify({ parkMedian: norms.parkMedian, varCost: norms.varCost,

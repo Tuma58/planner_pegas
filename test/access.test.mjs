@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '../src/db.mjs';
-import { accessOf, assignRoleSets, roleSets, stripOrders, stripSmall, stripTrips } from '../src/access.mjs';
+import { accessOf, assignRoleSets, broadcastTextFor, roleSets, stripOrders, stripSmall, stripTrips } from '../src/access.mjs';
 import { createStaffUser, canLogin } from '../src/staff.mjs';
 import { hashPassword } from '../src/security.mjs';
 import { effectivePermissions } from '../src/permissions.mjs';
@@ -91,4 +91,16 @@ test('без наборов — прежняя модель (переходны�
   assert.equal(access.legacy, true);
   assert.equal(access.views, null);
   assert.equal(access.money, 'full');
+});
+
+test('рассылки с деньгами: полный текст — только уровню «все», остальным версия без денег', t => {
+  const db = freshDb(t);
+  const head = person(db, 5, ['log_head']);     // full
+  const planner = person(db, 6, ['log_plan']);  // rates
+  const control = person(db, 8, ['log_ctrl']);  // none
+  const options = { money: 'full', plain: 'без денег' };
+  assert.equal(broadcastTextFor(db, head, 'выручка 5 млн', options), 'выручка 5 млн');
+  assert.equal(broadcastTextFor(db, planner, 'выручка 5 млн', options), 'без денег');
+  assert.equal(broadcastTextFor(db, control, 'маржа', { money: 'full' }), null);
+  assert.equal(broadcastTextFor(db, control, 'смена', {}), 'смена'); // без денег — всем
 });
