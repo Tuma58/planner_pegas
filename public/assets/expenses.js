@@ -7,6 +7,9 @@
 import { api, escapeHtml, money, renderInto, toast } from './api.js';
 import { readXlsxRows } from './xlsx-lite.js';
 
+// ЦФО статьи (блок 3 «Слияния», 07.11) — подписи владельцев затрат.
+const CFO_NAMES = { drv: 'Эксплуатация', toir: 'ТОиР', log: 'Логистика', staff: 'Направление' };
+
 const dayHuman = iso => {
   const [y, m, d] = String(iso || '').split('-');
   return d ? `${d}.${m}.${y.slice(2)}` : '';
@@ -95,6 +98,18 @@ export async function renderExpenses(container, context) {
       rows.map(row => groupRow('cat', row.key,
         categoryById.get(row.key)?.name || row.key, row, filterCat === row.key)).join(''));
   };
+  // ЦФО (блок 3 «Слияния», 07.11): затраты по центрам ответственности —
+  // внутри статьи ЦФО; строка — тот же фильтр статьи.
+  const CFO_TITLE = CFO_NAMES;
+  const cfoBlock = () => {
+    const rows = data.summary.byCfo || [];
+    if (!rows.length) return '';
+    return groupBlock('cfo',
+      `По ЦФО ${rows.map(row => `<small class="muted">${CFO_TITLE[row.key] || row.key}</small> <b>${money(row.sum)}</b>`).join(' · ')}`,
+      rows.map(row => `<div class="exp-sub"><small class="muted">ЦФО · ${CFO_TITLE[row.key] || row.key} — без НДС ${money(row.net)}</small></div>` +
+        data.summary.byCategory.filter(cat => (categoryById.get(cat.key)?.cfo || 'staff') === row.key)
+          .map(cat => groupRow('cat', cat.key, categoryById.get(cat.key)?.name || cat.key, cat, filterCat === cat.key)).join('')).join(''));
+  };
   const supplierBlock = () => {
     const rows = data.summary.bySupplier;
     if (!rows.length) return '';
@@ -151,6 +166,7 @@ export async function renderExpenses(container, context) {
         <div class="sec-b">${data.summary.count ? `<div class="exp-groups">
           ${kindBlock('variable', 'Переменные затраты')}
           ${kindBlock('fixed', 'Постоянные затраты')}
+          ${cfoBlock()}
           ${supplierBlock()}
         </div>${filterNote}`
     : '<div class="bi-empty">Журнал пуст — добавьте первую запись или загрузите выгрузку поставщика.</div>'}</div>
@@ -284,6 +300,9 @@ export async function renderExpenses(container, context) {
           <span style="flex:1;min-width:0"><strong style="${category.active ? '' : 'opacity:.5'}">${escapeHtml(category.name)}</strong>
             <small class="muted"> · ${category.kind === 'variable' ? 'ездовая (₽/км)' : 'постоянная (₽/машино-день)'}
             · ${category.nature === 'goods' ? 'материал/агрегат' : 'услуга/работа'}</small></span>
+          <select data-cat-cfo="${category.id}" title="ЦФО — владелец статьи по структуре СТ">
+            ${Object.entries(CFO_NAMES).map(([key, label]) => `<option value="${key}" ${(category.cfo || 'staff') === key ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
           <button type="button" class="button ghost small" data-cat-toggle="${category.id}"
             data-cat-active="${category.active}">${category.active ? '⏸ Выключить' : '▶ Включить'}</button>
         </div>`).join('')}
@@ -295,6 +314,9 @@ export async function renderExpenses(container, context) {
           <option value="variable">ездовая — ложится на километры</option>
           <option value="fixed">постоянная — ложится на машино-дни</option>
         </select>
+        <select name="cfo" title="ЦФО — владелец статьи по структуре СТ">
+          ${Object.entries(CFO_NAMES).map(([key, label]) => `<option value="${key}" ${key === 'staff' ? 'selected' : ''}>ЦФО · ${label}</option>`).join('')}
+        </select>
         <select name="nature" title="Агрегат и работа учитываются раздельно: шины ≠ шиномонтаж">
           <option value="service">услуга / работа (ремонт, монтаж, мойка)</option>
           <option value="goods">материал / агрегат (шины, запчасти, топливо)</option>
@@ -304,6 +326,14 @@ export async function renderExpenses(container, context) {
           <button type="submit" class="button">➕ Добавить</button>
         </div>
       </form>`);
+    document.querySelectorAll('[data-cat-cfo]').forEach(select =>
+      select.addEventListener('change', async () => {
+        try {
+          await api(`/api/expense-categories/${select.dataset.catCfo}`, { method: 'PATCH',
+            body: JSON.stringify({ cfo: select.value }) });
+          toast('ЦФО статьи сохранён');
+        } catch (error) { toast(error.message, 'error'); }
+      }));
     document.querySelectorAll('[data-cat-toggle]').forEach(toggle =>
       toggle.addEventListener('click', async () => {
         try {
@@ -318,7 +348,8 @@ export async function renderExpenses(container, context) {
       const form = event.target;
       try {
         await api('/api/expense-categories', { method: 'POST', body: JSON.stringify({
-          name: form.name.value.trim(), kind: form.kind.value, nature: form.nature.value }) });
+          name: form.name.value.trim(), kind: form.kind.value, nature: form.nature.value,
+          cfo: form.cfo.value }) });
         toast('Категория добавлена');
         context.closeModal();
         redraw();

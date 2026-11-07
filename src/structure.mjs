@@ -52,7 +52,15 @@ export function migrateOrgStructure(db) {
       COMMIT;
       PRAGMA foreign_keys=ON;`);
   }
-  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='org_structure_v1'`).get()) return;
+  // Видимость затрат ЦФО по должности (блок 3, решение 07.11): 'all' —
+  // общий ЦФО (руководитель направления), 'dept' — затраты своего отдела
+  // (руководители отделов, начальники автоколонн, главный механик).
+  const posCols = db.prepare(`PRAGMA table_info(org_positions)`).all().map(col => col.name);
+  if (!posCols.includes('cfo_view')) db.exec(`ALTER TABLE org_positions ADD COLUMN cfo_view TEXT NOT NULL DEFAULT ''`);
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='org_structure_v1'`).get()) {
+    markCfoView(db);
+    return;
+  }
   if (!db.prepare(`SELECT COUNT(*) c FROM org_positions`).get().c) {
     const seed = JSON.parse(fs.readFileSync(SEED_URL, 'utf8'));
     db.exec('BEGIN IMMEDIATE');
@@ -79,6 +87,18 @@ export function migrateOrgStructure(db) {
   }
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('org_structure_v1',?)`)
     .run(JSON.parse(fs.readFileSync(SEED_URL, 'utf8')).version || '1');
+  markCfoView(db);
+}
+
+function markCfoView(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='org_cfo_view_v1'`).get()) return;
+  // По номеру должности в структуре СТ: 1 — руководитель направления;
+  // 5, 9, 14 — руководители отделов (логистика, эксплуатация, ТОиР);
+  // 10 — начальник автоколонны (владелец ЦФО эксплуатации по среде).
+  const mark = db.prepare(`UPDATE org_positions SET cfo_view=? WHERE n=? AND id LIKE 'st-%' AND cfo_view=''`);
+  mark.run('all', 1);
+  for (const n of [5, 9, 10, 14]) mark.run('dept', n);
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('org_cfo_view_v1','1')`).run();
 }
 
 // Справочник для выбора в карточке сотрудника: компактно, без паспортов.
@@ -130,6 +150,7 @@ export function structureData(db, park = null) {
     try { passport = JSON.parse(p.passport_json || '{}'); } catch { passport = {}; }
     return { id: p.id, n: p.n, dept: p.dept_key, group: p.group_id, title: p.title,
       headcount: p.headcount, status: p.status, driverPool: Boolean(p.driver_pool),
+      cfoView: p.cfo_view || '',
       fact, vacancies: Math.max(0, p.headcount - fact), over: Math.max(0, fact - p.headcount),
       people, passport };
   });
@@ -190,10 +211,11 @@ export function updatePosition(db, id, body = {}) {
     }
     passport = JSON.stringify(clean);
   }
+  const cfoView = ['', 'dept', 'all'].includes(body.cfoView) ? body.cfoView : current.cfo_view;
   db.prepare(`UPDATE org_positions SET title=?, headcount=?, group_id=?, status=?,
-      passport_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      passport_json=?, cfo_view=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
     .run(title, headcount, groupId, body.status != null ? String(body.status) : current.status,
-      passport, id);
+      passport, cfoView, id);
   if (title !== current.title) {
     db.prepare(`UPDATE users SET job_role=?, updated_at=CURRENT_TIMESTAMP WHERE position_id=?`)
       .run(title, id);

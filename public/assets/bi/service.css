@@ -65,3 +65,4 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .svc-toc a:hover { color: var(--accent); background: var(--card); }
 @media (max-width: 900px) { .svc-toc { display: none; } }
+.exp-sub { padding: 6px 10px 2px; border-top: 1px solid var(--border2); }

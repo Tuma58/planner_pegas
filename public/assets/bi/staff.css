@@ -225,3 +225,16 @@
 .gl-pr { padding: 10px 15px; border-bottom: 1px solid var(--border2); font-size: 13px; }
 .gl-pr:last-child { border-bottom: 0; }
 .gl-pr .muted { font-size: 12.5px; margin-top: 2px; line-height: 1.5; }
+
+/* ── Экран «₽ ЦФО и затраты» (Слияние, блок 3, 07.11) ── */
+.cfo-c .sec-b:first-of-type { display: flex; flex-direction: column; gap: 10px; }
+.cfo-own { font-size: 12px; }
+.cfo-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.cfo-kpis > div { display: flex; flex-direction: column; gap: 2px; }
+.cfo-kpis .l { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+.cfo-kpis b { font-family: var(--mono-font); font-size: 18px; color: var(--ink); }
+.cfo-kpis small { font-family: var(--mono-font); font-size: 11px; color: var(--faint); }
+.cfo-empty td { color: var(--faint); }
+.cfo-detail { display: flex; flex-direction: column; gap: 1px; margin: 3px 0 0 10px; font-size: 11.5px; color: var(--muted); }
+.cfo-detail b { font-family: var(--mono-font); font-weight: 600; color: var(--ink); }
+.cfo-period { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; } .cfo-period input { width: auto; }

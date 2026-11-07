@@ -920,6 +920,9 @@ function briefDialog(context) {
       r.expenses?.count ? `Затраты (журнал, б/НДС): ${rub(r.expenses.totalNet)}` +
         `${delta(r.expenses.totalNet, r.prevExpenses?.totalNet, false)} — ` +
         r.expenses.byKind.map(k => `${k.key === 'variable' ? 'перем.' : 'пост.'} ${rub(k.net)}`).join(' · ') : null,
+      // ЦФО (блок 3 «Слияния», 07.11): та же сумма по центрам ответственности.
+      r.expenses?.byCfo?.length ? `По ЦФО: ${r.expenses.byCfo.map(k =>
+        `${({ drv: 'эксплуатация', toir: 'ТОиР', log: 'логистика', staff: 'направление' })[k.key] || k.key} ${rub(k.net)}`).join(' · ')}` : null,
       r.expenses?.top?.length ? `Топ статей: ${r.expenses.top.slice(0, 4)
         .map(item => `${item.name} ${rub(item.net)}`).join(' · ')}` : null,
       r.expenses?.count ? `Прибыль по учтённому: ${rub(r.factNet - r.expenses.totalNet)}` +

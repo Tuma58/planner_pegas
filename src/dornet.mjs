@@ -25,7 +25,7 @@ export const DORNET_SERVICES = [
   { key: 'tentrepair', path: 'points/tentrepair/orders', listKey: 'orders',
     label: 'Ремонт тентов', category: 'repair', pointField: 'tentrepair_name' },
   { key: 'tow', path: 'points/tows/orders', listKey: 'orders',
-    label: 'Эвакуация', category: 'other', pointField: 'tow_name' },
+    label: 'Эвакуация', category: 'evac', pointField: 'tow_name' },
   { key: 'shop', path: 'points/shops/orders', listKey: 'orders',
     label: 'Антилёд', category: 'other', pointField: 'shop_name' },
   { key: 'mail', path: 'points/mails/orders', listKey: 'orders',

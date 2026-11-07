@@ -44,8 +44,23 @@ export const EXPENSE_CATEGORY_SEED = [
   ['insurance', 'Страхование', 'fixed', 'service'],
   ['tax', 'Налоги', 'fixed', 'service'],
   ['overhead', 'Накладные', 'fixed', 'service'],
-  ['other', 'Прочее', 'fixed', 'service']
+  ['other', 'Прочее', 'fixed', 'service'],
+  // Статьи ЦФО из «Рабочей среды СТ» (блок 3 «Слияния», 07.11).
+  ['evac', 'Эвакуация ТС', 'variable', 'service'],
+  ['access', 'Пропуск, ГЛОНАСС', 'fixed', 'service']
 ];
+
+// ЦФО статьи — владелец затраты по структуре СТ (решения руководителя
+// 07.11): эксплуатация и ТОиР — центры затрат, направление (Штаб) —
+// свод и общие статьи. Логистика — центр дохода, своих статей журнала
+// нет. Разметка — стартовая, дальше правится в справочнике статей.
+export const CFO_KEYS = ['drv', 'toir', 'log', 'staff'];
+export const CATEGORY_CFO_SEED = {
+  fuel: 'drv', tolls: 'drv', wash: 'drv', parking: 'drv', tires: 'drv', tirefit: 'drv',
+  fines: 'drv', salary: 'drv', evac: 'drv',
+  parts: 'toir', repair: 'toir',
+  lease: 'staff', insurance: 'staff', tax: 'staff', overhead: 'staff', access: 'staff', other: 'staff'
+};
 
 // День из ячейки выгрузки: «дд.мм.гггг» (возможно с временем),
 // ISO «гггг-мм-дд», или порядковый номер даты Excel (дней с 30.12.1899 —
@@ -135,6 +150,8 @@ export function expensesSummary(items, vatRate, categories = new Map()) {
   const byVehicle = new Map();
   const byKind = new Map();
   const bySupplier = new Map();
+  const byCfo = new Map();
+  const byDetail = new Map();
   let total = 0;
   let totalNet = 0;
   for (const item of items) {
@@ -143,6 +160,11 @@ export function expensesSummary(items, vatRate, categories = new Map()) {
     roll(byCategory, item.category_id, item);
     roll(byKind, categories.get(item.category_id)?.kind || 'variable', item);
     roll(bySupplier, supplierBrand(item.supplier), item);
+    roll(byCfo, categories.get(item.category_id)?.cfo || 'staff', item);
+    // Детализация внутри статьи — по поставщику-бренду (штрафы: ГИБДД
+    // из Dornet отдельно от Платона, решение 07.11 «внутри детализация»).
+    if (!byDetail.has(item.category_id)) byDetail.set(item.category_id, new Map());
+    roll(byDetail.get(item.category_id), supplierBrand(item.supplier), item);
     if (item.vehicle_id) roll(byVehicle, item.vehicle_id, item);
   }
   const unpack = map => [...map].map(([key, bucket]) => ({ key,
@@ -150,5 +172,7 @@ export function expensesSummary(items, vatRate, categories = new Map()) {
     .sort((a, b) => b.sum - a.sum);
   return { total: Math.round(total), totalNet: Math.round(totalNet),
     count: items.length, byCategory: unpack(byCategory), byVehicle: unpack(byVehicle),
-    byKind: unpack(byKind), bySupplier: unpack(bySupplier).slice(0, 12) };
+    byKind: unpack(byKind), bySupplier: unpack(bySupplier).slice(0, 12),
+    byCfo: unpack(byCfo),
+    byDetail: Object.fromEntries([...byDetail].map(([key, map]) => [key, unpack(map)])) };
 }

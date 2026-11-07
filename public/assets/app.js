@@ -20,6 +20,7 @@ import { attendanceDialog, DISP_KINDS, parkScheduleKeeper, renderResource, times
 import { fireReasonDialog, renderStaff } from './staff.js';
 import { renderStructure } from './structure.js';
 import { renderGoals } from './goals.js';
+import { renderCfo } from './cfo.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -816,7 +817,10 @@ const MAIN_VIEWS = [
   // Обзор структуры СТ (блок 1 «Слияния», 05.11) — видят все.
   { id: 'structure', title: 'Структура', show: () => true },
   // Цели и задачи направления (блок 2 «Слияния», 07.11) — видят все.
-  { id: 'goals', title: 'Цели и задачи', show: () => true }
+  { id: 'goals', title: 'Цели и задачи', show: () => true },
+  // ЦФО и затраты (блок 3 «Слияния», 07.11): общий — в Штабе, руководителю
+  // отдела — затраты его отдела в блоке отдела (сервер отдаёт cfoScope).
+  { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
 ];
 
 // Навигатор по структуре направления СТ (как в «Рабочей среде СТ»):
@@ -829,7 +833,7 @@ const NAV_GROUPS = [
   { dept: '', title: 'Общее', coef: '', sub: [
     { title: '', views: ['dashboard', 'gantt'] }] },
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: '', views: ['structure', 'goals', 'boss', 'staff', 'expenses'] }] },
+    { title: '', views: ['structure', 'goals', 'cfo', 'boss', 'staff', 'expenses'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
@@ -841,6 +845,7 @@ const NAV_GROUPS = [
 ];
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
+  cfo: ['₽', 'Затраты по центрам ответственности, ₽ на машино-день, управляемые потери'],
   goals: ['◉', 'Миссия, цели направления и задачи отделов — на живых показателях'],
   structure: ['◫', 'Отделы, группы и должности: штат, факт, вакансии, паспорта'],
   dashboard: ['◧', 'План-факт предприятия на сегодня и прогноз месяца'],
@@ -878,7 +883,15 @@ function renderViewTabs() {
       + `<span class="nav-ico">${icon}</span><span class="nav-t">${view.title}</span></button>`;
   };
   const placed = new Set();
-  const groups = NAV_GROUPS.map(group => {
+  // Руководителю отдела «ЦФО» — в блоке его отдела, не в Штабе.
+  const scope = state.data?.user?.cfoScope;
+  const ownCfo = scope && !scope.all ? scope.depts[0] : null;
+  const groups = NAV_GROUPS.map(group => ({ ...group, sub: group.sub.map((sub, index) => {
+    let viewsOf = sub.views;
+    if (ownCfo && group.dept === 'staff') viewsOf = viewsOf.filter(id => id !== 'cfo');
+    if (ownCfo && group.dept === ownCfo && index === 0) viewsOf = [...viewsOf, 'cfo'];
+    return { ...sub, views: viewsOf };
+  }) })).map(group => {
     const subs = group.sub.map(sub => {
       const items = sub.views.map(id => byIdView.get(id)).filter(Boolean)
         .filter(view => !query || view.title.toLowerCase().includes(query));
@@ -976,6 +989,8 @@ function renderMain() {
       showModal, closeModal, rerenderMain: renderMain,
       onReload: reload, taskContainer: byId('sidepanel')
     });
+  } else if (state.view === 'cfo') {
+    renderCfo(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'goals') {
     renderGoals(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'structure') {

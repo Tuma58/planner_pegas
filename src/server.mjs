@@ -11,7 +11,7 @@ import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
-import { expenseFingerprint, expensesAccess, expensesSummary, validateExpense } from './expenses.mjs';
+import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, validateExpense } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
@@ -52,6 +52,7 @@ import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShi
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { directionGoals } from '../public/assets/goals-core.js';
 import { archiveGoal, goalsData, goalsDigestLine, saveGoal } from './goals.mjs';
+import { cfoData, cfoScope } from './cfo.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -201,6 +202,10 @@ function publicUser(user) {
     role: user.role, roles, roleLabel: roleLabelsFor(roles), active: Boolean(user.active),
     // Место в структуре СТ (блок 1 «Слияния»): отдел — по должности, не по роли.
     dept: userDept(db, user), positionTitle: positionById(db, user.position_id)?.title || '',
+    // Экран «₽ ЦФО и затраты» (блок 3 «Слияния»): общий — персональный
+    // доступ к затратам или должность «весь ЦФО»; руководителю отдела —
+    // только его отдел. null — экран не показывается.
+    cfoScope: cfoScope(db, user, expensesAccess(user, settingsObject(db))),
     guest: Boolean(Number(user.guest)),
     permissions: effectivePermissions(user),
     // Вкладка «Сотрудники»: право staff:write или логин из настройки
@@ -8787,14 +8792,15 @@ async function api(request, response, url) {
     if (name.length < 3) return errorJson(response, 422, 'Название категории — от 3 символов');
     const kind = body.kind === 'fixed' ? 'fixed' : 'variable';
     const nature = body.nature === 'goods' ? 'goods' : 'service';
+    const cfo = CFO_KEYS.includes(body.cfo) ? body.cfo : 'staff';
     const id = randomUUID();
     try {
-      db.prepare(`INSERT INTO expense_categories(id,name,kind,sort,nature) VALUES(?,?,?,
-        (SELECT COALESCE(MAX(sort),0)+1 FROM expense_categories),?)`).run(id, name, kind, nature);
+      db.prepare(`INSERT INTO expense_categories(id,name,kind,sort,nature,cfo) VALUES(?,?,?,
+        (SELECT COALESCE(MAX(sort),0)+1 FROM expense_categories),?,?)`).run(id, name, kind, nature, cfo);
     } catch {
       return errorJson(response, 422, 'Категория с таким названием уже есть');
     }
-    audit(db, user, 'create', 'expense-category', id, { name, kind, nature }, requestIp(request));
+    audit(db, user, 'create', 'expense-category', id, { name, kind, nature, cfo }, requestIp(request));
     return json(response, 201, { id });
   }
   // Пресеты импорта выгрузок (03.11, под Автодор/Платон): сопоставление
@@ -8837,14 +8843,15 @@ async function api(request, response, url) {
       .get(expenseCategoryMatch[0]);
     if (!category) return errorJson(response, 404, 'Категория не найдена');
     const body = await readJson(request);
-    db.prepare(`UPDATE expense_categories SET name=?, kind=?, active=?, nature=? WHERE id=?`)
+    db.prepare(`UPDATE expense_categories SET name=?, kind=?, active=?, nature=?, cfo=? WHERE id=?`)
       .run(String(body.name ?? category.name).trim().slice(0, 80),
         ['variable', 'fixed'].includes(body.kind) ? body.kind : category.kind,
         body.active === undefined ? category.active : (body.active ? 1 : 0),
         ['goods', 'service'].includes(body.nature) ? body.nature : category.nature,
+        CFO_KEYS.includes(body.cfo) ? body.cfo : category.cfo,
         expenseCategoryMatch[0]);
     audit(db, user, 'update', 'expense-category', expenseCategoryMatch[0],
-      { name: body.name, active: body.active }, requestIp(request));
+      { name: body.name, active: body.active, cfo: body.cfo }, requestIp(request));
     return json(response, 200, { ok: true });
   }
 
@@ -14309,6 +14316,8 @@ async function api(request, response, url) {
     return {
       total: summary.total, totalNet: summary.totalNet, count: summary.count,
       byKind: summary.byKind,
+      // Разбивка по ЦФО (блок 3 «Слияния», 07.11).
+      byCfo: summary.byCfo,
       top: summary.byCategory.slice(0, 5).map(row => ({
         name: categories.get(row.key)?.name || row.key, sum: row.sum, net: row.net })),
       suppliers: summary.bySupplier.slice(0, 3)
@@ -14869,6 +14878,41 @@ async function api(request, response, url) {
     audit(db, user, request.method === 'DELETE' ? 'archive' : 'save', 'org_goal', result.id || id,
       result.before || { title: result.title }, requestIp(request));
     return json(response, 200, { ok: true, id: result.id || id });
+  }
+  // ── ₽ ЦФО и затраты (блок 3 «Слияния», 07.11) ──
+  if (request.method === 'GET' && pathname === '/api/cfo') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const scope = cfoScope(db, user, expensesAccess(user, settingsObject(db)));
+    if (!scope) return errorJson(response, 403, 'Затраты ЦФО видят руководители отделов и обладатели доступа к затратам');
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('to') || '')
+      ? url.searchParams.get('to') : new Date().toISOString().slice(0, 10);
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('from') || '')
+      ? url.searchParams.get('from') : `${to.slice(0, 7)}-01`;
+    if (to < from) return errorJson(response, 422, 'Период задан неверно');
+    const toExcl = addDayIso(to);
+    let snap = null;
+    try { snap = reportSnapshot(db, `${from}T00:00:00.000Z`, `${toExcl}T00:00:00.000Z`); } catch { snap = null; }
+    const structure = structureData(db);
+    const owners = {};
+    for (const position of structure.positions.filter(item => item.cfoView)) {
+      (owners[position.dept] ||= []).push({ title: position.title, people: position.people.map(person => person.name) });
+    }
+    const claims = db.prepare(`SELECT status, SUM(amount) s FROM demurrage_claims
+      WHERE created_day>=? AND created_day<=? AND status<>'cancelled' GROUP BY status`).all(from, to);
+    const incidents = Object.fromEntries(db.prepare(`SELECT kind, COUNT(*) n FROM trip_incidents
+      WHERE substr(created_at,1,10)>=? AND substr(created_at,1,10)<=? GROUP BY kind`).all(from, to)
+      .map(row => [row.kind, row.n]));
+    const data = cfoData({
+      from, to, snap, owners, incidents,
+      items: db.prepare(`SELECT category_id, amount, vat, supplier, vehicle_id FROM expenses
+        WHERE spent_on>=? AND spent_on<=?`).all(from, to),
+      categories: expenseCategoriesOf(),
+      vatRate: Number(settingsObject(db).calculation?.vatRate ?? 0.22),
+      demurrage: { billed: Math.round(claims.find(row => row.status === 'billed')?.s || 0),
+        open: Math.round(claims.find(row => row.status === 'new')?.s || 0) }
+    }, scope);
+    return json(response, 200, data);
   }
   if (request.method === 'GET' && pathname === '/api/structure') {
     const user = requireUser(request, response);

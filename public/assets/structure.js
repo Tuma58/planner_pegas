@@ -170,6 +170,11 @@ function positionDialog(context, data, position, after) {
     `<option value="${item.id}" ${item.id === position.group ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label>
       </div>
       <label class="field">Статус <input name="status" value="${escapeHtml(position.status)}"></label>
+      <label class="field">Затраты ЦФО <select name="cfoView">
+        <option value="" ${!position.cfoView ? 'selected' : ''}>не видит</option>
+        <option value="dept" ${position.cfoView === 'dept' ? 'selected' : ''}>видит затраты своего отдела</option>
+        <option value="all" ${position.cfoView === 'all' ? 'selected' : ''}>видит общий ЦФО направления</option>
+      </select><small class="muted">экран «₽ ЦФО и затраты»; персональный доступ к затратам — отдельно, в Настройках</small></label>
       ${PASSPORT.map(([key, label]) => `<label class="field">${label} <small class="muted">${key === 'kpi' ? 'строка: показатель | норма | период' : 'по пункту на строку'}</small>
         <textarea name="pp_${key}" rows="${key === 'gen' || key === 'duties' ? 5 : 3}">${escapeHtml(lines(passport[key])
     .map(item => Array.isArray(item) ? item.join(' | ') : item).join('\n'))}</textarea></label>`).join('')}
@@ -203,7 +208,8 @@ function positionDialog(context, data, position, after) {
     try {
       await api(`/api/structure/positions/${position.id}`, { method: 'PATCH', body: JSON.stringify({
         title: String(values.get('title') || '').trim(), headcount: Number(values.get('headcount')),
-        group: String(values.get('group')), status: String(values.get('status') || ''), passport: pp }) });
+        group: String(values.get('group')), status: String(values.get('status') || ''),
+        cfoView: String(values.get('cfoView') || ''), passport: pp }) });
       toast('Должность сохранена');
       closeModal(); after();
     } catch (error) { document.querySelector('#stPosError').textContent = error.message; }

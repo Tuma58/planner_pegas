@@ -6,7 +6,7 @@ import { hashPassword } from './security.mjs';
 import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
-import { EXPENSE_CATEGORY_SEED } from './expenses.mjs';
+import { CATEGORY_CFO_SEED, EXPENSE_CATEGORY_SEED } from './expenses.mjs';
 import { migrateOrgStructure } from './structure.mjs';
 import { migrateGoals } from './goals.mjs';
 
@@ -1715,6 +1715,25 @@ function migrateColumns(db) {
     if (moved || movedStore) {
       console.log(`Затраты: шиномонтаж отделён от шин (${moved}), расходники → запчасти (${movedStore})`);
     }
+  }
+  // ЦФО статьи (блок 3 «Слияния», 07.11): владелец затраты по структуре
+  // СТ; новые статьи «Эвакуация ТС» и «Пропуск, ГЛОНАСС»; эвакуация из
+  // Dornet перевешивается из «Прочего». Ручная разметка не трогается —
+  // ставится только пустая.
+  ensure('expense_categories', 'cfo', "TEXT NOT NULL DEFAULT ''");
+  if (!db.prepare(`SELECT value FROM app_meta WHERE key='expense_categories_cfo_v1'`).get()) {
+    const insertCategory = db.prepare(`INSERT OR IGNORE INTO expense_categories(id,name,kind,sort,nature)
+      VALUES(?,?,?,?,?)`);
+    EXPENSE_CATEGORY_SEED.forEach(([id, name, kind, nature], index) =>
+      insertCategory.run(id, name, kind, index, nature));
+    const mark = db.prepare(`UPDATE expense_categories SET cfo=? WHERE id=? AND cfo=''`);
+    for (const [id, cfo] of Object.entries(CATEGORY_CFO_SEED)) mark.run(cfo, id);
+    db.prepare(`UPDATE expense_categories SET cfo='staff' WHERE cfo=''`).run();
+    const evac = db.prepare(`UPDATE expenses SET category_id='evac'
+      WHERE category_id='other' AND import_key LIKE 'dornet:tow:%'`).run().changes;
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('expense_categories_cfo_v1',?)`)
+      .run(JSON.stringify({ at: new Date().toISOString(), evac }));
+    if (evac) console.log(`Затраты: эвакуация Dornet отделена от «Прочего» (${evac})`);
   }
 }
 
