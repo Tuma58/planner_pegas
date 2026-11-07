@@ -1568,6 +1568,13 @@ function migrateColumns(db) {
   CREATE UNIQUE INDEX IF NOT EXISTS idx_waybills_number ON waybills(year, number);
   CREATE INDEX IF NOT EXISTS idx_waybills_vehicle ON waybills(vehicle_id, starts_at);
   CREATE INDEX IF NOT EXISTS idx_waybills_trip ON waybills(trip_id);`);
+  // Счётчик использования экранов и отчётов (решение руководителя 07.11,
+  // проект «Слияние»: удалять лишнее только по данным). Одна строка —
+  // день × ключ (экран или отчёт) × сотрудник; роли — на момент открытия.
+  db.exec(`CREATE TABLE IF NOT EXISTS ui_usage (
+    day TEXT NOT NULL, key TEXT NOT NULL, user_id TEXT NOT NULL,
+    roles TEXT NOT NULL DEFAULT '', opens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(day, key, user_id))`);
   // Титулы подписей листа по ролям — фундамент этапа 2 (УКЭП механика и
   // организации, УНЭП водителя через Госключ, титул медика от поставщика):
   // каркас из четырёх ролей рождается вместе с листом, этапы 2–3 только
