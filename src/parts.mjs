@@ -58,6 +58,10 @@ export function migrateParts(db) {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_by_name TEXT NOT NULL DEFAULT '')`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_parts_items_name ON parts_items(name)`);
+  // Кратность заказа (упаковка, комплект): «к закупке» округляется вверх
+  // до кратного — поставщик меньше не продаёт (решение 07.11). Пусто — 1.
+  const itemCols = db.prepare('PRAGMA table_info(parts_items)').all().map(col => col.name);
+  if (!itemCols.includes('pack_qty')) db.exec('ALTER TABLE parts_items ADD COLUMN pack_qty REAL CHECK(pack_qty IS NULL OR pack_qty > 0)');
   db.exec(`CREATE TABLE IF NOT EXISTS parts_requests (
     id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES parts_items(id),
     qty REAL NOT NULL CHECK(qty > 0), supplier TEXT NOT NULL DEFAULT '',
@@ -175,10 +179,12 @@ export function minStockOf({ issues, windowDays, leadDays, safetyFactor, manualM
 }
 
 // К закупке: не хватает до неснижаемого с учётом уже заказанного.
-export function toBuyQty(minQty, stock, onOrder) {
+export function toBuyQty(minQty, stock, onOrder, packQty = null) {
   if (minQty == null) return 0;
   const gap = minQty - stock - onOrder;
-  return gap > EPS ? ceilQty(gap) : 0;
+  if (gap <= EPS) return 0;
+  const pack = Number(packQty) > 0 ? Number(packQty) : null;
+  return pack ? round2(Math.ceil(gap / pack - EPS) * pack) : ceilQty(gap);
 }
 
 const vatRateOf = settings => Number(settings?.calculation?.vatRate ?? 0.22);
@@ -223,13 +229,13 @@ export function partsStock(db, { settings = {}, today = partsToday(settings), in
     const first = firstMove.get(item.id);
     return { id: item.id, code: item.code, name: item.name, unit: item.unit, category: item.category,
       supplier: item.supplier, note: item.note, archived: Boolean(item.archived_at),
-      manualMin: item.manual_min, leadDaysManual: item.lead_days_manual,
+      manualMin: item.manual_min, leadDaysManual: item.lead_days_manual, packQty: item.pack_qty ?? null,
       stock: qty, onOrder: round2(ordered.qty), openRequests: ordered.count,
       lead: { ...lead, days: lead.days == null ? null : round2(lead.days) }, min,
       // История позиции короче окна — расход в сутки занижен, это видно.
       windowFull: Boolean(first && first <= fromDay),
       below: min.qty != null && qty < min.qty - EPS,
-      toBuy: toBuyQty(min.qty, qty, ordered.qty),
+      toBuy: toBuyQty(min.qty, qty, ordered.qty, item.pack_qty),
       avgCost: avgCost == null ? null : round2(avgCost), stockValue: avgCost == null ? null : Math.round(avgCost * Math.max(qty, 0)) };
   });
   const toBuy = list.filter(item => item.toBuy > 0);
@@ -312,7 +318,8 @@ export function itemFromBody(body, current = {}) {
     code: str(pick('code', 'code'), 80), name: str(pick('name', 'name'), 200),
     unit: str(pick('unit', 'unit'), 20) || 'шт', category: str(pick('category', 'category'), 120),
     supplier: str(pick('supplier', 'supplier'), 200), note: str(pick('note', 'note'), 1000),
-    manual_min: numOrNull(pick('manualMin', 'manual_min')), lead_days_manual: numOrNull(pick('leadDaysManual', 'lead_days_manual'))
+    manual_min: numOrNull(pick('manualMin', 'manual_min')), lead_days_manual: numOrNull(pick('leadDaysManual', 'lead_days_manual')),
+    pack_qty: numOrNull(pick('packQty', 'pack_qty'))
   };
 }
 
@@ -320,6 +327,7 @@ export function itemError(item) {
   if (!item.name) return 'Укажите наименование';
   if (item.manual_min != null && !(item.manual_min >= 0)) return 'Ручной минимум — число не меньше нуля (пусто — живой норматив)';
   if (item.lead_days_manual != null && !(item.lead_days_manual >= 0)) return 'Срок поставки — число дней не меньше нуля';
+  if (item.pack_qty != null && !(item.pack_qty > 0)) return 'Кратность заказа — больше нуля (пусто — поштучно)';
   return '';
 }
 
@@ -552,9 +560,9 @@ export async function partsApi(ctx) {
     const duplicate = item.code && db.prepare(`SELECT name FROM parts_items WHERE archived_at IS NULL AND lower(code)=lower(?)`).get(item.code);
     if (duplicate) { errorJson(response, 409, `Артикул уже есть у позиции «${duplicate.name}»`); return true; }
     const id = randomUUID();
-    db.prepare(`INSERT INTO parts_items(id,code,name,unit,category,supplier,note,manual_min,lead_days_manual,updated_by_name)
-      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, item.code, item.name, item.unit, item.category, item.supplier, item.note,
-      item.manual_min, item.lead_days_manual, user.full_name || user.username || '');
+    db.prepare(`INSERT INTO parts_items(id,code,name,unit,category,supplier,note,manual_min,lead_days_manual,pack_qty,updated_by_name)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, item.code, item.name, item.unit, item.category, item.supplier, item.note,
+      item.manual_min, item.lead_days_manual, item.pack_qty, user.full_name || user.username || '');
     audit(db, user, 'create', 'parts_item', id, item, ip);
     json(response, 201, { id });
     return true;
@@ -583,9 +591,9 @@ export async function partsApi(ctx) {
       const item = itemFromBody(body, current);
       const error = itemError(item);
       if (error) { errorJson(response, 422, error); return true; }
-      db.prepare(`UPDATE parts_items SET code=?,name=?,unit=?,category=?,supplier=?,note=?,manual_min=?,lead_days_manual=?,
+      db.prepare(`UPDATE parts_items SET code=?,name=?,unit=?,category=?,supplier=?,note=?,manual_min=?,lead_days_manual=?,pack_qty=?,
         updated_at=CURRENT_TIMESTAMP, updated_by_name=? WHERE id=?`).run(item.code, item.name, item.unit, item.category,
-        item.supplier, item.note, item.manual_min, item.lead_days_manual, user.full_name || user.username || '', id);
+        item.supplier, item.note, item.manual_min, item.lead_days_manual, item.pack_qty, user.full_name || user.username || '', id);
       audit(db, user, 'update', 'parts_item', id, { before: { ...current }, after: item }, ip);
       json(response, 200, { ok: true });
       return true;

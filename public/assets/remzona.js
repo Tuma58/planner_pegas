@@ -13,7 +13,14 @@ const STATUS_LABEL = {
 const fmt = iso => iso ? new Date(iso).toLocaleString('ru-RU',
   { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' }) : '—';
 
-function orderCardHtml(order, can) {
+// Запчасти наряда со склада (склад ТОиР, 07.11): кнопка у наряда тем, кому
+// виден «Склад запчастей»; выдача — там же, «🔧 На наряд».
+function partsVisible(state, can) {
+  const access = state?.data?.user?.access;
+  return !access || access.legacy ? can('fleet:write') || can('reports:read') : access.views.includes('parts');
+}
+
+function orderCardHtml(order, can, state) {
   const jobsDone = order.jobs.filter(job => job.status === 'done').length;
   const write = can('fleet:write');
   const actions = !write ? '' : {
@@ -29,7 +36,8 @@ function orderCardHtml(order, can) {
       <strong class="mono vlink" data-vinfo="${order.vehicle_id}">${escapeHtml(order.plate)}</strong>
       <span class="badge">${escapeHtml(order.purpose)}</span>
       <small class="muted">${escapeHtml(order.vehicle_type || '')}</small>
-      <span style="margin-left:auto">${actions}</span>
+      <span style="margin-left:auto">${partsVisible(state, can) ? `<button class="button ghost small" data-rparts="${order.id}"
+        data-rplate="${escapeHtml(order.plate)}" title="Запчасти, выданные со склада на этот наряд">🔩</button> ` : ''}${actions}</span>
     </div>
     ${order.complaint ? `<small>${escapeHtml(order.complaint)}</small>` : ''}
     <small class="muted">заезд ${fmt(order.arrived_at)}${order.odometer_km
@@ -64,7 +72,7 @@ export async function renderRemzona(container, context) {
     <section class="section dept-toir rz-col">
       <div class="sec-h"><span class="st">${STATUS_LABEL[status]}</span>
         <div class="sec-actions"><span class="bi-tag">${groups[status].length}</span></div></div>
-      <div class="sec-b"><div class="list">${groups[status].map(order => orderCardHtml(order, can)).join('')
+      <div class="sec-b"><div class="list">${groups[status].map(order => orderCardHtml(order, can, state)).join('')
         || '<div class="bi-empty">пусто</div>'}</div></div>
     </section>`).join('');
   // Запросы выпуска от логистов (решение руководителя 04.11): борт в
@@ -163,6 +171,20 @@ export async function renderRemzona(container, context) {
         method: 'PATCH', body: JSON.stringify({ action: button.dataset.ra }) });
       refresh();
     } catch (error) { toast(error.message, 'error'); }
+  }));
+  container.querySelectorAll('[data-rparts]').forEach(button => button.addEventListener('click', async () => {
+    let data;
+    try { data = await api(`/api/parts/orders/${encodeURIComponent(button.dataset.rparts)}`); } catch (error) { toast(error.message); return; }
+    const rub = value => value == null ? '—' : `${Math.round(value).toLocaleString('ru-RU')} ₽`;
+    showModal(`<h2>🔩 Запчасти наряда · <span class="mono">${escapeHtml(button.dataset.rplate)}</span></h2>
+      ${data.parts.length ? `<table class="bi-table"><thead><tr><th>Позиция</th><th class="r">Кол-во</th><th>День</th><th>Выдал</th>${data.money !== false ? '<th class="r">Себестоимость</th>' : ''}</tr></thead>
+        <tbody>${data.parts.map(row => `<tr><td>${escapeHtml(row.name)}${row.code ? ` <small class="muted">${escapeHtml(row.code)}</small>` : ''}</td>
+          <td class="num">${row.qty} ${escapeHtml(row.unit)}</td><td>${escapeHtml(String(row.day || '').split('-').reverse().join('.'))}</td>
+          <td>${escapeHtml(row.created_by_name || '')}</td>${data.money !== false ? `<td class="num">${rub(row.cost)}</td>` : ''}</tr>`).join('')}</tbody></table>
+        ${data.money !== false && data.cost != null ? `<p class="muted">Итого без НДС: ${rub(data.cost)} — справочно; затрата признана при закупке.</p>` : ''}`
+    : '<div class="empty-state">Со склада на наряд ничего не выдавали</div>'}
+      <p class="muted">Выдать — «Склад запчастей» → «🔧 На наряд».</p>
+      <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div>`);
   }));
   container.querySelectorAll('[data-rjadd]').forEach(button => button.addEventListener('click', () => {
     const title = prompt('Работа (например: замена колодок передней оси)');

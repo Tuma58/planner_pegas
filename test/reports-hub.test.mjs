@@ -77,23 +77,25 @@ test('руководитель логистики: свой отдел и утв
     assert.ok([report.dept, ...(report.alsoDepts || [])].includes('log'), report.id);
   }
   for (const foreign of ['drivers', 'mileage', 'reconcile', 'staff', 'history']) assert.ok(!got.includes(foreign), foreign);
-  // «Скорости» — отдел свой, но сервер требует reports:read: видно серым.
-  assert.ok(ids(reportsLocked(access, canOf(set.codes)).map(item => item.report)).includes('speed'));
+  // «Скорости» — свой отдел; reports:read у руководителя есть (решение 07.11).
+  assert.ok(got.includes('speed'));
+  assert.equal(reportsLocked(access, canOf(set.codes)).length, 0);
 });
 
-test('уровень денег режет: «ставки» не видят выручку, «без денег» — ставки', () => {
+test('уровень денег режет без права отчётов; «Отчёты (чтение)» открывает отчёты с ценами', () => {
   const base = { legacy: false, scope: { all: false, depts: ['log'] }, views: ['reports'] };
-  const can = () => true;
-  const rates = reportsFor({ ...base, money: 'rates' }, can);
+  const noReports = permission => permission !== 'reports:read';
+  const rates = reportsFor({ ...base, money: 'rates' }, noReports);
   assert.ok(rates.every(report => report.money !== 'full'));
   assert.ok(ids(rates).includes('demurrage'));
-  const none = reportsFor({ ...base, money: 'none' }, can);
+  const none = reportsFor({ ...base, money: 'none' }, noReports);
   assert.ok(none.every(report => report.money === 'none'));
   assert.ok(!ids(none).includes('demurrage'));
   // requireReports без reports:read пускает экран отчётов только при full.
-  const noPerm = permission => permission !== 'reports:read';
-  assert.ok(!ids(reportsFor({ ...base, money: 'rates' }, noPerm)).includes('rejected-orders'));
-  assert.ok(ids(reportsFor({ ...base, money: 'full' }, noPerm)).includes('rejected-orders'));
+  assert.ok(!ids(reportsFor({ ...base, money: 'rates' }, noReports)).includes('rejected-orders'));
+  assert.ok(ids(reportsFor({ ...base, money: 'full' }, noReports)).includes('rejected-orders'));
+  // С правом reports:read — отчёты с ценами и при «без денег» (решение 07.11).
+  assert.ok(ids(reportsFor({ ...base, money: 'none' }, () => true)).includes('rejected-orders'));
 });
 
 test('отчёт-экран показывается, только если экран есть в наборе', () => {
@@ -103,15 +105,17 @@ test('отчёт-экран показывается, только если эк
   assert.ok(!got.includes('ops') && !got.includes('dashboard') && !got.includes('cfo'));
 });
 
-test('руководители эксплуатации и ТОиР без денег: ничего с выручкой', t => {
+test('руководители эксплуатации и ТОиР: отчёты своего отдела с ценами, чужих нет', t => {
   const db = freshDb(t);
   for (const setId of ['drv_head', 'toir_head']) {
     const set = roleSets(db).find(item => item.id === setId);
+    assert.ok(set.codes.includes('reports'), setId);
     const access = accessFor(db, setId);
     const visible = reportsFor(access, canOf(set.codes));
-    assert.ok(visible.every(report => report.money === 'none'), setId);
     assert.ok(visible.every(report => [report.dept, ...(report.alsoDepts || [])].includes(set.scope)), setId);
   }
+  const drv = reportsFor(accessFor(db, 'drv_head'), canOf(roleSets(db).find(item => item.id === 'drv_head').codes));
+  assert.ok(ids(drv).includes('mileage') && ids(drv).includes('drivers'));
 });
 
 test('группировка по уровням и список кандидатов на слияние', () => {

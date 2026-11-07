@@ -29,7 +29,7 @@ const SEED = [
     ['manager', 'sales', 'logist', 'dispatcher', 'resource', 'mechanic'], 'full', 'all'],
   ['log_head', 'Руководитель отдела логистики', 'log',
     [...DEPT_PANELS, 'sales', 'routes', 'delivery', 'flows', 'logist', 'gantt', 'dispatcher', 'monitoring', 'incidents'],
-    ['sales', 'logist', 'dispatcher'], 'full', 'dept'],
+    ['sales', 'logist', 'dispatcher', 'reports'], 'full', 'dept'],
   ['log_plan', 'Специалист группы планирования', 'log', ['sales', 'routes', 'delivery', 'flows', 'gantt'],
     ['sales'], 'rates', ''],
   ['log_assign', 'Логист-диспетчер', 'log', ['logist', 'gantt'], ['logist'], 'rates', ''],
@@ -38,14 +38,14 @@ const SEED = [
   ['log_ctrl', 'Диспетчер-контролёр', 'log', ['dispatcher', 'monitoring', 'incidents', 'gantt'],
     ['dispatcher'], 'rates', ''],
   ['drv_head', 'Руководитель отдела эксплуатации', 'drv', [...DEPT_PANELS, 'resource', 'fleetplan', 'gantt'],
-    ['resource'], 'none', 'dept'],
+    ['resource', 'reports'], 'none', 'dept'],
   // Начальник автоколонны — ПОД руководителем эксплуатации, не
   // руководитель отдела (уточнение руководителя 07.11): рабочие экраны,
   // без поля, панелей отдела и ЦФО.
   ['drv_column', 'Начальник автоколонны', 'drv', ['resource', 'fleetplan', 'gantt'],
     ['resource'], 'none', ''],
   ['drv_acc', 'Диспетчер учёта', 'drv', ['resource', 'docs'], ['resource'], 'none', ''],
-  ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona', 'toboard', 'parts'], ['mechanic'], 'none', 'dept'],
+  ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona', 'toboard', 'parts'], ['mechanic', 'reports'], 'none', 'dept'],
   ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona', 'toboard', 'parts'], ['mechanic'], 'none', ''],
   // Снабжение ТОиР (закупщик, кладовщик, снабженец): склад и Ремзона,
   // цены прихода — уровень «ставки».
@@ -78,6 +78,7 @@ export function migrateAccess(db) {
     migrateCtrlRates(db);
     migrateChecklist(db);
     migrateChecklistV3(db);
+    migrateHeadReports(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -220,6 +221,25 @@ function migrateChecklistV3(db) {
   add('drv_head', 'payroll');
   for (const id of ['toir_head', 'toir_mech', 'dir_head', 'admin']) add(id, 'parts');
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_checklist_v3','1')`).run();
+}
+
+// Отчёты с ценами руководителям отделов (решение 07.11): код «reports»
+// (reports:read) в наборы логистики, эксплуатации и ТОиР; коды людей с
+// этими наборами пересчитываются. Деньги рабочих экранов — прежние.
+function migrateHeadReports(db) {
+  ensureRoleCode(db, 'reports');
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_head_reports_v1'`).get()) return;
+  for (const id of ['log_head', 'drv_head', 'toir_head']) {
+    const row = db.prepare(`SELECT codes_json FROM role_sets WHERE id=?`).get(id);
+    if (!row) continue;
+    const codes = parse(row.codes_json, []);
+    if (!codes.includes('reports')) db.prepare(`UPDATE role_sets SET codes_json=? WHERE id=?`).run(JSON.stringify([...codes, 'reports']), id);
+  }
+  for (const user of db.prepare(`SELECT id, role_sets FROM users WHERE role_sets<>''`).all()) {
+    const sets = parse(user.role_sets, []);
+    if (sets.some(id => ['log_head', 'drv_head', 'toir_head'].includes(id))) assignRoleSets(db, user.id, sets, { allowAdmin: true });
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_head_reports_v1','1')`).run();
 }
 
 function migrateFieldView(db) {

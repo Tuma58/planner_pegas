@@ -17,7 +17,7 @@ import { migrateTripDocs } from './trip-docs.mjs';
 import { migrateSafety } from './safety.mjs';
 import { migrateVehicleCards, migrateWaybillHou } from './vehicle-card.mjs';
 import { migrateCrm } from './crm.mjs';
-import { migrateTurnover } from './turnover.mjs';
+import { migrateTurnover, seedTurnoverSettings } from './turnover.mjs';
 import { migrateParts } from './parts.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
@@ -1444,6 +1444,7 @@ function migrateColumns(db) {
   migrateSafety(db);
   migrateVehicleCards(db);
   migrateCrm(db);
+  seedTurnoverSettings(db);
   migrateTurnover(db);
   migrateParts(db);
   // «Продажи» → «Планирование» (решение руководителя 05.11): область

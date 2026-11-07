@@ -32,9 +32,10 @@ const person = (db, n, sets) => {
 test('утверждённые роли-наборы на месте; набор пишет старые коды прав', t => {
   const db = freshDb(t);
   const sets = roleSets(db);
-  assert.equal(sets.length, 17); // 12 по таблице 9.1 + охранник, контролёр ТС, БДД, АХО (07.11)
+  assert.equal(sets.length, 17); // 12 по таблице 9.1 + охранник, контролёр ТС, БДД, АХО, снабжение ТОиР (07.11)
   const head = person(db, 5, ['log_head']);
-  assert.deepEqual(JSON.parse(head.roles).sort(), ['dispatcher', 'logist', 'sales']);
+  // + «reports» — отчёты с ценами руководителям отделов (решение 07.11).
+  assert.deepEqual(JSON.parse(head.roles).sort(), ['dispatcher', 'logist', 'reports', 'sales']);
   assert.ok(canLogin(head));
   assert.ok(effectivePermissions(head).includes('orders:write'));
   const access = accessOf(db, head);

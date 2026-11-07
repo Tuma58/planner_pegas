@@ -209,7 +209,10 @@ function deptOk(access, report) {
   return [report.dept, ...(report.alsoDepts || [])].some(dept => dept && depts.includes(dept));
 }
 
-function moneyOk(access, report) {
+// Право «Отчёты (чтение, с ценами)» (reports:read) открывает отчёты с
+// деньгами и роли без денег — решение руководителя 07.11.
+function moneyOk(access, report, allowed = () => false) {
+  if (allowed('reports:read')) return true;
   const have = RANK[access?.money] || RANK.none;
   return have >= (RANK[report.money] || RANK.none);
 }
@@ -240,7 +243,7 @@ const safeCan = can => (typeof can === 'function' ? permission => Boolean(can(pe
 export function reportsFor(access, can, list = REPORTS) {
   const allowed = safeCan(can);
   if (legacyOf(access) && !allowed('reports:read')) return [];
-  return list.filter(report => deptOk(access, report) && moneyOk(access, report)
+  return list.filter(report => deptOk(access, report) && moneyOk(access, report, allowed)
     && viewOk(access, report) && !gateReason(access, allowed, report));
 }
 
@@ -250,7 +253,7 @@ export function reportsFor(access, can, list = REPORTS) {
 export function reportsLocked(access, can, list = REPORTS) {
   if (legacyOf(access)) return [];
   const allowed = safeCan(can);
-  return list.filter(report => deptOk(access, report) && moneyOk(access, report) && viewOk(access, report))
+  return list.filter(report => deptOk(access, report) && moneyOk(access, report, allowed) && viewOk(access, report))
     .map(report => ({ report, reason: gateReason(access, allowed, report) }))
     .filter(item => item.reason);
 }

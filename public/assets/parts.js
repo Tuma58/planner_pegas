@@ -214,9 +214,11 @@ function itemDialog(context, item, after) {
         placeholder="пусто — живой норматив"><small class="muted">Задан — заменяет живой неснижаемый запас</small></label>
       <label class="field">Срок поставки вручную, сут <input type="number" min="0" step="any" name="leadDaysManual" value="${i.leadDaysManual ?? ''}"
         placeholder="пусто — из факта заявок"><small class="muted">Работает, пока по позиции мало фактов «заявка → приход»</small></label>
+      <label class="field">Кратность заказа <input type="number" min="0" step="any" name="packQty" value="${i.packQty ?? ''}"
+        placeholder="пусто — поштучно" title="Упаковка или комплект: «к закупке» округляется вверх до кратного"></label>
       <label class="field">Примечание <textarea name="note" rows="2">${escapeHtml(i.note || '')}</textarea></label>
       ${item ? `<button type="button" class="button ghost small" id="partsArchive">${i.archived ? '↺ Вернуть из архива' : '🗄 В архив'}</button>` : ''}`,
-    collect: f => Object.fromEntries(['name', 'code', 'unit', 'category', 'supplier', 'manualMin', 'leadDaysManual', 'note'].map(key => [key, f[key].value])),
+    collect: f => Object.fromEntries(['name', 'code', 'unit', 'category', 'supplier', 'manualMin', 'leadDaysManual', 'packQty', 'note'].map(key => [key, f[key].value])),
     done: () => { toast('Позиция сохранена'); after(); }
   });
   const archive = form.querySelector('#partsArchive');

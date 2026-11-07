@@ -102,6 +102,9 @@ test('неснижаемый запас: расход/сутки × срок × 
   assert.equal(minStockOf({ issues: [3], windowDays: 90, leadDays: 6, safetyFactor: 1, manualMin: 0 }).qty, 0);
   assert.equal(toBuyQty(5, 1, 2), 2);
   assert.equal(toBuyQty(5, 3, 2), 0);
+  assert.equal(toBuyQty(5, 1, 0, 6), 6); // кратность: нужно 4, упаковка 6 → 6
+  assert.equal(toBuyQty(13, 0, 0, 6), 18);
+  assert.equal(toBuyQty(5, 5, 0, 6), 0);
   assert.equal(toBuyQty(2.3, 0, 0), 3);
   assert.equal(toBuyQty(null, 0, 0), 0);
 });

@@ -47,7 +47,7 @@ export function turnoverSection(data) {
     <div class="sec-b">
       <div class="bi-kpis">
         <div class="metric hero ${tone}"><span class="l">Текучесть</span><span class="v">${pct(data.turnoverPct)}</span>
-          <span class="d">${target === null || target === undefined ? 'цель не задана' : `цель ≤ ${num(target)}%`}</span></div>
+          <span class="d">${target === null || target === undefined ? 'цель не задана' : `цель ≤ ${num(target)}% в месяц`}</span></div>
         <div class="metric dept-drv"><span class="l">Средняя численность</span><span class="v">${num(data.headcountAvg)}</span>
           <span class="d">сейчас в штате ${data.active ?? '—'}</span></div>
         <div class="metric"><span class="l">Принято</span><span class="v">${data.hired ?? 0}</span><span class="d">за период</span></div>

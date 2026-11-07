@@ -86,7 +86,8 @@ export async function renderReportsHub(container, context) {
 
   container.innerHTML = `<div class="bi-page rh-page">
     <div class="bi-sub"><h2>Реестр отчётов</h2>
-      <p>Каждый отчёт — один раз, с источником цифр. Область: ${escapeHtml(area)} · деньги: ${escapeHtml(MONEY_TITLES[access?.money] || '—')}.</p>
+      <p>Каждый отчёт — один раз, с источником цифр. Область: ${escapeHtml(area)} · деньги: ${escapeHtml(access && !access.legacy && access.money !== 'full' && context.can?.('reports:read')
+    ? 'в отчётах — с ценами' : MONEY_TITLES[access?.money] || '—')}.</p>
       <div class="bi-actions">${rangePickerHtml('rhFrom', 'rhTo', from, to, 'период')}
         <label class="rh-check"><input type="checkbox" id="rhMerge"${showMerge ? ' checked' : ''}> дубли</label></div></div>
     <div class="bi-kpis">

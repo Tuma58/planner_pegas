@@ -42,6 +42,7 @@ const biPage = (headHtml, sections) => `<div class="bi-page svc-set">${headHtml}
 
 function renderGeneral() {
   const { general, calculation, statuses, rejectionReasons, orderOptions } = state.admin.settings;
+  const turnover = state.admin.settings.turnover || {};
   const goals = directionGoals(calculation);
   content.innerHTML = biPage(biHead('Настройки планера',
     'Параметры, которые раньше были зашиты непосредственно в HTML.',
@@ -95,6 +96,12 @@ function renderGeneral() {
         Учёт дебиторки CRM <small class="muted">долги клиентов; включить, когда есть сотрудник и процесс</small></label>
       <label class="field">Норматив ФОТ управления, % выручки <small class="muted">пусто — не задан (блок «ФОТ»)</small>
         <input id="fotNormPct" type="number" min="0" max="100" step="0.1" value="${goals.fotPct ?? ''}"></label>
+      <label class="field">Текучесть водителей: учёт с <small class="muted">справочник наполнялся в августе — приёмы до даты не считаются</small>
+        <input id="turnoverFrom" type="date" value="${escapeHtml(turnover.accountingFrom || '')}"></label>
+      <label class="field">Текучесть водителей: цель, % в месяц <small class="muted">пусто — не задана</small>
+        <input id="turnoverTarget" type="number" min="0" step="0.1" value="${turnover.targetPct ?? ''}"></label>
+      <label class="field">Короткий стаж, дней <small class="muted">пусто — медиана стажа уволенных</small>
+        <input id="turnoverShort" type="number" min="0" step="1" value="${turnover.shortTenureDays ?? ''}"></label>
     </div>`, { span: 's12' }),
     biSec('Экономика и нормативы', `<div class="fields three">
       <label class="field">Себестоимость, ₽/км<input id="costPerKm" type="number" min="0" step=".01" value="${calculation.costPerKm}"></label>
@@ -178,7 +185,14 @@ async function saveGeneral() {
       row.dataset.status, row.querySelector('[data-status-name]').value.trim(),
       row.querySelector('[data-status-color]').value
     ]),
-    rejectionReasons: byId('rejectionReasons').value.split('\n').map(item => item.trim()).filter(Boolean)
+    rejectionReasons: byId('rejectionReasons').value.split('\n').map(item => item.trim()).filter(Boolean),
+    // Текучесть водителей (поле Эксплуатации): пусто — не задано, ноль — осознанно.
+    turnover: {
+      ...(state.admin.settings.turnover || {}),
+      accountingFrom: byId('turnoverFrom').value || null,
+      targetPct: byId('turnoverTarget').value === '' ? null : Number(byId('turnoverTarget').value),
+      shortTenureDays: byId('turnoverShort').value === '' ? null : Number(byId('turnoverShort').value)
+    }
   };
   try {
     await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) });

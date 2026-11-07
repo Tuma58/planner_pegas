@@ -76,6 +76,23 @@ function settingsOf(db) {
 const COLUMNS = [['hired_on', 'TEXT'], ['fired_on', 'TEXT'], ['hired_source', 'TEXT'],
   ['fired_source', 'TEXT'], ['fired_kind', 'TEXT'], ['fired_reason', 'TEXT']];
 
+// Стартовые значения (решение руководителя 07.11 «делай как видишь
+// лучше»): учёт с 01.09.2026 — справочник наполнялся весь август, его
+// «приёмы» не приёмы; цель 3 % в месяц (сентябрь 1,8 %, октябрь 4,6 % —
+// цель между ними, требует удерживать уровень сентября); короткий стаж —
+// 90 дней, испытательный срок по ТК РФ. Пишутся один раз и только если
+// руководитель ещё ничего не задал; дальше правятся в Настройках.
+export const TURNOVER_START = { accountingFrom: '2026-09-01', targetPct: 3, shortTenureDays: 90 };
+export function seedTurnoverSettings(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='turnover_settings_v1'`).get()) return;
+  const row = db.prepare(`SELECT value_json FROM settings WHERE key='turnover'`).get();
+  const current = row ? JSON.parse(row.value_json || '{}') : {};
+  const next = { ...TURNOVER_START, ...Object.fromEntries(Object.entries(current).filter(([, value]) => value !== null && value !== '' && value !== undefined)) };
+  db.prepare(`INSERT INTO settings(key,value_json,updated_at) VALUES('turnover',?,CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=CURRENT_TIMESTAMP`).run(JSON.stringify(next));
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('turnover_settings_v1','1')`).run();
+}
+
 export function migrateTurnover(db) {
   const have = new Set(db.prepare('PRAGMA table_info(drivers)').all().map(row => row.name));
   for (const [name, type] of COLUMNS) {

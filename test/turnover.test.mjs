@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
 import { hasPermission } from '../src/permissions.mjs';
 import { driverTurnover, median, migrateTurnover, shortTenureThreshold, syncTurnoverDates,
-  turnoverApi, turnoverRights } from '../src/turnover.mjs';
+  turnoverApi, turnoverRights, seedTurnoverSettings, TURNOVER_START } from '../src/turnover.mjs';
 import { turnoverSection } from '../public/assets/turnover.js';
 
 function freshDb(t) {
@@ -253,4 +253,16 @@ test('фронт-секция: показатели, месяцы, экрани�
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /не считаются увольнением: 2/);
   assert.match(turnoverSection(null), /Нет данных/);
+});
+
+test('стартовые настройки текучести: пишутся один раз, заданное руководителем не трогают', t => {
+  const db = freshDb(t);
+  const saved = JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='turnover'`).get().value_json);
+  assert.deepEqual(saved, TURNOVER_START);
+  db.prepare(`UPDATE settings SET value_json=? WHERE key='turnover'`).run(JSON.stringify({ targetPct: 0 }));
+  seedTurnoverSettings(db); // метка стоит — повтор ничего не меняет
+  assert.deepEqual(JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='turnover'`).get().value_json), { targetPct: 0 });
+  db.prepare(`DELETE FROM app_meta WHERE key='turnover_settings_v1'`).run();
+  seedTurnoverSettings(db); // ноль руководителя — осознанное значение
+  assert.equal(JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='turnover'`).get().value_json).targetPct, 0);
 });
