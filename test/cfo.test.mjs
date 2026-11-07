@@ -79,7 +79,9 @@ test('видимость ЦФО: по доступу к затратам и по
     return db.prepare('SELECT * FROM users WHERE id=?').get(r.id);
   };
   assert.deepEqual(cfoScope(db, make(14), false), { all: false, depts: ['toir'] });
-  assert.deepEqual(cfoScope(db, make(10), false), { all: false, depts: ['drv'] });
+  // Начальник автоколонны — не руководитель отдела (уточнение 07.11).
+  assert.equal(cfoScope(db, make(10), false), null);
+  assert.deepEqual(cfoScope(db, make(9), false), { all: false, depts: ['drv'] });
   assert.equal(cfoScope(db, make(1), false).all, true);
   assert.equal(cfoScope(db, make(20), false), null); // слесарь
   assert.equal(cfoScope(db, make(20), true).all, true);

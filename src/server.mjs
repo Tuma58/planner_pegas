@@ -54,7 +54,7 @@ import { directionGoals } from '../public/assets/goals-core.js';
 import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
 import { accessOf, assignRoleSets, roleSets, stripOrders, stripSmall, stripTrips } from './access.mjs';
-import { FIELD_META, fieldData, fieldLive } from './field.mjs';
+import { FIELD_META, directionData, fieldData, fieldLive } from './field.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -15113,6 +15113,33 @@ async function api(request, response, url) {
       return errorJson(response, 403, 'Поле вне вашей роли');
     }
     const asked = url.searchParams.get('dept');
+    // Штаб без явного отдела — поле направления (Э2): свод и провал.
+    if (access.scope.all && (!asked || asked === 'direction')) {
+      const gctx = goalsContext(url.searchParams.get('month'), mileageData);
+      const goals = goalsData(db, gctx);
+      goals.initiatives = goalsInitiatives();
+      let park = null;
+      try { park = parkReportData(gctx.from, gctx.to); } catch { park = null; }
+      const goalsCfg = directionGoals(settingsObject(db).calculation);
+      const cfoView = cfoScope(db, user, expensesAccess(user, settingsObject(db)));
+      const toIncl = new Date(Date.parse(`${gctx.to}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
+      const today = new Date().toISOString().slice(0, 10);
+      const shiftsOf = deptKey => db.prepare(`SELECT u.full_name name, s.kind FROM staff_shifts s
+        JOIN users u ON u.id=s.user_id JOIN org_positions p ON p.id=u.position_id
+        WHERE s.day=? AND s.kind IN ('day','night') AND p.dept_key=? AND u.active=1 AND u.deleted_at IS NULL`)
+        .all(today, deptKey);
+      const data = directionData({
+        month: gctx.month, from: gctx.from, to: gctx.to, park, snap: gctx.snap, goals,
+        structure: structureData(db, park?.total),
+        cfo: cfoView?.all ? cfoReportFor(cfoView, gctx.from, toIncl) : null,
+        shifts: [],
+        targets: { КТГ: goalsCfg.ktg, КВЛ: goalsCfg.kvl, КИП: goalsCfg.kip, КЭИП: goalsCfg.use }
+      }, { log: fieldLive(db, 'log'), drv: fieldLive(db, 'drv'), toir: fieldLive(db, 'toir'), staff: fieldLive(db, 'staff') });
+      for (const card of data.depts) if (card.people) card.people.onShift = shiftsOf(card.dept);
+      data.canSwitch = true;
+      if (access.money !== 'full') data.revenue = null;
+      return json(response, 200, data);
+    }
     const dept = access.scope.all ? (FIELD_META[asked] ? asked : 'log')
       : (access.scope.depts.includes(asked) ? asked : access.scope.depts[0]);
     if (!dept || !FIELD_META[dept]) return errorJson(response, 403, 'У вашей роли нет отдела');

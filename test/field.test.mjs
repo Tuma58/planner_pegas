@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '../src/db.mjs';
-import { fieldData, fieldLive, idleVehicles } from '../src/field.mjs';
+import { directionData, fieldData, fieldLive, idleVehicles } from '../src/field.mjs';
 import { accessOf, assignRoleSets, roleSets } from '../src/access.mjs';
 
 function freshDb(t) {
@@ -21,10 +21,10 @@ function freshDb(t) {
 test('«Моё поле» есть в наборах руководителей и нет у рядовых ролей', t => {
   const db = freshDb(t);
   const views = new Map(roleSets(db).map(set => [set.id, set.views]));
-  for (const id of ['dir_head', 'log_head', 'drv_head', 'drv_column', 'toir_head', 'admin']) {
+  for (const id of ['dir_head', 'log_head', 'drv_head', 'toir_head', 'admin']) {
     assert.ok(views.get(id).includes('field'), id);
   }
-  for (const id of ['log_plan', 'log_assign', 'log_ctrl', 'drv_acc', 'toir_mech', 'accountant']) {
+  for (const id of ['drv_column', 'log_plan', 'log_assign', 'log_ctrl', 'drv_acc', 'toir_mech', 'accountant']) {
     assert.ok(!views.get(id).includes('field'), id);
   }
 });
@@ -77,4 +77,28 @@ test('руководитель отдела не может открыть по�
   const access = accessOf(db, db.prepare('SELECT * FROM users WHERE id=?').get(id));
   assert.deepEqual(access.scope.depts, ['drv']);
   assert.equal(access.scope.all, false);
+});
+
+test('поле направления: каскад против целей, водопад машино-дней по зонам, карточки трёх отделов', () => {
+  const live = { joints: [], queues: [] };
+  const data = directionData({
+    month: '2026-07', from: '2026-07-01', to: '2026-08-01',
+    park: { total: { ktg: 96, kvl: 92, kip: 80, koef: 70.7 }, weeks: [] },
+    snap: { utilization: { calendarDays: 300, machineDays: { work: 200, repair: 10, noDriver: 7, shift: 3, idle: 80, out: 0 } } },
+    goals: { items: [{ dept: 'staff', kind: 'task', title: 'Свод', metric: { tone: 'ok' } }], head: [], initiatives: { log: { p160: 1, eff: 0 } } },
+    structure: null, cfo: null, targets: { КТГ: 97, КВЛ: 99, КИП: 99, КЭИП: 95.1 }
+  }, { log: live, drv: live, toir: live, staff: { joints: [], queues: [] } });
+  assert.equal(data.direction, true);
+  assert.deepEqual(data.cascade.map(item => item.coef), ['КТГ', 'КВЛ', 'КИП', 'КЭИП']);
+  assert.equal(data.cascade[3].target, 95.1);
+  const step = key => data.waterfall.find(item => item.key === key);
+  assert.equal(step('calendar').value, 300);
+  assert.equal(step('noDriver').value, -10);
+  assert.equal(step('noDriver').dept, 'drv');
+  assert.equal(step('idle').dept, 'log');
+  assert.equal(step('work').value, 200);
+  assert.deepEqual(data.depts.map(card => card.dept), ['log', 'drv', 'toir']);
+  assert.equal(data.depts.find(card => card.dept === 'toir').machineDays.lost, 10);
+  assert.equal(data.staff.summary.ok, 1);
+  assert.equal(data.joints.length, 3);
 });

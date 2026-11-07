@@ -91,14 +91,22 @@ export function migrateOrgStructure(db) {
 }
 
 function markCfoView(db) {
-  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='org_cfo_view_v1'`).get()) return;
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='org_cfo_view_v1'`).get()) { unmarkColumnHead(db); return; }
   // По номеру должности в структуре СТ: 1 — руководитель направления;
   // 5, 9, 14 — руководители отделов (логистика, эксплуатация, ТОиР);
-  // 10 — начальник автоколонны (владелец ЦФО эксплуатации по среде).
   const mark = db.prepare(`UPDATE org_positions SET cfo_view=? WHERE n=? AND id LIKE 'st-%' AND cfo_view=''`);
   mark.run('all', 1);
-  for (const n of [5, 9, 10, 14]) mark.run('dept', n);
+  for (const n of [5, 9, 14]) mark.run('dept', n);
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('org_cfo_view_v1','1')`).run();
+  unmarkColumnHead(db);
+}
+
+// Уточнение 07.11: начальник автоколонны (n10) — не руководитель отдела,
+// затрат ЦФО не видит. Снимается только стартовая отметка.
+function unmarkColumnHead(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='org_cfo_view_v2'`).get()) return;
+  db.prepare(`UPDATE org_positions SET cfo_view='' WHERE n=10 AND id LIKE 'st-%' AND cfo_view='dept'`).run();
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('org_cfo_view_v2','1')`).run();
 }
 
 // Справочник для выбора в карточке сотрудника: компактно, без паспортов.

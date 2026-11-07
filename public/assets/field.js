@@ -5,7 +5,7 @@
 // поле, что его руководитель.
 import { api, escapeHtml } from './api.js';
 
-const DEPT_TABS = [['log', 'Логистика'], ['drv', 'Эксплуатация'], ['toir', 'ТОиР']];
+const DEPT_TABS = [['direction', 'Направление'], ['log', 'Логистика'], ['drv', 'Эксплуатация'], ['toir', 'ТОиР']];
 const TONE = { ok: 'pos', near: 'warn', miss: 'neg' };
 const pct = value => value == null ? '—' : `${String(value).replace('.', ',')}%`;
 const rub = value => value == null ? '—' : `${Math.round(value).toLocaleString('ru-RU')} ₽`;
@@ -26,6 +26,7 @@ export async function renderField(container, context) {
     container.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
     return;
   }
+  if (data.direction) { renderDirection(container, context, data); return; }
   const c = data.coef;
   const s = data.summary || { ok: 0, near: 0, miss: 0, info: 0, none: 0 };
   const money = data.money;
@@ -43,11 +44,10 @@ export async function renderField(container, context) {
     </div>`;
 
   container.innerHTML = `<div class="bi-page fd-page">
-    <div class="bi-sub"><h2>Моё поле · ${escapeHtml(data.name)}</h2>
+    <div class="bi-sub"><h2>${data.canSwitch ? 'Поле отдела' : 'Моё поле'} · ${escapeHtml(data.name)}</h2>
       <p>Коэффициент, потери, задачи и деньги — за выбранный месяц; стыки и очереди — сейчас. Стрелка «→» — в рабочий экран.</p>
       <div class="bi-actions"><input type="month" id="fdMonth" value="${escapeHtml(data.month)}" title="Месяц показателей; очереди и стыки — всегда «сейчас»">
-        ${data.canSwitch ? `<span class="segmented">${DEPT_TABS.map(([key, label]) =>
-    `<button data-fd-dept="${key}" class="${data.dept === key ? 'active' : ''}">${label}</button>`).join('')}</span>` : ''}</div></div>
+        ${data.canSwitch ? tabsHtml(data.dept) : ''}</div></div>
     <div class="bi-kpis">
       <div class="metric hero dept-${data.dept} ${toneOf(c.value, c.target)}"><span class="l">${escapeHtml(FIELD_COEF[data.dept])}</span>
         <span class="v">${pct(c.value)}</span><span class="d">цель ${pct(c.target)}</span></div>
@@ -128,6 +128,93 @@ export async function renderField(container, context) {
     if (goto) document.querySelector(`#viewTabs [data-view="${goto.dataset.goto}"]`)?.click();
   };
 }
+
+const tabsHtml = current => `<span class="segmented">${DEPT_TABS.map(([key, label]) =>
+  `<button data-fd-dept="${key}" class="${current === key ? 'active' : ''}">${label}</button>`).join('')}</span>`;
+
+// Поле направления (Э2, 07.11): свод Штаба и провал в поле любого отдела.
+function renderDirection(container, context, data) {
+  const { state } = context;
+  const wf = data.waterfall;
+  const calendar = wf[0]?.value || 0;
+  const r = data.revenue;
+  const deptCard = card => {
+    const s = card.summary;
+    const hanging = card.joints.filter(joint => joint.side === 'in' && joint.count);
+    return `<section class="section s4 dept-${card.dept} fd-card" data-fd-dept="${card.dept}" title="Открыть поле отдела — как его видит руководитель">
+      <div class="sec-h"><span class="st">${escapeHtml(card.name)}</span><span class="owner-chip chip-${card.dept}">${FIELD_SHORT[card.dept]}</span>
+        <span class="fd-go" style="margin-left:auto">→</span></div>
+      <div class="sec-b fd-list">
+        <div class="fd-big ${toneOf(card.coef.value, card.coef.target)}"><b>${pct(card.coef.value)}</b> <span class="muted">цель ${pct(card.coef.target)}</span></div>
+        <div><span class="muted">Потери:</span> <b>${Math.round(card.machineDays.lost)} МД</b> <span class="muted">· ${escapeHtml(card.machineDays.label)}</span></div>
+        <div><span class="muted">Задачи:</span> в норме <b>${s.ok}</b> · близко <b>${s.near}</b> · мимо <b class="${s.miss ? 'fd-bad' : ''}">${s.miss}</b></div>
+        <div><span class="muted">Очереди:</span> ${card.queues.map(queue => `${escapeHtml(queue.label)} <b class="${queue.count ? 'fd-warn' : ''}">${queue.count}</b>`).join(' · ') || '—'}</div>
+        ${hanging.length ? `<div><span class="muted">Висит на входе:</span> ${hanging.map(joint => `«${escapeHtml(joint.risk)}» <b class="fd-warn">${joint.count}</b>`).join(' · ')}</div>` : ''}
+        ${card.people ? `<div><span class="muted">Люди:</span> <b>${card.people.fact}</b> из ${card.people.headcount}${card.people.vacancies ? ` · вакансий <b class="fd-warn">${card.people.vacancies}</b>` : ''} · на смене ${card.people.onShift.length}</div>` : ''}
+        ${card.money ? `<div><span class="muted">Деньги:</span> ${card.money.result
+    ? `выручка на МД под грузом <b>${rub(card.money.result.revenuePerMd)}</b>`
+    : `затраты <b>${rub(card.money.net)}</b> · на МД <b>${rub(card.money.perMd)}</b>`}</div>` : ''}
+      </div></section>`;
+  };
+  container.innerHTML = `<div class="bi-page fd-page">
+    <div class="bi-sub"><h2>Поле направления СТ</h2>
+      <p>Свод отделов за месяц и стыки на текущий момент. Клик по отделу — его поле, ровно как видит руководитель отдела.</p>
+      <div class="bi-actions"><input type="month" id="fdMonth" value="${escapeHtml(data.month)}">${tabsHtml('direction')}</div></div>
+    <div class="bi-kpis">
+      ${data.cascade.map(item => `<div class="metric ${item.coef === 'КЭИП' ? 'hero' : ''} dept-${item.dept} ${toneOf(item.value, item.target)}">
+        <span class="l">${item.coef}</span><span class="v">${pct(item.value)}</span><span class="d">цель ${pct(item.target)}</span></div>`).join('')}
+      ${r ? `<div class="metric dept-staff ${TONE[r.tone] || ''}"><span class="l">Выручка месяца без НДС</span>
+        <span class="v">${num(r.value, '')}<small>млн</small></span><span class="d">${escapeHtml(r.note || '')}</span></div>` : ''}
+    </div>
+    <div class="bi-grid">
+      ${data.depts.map(deptCard).join('')}
+      <section class="section s6">
+        <div class="sec-h"><span class="st">Машино-дни — общая валюта каскада</span><span class="hint">где теряются дни и чья это зона</span></div>
+        <div class="sec-b fd-wf">${wf.length ? wf.map(step => `<div class="fd-wf-row ${step.total ? 'total' : ''}">
+          <span>${escapeHtml(step.label)}</span>
+          <span class="fd-wf-bar"><i class="${step.dept ? `dept-${step.dept}` : ''}" style="width:${calendar ? Math.min(100, Math.abs(step.value) / calendar * 100) : 0}%"></i></span>
+          <b>${step.value > 0 && step.key !== 'calendar' && !step.total ? '+' : ''}${Math.round(step.value).toLocaleString('ru-RU')}</b></div>`).join('')
+    : '<div class="bi-empty">нет данных за период</div>'}</div>
+      </section>
+      <section class="section s6">
+        <div class="sec-h"><span class="st">Стыки между отделами</span><span class="hint">процессы среды СТ — что висит на передаче сейчас</span></div>
+        <div class="sec-b fd-list">${data.joints.map(joint => `<div class="fd-joint">
+          <div class="fd-jh"><span class="owner-chip chip-${joint.from}">${FIELD_SHORT[joint.from]}</span> → <span class="owner-chip chip-${joint.to}">${FIELD_SHORT[joint.to]}</span>
+            <b>«${escapeHtml(joint.risk)}»</b></div>
+          ${joint.pending || joint.count == null ? `<div class="muted">◌ нет источника — блок «${escapeHtml(joint.pending || 'Процессы и контроль')}»</div>`
+    : `<div class="fd-jv"><b class="${joint.count ? 'fd-warn' : 'fd-ok'}">${joint.count}</b> ${escapeHtml(joint.label)}${joint.maxH != null && joint.count ? ` <span class="muted">· дольше всех ${joint.maxH} ч</span>` : ''}</div>`}
+        </div>`).join('')}</div>
+      </section>
+      <section class="section s6 dept-staff">
+        <div class="sec-h"><span class="st">Задачи Штаба</span>${go('goals')}</div>
+        <div class="sec-b fd-list">${data.staff.tasks.map(task => `<div class="fd-task ${task.kind === 'dept' ? 'goal' : ''}">
+          <span>${escapeHtml(task.title)}</span>
+          ${task.metric?.pending ? `<small class="muted">◌ «${escapeHtml(task.metric.pending)}»</small>`
+    : task.metric ? `<small class="fd-m ${TONE[task.metric.tone] || ''}"><b>${num(task.metric.value, task.metric.unit)}</b>${task.metric.target != null ? ` / ${num(task.metric.target, task.metric.unit)}` : ''}</small>` : ''}</div>`).join('')}</div>
+      </section>
+      <section class="section s6 dept-staff">
+        <div class="sec-h"><span class="st">Инициативы направления</span></div>
+        <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Отдел</th><th class="r">«160 млн»</th><th class="r">План эффективности</th></tr></thead>
+          <tbody>${['log', 'drv', 'toir', 'staff'].map(key => {
+    const item = data.initiatives?.[key] || { p160: 0, eff: 0 };
+    return `<tr><td>${FIELD_SHORT[key]}</td><td class="num">${item.p160}</td><td class="num">${item.eff}</td></tr>`;
+  }).join('')}</tbody></table></div>
+      </section>
+    </div>
+  </div>`;
+  container.querySelector('#fdMonth').onchange = event => {
+    state.fieldMonth = event.currentTarget.value || null;
+    renderField(container, context);
+  };
+  container.onclick = event => {
+    const switcher = event.target.closest('[data-fd-dept]');
+    if (switcher) { state.fieldDept = switcher.dataset.fdDept; renderField(container, context); return; }
+    const goto = event.target.closest('[data-goto]');
+    if (goto) document.querySelector(`#viewTabs [data-view="${goto.dataset.goto}"]`)?.click();
+  };
+}
+
+const FIELD_SHORT = { log: 'Логистика', drv: 'Эксплуатация', toir: 'ТОиР', staff: 'Штаб' };
 
 const FIELD_COEF = { log: 'КИП — с заданием от укомплектованных', drv: 'КВЛ — укомплектованные от исправных',
   toir: 'КТГ — исправные от списка', staff: 'КЭИП — использование парка' };

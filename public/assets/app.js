@@ -93,7 +93,9 @@ function setupUser() {
   }
   renderCascade();
   // Первый экран руководителя отдела — «Моё поле» (Э1, 07.11).
-  if (!state.fieldLanded && user.access && !user.access.legacy && !user.access.scope.all
+  // Четыре руководителя (направления, логистики, ремзоны, эксплуатации) —
+  // на своё поле; руководитель направления — на поле направления.
+  if (!state.fieldLanded && user.access && !user.access.legacy
       && user.access.views.includes('field')) {
     state.fieldLanded = true;
     state.view = 'field';
@@ -864,8 +866,13 @@ const MAIN_VIEWS = [
 const NAV_GROUPS = [
   { dept: '', title: 'Общее', coef: '', sub: [
     { title: '', views: ['dashboard', 'gantt'] }] },
+  // Штаб — «Панели» в порядке «Рабочей среды СТ» (скрин руководителя
+  // 07.11): поле направления, обзор структуры, цели и задачи, ЦФО; новые
+  // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
+  // блоков. Ниже — рабочие экраны Штаба.
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: '', views: ['field', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses'] }] },
+    { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo'] },
+    { title: 'Работа Штаба', views: ['boss', 'staff', 'expenses'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
@@ -913,6 +920,12 @@ function viewAllowed(id) {
   return !access || access.legacy || access.views.includes(id);
 }
 const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo'];
+// У области «всё направление» поле — «Поле направления» (Э2, 07.11).
+function viewTitle(view) {
+  const access = state.data?.user?.access;
+  if (view.id === 'field' && (!access || access.legacy || access.scope.all)) return 'Поле направления';
+  return view.title;
+}
 
 function renderViewTabs() {
   const views = MAIN_VIEWS.filter(view => view.show() && viewAllowed(view.id));
@@ -920,8 +933,9 @@ function renderViewTabs() {
   const query = (byId('navSearch')?.value || '').trim().toLowerCase();
   const link = view => {
     const [icon] = VIEW_META[view.id] || ['•'];
-    return `<button data-view="${view.id}" class="navlink${view.id === state.view ? ' active' : ''}" title="${view.title}">`
-      + `<span class="nav-ico">${icon}</span><span class="nav-t">${view.title}</span></button>`;
+    const title = viewTitle(view);
+    return `<button data-view="${view.id}" class="navlink${view.id === state.view ? ' active' : ''}" title="${title}">`
+      + `<span class="nav-ico">${icon}</span><span class="nav-t">${title}</span></button>`;
   };
   const placed = new Set();
   // Мини-структура отдела (07.11): у руководителя отдела панели
@@ -964,7 +978,7 @@ function renderViewTabs() {
       button.classList.toggle('active', button.dataset.view === state.view));
   }
   const current = byIdView.get(state.view);
-  byId('pageTitle').textContent = current?.title || '';
+  byId('pageTitle').textContent = current ? viewTitle(current) : '';
   byId('pageHint').textContent = VIEW_META[state.view]?.[1] || '';
   byId('viewTabs').onclick = event => {
     const button = event.target.closest('[data-view]');

@@ -104,14 +104,17 @@ export function fieldData(ctx) {
     total: (md.idle || 0) + (md.repair || 0) + (md.noDriver || 0) + (md.shift || 0) + (md.out || 0)
   };
   const dept = ctx.structure?.depts?.find(item => item.key === ctx.dept);
+  const tasks = (ctx.goals?.items || []).filter(item => item.dept === ctx.dept);
+  // Светофор задач — по задачам ЭТОГО отдела, не всего направления.
+  const summary = { ok: 0, near: 0, miss: 0, info: 0, none: 0 };
+  for (const task of tasks.filter(item => item.kind === 'task')) summary[task.metric?.tone || 'none'] += 1;
   return {
     dept: ctx.dept, ...meta, month: ctx.month, from: ctx.from, to: ctx.to,
     coef: { value: ctx.park?.total?.[coefKey] ?? null, target: ctx.targets?.[meta.coef] ?? null,
       weeks: (ctx.park?.weeks || []).slice(-6).map(week => ({ from: week.from, value: week[coefKey] })) },
     machineDays: { lost: losses[meta.lossKey], label: meta.lossLabel, calendar: ctx.snap?.utilization?.calendarDays || 0,
       breakdown: md },
-    tasks: (ctx.goals?.items || []).filter(item => item.dept === ctx.dept),
-    summary: ctx.goals?.summary || null,
+    tasks, summary,
     people: dept ? { headcount: dept.headcount, fact: dept.fact, vacancies: dept.vacancies,
       noRole: ctx.structure.totals.noRole,
       openPositions: ctx.structure.positions.filter(item => item.dept === ctx.dept && item.vacancies)
@@ -120,5 +123,45 @@ export function fieldData(ctx) {
     money: ctx.cfo?.centers?.find(center => center.key === ctx.dept) || null,
     initiatives: ctx.goals?.initiatives?.[ctx.dept] || null,
     ...ctx.live
+  };
+}
+
+// ── Поле направления (Э2, 07.11) — Штаб и руководитель направления ──
+// Свод: каскад КТГ→КВЛ→КИП→КЭИП против целей, выручка против плана и
+// стратегии, водопад машино-дней (календарь → ремонт → без водителя и
+// пересменки → простой без задания → под заданием), все стыки и карточки
+// трёх отделов — те же поля, что видят их руководители (провал кликом).
+// ctx — как у fieldData, но с полными (не срезанными) goals/structure/cfo;
+// live — { log, drv, toir, staff } из fieldLive.
+export function directionData(ctx, live) {
+  const total = ctx.park?.total || {};
+  const md = ctx.snap?.utilization?.machineDays || {};
+  const calendar = ctx.snap?.utilization?.calendarDays || 0;
+  const depts = ['log', 'drv', 'toir'].map(dept => fieldData({ ...ctx, dept, live: live[dept] }));
+  const staff = fieldData({ ...ctx, dept: 'staff', live: live.staff });
+  const revenueMetric = (ctx.goals?.head || []).find(metric => metric?.key === 'revenue_month') || null;
+  return {
+    direction: true, dept: 'direction', name: 'Направление СТ', month: ctx.month, from: ctx.from, to: ctx.to,
+    cascade: [['КТГ', 'ktg', 'toir'], ['КВЛ', 'kvl', 'drv'], ['КИП', 'kip', 'log'], ['КЭИП', 'koef', 'staff']]
+      .map(([coef, key, dept]) => ({ coef, dept, value: total[key] ?? null, target: ctx.targets?.[coef] ?? null })),
+    revenue: revenueMetric,
+    waterfall: calendar ? [
+      { key: 'calendar', label: 'Календарь парка', value: calendar },
+      { key: 'repair', label: 'Ремонт · ТОиР', value: -(md.repair || 0), dept: 'toir' },
+      { key: 'out', label: 'Выведены', value: -(md.out || 0), dept: 'toir' },
+      { key: 'noDriver', label: 'Без водителя и пересменки · Эксплуатация', value: -((md.noDriver || 0) + (md.shift || 0)), dept: 'drv' },
+      { key: 'idle', label: 'Простой без задания · Логистика', value: -(md.idle || 0), dept: 'log' },
+      { key: 'work', label: 'Под заданием', value: md.work || 0, total: true }
+    ] : [],
+    joints: JOINTS.map(joint => {
+      const found = (live.staff?.joints || []).find(item => item.key === joint.key);
+      return found || { ...joint, count: null };
+    }),
+    depts: depts.map(dept => ({ dept: dept.dept, name: dept.name, coef: dept.coef, machineDays: dept.machineDays,
+      summary: dept.summary, people: dept.people, money: dept.money,
+      queues: dept.queues.filter(queue => queue.dept === dept.dept),
+      joints: dept.joints.map(joint => ({ key: joint.key, side: joint.side, count: joint.count, risk: joint.risk })) })),
+    staff: { tasks: staff.tasks, summary: staff.summary, people: staff.people, initiatives: staff.initiatives },
+    initiatives: ctx.goals?.initiatives || null
   };
 }

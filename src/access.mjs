@@ -37,8 +37,11 @@ const SEED = [
     ['dispatcher'], 'none', ''],
   ['drv_head', 'Руководитель отдела эксплуатации', 'drv', [...DEPT_PANELS, 'resource', 'fleetplan', 'gantt'],
     ['resource'], 'none', 'dept'],
-  ['drv_column', 'Начальник автоколонны', 'drv', [...DEPT_PANELS, 'resource', 'fleetplan', 'gantt'],
-    ['resource'], 'none', 'dept'],
+  // Начальник автоколонны — ПОД руководителем эксплуатации, не
+  // руководитель отдела (уточнение руководителя 07.11): рабочие экраны,
+  // без поля, панелей отдела и ЦФО.
+  ['drv_column', 'Начальник автоколонны', 'drv', ['resource', 'fleetplan', 'gantt'],
+    ['resource'], 'none', ''],
   ['drv_acc', 'Диспетчер учёта', 'drv', ['resource'], ['resource'], 'none', ''],
   ['toir_head', 'Главный механик', 'toir', [...DEPT_PANELS, 'remzona'], ['mechanic'], 'none', 'dept'],
   ['toir_mech', 'Механик / оператор / старший смены', 'toir', ['remzona'], ['mechanic'], 'none', ''],
@@ -56,13 +59,31 @@ export function migrateAccess(db) {
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
   const cols = db.prepare(`PRAGMA table_info(users)`).all().map(col => col.name);
   if (!cols.includes('role_sets')) db.exec(`ALTER TABLE users ADD COLUMN role_sets TEXT NOT NULL DEFAULT ''`);
-  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_v1'`).get()) { migrateFieldView(db); return; }
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_v1'`).get()) {
+    migrateFieldView(db);
+    migrateColumnHead(db);
+    return;
+  }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
     VALUES(?,?,?,?,?,?,?,?)`);
   SEED.forEach(([id, title, scope, views, codes, money, cfo], index) =>
     insert.run(id, title, scope, JSON.stringify(views), JSON.stringify(codes), money, cfo, index + 1));
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_v1','1')`).run();
   migrateFieldView(db);
+  migrateColumnHead(db);
+}
+
+// Уточнение 07.11: четыре руководителя — направления, логистики, ремзоны
+// (главный механик), эксплуатации. Начальник автоколонны — подчинённый:
+// у набора снимаются поле, панели отдела и ЦФО (разово, меткой).
+function migrateColumnHead(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_column_v1'`).get()) return;
+  const row = db.prepare(`SELECT views_json FROM role_sets WHERE id='drv_column'`).get();
+  if (row) {
+    const views = parse(row.views_json, []).filter(view => !DEPT_PANELS.includes(view));
+    db.prepare(`UPDATE role_sets SET views_json=?, cfo='' WHERE id='drv_column'`).run(JSON.stringify(views));
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_column_v1','1')`).run();
 }
 
 // Э1 (07.11): «Моё поле» добавляется в наборы руководителей (у кого есть

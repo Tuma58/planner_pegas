@@ -267,3 +267,17 @@
 .fd-week i { display: block; width: 100%; max-width: 44px; background: var(--accent); border-radius: 4px 4px 0 0; }
 .fd-week i.pos { background: var(--ok); } .fd-week i.warn { background: var(--warn); } .fd-week i.neg { background: var(--bad); }
 .fd-week small { font-family: var(--mono-font); font-size: 10.5px; color: var(--faint); }
+/* Поле направления (Э2) */
+.fd-card { cursor: pointer; transition: border-color .15s; }
+.fd-card:hover { border-color: var(--accent); }
+.fd-big b { font-family: var(--mono-font); font-size: 26px; }
+.fd-big.pos b { color: var(--ok); } .fd-big.warn b { color: var(--warn); } .fd-big.neg b { color: var(--bad); }
+.fd-bad { color: var(--bad); }
+.fd-wf { display: flex; flex-direction: column; gap: 7px; }
+.fd-wf-row { display: grid; grid-template-columns: minmax(0, 1.4fr) 1fr 80px; gap: 10px; align-items: center; font-size: 12.5px; }
+.fd-wf-row b { font-family: var(--mono-font); text-align: right; }
+.fd-wf-row.total { border-top: 1px solid var(--border2); padding-top: 6px; font-weight: 650; }
+.fd-wf-bar { height: 8px; background: var(--border2); border-radius: 4px; overflow: hidden; }
+.fd-wf-bar i { display: block; height: 100%; background: var(--accent); }
+.fd-wf-bar i.dept-toir { background: var(--toir); } .fd-wf-bar i.dept-drv { background: var(--drv); } .fd-wf-bar i.dept-log { background: var(--log); }
+.fd-wf-row.total .fd-wf-bar i { background: var(--ok); }
