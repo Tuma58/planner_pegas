@@ -27,6 +27,8 @@ import { gateOnsite } from './gate.mjs';
 import { partsStock } from './parts.mjs';
 import { driverTurnover } from './turnover.mjs';
 import { leadStats } from './crm.mjs';
+import { payrollRates, payrollReport } from './payroll.mjs';
+import { docsOf } from './vehicle-card.mjs';
 
 const DAY = 86_400_000;
 const MSK = 3 * 3_600_000;
@@ -441,6 +443,17 @@ export function migrateArm(db) {
     CHECK(status <> 'failed' OR length(trim(result)) > 0))`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_arm_tasks_to ON arm_tasks(to_user_id, status)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_arm_tasks_from ON arm_tasks(from_user_id, status)`);
+  // Э5: задача водителю (он не пользователь планера — у него Mini App):
+  // to_driver_id, to_user_id пустой.
+  const cols = db.prepare('PRAGMA table_info(arm_tasks)').all().map(col => col.name);
+  if (!cols.includes('to_driver_id')) db.exec('ALTER TABLE arm_tasks ADD COLUMN to_driver_id TEXT');
+}
+
+// Водителю ставит задачу Эксплуатация (руководитель, начальник колонны,
+// учёт) и направление — водители в структуре отдела Эксплуатации.
+export function canAssignDriver(db, from, fromAccess) {
+  if (!from) return false;
+  return isDirection(fromAccess) || deptOf(db, from) === 'drv';
 }
 
 const deptOf = (db, user) => user?.position_id
@@ -471,11 +484,18 @@ export function peopleFor(db, user, access) {
   const rows = db.prepare(`SELECT u.id, u.full_name, u.position_id, u.active, u.deleted_at, p.title position, p.dept_key
     FROM users u LEFT JOIN org_positions p ON p.id=u.position_id
     WHERE u.active=1 AND u.deleted_at IS NULL ORDER BY p.dept_key, u.full_name`).all();
-  return rows.filter(row => canAssign(db, user, access, row)).map(row => ({ id: row.id, name: row.full_name,
+  const people = rows.filter(row => canAssign(db, user, access, row)).map(row => ({ id: row.id, name: row.full_name,
     position: row.position || '', dept: row.dept_key || '', canView: canView(db, user, access, row) }));
+  if (!canAssignDriver(db, user, access)) return people;
+  const drivers = db.prepare(`SELECT d.id, d.full_name, d.telegram_chat_id, v.plate FROM drivers d LEFT JOIN vehicles v ON v.id=d.vehicle_id
+    WHERE d.status<>'fired' ORDER BY d.full_name`).all()
+    .map(row => ({ id: `d:${row.id}`, name: row.full_name, position: `водитель${row.plate ? ` · ${row.plate}` : ''}${row.telegram_chat_id ? '' : ' · нет Telegram'}`,
+      dept: 'drv', driver: true, canView: false }));
+  return [...people, ...drivers];
 }
 
 export function addTask(db, from, fromAccess, body, nowMs = Date.now()) {
+  if (String(body.toUserId || '').startsWith('d:')) return addDriverTask(db, from, fromAccess, body, nowMs);
   const to = body.toUserId ? db.prepare('SELECT * FROM users WHERE id=?').get(body.toUserId) : null;
   if (!to) return { status: 422, error: 'Укажите, кому задача' };
   if (!canAssign(db, from, fromAccess, to)) {
@@ -493,8 +513,37 @@ export function addTask(db, from, fromAccess, body, nowMs = Date.now()) {
   return { ok: true, id, to };
 }
 
+const taskFields = (body, nowMs) => {
+  const title = String(body.title || '').trim().slice(0, 300);
+  if (!title) return { status: 422, error: 'Опишите, что сделать' };
+  const due = body.dueAt && Number.isFinite(Date.parse(body.dueAt)) ? new Date(Date.parse(body.dueAt)).toISOString() : null;
+  if (!due) return { status: 422, error: 'Укажите срок' };
+  if (Date.parse(due) < nowMs - 60_000) return { status: 422, error: 'Срок уже прошёл' };
+  return { title, due, body: String(body.body || '').trim().slice(0, 2000), about: String(body.about || '').trim().slice(0, 200) };
+};
+
+export function addDriverTask(db, from, fromAccess, body, nowMs = Date.now()) {
+  const driver = db.prepare(`SELECT * FROM drivers WHERE id=? AND status<>'fired'`).get(String(body.toUserId).slice(2));
+  if (!driver) return { status: 422, error: 'Водитель не найден' };
+  if (!canAssignDriver(db, from, fromAccess)) return { status: 403, error: 'Водителю задачу ставит Эксплуатация' };
+  const f = taskFields(body, nowMs);
+  if (f.error) return f;
+  const id = randomUUID();
+  db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_driver_id,to_name,dept_key,title,body,about,due_at)
+    VALUES(?,?,?,'',?,?,'drv',?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', driver.id, driver.full_name,
+    f.title, f.body, f.about, f.due);
+  return { ok: true, id, driver };
+}
+
+// Действие водителя по своей задаче (из Mini App): take / done / fail.
+export function driverTaskAction(db, driver, id, action, result = '', nowMs = Date.now()) {
+  const task = db.prepare('SELECT * FROM arm_tasks WHERE id=?').get(id);
+  if (!task || task.to_driver_id !== driver.id) return { status: 404, error: 'Задача не найдена' };
+  return taskAction(db, { id: `driver:${driver.id}` }, id, action, result, nowMs, `driver:${driver.id}`);
+}
+
 // Действие по задаче: take / done / fail — исполнитель; cancel — автор.
-export function taskAction(db, user, id, action, result = '', nowMs = Date.now()) {
+export function taskAction(db, user, id, action, result = '', nowMs = Date.now(), executorKey = null) {
   const task = db.prepare('SELECT * FROM arm_tasks WHERE id=?').get(id);
   if (!task) return { status: 404, error: 'Задача не найдена' };
   const open = ['new', 'work'].includes(task.status);
@@ -506,7 +555,8 @@ export function taskAction(db, user, id, action, result = '', nowMs = Date.now()
     db.prepare(`UPDATE arm_tasks SET status='cancelled', result=?, updated_at=?, closed_at=? WHERE id=?`).run(text, now, now, id);
     return { ok: true, task, notify: task.to_user_id };
   }
-  if (task.to_user_id !== user.id) return { status: 403, error: 'Отмечает исполнитель' };
+  const executor = task.to_driver_id ? `driver:${task.to_driver_id}` : task.to_user_id;
+  if (executor !== (executorKey || user.id)) return { status: 403, error: 'Отмечает исполнитель' };
   if (!open) return { status: 409, error: 'Задача уже закрыта' };
   if (action === 'take') {
     db.prepare(`UPDATE arm_tasks SET status='work', updated_at=? WHERE id=?`).run(now, id);
@@ -560,6 +610,61 @@ W.tasks_on_time = ({ db, user, nowMs }) => {
     note: row.n ? `${row.ok || 0} из ${row.n} закрытых` : 'закрытых задач ещё нет', tone: '', source: 'arm_tasks' };
 };
 
+// ── Э5: АРМ водителя (Telegram Mini App «Мой рейс») ──
+// Тот же каркас: шапка + Анализ / План / Выполнение / Задачи. «Выполнение»
+// — текущий рейс с кнопкой этапа (ядро «Моего рейса», его рисует Mini App
+// из state); здесь — остальные зоны из канонов: ведомость ФОТ по
+// положению (свой расчёт водителя, по суткам), допуски БДД, документы ТС,
+// задачи от Эксплуатации, документы рейсов к сдаче.
+export function driverArmData(db, driver, { nowMs = Date.now(), settings = {} } = {}) {
+  const today = mskDay(nowMs);
+  const from = `${today.slice(0, 7)}-01`;
+  const vehicle = driver.vehicle_id ? db.prepare(`SELECT id, plate, trailer_plate FROM vehicles WHERE id=?`).get(driver.vehicle_id) : null;
+  const analysis = [];
+  const pay = safe(() => payrollReport(db, { from, to: today, ...payrollRates(settings) }).rows.find(row => row.driverId === driver.id));
+  if (pay) {
+    analysis.push({ kind: 'metric', label: 'Дней работы, месяц', value: pay.days, unit: '', tone: '', source: 'табель явки' });
+    analysis.push({ kind: 'metric', label: 'Пробег, км', value: pay.km, unit: '', tone: '', note: `рейсов ${pay.trips}`, source: 'одометр → рейсы' });
+    analysis.push({ kind: 'metric', label: 'Начислено по положению, ₽', value: pay.payable, unit: '',
+      note: `сдельно ${pay.piece.toLocaleString('ru-RU')} · сверхвахта ${pay.overtime.amount.toLocaleString('ru-RU')}`, tone: '',
+      source: 'ведомость ФОТ (по суткам) — предварительно' });
+  } else {
+    analysis.push({ kind: 'metric', label: 'Дней работы, месяц', value: 0, unit: '', note: 'в табеле за месяц отметок нет', tone: '', source: 'табель явки' });
+  }
+  const plan = [];
+  // Текущий рейс — первый из plan/run (его показывает «Выполнение»), следующий — второй.
+  const next = vehicle ? db.prepare(`SELECT from_point, to_point, starts_at FROM trips WHERE vehicle_id=? AND status IN ('plan','run')
+    ORDER BY starts_at LIMIT 1 OFFSET 1`).get(vehicle.id) : null;
+  if (next) plan.push({ kind: 'row', label: `Следующий рейс: ${next.from_point || ''} → ${next.to_point || ''}`,
+    note: `погрузка ${dueLabel(next.starts_at, nowMs).replace('срок ', '').replace('просрочена · ', '')}`, value: null, source: 'trips' });
+  const warnDays = directionGoals(settings.calculation).docsWarnDays;
+  const warnTo = new Date(Date.parse(`${today}T00:00:00Z`) + warnDays * DAY).toISOString().slice(0, 10);
+  for (const row of safe(() => db.prepare(`SELECT kind, MAX(valid_until) until FROM safety_events WHERE driver_id=?
+      AND kind IN ('admission','briefing') GROUP BY kind`).all(driver.id)) || []) {
+    if (row.until <= warnTo) plan.push({ kind: 'row', label: row.kind === 'admission' ? 'Допуск водителя' : 'Инструктаж',
+      note: `${row.until < today ? 'истёк' : 'до'} ${row.until.split('-').reverse().join('.')}`, value: null,
+      tone: row.until < today ? 'neg' : 'warn', source: 'БДД · safety_events' });
+  }
+  if (vehicle) {
+    const card = safe(() => db.prepare('SELECT * FROM vehicle_cards WHERE vehicle_id=?').get(vehicle.id));
+    for (const doc of (safe(() => docsOf(card, today, warnDays)) || []).filter(item => ['soon', 'expired'].includes(item.status))) {
+      plan.push({ kind: 'row', label: `${doc.label} · ${vehicle.plate}`, note: `${doc.status === 'expired' ? 'истёк' : 'до'} ${String(doc.until).split('-').reverse().join('.')}`,
+        value: null, tone: doc.status === 'expired' ? 'neg' : 'warn', source: 'паспорт ТС' });
+    }
+  }
+  const tasks = db.prepare(`SELECT * FROM arm_tasks WHERE to_driver_id=? AND status IN ('new','work') ORDER BY due_at`).all(driver.id)
+    .map(task => ({ kind: 'task', id: task.id, label: task.title, body: task.body, about: task.about,
+      tag: `от ${task.from_name} · ${dueLabel(task.due_at, nowMs)}`, tone: Date.parse(task.due_at) < nowMs ? 'neg' : task.status === 'work' ? '' : 'warn',
+      actions: task.status === 'new' ? ['take', 'done', 'fail'] : ['done', 'fail'], source: 'arm_tasks' }));
+  const docsDue = vehicle ? safe(() => db.prepare(`SELECT order_no, to_point FROM trips WHERE vehicle_id=? AND status IN ('unloaded','done','paid')
+      AND docs_returned_at IS NULL AND COALESCE(unloaded_at, ends_at)>=(SELECT value FROM app_meta WHERE key='docs_return_since')
+      ORDER BY COALESCE(unloaded_at, ends_at) LIMIT 5`).all(vehicle.id)) || [] : [];
+  for (const row of docsDue) tasks.push({ kind: 'task', label: `Сдать документы по рейсу${row.order_no ? ` № ${row.order_no}` : ''}${row.to_point ? ` (${row.to_point})` : ''}`,
+    tag: 'диспетчеру учёта', tone: 'warn', actions: [], source: 'документы после выгрузки' });
+  return { person: { name: driver.full_name, position: 'Водитель-экспедитор', vehicle: vehicle ? `${vehicle.plate}${vehicle.trailer_plate ? ` + ${vehicle.trailer_plate}` : ''}` : '' },
+    zones: { analysis, plan, exec: [], tasks }, zoneTitles: Object.fromEntries(ARM_ZONES) };
+}
+
 // Данные АРМ: шапка + четыре зоны. roleId — набор из реестра; нет его —
 // каркас тот же, зоны по должности пустые до Э3, задачи работают.
 export function armData(db, user, roleId, { nowMs = Date.now(), settings = {}, readOnly = false, park = null, money = 'none' } = {}) {
@@ -609,6 +714,12 @@ export async function armApi(ctx) {
     const body = await readJson(request) || {};
     const result = addTask(db, user, access, body);
     if (!result.ok) { errorJson(response, result.status, result.error); return true; }
+    if (result.driver) {
+      audit(db, user, 'create', 'arm_task', result.id, { toDriver: result.driver.id, title: body.title }, requestIp(request));
+      try { ctx.notifyDriver?.(result.driver, `☑ Задача от ${user.full_name || user.username}: ${String(body.title).trim()} — ${dueLabel(new Date(Date.parse(body.dueAt)).toISOString(), Date.now())}.`); } catch { /* не критично */ }
+      json(response, 201, { id: result.id });
+      return true;
+    }
     audit(db, user, 'create', 'arm_task', result.id, { to: result.to.id, title: body.title }, requestIp(request));
     notify(result.to.id, `☑ Задача от ${user.full_name || user.username}: ${String(body.title).trim()} — срок ${dueLabel(new Date(Date.parse(body.dueAt)).toISOString(), Date.now()).replace('срок ', '')}. Открыть: «Моё рабочее место».`);
     json(response, 201, { id: result.id });

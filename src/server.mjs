@@ -65,7 +65,7 @@ import { payrollApi } from './payroll.mjs';
 import { crmApi, markTripPaid, syncContractDays } from './crm.mjs';
 import { turnoverApi } from './turnover.mjs';
 import { partsApi } from './parts.mjs';
-import { armApi } from './arm.mjs';
+import { armApi, driverArmData, driverTaskAction } from './arm.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -9227,6 +9227,28 @@ async function api(request, response, url) {
     if (!driver) return;
     return json(response, 200, driverAppState(driver));
   }
+  // АРМ водителя (Э5, 07.11): тот же каркас из четырёх зон; «Выполнение» —
+  // текущий рейс из state; задачи от Эксплуатации — кнопками.
+  if (request.method === 'POST' && pathname === '/api/driver-app/arm') {
+    const body = await readJson(request);
+    const driver = driverAppAuth(body, response);
+    if (!driver) return;
+    return json(response, 200, { ...driverArmData(db, driver, { settings: settingsObject(db) }), state: driverAppState(driver) });
+  }
+  if (request.method === 'POST' && pathname === '/api/driver-app/task') {
+    const body = await readJson(request);
+    const driver = driverAppAuth(body, response);
+    if (!driver) return;
+    const result = driverTaskAction(db, driver, String(body.id || ''), String(body.action || ''), body.result);
+    if (!result.ok) return errorJson(response, result.status, result.error);
+    audit(db, null, `driver-${body.action}`, 'arm_task', result.task.id, { driver: driver.full_name, result: body.result || '' }, requestIp(request));
+    if (result.notify) {
+      const author = db.prepare('SELECT full_name FROM users WHERE id=?').get(result.notify);
+      const what = { done: '✓ сделано', fail: '✗ не сделано' }[body.action];
+      if (author) notifyUserByName(author.full_name, `☑ Задача «${result.task.title}» — ${what}${body.result ? `: ${String(body.result).trim()}` : ''} (водитель ${driver.full_name}).`, 'arm_task', null);
+    }
+    return json(response, 200, { ok: true, ...driverArmData(db, driver, { settings: settingsObject(db) }), state: driverAppState(driver) });
+  }
   if (request.method === 'POST' && pathname === '/api/driver-app/step') {
     const body = await readJson(request);
     const driver = driverAppAuth(body, response);
@@ -15329,6 +15351,14 @@ async function api(request, response, url) {
       const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
       const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 864e5).toISOString().slice(0, 10);
       return parkReportData(`${today.slice(0, 7)}-01`, tomorrow);
+    };
+    // Водителю — сообщением бота водителей с кнопкой приложения.
+    ctx.notifyDriver = (driver, text) => {
+      if (!driver.telegram_chat_id) return;
+      const appBase = String(telegramConfig().webhookBase || '').trim().replace(/\/+$/, '');
+      tgApi('sendMessage', { chat_id: driver.telegram_chat_id, text,
+        ...(appBase.startsWith('https') ? { reply_markup: { inline_keyboard: [[{ text: '📱 Открыть приложение', web_app: { url: `${appBase}/driver.html` } }]] } } : {})
+      }, driverBotToken());
     };
     ctx.notifyUser = (userId, text) => {
       const target = db.prepare('SELECT full_name FROM users WHERE id=?').get(userId);

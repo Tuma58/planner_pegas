@@ -8,7 +8,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
 import { accessOf, assignRoleSets } from '../src/access.mjs';
-import { ARM_ROLES, ARM_ZONES, addTask, armApi, armData, armRoleOf, canAssign, canView, taskAction } from '../src/arm.mjs';
+import { ARM_ROLES, ARM_ZONES, addTask, armApi, armData, armRoleOf, canAssign, canView, driverArmData, driverTaskAction, peopleFor, taskAction } from '../src/arm.mjs';
 
 function freshDb(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-arm-test-'));
@@ -180,4 +180,37 @@ test('Э4: у руководителей отделов поле внутри А
   // Задачи смены по процессу — ссылкой на панель рабочего экрана.
   const logist = armData(db, userWith(db, ['log_assign']), 'log_assign');
   assert.ok(logist.zones.tasks.some(item => item.source === 'task_marks' && item.screen === 'logist'));
+});
+
+test('Э5: АРМ водителя — тот же каркас; задачу ставит Эксплуатация, водитель закрывает из приложения', t => {
+  const db = freshDb(t);
+  const driver = db.prepare(`SELECT * FROM drivers WHERE status<>'fired' AND vehicle_id IS NOT NULL LIMIT 1`).get();
+  const data = driverArmData(db, driver);
+  assert.deepEqual(Object.keys(data.zones), ['analysis', 'plan', 'exec', 'tasks']);
+  assert.ok(data.zones.analysis.length >= 1);
+  assert.equal(data.person.name, driver.full_name);
+  const acc = user => accessOf(db, user);
+  const column = placed(db, ['drv_column'], 10);
+  const logist = placed(db, ['log_assign'], 7);
+  assert.ok(peopleFor(db, column, acc(column)).some(person => person.id === `d:${driver.id}`));
+  assert.ok(!peopleFor(db, logist, acc(logist)).some(person => person.driver)); // логистика водителям не ставит
+  const due = new Date(Date.now() + 86_400_000).toISOString();
+  assert.equal(addTask(db, logist, acc(logist), { toUserId: `d:${driver.id}`, title: 'x', dueAt: due }).status, 403);
+  const created = addTask(db, column, acc(column), { toUserId: `d:${driver.id}`, title: 'Пройти инструктаж', dueAt: due });
+  assert.ok(created.ok && created.driver.id === driver.id);
+  const task = driverArmData(db, driver).zones.tasks.find(item => item.id === created.id);
+  assert.deepEqual(task.actions, ['take', 'done', 'fail']);
+  // Чужой водитель не видит и не закрывает.
+  const other = db.prepare(`SELECT * FROM drivers WHERE id<>? AND status<>'fired' LIMIT 1`).get(driver.id);
+  assert.equal(driverTaskAction(db, other, created.id, 'done').status, 404);
+  assert.equal(driverTaskAction(db, driver, created.id, 'fail', '').status, 422);
+  const done = driverTaskAction(db, driver, created.id, 'done', 'прошёл');
+  assert.ok(done.ok);
+  assert.equal(done.notify, column.id); // начальнику колонны — уведомление
+  assert.equal(db.prepare('SELECT status FROM arm_tasks WHERE id=?').get(created.id).status, 'done');
+  // Задача водителю видна у автора в «Я поставил» до закрытия, а снимает её только автор.
+  const second = addTask(db, column, acc(column), { toUserId: `d:${driver.id}`, title: 'Сдать путевой', dueAt: due });
+  assert.equal(armData(db, column, 'drv_column').given[0].id, second.id);
+  assert.equal(driverTaskAction(db, driver, second.id, 'cancel').status, 403);
+  assert.ok(taskAction(db, column, second.id, 'cancel').ok);
 });

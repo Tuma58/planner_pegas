@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Мой рейс — Пегас-Авто</title>
+<title>Моё рабочее место — Пегас-Авто</title>
   <link rel="icon" href="/assets/brand/pegas-symbol.svg" type="image/svg+xml">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -48,6 +48,19 @@
     background: rgba(42,68,160,.12); font-size: 15px; white-space: pre-line; }
   .err { background: rgba(194,59,67,.14); }
   .refresh { text-align: center; margin-top: 8px; }
+  /* АРМ водителя (Э5): те же зоны, что у всех, — столбиком под телефон */
+  .zone { margin-bottom: 6px; }
+  .zone-h { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--tg-theme-hint-color, #525d78); margin: 10px 4px 6px; }
+  .head h1 { margin: 0; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .metric .l { font-size: 12px; color: var(--tg-theme-hint-color, #525d78); }
+  .metric .v { font-size: 22px; font-weight: 700; }
+  .metric .d { font-size: 12px; color: var(--tg-theme-hint-color, #525d78); }
+  .row, .task { padding: 8px 0; border-bottom: 1px solid rgba(128,128,128,.15); }
+  .row:last-child, .task:last-child { border-bottom: none; }
+  .row small, .task small { display: block; color: var(--tg-theme-hint-color, #525d78); }
+  .row.warn span, .task.warn b { color: #b7791f; } .row.neg span, .task.neg b { color: #c23b43; }
   .refresh button { border: 0; background: transparent; color: var(--tg-theme-link-color, #2a44a0); font-size: 14px; }
 </style>
 </head>

@@ -63,13 +63,15 @@ async function newTaskDialog(context, after) {
   if (!people.length) { toast('Некому поставить задачу: в вашем отделе пока нет коллег с учётной записью'); return; }
   const tomorrow = new Date(Date.now() + 27 * 3_600_000).toISOString().slice(0, 16);
   context.showModal(`<form id="armTaskForm"><h2>☑ Поставить задачу</h2>
-    <label class="field">Кому <select name="toUserId" required><option value="">—</option>${people.map(person =>
-    `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}${person.position ? ` · ${escapeHtml(person.position)}` : ''}</option>`).join('')}</select></label>
+    <label class="field">Кому <select name="toUserId" required><option value="">—</option>${[['Коллеги', people.filter(person => !person.driver)],
+    ['Водители (задача придёт в приложение «Мой рейс»)', people.filter(person => person.driver)]].filter(([, list]) => list.length)
+    .map(([label, list]) => `<optgroup label="${escapeHtml(label)}">${list.map(person =>
+      `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}${person.position ? ` · ${escapeHtml(person.position)}` : ''}</option>`).join('')}</optgroup>`).join('')}</select></label>
     <label class="field">Что сделать <input name="title" maxlength="300" required placeholder="Закрыть брони Корса до вечера"></label>
     <label class="field">Срок <input type="datetime-local" name="dueAt" value="${tomorrow}" required></label>
     <label class="field">К чему относится <small class="muted">рейс, машина, клиент — по желанию</small><input name="about" maxlength="200"></label>
     <label class="field">Подробности <textarea name="body" rows="3"></textarea></label>
-    <p class="muted">Задачу можно поставить коллеге своего отдела. Между отделами — стыки и «⚑ Сигнал».</p>
+    <p class="muted">Задачу можно поставить коллеге своего отдела; Эксплуатация — и водителю. Между отделами — стыки и «⚑ Сигнал».</p>
     <div class="form-error" id="armTaskErr"></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button primary">Поставить</button></div></form>`);
   document.querySelector('#armTaskForm').addEventListener('submit', async event => {
