@@ -245,3 +245,25 @@
 .st-wide .sec-b { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 18px; }
 .st-wide .st-coef, .st-wide .st-staff { grid-column: 1 / -1; }
 .st-wide .st-group { border-top: 0; border-left: 2px solid var(--border2); padding: 0 0 0 10px; }
+
+/* ── «◉ Моё поле» (Слияние, Э1, 07.11) ── */
+.fd-list { display: flex; flex-direction: column; gap: 9px; font-size: 13px; }
+.fd-joint { border-left: 3px solid var(--border2); padding-left: 10px; display: flex; flex-direction: column; gap: 4px; }
+.fd-joint.in { border-left-color: var(--accent); }
+.fd-jh { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fd-jv b, .fd-list b { font-family: var(--mono-font); }
+.fd-warn { color: var(--warn); } .fd-ok { color: var(--ok); }
+.fd-plates { display: flex; flex-wrap: wrap; gap: 4px; }
+.fd-note { font-size: 11.5px; }
+.fd-go { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 4px; }
+.fd-go:hover { color: var(--accent); }
+.sec-h .fd-go { margin-left: auto; }
+.fd-task { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--border2); padding-bottom: 6px; }
+.fd-task.goal span { font-weight: 650; }
+.fd-m { font-family: var(--mono-font); white-space: nowrap; color: var(--muted); }
+.fd-m.pos b { color: var(--ok); } .fd-m.warn b { color: var(--warn); } .fd-m.neg b { color: var(--bad); }
+.fd-weeks { display: flex; align-items: flex-end; gap: 10px; height: 130px; }
+.fd-week { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+.fd-week i { display: block; width: 100%; max-width: 44px; background: var(--accent); border-radius: 4px 4px 0 0; }
+.fd-week i.pos { background: var(--ok); } .fd-week i.warn { background: var(--warn); } .fd-week i.neg { background: var(--bad); }
+.fd-week small { font-family: var(--mono-font); font-size: 10.5px; color: var(--faint); }

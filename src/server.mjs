@@ -54,6 +54,7 @@ import { directionGoals } from '../public/assets/goals-core.js';
 import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
 import { accessOf, assignRoleSets, roleSets, stripOrders, stripSmall, stripTrips } from './access.mjs';
+import { FIELD_META, fieldData, fieldLive } from './field.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -14920,16 +14921,8 @@ async function api(request, response, url) {
     return json(response, 200, { ok: true, id: result.id || id });
   }
   // ── ₽ ЦФО и затраты (блок 3 «Слияния», 07.11) ──
-  if (request.method === 'GET' && pathname === '/api/cfo') {
-    const user = requireUser(request, response);
-    if (!user) return;
-    const scope = cfoScope(db, user, expensesAccess(user, settingsObject(db)));
-    if (!scope) return errorJson(response, 403, 'Затраты ЦФО видят руководители отделов и обладатели доступа к затратам');
-    const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('to') || '')
-      ? url.searchParams.get('to') : new Date().toISOString().slice(0, 10);
-    const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('from') || '')
-      ? url.searchParams.get('from') : `${to.slice(0, 7)}-01`;
-    if (to < from) return errorJson(response, 422, 'Период задан неверно');
+  // Отчёт ЦФО за период по области — общий для экрана ЦФО и «Моего поля».
+  const cfoReportFor = (scope, from, to) => {
     const toExcl = addDayIso(to);
     let snap = null;
     try { snap = reportSnapshot(db, `${from}T00:00:00.000Z`, `${toExcl}T00:00:00.000Z`); } catch { snap = null; }
@@ -14943,7 +14936,7 @@ async function api(request, response, url) {
     const incidents = Object.fromEntries(db.prepare(`SELECT kind, COUNT(*) n FROM trip_incidents
       WHERE substr(created_at,1,10)>=? AND substr(created_at,1,10)<=? GROUP BY kind`).all(from, to)
       .map(row => [row.kind, row.n]));
-    const data = cfoData({
+    return cfoData({
       from, to, snap, owners, incidents,
       items: db.prepare(`SELECT category_id, amount, vat, supplier, vehicle_id FROM expenses
         WHERE spent_on>=? AND spent_on<=?`).all(from, to),
@@ -14952,6 +14945,57 @@ async function api(request, response, url) {
       demurrage: { billed: Math.round(claims.find(row => row.status === 'billed')?.s || 0),
         open: Math.round(claims.find(row => row.status === 'new')?.s || 0) }
     }, scope);
+  };
+  if (request.method === 'GET' && pathname === '/api/cfo') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const scope = cfoScope(db, user, expensesAccess(user, settingsObject(db)));
+    if (!scope) return errorJson(response, 403, 'Затраты ЦФО видят руководители отделов и обладатели доступа к затратам');
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('to') || '')
+      ? url.searchParams.get('to') : new Date().toISOString().slice(0, 10);
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('from') || '')
+      ? url.searchParams.get('from') : `${to.slice(0, 7)}-01`;
+    if (to < from) return errorJson(response, 422, 'Период задан неверно');
+    return json(response, 200, cfoReportFor(scope, from, to));
+  }
+  // ── ◉ Моё поле — поле управления отдела (Э1, 07.11) ──
+  // Отдел — из области пользователя; у области «всё направление» отдел
+  // выбирается параметром (провал Штаба в поле любого отдела).
+  if (request.method === 'GET' && pathname === '/api/field') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    if (access.legacy ? !hasPermission(user, 'reports:read') : !access.views.includes('field')) {
+      return errorJson(response, 403, 'Поле вне вашей роли');
+    }
+    const asked = url.searchParams.get('dept');
+    const dept = access.scope.all ? (FIELD_META[asked] ? asked : 'log')
+      : (access.scope.depts.includes(asked) ? asked : access.scope.depts[0]);
+    if (!dept || !FIELD_META[dept]) return errorJson(response, 403, 'У вашей роли нет отдела');
+    const scope = { all: false, depts: [dept] };
+    const gctx = goalsContext(url.searchParams.get('month'), mileageData);
+    const goals = scopeGoals(goalsData(db, gctx), scope, gctx);
+    goals.initiatives = goalsInitiatives();
+    let park = null;
+    try { park = parkReportData(gctx.from, gctx.to); } catch { park = null; }
+    const structure = scopeStructure(structureData(db, park?.total), scope);
+    const goalsCfg = directionGoals(settingsObject(db).calculation);
+    const cfoView = cfoScope(db, user, expensesAccess(user, settingsObject(db)));
+    const today = new Date().toISOString().slice(0, 10);
+    const shifts = db.prepare(`SELECT u.full_name name, s.kind FROM staff_shifts s
+      JOIN users u ON u.id=s.user_id JOIN org_positions p ON p.id=u.position_id
+      WHERE s.day=? AND s.kind IN ('day','night') AND p.dept_key=? AND u.active=1 AND u.deleted_at IS NULL
+      ORDER BY s.kind, u.full_name`).all(today, dept);
+    const data = fieldData({
+      dept, month: gctx.month, from: gctx.from, to: gctx.to, park, snap: gctx.snap, goals, structure,
+      cfo: cfoView && (cfoView.all || cfoView.depts.includes(dept))
+        ? cfoReportFor({ all: false, depts: [dept] }, gctx.from,
+          new Date(Date.parse(`${gctx.to}T00:00:00Z`) - 864e5).toISOString().slice(0, 10)) : null,
+      live: fieldLive(db, dept), shifts,
+      targets: { КТГ: goalsCfg.ktg, КВЛ: goalsCfg.kvl, КИП: goalsCfg.kip, КЭИП: goalsCfg.use }
+    });
+    data.canSwitch = access.scope.all;
+    data.money = access.money === 'none' && dept === 'log' ? null : data.money;
     return json(response, 200, data);
   }
   if (request.method === 'GET' && pathname === '/api/structure') {

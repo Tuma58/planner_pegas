@@ -13,10 +13,11 @@
 
 import { ROLE_LABELS, rolesOf } from './permissions.mjs';
 
-export const ALL_VIEWS = ['dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
+export const ALL_VIEWS = ['field', 'dashboard', 'gantt', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses',
   'sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents',
   'resource', 'fleetplan', 'remzona'];
-const DEPT_PANELS = ['structure', 'goals', 'cfo'];
+// «Моё поле» — первым: поле управления руководителя отдела (Э1, 07.11).
+const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo'];
 // Уровни денег: full — выручка, планы, прогноз, претензии; rates —
 // ставки рейсов и заявок (работа логиста/планирования), без итогов
 // направления; none — без денег вовсе.
@@ -55,12 +56,25 @@ export function migrateAccess(db) {
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
   const cols = db.prepare(`PRAGMA table_info(users)`).all().map(col => col.name);
   if (!cols.includes('role_sets')) db.exec(`ALTER TABLE users ADD COLUMN role_sets TEXT NOT NULL DEFAULT ''`);
-  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_v1'`).get()) return;
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_v1'`).get()) { migrateFieldView(db); return; }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
     VALUES(?,?,?,?,?,?,?,?)`);
   SEED.forEach(([id, title, scope, views, codes, money, cfo], index) =>
     insert.run(id, title, scope, JSON.stringify(views), JSON.stringify(codes), money, cfo, index + 1));
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_v1','1')`).run();
+  migrateFieldView(db);
+}
+
+// Э1 (07.11): «Моё поле» добавляется в наборы руководителей (у кого есть
+// панели отдела) и в наборы всего направления — разово, правки целы.
+function migrateFieldView(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_field_v1'`).get()) return;
+  for (const row of db.prepare(`SELECT id, views_json FROM role_sets`).all()) {
+    const views = parse(row.views_json, []);
+    if (views.includes('field') || !(views.includes('structure') || row.id === 'admin')) continue;
+    db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify(['field', ...views]), row.id);
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_field_v1','1')`).run();
 }
 
 const parse = (text, fallback) => { try { return JSON.parse(text || ''); } catch { return fallback; } };

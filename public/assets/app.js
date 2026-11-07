@@ -21,6 +21,7 @@ import { fireReasonDialog, renderStaff } from './staff.js';
 import { renderStructure } from './structure.js';
 import { renderGoals } from './goals.js';
 import { renderCfo } from './cfo.js';
+import { renderField } from './field.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -91,6 +92,12 @@ function setupUser() {
     try { localStorage.setItem('pl_dept', dept); } catch { /* приватный режим */ }
   }
   renderCascade();
+  // Первый экран руководителя отдела — «Моё поле» (Э1, 07.11).
+  if (!state.fieldLanded && user.access && !user.access.legacy && !user.access.scope.all
+      && user.access.views.includes('field')) {
+    state.fieldLanded = true;
+    state.view = 'field';
+  }
   if (user.labMode) setupLabSwitch(user);
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
 }
@@ -840,6 +847,11 @@ const MAIN_VIEWS = [
   { id: 'goals', title: 'Цели и задачи', show: () => true },
   // ЦФО и затраты (блок 3 «Слияния», 07.11): общий — в Штабе, руководителю
   // отдела — затраты его отдела в блоке отдела (сервер отдаёт cfoScope).
+  // «◉ Моё поле» (Э1, 07.11) — поле управления руководителя отдела.
+  { id: 'field', title: 'Моё поле', show: () => {
+    const access = state.data?.user?.access;
+    return Boolean(access?.views?.includes('field') || (access?.legacy && can('reports:read')));
+  } },
   { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
 ];
 
@@ -853,7 +865,7 @@ const NAV_GROUPS = [
   { dept: '', title: 'Общее', coef: '', sub: [
     { title: '', views: ['dashboard', 'gantt'] }] },
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: '', views: ['structure', 'goals', 'cfo', 'boss', 'staff', 'expenses'] }] },
+    { title: '', views: ['field', 'structure', 'goals', 'cfo', 'boss', 'staff', 'expenses'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
@@ -865,6 +877,7 @@ const NAV_GROUPS = [
 ];
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
+  field: ['◉', 'Поле управления отдела: коэффициент, потери, стыки, очереди, люди, деньги'],
   cfo: ['₽', 'Затраты по центрам ответственности, ₽ на машино-день, управляемые потери'],
   goals: ['◉', 'Миссия, цели направления и задачи отделов — на живых показателях'],
   structure: ['◫', 'Отделы, группы и должности: штат, факт, вакансии, паспорта'],
@@ -899,7 +912,7 @@ function viewAllowed(id) {
   const access = state.data?.user?.access;
   return !access || access.legacy || access.views.includes(id);
 }
-const DEPT_PANELS = ['structure', 'goals', 'cfo'];
+const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo'];
 
 function renderViewTabs() {
   const views = MAIN_VIEWS.filter(view => view.show() && viewAllowed(view.id));
@@ -1031,6 +1044,8 @@ function renderMain() {
       showModal, closeModal, rerenderMain: renderMain,
       onReload: reload, taskContainer: byId('sidepanel')
     });
+  } else if (state.view === 'field') {
+    renderField(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'cfo') {
     renderCfo(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'goals') {

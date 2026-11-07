@@ -1,0 +1,124 @@
+// «Моё поле» — поле управления руководителя отдела (проект «Слияние»,
+// Э1, утверждено руководителем 07.11.2026). Один экран с параметром
+// «отдел»: всё о своём отделе — коэффициент и его ход, потери машино-дней
+// этапа, задачи, стыки с соседями (процессы «Рабочей среды СТ»), живые
+// очереди рабочих экранов, люди, деньги ЦФО, инициативы. Своих формул
+// здесь нет: секции раскладывают готовые каноны (parkReportData,
+// reportSnapshot, «Цели и задачи», «Структура», «ЦФО») и прямые выборки
+// очередей — те же данные, что видят рабочие экраны. Каждая секция ведёт
+// в экран, где идёт работа.
+
+export const FIELD_META = {
+  log: { name: 'Отдел логистики', coef: 'КИП', lossKey: 'idle', lossLabel: 'простой укомплектованных без задания' },
+  drv: { name: 'Отдел эксплуатации', coef: 'КВЛ', lossKey: 'noDriverShift', lossLabel: 'без водителя и пересменки' },
+  toir: { name: 'Ремонтная служба (ТОиР)', coef: 'КТГ', lossKey: 'repair', lossLabel: 'в ремонте' },
+  staff: { name: 'Штаб направления', coef: 'КЭИП', lossKey: 'total', lossLabel: 'все потери каскада' }
+};
+const COEF_KEY = { КТГ: 'ktg', КВЛ: 'kvl', КИП: 'kip', КЭИП: 'koef' };
+
+// Стыки среды СТ (панель «Процессы и контроль»): что отдел передаёт
+// соседу и что получает. Мерим бдительность — сколько сейчас «висит» на
+// стыке и как долго, а не чужую цифру.
+export const JOINTS = [
+  { key: 'toir_drv', from: 'toir', to: 'drv', risk: 'починили — не укомплектовали',
+    label: 'ТС из ремонта без водителя', screen: 'resource' },
+  { key: 'drv_log', from: 'drv', to: 'log', risk: 'укомплектовали — не загрузили',
+    label: 'укомплектованные ТС без задания', screen: 'logist' },
+  { key: 'log_toir', from: 'log', to: 'toir', risk: 'гоняем — довели до поломки',
+    label: 'окна ТО в провалах заявок', screen: 'remzona', pending: 'Процессы и контроль' }
+];
+
+const nowIso = () => new Date().toISOString();
+const hoursSince = iso => iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 3.6e6) : null;
+
+// Машины «без задания»: в работе, сейчас нет рейса и нет плана вперёд,
+// нет действующей диспозиции. Часы простоя — от выгрузки последнего рейса.
+export function idleVehicles(db, at = nowIso()) {
+  return db.prepare(`SELECT v.id, v.plate,
+      (SELECT MAX(COALESCE(t.unloaded_at, t.ends_at)) FROM trips t
+        WHERE t.vehicle_id=v.id AND t.status<>'rejected' AND t.ends_at<=?) last_end
+    FROM vehicles v WHERE v.status='work'
+      AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_id=v.id AND t.status IN ('plan','run')
+        AND t.ends_at>?)
+      AND NOT EXISTS (SELECT 1 FROM vehicle_dispositions d WHERE d.vehicle_id=v.id
+        AND d.kind<>'reserve' AND d.starts_at<=? AND d.ends_at>?)
+    ORDER BY last_end`).all(at, at, at, at)
+    .map(row => ({ plate: row.plate, idleH: hoursSince(row.last_end) }));
+}
+
+// Живые очереди отдела и стыки — прямые выборки по текущему моменту.
+export function fieldLive(db, dept, at = nowIso()) {
+  const activeDispo = kind => db.prepare(`SELECT d.vehicle_id, v.plate, d.starts_at FROM vehicle_dispositions d
+    JOIN vehicles v ON v.id=d.vehicle_id WHERE d.kind=? AND d.starts_at<=? AND d.ends_at>?
+    ORDER BY d.starts_at`).all(kind, at, at);
+  const idle = idleVehicles(db, at);
+  const noDriver = activeDispo('no_driver');
+  const fromRepair = noDriver.filter(row => db.prepare(`SELECT 1 FROM repair_orders WHERE vehicle_id=?
+    AND status='released' AND released_at>=datetime(?, '-7 days')`).get(row.vehicle_id, at));
+  const joints = JOINTS.map(joint => {
+    const base = { ...joint, side: joint.from === dept ? 'out' : joint.to === dept ? 'in' : null };
+    if (joint.pending) return { ...base, count: null };
+    const list = joint.key === 'toir_drv'
+      ? fromRepair.map(row => ({ plate: row.plate, hours: hoursSince(row.starts_at) }))
+      : idle.map(row => ({ plate: row.plate, hours: row.idleH }));
+    const hours = list.map(row => row.hours).filter(Number.isFinite);
+    return { ...base, count: list.length, maxH: hours.length ? Math.round(Math.max(...hours)) : null,
+      items: list.slice(0, 8) };
+  }).filter(joint => dept === 'staff' || joint.side);
+  const queues = [];
+  if (dept === 'log' || dept === 'staff') {
+    const orders = db.prepare(`SELECT COUNT(*) n, MIN(window_from) first FROM orders
+      WHERE deleted_at IS NULL AND trip_id IS NULL AND status NOT IN ('rejected','cancelled')
+        AND window_to>=?`).get(at);
+    queues.push({ key: 'orders', dept: 'log', label: 'Заявки без ТС', count: orders.n,
+      note: orders.first ? `ближайшее окно ${orders.first.slice(0, 16).replace('T', ' ')}` : '', screen: 'logist' });
+    queues.push({ key: 'idle', dept: 'log', label: 'Свободные ТС без задания', count: idle.length,
+      note: idle[0]?.idleH != null ? `дольше всех ${Math.round(idle[0].idleH)} ч` : '', screen: 'logist' });
+    const late = db.prepare(`SELECT COUNT(*) n FROM trips WHERE status='run' AND ends_at<?`).get(at).n;
+    queues.push({ key: 'late', dept: 'log', label: 'Рейсы в пути позже срока', count: late, screen: 'dispatcher' });
+  }
+  if (dept === 'drv' || dept === 'staff') {
+    queues.push({ key: 'no_driver', dept: 'drv', label: 'ТС без водителя', count: noDriver.length,
+      note: noDriver.length ? noDriver.slice(0, 5).map(row => row.plate).join(', ') : '', screen: 'resource' });
+    queues.push({ key: 'shift', dept: 'drv', label: 'На пересменке', count: activeDispo('shift').length, screen: 'resource' });
+  }
+  if (dept === 'toir' || dept === 'staff') {
+    const repair = db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN planned_out IS NOT NULL AND planned_out<? THEN 1 ELSE 0 END) late
+      FROM repair_orders WHERE status IN ('queued','in_progress','ready')`).get(at);
+    queues.push({ key: 'repair', dept: 'toir', label: 'В ремонте', count: repair.n, screen: 'remzona' });
+    queues.push({ key: 'repair_late', dept: 'toir', label: 'Просрочен выпуск из ремонта', count: repair.late || 0, screen: 'remzona' });
+  }
+  return { joints, queues };
+}
+
+// Сборка поля: ctx — готовые каноны, посчитанные сервером за период.
+// ctx: { dept, month, from, to, park (parkReportData целиком), snap,
+//   goals (срез «Целей»), structure (срез «Структуры»), cfo (срез ЦФО|null),
+//   live (fieldLive), shifts ([{name, kind}]), targets }
+export function fieldData(ctx) {
+  const meta = FIELD_META[ctx.dept];
+  const coefKey = COEF_KEY[meta.coef];
+  const md = ctx.snap?.utilization?.machineDays || {};
+  const losses = {
+    idle: md.idle || 0, repair: md.repair || 0, noDriverShift: (md.noDriver || 0) + (md.shift || 0),
+    total: (md.idle || 0) + (md.repair || 0) + (md.noDriver || 0) + (md.shift || 0) + (md.out || 0)
+  };
+  const dept = ctx.structure?.depts?.find(item => item.key === ctx.dept);
+  return {
+    dept: ctx.dept, ...meta, month: ctx.month, from: ctx.from, to: ctx.to,
+    coef: { value: ctx.park?.total?.[coefKey] ?? null, target: ctx.targets?.[meta.coef] ?? null,
+      weeks: (ctx.park?.weeks || []).slice(-6).map(week => ({ from: week.from, value: week[coefKey] })) },
+    machineDays: { lost: losses[meta.lossKey], label: meta.lossLabel, calendar: ctx.snap?.utilization?.calendarDays || 0,
+      breakdown: md },
+    tasks: (ctx.goals?.items || []).filter(item => item.dept === ctx.dept),
+    summary: ctx.goals?.summary || null,
+    people: dept ? { headcount: dept.headcount, fact: dept.fact, vacancies: dept.vacancies,
+      noRole: ctx.structure.totals.noRole,
+      openPositions: ctx.structure.positions.filter(item => item.dept === ctx.dept && item.vacancies)
+        .map(item => ({ title: item.title, vacancies: item.vacancies })),
+      onShift: ctx.shifts || [] } : null,
+    money: ctx.cfo?.centers?.find(center => center.key === ctx.dept) || null,
+    initiatives: ctx.goals?.initiatives?.[ctx.dept] || null,
+    ...ctx.live
+  };
+}
