@@ -1,4 +1,4 @@
-import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs, captureViewScroll, restoreViewScroll } from './api.js';
+import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs, captureViewScroll, restoreViewScroll, setMoneyHidden } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderMonitoring } from './monitoring.js';
 import { vehicleInfoDialog } from './vehicle-info.js';
@@ -95,6 +95,8 @@ function setupUser() {
     try { localStorage.setItem('pl_dept', dept); } catch { /* приватный режим */ }
   }
   renderCascade();
+  // «Скрыто» вместо «0 ₽» у роли без денег (сервер вырезал суммы).
+  setMoneyHidden(user.access && !user.access.legacy && user.access.money === 'none');
   // Первый экран руководителя отдела — «Моё поле» (Э1, 07.11).
   // Четыре руководителя (направления, логистики, ремзоны, эксплуатации) —
   // на своё поле; руководитель направления — на поле направления.

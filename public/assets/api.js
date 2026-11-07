@@ -260,8 +260,14 @@ export function restoreViewScroll(snapshot, root = document.body) {
   if (snapshot.window.y || snapshot.window.x) window.scrollTo(snapshot.window.x, snapshot.window.y);
 }
 
-export const money = value =>
-  `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
+// Деньги, вырезанные сервером по уровню роли (роли-наборы, 07.11), приходят
+// как null — у ролей «без денег» показываем «скрыто», а не «0 ₽», чтобы ноль
+// не путали с суммой (чек-лист продукта). Флаг ставит app.js при входе.
+let moneyHidden = false;
+export const setMoneyHidden = value => { moneyHidden = Boolean(value); };
+export const money = value => moneyHidden && value == null
+  ? 'скрыто'
+  : `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} ₽`;
 
 // Сумма из пользовательского ввода: терпит копипаст с пробелами
 // (в т.ч. неразрывными — так форматирует money()), знаком ₽ и запятой:

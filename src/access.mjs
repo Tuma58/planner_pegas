@@ -33,8 +33,10 @@ const SEED = [
   ['log_plan', 'Специалист группы планирования', 'log', ['sales', 'routes', 'delivery', 'flows', 'gantt'],
     ['sales'], 'rates', ''],
   ['log_assign', 'Логист-диспетчер', 'log', ['logist', 'gantt'], ['logist'], 'rates', ''],
+  // Уровень «ставки» (чек-лист 07.11): сверка суммы заказа перед 1С и сбор
+  // наличных — прямая работа диспетчера-контролёра; итогов направления нет.
   ['log_ctrl', 'Диспетчер-контролёр', 'log', ['dispatcher', 'monitoring', 'incidents', 'gantt'],
-    ['dispatcher'], 'none', ''],
+    ['dispatcher'], 'rates', ''],
   ['drv_head', 'Руководитель отдела эксплуатации', 'drv', [...DEPT_PANELS, 'resource', 'fleetplan', 'gantt'],
     ['resource'], 'none', 'dept'],
   // Начальник автоколонны — ПОД руководителем эксплуатации, не
@@ -67,6 +69,7 @@ export function migrateAccess(db) {
     migrateKpiView(db);
     migrateGuard(db);
     migrateRelease(db);
+    migrateCtrlRates(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -79,6 +82,7 @@ export function migrateAccess(db) {
   migrateKpiView(db);
   migrateGuard(db);
   migrateRelease(db);
+  migrateCtrlRates(db);
 }
 
 // Уточнение 07.11: четыре руководителя — направления, логистики, ремзоны
@@ -152,6 +156,14 @@ function migrateRelease(db) {
     if (!views.includes('release')) db.prepare(`UPDATE role_sets SET views_json=? WHERE id=?`).run(JSON.stringify([...views, 'release']), row.id);
   }
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_release_v1','1')`).run();
+}
+
+// Чек-лист продукта 07.11: диспетчеру-контролёру «без денег» → «ставки»
+// (иначе в сверке суммы и наличных 0 ₽). Правка руководителя набора — цела.
+function migrateCtrlRates(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_ctrl_rates_v1'`).get()) return;
+  db.prepare(`UPDATE role_sets SET money='rates' WHERE id='log_ctrl' AND money='none'`).run();
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_ctrl_rates_v1','1')`).run();
 }
 
 function migrateFieldView(db) {

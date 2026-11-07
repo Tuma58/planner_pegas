@@ -50,7 +50,9 @@ test('утверждённые роли-наборы на месте; набор
 
 test('деньги режутся по уровню набора', t => {
   const db = freshDb(t);
-  assert.equal(accessOf(db, person(db, 8, ['log_ctrl'])).money, 'none');
+  // Диспетчер-контролёр сверяет сумму перед 1С и наличные — «ставки» (07.11).
+  assert.equal(accessOf(db, person(db, 8, ['log_ctrl'])).money, 'rates');
+  assert.equal(accessOf(db, person(db, 15, ['toir_mech'])).money, 'none');
   assert.equal(accessOf(db, person(db, 7, ['log_assign'])).money, 'rates');
   // Совмещение: лучший уровень из наборов.
   assert.equal(accessOf(db, person(db, 6, ['log_ctrl', 'log_plan'])).money, 'rates');
@@ -97,7 +99,7 @@ test('рассылки с деньгами: полный текст — толь
   const db = freshDb(t);
   const head = person(db, 5, ['log_head']);     // full
   const planner = person(db, 6, ['log_plan']);  // rates
-  const control = person(db, 8, ['log_ctrl']);  // none
+  const control = person(db, 15, ['toir_mech']);  // none
   const options = { money: 'full', plain: 'без денег' };
   assert.equal(broadcastTextFor(db, head, 'выручка 5 млн', options), 'выручка 5 млн');
   assert.equal(broadcastTextFor(db, planner, 'выручка 5 млн', options), 'без денег');
