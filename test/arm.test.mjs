@@ -166,3 +166,18 @@ test('Э3: АРМ у всех наборов ролей — четыре зон�
   const noMoney = armData(db, userWith(db, ['drv_head']), 'log_head', { park: parkStub, money: 'none' });
   assert.ok(!noMoney.zones.analysis.some(item => item.label.startsWith('Выручка')));
 });
+
+test('Э4: у руководителей отделов поле внутри АРМ — без дублей виджетов поля', t => {
+  const db = freshDb(t);
+  for (const [role, dept] of [['log_head', 'log'], ['drv_head', 'drv'], ['toir_head', 'toir']]) {
+    const data = armData(db, userWith(db, [role]), role);
+    assert.equal(data.fieldDept, dept, role);
+    // Коэффициент, очереди и стыки отдела приходят секциями поля, не виджетами АРМ.
+    assert.ok(!data.zones.analysis.some(item => /^(КТГ|КВЛ|КИП)/.test(item.label)), role);
+    assert.ok(!data.zones.tasks.some(item => item.source === 'joint_signals'), role);
+  }
+  assert.equal(armData(db, userWith(db, ['dir_head']), 'dir_head').fieldDept, null); // поле направления — панель Штаба
+  // Задачи смены по процессу — ссылкой на панель рабочего экрана.
+  const logist = armData(db, userWith(db, ['log_assign']), 'log_assign');
+  assert.ok(logist.zones.tasks.some(item => item.source === 'task_marks' && item.screen === 'logist'));
+});

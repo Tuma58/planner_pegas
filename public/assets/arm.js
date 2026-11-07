@@ -5,6 +5,7 @@
 // (показатель, строка очереди, задача) и задачи Э2: поставить, взять,
 // сделано / не сделано, снять; руководитель смотрит место подчинённого.
 import { api, escapeHtml, renderInto, toast } from './api.js';
+import { fieldClick, fieldParts } from './field.js';
 
 const ZONE_ICON = { analysis: '◔', plan: '▦', exec: '▶', tasks: '☑' };
 const ZONE_HINT = { analysis: 'мои показатели', plan: 'сегодня · завтра', exec: 'сейчас', tasks: 'на мне' };
@@ -28,20 +29,32 @@ const task = item => `<div class="arm-task ${item.tone || ''}" title="${escapeHt
   ${(item.actions || []).map(action => `<button type="button" class="button small ${action === 'done' ? 'primary' : 'ghost'}"
     data-arm-act="${action}" data-arm-task="${escapeHtml(item.id)}">${ACTION_LABEL[action]}</button>`).join('')}${go(item.screen)}</div>`;
 
-function zoneHtml(zone, title, items, data) {
+// Секции «Моего поля» руководителя — по зонам (Э4): размер секции снят,
+// внутри зоны карточки идут столбиком.
+const FIELD_ZONES = { analysis: ['kpi', 'weeks', 'tasks', 'money'], plan: ['leading', 'initiatives'], exec: ['queues', 'people'], tasks: ['joints'] };
+const unsized = html => String(html || '').replace(/class="section s\d+/g, 'class="section');
+
+function zoneHtml(zone, title, items, data, field) {
   const metrics = items.filter(item => item.kind === 'metric');
   const rest = items.filter(item => item.kind !== 'metric');
+  const fieldCards = field ? FIELD_ZONES[zone].map(key => unsized(field[key])).join('') : '';
+  const tiles = field && zone === 'analysis' ? `<section class="section"><div class="sec-h"><span class="st">Показатели отдела</span>
+    <span class="hint">месяц</span></div><div class="sec-b">${field.tiles}</div></section>` : '';
+  const own = metrics.length || rest.length || zone === 'tasks' || !fieldCards;
   const empty = zone === 'tasks' ? 'Открытых задач нет' : (data.pendingNote ? 'Наполнение по должности — на следующем этапе' : 'Нет данных');
-  return `<section class="section s6 arm-zone arm-${zone}">
-    <div class="sec-h"><span class="sn">${ZONE_ICON[zone]}</span><span class="st">${escapeHtml(title)}</span>
+  return `<div class="arm-zone arm-${zone}">
+    <div class="arm-zone-h"><span class="sn">${ZONE_ICON[zone]}</span><span class="st">${escapeHtml(title)}</span>
       <span class="hint">${ZONE_HINT[zone]}</span>
-      ${zone === 'tasks' && !data.readOnly ? '<div class="sec-actions"><button type="button" class="button small" id="armNewTask">＋ Поставить задачу</button></div>' : ''}</div>
-    <div class="sec-b">
+      ${zone === 'tasks' && !data.readOnly ? '<button type="button" class="button small" id="armNewTask">＋ Поставить задачу</button>' : ''}</div>
+    ${tiles}
+    ${own ? `<section class="section"><div class="sec-b arm-own">
       ${metrics.length ? `<div class="bi-kpis arm-kpis">${metrics.map(metric).join('')}</div>` : ''}
       ${rest.map(item => item.kind === 'task' ? task(item) : row(item)).join('')}
       ${!items.length ? `<div class="bi-empty">${empty}</div>` : ''}
       ${zone === 'tasks' && data.given?.length ? `<div class="arm-sub">Я поставил · открыто ${data.given.length}</div>${data.given.map(task).join('')}` : ''}
-    </div></section>`;
+    </div></section>` : ''}
+    ${fieldCards}
+  </div>`;
 }
 
 async function newTaskDialog(context, after) {
@@ -91,10 +104,18 @@ export async function renderArm(container, context) {
   const { state } = context;
   let data;
   let people = [];
+  let field = null;
   try {
     data = await api(`/api/arm${state.armUser ? `?user=${encodeURIComponent(state.armUser)}` : ''}`);
     const list = await api('/api/arm/people').catch(() => ({ people: [], canViewOthers: false }));
     if (list.canViewOthers) people = list.people.filter(person => person.canView);
+    // Руководитель отдела: «Моё поле» внутри зон (Э4).
+    if (data.fieldDept) {
+      const query = new URLSearchParams({ dept: data.fieldDept });
+      if (state.fieldMonth) query.set('month', state.fieldMonth);
+      field = await api(`/api/field?${query}`).then(fieldData => ({ ...fieldParts(fieldData), month: fieldData.month }))
+        .catch(() => null);
+    }
   } catch (error) {
     container.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
     return;
@@ -107,14 +128,18 @@ export async function renderArm(container, context) {
         <div class="muted">${escapeHtml([p.deptName, p.shift].filter(Boolean).join(' · '))}</div>
         ${p.deptTask ? `<div class="arm-task-dept">Задача отдела: ${escapeHtml(p.deptTask)}</div>` : ''}
         ${data.readOnly ? '<div class="bi-tag warn arm-ro">глазами сотрудника · только просмотр</div>' : ''}</div>
+      ${field ? `<label class="arm-who">Месяц показателей <input type="month" id="armMonth" value="${escapeHtml(field.month || '')}"></label>` : ''}
       ${people.length ? `<label class="arm-who">Чьё место <select id="armWho"><option value="">моё</option>${people.map(person =>
     `<option value="${escapeHtml(person.id)}" ${person.id === state.armUser ? 'selected' : ''}>${escapeHtml(person.name)}${person.position ? ` · ${escapeHtml(person.position)}` : ''}</option>`).join('')}</select></label>` : ''}
     </div>
     ${data.pendingNote ? `<div class="muted arm-pending">${escapeHtml(data.pendingNote)}</div>` : ''}
-    <div class="bi-grid arm-grid">${Object.keys(data.zones).map(zone => zoneHtml(zone, data.zoneTitles[zone], data.zones[zone], data)).join('')}</div>
+    <div class="arm-grid">${Object.keys(data.zones).map(zone => zoneHtml(zone, data.zoneTitles[zone], data.zones[zone], data, field)).join('')}</div>
   </div>`)) return;
   container.querySelector('#armWho')?.addEventListener('change', event => { state.armUser = event.currentTarget.value; rerender(); });
+  container.querySelector('#armMonth')?.addEventListener('change', event => { state.fieldMonth = event.currentTarget.value || null; rerender(); });
   container.onclick = event => {
+    // Сигналы на стыках — тот же обработчик, что в «Моём поле».
+    if (event.target.closest('[data-signal]')) { fieldClick(event, container, { ...context, rerender }); return; }
     const goto = event.target.closest('[data-goto]');
     if (goto) { document.querySelector(`#viewTabs [data-view="${goto.dataset.goto}"]`)?.click(); return; }
     const act = event.target.closest('[data-arm-act]');

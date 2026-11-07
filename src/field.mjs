@@ -62,8 +62,11 @@ export function fieldLive(db, dept, at = nowIso()) {
     // Случаи журнала сквозного контроля (блок 4): у каждого — сигнал
     // контролёра и принятие владельцем; пока детектор не открыл случай
     // (первый тик), показываем сырой список условия.
+    // Первыми — поданные и не принятые (их ждёт владелец стыка), затем
+    // ещё не поданные (их ждёт контролёр): в показ попадают первые 12, и
+    // поданный сигнал не должен теряться за сотней неподанных (07.11).
     const cases = db.prepare(`SELECT * FROM joint_signals WHERE joint_key=? AND closed_at IS NULL
-      ORDER BY signaled_at IS NOT NULL, opened_at`).all(joint.key);
+      ORDER BY (signaled_at IS NOT NULL AND accepted_at IS NULL) DESC, signaled_at IS NOT NULL, opened_at`).all(joint.key);
     const list = cases.length ? cases.map(row => ({ id: row.id, plate: row.plate, hours: hoursSince(row.opened_at),
       signaledAt: row.signaled_at, signaledBy: row.signaled_by_name, acceptedAt: row.accepted_at, acceptedBy: row.accepted_by_name }))
       : joint.key === 'toir_drv'

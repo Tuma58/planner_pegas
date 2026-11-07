@@ -105,21 +105,14 @@ function setupUser() {
   renderCascade();
   // «Скрыто» вместо «0 ₽» у роли без денег (сервер вырезал суммы).
   setMoneyHidden(user.access && !user.access.legacy && user.access.money === 'none');
-  // Первый экран руководителя отдела — «Моё поле» (Э1, 07.11).
-  // Четыре руководителя (направления, логистики, ремзоны, эксплуатации) —
-  // на своё поле; руководитель направления — на поле направления.
-  if (!state.fieldLanded && user.access && !user.access.legacy
-      && user.access.views.includes('field')) {
-    state.fieldLanded = true;
-    state.view = 'field';
-  }
-  // АРМ — стартовый экран у всех должностей с наполнением (Э3, 07.11),
-  // кроме руководителей (у них «Моё поле» до Э4) и поста КПП (охраннику
-  // сразу нужен журнал въезда — АРМ у него в меню).
-  else if (!state.fieldLanded && user.access && !user.access.legacy && user.access.views.includes('arm')
-      && !(user.access.sets.length === 1 && user.access.sets[0] === 'guard')) {
-    state.fieldLanded = true;
-    state.view = 'arm';
+  // Стартовый экран — «Моё рабочее место» у всех (АРМ Э4, 07.11): у
+  // руководителей отделов поле уже внутри АРМ. Исключение — пост КПП
+  // (охраннику сразу нужен журнал въезда). Без АРМ — прежнее «Моё поле».
+  if (!state.fieldLanded && user.access && !user.access.legacy) {
+    const access = user.access;
+    const guardPost = access.sets.length === 1 && access.sets[0] === 'guard';
+    if (access.views.includes('arm') && !guardPost) { state.fieldLanded = true; state.view = 'arm'; }
+    else if (access.views.includes('field')) { state.fieldLanded = true; state.view = 'field'; }
   }
   if (user.labMode) setupLabSwitch(user);
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
@@ -873,8 +866,11 @@ const MAIN_VIEWS = [
   // ЦФО и затраты (блок 3 «Слияния», 07.11): общий — в Штабе, руководителю
   // отдела — затраты его отдела в блоке отдела (сервер отдаёт cfoScope).
   // «◉ Моё поле» (Э1, 07.11) — поле управления руководителя отдела.
-  { id: 'field', title: 'Моё поле', show: () => {
+  // «Моё поле»: у руководителя отдела с АРМ поле живёт внутри АРМ (Э4) —
+  // отдельный пункт только у направления (поле направления — панель Штаба).
+  { id: 'field', title: 'Поле', show: () => {
     const access = state.data?.user?.access;
+    if (access && !access.legacy && !access.scope?.all && access.views?.includes('arm')) return false;
     return Boolean(access?.views?.includes('field') || (access?.legacy && can('reports:read')));
   } },
   // «◎ KPI и каскад» (блок 4, 07.11) — Штаб и руководители отделов.

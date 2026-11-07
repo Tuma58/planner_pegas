@@ -809,7 +809,10 @@ export async function renderDashboard(container, context) {
   // «Моя смена» — только сотрудникам конвейера; табло (manager) и гостям не показывается.
   const myRoles = data.user.roles || [data.user.role];
   const showMyShift = !Number(data.user.guest) &&
-    myRoles.some(role => ['sales', 'logist', 'dispatcher', 'resource', 'accountant', 'admin'].includes(role));
+    myRoles.some(role => ['sales', 'logist', 'dispatcher', 'resource', 'accountant', 'admin'].includes(role))
+    // «Моя смена» переехала в АРМ (Э4, 07.11): у кого она в зоне «Анализ»,
+    // на дашборде карточки нет (одно место вместо двух).
+    && !['log_assign', 'log_ctrl', 'log_plan'].some(id => data.user.access?.sets?.includes(id));
 
   // Открытые вопросы водителей — общая цифра смены на дашборде.
   const questions = await loadOpenQuestions();

@@ -351,6 +351,17 @@ Object.assign(W, {
     : { kind: 'row', label: 'Учёт долгов клиентов выключен', value: null, note: 'включается в Настройках', screen: 'payments', source: 'Настройки' }
 });
 
+// Задачи смены по процессу (боковые панели экранов Диспетчер / Логист /
+// Планирование, Э4): список живёт в рабочем экране — в АРМ счётчик
+// отмеченных сегодня и переход туда (панели остаются там, где работа).
+const PROCESS = { logist: ['Логист', 'logist'], dispatcher: ['Диспетчер', 'dispatcher'], sales: ['Планирование', 'sales'] };
+W.process_marks = ({ db, nowMs }, kind) => {
+  const day = mskDay(nowMs);
+  const n = safe(() => db.prepare(`SELECT COUNT(*) n FROM task_marks WHERE kind=? AND day=?`).get(kind, day).n) ?? 0;
+  return { kind: 'task', label: `Задачи смены по процессу — панель экрана «${PROCESS[kind][0]}»`, tag: `отмечено сегодня ${n}`,
+    tone: '', screen: PROCESS[kind][1], source: 'task_marks' };
+};
+
 const JOINT_TITLE = { drv_log: 'машина без задания', toir_drv: 'после ремонта без водителя', log_toir: 'ТО без заезда' };
 const HD_STATUS = { new: 'новая', review: 'на рассмотрении', work: 'в работе' };
 
@@ -364,9 +375,9 @@ function queuesOf(db, dept, keys) {
 // Э1 — пилот; остальные наборы добавляются строкой (Э3).
 export const ARM_ROLES = {
   log_assign: { analysis: ['my_shift', 'next_share'], plan: ['log_plan'], exec: ['log_queues_assign', 'my_holds'],
-    tasks: [['joint_cases', 'drv_log', 'logist'], 'my_helpdesk'] },
+    tasks: [['process_marks', 'logist'], ['joint_cases', 'drv_log', 'logist'], 'my_helpdesk'] },
   log_ctrl: { analysis: ['my_shift', 'late_unload'], plan: ['ctrl_plan'], exec: ['log_queues_ctrl', 'cash_collect'],
-    tasks: ['my_helpdesk'] },
+    tasks: [['process_marks', 'dispatcher'], 'my_helpdesk'] },
   drv_acc: { analysis: ['docs_norm', 'attendance_yesterday'], plan: ['drv_plan'], exec: ['docs_waiting', 'attendance_today', 'drv_queues'],
     tasks: [['joint_cases', 'toir_drv', 'resource'], 'my_helpdesk'] },
   toir_mech: { analysis: ['repair_on_time', 'jobs_done'], plan: ['toir_plan'], exec: ['toir_queues'],
@@ -375,16 +386,17 @@ export const ARM_ROLES = {
   dir_head: { analysis: [['coef', 'ktg'], ['coef', 'kvl'], ['coef', 'kip'], ['coef', 'use'], 'revenue'], plan: ['dir_plan'],
     exec: [['dept_queues', 'log'], ['dept_queues', 'drv'], ['dept_queues', 'toir']],
     tasks: [['joint_cases', 'drv_log', 'field'], ['joint_cases', 'toir_drv', 'field'], ['joint_cases', 'log_toir', 'field'], 'my_helpdesk'] },
-  log_head: { analysis: [['coef', 'kip'], 'revenue', ['vigilance', 'log'], 'next_share'], plan: ['log_plan'], exec: [['dept_queues', 'log']],
-    tasks: [['joint_cases', 'drv_log', 'logist'], 'my_helpdesk'] },
-  log_plan: { analysis: ['my_shift', 'leads'], plan: ['lead_steps', 'log_plan'], exec: ['orders_queue', 'claims_new'], tasks: ['my_helpdesk'] },
-  drv_head: { analysis: [['coef', 'kvl'], ['vigilance', 'drv'], 'turnover_month'], plan: ['drv_plan', 'release_today'],
-    exec: [['dept_queues', 'drv']], tasks: [['joint_cases', 'toir_drv', 'resource'], 'my_helpdesk'] },
+  // Руководители отделов (Э4, 07.11): показатели, стыки с сигналами,
+  // очереди, задачи и деньги отдела — секции «Моего поля» внутри зон
+  // (фронт берёт /api/field); здесь — то, чего в поле нет.
+  log_head: { analysis: [], plan: ['log_plan'], exec: [], tasks: ['my_helpdesk'], field: 'log' },
+  log_plan: { analysis: ['my_shift', 'leads'], plan: ['lead_steps', 'log_plan'], exec: ['orders_queue', 'claims_new'], tasks: [['process_marks', 'sales'], 'my_helpdesk'] },
+  drv_head: { analysis: ['turnover_month'], plan: ['drv_plan', 'release_today'], exec: [], tasks: ['my_helpdesk'], field: 'drv' },
   drv_column: { analysis: ['attendance_yesterday', 'turnover_month'], plan: ['drv_plan'], exec: ['drv_shift_queue', 'attendance_today'],
     tasks: [['joint_cases', 'toir_drv', 'resource'], 'my_helpdesk'] },
   drv_tech: { analysis: ['release_stats'], plan: ['release_today'], exec: ['toir_queues'], tasks: ['my_helpdesk'] },
-  toir_head: { analysis: [['coef', 'ktg'], ['vigilance', 'toir'], 'repair_on_time'], plan: ['toir_plan', 'parts_plan'],
-    exec: ['toir_queues', 'parts_buy'], tasks: ['release_requests', ['joint_cases', 'log_toir', 'toboard'], 'my_helpdesk'] },
+  toir_head: { analysis: ['repair_on_time'], plan: ['toir_plan', 'parts_plan'], exec: ['parts_buy'],
+    tasks: ['release_requests', 'my_helpdesk'], field: 'toir' },
   toir_supply: { analysis: ['parts'], plan: ['parts_plan'], exec: ['parts_buy'], tasks: ['my_helpdesk'] },
   staff_bdd: { analysis: ['safety_analysis'], plan: ['safety_plan'], exec: ['safety_exec'], tasks: ['my_helpdesk'] },
   staff_aho: { analysis: ['gate_day'], plan: ['gate'], exec: ['helpdesk_new'], tasks: ['my_helpdesk'] },
@@ -562,7 +574,7 @@ export function armData(db, user, roleId, { nowMs = Date.now(), settings = {}, r
   const tasks = tasksWidgets(db, user, nowMs, readOnly);
   zones.tasks = [...tasks.mine, ...zones.tasks];
   zones.analysis = [...zones.analysis, W.tasks_on_time(ctx)];
-  return { role: roleId, pilot: Boolean(ARM_ROLES[roleId]), person: personOf(db, user, nowMs), zones,
+  return { role: roleId, pilot: Boolean(ARM_ROLES[roleId]), fieldDept: spec.field || null, person: personOf(db, user, nowMs), zones,
     zoneTitles: Object.fromEntries(ARM_ZONES), given: tasks.given, readOnly,
     pendingNote: ARM_ROLES[roleId] ? '' : 'Наполнение по вашей должности — на следующем этапе; задачи уже работают' };
 }
