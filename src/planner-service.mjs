@@ -3,6 +3,7 @@ import { calcSettings, tripNet } from './money.mjs';
 import { scheduleAttendanceFor } from './schedule.mjs';
 import { settingsObject } from './db.mjs';
 import { crewNorms, effectiveArrival, effectiveFinish, markOverlapCuts, tripFundBreakdown } from './crew-fund.mjs';
+import { directionGoals } from '../public/assets/goals-core.js';
 
 export const TRIP_STATUS = {
   plan: 'plan', run: 'run', unl: 'unloaded', unloaded: 'unloaded',
@@ -1093,7 +1094,8 @@ export function reportSnapshot(db, fromValue, toValue) {
   const calendarDays = fleet.length * dayCount;
   const techDays = calendarDays - machineDays.repair - machineDays.out;
   const lineDays = techDays - machineDays.noDriver - machineDays.shift;
-  const utilizationTarget = Number(calculation.utilizationTarget ?? 0.951);
+  // Цель — производная КТГ×КВЛ×КИП из реестра целей направления (07.11).
+  const utilizationTarget = directionGoals(calculation).use / 100;
   const tripDaysTotal = trips.reduce((sum, trip) =>
     sum + Math.max(0, (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 86_400_000), 0);
   const marginPerTripDay = tripDaysTotal ? contribution / tripDaysTotal : 0;

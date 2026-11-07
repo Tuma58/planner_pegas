@@ -1,4 +1,5 @@
 import { api, escapeHtml, formatDate, logout, setupTheme, toast } from './api.js';
+import { directionGoals } from './goals-core.js';
 setupTheme();
 
 const state = { section: 'general', admin: null, users: null };
@@ -41,6 +42,7 @@ const biPage = (headHtml, sections) => `<div class="bi-page svc-set">${headHtml}
 
 function renderGeneral() {
   const { general, calculation, statuses, rejectionReasons, orderOptions } = state.admin.settings;
+  const goals = directionGoals(calculation);
   content.innerHTML = biPage(biHead('Настройки планера',
     'Параметры, которые раньше были зашиты непосредственно в HTML.',
     '<button class="button" id="saveGeneral">Сохранить</button>'), [
@@ -56,6 +58,26 @@ function renderGeneral() {
       <tbody>${statuses.map(([id, name, color]) => `<tr data-status="${escapeHtml(id)}"><td class="mono">${escapeHtml(id)}</td>
         <td><input data-status-name value="${escapeHtml(name)}"></td><td><input data-status-color type="color" value="${escapeHtml(color)}"></td></tr>`).join('')}</tbody></table></div>`,
       { span: 's6', flush: true }),
+    // Реестр целей направления СТ (блок 2 «Слияния», 07.11): одна точка
+    // правды, её читают «Цели и задачи», «Структура», «Руководитель»,
+    // фонд машино-дней и дашборд (goals-core.js).
+    biSec('Цели направления СТ', `<div class="fields three">
+      <label class="field">Выручка, млн ₽/мес без НДС <small class="muted">стратегическая цель; план месяца — ступень, задаётся у руководителя</small>
+        <input id="goalRevenueMln" type="number" min="0" step="1" value="${goals.revenueMln}"></label>
+      <label class="field">КТГ, % <small class="muted">ТОиР — исправные от списка</small>
+        <input id="ktgTargetPct" type="number" min="0" max="100" step="0.5" value="${goals.ktg}"></label>
+      <label class="field">КВЛ, % <small class="muted">Эксплуатация — укомплектованные от исправных</small>
+        <input id="kvlTargetPct" type="number" min="0" max="100" step="0.5" value="${goals.kvl}"></label>
+      <label class="field">КИП, % <small class="muted">Логистика — с заданием от укомплектованных</small>
+        <input id="kipTargetPct" type="number" min="0" max="100" step="0.5" value="${goals.kip}"></label>
+      <div class="field"><span>Использование парка (КЭИП)</span><b class="mono" style="font-size:18px">${String(goals.use).replace('.', ',')}%</b>
+        <small class="muted">= КТГ × КВЛ × КИП, считается само</small></div>
+      <label class="field">Цель среднесуточного пробега, км/сут на машину
+        <input id="dailyKmTarget" type="number" min="0" step="10" value="${goals.kmDay}"></label>
+      <label class="field">Списочный парк, ТС<input id="fleetTarget" type="number" min="0" step="1" value="${goals.fleet}"></label>
+      <label class="field">Норматив ФОТ управления, % выручки <small class="muted">пусто — не задан (блок «ФОТ»)</small>
+        <input id="fotNormPct" type="number" min="0" max="100" step="0.1" value="${goals.fotPct ?? ''}"></label>
+    </div>`, { span: 's12' }),
     biSec('Экономика и нормативы', `<div class="fields three">
       <label class="field">Себестоимость, ₽/км<input id="costPerKm" type="number" min="0" step=".01" value="${calculation.costPerKm}"></label>
       <label class="field">Страхование, Платон и дороги, ₽/км<input id="insuranceAndRoadsPerKm" type="number" min="0" step=".01" value="${calculation.insuranceAndRoadsPerKm}"></label>
@@ -66,19 +88,11 @@ function renderGeneral() {
       <label class="field">Ставка НДС<input id="vatRate" type="number" min="0" max="1" step=".01" value="${calculation.vatRate}"></label>
       <label class="field">Потолок КИП, % <small class="muted">(физический максимум «под грузом»; КИП в отчётах показывается от него; 0 — сырой КИП)</small>
         <input id="kipCeilingPct" type="number" min="0" max="100" step="1" value="${calculation.kipCeilingPct ?? 67}"></label>
-      <label class="field">Цели каскада структуры СТ, % <small class="muted">(КТГ от списка · КВЛ от КТГ · КИП от КВЛ; итог — их произведение; видны на экране «Структура»)</small>
-        <span style="display:flex;gap:6px">
-          <input id="ktgTargetPct" type="number" min="0" max="100" step="0.5" value="${calculation.ktgTargetPct ?? 97}" title="КТГ — ТОиР">
-          <input id="kvlTargetPct" type="number" min="0" max="100" step="0.5" value="${calculation.kvlTargetPct ?? 99}" title="КВЛ — Эксплуатация">
-          <input id="kipTargetPct" type="number" min="0" max="100" step="0.5" value="${calculation.kipTargetPct ?? 99}" title="КИП — Логистика"></span></label>
-      <label class="field">Цель среднесуточного пробега, км/сут на машину
-        <input id="dailyKmTarget" type="number" min="0" step="10" value="${calculation.dailyKmTarget ?? 500}"></label>
       <label class="field">НДС для ИП<input id="individualEntrepreneurVatRate" type="number" min="0" max="1" step=".01" value="${calculation.individualEntrepreneurVatRate}"></label>
       <label class="field">Запас надёжности обещаний, %<input id="transitReservePct" type="number" min="0" max="50" step="1" value="${calculation.transitReservePct ?? 10}" title="Главный рычаг сроков (22.09): живой транзит (выученная дорожная скорость по дальности плеча + средние ворота) умножается на 1+запас. Рекомендацию из факта (p80) смотрите в «🧠 Живые нормативы» у руководителя; 0 — осознанно без запаса"></label>
       <label class="field">Скорость транзита, км/ч<input id="techSpeedKmh" type="number" min="1" value="${calculation.techSpeedKmh ?? 50}" title="Резервная: работает, только пока живые скорости не выучены (свежая база)"></label>
       <label class="field">Грузовая операция, ч<input id="handlingHoursPerOperation" type="number" min="0" step=".5" value="${calculation.handlingHoursPerOperation ?? 2}" title="Резерв на операцию, пока средние ворота не выучены"></label>
       <label class="field">Коэффициент транзита<input id="transitFactor" type="number" min="1" step=".1" value="${calculation.transitFactor ?? 1.5}" title="Резервный: применяется только в старой формуле (пока скорости не выучены); в живом транзите его сменил «Запас надёжности, %»"></label>
-      <label class="field">Целевая утилизация<input id="utilizationTarget" type="number" min="0" max="1" step=".001" value="${calculation.utilizationTarget}"></label>
       <label class="field">Целевой стык между рейсами, ч<input id="targetGapHours" type="number" min="1" max="48" step="1" value="${calculation.targetGapHours ?? 8}" title="Рычаг стыковки (24.09): сколько часов допустимо от выгрузки до старта следующего рейса. От цели живут сигналы планированию, строка в Отчёте дня и разбор «кто передержал» в Нормативах недели. 8 ч — стык лучших пар"></label>
       <label class="field">Перегон требует оформления, км<input id="transferGapKm" type="number" min="0" max="2000" step="5" value="${calculation.transferGapKm ?? 100}" title="Инструмент отклонений (04.10): если следующая погрузка дальше этого порога от точки выгрузки, а порожний перегон не оформлен — пара попадает в «Требует решения» с кнопкой «Оформить». 0 — контроль выключен"></label>
       <label class="field">Цель: следующий до выгрузки, %<input id="nextAssignTargetPct" type="number" min="0" max="100" step="1" value="${calculation.nextAssignTargetPct ?? 85}" title="Норматив стыковки (23.09): у какой доли рейсов следующий должен быть назначен ДО фактической выгрузки. Такой стык — 8 ч против 27,6 у назначенных после. Факт — в Отчёте дня и Нормативах недели; планированию приходит «🔎 Освобождаются без груза» за 6–24 ч до выгрузки"></label>
@@ -111,6 +125,8 @@ async function saveGeneral() {
       kipCeilingPct: numeric('kipCeilingPct'),
       ktgTargetPct: numeric('ktgTargetPct'), kvlTargetPct: numeric('kvlTargetPct'),
       kipTargetPct: numeric('kipTargetPct'),
+      goalRevenueMln: numeric('goalRevenueMln'), fleetTarget: numeric('fleetTarget'),
+      fotNormPct: byId('fotNormPct').value === '' ? '' : numeric('fotNormPct'),
       dailyKmTarget: numeric('dailyKmTarget'),
       insuranceAndRoadsPerKm: numeric('insuranceAndRoadsPerKm'),
       driverPerTripDay: numeric('driverPerTripDay'),
@@ -122,7 +138,6 @@ async function saveGeneral() {
       transitReservePct: numeric('transitReservePct'),
       handlingHoursPerOperation: numeric('handlingHoursPerOperation'),
       transitFactor: numeric('transitFactor'),
-      utilizationTarget: numeric('utilizationTarget'),
       demurrageFreeHours: numeric('demurrageFreeHours'),
       demurrageRatePerHour: numeric('demurrageRatePerHour'),
       gateTargetHours: numeric('gateTargetHours'),

@@ -50,6 +50,8 @@ import { crewNorms, effectiveArrival, effectiveFinish, intervalOverlapH, markOve
 import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek, rebuildDispatchProfiles, rebuildDispatcherCapacity, shiftPlanFact, snapshotPlanHour } from './dispatch-load.mjs';
 import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
+import { directionGoals } from '../public/assets/goals-core.js';
+import { archiveGoal, goalsData, goalsDigestLine, saveGoal } from './goals.mjs';
 import { archivePosition, createPosition, positionById, saveGroup, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
@@ -6577,6 +6579,69 @@ function runGreenAssign() {
 setInterval(watchWrap('runGreenAssign', runGreenAssign), 15 * 60_000);
 setTimeout(runGreenAssign, 100_000);
 
+// ── Цели и задачи направления (блок 2 «Слияния», 07.11) ──
+// Контекст живых показателей за месяц: только готовые каноны —
+// parkReportData (каскад), reportSnapshot (деньги, машино-дни),
+// mileageData (пробеги; передаёт обработчик API — функция живёт в нём),
+// structureData (штат), Ремзона, журнал затрат, HELP DESK.
+function goalsContext(month, mileageFn = null) {
+  const now = new Date();
+  const monthKey = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : now.toISOString().slice(0, 7);
+  const from = `${monthKey}-01`;
+  const next = new Date(Date.parse(`${from}T00:00:00Z`));
+  next.setUTCMonth(next.getUTCMonth() + 1);
+  const monthEnd = next.toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+  const to = monthEnd < today ? monthEnd : (today > from ? today : addDayIso(from));
+  const safe = fn => { try { return fn(); } catch { return null; } };
+  const park = safe(() => parkReportData(from, to).total);
+  const snap = safe(() => reportSnapshot(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`));
+  const mileage = mileageFn ? safe(() => mileageFn(from, to)) : null;
+  const structure = safe(() => structureData(db));
+  const toirDept = structure?.depts.find(dept => dept.key === 'toir');
+  const repairs = db.prepare(`SELECT arrived_at, released_at FROM repair_orders
+    WHERE status='released' AND released_at>=? AND released_at<? AND arrived_at IS NOT NULL`).all(from, to)
+    .map(row => (Date.parse(row.released_at) - Date.parse(row.arrived_at)) / 864e5)
+    .filter(days => Number.isFinite(days) && days >= 0).sort((a, b) => a - b);
+  const planRow = db.prepare(`SELECT target_net FROM revenue_plans WHERE period_start=?`).get(from);
+  return {
+    month: monthKey, from, to,
+    goals: directionGoals(settingsObject(db).calculation),
+    park, snap, mileage,
+    revenuePlanMln: planRow?.target_net ? +(planRow.target_net / 1e6).toFixed(1) : null,
+    staffing: structure ? {
+      toir: toirDept?.headcount ? Math.round(toirDept.fact / toirDept.headcount * 100) : null,
+      drivers: structure.totals.driverHeadcount
+        ? Math.round(structure.totals.drivers / structure.totals.driverHeadcount * 100) : null
+    } : null,
+    repairDays: repairs.length ? +repairs[Math.floor(repairs.length / 2)].toFixed(1) : null,
+    fines: db.prepare(`SELECT COUNT(*) n FROM expenses WHERE category_id='fines'
+      AND spent_on>=? AND spent_on<?`).get(from, to).n,
+    nextAssigned: safe(() => nextAssignedShare(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`).pct),
+    helpdeskOpen: db.prepare(`SELECT COUNT(*) n FROM helpdesk_tickets
+      WHERE status IN ('new','review','work')`).get().n
+  };
+}
+
+// Инициативы по отделам: открытые инициативы «160 млн» (область →
+// отдел) и невыполненные пункты плана последнего выпуска «Повышения
+// эффективности» (ответственный → отдел по тем же словам). Контуры
+// не меняются — только счёт.
+const AREA_DEPT = [[/планир|продаж|логист|диспетч|контрол/i, 'log'], [/ресурс|эксплуат|водител|колонн/i, 'drv'],
+  [/ремзон|ремонт|механ|тоир/i, 'toir'], [/конвейер|продукт|руковод|штаб/i, 'staff']];
+const deptOfArea = text => (AREA_DEPT.find(([re]) => re.test(String(text || ''))) || [])[1] || 'staff';
+function goalsInitiatives() {
+  const out = { staff: { p160: 0, eff: 0 }, log: { p160: 0, eff: 0 }, drv: { p160: 0, eff: 0 }, toir: { p160: 0, eff: 0 } };
+  for (const row of db.prepare(`SELECT area FROM project_initiatives WHERE status IN ('todo','doing')`).all()) {
+    out[deptOfArea(row.area)].p160 += 1;
+  }
+  const issue = db.prepare(`SELECT plan_json FROM eff_issues ORDER BY period_start DESC, created_at DESC LIMIT 1`).get();
+  let plan = [];
+  try { plan = JSON.parse(issue?.plan_json || '[]'); } catch { plan = []; }
+  for (const item of plan) if (!item.done) out[deptOfArea(item.owner)].eff += 1;
+  return out;
+}
+
 // ── Недельный анализ дрейфа нормативов: «📐 Нормативы недели» ──
 // Себестоимость, выручка и транзит со временем плывут — правила не должны
 // отставать. Понедельник 08:10 МСК: живые нормативы против прошлой недели
@@ -6741,6 +6806,17 @@ function runNormsDigest() {
           if (!holes.length) return '';
           return ` · круги (зазор стыковки ${load.gap.days} дн): дыра ${holes.map(item =>
             `${item.name.split(' · ')[0]} −${item.holeVehicles} маш`).join(', ')} — панель «⭕ Загрузка кругов»`;
+        } catch { return ''; }
+      })() +
+      (() => {
+        // Цели направления (блок 2 «Слияния»): светофор задач отделов.
+        try {
+          const summary = goalsData(db, goalsContext()).summary;
+          let lastGoals = null;
+          try { lastGoals = JSON.parse(db.prepare(`SELECT value FROM app_meta WHERE key='goals_last'`).get()?.value || 'null'); } catch { lastGoals = null; }
+          db.prepare(`INSERT INTO app_meta(key,value) VALUES('goals_last',?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(summary));
+          return goalsDigestLine(summary, lastGoals);
         } catch { return ''; }
       })() +
       (hints.length ? ` · 💡 ${hints.join('; ')}` : ' · без тревог'));
@@ -14771,6 +14847,25 @@ async function api(request, response, url) {
   // ── Структура направления СТ (проект «Слияние», блок 1, 05.11) ──
   // Читают все (обзор структуры — первый экран Штаба); правят штат,
   // группы и паспорта — те, у кого полный доступ к кадрам.
+  if (request.method === 'GET' && pathname === '/api/goals') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const ctx = goalsContext(url.searchParams.get('month'), mileageData);
+    const data = goalsData(db, ctx);
+    return json(response, 200, { ...data, month: ctx.month, from: ctx.from, to: ctx.to,
+      goals: ctx.goals, canEdit: staffAccess(user, settingsObject(db)),
+      initiatives: goalsInitiatives() });
+  }
+  if ((request.method === 'POST' || request.method === 'DELETE') && pathname.startsWith('/api/goals/items')) {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const id = pathname.split('/')[4] || '';
+    const result = request.method === 'DELETE' ? archiveGoal(db, id) : saveGoal(db, await readJson(request));
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, request.method === 'DELETE' ? 'archive' : 'save', 'org_goal', result.id || id,
+      result.before || { title: result.title }, requestIp(request));
+    return json(response, 200, { ok: true, id: result.id || id });
+  }
   if (request.method === 'GET' && pathname === '/api/structure') {
     const user = requireUser(request, response);
     if (!user) return;
@@ -14784,11 +14879,8 @@ async function api(request, response, url) {
     const data = structureData(db, park);
     data.canEdit = staffAccess(user, settingsObject(db));
     // Цели каскада — из Настроек (ноль — осознанное значение, пустота → канон среды СТ).
-    const calc = settingsObject(db).calculation || {};
-    const pick = (value, fallback) => (value === '' || value == null || !Number.isFinite(Number(value))) ? fallback : Number(value);
-    const targets = { КТГ: pick(calc.ktgTargetPct, 97), КВЛ: pick(calc.kvlTargetPct, 99), КИП: pick(calc.kipTargetPct, 99) };
-    targets.КЭИП = +(targets.КТГ * targets.КВЛ * targets.КИП / 1e4).toFixed(1);
-    data.targets = targets;
+    const goals = directionGoals(settingsObject(db).calculation);
+    data.targets = { КТГ: goals.ktg, КВЛ: goals.kvl, КИП: goals.kip, КЭИП: goals.use };
     return json(response, 200, data);
   }
   match = route(/^\/api\/structure\/positions\/([\w-]+)$/, pathname);

@@ -19,6 +19,7 @@ import { setupGuide } from './guide.js';
 import { attendanceDialog, DISP_KINDS, parkScheduleKeeper, renderResource, timesheetDialog } from './resource.js';
 import { fireReasonDialog, renderStaff } from './staff.js';
 import { renderStructure } from './structure.js';
+import { renderGoals } from './goals.js';
 import { renderRemzona } from './remzona.js';
 import { transferPlaceOf, transferDialog } from './transfer.js';
 import { callSearchDialog, setTopics, watchIncomingCalls } from './call-card.js';
@@ -813,7 +814,9 @@ const MAIN_VIEWS = [
   { id: 'staff', title: 'Сотрудники', show: () => Boolean(state.data?.user?.staffAccess) },
   { id: 'dashboard', title: 'Дашборд', show: () => true },
   // Обзор структуры СТ (блок 1 «Слияния», 05.11) — видят все.
-  { id: 'structure', title: 'Структура', show: () => true }
+  { id: 'structure', title: 'Структура', show: () => true },
+  // Цели и задачи направления (блок 2 «Слияния», 07.11) — видят все.
+  { id: 'goals', title: 'Цели и задачи', show: () => true }
 ];
 
 // Навигатор по структуре направления СТ (как в «Рабочей среде СТ»):
@@ -826,7 +829,7 @@ const NAV_GROUPS = [
   { dept: '', title: 'Общее', coef: '', sub: [
     { title: '', views: ['dashboard', 'gantt'] }] },
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: '', views: ['structure', 'boss', 'staff', 'expenses'] }] },
+    { title: '', views: ['structure', 'goals', 'boss', 'staff', 'expenses'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
@@ -838,6 +841,7 @@ const NAV_GROUPS = [
 ];
 NAV_GROUPS.forEach(group => { group.views = group.sub.flatMap(item => item.views); });
 const VIEW_META = {
+  goals: ['◉', 'Миссия, цели направления и задачи отделов — на живых показателях'],
   structure: ['◫', 'Отделы, группы и должности: штат, факт, вакансии, паспорта'],
   dashboard: ['◧', 'План-факт предприятия на сегодня и прогноз месяца'],
   boss: ['▤', 'Операционный отчёт: каскад, экономика, отклонения'],
@@ -972,6 +976,8 @@ function renderMain() {
       showModal, closeModal, rerenderMain: renderMain,
       onReload: reload, taskContainer: byId('sidepanel')
     });
+  } else if (state.view === 'goals') {
+    renderGoals(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'structure') {
     renderStructure(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'staff') {

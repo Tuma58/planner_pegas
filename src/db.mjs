@@ -8,6 +8,7 @@ import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadat
 import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
 import { EXPENSE_CATEGORY_SEED } from './expenses.mjs';
 import { migrateOrgStructure } from './structure.mjs';
+import { migrateGoals } from './goals.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -1424,6 +1425,7 @@ function migrateColumns(db) {
     db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('brand_rename_v1','1')`).run();
   }
   migrateOrgStructure(db);
+  migrateGoals(db);
   // «Продажи» → «Планирование» (решение руководителя 05.11): область
   // инициатив проекта «160 млн» хранится текстом — разовый перенос.
   if (!db.prepare(`SELECT 1 FROM app_meta WHERE key='sales_rename_v1'`).get()) {

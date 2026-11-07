@@ -209,7 +209,6 @@ export const defaultSettings = {
     techSpeedKmh: 50,
     handlingHoursPerOperation: 2,
     transitFactor: 1.5,
-    utilizationTarget: 0.951,
     demurragePerHourVat: 1000
   },
   orderOptions: {

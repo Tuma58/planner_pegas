@@ -196,3 +196,32 @@
 .st-pp .bi-table { margin-top: 6px; }
 .st-pp textarea { width: 100%; font: inherit; font-size: 12.5px; }
 .st-edit { border-color: var(--accent); }
+
+/* ── Экран «Цели и задачи» (Слияние, блок 2, 07.11) ── */
+.gl-page .bi-sub p { max-width: 900px; }
+.gl-strat { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.gl-card { border: 1px solid var(--border2); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; background: var(--card); }
+.gl-card h3 { margin: 0; font-size: 14px; }
+.gl-card p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; flex: 1; }
+.gl-foot { border-top: 1px solid var(--border2); padding-top: 7px; }
+.gl-dept .sec-b { display: flex; flex-direction: column; gap: 8px; }
+.gl-goal { font-weight: 650; font-size: 13px; color: var(--ink); }
+.gl-tasks { list-style: none; margin: 0; padding: 0; }
+.gl-tasks li { padding: 7px 0; border-top: 1px solid var(--border2); display: flex; flex-direction: column; gap: 3px; }
+.gl-t { font-size: 12.5px; }
+.gl-m { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-family: var(--mono-font); color: var(--muted); flex-wrap: wrap; }
+.gl-m b { color: var(--ink); font-weight: 650; }
+.gl-m small { color: var(--faint); }
+.gl-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.gl-m.ok .gl-dot { background: var(--ok); } .gl-m.near .gl-dot { background: var(--warn); } .gl-m.miss .gl-dot { background: var(--bad); }
+.gl-m.ok b { color: var(--ok); } .gl-m.miss b { color: var(--bad); } .gl-m.near b { color: var(--warn); }
+.gl-m.info .gl-dot { background: transparent; border: 1.5px solid var(--faint); }
+.gl-m.none { font-family: inherit; color: var(--faint); font-style: italic; }
+.gl-m .link-btn, .gl-tools .link-btn { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 12px; }
+.gl-m .link-btn:hover, .gl-tools .link-btn:hover { color: var(--accent); }
+.gl-tools { white-space: nowrap; }
+.gl-ini { font-size: 11.5px; border-top: 1px dashed var(--border2); padding-top: 6px; }
+.gl-ini b { color: var(--ink); font-family: var(--mono-font); }
+.gl-pr { padding: 10px 15px; border-bottom: 1px solid var(--border2); font-size: 13px; }
+.gl-pr:last-child { border-bottom: 0; }
+.gl-pr .muted { font-size: 12.5px; margin-top: 2px; line-height: 1.5; }

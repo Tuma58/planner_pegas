@@ -10,7 +10,9 @@ import { loadOpenQuestions } from './call-card.js';
 import { boardDialog, boardNotesHtml, wireBoardNotes } from './board.js';
 
 const DAY_MS = 86_400_000;
-const DEFAULT_MONTH_PLAN = 160_000_000;
+import { directionGoals } from './goals-core.js';
+// План месяца не задан — ориентир на стратегическую цель направления
+// (реестр целей, 07.11), а не на зашитое число.
 
 // ── Режим табло (26.10, заказ руководителя) ──
 // В ТВ-режиме экраны сменяют друг друга сами: дашборд → опаздывающие →
@@ -304,7 +306,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
 
   const periodKey = new Date(monthStart).toISOString().slice(0, 10);
   const monthPlan = Number((data.revenuePlans || [])
-    .find(item => item.period_start === periodKey)?.target_net || 0) || DEFAULT_MONTH_PLAN;
+    .find(item => item.period_start === periodKey)?.target_net || 0) || directionGoals(data.settings?.calculation).revenueMln * 1e6;
   // Дневной план — остаток плана на остаток дней (включая сегодня); остаток
   // считается от факта прошедших дней — как в ленте «Вчера/Сегодня/Завтра».
   const dayPlan = Math.max(0, (monthPlan - factPast) / Math.max(1, remainingDays));

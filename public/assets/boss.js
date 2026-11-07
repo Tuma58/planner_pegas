@@ -5,6 +5,7 @@ import { renderEfficiency } from './efficiency.js';
 // владельцам, баланс машино-дней, экономика по типам ТС и топ клиентов.
 // Тема «панель приборов» (спидометры, лобовое стекло) выведена из продукта.
 // Данные — GET /api/reports (сервер) + рейсы bootstrap для кривой и клиентов.
+import { directionGoals } from './goals-core.js';
 import { inventoryDialog } from './inventory.js';
 import { selfTuningDialog } from './self-tuning.js';
 import { ringLoadDialog } from './ring-load.js';
@@ -23,7 +24,10 @@ const n1 = value => Number(value || 0).toLocaleString('ru-RU', { maximumFraction
 const n0 = value => Math.round(Number(value || 0)).toLocaleString('ru-RU');
 
 // Плановые уровни каскада — как в операционном отчёте АТП.
-const PLAN = { ktg: 0.97, kvl: 0.99, kip: 0.99 };
+// Цели каскада — из реестра целей направления (Настройки → Цели
+// направления, 07.11); обновляются на каждом рендере вкладки.
+const pctGoal = value => `${String(+(value * 100).toFixed(1)).replace('.', ',')}%`;
+let PLAN = { ktg: 0.97, kvl: 0.99, kip: 0.99 };
 const devPP = (fact, plan) => (fact - plan) * 100;
 const pillCls = d => d >= 0 ? 'g' : (d >= -3 ? 'w' : 'b');
 
@@ -95,6 +99,10 @@ function wireBossTabs(container, context) {
 }
 
 export async function renderBoss(container, context) {
+  {
+    const goals = directionGoals(context.state.data?.settings?.calculation);
+    PLAN = { ktg: goals.ktg / 100, kvl: goals.kvl / 100, kip: goals.kip / 100 };
+  }
   const { state } = context;
   if (!state.bossView) state.bossView = savedBossView() || 'ops';
   // Вид «Неделя»: живая презентация эффективности (пт 08:00 — автосборка).
@@ -237,10 +245,10 @@ export async function renderBoss(container, context) {
       pill: planDev == null ? null : `${planDev >= 0 ? '+' : ''}${planDev.toFixed(1)}%`,
       pc: planDev == null ? 'w' : (planDev >= 0 ? 'g' : 'b'),
       g: revenuePlan ? report.netRevenue / revenuePlan : 0, c: 'var(--ok)', cls: 'dept-staff hero' },
-    { k: 'КТГ — техготовность', v: pct(u.ktg), p: 'план 97%',
+    { k: 'КТГ — техготовность', v: pct(u.ktg), p: `план ${pctGoal(PLAN.ktg)}`,
       pill: `${devPP(u.ktg, PLAN.ktg) >= 0 ? '+' : ''}${devPP(u.ktg, PLAN.ktg).toFixed(1)} п.п.`,
       pc: pillCls(devPP(u.ktg, PLAN.ktg)), g: u.ktg / PLAN.ktg, c: 'var(--toir)', cls: 'dept-toir' },
-    { k: 'КВЛ — укомплектованность', v: pct(u.kvl), p: 'план 99%',
+    { k: 'КВЛ — укомплектованность', v: pct(u.kvl), p: `план ${pctGoal(PLAN.kvl)}`,
       pill: `${devPP(u.kvl, PLAN.kvl) >= 0 ? '+' : ''}${devPP(u.kvl, PLAN.kvl).toFixed(1)} п.п.`,
       pc: pillCls(devPP(u.kvl, PLAN.kvl)), g: u.kvl / PLAN.kvl, c: 'var(--drv)', cls: 'dept-drv' },
     { k: 'КИП — с заданием', v: pct(u.kip), p: `с заданием ${n1(u.workDays / Math.max(1, u.days))} ед. из ${u.vehicles}`,
