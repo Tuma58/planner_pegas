@@ -1606,6 +1606,12 @@ function migrateColumns(db) {
   CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id) WHERE chat_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id) WHERE recipient_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)`);
+  // ── ⚙ Скорость, хвост 09.11: /api/exceptions дёргается каждым тиком
+  // диспетчерской и сканировал trips/orders целиком (p50 415 мс).
+  // Актуальные рейсы ищутся по ends_at, возвраты — частичным индексом
+  // (строк с returned_at единицы на тысячи заявок).
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_trips_ends ON trips(ends_at);
+  CREATE INDEX IF NOT EXISTS idx_orders_returned ON orders(returned_at) WHERE returned_at IS NOT NULL`);
   db.exec(`CREATE TABLE IF NOT EXISTS messages_archive AS SELECT * FROM messages WHERE 0`);
   db.exec(`CREATE TABLE IF NOT EXISTS audit_log_archive AS SELECT * FROM audit_log WHERE 0`);
   // Назначение поверх диспозиции (заявка Базуева, решение руководителя

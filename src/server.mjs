@@ -13498,8 +13498,16 @@ async function api(request, response, url) {
     // Оперативный реестр — только актуальное: проблемы завершившихся рейсов и
     // истёкших окон решить уже нельзя, они очищаются автоматически.
     // История конфликтов за любой период доступна в отчёте «История конфликтов».
+    // Выборка адресная (не listTrips: тот тащит 92 дня истории, которые тут
+    // же выбрасывались) — отклонённые ниже нигде не участвуют.
     const nowIso = new Date().toISOString();
-    const trips = listTrips().filter(trip => trip.ends_at >= nowIso);
+    const trips = db.prepare(`SELECT t.*,v.plate vehicle_plate,v.trailer_plate,v.driver_name,vt.name vehicle_type,
+      f.name from_name,f.color from_color,d.name to_name,d.color to_color
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      JOIN vehicle_types vt ON vt.id=v.type_id JOIN zones f ON f.id=t.from_zone_id
+      JOIN zones d ON d.id=t.to_zone_id
+      WHERE t.ends_at >= ? AND t.status<>'rejected'
+      ORDER BY t.starts_at`).all(nowIso);
     const dispositions = listDispositions();
     const conflicts = new Set();
     const grouped = Map.groupBy(
