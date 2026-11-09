@@ -77,7 +77,7 @@ import {
   decryptSecret, encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
 import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from './dornet.mjs';
-import { gibddBoard, mapApiFines, normCdi, plateParts, upsertGibddFines } from './gibdd.mjs';
+import { gibddBoard, importSts, mapApiFines, normCdi, plateParts, upsertGibddFines } from './gibdd.mjs';
 import { rncardExpenseRows } from './rncard.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
@@ -7189,11 +7189,16 @@ async function gibddFetch(connector, path, body, attempts = 3) {
 async function runGibddSync(options = {}) {
   const connector = gibddConfig();
   if (!connector) return null;
-  const stats = { at: new Date().toISOString(), autosAdded: 0, added: 0, updated: 0,
-    paidNew: 0, unknownCdi: [], noSts: 0, badPlate: [], errors: [] };
+  const stats = { at: new Date().toISOString(), autosAdded: 0, stsImported: 0, added: 0,
+    updated: 0, paidNew: 0, unknownCdi: [], noSts: 0, badPlate: [], errors: [] };
   try {
-    const known = new Set(Object.values((await gibddFetch(connector, 'partner_auto/'))?.data || {})
-      .map(auto => normCdi(auto.auto_cdi)));
+    const serviceAutos = Object.values((await gibddFetch(connector, 'partner_auto/'))?.data || {});
+    const known = new Set(serviceAutos.map(auto => normCdi(auto.auto_cdi)));
+    // Личный кабинет сервиса — источник истины по СТС: пустые СТС в
+    // паспортах ТС заполняются из него по совпадению госномера.
+    stats.stsImported = importSts(db, serviceAutos);
+    const servicePlates = new Set(serviceAutos
+      .map(auto => normalizePlate(`${auto.auto_number}${auto.auto_region}`)).filter(Boolean));
     const cars = db.prepare(`SELECT v.id, v.plate, c.sts_number, COALESCE(v.model,'') AS model
         FROM vehicles v JOIN vehicle_cards c ON c.vehicle_id=v.id
       WHERE v.status<>'out' AND c.sts_number<>''`).all();
@@ -7203,6 +7208,12 @@ async function runGibddSync(options = {}) {
     for (const car of cars) {
       const cdi = normCdi(car.sts_number);
       if (known.has(cdi)) continue;
+      // Госномер уже на мониторинге под другим СТС — не плодим дубль в
+      // ЛК: расхождение (перерегистрация или опечатка) — человеку.
+      if (servicePlates.has(normalizePlate(car.plate))) {
+        stats.errors.push(`СТС расходится у ${car.plate}: в паспорте ${car.sts_number}, в сервисе другой`);
+        continue;
+      }
       const parts = plateParts(car.plate);
       if (!parts) { stats.badPlate.push(car.plate); continue; }
       try {
@@ -7233,7 +7244,7 @@ async function runGibddSync(options = {}) {
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(stats));
   if (stats.added || stats.autosAdded || stats.errors.length || options.verbose) {
     console.log(`OnlineГИБДД: +${stats.added} штрафов, обновлено ${stats.updated},` +
-      ` машин добавлено ${stats.autosAdded}` +
+      ` машин добавлено ${stats.autosAdded}, СТС импортировано ${stats.stsImported}` +
       (stats.errors.length ? ` | ошибки: ${stats.errors.join('; ')}` : ''));
   }
   return stats;

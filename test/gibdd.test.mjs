@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
-import { gibddBoard, mapApiFines, normCdi, offenseIso, plateParts, upsertGibddFines } from '../src/gibdd.mjs';
+import { gibddBoard, importSts, mapApiFines, normCdi, offenseIso, plateParts, upsertGibddFines } from '../src/gibdd.mjs';
 
 function freshDb(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-gibdd-test-'));
@@ -91,6 +91,26 @@ test('штраф ложится в журнал с машиной по СТС и
   // Неизвестный СТС честно виден в сводке синхронизации.
   const alien = upsertGibddFines(db, [{ ...row, bill_id: '18810158260007654321', auto_cdi: '77ХХ000001' }]);
   assert.deepEqual(alien.unknownCdi, ['77ХХ000001']);
+});
+
+test('СТС подтягиваются из личного кабинета по госномеру; заполненные не перетираются', t => {
+  const db = freshDb(t);
+  const [first, second] = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' ORDER BY plate LIMIT 2`).all();
+  db.prepare(`INSERT INTO vehicle_cards(vehicle_id, sts_number) VALUES(?, '58АА000001')`).run(second.id);
+  const parts = p => {
+    const m = p.toUpperCase().match(/^(.{6})(\d{2,3})$/);
+    return { auto_number: m[1], auto_region: m[2] };
+  };
+  const imported = importSts(db, [
+    { auto_cdi: '9911000001', ...parts(first.plate) },   // пустой паспорт — заполнится
+    { auto_cdi: '9911000002', ...parts(second.plate) },  // СТС уже есть — не перетирается
+    { auto_cdi: '9911000003', auto_number: 'Х999ХХ', auto_region: '99' } // чужой номер — мимо
+  ]);
+  assert.equal(imported, 1);
+  assert.equal(db.prepare('SELECT sts_number FROM vehicle_cards WHERE vehicle_id=?').get(first.id).sts_number, '9911000001');
+  assert.equal(db.prepare('SELECT sts_number FROM vehicle_cards WHERE vehicle_id=?').get(second.id).sts_number, '58АА000001');
+  // Повтор — тишина: СТС уже у нас.
+  assert.equal(importSts(db, [{ auto_cdi: '9911000001', ...parts(first.plate) }]), 0);
 });
 
 test('свод для экрана БДД: неоплаченные, горящая скидка, машины без СТС', t => {

@@ -660,13 +660,14 @@ function renderIntegration() {
           placeholder="${cfg.onlinegibdd?.hasToken ? 'оставьте пустым, чтобы не менять' : 'личный кабинет → «API документация»'}" autocomplete="new-password"></label>
       </div>
       <label class="check"><input id="gibddEnabled" type="checkbox" ${cfg.onlinegibdd?.enabled ? 'checked' : ''}> Включить коннектор</label>
-      <p class="muted">Машины с СТС из «Паспорта ТС» сами встают на мониторинг, штрафы с
-        виновником по закреплению едут на экран «Безопасность движения» трижды в сутки.
-        В «💸 Затраты» этот коннектор не пишет — оплаченные штрафы кладёт Dornet.
-        ${cfg.onlinegibdd?.last ? `Последняя синхронизация ${formatDate(cfg.onlinegibdd.last.at, { dateStyle: 'short', timeStyle: 'short' })}: +${cfg.onlinegibdd.last.added} / обновлено ${cfg.onlinegibdd.last.updated}, машин добавлено ${cfg.onlinegibdd.last.autosAdded}${cfg.onlinegibdd.last.noSts ? ` · без СТС ${cfg.onlinegibdd.last.noSts}` : ''}${cfg.onlinegibdd.last.errors?.length ? ` · ошибка: ${escapeHtml(String(cfg.onlinegibdd.last.errors[0]).slice(0, 120))}` : ''}.` : 'Синхронизаций ещё не было.'}</p>
+      <p class="muted">СТС машин сами подтягиваются из личного кабинета сервиса в «Паспорт ТС»
+        (по совпадению госномера), штрафы с виновником по закреплению едут на экран
+        «Безопасность движения» трижды в сутки. В «💸 Затраты» этот коннектор не пишет —
+        оплаченные штрафы кладёт Dornet.
+        ${cfg.onlinegibdd?.last ? `Последняя синхронизация ${formatDate(cfg.onlinegibdd.last.at, { dateStyle: 'short', timeStyle: 'short' })}: +${cfg.onlinegibdd.last.added} / обновлено ${cfg.onlinegibdd.last.updated}, машин добавлено ${cfg.onlinegibdd.last.autosAdded}, СТС импортировано ${cfg.onlinegibdd.last.stsImported ?? 0}${cfg.onlinegibdd.last.noSts ? ` · без СТС ${cfg.onlinegibdd.last.noSts}` : ''}${cfg.onlinegibdd.last.errors?.length ? ` · ошибка: ${escapeHtml(String(cfg.onlinegibdd.last.errors[0]).slice(0, 120))}` : ''}.` : 'Синхронизаций ещё не было.'}</p>
       <div class="actions">
         <button class="button secondary" id="gibddSync" type="button">Синхронизировать сейчас</button>
-        <span class="muted">Кнопка сохранит ключ сама; машины без СТС в паспорте видны на экране БДД.</span>
+        <span class="muted">Кнопка сохранит ключ сама; машины, не найденные в сервисе, видны на экране БДД.</span>
       </div>`, { span: 's6' }),
     biSec('РН-Карт (Роснефть) — топливо', `
       <div class="fields">
@@ -748,7 +749,7 @@ function renderIntegration() {
         enabled: true
       } }) });
       const result = await api('/api/admin/gibdd/sync', { method: 'POST', body: '{}' });
-      toast(`OnlineГИБДД: +${result.added} штрафов, обновлено ${result.updated}, машин добавлено ${result.autosAdded}` +
+      toast(`OnlineГИБДД: +${result.added} штрафов, обновлено ${result.updated}, машин добавлено ${result.autosAdded}, СТС импортировано ${result.stsImported ?? 0}` +
         (result.errors?.length ? ` · ошибка: ${result.errors[0]}` : ''));
     } catch (error) { toast(error.message, 'error'); }
   };

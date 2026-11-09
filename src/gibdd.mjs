@@ -48,6 +48,34 @@ export function offenseIso(date, time) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
+// Госномер к виду планера: без пробелов, нижний регистр, кириллица.
+const plateKey = value => toCyr(value).replace(/\s+/g, '').toLowerCase();
+
+// Импорт СТС из личного кабинета сервиса в «Паспорт ТС» (руководитель
+// 09.11: «ЛК действующий, все СТС в нём» — кабинет и есть источник
+// истины). Пустой СТС заполняется по совпадению госномера; заполненный
+// не перезаписывается — расхождение решает человек.
+export function importSts(db, serviceAutos) {
+  const ourCdi = new Set(db.prepare(`SELECT sts_number FROM vehicle_cards
+    WHERE sts_number<>''`).all().map(row => normCdi(row.sts_number)));
+  const byPlate = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+    .map(vehicle => [plateKey(vehicle.plate), vehicle.id]));
+  const fill = db.prepare(`INSERT INTO vehicle_cards(vehicle_id, sts_number, updated_at, updated_by_name)
+    VALUES(?, ?, CURRENT_TIMESTAMP, 'OnlineГИБДД')
+    ON CONFLICT(vehicle_id) DO UPDATE SET sts_number=excluded.sts_number,
+      updated_at=CURRENT_TIMESTAMP, updated_by_name='OnlineГИБДД'
+    WHERE vehicle_cards.sts_number=''`);
+  let imported = 0;
+  for (const auto of serviceAutos || []) {
+    const cdi = normCdi(auto?.auto_cdi);
+    if (!cdi || ourCdi.has(cdi)) continue;
+    const vehicleId = byPlate.get(plateKey(`${auto.auto_number}${auto.auto_region}`));
+    if (!vehicleId) continue;
+    if (fill.run(vehicleId, cdi).changes) imported += 1;
+  }
+  return imported;
+}
+
 export function migrateGibdd(db) {
   db.prepare(`INSERT OR IGNORE INTO integration_connectors(id,name,base_url)
     VALUES('onlinegibdd','OnlineГИБДД (штрафы)','https://api.onlinegibdd.ru/v3')`).run();
