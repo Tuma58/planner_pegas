@@ -12,6 +12,7 @@ import { dashboardMetrics } from './dashboard.js';
 import { customerCardDialog } from './customer-card.js';
 import { vehiclePlace } from './transfer.js';
 import { loadOpenQuestions, questionsForOwner, questionsStripHtml, wireQuestionsStrip } from './call-card.js';
+import { localTimeHint, localIsoFromMsk, mskFromLocal, wireLocalTimeHint } from './tz.js';
 import { STAGES, inSalesPortfolio, myTasks, orderStage, pipelineStep, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
 
@@ -874,7 +875,7 @@ export async function renderSales(container, context) {
         ${Number(order.cash) ? '<span class="cash-badge">💵 наличные</span>' : ''}
         <small class="muted" style="display:block">${order.order_no ? `№ ${escapeHtml(order.order_no)} · ` : ''}${escapeHtml(order.body_type || 'Рефрижератор')} · ${escapeHtml(order.temperature_mode || '—')}${order.planned_km ? ` · 📏 <span class="mono">${Math.round(order.planned_km)}</span> км` : ''}${(() => {
           try { const viaList = JSON.parse(order.via_json || '[]');
-            return viaList.length ? ` · ⛳ ${viaList.length} пром.` : ''; } catch { return ''; } })()} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}</small>
+            return viaList.length ? ` · ⛳ ${viaList.length} пром.` : ''; } catch { return ''; } })()} · окно ${fmtDateTime(order.window_from)} → ${fmtDateTime(order.window_to)}${localTimeHint(order.to_point || '', order.window_to)}</small>
         ${order.comment ? `<small class="muted" style="display:block">💬 ${escapeHtml(order.comment)}</small>` : ''}
         ${orderFileLinks(data, order.id)}
         ${order.returned_at ? `<small class="returned-note">↩ вернулась из плана: ${escapeHtml(order.rejection_reason || 'без причины')}</small>` : ''}
@@ -1619,17 +1620,37 @@ export async function renderSales(container, context) {
           `📍 геозоны: ${nameOf(form.fromZoneId.value)} → ${nameOf(form.toZoneId.value)} (из спота маршрута)`;
       })();
       if (spot.planned_load) {
-        form.windowFrom.value = toLocalInput(spot.planned_load);
-        form.windowTo.value = toLocalInput(new Date(Date.parse(spot.planned_load) + 12 * 3_600_000).toISOString());
+        // Поле у восточной точки живёт в местном времени — план спота (МСК)
+        // перед подстановкой сдвигается в пояс точки, иначе при сохранении
+        // конверсия «местное → МСК» уехала бы на величину пояса.
+        form.windowFrom.value = toLocalInput(localIsoFromMsk(spot.planned_load, form.fromPoint.value));
+        form.windowTo.value = toLocalInput(localIsoFromMsk(
+          new Date(Date.parse(spot.planned_load) + 12 * 3_600_000).toISOString(), form.toPoint.value));
+        form.windowFrom.dispatchEvent(new Event('input'));
+        form.windowTo.dispatchEvent(new Event('input'));
       }
       if (spot.expected_rate) form.rateVat.value = Math.round(spot.expected_rate);
       state.salesSpotToClose = { spotId: spot.id, routeId: spot.route_id };
       toast('Форма заполнена плечом спота — выберите заказчика и забронируйте');
       form.customerName.focus();
     }));
+  // Пояса (заявка Базуева 09.11): время у восточной точки вносится по
+  // местным часам, как в заявке клиента, — подсказка под полем показывает
+  // пересчёт, сохранение переводит в МСК (mskFromLocal в onsubmit ниже).
+  {
+    const form = container.querySelector('#salesForm');
+    const refreshFrom = wireLocalTimeHint(container.querySelector('#salesWinFrom'),
+      () => form.fromPoint.value);
+    const refreshTo = wireLocalTimeHint(container.querySelector('#salesWinTo'),
+      () => form.toPoint.value);
+    container.querySelector('#salesFromPoint')?.addEventListener('input', refreshFrom);
+    container.querySelector('#salesToPoint')?.addEventListener('input', refreshTo);
+  }
   container.querySelector('#salesForm').onsubmit = async event => {
     event.preventDefault();
     const values = formValues(event.currentTarget);
+    values.windowFrom = mskFromLocal(values.windowFrom, values.fromPoint);
+    values.windowTo = mskFromLocal(values.windowTo, values.toPoint);
     values.cash = values.cash ? 1 : 0;
     values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
     values.toAddressId = addressByName(data, values.toPoint)?.id || null;
@@ -1866,8 +1887,10 @@ export function editOrderDialog(order, data, context) {
       <label class="field">Кузов<select name="bodyType">${options(orderOptions.bodyTypes, order.body_type)}</select></label>
     </div>
     <div class="form-grid">
-      <label class="field">Окно с<input name="windowFrom" type="datetime-local" required value="${inputValue(order.window_from)}"></label>
-      <label class="field">Окно по<input name="windowTo" type="datetime-local" required value="${inputValue(order.window_to)}"></label>
+      <label class="field">Окно с<input name="windowFrom" id="editWinFrom" type="datetime-local" required
+        value="${inputValue(localIsoFromMsk(order.window_from, order.from_point))}"></label>
+      <label class="field">Окно по<input name="windowTo" id="editWinTo" type="datetime-local" required
+        value="${inputValue(localIsoFromMsk(order.window_to, order.to_point))}"></label>
     </div>
     <div class="form-grid">
       <label class="field">Ставка с НДС, ₽<input name="rateVat" type="text" inputmode="numeric"
@@ -2002,9 +2025,22 @@ export function editOrderDialog(order, data, context) {
   });
   wireNetField(document.getElementById('editOrderForm'),
     document.getElementById('editRateNet'), data);
+  // Пояса: поля окна показывают местное время восточной точки (как в
+  // заявке клиента) — подсказка с пересчётом в МСК, сохранение ниже.
+  {
+    const form = document.getElementById('editOrderForm');
+    const refreshFrom = wireLocalTimeHint(document.getElementById('editWinFrom'),
+      () => form.fromPoint.value);
+    const refreshTo = wireLocalTimeHint(document.getElementById('editWinTo'),
+      () => form.toPoint.value);
+    document.getElementById('editFromPoint')?.addEventListener('input', refreshFrom);
+    document.getElementById('editToPoint')?.addEventListener('input', refreshTo);
+  }
   document.getElementById('editOrderForm').onsubmit = async event => {
     event.preventDefault();
     const values = formValues(event.target);
+    values.windowFrom = mskFromLocal(values.windowFrom, values.fromPoint);
+    values.windowTo = mskFromLocal(values.windowTo, values.toPoint);
     values.rateVat = parseMoney(values.rateVat);
     values.cash = values.cash ? 1 : 0;
     values.fromAddressId = addressByName(data, values.fromPoint)?.id || null;
