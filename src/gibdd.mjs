@@ -111,7 +111,7 @@ export function mapApiFines(data) {
       if (!fine?.bill_id) continue;
       rows.push({
         bill_id: String(fine.bill_id), gis_id: Number(fine.gis_id) || null, auto_cdi: cdi,
-        status: fine.gis_status === 'payed' ? 'payed' : 'nopayed',
+        status: ['payed', 'revoked'].includes(fine.gis_status) ? fine.gis_status : 'nopayed',
         in_processing: String(fine.in_processing ?? '0'),
         bill_date: fine.pay_bill_date || null, pay_due: fine.last_bill_date || null,
         amount: Number(fine.pay_bill_amount) || 0,
@@ -155,18 +155,23 @@ export function upsertGibddFines(db, rows) {
   const byCdi = new Map(db.prepare(`SELECT c.vehicle_id, c.sts_number, v.plate
       FROM vehicle_cards c JOIN vehicles v ON v.id=c.vehicle_id
       WHERE c.sts_number<>''`).all().map(row => [normCdi(row.sts_number), row]));
-  const get = db.prepare('SELECT bill_id, status, driver_id, driver_name FROM gibdd_fines WHERE bill_id=?');
+  const get = db.prepare('SELECT bill_id, status, vehicle_id, driver_id, driver_name FROM gibdd_fines WHERE bill_id=?');
   const insert = db.prepare(`INSERT INTO gibdd_fines(bill_id,gis_id,auto_cdi,vehicle_id,plate,
       driver_id,driver_name,status,in_processing,bill_date,pay_due,amount,discount_pct,
       discount_until,amount_discount,offense_on,offense_time,offense_at,location,
       article_number,article,paid_seen_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  // Обновление дозаполняет машину и виновника: СТС и закрепления могли
+  // появиться ПОЗЖЕ штрафа (урок первого прогона 09.11: 20 тыс. штрафов
+  // приехали раньше импорта СТС и остались без машин).
   const update = db.prepare(`UPDATE gibdd_fines SET status=?, in_processing=?, amount=?,
       discount_pct=?, discount_until=?, amount_discount=?, pay_due=?,
+      vehicle_id=COALESCE(vehicle_id,?), plate=CASE WHEN plate='' THEN ? ELSE plate END,
       driver_id=COALESCE(driver_id,?), driver_name=CASE WHEN driver_name='' THEN ? ELSE driver_name END,
       paid_seen_at=CASE WHEN paid_seen_at IS NULL AND ?='payed' THEN CURRENT_TIMESTAMP ELSE paid_seen_at END,
       updated_at=CURRENT_TIMESTAMP
-    WHERE bill_id=? AND (status<>? OR in_processing<>? OR amount<>? OR driver_name='')`);
+    WHERE bill_id=? AND (status<>? OR in_processing<>? OR amount<>? OR (driver_name='' AND ?<>'')
+      OR (vehicle_id IS NULL AND ? IS NOT NULL))`);
   const stats = { added: 0, updated: 0, paidNew: 0, unknownCdi: new Set() };
   for (const row of rows) {
     const car = byCdi.get(row.auto_cdi);
@@ -182,12 +187,15 @@ export function upsertGibddFines(db, rows) {
       stats.added += 1;
       if (row.status === 'payed') stats.paidNew += 1;
     } else {
+      const vehicleId = existing.vehicle_id || car?.vehicle_id || null;
       const driver = existing.driver_name ? { driverId: existing.driver_id, driverName: existing.driver_name }
-        : resolveFineDriver(db, car?.vehicle_id || null, row.offense_at);
+        : resolveFineDriver(db, vehicleId, row.offense_at);
       const result = update.run(row.status, row.in_processing, row.amount,
         row.discount_pct, row.discount_until, row.amount_discount, row.pay_due,
+        car?.vehicle_id || null, car?.plate || '',
         driver.driverId, driver.driverName, row.status,
-        row.bill_id, row.status, row.in_processing, row.amount);
+        row.bill_id, row.status, row.in_processing, row.amount, driver.driverName,
+        car?.vehicle_id || null);
       if (result.changes) {
         stats.updated += 1;
         if (row.status === 'payed' && existing.status !== 'payed') stats.paidNew += 1;

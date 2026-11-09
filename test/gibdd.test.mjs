@@ -93,6 +93,45 @@ test('штраф ложится в журнал с машиной по СТС и
   assert.deepEqual(alien.unknownCdi, ['77ХХ000001']);
 });
 
+test('штраф, пришедший раньше СТС, дозаполняется машиной и виновником при повторе', t => {
+  const db = freshDb(t);
+  const vehicle = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' LIMIT 1`).get();
+  db.prepare(`UPDATE vehicles SET driver_name='Текущий Водитель' WHERE id=?`).run(vehicle.id);
+  const row = {
+    bill_id: '18810158260009990001', gis_id: 2, auto_cdi: '58КК777888', status: 'nopayed',
+    in_processing: '0', bill_date: '2026-11-01', pay_due: '2026-12-29', amount: 500,
+    discount_pct: 50, discount_until: '2026-11-15', amount_discount: 250,
+    offense_on: '2026-10-25', offense_time: '09:00', offense_at: '2026-10-25T06:00:00.000Z',
+    location: 'ПЕНЗА', article_number: '12.09.2', article: ''
+  };
+  upsertGibddFines(db, [row]); // СТС ещё нигде нет — штраф без машины
+  assert.equal(db.prepare('SELECT vehicle_id FROM gibdd_fines WHERE bill_id=?').get(row.bill_id).vehicle_id, null);
+  // СТС появился в паспорте (импорт из ЛК) — повторная синхронизация дозаполняет.
+  db.prepare(`INSERT INTO vehicle_cards(vehicle_id, sts_number) VALUES(?, '58КК777888')`).run(vehicle.id);
+  const second = upsertGibddFines(db, [row]);
+  assert.equal(second.updated, 1);
+  const saved = db.prepare('SELECT * FROM gibdd_fines WHERE bill_id=?').get(row.bill_id);
+  assert.equal(saved.vehicle_id, vehicle.id);
+  assert.equal(saved.plate, vehicle.plate);
+  assert.equal(saved.driver_name, 'Текущий Водитель'); // фолбэк без закреплений
+  // Третий прогон без изменений — тишина.
+  assert.equal(upsertGibddFines(db, [row]).updated, 0);
+});
+
+test('обжалованный штраф не считается неоплаченным', t => {
+  const db = freshDb(t);
+  const rows = mapApiFines({ auto_list: { 0: { auto_cdi: '5800111222', offense_list: {
+    0: { gis_id: 3, gis_status: 'revoked', bill_id: 'УИН-ОБЖ', pay_bill_amount: 250000,
+      offense_date: '2026-11-02', offense_time: '10:00' }
+  } } } });
+  assert.equal(rows[0].status, 'revoked');
+  upsertGibddFines(db, rows);
+  const board = gibddBoard(db, { from: '2026-11-01', to: '2026-11-09', warnDays: 7,
+    nowMs: Date.parse('2026-11-09T09:00:00.000Z') });
+  assert.equal(board.unpaidCount, 0);
+  assert.equal(board.fines.length, 1); // в журнале периода виден
+});
+
 test('СТС подтягиваются из личного кабинета по госномеру; заполненные не перетираются', t => {
   const db = freshDb(t);
   const [first, second] = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' ORDER BY plate LIMIT 2`).all();

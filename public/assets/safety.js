@@ -63,7 +63,9 @@ export async function renderSafety(container, context) {
           <td class="num">${fine.amount_discount != null && fine.amount_discount < fine.amount && fine.status === 'nopayed'
     ? `<s class="muted">${fmtRub(fine.amount)}</s> ${fmtRub(fine.amount_discount)}` : fmtRub(fine.amount)}</td>
           <td>${fine.discount_until && fine.status === 'nopayed' ? ruDay(fine.discount_until) : '—'}</td>
-          <td>${fine.status === 'payed' ? '<span class="bi-tag pos">оплачен</span>' : '<span class="bi-tag warn">не оплачен</span>'}</td>
+          <td>${fine.status === 'payed' ? '<span class="bi-tag pos">оплачен</span>'
+    : fine.status === 'revoked' ? '<span class="bi-tag">обжалован</span>'
+      : '<span class="bi-tag warn">не оплачен</span>'}</td>
           ${data.canWrite ? `<td>${fine.driver_id || fine.vehicle_id ? `<button class="button small ghost" data-sf-fine="${escapeHtml(fine.bill_id)}">→ расследование</button>` : ''}</td>` : ''}</tr>`).join('')
     || `<tr><td colspan="7" class="muted">штрафов за период нет</td></tr>`}</tbody></table></div>
         ${g.withoutSts.length ? `<div class="sec-b"><span class="muted">Без СТС в паспорте ТС — не на мониторинге (${g.withoutSts.length}): ${g.withoutSts.slice(0, 40).map(escapeHtml).join(', ')}${g.withoutSts.length > 40 ? '…' : ''}</span></div>` : ''}
