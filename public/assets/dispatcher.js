@@ -13,7 +13,7 @@ import { replaceVehicleDialog, rejectTripDialog } from './logist.js';
 import { openTransfers, transferStage, transferTaskText, transferDialog } from './transfer.js';
 import { callCardDialog, closeQuestionDialog, questionDialog, setTopics, topicLabel } from './call-card.js';
 import { tripIncidentDialog } from './incidents.js';
-import { localTimeHint } from './tz.js';
+import { localTimeHint, localIsoFromMsk, mskFromLocal, tzOffsetHours, wireLocalTimeHint } from './tz.js';
 import { waybillFromTrip, waybillRegistry } from './waybill.js';
 
 const LATE_MS = 30 * 60_000;
@@ -180,13 +180,20 @@ function returnCargoDialog(trip, data, context) {
       <button class="button danger">Добавить точку возврата</button>
     </div></form>`);
   wireSelectSearch(document.getElementById('returnSearch'), document.getElementById('returnPoint'));
+  // Пояса: плановое прибытие возврата — по местным часам выбранного пункта.
+  {
+    const form = document.getElementById('returnCargoForm');
+    const refresh = wireLocalTimeHint(form.plannedArrival, () => form.point.value);
+    document.getElementById('returnPoint').addEventListener('change', refresh);
+  }
   document.getElementById('returnCargoForm').onsubmit = async event => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
     try {
       await api(`/api/trips/${trip.id}/stops`, { method: 'POST', body: JSON.stringify({
         kind: 'D', point: values.point,
-        plannedArrival: values.plannedArrival ? new Date(values.plannedArrival).toISOString() : null,
+        plannedArrival: values.plannedArrival
+          ? mskFromLocal(new Date(values.plannedArrival).toISOString(), values.point) : null,
         note: `ВОЗВРАТ: ${values.note}`
       }) });
       context.closeModal();
@@ -924,6 +931,8 @@ export async function renderDispatcher(container, context, options = {}) {
     const timeInput = (name, label, value) => `<label class="field">${label}
       <input name="${name}" type="datetime-local" value="${value ? toLocalInput(value) : ''}"></label>`;
     context.showModal(`<form id="stopEditForm"><h2>Стоянка · ${escapeHtml(stop.point || '')}</h2>
+      <p class="muted">Все времена здесь — по МСК${tzOffsetHours(stop.point)
+    ? ` (пояс точки +${tzOffsetHours(stop.point)} — местные часы видны на карточках)` : ''}.</p>
       <div class="form-grid">
         ${timeInput('actualArrival', 'Факт прибытия', stop.actual_arrival)}
         ${timeInput('actualDeparture', 'Факт убытия', stop.actual_departure)}
@@ -968,9 +977,16 @@ export async function renderDispatcher(container, context, options = {}) {
         <button type="button" class="button ghost" data-close>Отмена</button>
         <button class="button">Добавить</button>
       </div></form>`);
+    // Пояса: план прибытия вносится по местным часам пункта (как в заявке).
+    {
+      const form = document.getElementById('stopAddForm');
+      const refresh = wireLocalTimeHint(form.plannedArrival, () => form.point.value);
+      form.point.addEventListener('input', refresh);
+    }
     document.getElementById('stopAddForm').onsubmit = async event => {
       event.preventDefault();
       const values = formValues(event.currentTarget);
+      values.plannedArrival = mskFromLocal(values.plannedArrival, values.point);
       try {
         await api(`/api/trips/${tripId}/stops`, { method: 'POST', body: JSON.stringify(values) });
         context.closeModal();
@@ -2354,7 +2370,10 @@ export async function renderDispatcher(container, context, options = {}) {
       // стоянки, умный транзит), сумма — прежним confirm-sum; продажи
       // получают список правок.
       const order = (data.orders || []).find(item => item.id === trip.order_id) || null;
-      const toLocal = iso => iso ? toLocalInput(iso) : '';
+      // Пояса (заявка Базуева 09.11): окно у восточной точки показывается
+      // и правится в МЕСТНОМ времени точки — как написано в заявке клиента;
+      // при сохранении mskFromLocal переводит обратно в МСК.
+      const toLocal = (iso, pointText) => iso ? toLocalInput(localIsoFromMsk(iso, pointText || '')) : '';
       context.showModal(`<form id="sumForm">
         <h2>✏ Корректировка заказа</h2>
         <p class="muted">${escapeHtml(trip.vehicle_plate)} · ${escapeHtml(trip.customer_name || '')}
@@ -2363,9 +2382,9 @@ export async function renderDispatcher(container, context, options = {}) {
           должны попасть точные данные.</p>
         ${order ? `<div class="form-grid" style="grid-template-columns:1fr 1fr">
           <label class="field">Погрузка с
-            <input type="datetime-local" name="windowFrom" value="${toLocal(order.window_from)}"></label>
+            <input type="datetime-local" name="windowFrom" id="corrWinFrom" value="${toLocal(order.window_from, order.from_point)}"></label>
           <label class="field" title="Срок доставки по заявке клиента: плановая выгрузка рейса пересчитается и будет не раньше этого срока">Выгрузка до (доставить к)
-            <input type="datetime-local" name="windowTo" value="${toLocal(order.window_to)}"></label>
+            <input type="datetime-local" name="windowTo" id="corrWinTo" value="${toLocal(order.window_to, order.to_point)}"></label>
           <label class="field" style="grid-column:1/-1">Пункт погрузки
             <input name="fromPoint" value="${escapeHtml(order.from_point || '')}"></label>
           <label class="field" style="grid-column:1/-1">Пункт выгрузки
@@ -2404,7 +2423,7 @@ export async function renderDispatcher(container, context, options = {}) {
         if (!box) return;
         box.innerHTML = editVia.map((item, index) => `<span class="via-chip">
             ${item.kind === 'P' ? '📦' : '📥'} ${escapeHtml(String(item.point || '').slice(0, 34))}${item.at
-    ? ` · 🕐 ${escapeHtml(formatDateTime(item.at))}` : ''}
+    ? ` · 🕐 ${escapeHtml(formatDateTime(item.at))}${escapeHtml(localTimeHint(item.point, item.at))}` : ''}
             <button type="button" data-corr-via-del="${index}" title="Убрать точку">×</button></span>`).join('')
           || '<span class="muted">точек нет</span>';
         box.querySelectorAll('[data-corr-via-del]').forEach(del =>
@@ -2415,6 +2434,17 @@ export async function renderDispatcher(container, context, options = {}) {
       };
       if (order) {
         redrawVia();
+        // Подсказки пересчёта «местное → МСК» у всех трёх полей времени.
+        const corrForm = document.getElementById('sumForm');
+        const refreshFrom = wireLocalTimeHint(document.getElementById('corrWinFrom'),
+          () => corrForm.fromPoint.value);
+        const refreshTo = wireLocalTimeHint(document.getElementById('corrWinTo'),
+          () => corrForm.toPoint.value);
+        corrForm.fromPoint?.addEventListener('input', refreshFrom);
+        corrForm.toPoint?.addEventListener('input', refreshTo);
+        const refreshVia = wireLocalTimeHint(document.getElementById('corrViaAt'),
+          () => document.getElementById('corrViaPoint')?.value || '');
+        document.getElementById('corrViaPoint')?.addEventListener('input', refreshVia);
         document.getElementById('corrViaAdd')?.addEventListener('click', () => {
           const input = document.getElementById('corrViaPoint');
           const point = String(input?.value || '').trim();
@@ -2423,9 +2453,10 @@ export async function renderDispatcher(container, context, options = {}) {
           const atInput = document.getElementById('corrViaAt');
           editVia.push({ point, kind: document.getElementById('corrViaKind')?.value === 'P' ? 'P' : 'D',
             addressId: null,
-            at: atInput?.value ? new Date(atInput.value).toISOString() : null });
+            at: atInput?.value ? mskFromLocal(new Date(atInput.value).toISOString(), point) : null });
           input.value = '';
           if (atInput) atInput.value = '';
+          refreshVia();
           redrawVia();
         });
       }
@@ -2440,8 +2471,14 @@ export async function renderDispatcher(container, context, options = {}) {
               const now = editVia.map(item => item.point).join(', ') || '—';
               corrections.push(`точки: [${was.slice(0, 60)}] → [${now.slice(0, 60)}]`);
             }
-            const windowFrom = form.get('windowFrom') ? new Date(form.get('windowFrom')).toISOString() : null;
-            const windowTo = form.get('windowTo') ? new Date(form.get('windowTo')).toISOString() : null;
+            // Поля окна заполнены в местном времени точек — переводим в МСК
+            // по актуальным пунктам формы (их могли поправить тут же).
+            const windowFrom = form.get('windowFrom') ? mskFromLocal(
+              new Date(form.get('windowFrom')).toISOString(),
+              String(form.get('fromPoint') || order.from_point || '')) : null;
+            const windowTo = form.get('windowTo') ? mskFromLocal(
+              new Date(form.get('windowTo')).toISOString(),
+              String(form.get('toPoint') || order.to_point || '')) : null;
             if (windowFrom && windowFrom !== order.window_from) {
               patch.windowFrom = windowFrom;
               corrections.push(`погрузка с: ${formatDateTime(order.window_from)} → ${formatDateTime(windowFrom)}`);

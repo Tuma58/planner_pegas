@@ -44,3 +44,52 @@ export function localTimeHint(pointText, iso) {
   if (!offset || !Number.isFinite(ms)) return '';
   return ` · ${fmt.format(new Date(ms + offset * 3_600_000))} местн. (+${offset})`;
 }
+
+// ── Этап 3 поясов (заявка Базуева 09.11) ────────────────────────────────
+// В заявке клиента время у восточной точки стоит по МЕСТНЫМ часам этой
+// точки. Сотрудник вносит его в форму «как в заявке», планер при
+// сохранении сам переводит в МСК; хранение и контроль — по-прежнему МСК.
+// Правило действует на ввод с момента выпуска, старые записи не трогаем.
+
+// Ввод (местное время точки, ISO) → хранимое МСК: минус смещение пояса.
+export function mskFromLocal(iso, pointText) {
+  const offset = tzOffsetHours(pointText);
+  const ms = Date.parse(iso || '');
+  if (!offset || !Number.isFinite(ms)) return iso;
+  return new Date(ms - offset * 3_600_000).toISOString();
+}
+
+// Обратный ход для предзаполнения форм: хранимое МСК → местное время
+// точки, чтобы поле показывало то же число, что в заявке клиента.
+export function localIsoFromMsk(iso, pointText) {
+  const offset = tzOffsetHours(pointText);
+  const ms = Date.parse(iso || '');
+  if (!offset || !Number.isFinite(ms)) return iso;
+  return new Date(ms + offset * 3_600_000).toISOString();
+}
+
+// Живая подсказка под полем datetime-local: как планер понял ввод.
+// getPointText — актуальный текст пункта (его поле может меняться рядом).
+// Возвращает refresh — дёргать при смене пункта.
+export function wireLocalTimeHint(input, getPointText) {
+  if (!input) return () => {};
+  const hint = document.createElement('small');
+  hint.className = 'muted';
+  hint.style.display = 'none';
+  input.insertAdjacentElement('afterend', hint);
+  const refresh = () => {
+    const offset = tzOffsetHours(getPointText());
+    // Значение поля без зоны трактуем как UTC — так же, как остальные
+    // метки времени планера (см. pipeline.js).
+    const ms = Date.parse(`${String(input.value || '').slice(0, 16)}:00.000Z`);
+    if (!offset || !Number.isFinite(ms)) { hint.style.display = 'none'; return; }
+    const msk = new Date(ms - offset * 3_600_000);
+    const pad = n => String(n).padStart(2, '0');
+    hint.style.display = 'block';
+    hint.textContent = `⏱ принято как местное точки (+${offset}) — по МСК ` +
+      `${pad(msk.getUTCDate())}.${pad(msk.getUTCMonth() + 1)} ${pad(msk.getUTCHours())}:${pad(msk.getUTCMinutes())}`;
+  };
+  input.addEventListener('input', refresh);
+  refresh();
+  return refresh;
+}
