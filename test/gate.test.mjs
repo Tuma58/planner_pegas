@@ -37,7 +37,7 @@ test('одна кнопка: въезд, потом выезд; тягач уз�
   assert.equal(exit.kind, 'out');
   // Неизвестный номер — нужен тип; личный — запоминается в справочнике.
   assert.equal(gateRegister(db, 'Охранник', { plate: 'Х777ХХ58' }).error, 'NEED_TYPE');
-  assert.equal(gateRegister(db, 'Охранник', { plate: 'Х777ХХ58', type: 'personal', person: 'Иванов', addDir: true }).kind, 'in');
+  assert.equal(gateRegister(db, 'Охранник', { plate: 'Х777ХХ58', type: 'personal', person: 'Иванов', addDir: true }, '2026-11-07T11:00:00.000Z').kind, 'in');
   assert.equal(db.prepare(`SELECT type FROM gate_dir WHERE plate='Х777ХХ58'`).get().type, 'personal');
   const report = gateReport(db, '2026-11-07T00:00:00.000Z', '2026-11-08T00:00:00.000Z', '2026-11-07T12:00:00.000Z');
   assert.equal(report.visits.length, 2);
