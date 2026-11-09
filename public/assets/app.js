@@ -2474,6 +2474,11 @@ async function autoRefreshTick(force = false) {
   if (state.dataRev) {
     try {
       const info = await api('/api/bootstrap/rev');
+      // Самообновление вкладки (09.11): на сервере новая версия
+      // интерфейса — вкладка тихо перезагружается в спокойный момент.
+      // Иначе вкладки с кодом до диеты тика живут неделями и качают
+      // полный снимок 21 МБ каждую минуту (замер Э0: 2,9 ГБ за полчаса).
+      if (maybeSelfReload(info.assetVersion)) return;
       if (info.rev && info.rev === state.dataRev) { lastAutoRefresh = Date.now(); return; }
       // Э1 диеты тика (04.11): изменившееся доезжает дельтой (килобайты),
       // полный снимок 21 МБ — входам и плановому часовому рефрешу
@@ -2612,6 +2617,27 @@ function sendPerfBeacon(tickStarted, kind, renderMs = 0) {
     view: `${state.view || ''}·${kind}`, tickMs, renderMs,
     longTasks: longTaskCount }) }).catch(() => { /* маячок не мешает работе */ });
   longTaskCount = 0;
+}
+
+// Тихое самообновление вкладки при новой версии интерфейса (09.11).
+// Щиты: версия запоминается с первого тика; перезагрузка — только в
+// простое (минута без действий, нет модалки и зажатой мыши) и не чаще
+// раза в 10 минут (sessionStorage — защита от цикла, если ассеты
+// почему-то не сменились).
+let knownAssetVersion = '';
+function maybeSelfReload(assetVersion) {
+  if (!assetVersion) return false;
+  if (!knownAssetVersion) { knownAssetVersion = assetVersion; return false; }
+  if (knownAssetVersion === assetVersion) return false;
+  if (mouseHeld || byId('modalRoot').innerHTML.trim()
+    || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)
+    || Date.now() - lastUserActivity < 60_000) return false;
+  let lastReload = 0;
+  try { lastReload = Number(sessionStorage.getItem('pl_av_reload_at')) || 0; } catch { /* приват-режим */ }
+  if (Date.now() - lastReload < 10 * 60_000) return false;
+  try { sessionStorage.setItem('pl_av_reload_at', String(Date.now())); } catch { /* приват-режим */ }
+  location.reload();
+  return true;
 }
 
 let lastFullRefresh = Date.now();
