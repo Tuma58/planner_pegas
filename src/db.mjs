@@ -7,6 +7,7 @@ import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
 import { EXPENSE_CATEGORY_SEED } from './expenses.mjs';
+import { migrateGibdd } from './gibdd.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -424,6 +425,9 @@ export function openDatabase(databasePath, admin, options = {}) {
   db.exec(SCHEMA);
   migrateColumns(db);
   seed(db, admin, options);
+  // После сида: миграция читает settings.calculation (на свежей базе
+  // настройки появляются только в seed).
+  migrateGibdd(db);
   seedDrivers(db);
   seedAddresses(db);
   backfillEmptyKm(db);

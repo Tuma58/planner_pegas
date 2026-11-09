@@ -590,6 +590,22 @@ function renderIntegration() {
         <span class="muted">Бэкафилл истории: введите токен и CID, выберите период (до года) и жмите — кнопка сохранит настройки сама.</span>
       </div>
     </div>
+    <div class="card"><h2>OnlineГИБДД — штрафы</h2>
+      <div class="fields">
+        <label class="field">Ключ API ${cfg.onlinegibdd?.hasToken ? '(сохранен)' : ''}<input id="gibddToken" type="password"
+          placeholder="${cfg.onlinegibdd?.hasToken ? 'оставьте пустым, чтобы не менять' : 'личный кабинет → «API документация»'}" autocomplete="new-password"></label>
+      </div>
+      <label class="check"><input id="gibddEnabled" type="checkbox" ${cfg.onlinegibdd?.enabled ? 'checked' : ''}> Включить коннектор</label>
+      <p class="muted">СТС машин сами подтягиваются из личного кабинета сервиса (по совпадению
+        госномера), штрафы с виновником по закреплению видны внизу вкладки «💸 Затраты»
+        трижды в сутки. В сам журнал затрат этот коннектор не пишет — оплаченные штрафы
+        кладёт Dornet.
+        ${cfg.onlinegibdd?.last ? `Последняя синхронизация ${formatDate(cfg.onlinegibdd.last.at, { dateStyle: 'short', timeStyle: 'short' })}: +${cfg.onlinegibdd.last.added} / обновлено ${cfg.onlinegibdd.last.updated}, машин добавлено ${cfg.onlinegibdd.last.autosAdded}, СТС импортировано ${cfg.onlinegibdd.last.stsImported ?? 0}${cfg.onlinegibdd.last.errors?.length ? ` · ошибка: ${escapeHtml(String(cfg.onlinegibdd.last.errors[0]).slice(0, 120))}` : ''}.` : 'Синхронизаций ещё не было.'}</p>
+      <div class="actions">
+        <button class="button secondary" id="gibddSync" type="button">Синхронизировать сейчас</button>
+        <span class="muted">Кнопка сохранит ключ сама; машины, не найденные в сервисе, видны под таблицей штрафов.</span>
+      </div>
+    </div>
     <div class="card"><h2>РН-Карт (Роснефть) — топливо</h2>
       <div class="fields">
         <label class="field">Логин ЛК (лучше отдельная учётка для API)
@@ -662,6 +678,19 @@ function renderIntegration() {
         .map(([label, count]) => `${label} ${count}`).join(' · ');
       toast(`Dornet: добавлено ${result.added}${detail ? ` (${detail})` : ''}` +
         (result.errors?.length ? ` · ошибки: ${result.errors[0]}` : ''));
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  byId('gibddSync').onclick = async () => {
+    try {
+      // Кнопка сама сохраняет поля карточки (урок Dornet 03.11).
+      byId('gibddEnabled').checked = true;
+      await api('/api/admin/integration', { method: 'PUT', body: JSON.stringify({ onlinegibdd: {
+        token: byId('gibddToken').value,
+        enabled: true
+      } }) });
+      const result = await api('/api/admin/gibdd/sync', { method: 'POST', body: '{}' });
+      toast(`OnlineГИБДД: +${result.added} штрафов, обновлено ${result.updated}, машин добавлено ${result.autosAdded}, СТС импортировано ${result.stsImported ?? 0}` +
+        (result.errors?.length ? ` · ошибка: ${result.errors[0]}` : ''));
     } catch (error) { toast(error.message, 'error'); }
   };
   byId('rncardSync').onclick = async () => {
@@ -750,6 +779,10 @@ async function saveIntegration() {
       password: byId('rncardPassword').value,
       contract: byId('rncardContract').value.trim(),
       enabled: byId('rncardEnabled').checked
+    },
+    onlinegibdd: {
+      token: byId('gibddToken').value,
+      enabled: byId('gibddEnabled').checked
     }
   };
   try {

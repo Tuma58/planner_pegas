@@ -58,6 +58,7 @@ import {
   decryptSecret, encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
 } from './security.mjs';
 import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from './dornet.mjs';
+import { gibddBoard, importSts, mapApiFines, normCdi, plateParts, upsertGibddFines } from './gibdd.mjs';
 import { rncardExpenseRows } from './rncard.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
@@ -488,6 +489,14 @@ function integrationPublic() {
         WHERE key='dornet_sync_last'`).get()?.value || 'null');
       return { baseUrl: row?.base_url || 'https://back.dornet.ru', enabled: Boolean(row?.enabled),
         hasToken: Boolean(row?.token_cipher), cid, lastSuccessAt: row?.last_success_at, last };
+    })(),
+    onlinegibdd: (() => {
+      const row = db.prepare(`SELECT enabled,last_success_at,token_cipher
+        FROM integration_connectors WHERE id='onlinegibdd'`).get();
+      const last = JSON.parse(db.prepare(`SELECT value FROM app_meta
+        WHERE key='gibdd_sync_last'`).get()?.value || 'null');
+      return { enabled: Boolean(row?.enabled), hasToken: Boolean(row?.token_cipher),
+        lastSuccessAt: row?.last_success_at, last };
     })(),
     rncard: (() => {
       const row = db.prepare(`SELECT base_url,enabled,last_success_at,token_cipher,config_json
@@ -6972,6 +6981,117 @@ function dornetSyncTick() {
 setInterval(watchWrap('dornetSyncTick', dornetSyncTick), 6 * 3_600_000);
 setTimeout(dornetSyncTick, 75_000);
 
+// ── Коннектор «OnlineГИБДД» — штрафы ГИБДД по парку (09.11, Слияние) ──
+// Машины с СТС из «Паспорта ТС» ставятся на мониторинг сервисом сами;
+// штрафы едут в журнал gibdd_fines (УИН — ключ, дубли невозможны),
+// виновник — по закреплениям на момент нарушения. В «💸 Затраты» этот
+// коннектор НЕ пишет: оплаченные штрафы кладёт Dornet (факт списания).
+function gibddConfig() {
+  const row = db.prepare(`SELECT * FROM integration_connectors WHERE id='onlinegibdd'`).get();
+  if (!row?.enabled || !row.token_cipher) return null;
+  try {
+    return { baseUrl: (row.base_url || 'https://api.onlinegibdd.ru/v3').replace(/\/+$/, ''),
+      token: decryptSecret(row.token_cipher, config.appSecret) };
+  } catch (error) { console.error('gibddConfig:', error.message); return null; }
+}
+
+async function gibddFetch(connector, path, body, attempts = 3) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const response = await fetch(`${connector.baseUrl}/${path}`, {
+        method: body ? 'POST' : 'GET',
+        headers: { Authorization: `Bearer ${connector.token}`,
+          ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(60_000)
+      });
+      const data = await response.json().catch(() => null);
+      if (data?.success === false) {
+        throw new Error(Object.values(data.errors || {}).join('; ') || `HTTP ${response.status}`);
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return data;
+    } catch (error) {
+      if (attempt >= attempts) throw new Error(`OnlineГИБДД ${path}: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, 2_000 * attempt));
+    }
+  }
+}
+
+// Полная синхронизация: (1) машины с СТС, которых сервис ещё не знает,
+// добавляются на мониторинг; (2) штрафы — постранично, все статусы.
+async function runGibddSync(options = {}) {
+  const connector = gibddConfig();
+  if (!connector) return null;
+  const stats = { at: new Date().toISOString(), autosAdded: 0, stsImported: 0, added: 0,
+    updated: 0, paidNew: 0, unknownCdi: [], noSts: 0, badPlate: [], errors: [] };
+  try {
+    const serviceAutos = Object.values((await gibddFetch(connector, 'partner_auto/'))?.data || {});
+    const known = new Set(serviceAutos.map(auto => normCdi(auto.auto_cdi)));
+    // Личный кабинет сервиса — источник истины по СТС: пустые СТС в
+    // паспортах ТС заполняются из него по совпадению госномера.
+    stats.stsImported = importSts(db, serviceAutos);
+    const servicePlates = new Set(serviceAutos
+      .map(auto => normalizePlate(`${auto.auto_number}${auto.auto_region}`)).filter(Boolean));
+    const cars = db.prepare(`SELECT v.id, v.plate, c.sts_number, COALESCE(v.model,'') AS model
+        FROM vehicles v JOIN vehicle_cards c ON c.vehicle_id=v.id
+      WHERE v.status<>'out' AND c.sts_number<>''`).all();
+    stats.noSts = db.prepare(`SELECT COUNT(*) AS n FROM vehicles v
+        LEFT JOIN vehicle_cards c ON c.vehicle_id=v.id
+      WHERE v.status<>'out' AND COALESCE(c.sts_number,'')=''`).get().n;
+    for (const car of cars) {
+      const cdi = normCdi(car.sts_number);
+      if (known.has(cdi)) continue;
+      // Госномер уже на мониторинге под другим СТС — не плодим дубль в
+      // ЛК: расхождение (перерегистрация или опечатка) — человеку.
+      if (servicePlates.has(normalizePlate(car.plate))) {
+        stats.errors.push(`СТС расходится у ${car.plate}: в паспорте ${car.sts_number}, в сервисе другой`);
+        continue;
+      }
+      const parts = plateParts(car.plate);
+      if (!parts) { stats.badPlate.push(car.plate); continue; }
+      try {
+        await gibddFetch(connector, 'partner_auto/save/', {
+          auto_cdi: cdi, auto_number: parts.number, auto_region: parts.region,
+          auto_name: car.model || car.plate
+        });
+        stats.autosAdded += 1;
+      } catch (error) { stats.errors.push(`авто ${car.plate}: ${error.message}`); }
+    }
+    // Штрафы постранично — рекомендация сервиса для стабильной выборки.
+    for (let page = 1; page <= 50; page += 1) {
+      const data = await gibddFetch(connector, 'partner_fines/get_per_page/',
+        { status: 'all', page });
+      const result = upsertGibddFines(db, mapApiFines(data?.data));
+      stats.added += result.added;
+      stats.updated += result.updated;
+      stats.paidNew += result.paidNew;
+      for (const cdi of result.unknownCdi) {
+        if (!stats.unknownCdi.includes(cdi)) stats.unknownCdi.push(cdi);
+      }
+      if (!Number(data?.data?.hasmorepages)) break;
+    }
+    db.prepare(`UPDATE integration_connectors SET last_success_at=CURRENT_TIMESTAMP,
+      updated_at=CURRENT_TIMESTAMP WHERE id='onlinegibdd'`).run();
+  } catch (error) { stats.errors.push(error.message); }
+  db.prepare(`INSERT INTO app_meta(key,value) VALUES('gibdd_sync_last',?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(stats));
+  if (stats.added || stats.autosAdded || stats.errors.length || options.verbose) {
+    console.log(`OnlineГИБДД: +${stats.added} штрафов, обновлено ${stats.updated},` +
+      ` машин добавлено ${stats.autosAdded}, СТС импортировано ${stats.stsImported}` +
+      (stats.errors.length ? ` | ошибки: ${stats.errors.join('; ')}` : ''));
+  }
+  return stats;
+}
+
+// Сервис обновляет штрафы раз в сутки и просит не чаще 3 запросов в
+// сутки — тик каждые 8 часов ровно в это укладывается.
+function gibddSyncTick() {
+  runGibddSync().catch(error => console.error('OnlineГИБДД sync:', error.message));
+}
+setInterval(watchWrap('gibddSyncTick', gibddSyncTick), 8 * 3_600_000);
+setTimeout(gibddSyncTick, 90_000);
+
 // ── Коннектор «РН-Карт» (Роснефть) — топливо в журнал затрат (03.11) ──
 // WebAPI EMV v2 (lkapi.rn-card.ru): логин ЛК в query, пароль заголовком
 // RnCard-Identity-Account-Pass (Base64), операции за период ≤2 мес
@@ -8577,8 +8697,20 @@ async function api(request, response, url) {
       ORDER BY e.spent_on DESC, e.created_at DESC`).all(from, to);
     const vatRate = Number(settingsObject(db).calculation?.vatRate ?? 0.22);
     const categories = expenseCategoriesOf();
+    // Штрафы ГИБДД (коннектор OnlineГИБДД) — свод тем же периодом:
+    // полный журнал постановлений со скидками и виновниками; в сам
+    // журнал затрат они не пишутся (оплаченные кладёт Dornet).
+    const gibddWarnDays = Number(settingsObject(db).calculation?.gibddWarnDays ?? 7);
+    const gibdd = {
+      ...gibddBoard(db, { from, to, warnDays: gibddWarnDays }),
+      enabled: Boolean(db.prepare(`SELECT enabled FROM integration_connectors
+        WHERE id='onlinegibdd'`).get()?.enabled),
+      warnDays: gibddWarnDays,
+      last: JSON.parse(db.prepare(`SELECT value FROM app_meta
+        WHERE key='gibdd_sync_last'`).get()?.value || 'null')
+    };
     return json(response, 200, {
-      items, from, to,
+      items, from, to, gibdd,
       categories: [...categories.values()],
       summary: expensesSummary(items, vatRate, categories), vatRate
     });
@@ -15371,6 +15503,15 @@ async function api(request, response, url) {
         Number(Boolean(body.dornet.enabled)),
         JSON.stringify({ cid: Number(body.dornet.cid) || 0 }));
     }
+    if (body.onlinegibdd) {
+      const connector = db.prepare(`SELECT * FROM integration_connectors WHERE id='onlinegibdd'`).get();
+      db.prepare(`UPDATE integration_connectors SET token_cipher=?,enabled=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id='onlinegibdd'`).run(
+        body.onlinegibdd.token
+          ? encryptSecret(String(body.onlinegibdd.token), config.appSecret)
+          : connector.token_cipher,
+        Number(Boolean(body.onlinegibdd.enabled)));
+    }
     if (body.rncard) {
       const connector = db.prepare(`SELECT * FROM integration_connectors WHERE id='rncard'`).get();
       db.prepare(`UPDATE integration_connectors SET token_cipher=?,enabled=?,
@@ -15385,7 +15526,9 @@ async function api(request, response, url) {
       // Логин/договоры сменились — кэши карт могли относиться к чужим.
       db.prepare(`DELETE FROM app_meta WHERE key LIKE 'rncard_cards%'`).run();
     }
-    audit(db, user, 'update', 'integration', '1', { ...body, password: undefined, dornet: body.dornet ? { ...body.dornet, token: undefined } : undefined }, requestIp(request));
+    audit(db, user, 'update', 'integration', '1', { ...body, password: undefined,
+      dornet: body.dornet ? { ...body.dornet, token: undefined } : undefined,
+      onlinegibdd: body.onlinegibdd ? { ...body.onlinegibdd, token: undefined } : undefined }, requestIp(request));
     return json(response, 200, { ok: true });
   }
   // Dornet: ручная синхронизация произвольного периода (бэкафилл истории).
@@ -15406,6 +15549,16 @@ async function api(request, response, url) {
     return json(response, 200, stats);
   }
   // РН-Карт: ручная синхронизация произвольного периода (бэкафилл).
+  // OnlineГИБДД: ручной запуск полной синхронизации (машины + штрафы).
+  if (request.method === 'POST' && pathname === '/api/admin/gibdd/sync') {
+    const user = requirePermission(request, response, 'integration:write');
+    if (!user) return;
+    const stats = await runGibddSync({ verbose: true });
+    if (!stats) return errorJson(response, 422, 'Коннектор OnlineГИБДД не настроен или выключен (ключ API, галка)');
+    audit(db, user, 'gibdd-sync', 'integration', 'onlinegibdd',
+      { added: stats.added, autosAdded: stats.autosAdded }, requestIp(request));
+    return json(response, 200, stats);
+  }
   if (request.method === 'POST' && pathname === '/api/admin/rncard/sync') {
     const user = requirePermission(request, response, 'integration:write');
     if (!user) return;

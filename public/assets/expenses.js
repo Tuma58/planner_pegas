@@ -41,6 +41,47 @@ export function parseCsvRows(text) {
   return rows;
 }
 
+// «🚓 Штрафы ГИБДД» — полный журнал постановлений из коннектора
+// OnlineГИБДД (09.11): со скидками и ВИНОВНИКОМ — водителем, закреплённым
+// за машиной в момент нарушения. В журнал затрат эти записи не попадают:
+// оплаченные штрафы туда кладёт Dornet фактом списания (иначе задвоение).
+function gibddBlock(state, g) {
+  if (!g) return '';
+  const ruDay = iso => iso ? String(iso).slice(0, 10).split('-').reverse().join('.') : '—';
+  const open = Boolean(state.expGibddOpen);
+  const head = `<div class="resctl" style="margin-top:14px">
+    <button class="button ghost small" data-exp-gfines="1">${open ? '▾' : '▸'}</button>
+    <strong>🚓 Штрафы ГИБДД</strong>
+    ${g.enabled || g.unpaidCount || g.fines.length
+    ? `<small class="muted">не оплачено <b>${g.unpaidCount}</b> на <b>${money(g.unpaidAmount)}</b>
+        (суммы к оплате, со скидкой)${g.burning.length ? ` · <b>скидка 50 % горит у ${g.burning.length}</b> (порог ${g.warnDays} дн)` : ''}
+        · за период ${g.fines.length}${g.last?.at ? ` · данные ЛК на ${ruDay(g.last.at)}` : ''}</small>`
+    : '<small class="muted">коннектор OnlineГИБДД выключен — Настройки → Интеграции</small>'}
+  </div>`;
+  if (!open) return head;
+  const rows = g.fines.slice(0, 200).map(fine => `<tr>
+      <td class="mono">${ruDay(fine.offense_on)}${fine.offense_time ? ` ${escapeHtml(fine.offense_time)}` : ''}</td>
+      <td class="mono">${escapeHtml(fine.plate || fine.auto_cdi)}</td>
+      <td>${escapeHtml(fine.driver_name || '—')}</td>
+      <td>${escapeHtml(fine.article_number)}<div class="muted"><small>${escapeHtml((fine.location || '').slice(0, 80))}</small></div></td>
+      <td class="num">${fine.amount_discount != null && fine.amount_discount < fine.amount && fine.status === 'nopayed'
+    ? `<s class="muted">${money(fine.amount)}</s> <b>${money(fine.amount_discount)}</b>` : `<b>${money(fine.amount)}</b>`}</td>
+      <td class="mono">${fine.discount_until && fine.status === 'nopayed' ? ruDay(fine.discount_until) : '—'}</td>
+      <td>${fine.status === 'payed' ? '<small class="muted">оплачен</small>'
+    : fine.status === 'revoked' ? '<small class="muted">обжалован</small>'
+      : '<b style="color:var(--bad,#c0392b)">не оплачен</b>'}</td>
+    </tr>`).join('');
+  return `${head}
+    <table class="rtable">
+      <thead><tr><th>Нарушение</th><th>Машина</th><th>Виновник (по закреплению)</th>
+        <th>Статья · место</th><th class="num">Сумма</th><th>Скидка до</th><th>Статус</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" class="muted" style="padding:14px">Штрафов с нарушением в этом периоде нет.</td></tr>'}</tbody>
+    </table>
+    ${g.fines.length > 200 ? `<p class="muted" style="padding:6px">Показаны 200 из ${g.fines.length} — сузьте период.</p>` : ''}
+    ${g.withoutSts.length ? `<p class="muted" style="padding:6px">Без СТС — не на мониторинге (${g.withoutSts.length}): ${g.withoutSts.slice(0, 30).map(escapeHtml).join(', ')}${g.withoutSts.length > 30 ? '…' : ''}</p>` : ''}
+    ${g.last?.unknownCdi?.length ? `<p class="muted" style="padding:6px">В ЛК сервиса есть СТС, не найденные в планере: ${g.last.unknownCdi.length} (прицепы и выбывшие — это нормально).</p>` : ''}`;
+}
+
 export async function renderExpenses(container, context) {
   const { state, can } = context;
   const today = new Date().toISOString().slice(0, 10);
@@ -145,6 +186,7 @@ export async function renderExpenses(container, context) {
       <tbody>${tableRows || '<tr><td colspan="8" class="muted" style="padding:14px">Записей за период нет.</td></tr>'}</tbody>
     </table>
     ${items.length > 400 ? `<p class="muted" style="padding:6px">Показаны 400 из ${items.length} записей — сузьте период или категорию.</p>` : ''}
+    ${gibddBlock(state, data.gibdd)}
   </div>`;
   if (!renderInto(container, html)) return;
 
@@ -155,6 +197,10 @@ export async function renderExpenses(container, context) {
   container.querySelector('#expTo').addEventListener('change', event => {
     state.expTo = event.target.value; redraw();
   });
+  container.querySelectorAll('[data-exp-gfines]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.expGibddOpen = !state.expGibddOpen; redraw();
+    }));
   container.querySelectorAll('[data-exp-grp]').forEach(button =>
     button.addEventListener('click', () => {
       state.expOpen[button.dataset.expGrp] = !state.expOpen[button.dataset.expGrp];
