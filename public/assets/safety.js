@@ -5,6 +5,7 @@
 import { api, escapeHtml, renderInto, toast } from './api.js';
 
 const ruDay = iso => iso ? String(iso).slice(0, 10).split('-').reverse().join('.') : '—';
+const fmtRub = value => `${Math.round(Number(value) || 0).toLocaleString('ru-RU')} ₽`;
 
 export async function renderSafety(container, context) {
   const { state } = context;
@@ -18,6 +19,7 @@ export async function renderSafety(container, context) {
     return;
   }
   const s = data.summary;
+  const g = data.gibdd;
   if (!renderInto(container, `<div class="bi-page sf-page">
     <div class="bi-sub"><h2>Безопасность движения</h2>
       <p>ДТП, нарушения и режим труда и отдыха — с расследованием и мерами; допуски и инструктажи — со сроками. Медосмотр и техконтроль выпуска — на экране «Выпуск».</p>
@@ -30,6 +32,8 @@ export async function renderSafety(container, context) {
       <div class="metric ${s.open ? 'warn' : ''}"><span class="l">Открытые расследования</span><span class="v">${s.open}</span></div>
       <div class="metric ${s.termsDue ? 'warn' : ''}"><span class="l">Сроки допусков истекают</span><span class="v">${s.termsDue}</span><span class="d">порог ${data.warnDays} дн</span></div>
       <div class="metric ${data.withoutAdmission.length ? 'neg' : 'pos'}"><span class="l">Без действующего допуска</span><span class="v">${data.withoutAdmission.length}<small>из ${s.drivers}</small></span></div>
+      ${g ? `<div class="metric ${g.unpaidCount ? 'warn' : 'pos'}"><span class="l">Штрафы ГИБДД — не оплачено</span><span class="v">${g.unpaidCount}</span><span class="d">${fmtRub(g.unpaidAmount)} к оплате</span></div>
+      <div class="metric ${g.burning.length ? 'neg' : ''}"><span class="l">Скидка 50 % горит</span><span class="v">${g.burning.length}</span><span class="d">порог ${data.warnDays} дн</span></div>` : ''}
     </div>
     <div class="bi-grid">
       <section class="section s6"><div class="sec-h"><span class="st">Открытые расследования</span></div>
@@ -49,6 +53,22 @@ export async function renderSafety(container, context) {
     || '<tr><td colspan="4" class="muted">событий нет</td></tr>'}</tbody></table></div></section>
       <section class="section s6"><div class="sec-h"><span class="st">Без действующего допуска</span><span class="hint">внесите допуск в журнал</span></div>
         <div class="sec-b sf-tags">${data.withoutAdmission.slice(0, 80).map(row => `<span class="bi-tag">${escapeHtml(row.name)}</span>`).join(' ') || '<span class="muted">все допущены</span>'}</div></section>
+      ${g ? `<section class="section"><div class="sec-h"><span class="st">Штрафы ГИБДД за период</span>
+        <span class="hint">${g.enabled ? (g.last?.at ? `обновлено ${ruDay(g.last.at)} · виновник — по закреплению на момент нарушения` : 'синхронизаций ещё не было') : 'коннектор OnlineГИБДД выключен — Настройки → Интеграции'}</span></div>
+        <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Нарушение</th><th>Машина · водитель</th><th>Статья · место</th><th class="r">Сумма</th><th>Скидка до</th><th>Статус</th>${data.canWrite ? '<th></th>' : ''}</tr></thead>
+        <tbody>${g.fines.slice(0, 200).map(fine => `<tr>
+          <td>${ruDay(fine.offense_on)}${fine.offense_time ? ` ${escapeHtml(fine.offense_time)}` : ''}</td>
+          <td>${escapeHtml(fine.plate || fine.auto_cdi)}${fine.driver_name ? `<div class="muted">${escapeHtml(fine.driver_name)}</div>` : '<div class="muted">виновник не определён</div>'}</td>
+          <td>${escapeHtml(fine.article_number)}<div class="muted">${escapeHtml(fine.location.slice(0, 90))}</div></td>
+          <td class="num">${fine.amount_discount != null && fine.amount_discount < fine.amount && fine.status === 'nopayed'
+    ? `<s class="muted">${fmtRub(fine.amount)}</s> ${fmtRub(fine.amount_discount)}` : fmtRub(fine.amount)}</td>
+          <td>${fine.discount_until && fine.status === 'nopayed' ? ruDay(fine.discount_until) : '—'}</td>
+          <td>${fine.status === 'payed' ? '<span class="bi-tag pos">оплачен</span>' : '<span class="bi-tag warn">не оплачен</span>'}</td>
+          ${data.canWrite ? `<td>${fine.driver_id || fine.vehicle_id ? `<button class="button small ghost" data-sf-fine="${escapeHtml(fine.bill_id)}">→ расследование</button>` : ''}</td>` : ''}</tr>`).join('')
+    || `<tr><td colspan="7" class="muted">штрафов за период нет</td></tr>`}</tbody></table></div>
+        ${g.withoutSts.length ? `<div class="sec-b"><span class="muted">Без СТС в паспорте ТС — не на мониторинге (${g.withoutSts.length}): ${g.withoutSts.slice(0, 40).map(escapeHtml).join(', ')}${g.withoutSts.length > 40 ? '…' : ''}</span></div>` : ''}
+        ${g.last?.unknownCdi?.length ? `<div class="sec-b"><span class="muted">В сервисе есть СТС, которых нет в паспортах ТС: ${g.last.unknownCdi.slice(0, 10).map(escapeHtml).join(', ')}</span></div>` : ''}
+      </section>` : ''}
       <section class="section"><div class="sec-h"><span class="st">Журнал за период</span></div>
         <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Дата</th><th>Вид</th><th>Водитель · машина</th><th>Что произошло</th><th>Меры</th><th>Статус</th></tr></thead>
         <tbody>${data.events.map(row => `<tr><td>${ruDay(row.happened_on)}</td><td>${escapeHtml(data.kinds[row.kind])}</td>
@@ -60,6 +80,22 @@ export async function renderSafety(container, context) {
   const rerender = () => renderSafety(container, context);
   container.querySelector('#sfFrom').onchange = event => { state.safetyFrom = event.currentTarget.value; rerender(); };
   container.querySelector('#sfAdd')?.addEventListener('click', () => addDialog(context, data, rerender));
+  // Штраф → расследование: событие «Нарушение ПДД» с заполненными полями.
+  container.querySelectorAll('[data-sf-fine]').forEach(button => {
+    button.onclick = () => {
+      const fine = (g?.fines || []).find(item => item.bill_id === button.dataset.sfFine);
+      if (!fine) return;
+      // Виновник мог прийти фолбэком по имени (без id) — подберём по ФИО.
+      const driverId = fine.driver_id
+        || data.drivers.find(driver => driver.name === fine.driver_name)?.id || '';
+      addDialog(context, data, rerender, {
+        kind: 'pdd', driverId, vehicleId: fine.vehicle_id || '',
+        happenedOn: fine.offense_on || '',
+        description: `Штраф ГИБДД ${fine.article_number}: ${fine.article || ''} — ${fine.location}`.slice(0, 300)
+          + ` (УИН ${fine.bill_id}, ${fmtRub(fine.amount)})`
+      });
+    };
+  });
   container.querySelectorAll('[data-sf-close]').forEach(button => {
     button.onclick = async () => {
       const measures = prompt('Принятые меры (обязательно)');
@@ -73,16 +109,16 @@ export async function renderSafety(container, context) {
   });
 }
 
-function addDialog(context, data, after) {
+function addDialog(context, data, after, preset = {}) {
   const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
   context.showModal(`<form id="sfForm"><h2>Событие безопасности движения</h2>
-    <label class="field">Вид <select name="kind">${Object.entries(data.kinds).map(([key, label]) => `<option value="${key}">${escapeHtml(label)}</option>`).join('')}</select></label>
-    <label class="field">Водитель <select name="driverId"><option value="">—</option>${data.drivers.map(driver => `<option value="${driver.id}">${escapeHtml(driver.name)}</option>`).join('')}</select></label>
-    <label class="field">Машина <select name="vehicleId"><option value="">—</option>${data.vehicles.map(vehicle => `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)}</option>`).join('')}</select></label>
+    <label class="field">Вид <select name="kind">${Object.entries(data.kinds).map(([key, label]) => `<option value="${key}" ${preset.kind === key ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>
+    <label class="field">Водитель <select name="driverId"><option value="">—</option>${data.drivers.map(driver => `<option value="${driver.id}" ${preset.driverId === driver.id ? 'selected' : ''}>${escapeHtml(driver.name)}</option>`).join('')}</select></label>
+    <label class="field">Машина <select name="vehicleId"><option value="">—</option>${data.vehicles.map(vehicle => `<option value="${vehicle.id}" ${preset.vehicleId === vehicle.id ? 'selected' : ''}>${escapeHtml(vehicle.plate)}</option>`).join('')}</select></label>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <label class="field">Дата <input type="date" name="happenedOn" value="${today}" required></label>
+      <label class="field">Дата <input type="date" name="happenedOn" value="${preset.happenedOn || today}" required></label>
       <label class="field">Действует до <small class="muted">(допуск, инструктаж)</small><input type="date" name="validUntil"></label></div>
-    <label class="field">Что произошло <textarea name="description" rows="3"></textarea></label>
+    <label class="field">Что произошло <textarea name="description" rows="3">${escapeHtml(preset.description || '')}</textarea></label>
     <label class="field">Меры <textarea name="measures" rows="2"></textarea></label>
     <div class="form-error" id="sfErr"></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button primary">Сохранить</button></div></form>`);
