@@ -30,6 +30,16 @@ function tabloSlides(state) {
   return slides;
 }
 
+// День вестника: в понедельник до обеда газета получает каждый второй
+// слайд ротации, чтобы её не приходилось ловить (заказ руководителя
+// 09.11 — при двух объявлениях вестник выпадал на 3 минуты из 30).
+function vestnikNote(state) {
+  const msk = new Date(Date.now() + 3 * 3_600_000);
+  if (msk.getUTCDay() !== 1 || msk.getUTCHours() >= 13) return null;
+  return (state.data.boardNotes || []).find(note =>
+    String(note.text || '').startsWith('Вестник')) || null;
+}
+
 // Контроль рейсов для слайдов «Опаздывающие» и «Сегодня»: тот же
 // /api/control, что у диспетчера; кэш на минуту, чтобы ротация и
 // автообновление не дёргали расчёт задержек лишний раз.
@@ -163,7 +173,10 @@ function notesSlideHtml(state) {
   const notes = state.data.boardNotes || [];
   if (!notes.length) return '';
   const idx = ((state.tabloNoteIdx || 0) % notes.length + notes.length) % notes.length;
-  const note = notes[idx];
+  return noteSlideHtml(notes[idx], idx, notes.length);
+}
+
+function noteSlideHtml(note, idx, total) {
   const media = note.media_id
     ? (String(note.media_mime || '').startsWith('video')
       ? `<video class="tablo-media" src="/api/board-media/${note.media_id}" autoplay muted loop playsinline></video>`
@@ -174,7 +187,7 @@ function notesSlideHtml(state) {
       ${note.text ? `<div class="tablo-note-main">${escapeHtml(note.text)}</div>` : ''}
       ${note.subtext ? `<div class="tablo-note-sub">${escapeHtml(note.subtext)}</div>` : ''}
     </div>
-    ${notes.length > 1 ? `<div class="tablo-note-count">${idx + 1} / ${notes.length}</div>` : ''}
+    ${total > 1 ? `<div class="tablo-note-count">${idx + 1} / ${total}</div>` : ''}
   </div>`;
 }
 
@@ -191,11 +204,15 @@ async function renderTablo(state) {
     if (dots) dots.hidden = true;
     return;
   }
-  const current = slides.some(slide => slide.id === state.tabloSlide) ? state.tabloSlide : 'dash';
+  const vestnik = state.tabloSlide === 'vestnik' ? vestnikNote(state) : null;
+  const current = vestnik ? 'vestnik'
+    : slides.some(slide => slide.id === state.tabloSlide) ? state.tabloSlide : 'dash';
   if (dots) {
     dots.hidden = false;
+    // Слайд вестника вне ротации — подсвечиваем «Объявления», его дом.
     dots.innerHTML = slides.map(slide =>
-      `<span class="${slide.id === current ? 'on' : ''}">${slide.label}</span>`).join('');
+      `<span class="${slide.id === current || (current === 'vestnik' && slide.id === 'notes')
+        ? 'on' : ''}">${slide.label}</span>`).join('');
   }
   if (current === 'dash') { layer.hidden = true; return; }
   let html = '';
@@ -203,6 +220,7 @@ async function renderTablo(state) {
   else if (current === 'today') html = todaySlideHtml(await tabloControlItems(state), Date.now());
   else if (current === 'pace') html = paceSlideHtml(state);
   else if (current === 'notes') html = notesSlideHtml(state);
+  else if (current === 'vestnik') html = noteSlideHtml(vestnik, 0, 1);
   // Пока ждали сеть, из ТВ-режима могли выйти.
   if (!state.dashTv || !document.body.contains(layer)) { layer.hidden = true; return; }
   layer.innerHTML = html;
@@ -967,7 +985,16 @@ export async function renderDashboard(container, context) {
     state.tabloTimer = setInterval(() => {
       if (!state.dashTv) { clearInterval(state.tabloTimer); state.tabloTimer = null; return; }
       const slides = tabloSlides(state);
-      const index = slides.findIndex(slide => slide.id === state.tabloSlide);
+      // День вестника: после каждого обычного слайда — газета, потом
+      // ротация продолжается с места, где остановилась.
+      if (vestnikNote(state) && state.tabloSlide !== 'vestnik') {
+        state.tabloResume = state.tabloSlide;
+        state.tabloSlide = 'vestnik';
+        renderTablo(state);
+        return;
+      }
+      const base = state.tabloSlide === 'vestnik' ? (state.tabloResume || 'dash') : state.tabloSlide;
+      const index = slides.findIndex(slide => slide.id === base);
       const next = slides[(index + 1) % slides.length];
       if (next.id === 'notes') state.tabloNoteIdx = (state.tabloNoteIdx ?? -1) + 1;
       state.tabloSlide = next.id;
