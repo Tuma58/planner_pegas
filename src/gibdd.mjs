@@ -79,6 +79,28 @@ export function importSts(db, serviceAutos) {
 export function migrateGibdd(db) {
   db.prepare(`INSERT OR IGNORE INTO integration_connectors(id,name,base_url)
     VALUES('onlinegibdd','OnlineГИБДД (штрафы)','https://api.onlinegibdd.ru/v3')`).run();
+  // «Паспорт ТС» (реквизиты машины, здесь нужен СТС) — таблица в планере
+  // ещё не заведена: создаём СХЕМУ ЛАБОРАТОРИИ СЛИЯНИЯ один в один
+  // (vehicle-card.mjs, блок 5), чтобы перенос Слияния лёг без конфликта.
+  db.exec(`CREATE TABLE IF NOT EXISTS vehicle_cards (
+    vehicle_id TEXT PRIMARY KEY REFERENCES vehicles(id) ON DELETE CASCADE,
+    vin TEXT NOT NULL DEFAULT '', year INTEGER, sts_number TEXT NOT NULL DEFAULT '',
+    pts_number TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '', lessor TEXT NOT NULL DEFAULT '',
+    lease_until TEXT, osago_until TEXT, kasko_until TEXT, techinspect_until TEXT, tacho_until TEXT,
+    glonass_id TEXT NOT NULL DEFAULT '', tracker TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+    to_interval_km REAL, hou_interval_mh REAL, tires_note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT, updated_by_name TEXT NOT NULL DEFAULT '')`);
+  // Порог «скидка 50 % горит» — настройка (концепция живых нормативов:
+  // пороговое число задаёт руководитель); дефолт — только вместо пустоты.
+  const calcRow = db.prepare(`SELECT value_json FROM settings WHERE key='calculation'`).get();
+  if (calcRow) {
+    const calculation = JSON.parse(calcRow.value_json);
+    if (calculation.gibddWarnDays == null) {
+      calculation.gibddWarnDays = 7;
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='calculation'`)
+        .run(JSON.stringify(calculation));
+    }
+  }
   db.exec(`CREATE TABLE IF NOT EXISTS gibdd_fines (
     bill_id TEXT PRIMARY KEY,
     gis_id INTEGER,
@@ -205,6 +227,19 @@ export function upsertGibddFines(db, rows) {
   return { ...stats, unknownCdi: [...stats.unknownCdi].filter(Boolean) };
 }
 
+// Категория постановления по статье КоАП: Платон (12.21.3), платные
+// дороги «Автодор» (12.21.4 и региональные законы с текстом «неуплата
+// за проезд … по платным автодорогам», как московский ЗГМ45-10.13),
+// остальное — ПДД. Классификатор текстовый: сервис отдаёт статьи в
+// разных написаниях («ст.12.21.3 ч.1», «12.21.4.2 - Неуплата…»).
+export function fineCategory(articleNumber) {
+  const article = String(articleNumber || '').toLowerCase();
+  if (article.includes('12.21.3')) return 'platon';
+  if (article.includes('12.21.4')
+    || (article.includes('платн') && article.includes('автодорог'))) return 'avtodor';
+  return 'pdd';
+}
+
 // Свод для экрана БДД: журнал за период (по дате нарушения) + все
 // неоплаченные (как открытые расследования — видны всегда).
 export function gibddBoard(db, { from, to, warnDays, nowMs = Date.now() }) {
@@ -214,9 +249,21 @@ export function gibddBoard(db, { from, to, warnDays, nowMs = Date.now() }) {
       WHERE offense_on>=? AND offense_on<=? ORDER BY offense_on DESC, offense_time DESC`).all(from, to);
   const unpaid = db.prepare(`SELECT * FROM gibdd_fines WHERE status='nopayed'
       ORDER BY COALESCE(discount_until,'9999') , offense_on`).all();
+  for (const fine of fines) fine.category = fineCategory(fine.article_number);
+  for (const fine of unpaid) fine.category = fineCategory(fine.article_number);
   const burning = unpaid.filter(fine => fine.discount_until
     && fine.discount_until >= today && fine.discount_until <= warnTo);
   const overdue = unpaid.filter(fine => fine.pay_due && fine.pay_due < today);
+  // Разбивка неоплаченного по категориям — для кнопки-списка «Штрафы ПДД/
+  // Платон/Автодор»: суммы к оплате (со скидкой, пока действует).
+  const payable = fine => fine.amount_discount != null
+    && fine.discount_until && fine.discount_until >= today ? fine.amount_discount : fine.amount;
+  const byCategory = {};
+  for (const key of ['pdd', 'platon', 'avtodor']) byCategory[key] = { unpaidCount: 0, unpaidAmount: 0 };
+  for (const fine of unpaid) {
+    byCategory[fine.category].unpaidCount += 1;
+    byCategory[fine.category].unpaidAmount = +(byCategory[fine.category].unpaidAmount + payable(fine)).toFixed(2);
+  }
   const byDriver = new Map();
   for (const fine of fines) {
     const key = fine.driver_name || '— без виновника —';
@@ -226,10 +273,9 @@ export function gibddBoard(db, { from, to, warnDays, nowMs = Date.now() }) {
     byDriver.set(key, item);
   }
   return {
-    fines, burning,
+    fines, burning, byCategory, unpaid,
     unpaidCount: unpaid.length,
-    unpaidAmount: +unpaid.reduce((sum, fine) => sum + (fine.amount_discount != null
-      && fine.discount_until && fine.discount_until >= today ? fine.amount_discount : fine.amount), 0).toFixed(2),
+    unpaidAmount: +unpaid.reduce((sum, fine) => sum + payable(fine), 0).toFixed(2),
     overdueCount: overdue.length,
     byDriver: [...byDriver.values()].sort((a, b) => b.amount - a.amount).slice(0, 30),
     withoutSts: db.prepare(`SELECT v.plate FROM vehicles v

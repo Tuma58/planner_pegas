@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
-import { gibddBoard, importSts, mapApiFines, normCdi, offenseIso, plateParts, upsertGibddFines } from '../src/gibdd.mjs';
+import { fineCategory, gibddBoard, importSts, mapApiFines, normCdi, offenseIso, plateParts, upsertGibddFines } from '../src/gibdd.mjs';
 
 function freshDb(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-gibdd-test-'));
@@ -174,4 +174,38 @@ test('свод для экрана БДД: неоплаченные, горящ�
   assert.equal(board.unpaidAmount, 500); // обе со скидкой: 250 + 250
   assert.deepEqual(board.burning.map(fine => fine.bill_id), ['УИН-1']); // скидка до 12.11, порог 7 дн
   assert.ok(board.withoutSts.length > 0); // остальной демо-парк без СТС
+});
+
+test('категории штрафов: Платон и Автодор отделяются от ПДД по статье', t => {
+  assert.equal(fineCategory('ст.12.21.3 ч.1'), 'platon');
+  assert.equal(fineCategory('12.21.4.2 - Неуплата за проезд грузового ТС или автобуса по платным автодорогам'), 'avtodor');
+  assert.equal(fineCategory('ЗГМ45-10.13 ч.2 - Неуплата за проезд грузового ТС или автобуса по платным автодорогам'), 'avtodor');
+  assert.equal(fineCategory('ЗГМ45-8.14 п.2 Неуплата или нарушение порядка оплаты за платную парковку г.Москвы'), 'pdd'); // парковка — не дорога
+  assert.equal(fineCategory('12.09.2 - Превышение скорости движения ТС от 20 до 40 км/ч'), 'pdd');
+  assert.equal(fineCategory(''), 'pdd');
+
+  const db = freshDb(t);
+  const vehicle = db.prepare(`SELECT id FROM vehicles WHERE status='work' LIMIT 1`).get();
+  db.prepare(`INSERT INTO vehicle_cards(vehicle_id, sts_number) VALUES(?, '9911222333')`).run(vehicle.id);
+  const nowMs = Date.parse('2026-11-09T09:00:00.000Z');
+  const base = {
+    gis_id: 1, auto_cdi: '9911222333', in_processing: '0', bill_date: '2026-11-01',
+    pay_due: '2026-12-29', amount: 500, discount_pct: 50, amount_discount: 250,
+    offense_time: '10:00', offense_at: '2026-11-01T07:00:00.000Z',
+    location: '', article: '', status: 'nopayed', offense_on: '2026-11-01', discount_until: '2026-12-05'
+  };
+  upsertGibddFines(db, [
+    { ...base, bill_id: 'УИН-ПДД', article_number: '12.09.2 - Превышение скорости' },
+    { ...base, bill_id: 'УИН-Платон', article_number: 'ст.12.21.3 ч.1', amount: 10000, amount_discount: 5000 },
+    { ...base, bill_id: 'УИН-Автодор', article_number: '12.21.4.2 - Неуплата за проезд по платным автодорогам' }
+  ]);
+  const board = gibddBoard(db, { from: '2026-11-01', to: '2026-11-09', warnDays: 7, nowMs });
+  assert.equal(board.fines.find(fine => fine.bill_id === 'УИН-Платон').category, 'platon');
+  assert.equal(board.byCategory.platon.unpaidCount, 1);
+  assert.equal(board.byCategory.platon.unpaidAmount, 5000); // со скидкой, пока действует
+  assert.equal(board.byCategory.avtodor.unpaidCount, 1);
+  assert.equal(board.byCategory.pdd.unpaidCount, 1);
+  // Сумма разбивки сходится с общим итогом.
+  assert.equal(board.byCategory.pdd.unpaidAmount + board.byCategory.platon.unpaidAmount
+    + board.byCategory.avtodor.unpaidAmount, board.unpaidAmount);
 });

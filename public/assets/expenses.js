@@ -44,6 +44,80 @@ export function parseCsvRows(text) {
   return rows;
 }
 
+// «🚓 Штрафы ГИБДД» — полный журнал постановлений из коннектора
+// OnlineГИБДД (09.11): со скидками и ВИНОВНИКОМ — водителем, закреплённым
+// за машиной в момент нарушения. В журнал затрат эти записи не попадают:
+// оплаченные штрафы туда кладёт Dornet фактом списания (иначе задвоение).
+// Категории (кнопка-список в шапке, заказ 09.11): ПДД / Платон / Автодор —
+// категорию каждому постановлению ставит сервер по статье КоАП.
+const GIBDD_CATS = { pdd: '🚓 Штрафы ПДД', platon: '🛣 Штрафы Платон', avtodor: '🛤 Штрафы Автодор' };
+
+// Кнопка-список в шапке вкладки: раскрывает категории с итогами
+// неоплаченного, выбор открывает реестр этой категории.
+function gibddMenu(state, g) {
+  if (!g || !(g.enabled || g.unpaidCount)) return '';
+  const current = GIBDD_CATS[state.expGibddCat] ? state.expGibddCat : 'pdd';
+  const items = Object.entries(GIBDD_CATS).map(([key, label]) => {
+    const sums = g.byCategory?.[key] || { unpaidCount: 0, unpaidAmount: 0 };
+    return `<button class="exp-row ${state.expGibddOpen && key === current ? 'active' : ''}" data-exp-gcat="${key}">
+      <span>${label}</span>
+      ${sums.unpaidCount ? `<b>${money(sums.unpaidAmount)}</b><small class="muted">не оплачено ${sums.unpaidCount}</small>`
+      : '<small class="muted">неоплаченных нет</small>'}</button>`;
+  }).join('');
+  return `<details id="gibddDd" style="position:relative;display:inline-block">
+      <summary class="button ghost small" style="list-style:none;cursor:pointer">${GIBDD_CATS[current]} ▾</summary>
+      <div class="card" style="position:absolute;right:0;z-index:30;min-width:280px;margin-top:4px;padding:6px;display:flex;flex-direction:column;gap:2px">${items}</div>
+    </details>`;
+}
+
+function gibddBlock(state, g) {
+  if (!g) return '';
+  const ruDay = iso => iso ? String(iso).slice(0, 10).split('-').reverse().join('.') : '—';
+  const open = Boolean(state.expGibddOpen);
+  const cat = GIBDD_CATS[state.expGibddCat] ? state.expGibddCat : 'pdd';
+  const sums = g.byCategory?.[cat] || { unpaidCount: g.unpaidCount, unpaidAmount: g.unpaidAmount };
+  // Неоплаченные — открытые вопросы, видны всегда (даже вне периода);
+  // к ним добавляются остальные штрафы выбранного периода.
+  const seen = new Set();
+  const fines = [...(g.unpaid || []), ...(g.fines || [])]
+    .filter(fine => (fine.category || 'pdd') === cat)
+    .filter(fine => !seen.has(fine.bill_id) && seen.add(fine.bill_id))
+    .sort((a, b) => String(b.offense_on).localeCompare(String(a.offense_on)));
+  const periodCount = (g.fines || []).filter(fine => (fine.category || 'pdd') === cat).length;
+  const burning = (g.burning || []).filter(fine => (fine.category || 'pdd') === cat);
+  const head = `<div class="resctl" style="margin:8px 0 2px">
+    <button class="button ghost small" data-exp-gfines="1">${open ? '▾' : '▸'}</button>
+    <strong>${GIBDD_CATS[cat]}</strong>
+    ${g.enabled || g.unpaidCount || g.fines.length
+    ? `<small class="muted">не оплачено <b>${sums.unpaidCount}</b> на <b>${money(sums.unpaidAmount)}</b>
+        (суммы к оплате, со скидкой)${burning.length ? ` · <b>скидка 50 % горит у ${burning.length}</b> (порог ${g.warnDays} дн)` : ''}
+        · за период ${periodCount}${g.last?.at ? ` · данные ЛК на ${ruDay(g.last.at)}` : ''}</small>`
+    : '<small class="muted">коннектор OnlineГИБДД выключен — Настройки → Интеграции</small>'}
+  </div>`;
+  if (!open) return head;
+  const rows = fines.slice(0, 200).map(fine => `<tr>
+      <td class="mono">${ruDay(fine.offense_on)}${fine.offense_time ? ` ${escapeHtml(fine.offense_time)}` : ''}</td>
+      <td class="mono">${escapeHtml(fine.plate || fine.auto_cdi)}</td>
+      <td>${escapeHtml(fine.driver_name || '—')}</td>
+      <td>${escapeHtml(fine.article_number)}<div class="muted"><small>${escapeHtml((fine.location || '').slice(0, 80))}</small></div></td>
+      <td class="num">${fine.amount_discount != null && fine.amount_discount < fine.amount && fine.status === 'nopayed'
+    ? `<s class="muted">${money(fine.amount)}</s> <b>${money(fine.amount_discount)}</b>` : `<b>${money(fine.amount)}</b>`}</td>
+      <td class="mono">${fine.discount_until && fine.status === 'nopayed' ? ruDay(fine.discount_until) : '—'}</td>
+      <td>${fine.status === 'payed' ? '<small class="muted">оплачен</small>'
+    : fine.status === 'revoked' ? '<small class="muted">обжалован</small>'
+      : '<b style="color:var(--bad,#c0392b)">не оплачен</b>'}</td>
+    </tr>`).join('');
+  return `${head}
+    <table class="rtable">
+      <thead><tr><th>Нарушение</th><th>Машина</th><th>Виновник (по закреплению)</th>
+        <th>Статья · место</th><th class="num">Сумма</th><th>Скидка до</th><th>Статус</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" class="muted" style="padding:14px">Неоплаченных нет, штрафов с нарушением в этом периоде тоже.</td></tr>'}</tbody>
+    </table>
+    ${fines.length > 200 ? `<p class="muted" style="padding:6px">Показаны 200 из ${fines.length} — сузьте период.</p>` : ''}
+    ${g.withoutSts.length ? `<p class="muted" style="padding:6px">Без СТС — не на мониторинге (${g.withoutSts.length}): ${g.withoutSts.slice(0, 30).map(escapeHtml).join(', ')}${g.withoutSts.length > 30 ? '…' : ''}</p>` : ''}
+    ${g.last?.unknownCdi?.length ? `<p class="muted" style="padding:6px">В ЛК сервиса есть СТС, не найденные в планере: ${g.last.unknownCdi.length} (прицепы и выбывшие — это нормально).</p>` : ''}`;
+}
+
 export async function renderExpenses(container, context) {
   const { state, can } = context;
   const today = new Date().toISOString().slice(0, 10);
@@ -151,8 +225,10 @@ export async function renderExpenses(container, context) {
       ${canWrite ? `<button class="button small" id="expAdd">➕ Добавить</button>
         <button class="button ghost small" id="expImport" title="Выгрузка из личного кабинета поставщика: колонки сопоставляются при загрузке">📥 Импорт Excel/CSV</button>` : ''}
       ${canCategories ? `<button class="button ghost small" id="expCats" title="Справочник категорий затрат">🗂 Категории</button>` : ''}
+      ${gibddMenu(state, data.gibdd)}
       </div>
     </div>
+    ${gibddBlock(state, data.gibdd)}
     <div class="bi-kpis">
       ${tile('Итог периода', money(data.summary.total), 'dept-staff hero', `без НДС ${money(data.summary.totalNet)}`)}
       ${tile('Переменные', money(variable.sum), 'dept-staff', `${variable.count} шт · без НДС ${money(variable.net)}`)}
@@ -192,6 +268,19 @@ export async function renderExpenses(container, context) {
   container.querySelector('#expTo').addEventListener('change', event => {
     state.expTo = event.target.value; redraw();
   });
+  container.querySelectorAll('[data-exp-gfines]').forEach(button =>
+    button.addEventListener('click', () => {
+      state.expGibddOpen = !state.expGibddOpen; redraw();
+    }));
+  container.querySelectorAll('[data-exp-gcat]').forEach(button =>
+    button.addEventListener('click', () => {
+      // Повторный выбор открытой категории сворачивает реестр.
+      const same = state.expGibddCat === button.dataset.expGcat
+        || (!state.expGibddCat && button.dataset.expGcat === 'pdd');
+      state.expGibddCat = button.dataset.expGcat;
+      state.expGibddOpen = same ? !state.expGibddOpen : true;
+      redraw();
+    }));
   container.querySelectorAll('[data-exp-grp]').forEach(button =>
     button.addEventListener('click', () => {
       state.expOpen[button.dataset.expGrp] = !state.expOpen[button.dataset.expGrp];

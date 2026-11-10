@@ -3020,7 +3020,12 @@ function normalizePlate(value) {
 }
 // Поллер позиций: раз в минуту батчами по 50 IMEI. Пишется только последняя
 // позиция каждой сцепки; свежесть — fixed_at из unixtimestamp трекера.
+let monitoringPollBusy = false;
 async function runMonitoringPoll() {
+  // Защита от наслоения: опрос Пилота иногда висит на сети дольше минуты
+  // (замер 09.11: до 74 с) — следующий тик не стартует поверх прежнего.
+  if (monitoringPollBusy) return;
+  monitoringPollBusy = true;
   try {
     // Привязки прицепных трекеров следуют за фактическими сцепками
     // (06.10): перецепка/обмен/ручная правка — связка переезжает сама.
@@ -3044,39 +3049,53 @@ async function runMonitoringPoll() {
       byImei.set(String(trailer.imei), { vehicleId: trailer.vehicle_id, role: 'trailer' });
       allImei.push(trailer.imei);
     }
+    // Запросы к Пилоту — последовательно (сеть, event loop свободен), а
+    // записи — подготовленными выражениями в одной транзакции на батч:
+    // раньше ~250 UPDATE в минуту разбирали SQL каждый раз и фиксировались
+    // поодиночке — сторож держал поток до 1,3 с (замер Э0 09.11).
+    const updTrailer = db.prepare(`UPDATE trailer_positions SET latitude=?, longitude=?, speed=?,
+      fixed_at=?, sensors_json=?, received_at=CURRENT_TIMESTAMP WHERE imei=?`);
+    const updTrailerSensors = db.prepare(`INSERT INTO vehicle_positions(vehicle_id,trailer_sensors_json)
+      VALUES(?,?)
+      ON CONFLICT(vehicle_id) DO UPDATE SET trailer_sensors_json=excluded.trailer_sensors_json`);
+    const updTruck = db.prepare(`INSERT INTO vehicle_positions(vehicle_id,latitude,longitude,speed,direction,fixed_at,sensors_json,received_at)
+      VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(vehicle_id) DO UPDATE SET latitude=excluded.latitude,
+        longitude=excluded.longitude, speed=excluded.speed, direction=excluded.direction,
+        fixed_at=excluded.fixed_at, sensors_json=excluded.sensors_json, received_at=CURRENT_TIMESTAMP`);
     for (let i = 0; i < allImei.length; i += 50) {
       const chunk = allImei.slice(i, i + 50).join(',');
       const answer = await pilotApi(`/api/v3/vehicles/status?imei=${chunk}`);
-      for (const row of answer?.data || []) {
-        const link = byImei.get(String(row.imei || ''));
-        if (!link) continue;
-        const sensors = JSON.stringify((row.sensors || []).map(s => ({
-          name: s.name, value: s.hum_value, dig: s.dig_value, at: s.change_ts })));
-        if (link.role === 'trailer') {
-          db.prepare(`UPDATE trailer_positions SET latitude=?, longitude=?, speed=?,
-            fixed_at=?, sensors_json=?, received_at=CURRENT_TIMESTAMP WHERE imei=?`)
-            .run(Number.isFinite(row.lat) && row.lat ? row.lat : null,
+      const rows = answer?.data || [];
+      if (!rows.length) continue;
+      db.exec('BEGIN');
+      try {
+        for (const row of rows) {
+          const link = byImei.get(String(row.imei || ''));
+          if (!link) continue;
+          const sensors = JSON.stringify((row.sensors || []).map(s => ({
+            name: s.name, value: s.hum_value, dig: s.dig_value, at: s.change_ts })));
+          if (link.role === 'trailer') {
+            updTrailer.run(Number.isFinite(row.lat) && row.lat ? row.lat : null,
               Number.isFinite(row.lon) && row.lon ? row.lon : null, row.speed ?? null,
               row.unixtimestamp ? new Date(row.unixtimestamp * 1000).toISOString() : null,
               sensors, String(row.imei));
-          // Датчики прицепа сцепки дублируются к тягачу — для попапа сцепки.
-          if (link.vehicleId) db.prepare(`INSERT INTO vehicle_positions(vehicle_id,trailer_sensors_json)
-            VALUES(?,?)
-            ON CONFLICT(vehicle_id) DO UPDATE SET trailer_sensors_json=excluded.trailer_sensors_json`)
-            .run(link.vehicleId, sensors);
-          continue;
-        }
-        if (!Number.isFinite(row.lat) || !row.lat) continue;
-        db.prepare(`INSERT INTO vehicle_positions(vehicle_id,latitude,longitude,speed,direction,fixed_at,sensors_json,received_at)
-          VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-          ON CONFLICT(vehicle_id) DO UPDATE SET latitude=excluded.latitude,
-            longitude=excluded.longitude, speed=excluded.speed, direction=excluded.direction,
-            fixed_at=excluded.fixed_at, sensors_json=excluded.sensors_json, received_at=CURRENT_TIMESTAMP`)
-          .run(link.vehicleId, row.lat, row.lon, row.speed ?? null, row.dir ?? null,
+            // Датчики прицепа сцепки дублируются к тягачу — для попапа сцепки.
+            if (link.vehicleId) updTrailerSensors.run(link.vehicleId, sensors);
+            continue;
+          }
+          if (!Number.isFinite(row.lat) || !row.lat) continue;
+          updTruck.run(link.vehicleId, row.lat, row.lon, row.speed ?? null, row.dir ?? null,
             row.unixtimestamp ? new Date(row.unixtimestamp * 1000).toISOString() : null, sensors);
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
       }
     }
   } catch (error) { console.error('runMonitoringPoll:', error.message); }
+  finally { monitoringPollBusy = false; }
 }
 setInterval(watchWrap('runMonitoringPoll', runMonitoringPoll), 60_000);
 setTimeout(runMonitoringPoll, 45_000);
@@ -8250,7 +8269,12 @@ async function api(request, response, url) {
     };
     const compositeRev = `${bootstrapCache.rev}:${tripsSync.at}·${tripsSync.n}:${ordersSync.at}·${ordersSync.n}`;
     if (pathname === '/api/bootstrap/rev') {
-      return json(response, 200, dateFilter ? { rev: '' } : { rev: compositeRev, sync: syncInfo });
+      // assetVersion — тикнувший клиент видит, что на сервере новая
+      // версия интерфейса, и тихо перезагружает вкладку (лечение
+      // 09.11: вкладки с кодом до диеты Э1 качали полный снимок 21 МБ
+      // каждую минуту — 143 снимка и 2,9 ГБ за полчаса).
+      return json(response, 200, dateFilter ? { rev: '' }
+        : { rev: compositeRev, sync: syncInfo, assetVersion: ASSET_VERSION });
     }
     // part=small: только мелкие секции + паспорт — тик забирает их,
     // когда изменился их собственный hash, без 17 МБ рейсов и заявок.
@@ -8988,8 +9012,20 @@ async function api(request, response, url) {
       ORDER BY e.spent_on DESC, e.created_at DESC`).all(from, to);
     const vatRate = Number(settingsObject(db).calculation?.vatRate ?? 0.22);
     const categories = expenseCategoriesOf();
+    // Штрафы ГИБДД (коннектор OnlineГИБДД) — свод тем же периодом:
+    // полный журнал постановлений со скидками и виновниками; в сам
+    // журнал затрат они не пишутся (оплаченные кладёт Dornet).
+    const gibddWarnDays = Number(settingsObject(db).calculation?.gibddWarnDays ?? 7);
+    const gibdd = {
+      ...gibddBoard(db, { from, to, warnDays: gibddWarnDays }),
+      enabled: Boolean(db.prepare(`SELECT enabled FROM integration_connectors
+        WHERE id='onlinegibdd'`).get()?.enabled),
+      warnDays: gibddWarnDays,
+      last: JSON.parse(db.prepare(`SELECT value FROM app_meta
+        WHERE key='gibdd_sync_last'`).get()?.value || 'null')
+    };
     return json(response, 200, {
-      items, from, to,
+      items, from, to, gibdd,
       categories: [...categories.values()],
       summary: expensesSummary(items, vatRate, categories), vatRate
     });
@@ -13789,8 +13825,16 @@ async function api(request, response, url) {
     // Оперативный реестр — только актуальное: проблемы завершившихся рейсов и
     // истёкших окон решить уже нельзя, они очищаются автоматически.
     // История конфликтов за любой период доступна в отчёте «История конфликтов».
+    // Выборка адресная (не listTrips: тот тащит 92 дня истории, которые тут
+    // же выбрасывались) — отклонённые ниже нигде не участвуют.
     const nowIso = new Date().toISOString();
-    const trips = listTrips().filter(trip => trip.ends_at >= nowIso);
+    const trips = db.prepare(`SELECT t.*,v.plate vehicle_plate,v.trailer_plate,v.driver_name,vt.name vehicle_type,
+      f.name from_name,f.color from_color,d.name to_name,d.color to_color
+      FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+      JOIN vehicle_types vt ON vt.id=v.type_id JOIN zones f ON f.id=t.from_zone_id
+      JOIN zones d ON d.id=t.to_zone_id
+      WHERE t.ends_at >= ? AND t.status<>'rejected'
+      ORDER BY t.starts_at`).all(nowIso);
     const dispositions = listDispositions();
     const conflicts = new Set();
     const grouped = Map.groupBy(
@@ -16379,6 +16423,16 @@ async function api(request, response, url) {
     return json(response, 200, stats);
   }
   // РН-Карт: ручная синхронизация произвольного периода (бэкафилл).
+  // OnlineГИБДД: ручной запуск полной синхронизации (машины + штрафы).
+  if (request.method === 'POST' && pathname === '/api/admin/gibdd/sync') {
+    const user = requirePermission(request, response, 'integration:write');
+    if (!user) return;
+    const stats = await runGibddSync({ verbose: true });
+    if (!stats) return errorJson(response, 422, 'Коннектор OnlineГИБДД не настроен или выключен (ключ API, галка)');
+    audit(db, user, 'gibdd-sync', 'integration', 'onlinegibdd',
+      { added: stats.added, autosAdded: stats.autosAdded }, requestIp(request));
+    return json(response, 200, stats);
+  }
   if (request.method === 'POST' && pathname === '/api/admin/rncard/sync') {
     const user = requirePermission(request, response, 'integration:write');
     if (!user) return;
