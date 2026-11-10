@@ -10,6 +10,38 @@ const viewState = { center: [55.7, 44.0], zoom: 5 };
 let map = null;
 const truckMarkers = new Map();   // vehicle_id → marker
 const trailerMarkers = new Map(); // imei → marker
+const frameMarkers = new Map();   // weight_frame id → marker
+
+// Рамки ВГК — справочник, выученный из весогабаритных штрафов (меняется
+// редко): кэш на 10 минут, грузится только при включённом слое.
+let framesCache = { at: 0, frames: [] };
+async function loadFrames() {
+  if (Date.now() - framesCache.at < 10 * 60_000) return framesCache.frames;
+  try {
+    const answer = await api('/api/weight-frames');
+    framesCache = { at: Date.now(),
+      frames: (answer.frames || []).filter(frame => Number.isFinite(frame.latitude)) };
+  } catch { /* карта живёт и без рамок */ }
+  return framesCache.frames;
+}
+
+function upsertFrameMarker(frame) {
+  if (frameMarkers.has(frame.id)) return;
+  const rub = value => new Intl.NumberFormat('ru-RU').format(Math.round(value)) + ' ₽';
+  const day = iso => iso ? String(iso).slice(0, 10).split('-').reverse().join('.') : '—';
+  const icon = L.divIcon({ className: '', iconSize: [22, 22], iconAnchor: [11, 11],
+    html: '<div style="width:22px;height:22px;border-radius:5px;background:#b3432f;color:#fff;' +
+      'display:flex;align-items:center;justify-content:center;font-size:13px;' +
+      'border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)">⚖</div>' });
+  const marker = L.marker([frame.latitude, frame.longitude], { icon }).addTo(map);
+  marker.bindTooltip(`⚖ ${escapeHtml(frame.road)}, ${frame.km} км`);
+  marker.bindPopup(`<b>⚖ Рамка весогабаритного контроля</b><br>
+    ${escapeHtml(frame.road)}, ${frame.km} км<br>${escapeHtml(frame.region)}<br>
+    наши штрафы: <b>${frame.fines_count}</b> на <b>${rub(frame.fines_amount)}</b><br>
+    последний: ${day(frame.last_offense_on)}
+    ${frame.geo_status === 'approx' ? '<br><small>координата приблизительная (геокод дороги целиком)</small>' : ''}`);
+  frameMarkers.set(frame.id, marker);
+}
 
 const tsMs = value => {
   if (!value) return 0;
@@ -212,7 +244,7 @@ export async function renderMonitoring(container, context) {
   } catch (error) {
     container.innerHTML = `<p class="muted" style="margin:20px">Мониторинг недоступен: ${escapeHtml(error.message)}.
       Проверьте логин/пароль Пилота в Настройках → Телефония и сервисы.</p>`;
-    map = null; truckMarkers.clear(); trailerMarkers.clear();
+    map = null; truckMarkers.clear(); trailerMarkers.clear(); frameMarkers.clear();
     return;
   }
   const tripByVehicle = new Map();
@@ -241,6 +273,7 @@ export async function renderMonitoring(container, context) {
     </div>`;
     truckMarkers.clear();
     trailerMarkers.clear();
+    frameMarkers.clear();
     if (typeof L === 'undefined') {
       container.querySelector('#monMap').innerHTML =
         '<p class="muted" style="margin:20px">Библиотека карты не загрузилась — обновите страницу.</p>';
@@ -279,6 +312,8 @@ export async function renderMonitoring(container, context) {
       ${filterButton('', 'Все')}${filterButton('moving', '🟢')}${filterButton('stopped', '🔵')}${filterButton('silent', '🔴')}
       <button class="button small ${state.monTrailers ? '' : 'ghost'}" id="monTrailersToggle"
         title="Показать прицепы отдельными маркерами: свободные, отцепленные, температуры и двери">▢ Прицепы ${trailers.filter(t => t.latitude).length}</button>
+      <button class="button small ${state.monFrames ? '' : 'ghost'}" id="monFramesToggle"
+        title="Рамки весогабаритного контроля — места наших штрафов по ст. 12.21.1">⚖ Рамки</button>
     </div>
     <input id="monSearch" class="block-search" placeholder="Поиск: госномер, водитель, прицеп"
       value="${escapeHtml(state.monQuery || '')}" style="width:100%;margin-bottom:6px">
@@ -321,10 +356,24 @@ export async function renderMonitoring(container, context) {
   for (const [imei, marker] of trailerMarkers) {
     if (!seenTrailers.has(imei)) { marker.remove(); trailerMarkers.delete(imei); }
   }
+  const seenFrames = new Set();
+  if (state.monFrames) {
+    for (const frame of await loadFrames()) {
+      upsertFrameMarker(frame);
+      seenFrames.add(frame.id);
+    }
+  }
+  for (const [id, marker] of frameMarkers) {
+    if (!seenFrames.has(id)) { marker.remove(); frameMarkers.delete(id); }
+  }
 
   // ── Обработчики списка (перевешиваются с его перерисовкой). ──
   container.querySelector('#monTrailersToggle').onclick = () => {
     state.monTrailers = !state.monTrailers;
+    renderMonitoring(container, context);
+  };
+  container.querySelector('#monFramesToggle').onclick = () => {
+    state.monFrames = !state.monFrames;
     renderMonitoring(container, context);
   };
   container.querySelectorAll('[data-mon-filter]').forEach(button =>

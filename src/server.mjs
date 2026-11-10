@@ -59,6 +59,7 @@ import {
 } from './security.mjs';
 import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from './dornet.mjs';
 import { gibddBoard, importSts, mapApiFines, normCdi, plateParts, upsertGibddFines } from './gibdd.mjs';
+import { framesNearLeg, rebuildWeightFrames, roadEndpoints } from './weightframes.mjs';
 import { rncardExpenseRows } from './rncard.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
@@ -7092,6 +7093,8 @@ async function runGibddSync(options = {}) {
     }
     db.prepare(`UPDATE integration_connectors SET last_success_at=CURRENT_TIMESTAMP,
       updated_at=CURRENT_TIMESTAMP WHERE id='onlinegibdd'`).run();
+    // Свежие штрафы могли принести новую рамку ВГК — справочник следом.
+    rebuildWeightFrames(db, randomUUID);
   } catch (error) { stats.errors.push(error.message); }
   db.prepare(`INSERT INTO app_meta(key,value) VALUES('gibdd_sync_last',?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(stats));
@@ -7110,6 +7113,73 @@ function gibddSyncTick() {
 }
 setInterval(watchWrap('gibddSyncTick', gibddSyncTick), 8 * 3_600_000);
 setTimeout(gibddSyncTick, 90_000);
+
+// ── Рамки весогабаритного контроля (АПВГК) ────────────────────────────
+// Справочник учится из штрафов (src/weightframes.mjs): пересборка на
+// старте и после каждого синка ГИБДД; показ — слой «⚖ Рамки» на карте
+// мониторинга и предупреждение по коридору маршрута в заявке.
+function weightFramesRebuild() {
+  try {
+    const result = rebuildWeightFrames(db, randomUUID);
+    if (result.added) console.log(`Рамки ВГК: +${result.added} новых мест (всего ${result.frames})`);
+  } catch (error) { console.error('weightFramesRebuild:', error.message); }
+}
+setTimeout(weightFramesRebuild, 100_000);
+
+// Геокод рамки: концы дороги из названия («Лапотково - Ефремов») →
+// геокод обоих топонимов с регионом → точка на прямой между ними в доле
+// километража (дорожный км длиннее прямой — та же оценка ROAD_FACTOR,
+// что в plannedKmFor). Один топоним («Обход г. Воронежа») — центр с
+// пометкой approx. Одна рамка за тик — щадим лимит Nominatim (1 зап/с),
+// неудача повторяется не раньше чем через сутки.
+async function runFrameGeocodeWatch() {
+  const frame = db.prepare(`SELECT * FROM weight_frames
+    WHERE latitude IS NULL AND enabled=1
+      AND (geo_try_at IS NULL OR datetime(geo_try_at) < datetime('now','-1 day'))
+    ORDER BY fines_amount DESC LIMIT 1`).get();
+  if (!frame) return;
+  db.prepare(`UPDATE weight_frames SET geo_try_at=CURRENT_TIMESTAMP WHERE id=?`).run(frame.id);
+  try {
+    const ends = roadEndpoints(frame.road);
+    const points = [];
+    for (const [index, end] of ends.slice(0, 2).entries()) {
+      if (index) await new Promise(resolve => setTimeout(resolve, 1200));
+      const query = frame.region ? `${end}, ${frame.region}` : end;
+      const found = (await geocodeQuery(query)).filter(item => Number.isFinite(item.latitude));
+      points.push(found[0] || null);
+    }
+    let latitude = null;
+    let longitude = null;
+    let status = 'fail';
+    if (points.length === 2 && points[0] && points[1]) {
+      const roadLen = roadKm(points[0].latitude, points[0].longitude,
+        points[1].latitude, points[1].longitude);
+      if (roadLen > 0) {
+        const t = Math.max(0.03, Math.min(0.97, frame.km / roadLen));
+        latitude = points[0].latitude + (points[1].latitude - points[0].latitude) * t;
+        longitude = points[0].longitude + (points[1].longitude - points[0].longitude) * t;
+        status = 'ok';
+      }
+    } else if (points.find(Boolean)) {
+      const point = points.find(Boolean);
+      latitude = point.latitude;
+      longitude = point.longitude;
+      status = 'approx';
+    }
+    if (latitude != null) {
+      db.prepare(`UPDATE weight_frames SET latitude=?, longitude=?, geo_status=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(+latitude.toFixed(5), +longitude.toFixed(5), status, frame.id);
+    } else {
+      db.prepare(`UPDATE weight_frames SET geo_status='fail',
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(frame.id);
+    }
+    audit(db, null, 'frame-geocode', 'weight_frame', frame.id,
+      { road: frame.road, km: frame.km, status }, 'frame-watch');
+  } catch (error) { console.error('runFrameGeocodeWatch:', error.message); }
+}
+setInterval(watchWrap('runFrameGeocodeWatch', runFrameGeocodeWatch), 120_000);
+setTimeout(runFrameGeocodeWatch, 150_000);
 
 // ── Коннектор «РН-Карт» (Роснефть) — топливо в журнал затрат (03.11) ──
 // WebAPI EMV v2 (lkapi.rn-card.ru): логин ЛК в query, пароль заголовком
@@ -10118,6 +10188,35 @@ async function api(request, response, url) {
         LEFT JOIN vehicle_trackers t ON t.vehicle_id=p.vehicle_id`).all(),
       trailers: db.prepare(`SELECT tp.*, v.plate owner_plate FROM trailer_positions tp
         LEFT JOIN vehicles v ON v.id=tp.vehicle_id`).all()
+    });
+  }
+  // Рамки ВГК: справочник для слоя карты (выучен из весогабаритных штрафов).
+  if (request.method === 'GET' && pathname === '/api/weight-frames') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    return json(response, 200, {
+      frames: db.prepare(`SELECT * FROM weight_frames WHERE enabled=1
+        ORDER BY fines_amount DESC`).all(),
+      corridorKm: Number(settingsObject(db).calculation?.frameCorridorKm ?? 15)
+    });
+  }
+  // Рамки ВГК в коридоре маршрута (предупреждение логисту при построении):
+  // from/to — id адресов заявки, коридор — настройка frameCorridorKm (0 = выкл).
+  if (request.method === 'GET' && pathname === '/api/route-frames') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const corridorKm = Number(settingsObject(db).calculation?.frameCorridorKm ?? 15);
+    const a = addressPointById(url.searchParams.get('from'));
+    const b = addressPointById(url.searchParams.get('to'));
+    if (!corridorKm || !a || !b) return json(response, 200, { frames: [], corridorKm });
+    return json(response, 200, {
+      corridorKm,
+      frames: framesNearLeg(db, a, b, corridorKm).map(frame => ({
+        id: frame.id, road: frame.road, km: frame.km, region: frame.region,
+        finesCount: frame.fines_count, finesAmount: frame.fines_amount,
+        lastOffenseOn: frame.last_offense_on, awayKm: +frame.awayKm.toFixed(1),
+        approx: frame.geo_status === 'approx'
+      }))
     });
   }
   match = route(/^\/api\/telegram\/webhook\/(staff|driver)$/, pathname);
@@ -15442,6 +15541,13 @@ async function api(request, response, url) {
         };
       }
       body.notifyChannels = cleaned;
+    }
+    // Калькуляция пишется СЛИЯНИЕМ с текущей: часть порогов сидится
+    // миграциями и правится другими экранами (gibddWarnDays,
+    // frameCorridorKm) — замена целиком стирала бы их при каждом
+    // сохранении «Общих» настроек.
+    if (body.calculation !== undefined) {
+      body.calculation = { ...settingsObject(db).calculation, ...body.calculation };
     }
     for (const key of ['general', 'calculation', 'statuses', 'rejectionReasons',
       'orderOptions', 'networkAccess', 'telephony', 'telegram', 'notifyRules',
