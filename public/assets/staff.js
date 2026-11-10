@@ -67,7 +67,8 @@ export async function renderStaff(container, context) {
   const matches = person => !query ||
     `${person.fullName} ${person.jobRole} ${person.phone} ${person.extPhone || ''} ${person.username || ''} ${person.vehiclePlate || ''}`
       .toLowerCase().includes(query);
-  const users = payload.users.filter(matches);
+  const mismatch = person => person.active && !person.externalGuest && roleMismatch(person, payload);
+  const users = payload.users.filter(matches).filter(person => !state.staffOnlyMismatch || mismatch(person));
   const drivers = payload.drivers.filter(matches);
   const fired = users.filter(person => !person.active);
   // Секции-сегменты: офис и водители не теснят друг друга (замечание
@@ -84,9 +85,8 @@ export async function renderStaff(container, context) {
       ${accessTag(person)}</td>
     <td>${escapeHtml(person.jobRole || '—')}
       ${person.positionId ? '' : '<small class="bi-tag warn" title="Должность не из справочника структуры — выберите в «✎ Данные»">вне структуры</small>'}
-      ${person.roleSetTitles?.length ? `<small class="muted" style="display:block" title="Роль-набор: область, экраны, права">роль: ${escapeHtml(person.roleSetTitles.join(' + '))}</small>`
-    : person.roles?.length ? '<small class="muted" style="display:block" title="Права по старым ролям — назначьте роль-набор">старые права · без набора</small>'
-      : '<small class="muted" style="display:block" title="Права не назначены — в планер не входит">без роли · входа нет</small>'}</td>
+      </td>
+    <td>${roleCell(person, payload, state)}</td>
     <td class="mono">${escapeHtml(person.extPhone || '')}${person.extPhone && person.phone ? ' · ' : ''}${escapeHtml(person.phone || '')}
       ${person.workPhone ? `<small class="muted" title="телефон текущей смены (вводится при входе)" style="display:block">смена: ${escapeHtml(person.workPhone)}</small>` : ''}</td>
     <td>${person.telegram ? '✓' : '<span class="muted">—</span>'}</td>
@@ -115,7 +115,7 @@ export async function renderStaff(container, context) {
   const tableSection = (title, hint, head, rows, empty) => `<section class="section dept-staff">
       <div class="sec-h"><span class="st">${title}</span>${hint ? `<span class="hint">${hint}</span>` : ''}</div>
       <div class="sec-b flush"><div class="bi-scroll"><table class="bi-table"><thead><tr>${head}</tr></thead>
-        <tbody>${rows || `<tr><td colspan=5 class="muted">${empty}</td></tr>`}</tbody></table></div></div>
+        <tbody>${rows || `<tr><td colspan=6 class="muted">${empty}</td></tr>`}</tbody></table></div></div>
     </section>`;
   const html = `<div class="bi-page svc-staff" id="staffBoard">
     <div class="bi-sub">
@@ -123,6 +123,10 @@ export async function renderStaff(container, context) {
         <button data-staff-sec="office" class="${section === 'office' ? 'active' : ''}">Офис · ${activeUsers.length}</button>
         <button data-staff-sec="drivers" class="${section === 'drivers' ? 'active' : ''}">Водители · ${payload.drivers.length}</button>
       </span>
+      <label class="muted" style="display:inline-flex;gap:4px;align-items:center;white-space:nowrap"
+        title="Только те, у кого роль не совпадает с правами должности (или роли нет при должности со входом)">
+        <input type="checkbox" id="staffMismatch" ${state.staffOnlyMismatch ? 'checked' : ''} style="width:auto">
+        роль не по должности · ${payload.users.filter(mismatch).length}</label>
       <input id="staffSearch" class="block-search" placeholder="Поиск по всем: ФИО, должность, телефон, сцепка"
         value="${escapeHtml(state.staffQuery || '')}" style="flex:1;min-width:180px;max-width:360px">
       <div class="bi-actions">
@@ -150,7 +154,7 @@ export async function renderStaff(container, context) {
     ${query && !users.length && !drivers.length ? '<div class="bi-empty">Никого не найдено.</div>' : ''}
     ${showOffice ? tableSection(query ? `Офис · найдено ${users.length}` : 'Офис',
     fired.length ? 'уволенные остаются в списке серыми — карточка и история доступны, восстановление из карточки' : '',
-    '<th>Сотрудник</th><th>Должность</th><th>Телефоны</th><th>TG</th><th>Статус</th>',
+    '<th>Сотрудник</th><th>Должность</th><th title="Выберите — сохраняется сразу; жёлтым — роль не совпадает с должностью">Роль в планере</th><th>Телефоны</th><th>TG</th><th>Статус</th>',
     users.map(userRow).join(''), 'Никого не найдено') : ''}
     ${showDrivers ? tableSection(query ? `Водители · найдено ${drivers.length}` : 'Водители', '',
     '<th>Водитель</th><th>Должность</th><th>Телефон</th><th>Сцепка</th><th>Статус</th>',
@@ -163,6 +167,20 @@ export async function renderStaff(container, context) {
       state.staffSection = button.dataset.staffSec;
       renderStaff(container, context);
     });
+  container.querySelector('#staffMismatch').onchange = event => {
+    state.staffOnlyMismatch = event.currentTarget.checked;
+    renderStaff(container, context);
+  };
+  // Роль прямо в списке: выбор — сразу сохранение (PATCH роли).
+  container.querySelectorAll('[data-role-pick]').forEach(select => select.onchange = async () => {
+    const id = select.dataset.rolePick;
+    const value = select.value;
+    try {
+      await api(`/api/staff/users/${id}`, { method: 'PATCH', body: JSON.stringify({ roleSets: value ? [value] : [] }) });
+      toast(value ? 'Роль назначена' : 'Роль снята — входа в планер нет');
+    } catch (error) { toast(error.message); }
+    renderStaff(container, context);
+  });
   const search = container.querySelector('#staffSearch');
   search.addEventListener('input', () => {
     state.staffQuery = search.value;
@@ -523,14 +541,14 @@ function staffEditDialog(context, person, after) {
     </div>
     ${person ? '' : `
     <details class="st-pp"><summary>🔐 Доступ в планер <small class="muted">— не обязательно: без роли сотрудник в штате, но не входит</small></summary>
-    ${roleSetPicker(state.staffRoleSets || [], [], isAdmin)}
+    ${rolePickerForm(state, [], '', isAdmin)}
     <small class="muted">логин и временный пароль — кнопкой «🔐 Выдать доступ» в карточке после приёма</small></details>`}
-    ${person ? roleSetPicker(state.staffRoleSets || [], person.roleSets || [], isAdmin) : ''}
+    ${person ? rolePickerForm(state, person.roleSets || [], person.positionId, isAdmin) : ''}
     ${person && !person.roles?.includes('admin') ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
-      <input type="checkbox" name="readOnly" ${person.guest ? 'checked' : ''}>
+      <input type="checkbox" name="readOnly" style="width:auto;height:auto;flex:none;margin:0" ${person.guest ? 'checked' : ''}>
       👁 только просмотр <small class="muted">(гостевой режим: видит экраны своей роли, ничего не меняет)</small></label><br>` : ''}
     ${person ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
-      <input type="checkbox" name="dispatchExempt" ${person?.dispatchExempt ? 'checked' : ''}>
+      <input type="checkbox" name="dispatchExempt" style="width:auto;height:auto;flex:none;margin:0" ${person?.dispatchExempt ? 'checked' : ''}>
       не участвует в автораспределении диспетчерской
       <small class="muted">(руководитель службы: карточки доски ему не назначаются)</small></label>
     <label class="field">Эскалации доски
@@ -553,7 +571,9 @@ function staffEditDialog(context, person, after) {
     const position = (state.staffPositions || []).find(item => item.id === positionField.value);
     if (!position) return;
     const set = position.roleSet || '';
-    document.querySelectorAll('#staffForm [name="roleSets"]').forEach(input => { input.checked = input.value === set; });
+    const main = document.querySelector('#staffForm [name="roleMain"]');
+    if (main) main.innerHTML = roleOptions(state.staffRoleSets || [], set, set, isAdmin);
+    document.querySelectorAll('#staffForm [name="roleExtra"]').forEach(input => { input.checked = false; });
     const details = document.querySelector('#staffForm details');
     if (details) details.open = true;
     toast(set ? 'Роль отмечена по должности — проверьте перед сохранением'
@@ -571,14 +591,14 @@ function staffEditDialog(context, person, after) {
     if (position !== '__keep') body.positionId = position;
     if (person) body.dispatchExempt = form.querySelector('[name="dispatchExempt"]')?.checked || false;
     if (person) body.escRole = String(values.get('escRole') || '');
-    if (person) body.roleSets = [...form.querySelectorAll('[name="roleSets"]:checked')].map(input => input.value);
+    if (person) body.roleSets = pickedSets(form);
     const readOnly = form.querySelector('[name="readOnly"]');
     if (person && readOnly && readOnly.checked !== Boolean(person.guest)) body.readOnly = readOnly.checked;
     try {
       if (person) {
         await api(`/api/staff/users/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       } else {
-        body.roleSets = [...form.querySelectorAll('[name="roleSets"]:checked')].map(input => input.value);
+        body.roleSets = pickedSets(form);
         await api('/api/staff/users', { method: 'POST', body: JSON.stringify(body) });
       }
       toast(person ? 'Сохранено' : 'Сотрудник принят');
@@ -813,4 +833,57 @@ export function guestDialog(context, guest, after) {
       closeModal(); after?.();
     } catch (error) { document.querySelector('#guestError').textContent = error.message; }
   };
+}
+
+// ── Роль в планере — по отделам, с подсказкой «по должности» (10.11) ──
+const SCOPE_TITLE = { all: 'Направление', staff: 'Штаб', log: 'Логистика', drv: 'Эксплуатация', toir: 'ТОиР', '': 'Прочее' };
+const SCOPE_ORDER = ['all', 'staff', 'log', 'drv', 'toir', ''];
+function setsByScope(sets, isAdmin) {
+  return SCOPE_ORDER.map(scope => [scope, sets.filter(set => (set.scope || '') === scope
+    && (isAdmin || !set.codes?.includes('admin')))]).filter(([, list]) => list.length);
+}
+const positionSetOf = (person, payload) => (payload.positions || []).find(item => item.id === person.positionId)?.roleSet || '';
+// Роль не совпадает с правами должности (или роли нет при должности со входом).
+function roleMismatch(person, payload) {
+  if (person.roles?.includes('admin') || !person.positionId) return false;
+  const expected = positionSetOf(person, payload);
+  const own = person.roleSets || [];
+  return expected ? !own.includes(expected) : own.length > 0;
+}
+function roleOptions(sets, current, expected, isAdmin) {
+  return `<option value="" ${!current ? 'selected' : ''}>— без входа${expected === '' ? ' (по должности)' : ''}</option>
+    ${setsByScope(sets, isAdmin).map(([scope, list]) => `<optgroup label="${SCOPE_TITLE[scope]}">${list.map(set =>
+    `<option value="${set.id}" ${set.id === current ? 'selected' : ''}>${escapeHtml(set.title)}${set.id === expected ? ' ✓ по должности' : ''}</option>`).join('')}</optgroup>`).join('')}`;
+}
+function roleCell(person, payload, state) {
+  if (!person.active) return '<small class="muted">—</small>';
+  if (person.roles?.includes('admin')) return '<small class="muted">администратор</small>';
+  const own = person.roleSets || [];
+  if (own.length > 1) {
+    return `<small title="Совмещение — меняется в карточке «✎ Данные»">совмещение: ${escapeHtml((person.roleSetTitles || own).join(' + '))}</small>`;
+  }
+  const expected = person.positionId ? positionSetOf(person, payload) : null;
+  const off = person.positionId && roleMismatch(person, payload);
+  return `<select data-role-pick="${person.id}" class="staff-role-pick ${off ? 'warn' : ''}"
+      title="${off ? 'Роль не совпадает с правами должности' : 'Роль в планере — сохраняется сразу'}">
+    ${roleOptions(state.staffRoleSets || [], own[0] || '', expected, false)}</select>`;
+}
+
+// В карточке: основная роль одним выбором (по отделам, «✓ по должности»)
+// + совмещение галками — только когда человек правда совмещает.
+function rolePickerForm(state, current, positionId, isAdmin) {
+  const sets = state.staffRoleSets || [];
+  const expected = positionId ? (state.staffPositions || []).find(item => item.id === positionId)?.roleSet || '' : null;
+  const [main = '', ...extra] = current;
+  return `<label class="field">Роль в планере <small class="muted">— что видит и что может; «✓ по должности» — права её должности</small>
+      <select name="roleMain">${roleOptions(sets, main, expected, isAdmin)}</select></label>
+    <details class="st-pp" ${extra.length ? 'open' : ''}><summary>＋ Совмещение <small class="muted">— вторая роль, если человек совмещает должности</small></summary>
+      <div class="st-roles">${sets.filter(set => isAdmin || !set.codes?.includes('admin')).map(set => `<label>
+        <input type="checkbox" name="roleExtra" value="${set.id}" ${extra.includes(set.id) ? 'checked' : ''}>
+        <span>${escapeHtml(set.title)} <small class="muted">${SCOPE_TITLE[set.scope || '']}</small></span></label>`).join('')}</div></details>`;
+}
+function pickedSets(form) {
+  const main = String(form.querySelector('[name="roleMain"]')?.value || '');
+  const extra = [...form.querySelectorAll('[name="roleExtra"]:checked')].map(input => input.value);
+  return [...new Set([main, ...extra].filter(Boolean))];
 }
