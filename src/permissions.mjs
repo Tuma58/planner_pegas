@@ -80,8 +80,21 @@ export function roleLabelsFor(roles) {
 
 // Гостевой режим (users.guest): сотрудник видит всё по своим ролям, но любые
 // права на запись отсекаются — остаются только «…:read». Включает админ.
+// Перенос по отделам (10.11): право «Выпуск» у роли resource — новое,
+// оно действует только у людей с набором ролей (включённый отдел). Учётки
+// прода без набора живут по-старому — без нового экрана «Выпуск».
+const SET_ONLY = { 'release:write': ['resource'] };
+const hasSets = user => {
+  try { const sets = JSON.parse(user?.role_sets || '[]'); return Array.isArray(sets) && sets.length > 0; } catch { return false; }
+};
+
 export function effectivePermissions(user) {
-  const all = permissionsForRoles(rolesOf(user));
+  const roles = rolesOf(user);
+  let all = permissionsForRoles(roles);
+  if (!hasSets(user)) {
+    all = all.filter(permission => !SET_ONLY[permission]
+      || roles.some(role => permissionsFor(role).includes(permission) && !SET_ONLY[permission].includes(role)));
+  }
   return Number(user?.guest) ? all.filter(permission => permission.endsWith(':read')) : all;
 }
 

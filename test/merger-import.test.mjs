@@ -78,3 +78,13 @@ test('неоднозначное сопоставление блокирует �
   const name = snapshot.users.find(user => user.fullName.startsWith('Тарасов')).fullName;
   assert.ok(applyMerger(db, 'toir', { snapshot, overrides: { [name]: second } }).ok);
 });
+
+test('учётка прода без набора не получает новое право «Выпуск»; с набором Эксплуатации — получает', async () => {
+  const { effectivePermissions } = await import('../src/permissions.mjs');
+  const legacy = { roles: JSON.stringify(['logist', 'resource', 'dispatcher']), role_sets: '' };
+  assert.ok(!effectivePermissions(legacy).includes('release:write'));
+  assert.ok(effectivePermissions(legacy).includes('fleet:write'), 'прежние права целы');
+  assert.ok(effectivePermissions({ roles: '["resource"]', role_sets: '["drv_head"]' }).includes('release:write'));
+  assert.ok(effectivePermissions({ roles: '["admin"]', role_sets: '' }).includes('release:write'));
+  assert.ok(effectivePermissions({ roles: '["techctl"]', role_sets: '' }).includes('release:write'));
+});
