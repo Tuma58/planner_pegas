@@ -53,6 +53,11 @@ export async function api(path, options = {}) {
       location.href = '/login.html';
       throw new Error('Требуется вход');
     }
+    // Временный пароль (10.11): сервер пускает только на смену пароля.
+    if (response.status === 403 && data.code === 'password_change' && !location.pathname.endsWith('/login.html')) {
+      location.href = '/login.html?change=1';
+      throw new Error(data.error);
+    }
     if (!response.ok) {
       const err = new Error(data.error || `HTTP ${response.status}`);
       // Машинный код ошибки: фронт различает сценарии (диспозиция,

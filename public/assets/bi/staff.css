@@ -240,6 +240,8 @@
 .cfo-period { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; } .cfo-period input { width: auto; }
 .st-roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 12px; margin-top: 6px; }
 .st-roles label { display: flex; gap: 6px; align-items: flex-start; font-size: 12.5px; }
+.st-roles input[type="checkbox"] { width: auto; height: auto; min-height: 0; flex: none; margin: 2px 0 0; padding: 0; }
+#nsViews { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); max-height: 220px; overflow: auto; }
 /* Мини-структура отдела: группы колонками во всю ширину */
 .st-wide { grid-column: span 12; }
 .st-wide .sec-b { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 18px; }

@@ -367,3 +367,55 @@ export function broadcastTextFor(db, user, text, { money = '', plain = null } = 
   if (money !== 'full') return text;
   return accessOf(db, user).money === 'full' ? text : plain;
 }
+
+// ── Свои наборы (заказ руководителя 10.11: «новая должность с
+// назначением прав») ──
+// Новый набор собирается НА ОСНОВЕ существующего: коды прав (что
+// сотрудник может менять) наследуются от основы, руководитель выбирает
+// экраны и уровень денег. Код admin в свой набор не переходит; уровень
+// денег не выше, чем у того, кто создаёт. Область — отдел основы.
+const MONEY_RANK = { full: 3, rates: 2, none: 1 };
+
+function cleanSetBody(body, base, creatorMoney) {
+  const views = (Array.isArray(body?.views) ? body.views : base.views).filter(view => ALL_VIEWS.includes(view));
+  if (!views.length) return { error: 'Отметьте хотя бы один экран' };
+  const money = MONEY_LEVELS.includes(body?.money) ? body.money : base.money;
+  if (MONEY_RANK[money] > MONEY_RANK[creatorMoney || 'none']) {
+    return { error: 'Уровень денег не может быть выше вашего' };
+  }
+  return { views: [...new Set(views)], money };
+}
+
+export function createRoleSet(db, body, { creatorMoney = 'none' } = {}) {
+  const title = String(body?.title || '').trim();
+  if (!title) return { ok: false, status: 422, error: 'Название набора пустое' };
+  const base = roleSets(db).find(set => set.id === body?.base);
+  if (!base) return { ok: false, status: 422, error: 'Выберите основу — существующий набор' };
+  if (base.codes.includes('admin')) return { ok: false, status: 422, error: 'Набор администратора не может быть основой' };
+  if (roleSets(db).some(set => set.title.toLowerCase() === title.toLowerCase())) {
+    return { ok: false, status: 422, error: 'Набор с таким названием уже есть' };
+  }
+  const clean = cleanSetBody(body, base, creatorMoney);
+  if (clean.error) return { ok: false, status: 422, error: clean.error };
+  const id = `rs-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+  const sort = db.prepare(`SELECT COALESCE(MAX(sort),0)+1 s FROM role_sets`).get().s;
+  db.prepare(`INSERT INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
+    VALUES(?,?,?,?,?,?,?,?)`).run(id, title, base.scope, JSON.stringify(clean.views),
+    JSON.stringify(base.codes), clean.money, base.cfo === 'all' ? 'dept' : base.cfo, sort);
+  return { ok: true, id };
+}
+
+// Правка своего набора: название, экраны, деньги. Посевные наборы
+// (утверждённая таблица) здесь не меняются — только свои «rs-…».
+export function updateRoleSet(db, id, body, { creatorMoney = 'none' } = {}) {
+  const set = roleSets(db, { all: true }).find(item => item.id === id);
+  if (!set) return { ok: false, status: 404, error: 'Набор не найден' };
+  if (!id.startsWith('rs-')) return { ok: false, status: 422, error: 'Утверждённые наборы не правятся — создайте свой на их основе' };
+  const title = body?.title != null ? String(body.title).trim() : set.title;
+  if (!title) return { ok: false, status: 422, error: 'Название набора пустое' };
+  const clean = cleanSetBody(body, set, creatorMoney);
+  if (clean.error) return { ok: false, status: 422, error: clean.error };
+  db.prepare(`UPDATE role_sets SET title=?, views_json=?, money=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    .run(title, JSON.stringify(clean.views), clean.money, id);
+  return { ok: true };
+}

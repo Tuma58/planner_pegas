@@ -116,13 +116,7 @@ export async function renderStructure(container, context) {
         body: JSON.stringify({ id: group.id, name }) }), 'Группа переименована', rerender);
     }
     const addPos = event.target.closest('[data-add-pos]');
-    if (addPos) {
-      const title = prompt('Название новой должности');
-      if (!title) return;
-      const headcount = Number(prompt('Штат, человек', '1'));
-      return save(() => api('/api/structure/positions', { method: 'POST',
-        body: JSON.stringify({ group: addPos.dataset.addPos, title, headcount }) }), 'Должность добавлена', rerender);
-    }
+    if (addPos) return newPositionDialog(context, data, addPos.dataset.addPos, rerender);
     return undefined;
   };
 }
@@ -192,6 +186,9 @@ function positionDialog(context, data, position, after) {
         <option value="dept" ${position.cfoView === 'dept' ? 'selected' : ''}>видит затраты своего отдела</option>
         <option value="all" ${position.cfoView === 'all' ? 'selected' : ''}>видит общий ЦФО направления</option>
       </select><small class="muted">экран «₽ ЦФО и затраты»; персональный доступ к затратам — отдельно, в Настройках</small></label>
+      ${rolePicker(data, position.dept, position.roleSet)}
+      ${position.people.length ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:0 0 8px">
+        <input type="checkbox" name="applyToPeople" checked style="width:auto;height:auto;flex:none;margin:0"> применить новые права к людям на должности (${position.people.length})</label>` : ''}
       ${PASSPORT.map(([key, label]) => `<label class="field">${label} <small class="muted">${key === 'kpi' ? 'строка: показатель | норма | период' : 'по пункту на строку'}</small>
         <textarea name="pp_${key}" rows="${key === 'gen' || key === 'duties' ? 5 : 3}">${escapeHtml(lines(passport[key])
     .map(item => Array.isArray(item) ? item.join(' | ') : item).join('\n'))}</textarea></label>`).join('')}
@@ -207,6 +204,8 @@ function positionDialog(context, data, position, after) {
     </div>
     <p class="muted" style="margin:4px 0 10px">${escapeHtml(group?.name || '')} · ${escapeHtml(position.status)} ·
       штат <b>${position.headcount}</b> · факт <b>${position.fact}</b>${position.vacancies ? ` · вакансий <b>${position.vacancies}</b>` : ''}</p>
+    ${position.driverPool ? '' : `<p style="margin:8px 0" title="Набор прав: что видит и что может человек на должности">🔐 Права:
+      <b>${escapeHtml(setTitle(data, position.roleSet) || 'без входа в планер')}</b></p>`}
     ${people}
     <h3 class="st-h3">Паспорт должности</h3>
     ${passportHtml(passport) || '<div class="bi-empty">Паспорт не заполнен</div>'}
@@ -226,11 +225,13 @@ function positionDialog(context, data, position, after) {
       await api(`/api/structure/positions/${position.id}`, { method: 'PATCH', body: JSON.stringify({
         title: String(values.get('title') || '').trim(), headcount: Number(values.get('headcount')),
         group: String(values.get('group')), status: String(values.get('status') || ''),
-        cfoView: String(values.get('cfoView') || ''), passport: pp }) });
+        cfoView: String(values.get('cfoView') || ''), passport: pp,
+        roleSet: await resolveRoleSet(form, data, position.dept), applyToPeople: values.get('applyToPeople') === 'on' }) });
       toast('Должность сохранена');
       closeModal(); after();
     } catch (error) { document.querySelector('#stPosError').textContent = error.message; }
   });
+  wireRolePicker(form, data, position.dept);
   const archive = document.querySelector('#stPosArchive');
   if (archive) archive.onclick = async () => {
     if (!confirm(`Упразднить должность «${position.title}»?`)) return;
@@ -240,4 +241,97 @@ function positionDialog(context, data, position, after) {
       closeModal(); after();
     } catch (error) { document.querySelector('#stPosError').textContent = error.message; }
   };
+}
+
+// ── Права должности (10.11): набор ролей + «новый набор» на основе ──
+const MONEY_TITLE = { full: 'все деньги', rates: 'ставки', none: 'без денег' };
+const MONEY_RANK = { full: 3, rates: 2, none: 1 };
+const setTitle = (data, id) => (data.roleSets || []).find(set => set.id === id)?.title || (id ? id : '');
+// Наборы отдела должности (+ «всё направление» только в Штабе).
+const setsForDept = (data, dept) => (data.roleSets || [])
+  .filter(set => !set.scope || set.scope === dept || (set.scope === 'all' && dept === 'staff'));
+
+function rolePicker(data, dept, current = '') {
+  if (!data.roleSets) return '';
+  const sets = setsForDept(data, dept);
+  const titles = window.plViewTitles || {};
+  return `<label class="field">Права на должности (набор)
+      <select name="roleSet">
+        <option value="" ${!current ? 'selected' : ''}>— без входа в планер</option>
+        ${sets.map(set => `<option value="${set.id}" ${set.id === current ? 'selected' : ''}>${escapeHtml(set.title)} · ${set.views.length} экр. · ${MONEY_TITLE[set.money] || ''}</option>`).join('')}
+        <option value="__new">＋ Новый набор прав…</option>
+      </select>
+      <small class="muted">человеку, назначенному на должность, эти права отмечаются сами</small></label>
+    <div class="st-pp hidden" id="stNewSet" style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
+      <label class="field">Название набора <input name="nsTitle" placeholder="например: Аналитик логистики"></label>
+      <label class="field">На основе <small class="muted">— от основы берутся права на изменения</small>
+        <select name="nsBase">${sets.map(set => `<option value="${set.id}">${escapeHtml(set.title)}</option>`).join('')}</select></label>
+      <div class="field"><span>Экраны</span><div class="st-roles" id="nsViews">${(data.allViews || []).map(view =>
+    `<label><input type="checkbox" name="nsView" value="${view}"><span>${escapeHtml(titles[view] || view)}</span></label>`).join('')}</div></div>
+      <label class="field">Деньги <select name="nsMoney">${['none', 'rates', 'full']
+    .filter(level => MONEY_RANK[level] <= MONEY_RANK[data.myMoney || 'none'])
+    .map(level => `<option value="${level}">${MONEY_TITLE[level]}</option>`).join('')}</select></label>
+    </div>`;
+}
+
+function wireRolePicker(form, data, dept) {
+  const select = form?.querySelector('[name="roleSet"]');
+  if (!select) return;
+  const box = form.querySelector('#stNewSet');
+  const base = form.querySelector('[name="nsBase"]');
+  // Основа отмечает свои экраны и деньги — дальше руководитель правит.
+  const fill = () => {
+    const set = setsForDept(data, dept).find(item => item.id === base.value);
+    if (!set) return;
+    form.querySelectorAll('[name="nsView"]').forEach(input => { input.checked = set.views.includes(input.value); });
+    const money = form.querySelector('[name="nsMoney"]');
+    if ([...money.options].some(option => option.value === set.money)) money.value = set.money;
+  };
+  select.addEventListener('change', () => {
+    box.classList.toggle('hidden', select.value !== '__new');
+    if (select.value === '__new') fill();
+  });
+  base?.addEventListener('change', fill);
+}
+
+// «＋ Новый набор…» выбран — сначала создаём набор, потом его id уходит
+// в должность.
+async function resolveRoleSet(form, data, dept) {
+  const value = String(form.querySelector('[name="roleSet"]')?.value || '');
+  if (value !== '__new') return value;
+  const result = await api('/api/role-sets', { method: 'POST', body: JSON.stringify({
+    title: String(form.querySelector('[name="nsTitle"]').value || '').trim(),
+    base: form.querySelector('[name="nsBase"]').value,
+    views: [...form.querySelectorAll('[name="nsView"]:checked')].map(input => input.value),
+    money: form.querySelector('[name="nsMoney"]').value }) });
+  data.roleSets = result.roleSets;
+  return result.id;
+}
+
+// Новая должность: название, штат, права (набор или новый набор).
+function newPositionDialog(context, data, groupId, after) {
+  const { showModal, closeModal } = context;
+  const group = data.groups.find(item => item.id === groupId);
+  showModal(`<form id="stNewPos"><h2>＋ Новая должность</h2>
+    <p class="muted">${escapeHtml(group?.name || '')}</p>
+    <label class="field">Название <input name="title" required></label>
+    <label class="field">Штат, чел <input name="headcount" type="number" min="0" step="1" value="1"></label>
+    ${rolePicker(data, group?.dept, '')}
+    <div class="form-error" id="stNewPosError"></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button primary">Создать</button></div></form>`);
+  const form = document.querySelector('#stNewPos');
+  wireRolePicker(form, data, group?.dept);
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const values = new FormData(form);
+    try {
+      const roleSet = await resolveRoleSet(form, data, group?.dept);
+      await api('/api/structure/positions', { method: 'POST', body: JSON.stringify({
+        group: groupId, title: String(values.get('title') || '').trim(),
+        headcount: Number(values.get('headcount')), roleSet }) });
+      toast('Должность добавлена');
+      closeModal(); after();
+    } catch (error) { document.querySelector('#stNewPosError').textContent = error.message; }
+  });
 }

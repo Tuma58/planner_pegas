@@ -7,7 +7,8 @@ import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
 import { CATEGORY_CFO_SEED, EXPENSE_CATEGORY_SEED } from './expenses.mjs';
-import { migrateOrgStructure } from './structure.mjs';
+import { migrateOrgStructure, migratePositionRoles } from './structure.mjs';
+import { migrateCredentials } from './credentials.mjs';
 import { migrateGoals } from './goals.mjs';
 import { migrateAccess } from './access.mjs';
 import { migrateSignals } from './signals.mjs';
@@ -1442,6 +1443,8 @@ function migrateColumns(db) {
   migrateOrgStructure(db);
   migrateGoals(db);
   migrateAccess(db);
+  migratePositionRoles(db);
+  migrateCredentials(db);
   migrateSignals(db);
   migrateGate(db);
   migrateRelease(db);

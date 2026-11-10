@@ -94,7 +94,7 @@ function setupUser() {
   // Роль-набор (07.11) — подписью набора, а не перечнем кодов прав.
   const roleTitle = user.access?.setTitles?.length ? user.access.setTitles.join(' + ') : user.roleLabel;
   byId('profileRole').textContent = user.guest ? `${roleTitle} · 👁 гостевой режим` : roleTitle;
-  byId('profileRole').title = user.guest ? 'Только просмотр: права редактирования отключены администратором' : '';
+  byId('profileRole').title = user.guest ? `Только просмотр: права редактирования отключены${user.guestUntil ? ` · доступ до ${formatDate(user.guestUntil)}` : ''}` : '';
   byId('avatar').textContent = user.fullName.trim().charAt(0).toUpperCase();
   const dept = user.dept || (user.roles || [user.role]).map(role => ROLE_DEPT[role]).find(Boolean);
   if (dept) {
@@ -2979,6 +2979,30 @@ window.plRefresh = () => autoRefreshTick(true);
 window.plState = state;
 
 byId('logout').onclick = logout;
+// Названия экранов для выбора прав в наборе (Структура, 10.11).
+window.plViewTitles = Object.fromEntries(MAIN_VIEWS.map(view => [view.id, view.title]));
+// 🔑 Смена своего пароля (10.11): текущий + новый дважды; прочие сессии
+// закрываются, эта остаётся.
+byId('changePassword').onclick = () => {
+  showModal(`<form id="pwdForm"><h2>🔑 Сменить пароль</h2>
+    <label class="field">Текущий пароль <input name="current" type="password" autocomplete="current-password" required></label>
+    <label class="field">Новый пароль <small class="muted">не короче 10 символов, буквы и цифры</small>
+      <input name="next" type="password" autocomplete="new-password" minlength="10" required></label>
+    <label class="field">Новый пароль ещё раз <input name="repeat" type="password" autocomplete="new-password" required></label>
+    <div class="form-error" id="pwdError"></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button primary">Сменить</button></div></form>`);
+  byId('pwdForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    if (values.next !== values.repeat) { byId('pwdError').textContent = 'Новые пароли не совпадают'; return; }
+    try {
+      await api('/api/me/password', { method: 'POST', body: JSON.stringify({ current: values.current, next: values.next }) });
+      closeModal();
+      toast('Пароль изменён; другие открытые сессии закрыты');
+    } catch (error) { byId('pwdError').textContent = error.message; }
+  });
+};
 // Звонок водителя доступен любому сотруднику: вопрос может прилететь кому
 // угодно, а ответ должен быть под рукой без перехода по блокам.
 const callContext = () => ({ state, can, showModal, closeModal, onReload: reload });

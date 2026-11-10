@@ -39,6 +39,23 @@
       <div class="form-error" id="formError" role="alert"></div>
       <button class="button full" type="submit">Войти</button>
     </form>
+    <!-- Первый вход (10.11): временный пароль из справочника меняется на свой. -->
+    <form class="login-card hidden" id="changeForm">
+      <h2>Придумайте свой пароль</h2>
+      <p>Вы вошли по временному паролю. Задайте свой — дальше входите только с ним.</p>
+      <label class="field" id="changeCurrentField">Временный пароль
+        <input name="current" type="password" autocomplete="current-password">
+      </label>
+      <label class="field">Новый пароль
+        <input name="next" type="password" autocomplete="new-password" minlength="10" required>
+        <small class="muted">Не короче 10 символов, буквы и цифры, без логина внутри.</small>
+      </label>
+      <label class="field">Новый пароль ещё раз
+        <input name="repeat" type="password" autocomplete="new-password" required>
+      </label>
+      <div class="form-error" id="changeError" role="alert"></div>
+      <button class="button full" type="submit">Сохранить и войти</button>
+    </form>
   </main>
   <script type="module" src="/assets/login.js"></script>
 </body>

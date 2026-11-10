@@ -71,7 +71,8 @@ export function canLogin(user) {
 export function staffUserCard(db, id, month) {
   const user = db.prepare(`SELECT id, username, full_name, email, role, roles, active,
       guest, phone, work_phone, ext_phone, job_role, hired_at, fired_at,
-      telegram_chat_id, created_at, dispatch_exempt, esc_role, position_id, password_hash, role_sets
+      telegram_chat_id, created_at, dispatch_exempt, esc_role, position_id, password_hash, role_sets,
+      must_change_password, guest_until, guest_note, password_changed_at
     FROM users WHERE id=? AND deleted_at IS NULL`).get(id);
   if (!user) return null;
   const ack = db.prepare(`SELECT MAX(acked_at) at FROM guide_acks WHERE user_id=?`).get(id)?.at || null;
@@ -93,7 +94,11 @@ export function staffUserCard(db, id, month) {
       workPhone: user.work_phone || '', telegram: Boolean(user.telegram_chat_id),
       guest: Boolean(user.guest), active: Boolean(user.active),
       hiredAt: user.hired_at || user.created_at, firedAt: user.fired_at || null,
-      guideAckAt: ack, lastLoginAt: lastLogin
+      guideAckAt: ack, lastLoginAt: lastLogin,
+      mustChangePassword: Boolean(user.must_change_password),
+      passwordChangedAt: user.password_changed_at || null,
+      guestUntil: user.guest_until || null, guestNote: user.guest_note || '',
+      externalGuest: Boolean(user.guest) && !user.position_id
     },
     shifts: staffShifts(db, id, month),
     history

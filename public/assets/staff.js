@@ -61,6 +61,8 @@ export async function renderStaff(container, context) {
   // Справочник должностей структуры СТ (блок 1 «Слияния») — для формы.
   state.staffPositions = payload.positions || [];
   state.staffRoleSets = payload.roleSets || [];
+  state.staffAllViews = payload.allViews || [];
+  state.staffCanManageAccess = Boolean(payload.canManageAccess);
   const query = (state.staffQuery || '').toLowerCase();
   const matches = person => !query ||
     `${person.fullName} ${person.jobRole} ${person.phone} ${person.extPhone || ''} ${person.username || ''} ${person.vehiclePlate || ''}`
@@ -77,7 +79,9 @@ export async function renderStaff(container, context) {
 
   const userRow = person => `<tr class="${person.active ? '' : 'staff-fired'}">
     <td><span class="vlink" data-staff-card="${person.id}">${escapeHtml(person.fullName)}</span>
-      ${person.guest ? '<small class="muted" style="display:block">гость (только чтение)</small>' : ''}</td>
+      ${person.externalGuest ? `<small class="bi-tag" style="display:block" title="${escapeHtml(person.guestNote || '')}">гость до ${fmtDate(person.guestUntil)}</small>`
+    : person.guest ? '<small class="muted" style="display:block">только просмотр</small>' : ''}
+      ${accessTag(person)}</td>
     <td>${escapeHtml(person.jobRole || '—')}
       ${person.positionId ? '' : '<small class="bi-tag warn" title="Должность не из справочника структуры — выберите в «✎ Данные»">вне структуры</small>'}
       ${person.roleSetTitles?.length ? `<small class="muted" style="display:block" title="Роль-набор: область, экраны, права">роль: ${escapeHtml(person.roleSetTitles.join(' + '))}</small>`
@@ -99,6 +103,9 @@ export async function renderStaff(container, context) {
 
   // BI-вид (04.11): плитки состава → секции «Офис»/«Водители» с .bi-table.
   const activeUsers = payload.users.filter(person => person.active);
+  // С ролью, но без входа — кандидаты на массовую выдачу (админа не трогаем).
+  const noAccess = activeUsers.filter(person => person.roles?.length && !person.canLogin
+    && !person.roles.includes('admin'));
   const firedAll = payload.users.length - activeUsers.length;
   const withTg = activeUsers.filter(person => person.telegram).length;
   const driversNoCar = payload.drivers.filter(person => !person.vehiclePlate).length;
@@ -123,16 +130,22 @@ export async function renderStaff(container, context) {
         title="Общий план-график смен офиса на месяц: Д/Н/отпуск/болезнь, клик по клетке — цикл, печать">📅 Табель смен</button>
       <button class="button small ghost" id="staffAts"
         title="Абоненты АТС Билайн: кто из сотрудников на каком добавочном; несопоставленные номера — привязать или оставить незадействованными">☎ Сверка с АТС</button>
+      ${noAccess.length ? `<button class="button small ghost" id="staffIssueAll"
+        title="Логин и временный пароль всем с ролью, у кого ещё нет входа — листок для печати">🔐 Выдать доступ · ${noAccess.length}</button>` : ''}
+      ${state.staffCanManageAccess ? '<button class="button small ghost" id="staffAddGuest" title="Внешний человек: только просмотр по выбранному набору, со сроком доступа">＋ Гость</button>' : ''}
       <button class="button small" id="staffAddUser">+ Сотрудник</button>
       <button class="button small ghost" id="staffAddDriver" title="Водители заводятся в справочнике «Водители» — там же сцепка и вахта">+ Водитель</button>
       </div>
     </div>
     <div class="bi-kpis">
-      ${tile('Офис работает', activeUsers.length, 'чел', 'dept-staff', `гостей ${activeUsers.filter(person => person.guest).length}`)}
+      ${tile('Офис работает', activeUsers.filter(person => !person.externalGuest).length, 'чел', 'dept-staff',
+    `гостей ${activeUsers.filter(person => person.externalGuest).length}`)}
       ${tile('Водители', payload.drivers.length, 'чел', 'dept-drv', `без сцепки ${driversNoCar}`)}
       ${tile('Telegram привязан', withTg, `из ${activeUsers.length}`, 'dept-staff', 'офис, получают уведомления')}
       ${tile('Уволенные', firedAll, 'чел', firedAll ? 'warn' : 'dept-staff', 'серыми в списке офиса')}
       ${tile('Без роли', activeUsers.filter(person => !person.roles?.length).length, 'чел', 'dept-staff', 'в штате, но без входа в планер')}
+      ${tile('Вход', activeUsers.filter(person => person.canLogin && !person.mustChangePassword).length, `из ${activeUsers.filter(person => person.roles?.length).length}`,
+    noAccess.length ? 'warn' : 'dept-staff', `ждут выдачи ${noAccess.length} · не сменили временный ${activeUsers.filter(person => person.canLogin && person.mustChangePassword).length}`)}
     </div>
     ${query && !users.length && !drivers.length ? '<div class="bi-empty">Никого не найдено.</div>' : ''}
     ${showOffice ? tableSection(query ? `Офис · найдено ${users.length}` : 'Офис',
@@ -161,6 +174,16 @@ export async function renderStaff(container, context) {
   container.querySelector('#staffAts').onclick = () => staffAtsDialog(context,
     () => renderStaff(container, context));
   container.querySelector('#staffAddDriver').onclick = () => context.openDrivers?.();
+  const issueAll = container.querySelector('#staffIssueAll');
+  if (issueAll) issueAll.onclick = async () => {
+    if (!confirm(`Выдать логин и временный пароль ${noAccess.length} сотрудникам с ролью и без входа?\n\nПароли покажутся один раз — сразу распечатайте листок.`)) return;
+    try {
+      const result = await api('/api/staff/access/bulk', { method: 'POST', body: JSON.stringify({}) });
+      credentialsSheet(context, result.items, () => renderStaff(container, context));
+    } catch (error) { toast(error.message); }
+  };
+  const addGuest = container.querySelector('#staffAddGuest');
+  if (addGuest) addGuest.onclick = () => guestDialog(context, null, () => renderStaff(container, context));
   container.querySelectorAll('[data-staff-card]').forEach(element =>
     element.onclick = () => staffCardDialog(context, element.dataset.staffCard,
       () => renderStaff(container, context)));
@@ -268,15 +291,16 @@ export async function staffCardDialog(context, id, after) {
     </div>
     <p class="muted" style="margin:4px 0 12px;font-size:12.5px">
       в компании с ${fmtDate(person.hiredAt)} · ${person.canLogin
-    ? `учётка ${escapeHtml(person.username)} · последний вход ${fmtDateTime(person.lastLoginAt)}`
-    : 'без входа в планер — роль и пароль назначает администратор («⚙ Настройки» → Пользователи)'}</p>
+    ? `учётка ${escapeHtml(person.username)} · последний вход ${fmtDateTime(person.lastLoginAt)}${person.mustChangePassword ? ' · <b>временный пароль ещё не сменён</b>' : ''}`
+    : person.roles?.length ? 'роль есть, входа ещё нет — нажмите «🔐 Выдать доступ»'
+      : 'без входа в планер — сначала назначьте роль в «✎ Данные»'}</p>
     ${(() => {
     // Чек-лист приёма (этап 4, 09.10): виден первые 30 дней, пока не
     // закрыты все пункты — ничего не забыть при вводе человека в строй.
     const hiredMs = Date.parse(String(person.hiredAt || '').slice(0, 10));
     const fresh = Number.isFinite(hiredMs) && Date.now() - hiredMs < 30 * 86_400_000;
     const items = [
-      ['Учётка', Boolean(person.canLogin), 'роль и пароль — «⚙ Настройки» → Пользователи'],
+      ['Учётка', Boolean(person.canLogin), 'роль — «✎ Данные», логин и пароль — «🔐 Выдать доступ»'],
       ['Личный телефон', Boolean(person.phone), '«✎ Данные» → личный мобильный'],
       ['Добавочный АТС', Boolean(person.extPhone), '«☎ Сверка с АТС» или «✎ Данные» — без него карточка звонка не найдёт адресата'],
       ['Telegram', Boolean(person.telegram), 'сотрудник привязывает бота сам — инструкция в «?» раздел «Общее»'],
@@ -308,7 +332,10 @@ export async function staffCardDialog(context, id, after) {
     (context.state.staffRoleSets || []).find(set => set.id === id)?.title || id).join(' + ') || 'не назначена')}</b></div>
         <div class="dash-row"><span>Права (коды)</span><b>${escapeHtml(person.roleLabel)}</b></div>
         <div class="dash-row"><span>Инструкции</span><b>${person.guideAckAt ? `✍ ${fmtDate(person.guideAckAt)}` : '—'}</b></div>
-        <div class="dash-row"><span>Учётка</span><b>${person.active ? 'активна' : 'отключена'}${person.guest ? ' · гость' : ''}</b></div>
+        <div class="dash-row"><span>Учётка</span><b>${person.active ? 'активна' : 'отключена'}${person.externalGuest ? ` · гость до ${fmtDate(person.guestUntil)}` : person.guest ? ' · только просмотр' : ''}</b></div>
+        <div class="dash-row"><span>Пароль</span><b>${!person.canLogin ? 'не выдан'
+    : person.mustChangePassword ? 'временный — сменит при входе'
+      : `свой${person.passwordChangedAt ? ` с ${fmtDate(person.passwordChangedAt)}` : ''}`}</b></div>
       </div>
     </div>
     <div style="background:var(--panel2);border-radius:10px;padding:10px 12px;margin-top:10px">
@@ -337,7 +364,10 @@ export async function staffCardDialog(context, id, after) {
       <div style="font-size:12.5px;max-height:160px;overflow:auto">${card.history.map(histRow).join('') || '<span class="muted">пусто</span>'}</div>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
-      <button class="button" id="scEdit">✎ Данные</button>
+      ${person.externalGuest ? '<button class="button" id="scGuest">✎ Гостевой доступ</button>'
+    : '<button class="button" id="scEdit">✎ Данные</button>'}
+      ${person.active && person.roles?.length && (!person.roles.includes('admin') || isAdminUser(context))
+    ? `<button class="button ghost" id="scAccess" title="${person.canLogin ? 'Новый временный пароль; логин прежний; сотрудник сменит пароль при входе' : 'Логин и временный пароль — показываются один раз'}">${person.canLogin ? '↻ Сбросить пароль' : '🔐 Выдать доступ'}</button>` : ''}
       ${person.active
         ? '<button class="button ghost danger" id="scFire">✕ Уволить</button>'
         : '<button class="button ghost" id="scRestore">↩ Восстановить</button>'}
@@ -403,7 +433,18 @@ export async function staffCardDialog(context, id, after) {
   };
   document.querySelector('#scMPrev').onclick = () => shiftMonth(-1);
   document.querySelector('#scMNext').onclick = () => shiftMonth(1);
-  document.querySelector('#scEdit').onclick = () => staffEditDialog(context, person, reopen);
+  const editButton = document.querySelector('#scEdit');
+  if (editButton) editButton.onclick = () => staffEditDialog(context, person, reopen);
+  const guestButton = document.querySelector('#scGuest');
+  if (guestButton) guestButton.onclick = () => guestDialog(context, person, reopen);
+  const accessButton = document.querySelector('#scAccess');
+  if (accessButton) accessButton.onclick = async () => {
+    if (person.canLogin && !confirm(`Сбросить пароль «${person.fullName}»? Прежний перестанет работать, открытые сессии закроются.`)) return;
+    try {
+      const result = await api(`/api/staff/users/${id}/access`, { method: 'POST', body: JSON.stringify({}) });
+      credentialsSheet(context, result.items, reopen);
+    } catch (error) { toast(error.message); }
+  };
   document.querySelector('#scClose').onclick = () => { closeModal(); after?.(); };
   const fire = document.querySelector('#scFire');
   if (fire) fire.onclick = () => fireReasonDialog(context, person.fullName,
@@ -449,7 +490,7 @@ function positionSelect(positions, person) {
       ${groups.map(group => `<optgroup label="${escapeHtml(group.key)}">${group.items.map(item =>
     `<option value="${item.id}" ${person?.positionId === item.id ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</optgroup>`).join('')}
     </select>
-    <small class="muted">справочник — экран «Структура»; роль (права) назначается отдельно</small></label>`;
+    <small class="muted">справочник — экран «Структура»; у должности есть свой набор прав — он отмечается сам</small></label>`;
 }
 
 // Роль-набор (поле управления, 07.11): одна роль = область + экраны +
@@ -460,7 +501,7 @@ function roleSetPicker(sets, current, isAdmin) {
     <div class="st-roles">${sets.filter(set => isAdmin || set.id !== 'admin').map(set => `<label>
       <input type="checkbox" name="roleSets" value="${set.id}" ${current.includes(set.id) ? 'checked' : ''}>
       <span><b>${escapeHtml(set.title)}</b> <small class="muted">${set.views.length} экр. · ${MONEY_TITLE[set.money] || ''}</small></span></label>`).join('')}</div>
-    <small class="muted">без роли — сотрудник в штате, но в планер не входит; пароль задаёт администратор</small></div>`;
+    <small class="muted">без роли — сотрудник в штате, но в планер не входит; вход — «🔐 Выдать доступ» в карточке</small></div>`;
 }
 
 // Данные сотрудника: приём нового (с учёткой) и правка существующего.
@@ -482,10 +523,12 @@ function staffEditDialog(context, person, after) {
     </div>
     ${person ? '' : `
     <details class="st-pp"><summary>🔐 Доступ в планер <small class="muted">— не обязательно: без роли сотрудник в штате, но не входит</small></summary>
-    <label class="field">Логин в планер <input name="username" autocomplete="off"></label>
-    <label class="field">Пароль (мин. 10 символов) <input name="password" minlength="10" autocomplete="new-password"></label>
-    ${roleSetPicker(state.staffRoleSets || [], [], isAdmin)}</details>`}
+    ${roleSetPicker(state.staffRoleSets || [], [], isAdmin)}
+    <small class="muted">логин и временный пароль — кнопкой «🔐 Выдать доступ» в карточке после приёма</small></details>`}
     ${person ? roleSetPicker(state.staffRoleSets || [], person.roleSets || [], isAdmin) : ''}
+    ${person && !person.roles?.includes('admin') ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
+      <input type="checkbox" name="readOnly" ${person.guest ? 'checked' : ''}>
+      👁 только просмотр <small class="muted">(гостевой режим: видит экраны своей роли, ничего не меняет)</small></label><br>` : ''}
     ${person ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
       <input type="checkbox" name="dispatchExempt" ${person?.dispatchExempt ? 'checked' : ''}>
       не участвует в автораспределении диспетчерской
@@ -503,6 +546,19 @@ function staffEditDialog(context, person, after) {
       <button class="button ghost" type="button" id="staffFormCancel">Отмена</button>
     </div>
   </form>`);
+  // Права по должности (10.11): выбор должности отмечает её набор;
+  // руководитель может поправить галки вручную (совмещение).
+  const positionField = document.querySelector('#staffForm [name="positionId"]');
+  positionField?.addEventListener('change', () => {
+    const position = (state.staffPositions || []).find(item => item.id === positionField.value);
+    if (!position) return;
+    const set = position.roleSet || '';
+    document.querySelectorAll('#staffForm [name="roleSets"]').forEach(input => { input.checked = input.value === set; });
+    const details = document.querySelector('#staffForm details');
+    if (details) details.open = true;
+    toast(set ? 'Роль отмечена по должности — проверьте перед сохранением'
+      : 'У этой должности нет входа в планер — роль снята');
+  });
   document.querySelector('#staffFormCancel').onclick = () => { closeModal(); after?.(); };
   document.querySelector('#staffForm').addEventListener('submit', async event => {
     event.preventDefault();
@@ -516,12 +572,12 @@ function staffEditDialog(context, person, after) {
     if (person) body.dispatchExempt = form.querySelector('[name="dispatchExempt"]')?.checked || false;
     if (person) body.escRole = String(values.get('escRole') || '');
     if (person) body.roleSets = [...form.querySelectorAll('[name="roleSets"]:checked')].map(input => input.value);
+    const readOnly = form.querySelector('[name="readOnly"]');
+    if (person && readOnly && readOnly.checked !== Boolean(person.guest)) body.readOnly = readOnly.checked;
     try {
       if (person) {
         await api(`/api/staff/users/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       } else {
-        body.username = String(values.get('username') || '').trim();
-        body.password = String(values.get('password') || '');
         body.roleSets = [...form.querySelectorAll('[name="roleSets"]:checked')].map(input => input.value);
         await api('/api/staff/users', { method: 'POST', body: JSON.stringify(body) });
       }
@@ -649,4 +705,112 @@ export async function staffTimesheetDialog(context) {
     return d.toISOString().slice(0, 7);
   };
   await render();
+}
+
+const isAdminUser = context => (context.state.data?.user?.roles || []).includes('admin');
+
+// Статус доступа в строке списка.
+function accessTag(person) {
+  if (!person.active || !person.roles?.length) return '';
+  if (!person.canLogin) return '<small class="bi-tag warn" style="display:block" title="Роль есть, логина и пароля нет — «🔐 Выдать доступ»">входа нет</small>';
+  if (person.mustChangePassword) return '<small class="bi-tag" style="display:block" title="Выдан временный пароль — сотрудник ещё не входил и не сменил его">временный пароль</small>';
+  return '';
+}
+
+// ── 🔐 Листок доступа: логин и временный пароль — ОДИН раз ──
+// Пароли больше нигде не хранятся в открытом виде: закрыли окно —
+// остаётся только «↻ Сбросить пароль».
+export function credentialsSheet(context, items, after) {
+  const { showModal, closeModal } = context;
+  if (!items?.length) { toast('Выдавать некому — у всех с ролью вход уже есть'); after?.(); return; }
+  const origin = location.origin;
+  const rows = items.map(item => `<tr><td>${escapeHtml(item.fullName)}<small class="muted" style="display:block">${escapeHtml(item.position || '')}</small></td>
+    <td class="mono"><b>${escapeHtml(item.username)}</b></td><td class="mono"><b>${escapeHtml(item.password)}</b></td></tr>`).join('');
+  showModal(`<div>
+    <h2>🔐 Доступ выдан · ${items.length}</h2>
+    <p class="muted" style="font-size:12.5px">Пароли показаны <b>один раз</b> — распечатайте или перепишите сейчас.
+      При первом входе сотрудник придумает свой пароль; временный после этого не работает.
+      Адрес входа: <b>${escapeHtml(origin)}</b></p>
+    <div style="overflow:auto;max-height:52vh"><table class="bi-table"><thead><tr><th>Сотрудник</th><th>Логин</th><th>Временный пароль</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="modal-actions">
+      <button type="button" class="button primary" id="credPrint">🖨 Печать листков</button>
+      <button type="button" class="button ghost" id="credClose">Готово</button></div>
+  </div>`);
+  document.querySelector('#credPrint').onclick = () => printCredentials(items, origin);
+  document.querySelector('#credClose').onclick = () => {
+    if (!confirm('Закрыть? Пароли больше не будут показаны.')) return;
+    closeModal(); after?.();
+  };
+}
+
+// Печать: по листку-отрывному на человека (ФИО, адрес, логин, пароль,
+// что делать при первом входе).
+function printCredentials(items, origin) {
+  const win = window.open('', '_blank', 'width=800,height=900');
+  if (!win) { toast('Браузер заблокировал окно печати — разрешите всплывающие окна'); return; }
+  const card = item => `<div class="c"><h3>Вход в планер «Пегас-Авто»</h3>
+    <p class="n">${escapeHtml(item.fullName)}${item.position ? ` · ${escapeHtml(item.position)}` : ''}</p>
+    <table><tr><td>Адрес</td><td><b>${escapeHtml(origin)}</b></td></tr>
+      <tr><td>Логин</td><td><b>${escapeHtml(item.username)}</b></td></tr>
+      <tr><td>Временный пароль</td><td><b>${escapeHtml(item.password)}</b></td></tr></table>
+    <p class="h">При первом входе система попросит придумать свой пароль: не короче 10 символов,
+      буквы и цифры. Никому не сообщайте пароль; забыли — руководитель сбросит.
+      ${item.guestUntil ? `Гостевой доступ (только просмотр) действует до ${new Date(item.guestUntil).toLocaleDateString('ru-RU')}.` : ''}</p></div>`;
+  win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Доступ в планер</title>
+    <style>body{font:13px/1.4 system-ui,sans-serif;margin:16px;color:#111}
+    .c{border:1px dashed #888;border-radius:8px;padding:10px 14px;margin:0 0 12px;break-inside:avoid}
+    h3{margin:0 0 4px;font-size:14px}.n{margin:0 0 6px;font-weight:600}
+    table{border-collapse:collapse}td{padding:2px 12px 2px 0}td b{font-family:ui-monospace,Menlo,monospace;font-size:15px}
+    .h{margin:6px 0 0;color:#444;font-size:11.5px}</style></head>
+    <body>${items.map(card).join('')}<script>window.onload=()=>window.print()<\/script></body></html>`);
+  win.document.close();
+}
+
+// ── Гость: внешний человек, только просмотр по набору, со сроком ──
+export function guestDialog(context, guest, after) {
+  const { showModal, closeModal, state } = context;
+  const sets = (state.staffRoleSets || []).filter(set => !set.codes?.includes('admin'));
+  const inMonth = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+  showModal(`<form id="guestForm">
+    <h2>${guest ? `Гостевой доступ · ${escapeHtml(guest.fullName)}` : '＋ Гость'}</h2>
+    <p class="muted" style="font-size:12.5px">Гость видит экраны выбранного набора и <b>ничего не может менять</b>.
+      В штат и структуру не входит. По окончании срока вход закрывается сам.</p>
+    ${guest ? '' : `<label class="field">ФИО <input name="fullName" required></label>
+    <label class="field">E-mail <small class="muted">(не обязательно)</small><input name="email" type="email"></label>`}
+    <label class="field">Кто и зачем <input name="note" value="${escapeHtml(guest?.guestNote || '')}" placeholder="например: аудитор, собственник, проверка за ноябрь"></label>
+    <label class="field">Что видит (набор) <select name="roleSet">${sets.map(set =>
+    `<option value="${set.id}" ${guest?.roleSets?.includes(set.id) ? 'selected' : ''}>${escapeHtml(set.title)} · ${MONEY_TITLE[set.money] || ''}</option>`).join('')}</select></label>
+    <label class="field">Доступ до (включительно) <input name="until" type="date" required value="${(guest?.guestUntil || inMonth).slice(0, 10)}"></label>
+    <div class="form-error" id="guestError"></div>
+    <div class="modal-actions">
+      ${guest ? '<button type="button" class="button ghost danger" id="guestClose">⏹ Закрыть доступ сейчас</button>' : ''}
+      <button type="button" class="button ghost" data-close>Отмена</button>
+      <button class="button primary">${guest ? 'Сохранить' : 'Создать и выдать доступ'}</button></div>
+  </form>`);
+  const form = document.querySelector('#guestForm');
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(form));
+    try {
+      if (guest) {
+        await api(`/api/staff/guests/${guest.id}`, { method: 'PATCH', body: JSON.stringify(values) });
+        toast('Гостевой доступ сохранён');
+        closeModal(); after?.();
+      } else {
+        const result = await api('/api/staff/guests', { method: 'POST', body: JSON.stringify(values) });
+        credentialsSheet(context, result.items, after);
+      }
+    } catch (error) { document.querySelector('#guestError').textContent = error.message; }
+  });
+  const stop = document.querySelector('#guestClose');
+  if (stop) stop.onclick = async () => {
+    if (!confirm(`Закрыть доступ «${guest.fullName}» сейчас?`)) return;
+    const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+    try {
+      await api(`/api/staff/guests/${guest.id}`, { method: 'PATCH', body: JSON.stringify({ until: yesterday }) });
+      toast('Доступ гостя закрыт');
+      closeModal(); after?.();
+    } catch (error) { document.querySelector('#guestError').textContent = error.message; }
+  };
 }

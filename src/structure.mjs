@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { rolesOf, ROLE_LABELS } from './permissions.mjs';
+import { assignRoleSets, roleSets } from './access.mjs';
 
 const SEED_URL = new URL('./data/st-structure.json', import.meta.url);
 
@@ -111,12 +112,12 @@ function unmarkColumnHead(db) {
 
 // Справочник для выбора в карточке сотрудника: компактно, без паспортов.
 export function positionOptions(db) {
-  return db.prepare(`SELECT p.id, p.title, p.dept_key dept, g.name group_name, p.driver_pool
+  return db.prepare(`SELECT p.id, p.title, p.dept_key dept, g.name group_name, p.driver_pool, p.role_set
     FROM org_positions p LEFT JOIN org_groups g ON g.id=p.group_id
     LEFT JOIN org_depts d ON d.key=p.dept_key
     WHERE p.archived_at IS NULL ORDER BY d.sort, g.sort, p.n`).all()
     .map(row => ({ id: row.id, title: row.title, dept: row.dept,
-      group: row.group_name || '', driverPool: Boolean(row.driver_pool) }));
+      group: row.group_name || '', driverPool: Boolean(row.driver_pool), roleSet: row.role_set || '' }));
 }
 
 export function positionById(db, id) {
@@ -138,8 +139,10 @@ export function structureData(db, park = null) {
   const groups = db.prepare(`SELECT * FROM org_groups ORDER BY sort`).all();
   const positions = db.prepare(`SELECT * FROM org_positions WHERE archived_at IS NULL
     ORDER BY n`).all();
+  // Внешние гости (без должности) — не штат: в структуру не входят.
   const users = db.prepare(`SELECT id, full_name, role, roles, active, position_id, job_role
-    FROM users WHERE deleted_at IS NULL AND active=1`).all();
+    FROM users WHERE deleted_at IS NULL AND active=1
+      AND NOT (COALESCE(guest,0)=1 AND position_id IS NULL)`).all();
   const drivers = db.prepare(`SELECT COUNT(*) c FROM drivers WHERE status<>'fired'`).get().c;
   const byPosition = new Map();
   for (const user of users) {
@@ -158,7 +161,7 @@ export function structureData(db, park = null) {
     try { passport = JSON.parse(p.passport_json || '{}'); } catch { passport = {}; }
     return { id: p.id, n: p.n, dept: p.dept_key, group: p.group_id, title: p.title,
       headcount: p.headcount, status: p.status, driverPool: Boolean(p.driver_pool),
-      cfoView: p.cfo_view || '',
+      cfoView: p.cfo_view || '', roleSet: p.role_set || '',
       fact, vacancies: Math.max(0, p.headcount - fact), over: Math.max(0, fact - p.headcount),
       people, passport };
   });
@@ -241,15 +244,25 @@ export function updatePosition(db, id, body = {}) {
     passport = JSON.stringify(clean);
   }
   const cfoView = ['', 'dept', 'all'].includes(body.cfoView) ? body.cfoView : current.cfo_view;
+  const roleSet = body.roleSet !== undefined ? String(body.roleSet || '') : (current.role_set || '');
+  const setProblem = roleSetProblem(db, roleSet, current.dept_key);
+  if (setProblem) return { ok: false, status: 422, error: setProblem };
   db.prepare(`UPDATE org_positions SET title=?, headcount=?, group_id=?, status=?,
-      passport_json=?, cfo_view=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      passport_json=?, cfo_view=?, role_set=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
     .run(title, headcount, groupId, body.status != null ? String(body.status) : current.status,
-      passport, cfoView, id);
+      passport, cfoView, roleSet, id);
+  // Права должности сменились — по галке «применить к людям» набор
+  // переназначается всем на должности (администраторов не трогает).
+  let applied = 0;
+  if (roleSet && roleSet !== (current.role_set || '') && body.applyToPeople) {
+    applied = applyPositionSet(db, id, roleSet);
+  }
   if (title !== current.title) {
     db.prepare(`UPDATE users SET job_role=?, updated_at=CURRENT_TIMESTAMP WHERE position_id=?`)
       .run(title, id);
   }
-  return { ok: true, before: { title: current.title, headcount: current.headcount }, after: { title, headcount } };
+  return { ok: true, applied, before: { title: current.title, headcount: current.headcount, roleSet: current.role_set || '' },
+    after: { title, headcount, roleSet } };
 }
 
 export function createPosition(db, body = {}) {
@@ -261,11 +274,57 @@ export function createPosition(db, body = {}) {
   if (!Number.isInteger(headcount) || headcount < 0) {
     return { ok: false, status: 422, error: 'Штат — целое число от 0' };
   }
+  const roleSet = String(body.roleSet || '');
+  const setProblem = roleSetProblem(db, roleSet, group.dept_key);
+  if (setProblem) return { ok: false, status: 422, error: setProblem };
   const n = db.prepare(`SELECT COALESCE(MAX(n),0)+1 n FROM org_positions`).get().n;
   const id = `pos-${randomUUID().slice(0, 8)}`;
-  db.prepare(`INSERT INTO org_positions(id,dept_key,group_id,n,title,headcount,status)
-    VALUES(?,?,?,?,?,?,?)`).run(id, group.dept_key, group.id, n, title, headcount, 'Новая должность');
+  db.prepare(`INSERT INTO org_positions(id,dept_key,group_id,n,title,headcount,status,role_set)
+    VALUES(?,?,?,?,?,?,?,?)`).run(id, group.dept_key, group.id, n, title, headcount, 'Новая должность', roleSet);
   return { ok: true, id };
+}
+
+// Набор должности: пусто — без входа (слесарь, электрик); иначе набор
+// существует и не администраторский; отдел набора — отдел должности
+// (набор «всё направление» — только у должностей Штаба).
+function roleSetProblem(db, roleSet, dept) {
+  if (!roleSet) return '';
+  const set = roleSets(db).find(item => item.id === roleSet);
+  if (!set) return 'Набор прав не найден';
+  if (set.codes.includes('admin')) return 'Набор администратора к должности не привязывается';
+  if (set.scope && set.scope !== 'all' && set.scope !== dept) return 'Набор другого отдела — выберите набор своего отдела';
+  if (set.scope === 'all' && dept !== 'staff') return 'Набор «всё направление» — только для должностей Штаба';
+  return '';
+}
+
+export function applyPositionSet(db, positionId, roleSet) {
+  let count = 0;
+  for (const user of db.prepare(`SELECT id, roles FROM users WHERE position_id=? AND deleted_at IS NULL
+      AND active=1`).all(positionId)) {
+    if (rolesOf(user).includes('admin')) continue;
+    if (assignRoleSets(db, user.id, [roleSet]).ok) count += 1;
+  }
+  return count;
+}
+
+// Посев «должность → набор» по утверждённой таблице 9.1 и распределению
+// 09.11 (10-roli-shtat.md); дальше набор должности меняет руководитель
+// в «Структуре». Разово, меткой; несуществующие должности пропускаются.
+const POSITION_SET_SEED = {
+  'st-p1': 'dir_head', 'st-p3': 'staff_bdd', 'st-p4': 'staff_aho', 'st-p5': 'guard',
+  'st-p6': 'log_head', 'st-p7': 'log_plan', 'st-p8': 'log_assign', 'st-p9': 'log_ctrl',
+  'st-p10': 'drv_head', 'st-p11': 'drv_column', 'st-p25': 'drv_acc', 'st-p26': 'drv_tech',
+  'st-p16': 'toir_head', 'st-p17': 'toir_mech', 'st-p18': 'toir_mech', 'st-p19': 'toir_mech',
+  'st-p20': 'toir_mech', 'st-p23': 'toir_supply', 'st-p24': 'toir_supply', 'st-p30': 'toir_supply'
+};
+export function migratePositionRoles(db) {
+  const cols = db.prepare(`PRAGMA table_info(org_positions)`).all().map(col => col.name);
+  if (!cols.includes('role_set')) db.exec(`ALTER TABLE org_positions ADD COLUMN role_set TEXT NOT NULL DEFAULT ''`);
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='position_role_sets_v1'`).get()) return;
+  const known = new Set(roleSets(db).map(set => set.id));
+  const update = db.prepare(`UPDATE org_positions SET role_set=? WHERE id=? AND role_set=''`);
+  for (const [id, set] of Object.entries(POSITION_SET_SEED)) if (known.has(set)) update.run(set, id);
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('position_role_sets_v1','1')`).run();
 }
 
 // Упразднение — только пустой должности: людей сначала переводят.

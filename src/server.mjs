@@ -53,7 +53,9 @@ import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShi
 import { directionGoals } from '../public/assets/goals-core.js';
 import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
-import { accessOf, assignRoleSets, broadcastTextFor, roleSets, stripOrders, stripSmall, stripTrips } from './access.mjs';
+import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, roleSets, stripOrders, stripSmall, stripTrips,
+  updateRoleSet } from './access.mjs';
+import { changeOwnPassword, createGuest, guestExpired, issueAccess, issueAccessBulk, updateGuest } from './credentials.mjs';
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
@@ -67,7 +69,7 @@ import { turnoverApi } from './turnover.mjs';
 import { partsApi } from './parts.mjs';
 import { armApi, driverArmData, driverTaskAction } from './arm.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
-import { archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
+import { applyPositionSet, archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
 import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeelineSubscriptions, externalPartyDigits, findUserByPhone,
   matchAtsAbonents, parseXsiEvent, resolveSubscriptionTarget, setAtsTracked, syncBeelineJournal } from './beeline-telephony.mjs';
@@ -228,6 +230,10 @@ function publicUser(user) {
     access: accessOf(db, user),
     labMode: Boolean(process.env.LAB_AUTOLOGIN && !config.isProduction),
     guest: Boolean(Number(user.guest)),
+    guestUntil: user.guest_until || null,
+    // Временный пароль (выдан из справочника): фронт сразу ведёт на
+    // экран «придумайте свой пароль», сервер остальное не отдаёт.
+    mustChangePassword: Boolean(Number(user.must_change_password)),
     permissions: effectivePermissions(user),
     // Вкладка «Сотрудники»: право staff:write или логин из настройки
     // «полный доступ» (решение руководителя 07.10).
@@ -258,7 +264,8 @@ function currentUser(request) {
   if (!token) return null;
   return db.prepare(`
     SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
-    WHERE s.token_hash=? AND datetime(s.expires_at)>CURRENT_TIMESTAMP AND u.active=1`
+    WHERE s.token_hash=? AND datetime(s.expires_at)>CURRENT_TIMESTAMP AND u.active=1
+      AND NOT (COALESCE(u.guest,0)=1 AND u.guest_until IS NOT NULL AND u.guest_until < date('now'))`
   ).get(tokenHash(token)) || null;
 }
 
@@ -8127,6 +8134,22 @@ async function api(request, response, url) {
   if (!mutationOriginAllowed(request)) return errorJson(response, 403, 'Недопустимый Origin');
   const pathname = url.pathname;
 
+  // Рубежи учётки (10.11), до любых маршрутов: (1) с временным паролем
+  // доступны только «кто я», выход и смена пароля; (2) гость — только
+  // чтение: любая запись отсекается здесь, а не точечно по экранам.
+  if (pathname !== '/api/auth/login' && !pathname.startsWith('/api/driver-app/')) {
+    const sessionUser = currentUser(request);
+    if (sessionUser) {
+      const own = ['/api/auth/me', '/api/auth/logout', '/api/me/password'].includes(pathname);
+      if (Number(sessionUser.must_change_password) && !own) {
+        return json(response, 403, { error: 'Смените временный пароль', code: 'password_change' });
+      }
+      if (Number(sessionUser.guest) && request.method !== 'GET' && !own) {
+        return errorJson(response, 403, 'Гостевой режим — только просмотр');
+      }
+    }
+  }
+
   if (request.method === 'POST' && pathname === '/api/auth/login') {
     const body = await readJson(request);
     const clientIp = requestIp(request);
@@ -8157,12 +8180,15 @@ async function api(request, response, url) {
     }
     loginAttempts.delete(attemptKey);
     loginAttempts.delete(ipKey);
+    if (guestExpired(user)) return errorJson(response, 403, 'Срок гостевого доступа истёк — обратитесь к руководителю');
     // Рабочий телефон смены: роли, отвечающие на звонки, обязаны указать,
     // по какому номеру они сейчас на связи (добавочный/мобильный/дежурная
     // трубка) — по нему всплывает карточка входящего. Дежурный номер при
     // этом переезжает от прежнего владельца (решение руководителя 07.10).
     const workPhoneRaw = String(body.workPhone || '').trim();
-    const phoneMandatory = workPhoneRequired(rolesOf(user));
+    // Гостю и при первом входе (временный пароль) телефон не спрашиваем.
+    const phoneMandatory = workPhoneRequired(rolesOf(user)) && !Number(user.guest)
+      && !Number(user.must_change_password);
     if (phoneMandatory && !workPhoneRaw) {
       return errorJson(response, 422,
         'Укажите рабочий телефон: добавочный, мобильный или номер дежурной трубки');
@@ -8185,6 +8211,18 @@ async function api(request, response, url) {
     return json(response, 200, { user: publicUser(user) }, {
       'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}${config.secureCookies ? '; Secure' : ''}`
     });
+  }
+
+  if (request.method === 'POST' && pathname === '/api/me/password') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const result = changeOwnPassword(db, user, await readJson(request), { hashPassword, verifyPassword });
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    // Прочие сессии гаснут, текущая остаётся.
+    const token = parseCookies(request.headers.cookie).planner_session;
+    db.prepare(`DELETE FROM sessions WHERE user_id=? AND token_hash<>?`).run(user.id, tokenHash(token || ''));
+    audit(db, user, 'password-change', 'user', user.id, {}, requestIp(request));
+    return json(response, 200, { ok: true });
   }
 
   if (request.method === 'POST' && pathname === '/api/auth/logout') {
@@ -15425,6 +15463,8 @@ async function api(request, response, url) {
     }
     return user;
   };
+  // Гости и свои наборы прав — только у руководителя направления (10.11).
+  const canManageAccess = user => staffAccess(user, settingsObject(db)) && accessOf(db, user).scope.all;
   // ── Структура направления СТ (проект «Слияние», блок 1, 05.11) ──
   // Читают все (обзор структуры — первый экран Штаба); правят штат,
   // группы и паспорта — те, у кого полный доступ к кадрам.
@@ -15874,6 +15914,12 @@ async function api(request, response, url) {
     if (!access.legacy && !access.views.includes('structure')) return errorJson(response, 403, 'Панель вне вашей роли');
     const data = scopeStructure(structureData(db, park), access.scope);
     data.canEdit = staffAccess(user, settingsObject(db)) && access.scope.all;
+    // Права должности (10.11): справочник наборов и экранов для выбора.
+    if (data.canEdit) {
+      data.roleSets = roleSets(db).filter(set => !set.codes.includes('admin'));
+      data.allViews = ALL_VIEWS;
+      data.myMoney = access.money;
+    }
     // Цели каскада — из Настроек (ноль — осознанное значение, пустота → канон среды СТ).
     const goals = directionGoals(settingsObject(db).calculation);
     data.targets = { КТГ: goals.ktg, КВЛ: goals.kvl, КИП: goals.kip, КЭИП: goals.use };
@@ -15918,11 +15964,20 @@ async function api(request, response, url) {
     const titleOf = new Map(sets.map(set => [set.id, set.title]));
     const setsOf = new Map(db.prepare(`SELECT id, role_sets FROM users WHERE deleted_at IS NULL`).all()
       .map(row => [row.id, (() => { try { return JSON.parse(row.role_sets || '[]'); } catch { return []; } })()]));
+    const extra = new Map(db.prepare(`SELECT id, must_change_password, guest_until, guest_note,
+        password_changed_at FROM users WHERE deleted_at IS NULL`).all().map(row => [row.id, row]));
     for (const item of list.users) {
       item.roleSets = setsOf.get(item.id) || [];
       item.roleSetTitles = item.roleSets.map(id => titleOf.get(id) || id);
+      const row = extra.get(item.id) || {};
+      // Статус доступа: нет входа / выдан временный / сотрудник сменил пароль.
+      item.mustChangePassword = Boolean(row.must_change_password);
+      item.guestUntil = row.guest_until || null;
+      item.guestNote = row.guest_note || '';
+      item.externalGuest = item.guest && !item.positionId;
     }
-    return json(response, 200, { ...list, roleSets: sets });
+    return json(response, 200, { ...list, roleSets: sets, allViews: ALL_VIEWS,
+      canManageAccess: canManageAccess(user), myMoney: accessOf(db, user).money });
   }
   if (request.method === 'POST' && pathname === '/api/staff/users') {
     const user = requireStaffAccess(request, response);
@@ -15931,6 +15986,11 @@ async function api(request, response, url) {
     const result = createStaffUser(db, { ...body, roles: [] },
       { allowAdmin: hasPermission(user, 'users:write'), hashPassword });
     if (!result.ok) return errorJson(response, 422, result.error);
+    // Права по должности (10.11): набор не указан — берётся набор должности.
+    if (!Array.isArray(body.roleSets)) {
+      const positionSet = positionById(db, body.positionId)?.role_set;
+      if (positionSet) body.roleSets = [positionSet];
+    }
     // Роль = набор под должность (07.11): коды прав пишет assignRoleSets.
     if (Array.isArray(body.roleSets) && body.roleSets.length) {
       const assigned = assignRoleSets(db, result.id, body.roleSets, { allowAdmin: hasPermission(user, 'users:write') });
@@ -15938,6 +15998,74 @@ async function api(request, response, url) {
     }
     audit(db, user, 'create', 'staff', result.id, { ...body, password: undefined }, requestIp(request));
     return json(response, 201, { id: result.id });
+  }
+  // ── 🔐 Доступ в планер (10.11): логин и временный пароль генерируются,
+  // показываются ОДИН раз; при входе сотрудник придумывает свой. ──
+  match = route(/^\/api\/staff\/users\/([^/]+)\/access$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    if (match[0] === user.id) return errorJson(response, 422, 'Свой пароль меняйте в меню «Сменить пароль»');
+    const result = issueAccess(db, match[0], { hashPassword, allowAdmin: hasPermission(user, 'users:write') });
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, result.reissue ? 'password-reset' : 'issue-access', 'staff', match[0],
+      { username: result.username }, requestIp(request));
+    return json(response, 200, { items: [result] });
+  }
+  if (request.method === 'POST' && pathname === '/api/staff/access/bulk') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const items = issueAccessBulk(db, { hashPassword, ids: Array.isArray(body.ids) ? body.ids : null });
+    for (const item of items) {
+      audit(db, user, 'issue-access', 'staff', item.id, { username: item.username, bulk: true }, requestIp(request));
+    }
+    return json(response, 200, { items });
+  }
+  // Гости: внешние люди, только просмотр по набору, со сроком доступа.
+  if (request.method === 'POST' && pathname === '/api/staff/guests') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    if (!canManageAccess(user)) return errorJson(response, 403, 'Гостей заводит руководитель направления');
+    const body = await readJson(request);
+    const result = createGuest(db, body, { hashPassword, allowAdmin: false, createdBy: user.full_name });
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, 'create-guest', 'staff', result.id,
+      { fullName: result.fullName, until: result.guestUntil, roleSet: body.roleSet, note: body.note }, requestIp(request));
+    return json(response, 201, { items: [result] });
+  }
+  match = route(/^\/api\/staff\/guests\/([^/]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    if (!canManageAccess(user)) return errorJson(response, 403, 'Гостей ведёт руководитель направления');
+    const body = await readJson(request);
+    const result = updateGuest(db, match[0], body);
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, 'update-guest', 'staff', match[0], body, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
+  // Свои наборы прав (новая должность с назначением прав, 10.11).
+  if (request.method === 'POST' && pathname === '/api/role-sets') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    if (!canManageAccess(user)) return errorJson(response, 403, 'Наборы прав создаёт руководитель направления');
+    const body = await readJson(request);
+    const result = createRoleSet(db, body, { creatorMoney: accessOf(db, user).money });
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, 'create', 'role_set', result.id, body, requestIp(request));
+    return json(response, 201, { id: result.id, roleSets: roleSets(db) });
+  }
+  match = route(/^\/api\/role-sets\/([\w-]+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requireStaffAccess(request, response);
+    if (!user) return;
+    if (!canManageAccess(user)) return errorJson(response, 403, 'Наборы прав правит руководитель направления');
+    const body = await readJson(request);
+    const result = updateRoleSet(db, match[0], body, { creatorMoney: accessOf(db, user).money });
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, 'update', 'role_set', match[0], body, requestIp(request));
+    return json(response, 200, { ok: true, roleSets: roleSets(db) });
   }
   if (request.method === 'GET' && pathname === '/api/staff/ats') {
     const user = requireStaffAccess(request, response);
@@ -16031,6 +16159,14 @@ async function api(request, response, url) {
     const result = updateStaffUser(db, match[0], body,
       { allowAdmin: hasPermission(user, 'users:write') });
     if (!result.ok) return errorJson(response, 422, result.error);
+    // «Только просмотр» сотруднику (гостевой режим): не себе и не админу.
+    if (body.readOnly !== undefined) {
+      const target = db.prepare(`SELECT id, roles FROM users WHERE id=?`).get(match[0]);
+      if (match[0] === user.id) return errorJson(response, 422, 'Себе режим «только просмотр» не включается');
+      if (rolesOf(target).includes('admin')) return errorJson(response, 422, 'Администратору режим не меняется здесь');
+      db.prepare(`UPDATE users SET guest=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(body.readOnly ? 1 : 0, match[0]);
+    }
     if (Array.isArray(body.roleSets)) {
       const assigned = assignRoleSets(db, match[0], body.roleSets, { allowAdmin: hasPermission(user, 'users:write') });
       if (!assigned.ok) return errorJson(response, 422, assigned.error);
