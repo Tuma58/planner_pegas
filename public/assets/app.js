@@ -958,9 +958,17 @@ function renderCascade() {
 
 // Роль-набор (поле управления, 07.11): экраны — только из набора; без
 // наборов (переходный период) — прежняя видимость по правам.
+// Перенос по отделам (10.11): учётка без набора ролей (её отдел ещё не
+// включён) видит только экраны прежнего планера — новые экраны Слияния
+// приходят вместе с набором. Администратор видит всё.
+const LEGACY_VIEWS = ['gantt', 'sales', 'logist', 'routes', 'dispatcher', 'monitoring', 'resource', 'remzona',
+  'incidents', 'flows', 'delivery', 'fleetplan', 'boss', 'expenses', 'staff', 'dashboard'];
 function viewAllowed(id) {
   const access = state.data?.user?.access;
-  return !access || access.legacy || access.views.includes(id);
+  if (!access || access.legacy) {
+    return (state.data?.user?.roles || []).includes('admin') || LEGACY_VIEWS.includes(id);
+  }
+  return access.views.includes(id);
 }
 const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];
 const viewInSet = id => state.data?.user?.access?.views?.includes(id);
