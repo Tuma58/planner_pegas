@@ -7,6 +7,7 @@
 // работают, даже когда планер в фоновой вкладке. Поллинг raw JSON раз в 20 с.
 import { api, escapeHtml, formatDateTime, toast } from './api.js';
 import { kbSearch, kbSearchGuides } from './kb.js';
+import { mountTickets, ticketForm } from './tickets.js';
 import { GUIDES } from './guide.js';
 
 const POLL_MS = 20_000;
@@ -77,6 +78,12 @@ export function setupChat(state) {
   toolbarEnd.prepend(toggle);
 
   const myRoles = state.data.user.roles || [state.data.user.role];
+  // 📐 Тех. задание (10.11) — комната руководителей: с «Полем» в наборе
+  // или (без наборов) manager/admin. Сервер проверяет то же самое.
+  const myAccess = state.data.user.access;
+  const canTz = !myAccess || myAccess.legacy
+    ? myRoles.some(role => ['manager', 'admin'].includes(role))
+    : (myAccess.views || []).includes('field');
   const myId = state.data.user.id;
 
   const panel = document.createElement('aside');
@@ -162,6 +169,7 @@ export function setupChat(state) {
     if (key === 'auto') return '⚙ Конвейер';
     if (key === 'personal') return '📬 Планер — лично';
     if (key === 'helpdesk') return '🛟 HELP DESK';
+    if (key === 'tz') return '📐 Тех. задание';
     if (key === 'kb') return '❓ Справка';
     if (key.startsWith('dm:')) return peerName(key.slice(3));
     const group = groups.find(item => item.id === key.slice(6));
@@ -173,7 +181,7 @@ export function setupChat(state) {
   // Список переписок: закреплённые «Общий» и «Конвейер», затем диалоги и
   // группы по времени последнего сообщения (как в Telegram).
   const roomList = () => {
-    const keys = new Set(['all', 'auto', 'personal', 'helpdesk', 'kb']);
+    const keys = new Set(['all', 'auto', 'personal', 'helpdesk', 'kb', ...(canTz ? ['tz'] : [])]);
     for (const message of allMessages) keys.add(roomKeyOf(message));
     for (const group of groups) keys.add(`group:${group.id}`);
     const lastMsg = {};
@@ -181,7 +189,7 @@ export function setupChat(state) {
       const key = roomKeyOf(message);
       if (!lastMsg[key] || message.id > lastMsg[key].id) lastMsg[key] = message;
     }
-    const pinned = ['all', 'personal', 'auto', 'helpdesk', 'kb'];
+    const pinned = ['all', 'personal', 'auto', 'helpdesk', ...(canTz ? ['tz'] : []), 'kb'];
     const rest = [...keys].filter(key => !pinned.includes(key))
       .filter(key => {
         // Удалённая группа пропадает из списка сразу (сообщения в памяти не в счёт).
@@ -198,7 +206,7 @@ export function setupChat(state) {
       const count = unreadOf(key);
       const title = roomTitle(key);
       const avatar = key === 'all' ? '📢' : key === 'auto' ? '⚙' : key === 'personal' ? '📬'
-        : key === 'helpdesk' ? '🛟' : key === 'kb' ? '❓'
+        : key === 'helpdesk' ? '🛟' : key === 'tz' ? '📐' : key === 'kb' ? '❓'
         : key.startsWith('group:') ? '👥' : initials(title);
       const time = last ? formatDateTime(last.created_at.includes('Z')
         ? last.created_at : last.created_at.replace(' ', 'T') + 'Z') : '';
@@ -208,6 +216,7 @@ export function setupChat(state) {
         : (key === 'auto' ? 'Уведомления процесса — по вашим ролям'
           : key === 'personal' ? 'Личные отчёты планера: отчёт дня, ревизия зазоров'
           : key === 'helpdesk' ? 'Заявки на доработку планера — что мешает в работе'
+          : key === 'tz' ? 'Доработка нового продукта с руководителями'
           : key === 'kb' ? 'База знаний: поиск по статьям и инструкциям'
           : 'Сообщений пока нет');
       return `<div class="chat-room ${count ? 'has-unread' : ''}" data-room="${key}">
@@ -352,146 +361,20 @@ export function setupChat(state) {
   // Комната без переписки: лента карточек-заявок + форма «Новая заявка».
   // Заявки видят все (видно, что уже заявлено коллегами), решение о
   // выполнении — статусами на карточке — принимает только руководитель.
-  const HD_STATUS = {
-    new: ['🆕 новая', 'hd-new'], review: ['👀 на рассмотрении', 'hd-review'],
-    work: ['🔧 в работе', 'hd-work'], done: ['✅ готово', 'hd-done'],
-    rejected: ['✖ отклонена', 'hd-rejected']
-  };
   const canDecide = myRoles.some(role => ['manager', 'admin'].includes(role));
-  const hdTime = value => formatDateTime(String(value).includes('Z')
-    ? value : String(value).replace(' ', 'T') + 'Z');
-
-  const hdCard = ticket => {
-    const [label, cls] = HD_STATUS[ticket.status] || HD_STATUS.new;
-    const open = !['done', 'rejected'].includes(ticket.status);
-    return `<div class="hd-card ${open ? '' : 'hd-closed'}">
-      <div class="hd-head"><span class="hd-status ${cls}">${label}</span>
-        <b>${escapeHtml(shortName(ticket.author_name))}</b>
-        <small class="muted">${hdTime(ticket.created_at)}</small></div>
-      ${ticket.place ? `<div><small class="muted">Где:</small> ${escapeHtml(ticket.place)}</div>` : ''}
-      <div>${escapeHtml(ticket.problem)}</div>
-      ${ticket.expected ? `<div><small class="muted">Как должно быть:</small> ${escapeHtml(ticket.expected)}</div>` : ''}
-      ${ticket.frequency ? `<small class="muted">Частота: ${escapeHtml(ticket.frequency)}</small>` : ''}
-      ${ticket.media_id ? `<a href="/api/helpdesk-media/${ticket.media_id}" target="_blank" rel="noopener">📎 Вложение — открыть</a>` : ''}
-      ${ticket.decision_note ? `<div class="hd-note"><small class="muted">${escapeHtml(ticket.decided_by_name || 'Решение')}:</small>
-        ${escapeHtml(ticket.decision_note)}</div>` : ''}
-      ${canDecide && open ? `<div class="hd-actions">
-        ${ticket.status === 'new' ? `<button class="button ghost small" data-hd-set="review" data-hd-id="${ticket.id}">👀 На рассмотрение</button>` : ''}
-        ${ticket.status !== 'work' ? `<button class="button ghost small" data-hd-set="work" data-hd-id="${ticket.id}">🔧 В работу</button>` : ''}
-        <button class="button ghost small" data-hd-set="done" data-hd-id="${ticket.id}">✅ Готово</button>
-        <button class="button ghost small" data-hd-set="rejected" data-hd-id="${ticket.id}">✖ Отклонить</button>
-      </div>` : ''}
-      ${canDecide && !open ? `<div class="hd-actions">
-        <button class="button ghost small" data-hd-kb="${ticket.id}"
-          title="Превратить вопрос и ответ заявки в статью базы знаний">📚 В статью</button>
-      </div>` : ''}
-    </div>`;
-  };
-
-  // Форма новой заявки — каркас тех.задания из пяти полей.
-  const hdFormView = () => {
-    list.innerHTML = `<form class="hd-form" id="hdForm">
-      <b>✍ Новая заявка</b>
-      <input name="place" maxlength="120" placeholder="Где: экран или вкладка (например: Логист → карточка рейса)">
-      <textarea name="problem" rows="3" maxlength="1000" required
-        placeholder="Что не так или чего не хватает — своими словами"></textarea>
-      <textarea name="expected" rows="2" maxlength="1000"
-        placeholder="Как должно быть (по-вашему)"></textarea>
-      <select name="frequency">
-        <option value="">Как часто мешает…</option>
-        <option>мешает каждый день</option>
-        <option>несколько раз в неделю</option>
-        <option>иногда</option>
-        <option>случилось один раз</option>
-      </select>
-      <label><small class="muted">Скриншот, запись экрана, текст или таблица (по желанию)</small>
-        <input type="file" name="media" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.md,.txt,.csv,.xlsx,.xls"></label>
-      <div class="hd-actions">
-        <button class="button small" type="submit">📨 Отправить заявку</button>
-        <button class="button ghost small" type="button" id="hdCancel">Отмена</button>
-      </div>
-      <small class="muted">Заявки рассматриваются раз в день; решение о выполнении
-        принимает руководитель — ответ придёт вам в «📬 Планер — лично».</small>
-    </form>`;
-    list.querySelector('#hdCancel').onclick = () => renderHelpdesk();
-    list.querySelector('#hdForm').onsubmit = async event => {
-      event.preventDefault();
-      const form = event.target;
-      const body = {
-        place: form.place.value.trim(), problem: form.problem.value.trim(),
-        expected: form.expected.value.trim(), frequency: form.frequency.value
-      };
-      const file = form.media.files[0];
-      const submitButton = form.querySelector('button[type=submit]');
-      try {
-        submitButton.disabled = true;
-        if (file) {
-          submitButton.textContent = '⏳ Загрузка файла…';
-          const upload = await fetch('/api/helpdesk-media', {
-            method: 'POST',
-            headers: { 'X-File-Name': encodeURIComponent(file.name) },
-            body: file
-          });
-          const uploaded = await upload.json().catch(() => ({}));
-          if (!upload.ok) throw new Error(uploaded.error || 'Не удалось загрузить файл');
-          body.mediaId = uploaded.id;
-          body.mediaName = file.name;
-        }
-        await api('/api/helpdesk', { method: 'POST', body: JSON.stringify(body) });
-        toast('Заявка отправлена — руководитель получил уведомление');
-        renderHelpdesk();
-      } catch (error) {
-        toast(error.message, 'error');
-        submitButton.disabled = false;
-        submitButton.textContent = '📨 Отправить заявку';
-      }
-    };
-  };
-
-  async function renderHelpdesk() {
-    list.innerHTML = '<div class="muted" style="padding:12px;text-align:center">Загрузка заявок…</div>';
-    let items = [];
-    try { items = (await api('/api/helpdesk')).items; } catch (error) {
-      list.innerHTML = `<div class="muted" style="padding:12px;text-align:center">${escapeHtml(error.message)}</div>`;
-      return;
+  // Карточка, форма и статусы — общий модуль tickets.js (тот же, что у
+  // «📐 Тех. задания» руководителей в АРМ, 10.11).
+  const renderHelpdesk = () => mountTickets(list, {
+    kind: 'helpdesk', canDecide, kb: true,
+    stillHere: () => active?.key === 'helpdesk',
+    onKb: ticket => {
+      openRoom('kb');
+      kbFormView({ question: ticket.problem, answer: ticket.decision_note || '',
+        section: ticket.place, source: `helpdesk:${ticket.id}` });
     }
-    if (active?.key !== 'helpdesk') return; // пока грузили — ушли в другую переписку
-    list.innerHTML = `<div class="hd-top">
-        <button class="button small" id="hdNew">✍ Новая заявка</button>
-        <small class="muted">Опишите, что мешает в работе планера, — заявку увидят все,
-          решение о выполнении примет руководитель.</small>
-      </div>
-      ${items.map(hdCard).join('')
-        || '<div class="muted" style="padding:12px;text-align:center">Заявок пока нет — опишите первую.</div>'}`;
-    list.scrollTop = 0;
-    list.querySelector('#hdNew').onclick = hdFormView;
-    list.querySelectorAll('[data-hd-set]').forEach(button =>
-      button.addEventListener('click', async () => {
-        const status = button.dataset.hdSet;
-        let note = '';
-        if (status === 'rejected') {
-          note = (prompt('Причина отклонения — автор увидит её в ответе:') || '').trim();
-          if (!note) return;
-        } else if (status === 'done') {
-          note = (prompt('Комментарий к выполнению (можно пусто):') || '').trim();
-        }
-        try {
-          await api(`/api/helpdesk/${button.dataset.hdId}/status`,
-            { method: 'POST', body: JSON.stringify({ status, note }) });
-          toast('Статус заявки обновлён — автор получил уведомление');
-          renderHelpdesk();
-        } catch (error) { toast(error.message, 'error'); }
-      }));
-    // «📚 В статью»: вопрос и ответ закрытой заявки — в базу знаний.
-    list.querySelectorAll('[data-hd-kb]').forEach(button =>
-      button.addEventListener('click', () => {
-        const ticket = items.find(item => item.id === button.dataset.hdKb);
-        if (!ticket) return;
-        openRoom('kb');
-        kbFormView({ question: ticket.problem, answer: ticket.decision_note || '',
-          section: ticket.place, source: `helpdesk:${ticket.id}` });
-      }));
-  }
+  });
+  const hdFormView = () => ticketForm(list, { kind: 'helpdesk', onDone: renderHelpdesk });
+  const renderTz = () => mountTickets(list, { kind: 'tz', canDecide, stillHere: () => active?.key === 'tz' });
 
   // ── ❓ Справка: база знаний с поиском (этап 1 помощника, 02.11) ──
   // Поиск сразу по двум источникам: статьи «вопрос → ответ» (копятся из
@@ -669,6 +552,16 @@ export function setupChat(state) {
       renderKb();
       return;
     }
+    if (active.key === 'tz') {
+      el('chatDialogTitle').textContent = roomTitle('tz');
+      el('chatDialogSub').textContent = 'видят руководители · решение за руководителем направления';
+      el('chatGroupEdit').classList.add('hidden');
+      el('chatDelete').classList.add('hidden');
+      el('chatForm').classList.add('hidden');
+      if (list.querySelector('#hdForm')) return;
+      renderTz();
+      return;
+    }
     if (active.key === 'helpdesk') {
       el('chatDialogTitle').textContent = roomTitle('helpdesk');
       el('chatDialogSub').textContent = 'заявки видят все сотрудники · решение за руководителем';
@@ -734,7 +627,7 @@ export function setupChat(state) {
     el('chatForm').classList.remove('hidden');
     markSeen();
     renderDialog();
-    if (!['auto', 'helpdesk', 'kb', 'personal'].includes(key)) input.focus();
+    if (!['auto', 'helpdesk', 'tz', 'kb', 'personal'].includes(key)) input.focus();
   }
 
   // «Прочитано» — только у открытой переписки.

@@ -6,6 +6,7 @@
 // сделано / не сделано, снять; руководитель смотрит место подчинённого.
 import { api, escapeHtml, renderInto, toast } from './api.js';
 import { fieldClick, fieldParts } from './field.js';
+import { mountTickets, ticketForm } from './tickets.js';
 
 const ZONE_ICON = { analysis: '◔', plan: '▦', exec: '▶', tasks: '☑' };
 const ZONE_HINT = { analysis: 'мои показатели', plan: 'сегодня · завтра', exec: 'сейчас', tasks: 'на мне' };
@@ -134,6 +135,7 @@ export async function renderArm(container, context) {
       ${people.length ? `<label class="arm-who">Чьё место <select id="armWho"><option value="">моё</option>${people.map(person =>
     `<option value="${escapeHtml(person.id)}" ${person.id === state.armUser ? 'selected' : ''}>${escapeHtml(person.name)}${person.position ? ` · ${escapeHtml(person.position)}` : ''}</option>`).join('')}</select></label>` : ''}
     </div>
+    ${data.tz ? tzPlaque(data.tz) : ''}
     ${data.pendingNote ? `<div class="muted arm-pending">${escapeHtml(data.pendingNote)}</div>` : ''}
     <div class="arm-grid">${Object.keys(data.zones).map(zone => zoneHtml(zone, data.zoneTitles[zone], data.zones[zone], data, field)).join('')}</div>
   </div>`)) return;
@@ -147,5 +149,31 @@ export async function renderArm(container, context) {
     const act = event.target.closest('[data-arm-act]');
     if (act) { taskAct(act.dataset.armTask, act.dataset.armAct, rerender); return; }
     if (event.target.closest('#armNewTask')) newTaskDialog(context, rerender);
+    if (event.target.closest('#armTz')) tzDialog(context, data.tz, false, rerender);
+    if (event.target.closest('#armTzNew')) tzDialog(context, data.tz, true, rerender);
   };
+}
+
+// ── 📐 Тех. задание (10.11): руководители отделов дорабатывают новый
+// продукт. Механика HELP DESK целиком (общий tickets.js): форма-каркас
+// ТЗ, вложение, статусы руководителя направления, ответ автору лично.
+function tzPlaque(tz) {
+  return `<div class="section arm-tz"><div class="arm-tz-b">
+    <span class="arm-tz-t">📐 <b>Тех. задание</b><small class="muted"> · доработка нового продукта с руководителями</small></span>
+    <span class="bi-tag ${tz.fresh ? 'warn' : ''}" title="Новые — ещё без решения">новых ${tz.fresh}</span>
+    <span class="bi-tag" title="Новые, на рассмотрении и в работе">открыто ${tz.open}</span>
+    <span class="bi-tag" title="Мои открытые ТЗ">моих ${tz.mine}</span>
+    <button type="button" class="button small ghost" id="armTz">Открыть ленту</button>
+    <button type="button" class="button small" id="armTzNew">✍ Новое ТЗ</button>
+  </div></div>`;
+}
+
+function tzDialog(context, tz, fresh, after) {
+  context.showModal(`<div class="arm-tz-modal"><h2>📐 Тех. задание</h2>
+    <div class="arm-tz-list" id="armTzList"></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Закрыть</button></div></div>`, 'staffcard');
+  const list = document.querySelector('#armTzList');
+  const options = { kind: 'tz', canDecide: Boolean(tz?.canDecide), stillHere: () => document.contains(list), onChange: after };
+  if (fresh) ticketForm(list, { kind: 'tz', onDone: () => { mountTickets(list, options); after(); } });
+  else mountTickets(list, options);
 }

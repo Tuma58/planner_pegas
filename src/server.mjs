@@ -8,7 +8,7 @@ import { audit, canonTrailerPlate, nextOrderNo, nextRouteNo, openDatabase, queue
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
 import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaMimeOf, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
-import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, validateTicket } from './helpdesk.mjs';
+import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, tzAccess, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, validateExpense, fuelLitersOf } from './expenses.mjs';
@@ -6743,7 +6743,7 @@ function goalsContext(month, mileageFn = null) {
       AND spent_on>=? AND spent_on<?`).get(from, to).n,
     nextAssigned: safe(() => nextAssignedShare(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`).pct),
     helpdeskOpen: db.prepare(`SELECT COUNT(*) n FROM helpdesk_tickets
-      WHERE status IN ('new','review','work')`).get().n
+      WHERE status IN ('new','review','work') AND kind='helpdesk'`).get().n
   };
 }
 
@@ -8718,11 +8718,16 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/helpdesk') {
     const user = requireUser(request, response);
     if (!user) return;
+    // Вид ленты (10.11): helpdesk — всем; tz — только руководителям.
+    const kind = url.searchParams.get('kind') === 'tz' ? 'tz' : 'helpdesk';
+    if (kind === 'tz' && !tzAccess(accessOf(db, user), rolesOf(user))) {
+      return errorJson(response, 403, 'Тех. задания ведут руководители');
+    }
     // Открытые сверху (новые → рассмотрение → работа), закрытые — хвостом.
     return json(response, 200, {
-      items: db.prepare(`SELECT * FROM helpdesk_tickets
+      items: db.prepare(`SELECT * FROM helpdesk_tickets WHERE kind=?
         ORDER BY CASE status WHEN 'new' THEN 0 WHEN 'review' THEN 1
-          WHEN 'work' THEN 2 ELSE 3 END, created_at DESC LIMIT 300`).all()
+          WHEN 'work' THEN 2 ELSE 3 END, created_at DESC LIMIT 300`).all(kind)
     });
   }
   if (request.method === 'POST' && pathname === '/api/helpdesk') {
@@ -8732,6 +8737,10 @@ async function api(request, response, url) {
     const body = await readJson(request);
     const check = validateTicket(body);
     if (!check.ok) return errorJson(response, 422, check.error);
+    const kind = body.kind === 'tz' ? 'tz' : 'helpdesk';
+    if (kind === 'tz' && !tzAccess(accessOf(db, user), rolesOf(user))) {
+      return errorJson(response, 403, 'Тех. задание подают руководители');
+    }
     let mediaId = null;
     let mediaMime = null;
     let mediaName = '';
@@ -8744,11 +8753,11 @@ async function api(request, response, url) {
       }
     }
     const id = randomUUID();
-    db.prepare(`INSERT INTO helpdesk_tickets(id,author_id,author_name,place,problem,expected,frequency,media_id,media_mime,media_name)
-      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, user.id, user.full_name || user.username,
+    db.prepare(`INSERT INTO helpdesk_tickets(id,author_id,author_name,place,problem,expected,frequency,media_id,media_mime,media_name,kind,dept)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, user.id, user.full_name || user.username,
       check.ticket.place, check.ticket.problem, check.ticket.expected, check.ticket.frequency,
-      mediaId, mediaMime, mediaName);
-    notify('manager', `🛟 HELP DESK: новая заявка от ${user.full_name || user.username}` +
+      mediaId, mediaMime, mediaName, kind, userDept(db, user) || '');
+    notify('manager', `${kind === 'tz' ? '📐 ТЗ: новое тех. задание' : '🛟 HELP DESK: новая заявка'} от ${user.full_name || user.username}` +
       `${check.ticket.place ? ` (${check.ticket.place})` : ''}: «${check.ticket.problem.slice(0, 140)}` +
       `${check.ticket.problem.length > 140 ? '…' : ''}»`, 'helpdesk', id);
     // Осиротевшие вложения (форму закрыли, не отправив) старше суток — долой.

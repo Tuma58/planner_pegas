@@ -13,6 +13,25 @@ export const HELPDESK_STATUSES = {
   rejected: 'отклонена'
 };
 
+// Виды заявок (10.11): 🛟 HELP DESK — сотрудники о текущем планере;
+// 📐 Тех. задание — руководители отделов дорабатывают новый продукт.
+// Механика одна (таблица, форма, статусы, ответ автору), различается
+// кругом участников: ТЗ видят и подают только руководители.
+export const TICKET_KINDS = { helpdesk: '🛟 HELP DESK', tz: '📐 Тех. задание' };
+
+export function migrateTicketKinds(db) {
+  const cols = db.prepare(`PRAGMA table_info(helpdesk_tickets)`).all().map(col => col.name);
+  if (!cols.includes('kind')) db.exec(`ALTER TABLE helpdesk_tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'helpdesk'`);
+  if (!cols.includes('dept')) db.exec(`ALTER TABLE helpdesk_tickets ADD COLUMN dept TEXT NOT NULL DEFAULT ''`);
+}
+
+// Круг ТЗ — руководители: в наборах ролей — у кого есть «Поле» (руководитель
+// направления и отделов, администратор); без наборов — роли manager/admin.
+export function tzAccess(access, roles = []) {
+  if (!access || access.legacy) return roles.some(role => ['manager', 'admin'].includes(role));
+  return (access.views || []).includes('field');
+}
+
 // Частота — фиксированный список: по ней видно, что мешает людям
 // ежедневно (чинить первым), а что всплыло один раз.
 export const HELPDESK_FREQUENCIES = [
@@ -134,13 +153,15 @@ export function renderHelpdeskPosterSvg() {
 // Личное авто-сообщение автору при смене статуса его заявки.
 export function helpdeskStatusMessage(ticket, status, note = '') {
   const gist = ticket.problem.length > 80 ? `${ticket.problem.slice(0, 80)}…` : ticket.problem;
-  const head = `🛟 Ваша заявка «${gist}»`;
+  const head = ticket.kind === 'tz' ? `📐 Ваше ТЗ «${gist}»` : `🛟 Ваша заявка «${gist}»`;
   const tail = note ? (status === 'rejected' ? ` Причина: ${note}` : ` Комментарий: ${note}`) : '';
+  // «ТЗ» — средний род: принято, взято, выполнено…
+  const a = ticket.kind === 'tz' ? 'о' : 'а';
   switch (status) {
-    case 'review': return `${head} — принята на рассмотрение.${tail}`;
-    case 'work': return `${head} — взята в работу, сообщим о готовности.${tail}`;
-    case 'done': return `${head} — выполнена ✅. Обновите страницу планера, чтобы увидеть изменение.${tail}`;
-    case 'rejected': return `${head} — отклонена.${tail}`;
-    default: return `${head} — возвращена в очередь (статус «${HELPDESK_STATUSES[status] || status}»).${tail}`;
+    case 'review': return `${head} — принят${a} на рассмотрение.${tail}`;
+    case 'work': return `${head} — взят${a} в работу, сообщим о готовности.${tail}`;
+    case 'done': return `${head} — выполнен${a} ✅. Обновите страницу планера, чтобы увидеть изменение.${tail}`;
+    case 'rejected': return `${head} — отклонен${a}.${tail}`;
+    default: return `${head} — возвращен${a} в очередь (статус «${HELPDESK_STATUSES[status] || status}»).${tail}`;
   }
 }

@@ -29,6 +29,8 @@ import { driverTurnover } from './turnover.mjs';
 import { leadStats } from './crm.mjs';
 import { payrollRates, payrollReport } from './payroll.mjs';
 import { docsOf } from './vehicle-card.mjs';
+import { tzAccess } from './helpdesk.mjs';
+import { rolesOf } from './permissions.mjs';
 
 const DAY = 86_400_000;
 const MSK = 3 * 3_600_000;
@@ -208,7 +210,7 @@ const W = {
       source: 'joint_signals' })), ...more];
   },
   my_helpdesk: ({ db, user }) => db.prepare(`SELECT problem, status FROM helpdesk_tickets
-      WHERE author_id=? AND status IN ('new','review','work') ORDER BY created_at DESC LIMIT 5`).all(user.id)
+      WHERE kind='helpdesk' AND author_id=? AND status IN ('new','review','work') ORDER BY created_at DESC LIMIT 5`).all(user.id)
     .map(row => ({ kind: 'task', label: row.problem.slice(0, 120), tag: `HELP DESK · ${HD_STATUS[row.status] || row.status}`,
       tone: '', source: 'helpdesk_tickets' }))
 };
@@ -341,7 +343,7 @@ Object.assign(W, {
     ];
   },
   helpdesk_new: ({ db }) => {
-    const n = db.prepare(`SELECT COUNT(*) n FROM helpdesk_tickets WHERE status IN ('new','review')`).get().n;
+    const n = db.prepare(`SELECT COUNT(*) n FROM helpdesk_tickets WHERE kind='helpdesk' AND status IN ('new','review')`).get().n;
     return { kind: 'row', label: 'Заявки HELP DESK без решения', value: n, tone: n ? 'warn' : 'pos', source: 'helpdesk_tickets' };
   },
   paid_week: ({ db, nowMs }) => {
@@ -701,8 +703,15 @@ export async function armApi(ctx) {
     const roleId = targetAccess && !targetAccess.legacy ? armRoleOf(targetAccess.sets || []) : null;
     // Деньги — по уровню смотрящего (руководитель не видит больше своего).
     const money = access?.legacy ? 'full' : access?.money || 'none';
+    // 📐 Тех. задание (10.11): плашка руководителя — счётчики своей ленты.
+    const tz = target.id === user.id && tzAccess(access, rolesOf(user)) ? db.prepare(`SELECT
+        SUM(status IN ('new','review','work')) open, SUM(status='new') fresh,
+        SUM(author_id=? AND status IN ('new','review','work')) mine, COUNT(*) total
+      FROM helpdesk_tickets WHERE kind='tz'`).get(user.id) : null;
     json(response, 200, { ...armData(db, target, roleId, { settings: settingsObject(db), readOnly: target.id !== user.id,
       park: ctx.parkMonth, money }),
+      tz: tz ? { open: tz.open || 0, fresh: tz.fresh || 0, mine: tz.mine || 0, total: tz.total || 0,
+        canDecide: rolesOf(user).some(role => ['manager', 'admin'].includes(role)) } : null,
       viewer: { id: user.id, self: target.id === user.id } });
     return true;
   }

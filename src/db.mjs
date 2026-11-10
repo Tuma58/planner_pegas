@@ -9,6 +9,7 @@ import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
 import { CATEGORY_CFO_SEED, EXPENSE_CATEGORY_SEED } from './expenses.mjs';
 import { migrateOrgStructure, migratePositionRoles } from './structure.mjs';
 import { migrateCredentials } from './credentials.mjs';
+import { migrateTicketKinds } from './helpdesk.mjs';
 import { migrateGoals } from './goals.mjs';
 import { migrateAccess } from './access.mjs';
 import { migrateSignals } from './signals.mjs';
@@ -1493,6 +1494,7 @@ function migrateColumns(db) {
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS idx_helpdesk_status ON helpdesk_tickets(status, created_at);`);
+  migrateTicketKinds(db);
   // ── 📚 База знаний (02.11.2026, этап 1 «внутреннего помощника») ──
   // Копилка «вопрос → ответ»: статьи рождаются из заявок HELP DESK
   // («вопрос обучения» одной кнопкой становится статьёй) и пишутся
