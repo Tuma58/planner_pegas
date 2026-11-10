@@ -57,6 +57,46 @@ export function addressByName(data, value) {
     item.name.toLowerCase() === needle) || null;
 }
 
+// ⚖ Предупреждение о рамках весогабаритного контроля (заказ 10.11):
+// сервер держит справочник рамок, выученный из наших штрафов ст. 12.21.1,
+// и ищет их в коридоре прямой между адресами заявки (ширина — настройка
+// calculation.frameCorridorKm). Ответ кэшируется на пару адресов —
+// change-события пунктов дёргают пересчёт часто.
+const frameWarnCache = new Map();
+export async function frameWarnInto(node, data, fromPoint, toPoint) {
+  if (!node) return;
+  const from = addressByName(data, fromPoint);
+  const to = addressByName(data, toPoint);
+  if (!from?.id || !to?.id) { node.innerHTML = ''; return; }
+  const key = `${from.id}|${to.id}`;
+  if (!frameWarnCache.has(key)) {
+    try {
+      frameWarnCache.set(key, await api(`/api/route-frames?from=${from.id}&to=${to.id}`));
+    } catch { return; } // сеть мигнула — без предупреждения, не мешаем форме
+  }
+  // Пока ждали ответ, пункт могли сменить — рисуем только актуальную пару.
+  if (addressByName(data, fromPoint)?.id !== from.id || !node.isConnected) return;
+  const answer = frameWarnCache.get(key);
+  const frames = answer.frames || [];
+  const framesHtml = frames.length
+    ? `<div class="next-event" style="margin:0 0 6px;color:var(--bad,#c0392b)">⚖ По коридору маршрута —
+        рамки весогабаритного контроля: ${frames.slice(0, 3).map(frame =>
+      `<b>${escapeHtml(frame.road)}, ${frame.km} км</b> (наших штрафов ${frame.finesCount}
+          на ${money(frame.finesAmount)})`).join('; ')}${frames.length > 3 ? ` и ещё ${frames.length - 3}` : ''}.
+        Проверьте осевые нагрузки при погрузке</div>`
+    : '';
+  // Платные парковки — у самих адресов заявки: сессию готовят заранее.
+  const parkLine = (place, zone) => zone
+    ? `<div class="next-event" style="margin:0 0 6px;color:var(--bad,#c0392b)">🅿 Адрес ${place} — платная
+        парковка <b>${escapeHtml(zone.label)}</b> (наших штрафов ${zone.finesCount} на
+        ${money(zone.finesAmount)}). Подготовьте парковочную сессию в ЛК Моспаркинга —
+        диспетчеру придёт напоминание при выезде и по факту стоянки</div>`
+    : '';
+  node.innerHTML = framesHtml
+    + parkLine('погрузки', answer.parking?.from)
+    + parkLine('выгрузки', answer.parking?.to);
+}
+
 // Автоподтягивание при вводе: точное имя → начало имени → подстрока
 // в имени или полном адресе. Позволяет ввести «Болошнево» и получить
 // полную карточку пункта из справочника.
@@ -1203,6 +1243,7 @@ export async function renderSales(container, context) {
             </div>
           </div>
           <div id="salesPlannedKm" class="next-event" style="margin:0 0 6px"></div>
+          <div id="salesFrames"></div>
           <select name="fromZoneId" id="salesFrom" hidden>${zoneOptions}</select>
           <select name="toZoneId" id="salesTo" hidden>${zoneOptions}</select>
           <div id="salesZoneHint" class="next-event" style="margin:0 0 6px"
@@ -1380,6 +1421,8 @@ export async function renderSales(container, context) {
       ? `📏 Плановый километраж: <b>${km} км</b> · ${operations} операции ·
         транзит ~${Math.round(transitHours(km, data.settings.calculation, operations))} ч`
       : via.length ? `⛳ Промежуточных пунктов: ${via.length} — километраж появится при выборе адресов` : '';
+    frameWarnInto(container.querySelector('#salesFrames'), data,
+      container.querySelector('#salesFromPoint').value, container.querySelector('#salesToPoint').value);
   };
   const redrawVia = () => {
     container.querySelector('#salesViaChips').innerHTML = via.map((item, index) =>
@@ -1878,6 +1921,7 @@ export function editOrderDialog(order, data, context) {
     </div>
     <div id="editPlannedKm" class="next-event" style="margin:0 0 6px">${order.planned_km
       ? `📏 Плановый километраж: <b>${Math.round(order.planned_km)} км</b> (по справочнику адресов)` : ''}</div>
+    <div id="editFrames"></div>
     <div class="form-grid">
       <label class="field">Геозона откуда<select name="fromZoneId" id="editFromZone">${zoneOptions(order.from_zone_id)}</select></label>
       <label class="field">Геозона куда<select name="toZoneId" id="editToZone">${zoneOptions(order.to_zone_id)}</select></label>
@@ -1978,6 +2022,8 @@ export function editOrderDialog(order, data, context) {
     if (km) document.getElementById('editPlannedKm').innerHTML =
       `📏 Плановый километраж: <b>${km} км</b> · ${2 + editVia.length} операции ·
         транзит ~${Math.round(transitHours(km, data.settings.calculation, 2 + editVia.length))} ч`;
+    frameWarnInto(document.getElementById('editFrames'), data,
+      document.getElementById('editFromPoint').value, document.getElementById('editToPoint').value);
   };
   const redrawEditVia = () => {
     document.getElementById('editViaChips').innerHTML = editVia.map((item, index) =>
