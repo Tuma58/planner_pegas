@@ -114,25 +114,7 @@ function setupUser() {
     if (access.views.includes('arm') && !guardPost) { state.fieldLanded = true; state.view = 'arm'; }
     else if (access.views.includes('field')) { state.fieldLanded = true; state.view = 'field'; }
   }
-  if (user.labMode) setupLabSwitch(user);
   byId('settingsLink').classList.toggle('hidden', !(user.roles || [user.role]).includes('admin'));
-}
-
-// ЛАБОРАТОРИЯ (не переносить): «войти как…» — проверить роль-набор
-// глазами сотрудника. Сервер отдаёт список и сессию только с этой машины.
-async function setupLabSwitch(user) {
-  if (byId('labSwitch')) return;
-  const select = document.createElement('select');
-  select.id = 'labSwitch';
-  select.className = 'lab-switch';
-  select.title = 'Лаборатория: войти как сотрудник с ролью-набором';
-  try {
-    const people = await fetch('/__lab-users').then(response => response.json());
-    select.innerHTML = people.map(person => `<option value="${person.id}" ${person.id === user.id ? 'selected' : ''}>
-      ${escapeHtml(person.name)}${person.sets.length ? ` — ${escapeHtml(person.sets.join(' + '))}` : ''}</option>`).join('');
-  } catch { return; }
-  select.onchange = () => { location.href = `/__lab-login?as=${encodeURIComponent(select.value)}`; };
-  document.querySelector('.profile')?.prepend(select);
 }
 
 function setupFilters() {

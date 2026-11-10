@@ -231,7 +231,6 @@ function publicUser(user) {
     cfoScope: cfoScope(db, user, expensesAccess(user, settingsObject(db))),
     // Роль-набор (поле управления, 07.11): область, экраны, уровень денег.
     access: accessOf(db, user),
-    labMode: Boolean(process.env.LAB_AUTOLOGIN && !config.isProduction),
     guest: Boolean(Number(user.guest)),
     guestUntil: user.guest_until || null,
     // Временный пароль (выдан из справочника): фронт сразу ведёт на
@@ -17054,51 +17053,6 @@ export const server = http.createServer(async (request, response) => {
   try {
     if (!networkAccessAllowed(request, url.pathname)) {
       return errorJson(response, 403, 'Подключение из вашей сети запрещено администратором');
-    }
-    // ── ЛАБОРАТОРИЯ: вход без пароля на время разработки (просьба
-    // руководителя 04.11). Живёт ТОЛЬКО в рабочей копии design-lab; при
-    // переносе в планер этот блок удаляется. Тройная защита: переменная
-    // LAB_AUTOLOGIN (логин), не продакшен, запрос с этой же машины.
-    // Любая страница (/, /login, /planner, /settings) входит, только если
-    // сессии нет (уже вошедший под другой ролью остаётся); /__lab-login —
-    // всегда под LAB_AUTOLOGIN. Просьба руководителя 07.11: форма пароля
-    // в лаборатории не показывается вовсе (протухшая кука, новая база).
-    const labPages = ['/', '/login', '/login.html', '/planner', '/settings'];
-    if (request.method === 'GET'
-        && (url.pathname === '/__lab-login' || (labPages.includes(url.pathname) && !currentUser(request)))
-        && process.env.LAB_AUTOLOGIN && !config.isProduction
-        && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress)) {
-      // «Войти как…» (поле управления, 07.11): /__lab-login?as=<id> —
-      // сессия под любым сотрудником, чтобы проверить его роль-набор
-      // глазами; без параметра — под LAB_AUTOLOGIN.
-      const asId = url.pathname === '/__lab-login' ? url.searchParams.get('as') : null;
-      const user = asId
-        ? db.prepare('SELECT * FROM users WHERE id=? AND active=1 AND deleted_at IS NULL').get(asId)
-        : db.prepare('SELECT * FROM users WHERE username=? AND active=1')
-          .get(process.env.LAB_AUTOLOGIN);
-      if (user) {
-        const token = newSessionToken();
-        const expires = new Date(Date.now() + config.sessionTtlMs).toISOString();
-        db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
-          .run(tokenHash(token), user.id, expires);
-        response.writeHead(302, {
-          Location: ['/planner', '/settings'].includes(url.pathname) ? url.pathname : '/planner',
-          'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
-        });
-        return response.end();
-      }
-    }
-    // Список для «войти как…» — только лаборатория, только с этой машины.
-    if (request.method === 'GET' && url.pathname === '/__lab-users'
-        && process.env.LAB_AUTOLOGIN && !config.isProduction
-        && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress)) {
-      const sets = new Map(roleSets(db).map(set => [set.id, set.title]));
-      return json(response, 200, db.prepare(`SELECT id, full_name, username, role_sets FROM users
-        WHERE active=1 AND deleted_at IS NULL ORDER BY full_name`).all()
-        .map(row => ({ id: row.id, name: row.full_name, username: row.username,
-          sets: (() => { try { return JSON.parse(row.role_sets || '[]'); } catch { return []; } })()
-            .map(id => sets.get(id) || id) }))
-        .filter(row => row.sets.length || row.username === process.env.LAB_AUTOLOGIN));
     }
     if (url.pathname.startsWith('/api/')) await api(request, response, url);
     else if (url.pathname === '/ops-report') {
