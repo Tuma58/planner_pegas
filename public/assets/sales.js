@@ -71,20 +71,30 @@ export async function frameWarnInto(node, data, fromPoint, toPoint) {
   const key = `${from.id}|${to.id}`;
   if (!frameWarnCache.has(key)) {
     try {
-      const answer = await api(`/api/route-frames?from=${from.id}&to=${to.id}`);
-      frameWarnCache.set(key, answer.frames || []);
+      frameWarnCache.set(key, await api(`/api/route-frames?from=${from.id}&to=${to.id}`));
     } catch { return; } // сеть мигнула — без предупреждения, не мешаем форме
   }
   // Пока ждали ответ, пункт могли сменить — рисуем только актуальную пару.
   if (addressByName(data, fromPoint)?.id !== from.id || !node.isConnected) return;
-  const frames = frameWarnCache.get(key);
-  node.innerHTML = frames.length
+  const answer = frameWarnCache.get(key);
+  const frames = answer.frames || [];
+  const framesHtml = frames.length
     ? `<div class="next-event" style="margin:0 0 6px;color:var(--bad,#c0392b)">⚖ По коридору маршрута —
         рамки весогабаритного контроля: ${frames.slice(0, 3).map(frame =>
       `<b>${escapeHtml(frame.road)}, ${frame.km} км</b> (наших штрафов ${frame.finesCount}
           на ${money(frame.finesAmount)})`).join('; ')}${frames.length > 3 ? ` и ещё ${frames.length - 3}` : ''}.
         Проверьте осевые нагрузки при погрузке</div>`
     : '';
+  // Платные парковки — у самих адресов заявки: сессию готовят заранее.
+  const parkLine = (place, zone) => zone
+    ? `<div class="next-event" style="margin:0 0 6px;color:var(--bad,#c0392b)">🅿 Адрес ${place} — платная
+        парковка <b>${escapeHtml(zone.label)}</b> (наших штрафов ${zone.finesCount} на
+        ${money(zone.finesAmount)}). Подготовьте парковочную сессию в ЛК Моспаркинга —
+        диспетчеру придёт напоминание при выезде и по факту стоянки</div>`
+    : '';
+  node.innerHTML = framesHtml
+    + parkLine('погрузки', answer.parking?.from)
+    + parkLine('выгрузки', answer.parking?.to);
 }
 
 // Автоподтягивание при вводе: точное имя → начало имени → подстрока

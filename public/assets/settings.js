@@ -67,6 +67,7 @@ function renderGeneral() {
       <label class="field">Простой: тариф, ₽/ч<input id="demurrageRatePerHour" type="number" min="0" step="50" value="${calculation.demurrageRatePerHour ?? 1000}" title="Ставка за каждый начатый час сверхнормативного простоя — попадает в документ претензии"></label>
       <label class="field">Скидка ГИБДД «горит», дн<input id="gibddWarnDays" type="number" min="0" max="30" step="1" value="${calculation.gibddWarnDays ?? 7}" title="Штрафы (09.11): за сколько дней до конца скидки 50 % неоплаченный штраф подсвечивается «скидка горит» в Затратах"></label>
       <label class="field">Коридор рамок ВГК, км<input id="frameCorridorKm" type="number" min="0" max="200" step="5" value="${calculation.frameCorridorKm ?? 15}" title="Рамки весогабаритного контроля (10.11): если рамка из справочника (выучен из наших штрафов) ближе этого расстояния к прямой маршрута заявки — менеджеру и логисту показывается предупреждение. 0 — предупреждения выключены"></label>
+      <label class="field">Радиус платной парковки, м<input id="paidParkRadiusM" type="number" min="0" max="3000" step="50" value="${calculation.paidParkRadiusM ?? 400}" title="Платные парковки (10.11): точки выучены из парковочных штрафов. Адрес заявки или стоянка борта ближе этого радиуса — предупреждение в форме заявки, уведомление диспетчеру при выезде рейса и по факту стоянки (запустить сессию в ЛК Моспаркинга). 0 — контроль выключен"></label>
     </div></div>
     <div class="card"><h2>Статусы рейса</h2>
       <div class="table-wrap"><table><thead><tr><th>Код</th><th>Название</th><th>Цвет</th></tr></thead>
@@ -115,7 +116,8 @@ async function saveGeneral() {
       targetGapHours: numeric('targetGapHours'),
       transferGapKm: numeric('transferGapKm'),
       gibddWarnDays: numeric('gibddWarnDays'),
-      frameCorridorKm: numeric('frameCorridorKm')
+      frameCorridorKm: numeric('frameCorridorKm'),
+      paidParkRadiusM: numeric('paidParkRadiusM')
     },
     orderOptions: {
       temperatureModes: byId('temperatureModes').value.split('\n').map(item => item.trim()).filter(Boolean),

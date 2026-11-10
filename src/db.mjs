@@ -9,6 +9,7 @@ import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
 import { EXPENSE_CATEGORY_SEED } from './expenses.mjs';
 import { migrateGibdd } from './gibdd.mjs';
 import { migrateWeightFrames } from './weightframes.mjs';
+import { migrateParkingZones } from './paidparking.mjs';
 
 const tk20Data = JSON.parse(fs.readFileSync(new URL('./tk20-data.json', import.meta.url), 'utf8'));
 const addressesData = JSON.parse(fs.readFileSync(new URL('./addresses-data.json', import.meta.url), 'utf8'));
@@ -430,6 +431,7 @@ export function openDatabase(databasePath, admin, options = {}) {
   // настройки появляются только в seed).
   migrateGibdd(db);
   migrateWeightFrames(db);
+  migrateParkingZones(db);
   seedDrivers(db);
   seedAddresses(db);
   backfillEmptyKm(db);

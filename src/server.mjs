@@ -60,6 +60,7 @@ import {
 import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from './dornet.mjs';
 import { gibddBoard, importSts, mapApiFines, normCdi, plateParts, upsertGibddFines } from './gibdd.mjs';
 import { framesNearLeg, rebuildWeightFrames, roadEndpoints } from './weightframes.mjs';
+import { parkZoneLabel, parkZoneNear, rebuildParkingZones } from './paidparking.mjs';
 import { rncardExpenseRows } from './rncard.mjs';
 import { processOutbox, runPull, startIntegrationScheduler, testConnection } from './odata.mjs';
 import {
@@ -7093,8 +7094,10 @@ async function runGibddSync(options = {}) {
     }
     db.prepare(`UPDATE integration_connectors SET last_success_at=CURRENT_TIMESTAMP,
       updated_at=CURRENT_TIMESTAMP WHERE id='onlinegibdd'`).run();
-    // Свежие штрафы могли принести новую рамку ВГК — справочник следом.
+    // Свежие штрафы могли принести новую рамку ВГК или платную точку —
+    // справочники следом.
     rebuildWeightFrames(db, randomUUID);
+    rebuildParkingZones(db, randomUUID);
   } catch (error) { stats.errors.push(error.message); }
   db.prepare(`INSERT INTO app_meta(key,value) VALUES('gibdd_sync_last',?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(stats));
@@ -7122,6 +7125,8 @@ function weightFramesRebuild() {
   try {
     const result = rebuildWeightFrames(db, randomUUID);
     if (result.added) console.log(`Рамки ВГК: +${result.added} новых мест (всего ${result.frames})`);
+    const parking = rebuildParkingZones(db, randomUUID);
+    if (parking.added) console.log(`Платные парковки: +${parking.added} новых точек (всего ${parking.zones})`);
   } catch (error) { console.error('weightFramesRebuild:', error.message); }
 }
 setTimeout(weightFramesRebuild, 100_000);
@@ -7137,7 +7142,7 @@ async function runFrameGeocodeWatch() {
     WHERE latitude IS NULL AND enabled=1
       AND (geo_try_at IS NULL OR datetime(geo_try_at) < datetime('now','-1 day'))
     ORDER BY fines_amount DESC LIMIT 1`).get();
-  if (!frame) return;
+  if (!frame) return runParkingGeocode();
   db.prepare(`UPDATE weight_frames SET geo_try_at=CURRENT_TIMESTAMP WHERE id=?`).run(frame.id);
   try {
     const ends = roadEndpoints(frame.road);
@@ -7180,6 +7185,112 @@ async function runFrameGeocodeWatch() {
 }
 setInterval(watchWrap('runFrameGeocodeWatch', runFrameGeocodeWatch), 120_000);
 setTimeout(runFrameGeocodeWatch, 150_000);
+
+// Геокод платной точки: обычный уличный адрес («Пермская улица, 3,
+// Москва») — один запрос; очередь делит тик с рамками (рамки вперёд).
+async function runParkingGeocode() {
+  const zone = db.prepare(`SELECT * FROM paid_park_zones
+    WHERE latitude IS NULL AND enabled=1
+      AND (geo_try_at IS NULL OR datetime(geo_try_at) < datetime('now','-1 day'))
+    ORDER BY fines_amount DESC LIMIT 1`).get();
+  if (!zone) return;
+  db.prepare(`UPDATE paid_park_zones SET geo_try_at=CURRENT_TIMESTAMP WHERE id=?`).run(zone.id);
+  try {
+    const found = (await geocodeQuery(`${zone.street}, ${zone.house}, ${zone.city}`))
+      .filter(item => Number.isFinite(item.latitude));
+    if (found[0]) {
+      db.prepare(`UPDATE paid_park_zones SET latitude=?, longitude=?, geo_status='ok',
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(+found[0].latitude.toFixed(5), +found[0].longitude.toFixed(5), zone.id);
+    } else {
+      db.prepare(`UPDATE paid_park_zones SET geo_status='fail',
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(zone.id);
+    }
+    audit(db, null, 'parkzone-geocode', 'paid_park_zone', zone.id,
+      { street: zone.street, house: zone.house, ok: Boolean(found[0]) }, 'frame-watch');
+  } catch (error) { console.error('runParkingGeocode:', error.message); }
+}
+
+// ── Двойной контроль платных парковок ─────────────────────────────────
+// (1) ЗАБЛАГОВРЕМЕННО: рейс в пути идёт на точку в радиусе платной
+// парковки — диспетчеру уведомление сразу после выезда («подготовьте
+// сессию в ЛК Моспаркинга»), один раз на рейс. (2) ПО ФАКТУ: борт стоит
+// в радиусе точки два тика подряд (отсекает проезд и светофор) —
+// срочное уведомление; антиспам 12 ч на пару борт+точка. Радиус —
+// настройка calculation.paidParkRadiusM (0 = контроль выключен).
+function paidParkPoint(addressId) {
+  return addressId ? addressPointById(addressId) : null;
+}
+async function runPaidParkWatch() {
+  const radiusM = Number(settingsObject(db).calculation?.paidParkRadiusM ?? 400);
+  if (!radiusM) return;
+  const hasZones = db.prepare(`SELECT 1 FROM paid_park_zones
+    WHERE enabled=1 AND latitude IS NOT NULL LIMIT 1`).get();
+  if (!hasZones) return;
+  const told = JSON.parse(db.prepare(`SELECT value FROM app_meta
+    WHERE key='paidpark_told'`).get()?.value || '{}');
+  const seen = JSON.parse(db.prepare(`SELECT value FROM app_meta
+    WHERE key='paidpark_seen'`).get()?.value || '{}');
+  let changed = false;
+  // (1) Идущие рейсы с выгрузкой у платной точки — предупреждение при выезде.
+  const running = db.prepare(`SELECT t.id, t.order_no, t.vehicle_id, v.plate, o.to_address_id
+    FROM trips t JOIN vehicles v ON v.id=t.vehicle_id
+    LEFT JOIN orders o ON o.id=t.order_id
+    WHERE t.status='run'`).all();
+  for (const trip of running) {
+    const key = `plan:${trip.id}`;
+    if (told[key]) continue;
+    const zone = parkZoneNear(db, paidParkPoint(trip.to_address_id), radiusM);
+    if (!zone) continue;
+    told[key] = Date.now();
+    changed = true;
+    notify('dispatcher', `🅿 Рейс №${trip.order_no || '—'} (${trip.plate}) идёт на выгрузку у платной `
+      + `парковки ${parkZoneLabel(zone)} — там наших штрафов уже ${zone.fines_count} на `
+      + `${Math.round(zone.fines_amount).toLocaleString('ru-RU')} ₽. Подготовьте парковочную сессию `
+      + 'в ЛК Моспаркинга к прибытию', 'trip', trip.id, { category: 'gps_control' });
+  }
+  // (2) Борт фактически стоит у платной точки.
+  const positions = db.prepare(`SELECT p.vehicle_id, p.latitude, p.longitude, p.speed, p.fixed_at,
+      v.plate FROM vehicle_positions p JOIN vehicles v ON v.id=p.vehicle_id
+    WHERE p.latitude IS NOT NULL`).all();
+  const nowMs = Date.now();
+  for (const position of positions) {
+    const fixMs = Date.parse(String(position.fixed_at).includes('T')
+      ? position.fixed_at : `${position.fixed_at}Z`.replace(' ', 'T')) || 0;
+    if (!fixMs || nowMs - fixMs > 10 * 60_000) continue; // борт молчит
+    if (Number(position.speed) >= 3) continue;
+    const zone = parkZoneNear(db, position, radiusM);
+    const seenKey = `${position.vehicle_id}`;
+    if (!zone) { if (seen[seenKey]) { delete seen[seenKey]; changed = true; } continue; }
+    const toldKey = `arr:${position.vehicle_id}:${zone.id}`;
+    if (told[toldKey] && nowMs - told[toldKey] < 12 * 3_600_000) continue;
+    if (!seen[seenKey] || seen[seenKey].zone !== zone.id) {
+      seen[seenKey] = { zone: zone.id, at: nowMs };
+      changed = true;
+      continue; // первый тик — ждём подтверждения стоянки
+    }
+    if (nowMs - seen[seenKey].at < 2 * 60_000) continue;
+    told[toldKey] = nowMs;
+    delete seen[seenKey];
+    changed = true;
+    notify('dispatcher', `🅿⚠ ${position.plate} СТОИТ на платной парковке ${parkZoneLabel(zone)} `
+      + `(${zone.awayM} м от точки штрафов). Запустите парковочную сессию в ЛК Моспаркинга — `
+      + `каждый пропуск здесь стоил до 25 000 ₽`, 'vehicle', position.vehicle_id,
+    { category: 'gps_control' });
+  }
+  if (changed) {
+    // Чистка хвостов: завершённые рейсы и старые отметки не копятся вечно.
+    for (const key of Object.keys(told)) {
+      if (nowMs - told[key] > 14 * 86_400_000) delete told[key];
+    }
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('paidpark_told',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(told));
+    db.prepare(`INSERT INTO app_meta(key,value) VALUES('paidpark_seen',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(seen));
+  }
+}
+setInterval(watchWrap('runPaidParkWatch', runPaidParkWatch), 2 * 60_000);
+setTimeout(runPaidParkWatch, 180_000);
 
 // ── Коннектор «РН-Карт» (Роснефть) — топливо в журнал затрат (03.11) ──
 // WebAPI EMV v2 (lkapi.rn-card.ru): логин ЛК в query, пароль заголовком
@@ -10205,12 +10316,22 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/route-frames') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;
-    const corridorKm = Number(settingsObject(db).calculation?.frameCorridorKm ?? 15);
+    const calc = settingsObject(db).calculation || {};
+    const corridorKm = Number(calc.frameCorridorKm ?? 15);
+    const radiusM = Number(calc.paidParkRadiusM ?? 400);
     const a = addressPointById(url.searchParams.get('from'));
     const b = addressPointById(url.searchParams.get('to'));
-    if (!corridorKm || !a || !b) return json(response, 200, { frames: [], corridorKm });
+    // Платные парковки проверяются у САМИХ адресов (не по коридору):
+    // штраф приходит за стоянку на точке погрузки/выгрузки.
+    const parkOf = point => {
+      const zone = parkZoneNear(db, point, radiusM);
+      return zone ? { label: parkZoneLabel(zone), finesCount: zone.fines_count,
+        finesAmount: zone.fines_amount, awayM: zone.awayM } : null;
+    };
+    const parking = { from: parkOf(a), to: parkOf(b) };
+    if (!corridorKm || !a || !b) return json(response, 200, { frames: [], corridorKm, parking });
     return json(response, 200, {
-      corridorKm,
+      corridorKm, parking,
       frames: framesNearLeg(db, a, b, corridorKm).map(frame => ({
         id: frame.id, road: frame.road, km: frame.km, region: frame.region,
         finesCount: frame.fines_count, finesAmount: frame.fines_amount,
