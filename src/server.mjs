@@ -55,6 +55,7 @@ import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from '.
 import { cfoData, cfoScope } from './cfo.mjs';
 import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, roleSets, stripOrders, stripSmall, stripTrips,
   updateRoleSet } from './access.mjs';
+import { applyMerger, mergerPlan, mergerStatus, rollbackMerger } from './merger-import.mjs';
 import { changeOwnPassword, createGuest, guestExpired, issueAccess, issueAccessBulk, updateGuest } from './credentials.mjs';
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
@@ -8392,6 +8393,34 @@ async function api(request, response, url) {
     return json(response, 200, { user: publicUser(user) }, {
       'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}${config.secureCookies ? '; Secure' : ''}`
     });
+  }
+
+  // ── Перенос «Слияния» по отделам (10.11): только администратор ──
+  if (pathname === '/api/merger' && request.method === 'GET') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    const dept = url.searchParams.get('dept');
+    let overrides = {};
+    try { overrides = JSON.parse(url.searchParams.get('overrides') || '{}'); } catch { overrides = {}; }
+    return json(response, 200, { status: mergerStatus(db), plan: dept ? mergerPlan(db, dept, { overrides }) : null });
+  }
+  if (pathname === '/api/merger/apply' && request.method === 'POST') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const result = applyMerger(db, String(body.dept || ''), { overrides: body.overrides || {}, by: user.full_name });
+    if (!result.ok) return json(response, result.status || 422, { error: result.error, plan: result.plan });
+    audit(db, user, 'merger-apply', 'merger', String(body.dept || ''), result, requestIp(request));
+    return json(response, 200, result);
+  }
+  if (pathname === '/api/merger/rollback' && request.method === 'POST') {
+    const user = requirePermission(request, response, 'users:write');
+    if (!user) return;
+    const body = await readJson(request);
+    const result = rollbackMerger(db, String(body.dept || ''), { by: user.full_name });
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, 'merger-rollback', 'merger', String(body.dept || ''), result, requestIp(request));
+    return json(response, 200, result);
   }
 
   if (request.method === 'POST' && pathname === '/api/me/password') {

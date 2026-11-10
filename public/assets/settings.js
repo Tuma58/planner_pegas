@@ -1314,6 +1314,82 @@ async function renderTelephony() {
     }));
 }
 
+// ── Перенос «Слияния» по отделам (10.11) ──
+// Отдел включается загрузкой его людей из проверенного снимка: таблица
+// «кто кем станет» (сопоставление с учётками прода — авто, правится
+// вручную), «Включить отдел», «Откатить отдел». Прочие — без изменений.
+const MERGER_HOW = { exact: ['✓ найдена', ''], close: ['≈ похоже — проверьте', 'warn'], manual: ['✎ выбрано вручную', ''],
+  new: ['＋ новая учётка', ''], ambiguous: ['⚠ несколько похожих — выберите', 'bad'], skip: ['пропустить', 'warn'] };
+const MERGER_ACTION = { update: 'права и должность', create: 'создать в справочнике', fire: 'уволить', none: '—' };
+async function renderMerger() {
+  state.mergerDept = state.mergerDept || 'toir';
+  state.mergerOverrides = state.mergerOverrides || {};
+  const query = new URLSearchParams({ dept: state.mergerDept, overrides: JSON.stringify(state.mergerOverrides[state.mergerDept] || {}) });
+  const data = await api(`/api/merger?${query}`);
+  const plan = data.plan;
+  const current = data.status.find(item => item.key === state.mergerDept);
+  const options = row => `<select data-merger-pick="${escapeHtml(row.fullName)}" style="max-width:240px">
+      <option value="">авто${row.prod ? `: ${escapeHtml(row.prod.name)}` : ''}</option>
+      <option value="new" ${state.mergerOverrides[state.mergerDept]?.[row.fullName] === 'new' ? 'selected' : ''}>＋ новая учётка</option>
+      <option value="skip" ${state.mergerOverrides[state.mergerDept]?.[row.fullName] === 'skip' ? 'selected' : ''}>пропустить</option>
+      ${plan.accounts.map(account => `<option value="${account.id}" ${state.mergerOverrides[state.mergerDept]?.[row.fullName] === account.id ? 'selected' : ''}>${escapeHtml(account.name)} · ${escapeHtml(account.username)}</option>`).join('')}
+    </select>`;
+  content.innerHTML = biPage(biHead('Перенос по отделам',
+    'Отдел включается загрузкой его людей из штата, проверенного в лаборатории: должность и набор прав. Остальные сотрудники живут по-старому. Откат возвращает прежние права.'), [
+    biSec('Отделы', `<div class="actions">${data.status.map(item => `<button class="button ${item.key === state.mergerDept ? '' : 'ghost'} small" data-merger-dept="${item.key}">
+      ${escapeHtml(item.title)} ${item.applied ? `✅ ${item.people} чел.` : '— не включён'}</button>`).join(' ')}</div>
+      <p class="muted">Порядок руководителя: ТОиР → Эксплуатация → Логистика → Штаб.</p>`),
+    biSec(`Кто кем станет · ${escapeHtml(current?.title || '')}`, `
+      <p class="muted">Обновить — ${plan.summary.update} · создать — ${plan.summary.create} · уволить — ${plan.summary.fire}
+        ${plan.summary.attention ? ` · <b>требуют внимания ${plan.summary.attention}</b>` : ''}</p>
+      <div class="table-wrap bi-scroll"><table class="bi-table"><thead><tr><th>Сотрудник (табель)</th><th>Должность</th><th>Роль</th>
+        <th>Учётка на проде</th><th>Сопоставление</th><th>Действие</th></tr></thead><tbody>
+        ${plan.rows.map(row => {
+          const [how, tone] = MERGER_HOW[row.how] || ['', ''];
+          return `<tr>
+          <td>${escapeHtml(row.fullName)}${row.active ? '' : ' <span class="badge warn">уволен</span>'}${row.applied ? ' <span class="badge ok">включён</span>' : ''}</td>
+          <td>${escapeHtml(row.position)}${row.positionKnown ? '' : ' <span class="badge bad">нет в структуре</span>'}</td>
+          <td>${escapeHtml(row.roleTitles.join(' + ') || 'без входа')}${row.unknownSets.length ? ' <span class="badge bad">набор не найден</span>' : ''}</td>
+          <td>${row.prod ? `${escapeHtml(row.prod.name)} <small class="muted">${escapeHtml(row.prod.username)}</small>` : '<span class="muted">нет</span>'}
+            ${row.candidates.length > 1 ? `<br><small class="muted">похожие: ${row.candidates.map(item => escapeHtml(item.name)).join(', ')}</small>` : ''}</td>
+          <td><span class="badge ${tone}">${how}</span><br>${options(row)}</td>
+          <td>${MERGER_ACTION[row.action] || row.action}</td></tr>`;
+        }).join('')}</tbody></table></div>
+      <div class="actions" style="margin-top:10px">
+        <button class="button" id="mergerApply">${current?.applied ? 'Применить ещё раз' : `Включить отдел «${escapeHtml(current?.title || '')}»`}</button>
+        ${current?.applied ? '<button class="button ghost danger" id="mergerRollback">Откатить отдел</button>' : ''}
+      </div>
+      <p class="muted">После включения: «Сотрудники» → «🔐 Выдать доступ · N» — листки с логинами людям отдела.
+        Учётки с прежними правами получают права набора; их пароль не меняется.</p>`, { flush: false })
+  ]);
+  content.querySelectorAll('[data-merger-dept]').forEach(button => button.onclick = () => {
+    state.mergerDept = button.dataset.mergerDept; render();
+  });
+  content.querySelectorAll('[data-merger-pick]').forEach(select => select.onchange = () => {
+    const bucket = state.mergerOverrides[state.mergerDept] = state.mergerOverrides[state.mergerDept] || {};
+    if (select.value) bucket[select.dataset.mergerPick] = select.value; else delete bucket[select.dataset.mergerPick];
+    render();
+  });
+  byId('mergerApply').onclick = async () => {
+    if (!confirm(`Включить отдел «${current?.title}»: ${plan.summary.update} обновить, ${plan.summary.create} создать, ${plan.summary.fire} уволить?\n\nОткат — кнопкой «Откатить отдел».`)) return;
+    try {
+      const result = await api('/api/merger/apply', { method: 'POST',
+        body: JSON.stringify({ dept: state.mergerDept, overrides: state.mergerOverrides[state.mergerDept] || {} }) });
+      toast(`Отдел включён: обновлено ${result.updated}, создано ${result.created}, уволено ${result.fired}`);
+      render();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  const rollback = byId('mergerRollback');
+  if (rollback) rollback.onclick = async () => {
+    if (!confirm(`Откатить отдел «${current?.title}»? Прежние права вернутся, созданные учётки останутся в справочнике без входа.`)) return;
+    try {
+      const result = await api('/api/merger/rollback', { method: 'POST', body: JSON.stringify({ dept: state.mergerDept }) });
+      toast(`Откат выполнен: ${result.restored} записей`);
+      render();
+    } catch (error) { toast(error.message, 'error'); }
+  };
+}
+
 async function render() {
   try {
     if (state.section === 'general') renderGeneral();
@@ -1326,6 +1402,7 @@ async function render() {
     else if (state.section === 'telephony') await renderTelephony();
     else if (state.section === 'integration') renderIntegration();
     else if (state.section === 'outbox') renderOutbox();
+    else if (state.section === 'merger') await renderMerger();
   } catch (error) {
     toast(error.message, 'error');
   }

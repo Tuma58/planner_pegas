@@ -10,6 +10,7 @@ import { CATEGORY_CFO_SEED, EXPENSE_CATEGORY_SEED } from './expenses.mjs';
 import { migrateOrgStructure, migratePositionRoles } from './structure.mjs';
 import { migrateCredentials } from './credentials.mjs';
 import { migrateTicketKinds } from './helpdesk.mjs';
+import { migrateMerger } from './merger-import.mjs';
 import { migrateGoals } from './goals.mjs';
 import { migrateAccess } from './access.mjs';
 import { migrateSignals } from './signals.mjs';
@@ -1450,6 +1451,7 @@ function migrateColumns(db) {
   migrateAccess(db);
   migratePositionRoles(db);
   migrateCredentials(db);
+  migrateMerger(db);
   migrateSignals(db);
   migrateGate(db);
   migrateRelease(db);
