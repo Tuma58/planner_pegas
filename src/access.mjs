@@ -82,6 +82,7 @@ export function migrateAccess(db) {
     migrateArm(db);
     migrateArmAll(db);
     migrateSupplyMoney(db);
+    migrateLogTrips(db);
     return;
   }
   const insert = db.prepare(`INSERT OR IGNORE INTO role_sets(id,title,scope,views_json,codes_json,money,cfo,sort)
@@ -96,6 +97,7 @@ export function migrateAccess(db) {
   migrateRelease(db);
   migrateCtrlRates(db);
   migrateChecklist(db);
+  migrateLogTrips(db);
 }
 
 // Уточнение 07.11: четыре руководителя — направления, логистики, ремзоны
@@ -268,6 +270,33 @@ function migrateSupplyMoney(db) {
   if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_supply_money_v1'`).get()) return;
   db.prepare(`UPDATE role_sets SET money='none' WHERE id='toir_supply'`).run();
   db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_supply_money_v1','1')`).run();
+}
+
+// Решение руководителя 11.11 (перед включением Логистики): «уйти от
+// логистики должен только Ресурс, они управляют рейсами — всё остальное
+// должно остаться». Наборы логистики получают все три кода управления
+// рейсами (заявки, рейсы, отметки) и все рабочие экраны логистики;
+// различие должностей — в рабочем месте (АРМ). Правка Ресурса
+// (fleet:write) остаётся только у Эксплуатации. Людям с этими наборами
+// коды в users.roles пересобираются.
+const LOG_TRIP_SETS = ['log_plan', 'log_assign', 'log_ctrl'];
+const LOG_TRIP_CODES = ['sales', 'logist', 'dispatcher'];
+const LOG_TRIP_VIEWS = ['sales', 'routes', 'delivery', 'flows', 'logist', 'dispatcher', 'monitoring', 'incidents', 'gantt'];
+function migrateLogTrips(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='role_sets_log_trips_v1'`).get()) return;
+  for (const id of LOG_TRIP_SETS) {
+    const row = db.prepare(`SELECT views_json, codes_json FROM role_sets WHERE id=?`).get(id);
+    if (!row) continue;
+    const views = [...new Set([...parse(row.views_json, []), ...LOG_TRIP_VIEWS])];
+    const codes = [...new Set([...parse(row.codes_json, []), ...LOG_TRIP_CODES])];
+    db.prepare(`UPDATE role_sets SET views_json=?, codes_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(JSON.stringify(views), JSON.stringify(codes), id);
+  }
+  for (const user of db.prepare(`SELECT id, role_sets FROM users WHERE role_sets<>''`).all()) {
+    const ids = parse(user.role_sets, []);
+    if (Array.isArray(ids) && ids.some(id => LOG_TRIP_SETS.includes(id))) assignRoleSets(db, user.id, ids, { allowAdmin: true });
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('role_sets_log_trips_v1','1')`).run();
 }
 
 function migrateArmAll(db) {

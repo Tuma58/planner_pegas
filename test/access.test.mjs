@@ -107,3 +107,24 @@ test('рассылки с деньгами: полный текст — толь
   assert.equal(broadcastTextFor(db, control, 'маржа', { money: 'full' }), null);
   assert.equal(broadcastTextFor(db, control, 'смена', {}), 'смена'); // без денег — всем
 });
+
+test('логистика управляет рейсами целиком, Ресурс — только у Эксплуатации (решение 11.11)', async t => {
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const { openDatabase } = await import('../src/db.mjs');
+  const { roleSets } = await import('../src/access.mjs');
+  const { permissionsForRoles } = await import('../src/permissions.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-logtrips-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), { username: 'root-admin', password: 'Temporary-password-2026', fullName: 'А' });
+  t.after(() => db.close());
+  const sets = new Map(roleSets(db).map(set => [set.id, set]));
+  for (const id of ['log_plan', 'log_assign', 'log_ctrl', 'log_head']) {
+    const set = sets.get(id);
+    const perms = permissionsForRoles(set.codes);
+    for (const need of ['orders:write', 'trips:write', 'trip-status:write']) assert.ok(perms.includes(need), `${id}: ${need}`);
+    assert.ok(!perms.includes('fleet:write'), `${id}: Ресурс не правит`);
+    assert.ok(!set.views.includes('resource'), `${id}: экрана Ресурс нет`);
+    for (const view of ['sales', 'logist', 'dispatcher', 'monitoring', 'incidents', 'gantt']) assert.ok(set.views.includes(view), `${id}: ${view}`);
+  }
+  assert.ok(permissionsForRoles(sets.get('drv_head').codes).includes('fleet:write'));
+});
