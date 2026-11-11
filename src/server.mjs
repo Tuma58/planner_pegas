@@ -24,9 +24,13 @@ const watchTimings = new Map();
 function watchWrap(name, fn) {
   return async (...args) => {
     const startedNs = process.hrtime.bigint();
-    try { return await fn(...args); } finally {
+    let failed = null;
+    try { return await fn(...args); } catch (error) { failed = error; throw error; } finally {
       const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
-      const row = watchTimings.get(name) || { count: 0, totalMs: 0, maxMs: 0 };
+      const row = watchTimings.get(name) || { count: 0, totalMs: 0, maxMs: 0, errors: 0, lastError: '', lastErrorAt: 0 };
+      // Упавший сторож раньше был виден только в логе — теперь считается
+      // и попадает в «Контроль процессов» (11.11).
+      if (failed) { row.errors += 1; row.lastError = String(failed?.message || failed).slice(0, 160); row.lastErrorAt = Date.now(); }
       row.count += 1;
       row.totalMs += ms;
       if (ms > row.maxMs) row.maxMs = Math.round(ms);
@@ -36,7 +40,8 @@ function watchWrap(name, fn) {
   };
 }
 const watchersSnapshot = () => [...watchTimings]
-  .map(([name, row]) => ({ name, count: row.count,
+  .map(([name, row]) => ({ name, count: row.count, errors: row.errors || 0, lastError: row.lastError || '',
+    lastErrorAt: row.lastErrorAt || 0,
     totalMs: Math.round(row.totalMs), avgMs: Math.round(row.totalMs / row.count), maxMs: row.maxMs }))
   .sort((a, b) => b.totalMs - a.totalMs);
 import { ROLE_LABELS, effectivePermissions, hasPermission, permissionsForRoles, roleLabelsFor, rolesOf } from './permissions.mjs';
@@ -56,6 +61,7 @@ import { cfoData, cfoScope } from './cfo.mjs';
 import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, roleSets, stripOrders, stripSmall, stripTrips,
   updateRoleSet } from './access.mjs';
 import { applyMerger, mergerPlan, mergerStatus, rollbackMerger } from './merger-import.mjs';
+import { processAlertText, processControl, processControlTick } from './process-control.mjs';
 import { changeOwnPassword, createGuest, guestExpired, issueAccess, issueAccessBulk, updateGuest } from './credentials.mjs';
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
@@ -942,6 +948,51 @@ setInterval(watchWrap('runUnloadWatch', runUnloadWatch), 10 * 60_000);
 // Сквозной контроль (блок 4 «Слияния», 07.11): детектор стыков открывает
 // случаи и сам закрывает устранённые — каждые 5 минут.
 setInterval(watchWrap('runJointSignals', () => detectSignals(db)), 5 * 60_000);
+
+// ── 🧭 Контроль процессов (11.11) ──
+// Системные проверки: входы, сторожа, скорость. Проверки процессов
+// конвейера считает process-control.mjs из канонов АРМ.
+function processSystemChecks() {
+  const safe = fn => { try { return fn(); } catch { return null; } };
+  const noAccess = safe(() => db.prepare(`SELECT COUNT(*) n FROM users WHERE deleted_at IS NULL AND active=1
+    AND role_sets<>'' AND (password_hash IS NULL OR password_hash NOT LIKE 'scrypt$%')`).get().n);
+  const tempPass = safe(() => db.prepare(`SELECT COUNT(*) n FROM users WHERE deleted_at IS NULL AND active=1
+    AND must_change_password=1`).get().n);
+  const guestsExpiring = safe(() => db.prepare(`SELECT COUNT(*) n FROM users WHERE deleted_at IS NULL AND active=1
+    AND guest=1 AND guest_until IS NOT NULL AND guest_until < date('now','+3 days')`).get().n);
+  const watchers = watchersSnapshot();
+  const failed = watchers.filter(row => row.errors > 0);
+  const slowWatch = watchers.filter(row => row.maxMs >= 1000);
+  const perfSnap = safe(() => perf.snapshot()) || { endpoints: [] };
+  const slowApi = (perfSnap.endpoints || []).filter(row => row.count >= 5 && row.p95 >= (Number(settingsObject(db).performance?.slowMs ?? 500) || 500));
+  const apiErrors = (perfSnap.endpoints || []).reduce((sum, row) => sum + (row.errors || 0), 0);
+  return {
+    sys_access: [
+      { label: 'С ролью, но без входа', value: noAccess, note: '«Сотрудники» → «🔐 Выдать доступ»' },
+      { label: 'Не сменили временный пароль', value: tempPass, note: 'ещё не входили' },
+      { label: 'Гостевой доступ истекает или истёк', value: guestsExpiring, note: 'карточка гостя — продлить или закрыть' }
+    ],
+    sys_watch: [
+      { label: 'Сторожа с ошибками', value: failed.length, tone: failed.length ? 'neg' : '',
+        note: failed.slice(0, 3).map(row => `${row.name}: ${row.lastError}`).join('; ') },
+      { label: 'Сторожа дольше секунды', value: slowWatch.length, note: slowWatch.slice(0, 3).map(row => `${row.name} до ${row.maxMs} мс`).join('; ') },
+      { label: 'Сторожей работает', value: watchers.length, kind: 'metric' }
+    ],
+    sys_speed: [
+      { label: 'Медленные запросы (p95 выше порога)', value: slowApi.length, note: slowApi.slice(0, 3).map(row => `${row.path} ${row.p95} мс`).join('; ') },
+      { label: 'Ответы с ошибкой с запуска', value: apiErrors, tone: apiErrors ? 'warn' : '' }
+    ]
+  };
+}
+function runProcessControl() {
+  const settings = settingsObject(db);
+  if (settings.processControl?.enabled === false) return;
+  const tick = processControlTick(db, { settings, system: processSystemChecks() });
+  const text = processAlertText(tick);
+  if (text) notify('manager', text, 'process-control', null, { category: 'daily_report' });
+}
+setTimeout(watchWrap('runProcessControl', runProcessControl), 90_000);
+setInterval(watchWrap('runProcessControl', runProcessControl), 15 * 60_000);
 setTimeout(runUnloadWatch, 15_000);
 
 // Сторож-геокодер: адреса справочника без координат по одному подтягиваются
@@ -8421,6 +8472,13 @@ async function api(request, response, url) {
     return json(response, 200, { user: publicUser(user) }, {
       'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}${config.secureCookies ? '; Secure' : ''}`
     });
+  }
+
+  // ── 🧭 Контроль процессов (11.11): руководитель направления ──
+  if (pathname === '/api/process-control' && request.method === 'GET') {
+    const user = requirePermission(request, response, 'reports:read');
+    if (!user) return;
+    return json(response, 200, processControl(db, { settings: settingsObject(db), system: processSystemChecks() }));
   }
 
   // ── Перенос «Слияния» по отделам (10.11): только администратор ──

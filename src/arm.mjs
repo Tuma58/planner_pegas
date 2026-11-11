@@ -750,3 +750,10 @@ export async function armApi(ctx) {
   errorJson(response, 404, 'Маршрут АРМ не найден');
   return true;
 }
+
+// Виджет реестра по ключу — для «Контроля процессов» (11.11): те же
+// каноны очередей и показателей, что видит сотрудник в своём АРМ.
+export function armWidget(key, ctx, ...args) {
+  const out = safe(() => W[key]?.(ctx, ...args));
+  return out == null ? [] : Array.isArray(out) ? out : [out];
+}
