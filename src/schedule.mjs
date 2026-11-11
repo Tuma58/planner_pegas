@@ -143,6 +143,12 @@ export function projectPlanToTable(db, crewIds = null) {
         cells += 1;
       }
     }
+    // Будущий план уволенных — мусор: их строки больше не резолвятся и
+    // не перезаписываются, а старые дни продолжали держать борта
+    // (ревизия 11.11: fired-дубль «Тюгаев Ильяс» держал р892ху58 кодом
+    // 892). История (прошлые дни) остаётся — её читает табель.
+    db.prepare(`DELETE FROM driver_plan_days WHERE day>=? AND driver_id IN
+      (SELECT id FROM drivers WHERE status='fired')`).run(dayIso(todayMs, 0));
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
@@ -393,13 +399,18 @@ export function scheduleHolderMap(db, horizonDays = 35) {
       if (t3) byTail.set(t3, byTail.has(t3) ? 'many' : v.id);
     }
     const holder = new Map();
-    const put = (vid, day, drvId) => {
+    // Претенденты дня: кто и каким кодом держит борт — расшифровка MANY
+    // для сторожа «двое держат борт» (ревизия 11.11, кейс р892ху58).
+    const claims = new Map();
+    const put = (vid, day, drvId, code) => {
       const key = vid + '|' + day;
       holder.set(key, holder.has(key) && holder.get(key) !== drvId ? MANY : drvId);
+      (claims.get(key) || claims.set(key, new Map()).get(key)).set(drvId, code);
     };
     const drop = (vid, day, drvId) => {
       const key = vid + '|' + day;
       if (holder.get(key) === drvId) holder.delete(key);
+      claims.get(key)?.delete(drvId);
     };
     const rows = db.prepare(`SELECT driver_id, day, code, vehicle_id FROM driver_plan_days
       WHERE day>=? AND day<?`).all(horizon[0], dayIso(todayMs, horizonDays));
@@ -407,24 +418,27 @@ export function scheduleHolderMap(db, horizonDays = 35) {
       for (const row of rows) {
         const code = row.code;
         if (pass === 0 && ['в', 'П', 'РП', 'Р'].includes(code) && row.vehicle_id) {
-          put(row.vehicle_id, row.day, row.driver_id);
+          put(row.vehicle_id, row.day, row.driver_id, code);
         }
         if (pass === 1 && (/^\d{3}$/.test(code) || vehByPlate.has(canonPlate(code)))) {
           const sub = /^\d{3}$/.test(code) ? byTail.get(code) : vehByPlate.get(canonPlate(code));
           if (row.vehicle_id) drop(row.vehicle_id, row.day, row.driver_id);
-          if (sub && sub !== 'many') put(sub, row.day, row.driver_id);
+          if (sub && sub !== 'many') put(sub, row.day, row.driver_id, code);
         }
       }
     }
     const scheduledVids = new Set([...holder.keys()].map(key => key.split('|')[0]));
     const tailConflicts = [...byTail.entries()].filter(([, v]) => v === 'many').map(([t]) => t);
     const built = { rev, today, horizonDays, crewCount: crews0(db), holder, MANY, idByFio,
-      horizon, horizonSet: new Set(horizon), scheduledVids, tailConflicts };
+      claims, horizon, horizonSet: new Set(horizon), scheduledVids, tailConflicts };
     holderCaches.set(db, built);
     return built;
   }
   const crews = loadCrews(db);
-  // ФИО графика → водитель планера (однозначные; дубль ФИО не сличаем).
+  // ФИО графика → водитель планера: единый резолвер (ревизия 11.11 —
+  // прежний точный матч расходился с материализацией: короткая строка
+  // «Тюгаев Ильяс» в мосте пропадала, а план её уже жил у активного).
+  const fioIndex = buildFioIndex(db);
   const idByFio = new Map();
   for (const row of db.prepare(`SELECT id, full_name FROM drivers WHERE status<>'fired'`).all()) {
     const key = canonFio(row.full_name);
@@ -445,9 +459,11 @@ export function scheduleHolderMap(db, horizonDays = 35) {
   }
   // Держатель каждого борта по дням: сначала свои, замещения NNN поверх.
   const holder = new Map();
-  const put = (vid, day, drvId) => {
+  const claims = new Map();
+  const put = (vid, day, drvId, code) => {
     const key = vid + '|' + day;
     holder.set(key, holder.has(key) && holder.get(key) !== drvId ? MANY : drvId);
+    (claims.get(key) || claims.set(key, new Map()).get(key)).set(drvId, code);
   };
   // Уходя замещать чужой борт, водитель снимает с родной машины ТОЛЬКО
   // СЕБЯ: у экипажа бывает два своих водителя, и второй остаётся
@@ -456,6 +472,7 @@ export function scheduleHolderMap(db, horizonDays = 35) {
   const drop = (vid, day, drvId) => {
     const key = vid + '|' + day;
     if (holder.get(key) === drvId) holder.delete(key);
+    claims.get(key)?.delete(drvId);
   };
   // Замещение: три цифры борта ИЛИ полный госномер — полный номер
   // обязателен, когда в парке борта-тёзки по хвосту (мина «964»).
@@ -467,18 +484,18 @@ export function scheduleHolderMap(db, horizonDays = 35) {
     for (const crew of crews.values()) {
       for (const drv of crew.drv || []) {
         if (drv.vac) continue;
-        const drvId = idByFio.get(canonFio(drv.fio));
+        const drvId = resolveFio(fioIndex, drv.fio);
         if (!drvId) continue;
         const own = ownVehicle.get(crew.id + '|' + drv.ts);
         for (const day of horizon) {
           const code = planCode(drv, day);
           if (!code) continue;
-          if (pass === 0 && passes[0]({ code }) && own) put(own, day, drvId);
+          if (pass === 0 && passes[0]({ code }) && own) put(own, day, drvId, code);
           if (pass === 1 && passes[1]({ code })) {
             const sub = /^\d{3}$/.test(code) ? byTail.get(code)
               : vehByPlate.get(canonPlate(code));
             if (own) drop(own, day, drvId);
-            if (sub && sub !== 'many') put(sub, day, drvId);
+            if (sub && sub !== 'many') put(sub, day, drvId, code);
           }
         }
       }
@@ -493,9 +510,55 @@ export function scheduleHolderMap(db, horizonDays = 35) {
   // с964рв58 и р964нт58 в одном парке).
   const tailConflicts = [...byTail.entries()].filter(([, v]) => v === 'many').map(([t]) => t);
   const built = { rev, today, horizonDays, crewCount: crews.size,
-    holder, MANY, idByFio, horizon, horizonSet, scheduledVids, tailConflicts };
+    holder, MANY, idByFio, claims, horizon, horizonSet, scheduledVids, tailConflicts };
   holderCaches.set(db, built);
   return built;
+}
+
+// ── Сторожа чистоты графика (ревизия 11.11, кейс р892ху58) ──────────
+// 1) «Двое держат борт»: день, на который претендуют два РАЗНЫХ водителя
+//    (мост закреплений такие дни молча пропускает — борт остаётся без
+//    водителя, карточка ТС показывает отпускника, штрафы вешаются не на
+//    того). 2) «Один человек двумя строками графика»: строки экипажей,
+//    резолвящиеся в одного активного водителя, — источник задвоений.
+export function scheduleConflicts(db) {
+  const map = scheduleHolderMap(db);
+  const plateOf = new Map(db.prepare('SELECT id, plate FROM vehicles').all()
+    .map(v => [v.id, v.plate]));
+  const nameOf = new Map(db.prepare('SELECT id, full_name, status FROM drivers').all()
+    .map(d => [d.id, d.full_name + (d.status === 'fired' ? ' (уволен)' : '')]));
+  // Двое держат борт: агрегируем по борту и составу претендентов.
+  const groups = new Map();
+  for (const [key, who] of map.claims || []) {
+    if (who.size < 2) continue;
+    const [vid, day] = key.split('|');
+    const names = [...who.entries()]
+      .map(([id, code]) => `${nameOf.get(id) || '?'} [${code}]`).sort().join(' ⚡ ');
+    const gkey = vid + '::' + names;
+    const item = groups.get(gkey) || { plate: plateOf.get(vid) || '?', names, days: [] };
+    item.days.push(day);
+    groups.set(gkey, item);
+  }
+  const doubleHolders = [...groups.values()]
+    .map(g => ({ ...g, days: g.days.sort() }))
+    .sort((a, b) => b.days.length - a.days.length);
+  // Дубль-строки: несколько строк экипажей на одного активного водителя.
+  const fioIndex = buildFioIndex(db);
+  const rowsByDriver = new Map();
+  for (const [crewId, crew] of loadCrews(db)) {
+    for (const drv of crew.drv || []) {
+      if (drv.vac || !String(drv.fio || '').trim()) continue;
+      const id = resolveFio(fioIndex, drv.fio);
+      if (!id) continue;
+      (rowsByDriver.get(id) || rowsByDriver.set(id, []).get(id))
+        .push({ crewId, fio: String(drv.fio) });
+    }
+  }
+  const dupRows = [...rowsByDriver.entries()]
+    .filter(([, rows]) => rows.length > 1)
+    .map(([id, rows]) => ({ driver: nameOf.get(id) || '?',
+      rows: rows.map(r => `«${r.fio}» (экипаж ${r.crewId})`) }));
+  return { doubleHolders, dupRows };
 }
 
 export function syncAssignBridge(db, userId = null, horizonDays = 35) {
