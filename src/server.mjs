@@ -8352,7 +8352,10 @@ async function api(request, response, url) {
       if (Number(sessionUser.must_change_password) && !own) {
         return json(response, 403, { error: 'Смените временный пароль', code: 'password_change' });
       }
-      if (Number(sessionUser.guest) && request.method !== 'GET' && !own) {
+      // Счётчики использования и маячки скорости — служебная запись,
+      // гостю (и табло) не запрещается.
+      const telemetry = ['/api/usage', '/api/perf-beacon'].includes(pathname);
+      if (Number(sessionUser.guest) && request.method !== 'GET' && !own && !telemetry) {
         return errorJson(response, 403, 'Гостевой режим — только просмотр');
       }
     }

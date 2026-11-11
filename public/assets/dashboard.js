@@ -1139,7 +1139,7 @@ export async function renderDashboard(container, context) {
   // Автообновление, пока открыта вкладка: один живой таймер на сессию.
   clearInterval(state.dashboardTimer);
   state.dashboardTimer = setInterval(() => {
-    if (state.view === 'dashboard') context.onReload();
+    if (state.view === 'dashboard') (context.onSoftReload || context.onReload)();
     else clearInterval(state.dashboardTimer);
   }, 90_000);
 }
