@@ -745,19 +745,30 @@ export function credentialsSheet(context, items, after) {
   if (!items?.length) { toast('Выдавать некому — у всех с ролью вход уже есть'); after?.(); return; }
   const origin = location.origin;
   const rows = items.map(item => `<tr><td>${escapeHtml(item.fullName)}<small class="muted" style="display:block">${escapeHtml(item.position || '')}</small></td>
-    <td class="mono"><b>${escapeHtml(item.username)}</b></td><td class="mono"><b>${escapeHtml(item.password)}</b></td></tr>`).join('');
+    <td class="mono"><b>${escapeHtml(item.username)}</b></td><td class="mono"><b>${escapeHtml(item.password)}</b></td>
+    <td><button type="button" class="button ghost small" data-cred-copy="${items.indexOf(item)}" title="Скопировать вход этого сотрудника">📋</button></td></tr>`).join('');
   showModal(`<div>
     <h2>🔐 Доступ выдан · ${items.length}</h2>
     <p class="muted" style="font-size:12.5px">Пароли показаны <b>один раз</b> — распечатайте или перепишите сейчас.
       При первом входе сотрудник придумает свой пароль; временный после этого не работает.
       Адрес входа: <b>${escapeHtml(origin)}</b></p>
-    <div style="overflow:auto;max-height:52vh"><table class="bi-table"><thead><tr><th>Сотрудник</th><th>Логин</th><th>Временный пароль</th></tr></thead>
+    <div style="overflow:auto;max-height:52vh"><table class="bi-table"><thead><tr><th>Сотрудник</th><th>Логин</th><th>Временный пароль</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     <div class="modal-actions">
+      <button type="button" class="button" id="credCopy" title="Все входы текстом — вставить в мессенджер или документ">📋 Скопировать все</button>
       <button type="button" class="button primary" id="credPrint">🖨 Печать листков</button>
       <button type="button" class="button ghost" id="credClose">Готово</button></div>
   </div>`);
   document.querySelector('#credPrint').onclick = () => printCredentials(items, origin);
+  document.querySelector('#credCopy').onclick = async () => {
+    await copyToClipboard(credentialsText(items, origin));
+    toast(`Скопировано входов: ${items.length}`);
+  };
+  document.querySelectorAll('[data-cred-copy]').forEach(button => button.onclick = async () => {
+    const item = items[Number(button.dataset.credCopy)];
+    await copyToClipboard(credentialsText([item], origin));
+    toast(`Вход «${item.fullName}» скопирован`);
+  });
   document.querySelector('#credClose').onclick = () => {
     if (!confirm('Закрыть? Пароли больше не будут показаны.')) return;
     closeModal(); after?.();
@@ -886,4 +897,24 @@ function pickedSets(form) {
   const main = String(form.querySelector('[name="roleMain"]')?.value || '');
   const extra = [...form.querySelectorAll('[name="roleExtra"]:checked')].map(input => input.value);
   return [...new Set([main, ...extra].filter(Boolean))];
+}
+
+// Текст входа для мессенджера / документа: адрес один раз, дальше по
+// строке на человека, в конце — правило первого входа.
+function credentialsText(items, origin) {
+  return [`Вход в планер «Пегас-Авто»: ${origin}`, '',
+    ...items.map(item => `${item.fullName}${item.position ? ` (${item.position})` : ''} — логин: ${item.username} · временный пароль: ${item.password}`
+      + (item.guestUntil ? ` · гостевой доступ до ${new Date(item.guestUntil).toLocaleDateString('ru-RU')}` : '')),
+    '', 'При первом входе планер попросит придумать свой пароль (не короче 10 символов, буквы и цифры).'].join('\n');
+}
+
+async function copyToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return; } catch { /* нет доступа к буферу — запасной путь */ }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.append(area);
+  area.select();
+  try { document.execCommand('copy'); } finally { area.remove(); }
 }
