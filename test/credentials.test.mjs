@@ -186,3 +186,18 @@ test('логин не по образцу (прежняя учётка прод�
   assert.equal(issueAccessBulk(db, { hashPassword }).length, 0);
   assert.equal(issueAccess(db, tarasov, { hashPassword }).username, 'tarasov.ea');
 });
+
+test('доступ к затратам галкой: логин добавляется и убирается, прежние логины с пробелом целы', async t => {
+  const db = freshDb(t);
+  const { setExpensesAccess, expensesAccess } = await import('../src/expenses.mjs');
+  const settings = () => ({ expenses: JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='expenses'`).get()?.value_json || '{}') });
+  const user = login => ({ username: login, roles: '["resource"]', role_sets: '["drv_head"]' });
+  setExpensesAccess(db, 'Дарья Н', true);
+  setExpensesAccess(db, 'tarasov.ea', true);
+  setExpensesAccess(db, 'tarasov.ea', true); // повтор — без дубля
+  assert.equal(settings().expenses.access, 'Дарья Н, tarasov.ea');
+  assert.ok(expensesAccess(user('Дарья Н'), settings()) && expensesAccess(user('tarasov.ea'), settings()));
+  setExpensesAccess(db, 'Дарья Н', false);
+  assert.ok(!expensesAccess(user('Дарья Н'), settings()));
+  assert.ok(expensesAccess(user('tarasov.ea'), settings()));
+});
