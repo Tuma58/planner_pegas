@@ -37,6 +37,34 @@ function releaseBusy(button) {
   if (!left) button.classList.remove('busy');
 }
 
+// Ошибки в браузере — в журнал «Контроля процессов» (11.11): раньше о
+// сломавшемся экране узнавали только со слов сотрудника. Не чаще 5 разных
+// сообщений за сессию вкладки, повтор одного и того же — раз в 10 минут.
+const reportedErrors = new Map();
+function reportClientError(message, source) {
+  try {
+    const text = String(message || '').slice(0, 200);
+    if (!text || /Требуется вход|Failed to fetch|Load failed|NetworkError/i.test(text)) return;
+    const last = reportedErrors.get(text) || 0;
+    if (Date.now() - last < 10 * 60_000 || (!last && reportedErrors.size >= 5)) return;
+    reportedErrors.set(text, Date.now());
+    fetch('/api/client-error', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, source: String(source || '').replace(/^.*\/assets\//, '').slice(0, 120),
+        view: window.plState?.view || location.pathname }) }).catch(() => {});
+  } catch { /* маячок не мешает работе */ }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', event => reportClientError(event.message, `${event.filename || ''}:${event.lineno || ''}`));
+  window.addEventListener('unhandledrejection', event => {
+    const reason = event.reason;
+    // Отказы сервера с понятным текстом (422/403) — не поломка экрана.
+    if (reason && reason.code) return;
+    if (reason instanceof TypeError || reason instanceof ReferenceError || reason instanceof RangeError) {
+      reportClientError(`${reason.name}: ${reason.message}`, String(reason.stack || '').split('\n')[1] || '');
+    }
+  });
+}
+
 export async function api(path, options = {}) {
   const pressed = options.method && options.method !== 'GET' ? pressBusy() : null;
   try {
