@@ -108,6 +108,16 @@ function setupUser() {
   // Стартовый экран — «Моё рабочее место» у всех (АРМ Э4, 07.11): у
   // руководителей отделов поле уже внутри АРМ. Исключение — пост КПП
   // (охраннику сразу нужен журнал въезда). Без АРМ — прежнее «Моё поле».
+  // Вкладка перезагрузилась (самообновление после выкладки, F5) — человек
+  // возвращается на экран, где работал, а не на стартовый (жалоба
+  // диспетчеров 11.11: после автообновления выбрасывало на «Моё рабочее
+  // место»). Экран помнит вкладка (sessionStorage); новый вход — стартовый.
+  if (!state.fieldLanded) {
+    let saved = '';
+    try { saved = sessionStorage.getItem('pl_view') || ''; } catch { /* приват-режим */ }
+    const known = saved && MAIN_VIEWS.find(view => view.id === saved);
+    if (known && known.show() && viewAllowed(saved)) { state.fieldLanded = true; state.view = saved; }
+  }
   if (!state.fieldLanded && user.access && !user.access.legacy) {
     const access = user.access;
     const guardPost = access.sets.length === 1 && access.sets[0] === 'guard';
@@ -1093,6 +1103,7 @@ function renderViewTabs() {
     const button = event.target.closest('[data-view]');
     if (!button) return;
     state.view = button.dataset.view;
+    try { sessionStorage.setItem('pl_view', state.view); } catch { /* приват-режим */ }
     if (state.view === 'boss') state.bossWarm = true;
     trackUsage(`view:${state.view}`);
     renderViewTabs();
@@ -2905,7 +2916,13 @@ function mergeById(list, changed, sortKey, dropDeleted = false) {
 // Раньше таймеры звали reload() — 21,5 МБ с каждой открытой вкладки
 // диспетчера каждую минуту (главный источник подвисаний, найден 11.11 по
 // журналу веб-сервера). Свежие рейсы и заявки привозит общий тик дельтой.
-function softReload() { return state.data ? reload(state.data) : reload(); }
+// Щит: пока человек занят или только что двигал мышью — экран не дёргаем,
+// следующий тик таймера обновит.
+function softReload() {
+  if (!state.data) return reload();
+  if (userBusy() || Date.now() - lastUserActivity < 8_000) return undefined;
+  return reload(state.data);
+}
 
 // Щит ввода: карточка открыта, курсор в поле, мышь зажата.
 function userBusy() {
@@ -2988,13 +3005,20 @@ function sendPerfBeacon(tickStarted, kind, renderMs = 0) {
 // раза в 10 минут (sessionStorage — защита от цикла, если ассеты
 // почему-то не сменились).
 let knownAssetVersion = '';
+// Сколько вкладка должна простоять без действий, чтобы тихо обновиться
+// на новую версию: настройка performance.selfReloadIdleMin (по умолчанию
+// 10 минут — раньше была минута, и диспетчера обновляло посреди работы).
+function selfReloadIdleMs() {
+  const minutes = Number(state.data?.settings?.performance?.selfReloadIdleMin ?? 10);
+  return (Number.isFinite(minutes) && minutes >= 0 ? minutes : 10) * 60_000;
+}
 function maybeSelfReload(assetVersion) {
   if (!assetVersion) return false;
   if (!knownAssetVersion) { knownAssetVersion = assetVersion; return false; }
   if (knownAssetVersion === assetVersion) return false;
   if (mouseHeld || byId('modalRoot').innerHTML.trim()
     || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)
-    || Date.now() - lastUserActivity < 60_000) return false;
+    || Date.now() - lastUserActivity < selfReloadIdleMs()) return false;
   let lastReload = 0;
   try { lastReload = Number(sessionStorage.getItem('pl_av_reload_at')) || 0; } catch { /* приват-режим */ }
   if (Date.now() - lastReload < 10 * 60_000) return false;
