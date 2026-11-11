@@ -558,7 +558,53 @@ export function scheduleConflicts(db) {
     .filter(([, rows]) => rows.length > 1)
     .map(([id, rows]) => ({ driver: nameOf.get(id) || '?',
       rows: rows.map(r => `«${r.fio}» (экипаж ${r.crewId})`) }));
-  return { doubleHolders, dupRows };
+  // Сверка диспозиций с план-слоем (заказ 11.11): гант и график — разные
+  // хранилища, мост работает только из графика в планер, поэтому ручная
+  // диспозиция в ганте план людей не меняет. Расхождения — человеку:
+  // 1) машина стоит (ремонт/без водителя/выведена), а держатель в графике
+  //    с рабочим кодом — перепланировать человека или снять диспозицию;
+  // 2) пересменка в ганте без кода «П» у водителей борта — график о ней
+  //    не знает (мостовые пересменки рождаются из «П» и сюда не попадают).
+  const KIND_LABEL = { repair: '🔧 ремонт', no_driver: '👤 без водителя', out: '⛔ выведена' };
+  const dispoWork = new Map();
+  const shiftNoP = new Map();
+  const horizonFrom = map.horizon[0];
+  const horizonTo = map.horizon[map.horizon.length - 1];
+  for (const d of db.prepare(`SELECT vehicle_id vid, kind, starts_at, ends_at
+      FROM vehicle_dispositions WHERE kind IN ('repair','no_driver','out','shift')
+        AND starts_at < ? AND ends_at > ?`).all(horizonTo + 'T23:59:59Z', horizonFrom)) {
+    if (!map.scheduledVids.has(d.vid)) continue; // борт в графике не ведётся
+    for (const day of map.horizon) {
+      const from = Date.parse(day + 'T00:00:00Z');
+      if (!(Date.parse(d.starts_at) < from + 86_400_000 && Date.parse(d.ends_at) > from)) continue;
+      const who = map.claims?.get(d.vid + '|' + day);
+      if (d.kind === 'shift') {
+        // Пересменка есть, а кода «П» в плане дня нет ни у кого на борту.
+        if (who && ![...who.values()].includes('П')) {
+          const item = shiftNoP.get(d.vid) || { plate: plateOf.get(d.vid) || '?', days: [] };
+          item.days.push(day);
+          shiftNoP.set(d.vid, item);
+        }
+        continue;
+      }
+      const holderId = map.holder.get(d.vid + '|' + day);
+      if (!holderId) continue; // держателя нет — диспозиция и план согласны
+      const names = holderId === map.MANY
+        ? [...(who?.keys() || [])].map(id => nameOf.get(id) || '?').join(' ⚡ ')
+        : nameOf.get(holderId) || '?';
+      const gkey = d.vid + '::' + d.kind + '::' + names;
+      const item = dispoWork.get(gkey) || { plate: plateOf.get(d.vid) || '?',
+        kind: KIND_LABEL[d.kind] || d.kind, driver: names, days: [] };
+      item.days.push(day);
+      dispoWork.set(gkey, item);
+    }
+  }
+  const uniqDays = list => [...new Set(list)].sort();
+  return { doubleHolders, dupRows,
+    dispoWork: [...dispoWork.values()]
+      .map(g => ({ ...g, days: uniqDays(g.days) }))
+      .sort((a, b) => b.days.length - a.days.length),
+    shiftNoP: [...shiftNoP.values()].map(g => ({ ...g, days: uniqDays(g.days) })) };
 }
 
 export function syncAssignBridge(db, userId = null, horizonDays = 35) {

@@ -106,3 +106,40 @@ test('материализация: будущий план уволенного
   const left = db.prepare(`SELECT day FROM driver_plan_days WHERE driver_id='d-fired' ORDER BY day`).all();
   assert.deepEqual(left.map(r => r.day), [past], 'будущее уволенного удалено, история цела');
 });
+
+test('сверка диспозиций: стоянка при рабочем коде и пересменка без «П»', t => {
+  const db = freshDb(t);
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,status) VALUES('v1','х043хх58',?,'work')`).run(type);
+  db.prepare(`INSERT INTO vehicles(id,plate,type_id,status) VALUES('v2','х044хх58',?,'work')`).run(type);
+  db.prepare(`INSERT INTO drivers(id,full_name,status) VALUES('d1','Проверочный Пётр Петрович','active')`).run();
+  db.prepare(`INSERT INTO drivers(id,full_name,status) VALUES('d2','Сменщиков Семён Семёнович','active')`).run();
+  const crew = { id: 'E099', ts: [{ id: 'T1', tyagach: 'х043хх58' }, { id: 'T2', tyagach: 'х044хх58' }],
+    drv: [
+      { id: 'D1', fio: 'Проверочный Пётр Петрович', ts: 'T1', vac: false, plan: planFor('в', 1, 3), fact: {} },
+      { id: 'D2', fio: 'Сменщиков Семён Семёнович', ts: 'T2', vac: false, plan: planFor('в', 1, 3), fact: {} }
+    ] };
+  applyScheduleSync(db, { since: 0, crews: { E099: crew }, log: [] });
+  const dayIso = n => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+  // Ремонт на завтра-послезавтра при рабочем коде держателя.
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('dp1','v1','repair',?,?)`).run(dayIso(1) + 'T00:00:00.000Z', dayIso(3) + 'T00:00:00.000Z');
+  // Пересменка руками в ганте: в плане дня «в», кода «П» нет.
+  db.prepare(`INSERT INTO vehicle_dispositions(id,vehicle_id,kind,starts_at,ends_at)
+    VALUES('dp2','v2','shift',?,?)`).run(dayIso(2) + 'T08:00:00.000Z', dayIso(2) + 'T12:00:00.000Z');
+  const conflicts = scheduleConflicts(db);
+  assert.equal(conflicts.dispoWork.length, 1);
+  assert.equal(conflicts.dispoWork[0].plate, 'х043хх58');
+  assert.match(conflicts.dispoWork[0].kind, /ремонт/);
+  assert.match(conflicts.dispoWork[0].driver, /Проверочный/);
+  assert.equal(conflicts.dispoWork[0].days.length, 2);
+  assert.equal(conflicts.shiftNoP.length, 1);
+  assert.equal(conflicts.shiftNoP[0].plate, 'х044хх58');
+  // Код «П» в плане дня пересменки — расхождения нет (мостовая пересменка).
+  crew.drv[1].plan = planFor('в', 1, 3);
+  const mk = dayIso(2).slice(0, 7);
+  crew.drv[1].plan[mk][Number(dayIso(2).slice(8)) - 1] = 'П';
+  applyScheduleSync(db, { since: 1, crews: { E099: crew }, log: [] });
+  const after = scheduleConflicts(db);
+  assert.equal(after.shiftNoP.length, 0);
+});

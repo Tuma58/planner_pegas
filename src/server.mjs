@@ -14392,6 +14392,16 @@ async function api(request, response, url) {
       add('schedule_dup_rows', '📑 Один человек двумя строками графика',
         'Строки-дубли задваивают план и путают мост — объедините план в одной строке, лишнюю удалите',
         (conflicts?.dupRows || []).map(g => ({ label: g.driver, sub: g.rows.join(' + ') })));
+      // Сверка диспозиций с планом графика (заказ 11.11): мост односторонний
+      // (график → планер), ручная диспозиция план людей не меняет — покажем.
+      const daysLabel = days => `${days.length} дн (${days[0].slice(5)}${days.length > 1 ? `…${days[days.length - 1].slice(5)}` : ''})`;
+      add('schedule_dispo', '⛔ Машина стоит, а водитель в графике работает',
+        'Диспозиция ремонт/без водителя/выведена при рабочем коде держателя — перепланируйте человека (замещение) или снимите диспозицию',
+        (conflicts?.dispoWork || []).map(g => ({ label: g.plate,
+          sub: `${g.kind} · в графике ${g.driver} · ${daysLabel(g.days)}` })));
+      add('schedule_shift_nop', '🔁 Пересменка в ганте без «П» в графике',
+        'Пересменку поставили руками в ганте — в плане графика кода «П» нет, явка и доплаты её не увидят',
+        (conflicts?.shiftNoP || []).map(g => ({ label: g.plate, sub: daysLabel(g.days) })));
     }
     add('drv_fired_linked', '🚪 Уволенные, оставшиеся в закреплениях', 'vehicle_id у уволенного или ФИО в карточке работающего ТС',
       db.prepare(`SELECT d.full_name, v.plate FROM drivers d
