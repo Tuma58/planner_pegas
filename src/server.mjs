@@ -61,7 +61,8 @@ import { cfoData, cfoScope } from './cfo.mjs';
 import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, roleSets, stripOrders, stripSmall, stripTrips,
   updateRoleSet } from './access.mjs';
 import { applyMerger, mergerPlan, mergerStatus, rollbackMerger } from './merger-import.mjs';
-import { processAlertText, processControl, processControlTick } from './process-control.mjs';
+import { closeMonth, controlJournalChecks, processAlertText, processControl, processControlTick, recordClientError,
+  recordDenial } from './process-control.mjs';
 import { changeOwnPassword, createGuest, guestExpired, issueAccess, issueAccessBulk, updateGuest } from './credentials.mjs';
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
@@ -966,8 +967,12 @@ function processSystemChecks() {
   const perfSnap = safe(() => perf.snapshot()) || { endpoints: [] };
   const slowApi = (perfSnap.endpoints || []).filter(row => row.count >= 5 && row.p95 >= (Number(settingsObject(db).performance?.slowMs ?? 500) || 500));
   const apiErrors = (perfSnap.endpoints || []).reduce((sum, row) => sum + (row.errors || 0), 0);
+  const journal = safe(() => controlJournalChecks(db, { settings: settingsObject(db) })) || { sys_client: [], denials: [], month_close: [] };
   return {
+    sys_client: journal.sys_client,
+    month_close: journal.month_close,
     sys_access: [
+      ...journal.denials,
       { label: 'С ролью, но без входа', value: noAccess, note: '«Сотрудники» → «🔐 Выдать доступ»' },
       { label: 'Не сменили временный пароль', value: tempPass, note: 'ещё не входили' },
       { label: 'Гостевой доступ истекает или истёк', value: guestsExpiring, note: 'карточка гостя — продлить или закрыть' }
@@ -984,10 +989,24 @@ function processSystemChecks() {
     ]
   };
 }
+// Потери в деньгах: простаивающие машины × медиана маржи машино-суток
+// парка (живой норматив сегментации клиентов; нет норматива — нет денег).
+function processLosses() {
+  const safe = fn => { try { return fn(); } catch { return null; } };
+  const count = (dept, key) => (safe(() => fieldLive(db, dept).queues) || []).find(queue => queue.key === key)?.count || 0;
+  return {
+    dayValue: customerSegmentsCache.norms?.parkMedian || null,
+    losses: {
+      assign: { units: count('log', 'idle'), label: 'свободные машины без задания' },
+      crew: { units: count('drv', 'no_driver'), label: 'машины без водителя' },
+      tech: { units: count('toir', 'repair'), label: 'машины в ремонте' }
+    }
+  };
+}
 function runProcessControl() {
   const settings = settingsObject(db);
   if (settings.processControl?.enabled === false) return;
-  const tick = processControlTick(db, { settings, system: processSystemChecks() });
+  const tick = processControlTick(db, { settings, system: processSystemChecks(), ...processLosses() });
   const text = processAlertText(tick);
   if (text) notify('manager', text, 'process-control', null, { category: 'daily_report' });
 }
@@ -8404,7 +8423,7 @@ async function api(request, response, url) {
       }
       // Счётчики использования и маячки скорости — служебная запись,
       // гостю (и табло) не запрещается.
-      const telemetry = ['/api/usage', '/api/perf-beacon'].includes(pathname);
+      const telemetry = ['/api/usage', '/api/perf-beacon', '/api/client-error'].includes(pathname);
       if (Number(sessionUser.guest) && request.method !== 'GET' && !own && !telemetry) {
         return errorJson(response, 403, 'Гостевой режим — только просмотр');
       }
@@ -8478,7 +8497,29 @@ async function api(request, response, url) {
   if (pathname === '/api/process-control' && request.method === 'GET') {
     const user = requirePermission(request, response, 'reports:read');
     if (!user) return;
-    return json(response, 200, processControl(db, { settings: settingsObject(db), system: processSystemChecks() }));
+    const data = processControl(db, { settings: settingsObject(db), system: processSystemChecks(), ...processLosses() });
+    // Потери в деньгах — только уровню денег «все».
+    if (accessOf(db, user).money !== 'full') { data.dayValue = null; data.lossTotal = 0; for (const proc of data.processes) proc.loss = null; }
+    data.canClose = rolesOf(user).some(role => ['manager', 'admin'].includes(role));
+    return json(response, 200, data);
+  }
+  // Ошибка в браузере сотрудника — в журнал контроля.
+  if (pathname === '/api/client-error' && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    recordClientError(db, user.full_name || user.username, await readJson(request, 4_000) || {});
+    return json(response, 200, { ok: true });
+  }
+  // Закрытие месяца: «ФОТ / затраты сверены» — руководитель.
+  if (pathname === '/api/month-close' && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).some(role => ['manager', 'admin'].includes(role))) return errorJson(response, 403, 'Сверку месяца отмечает руководитель');
+    const body = await readJson(request);
+    const result = closeMonth(db, String(body.month || ''), String(body.kind || ''), user.full_name || user.username, body.on !== false);
+    if (!result.ok) return errorJson(response, result.status || 422, result.error);
+    audit(db, user, body.on === false ? 'month-reopen' : 'month-close', 'month', String(body.month), { kind: body.kind }, requestIp(request));
+    return json(response, 200, { ok: true });
   }
 
   // ── Перенос «Слияния» по отделам (10.11): только администратор ──
@@ -17203,6 +17244,11 @@ export const server = http.createServer(async (request, response) => {
     response.once('finish', () => {
       const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
       const key = perf.record(url.pathname, ms, sentBytes, response.statusCode);
+      // Отказ «недостаточно прав» — в журнал контроля по людям (11.11):
+      // после включения отделов видно, кому чего не хватило.
+      if (response.statusCode === 403 && url.pathname !== '/api/auth/login') {
+        try { const who = currentUser(request); if (who) recordDenial(db, who.full_name || who.username, key); } catch { /* журнал не мешает ответу */ }
+      }
       const slowMs = Number(settingsObject(db).performance?.slowMs ?? 500) || 500;
       if (ms >= slowMs) {
         console.log(`⚙ медленный ответ: ${key} · ${Math.round(ms)} мс · ${Math.round(sentBytes / 1024)} КБ · ${response.statusCode}`);

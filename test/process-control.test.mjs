@@ -60,3 +60,41 @@ test('красная проверка по своей норме делает п
   assert.deepEqual(blind.blind.map(proc => proc.key), ['sys_speed']);
   assert.match(processAlertText(blind), /Нет данных контроля/);
 });
+
+test('журналы контроля: ошибки браузера и отказы копятся по суткам; закрытие месяца — срок из настройки', async t => {
+  const db = freshDb(t);
+  const { closeMonth, controlJournalChecks, recordClientError, recordDenial } = await import('../src/process-control.mjs');
+  recordClientError(db, 'Дойкина О', { message: 'TypeError: x is undefined', view: 'dispatcher', source: 'dispatcher.js:10' });
+  recordClientError(db, 'Гаев Д', { message: 'TypeError: x is undefined', view: 'dispatcher' });
+  recordClientError(db, 'Гаев Д', { message: '' });
+  recordDenial(db, 'Базуев Лев', '/api/drivers/:id');
+  recordDenial(db, 'Базуев Лев', '/api/drivers/:id');
+  const nowMs = Date.parse('2026-11-20T09:00:00Z');
+  const cfg = { processControl: { monthCloseDay: 10 } };
+  let checks = controlJournalChecks(db, { settings: cfg });
+  assert.equal(checks.sys_client[0].value, 1);
+  assert.match(checks.sys_client[0].note, /×2/);
+  assert.equal(checks.denials[0].value, 1);
+  assert.match(checks.denials[0].note, /Базуев Лев → \/api\/drivers\/:id ×2/);
+  // 20-е число: срок (10-е) прошёл, октябрь не сверен — красная зона.
+  checks = controlJournalChecks(db, { nowMs, settings: cfg });
+  assert.deepEqual(checks.month_close.map(item => item.tone), ['neg', 'neg']);
+  assert.match(checks.month_close[0].label, /2026-10/);
+  assert.ok(closeMonth(db, '2026-10', 'payroll', 'Администратор').ok);
+  assert.match(closeMonth(db, '2099-01', 'payroll', 'А').error, /завершённый/);
+  checks = controlJournalChecks(db, { nowMs, settings: cfg });
+  assert.equal(checks.month_close[0].closed, true);
+  assert.equal(checks.month_close[0].tone, '');
+  assert.equal(checks.month_close[1].tone, 'neg');
+  // До срока — жёлтая, не красная.
+  assert.equal(controlJournalChecks(db, { nowMs: Date.parse('2026-11-05T09:00:00Z'), settings: cfg }).month_close[1].tone, 'warn');
+});
+
+test('потери в деньгах: простаивающие машины × медиана машино-суток; без норматива денег нет', t => {
+  const db = freshDb(t);
+  const losses = { assign: { units: 4, label: 'свободные машины без задания' }, tech: { units: 0, label: 'машины в ремонте' } };
+  const data = processControl(db, { settings, system: sys(0), losses, dayValue: 18_000 });
+  assert.equal(data.processes.find(proc => proc.key === 'assign').loss.perDay, 72_000);
+  assert.equal(data.lossTotal, 72_000);
+  assert.equal(processControl(db, { settings, system: sys(0), losses, dayValue: null }).lossTotal, 0);
+});

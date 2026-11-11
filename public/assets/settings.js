@@ -1334,7 +1334,10 @@ async function renderControl() {
       <td class="mono">${escapeHtml(proc.stage)}</td>
       <td><b>${escapeHtml(proc.title)}</b><br><small class="muted">${escapeHtml(PC_DEPT[proc.owner] || '')}${proc.screen ? ` · экран «${escapeHtml(proc.screen)}»` : ''}</small></td>
       <td><span class="badge ${tone}">${label}</span>${proc.baseline != null ? `<br><small class="muted">очередь ${proc.load} · обычно до ${proc.baseline}</small>` : proc.learning ? `<br><small class="muted">${escapeHtml(proc.learning)}</small>` : ''}</td>
-      <td style="font-size:12.5px">${checks}</td>
+      <td style="font-size:12.5px">${checks}${proc.checks.filter(item => item.closeKind).map(item =>
+        `<div><button class="button ghost small" data-close-month="${item.month}" data-close-kind="${item.closeKind}" data-close-on="${item.closed ? '0' : '1'}"
+          ${data.canClose ? '' : 'disabled'}>${item.closed ? '↩ снять отметку' : `✓ ${escapeHtml(item.label)} — сверено`}</button></div>`).join('')}
+        ${proc.loss && proc.loss.units ? `<div class="muted">≈ <b>${Math.round(proc.loss.perDay / 1000).toLocaleString('ru-RU')} т₽/сут</b> недополученной маржи: ${proc.loss.units} — ${escapeHtml(proc.loss.label)}</div>` : ''}</td>
       <td style="white-space:nowrap" title="${proc.week.map(day => `${day.day}: ${day.load ?? '—'}`).join(' · ')}">${proc.week.map(day => PC_DOT[day.status] || '⚫').join('') || '<span class="muted">—</span>'}</td>
     </tr>`;
   };
@@ -1344,7 +1347,8 @@ async function renderControl() {
     biSec('Сводка', `<div class="actions">
       <span class="badge ok">🟢 в норме ${s.ok}</span> <span class="badge warn">🟡 есть работа ${s.work}</span>
       <span class="badge bad">🔴 требуют внимания ${s.bad}</span> <span class="badge">⚫ без данных ${s.blind}</span>
-      <span class="muted">всего процессов ${s.total} · ${escapeHtml(data.day)}</span></div>
+      <span class="muted">всего процессов ${s.total} · ${escapeHtml(data.day)}</span>
+      ${data.lossTotal ? `<span class="badge bad" title="Простаивающие машины × медиана маржи машино-суток парка (${Math.round(data.dayValue / 1000)} т₽)">≈ ${Math.round(data.lossTotal / 1000).toLocaleString('ru-RU')} т₽/сут теряется на простоях</span>` : ''}</div>
       <p class="muted">«Хуже обычного» — очередь процесса выше своего же уровня за ${data.settings.windowDays} суток
       (перцентиль ${data.settings.alertPercentile}, нужно не меньше ${data.settings.minDays} суток истории) или проверка в красной зоне по своей норме.
       Пороги не зашиты: норматив каждый процесс выучивает из собственной истории.</p>`),
@@ -1353,6 +1357,14 @@ async function renderControl() {
       <tbody>${data.processes.map(row).join('')}</tbody></table></div>`, { flush: true })
   ]);
   byId('pcRefresh').onclick = () => render();
+  content.querySelectorAll('[data-close-month]').forEach(button => button.onclick = async () => {
+    try {
+      await api('/api/month-close', { method: 'POST', body: JSON.stringify({ month: button.dataset.closeMonth,
+        kind: button.dataset.closeKind, on: button.dataset.closeOn === '1' }) });
+      toast(button.dataset.closeOn === '1' ? 'Отмечено: сверено' : 'Отметка снята');
+      render();
+    } catch (error) { toast(error.message, 'error'); }
+  });
 }
 
 // ── Перенос «Слияния» по отделам (10.11) ──

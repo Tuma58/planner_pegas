@@ -43,8 +43,75 @@ export const PROCESSES = [
 export const SYSTEM_PROCESSES = [
   { key: 'sys_access', stage: 'Система', title: 'Доступ: входы и временные пароли', owner: 'staff', screen: 'staff' },
   { key: 'sys_watch', stage: 'Система', title: 'Сторожа и фоновые расчёты', owner: 'staff', screen: '' },
-  { key: 'sys_speed', stage: 'Система', title: 'Скорость планера', owner: 'staff', screen: '' }
+  { key: 'sys_speed', stage: 'Система', title: 'Скорость планера', owner: 'staff', screen: '' },
+  { key: 'sys_client', stage: 'Система', title: 'Ошибки в браузере у сотрудников', owner: 'staff', screen: '' },
+  { key: 'month_close', stage: 'А12–А13', title: 'Закрытие месяца: ФОТ и затраты сверены', owner: 'staff', screen: 'payroll' }
 ];
+
+// ── Журналы контроля (11.11): ошибки браузера, отказы в доступе,
+// закрытие месяца. Суточные агрегаты — без персональных данных сверх
+// имени сотрудника и адреса запроса.
+export const CLOSE_KINDS = { payroll: 'ФОТ водителей', expenses: 'Затраты' };
+const mskDay = (ms = Date.now()) => new Date(ms + 3 * 3_600_000).toISOString().slice(0, 10);
+
+export function recordClientError(db, userName, payload = {}) {
+  const message = String(payload.message || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!message) return false;
+  db.prepare(`INSERT INTO client_errors(day,message,source,view,user_name,count) VALUES(?,?,?,?,?,1)
+    ON CONFLICT(day,message) DO UPDATE SET count=count+1, view=excluded.view, user_name=excluded.user_name,
+      source=excluded.source, updated_at=CURRENT_TIMESTAMP`)
+    .run(mskDay(), message, String(payload.source || '').slice(0, 120), String(payload.view || '').slice(0, 30),
+      String(userName || '').slice(0, 60));
+  return true;
+}
+
+export function recordDenial(db, userName, pathname) {
+  db.prepare(`INSERT INTO access_denials(day,user_name,path,count) VALUES(?,?,?,1)
+    ON CONFLICT(day,user_name,path) DO UPDATE SET count=count+1, updated_at=CURRENT_TIMESTAMP`)
+    .run(mskDay(), String(userName || '').slice(0, 60), String(pathname || '').slice(0, 80));
+}
+
+export function closeMonth(db, month, kind, byName, on = true) {
+  if (!/^\d{4}-\d{2}$/.test(String(month)) || !CLOSE_KINDS[kind]) return { ok: false, status: 422, error: 'Месяц ГГГГ-ММ и вид: payroll или expenses' };
+  if (month >= mskDay().slice(0, 7)) return { ok: false, status: 422, error: 'Сверяется завершённый месяц' };
+  if (on) {
+    db.prepare(`INSERT INTO month_closures(month,kind,closed_by) VALUES(?,?,?)
+      ON CONFLICT(month,kind) DO UPDATE SET closed_by=excluded.closed_by, closed_at=CURRENT_TIMESTAMP`).run(month, kind, String(byName || ''));
+  } else db.prepare(`DELETE FROM month_closures WHERE month=? AND kind=?`).run(month, kind);
+  return { ok: true };
+}
+
+// Проверки системных журналов для processControl (opts.system).
+export function controlJournalChecks(db, { nowMs = Date.now(), settings = {} } = {}) {
+  const today = mskDay(nowMs);
+  const errors = db.prepare(`SELECT message, view, user_name, count FROM client_errors WHERE day=? ORDER BY count DESC`).all(today);
+  const denials = db.prepare(`SELECT user_name, path, count FROM access_denials WHERE day=? ORDER BY count DESC`).all(today);
+  const people = [...new Set(denials.map(row => row.user_name))];
+  // Прошлый месяц: срок сверки — день месяца из настройки (цель руководителя).
+  const now = new Date(nowMs + 3 * 3_600_000);
+  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+  const deadline = Number(settings.processControl?.monthCloseDay ?? 10);
+  const closed = new Map(db.prepare(`SELECT kind, closed_by, closed_at FROM month_closures WHERE month=?`).all(prev).map(row => [row.kind, row]));
+  const late = now.getUTCDate() > deadline;
+  return {
+    sys_client: [
+      { label: 'Разных ошибок за сутки', value: errors.length, tone: errors.length ? 'warn' : '',
+        note: errors.slice(0, 3).map(row => `${row.message} (${row.view || 'экран ?'}, ${row.user_name}, ×${row.count})`).join('; ') },
+      { label: 'Всего срабатываний', value: errors.reduce((sum, row) => sum + row.count, 0), kind: 'metric' }
+    ],
+    denials: [
+      { label: 'Отказы «недостаточно прав» за сутки: людей', value: people.length, tone: people.length ? 'warn' : '',
+        note: denials.slice(0, 4).map(row => `${row.user_name} → ${row.path} ×${row.count}`).join('; ') }
+    ],
+    month_close: Object.entries(CLOSE_KINDS).map(([kind, title]) => {
+      const row = closed.get(kind);
+      return { label: `${title} за ${prev}`, value: row ? 0 : 1, closeKind: kind, month: prev, closed: Boolean(row),
+        tone: row ? '' : late ? 'neg' : 'warn',
+        note: row ? `сверено: ${row.closed_by}, ${String(row.closed_at).slice(0, 10)}` : `не сверено · срок — ${deadline}-е число` };
+    })
+  };
+}
+
 
 export function migrateProcessControl(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS process_control_days (
@@ -53,12 +120,30 @@ export function migrateProcessControl(db) {
     details_json TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(day, key))`);
+  db.exec(`CREATE TABLE IF NOT EXISTS client_errors (
+      day TEXT NOT NULL, message TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', view TEXT NOT NULL DEFAULT '',
+      user_name TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(day, message));
+    CREATE TABLE IF NOT EXISTS access_denials (
+      day TEXT NOT NULL, user_name TEXT NOT NULL, path TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(day, user_name, path));
+    CREATE TABLE IF NOT EXISTS month_closures (
+      month TEXT NOT NULL, kind TEXT NOT NULL, closed_by TEXT NOT NULL DEFAULT '',
+      closed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(month, kind));`);
   // Цели руководителя: окно истории, перцентиль «хуже обычного», минимум
   // суток для норматива. Дефолт — только вместо пустоты.
   const row = db.prepare(`SELECT value_json FROM settings WHERE key='processControl'`).get();
   if (!row) {
     db.prepare(`INSERT INTO settings(key,value_json) VALUES('processControl',?)`)
-      .run(JSON.stringify({ windowDays: 14, alertPercentile: 90, minDays: 5, enabled: true }));
+      .run(JSON.stringify({ windowDays: 14, alertPercentile: 90, minDays: 5, enabled: true, monthCloseDay: 10 }));
+  } else {
+    // Срок сверки месяца — цель руководителя; дефолт только вместо пустоты.
+    let value = {};
+    try { value = JSON.parse(row.value_json) || {}; } catch { value = {}; }
+    if (value.monthCloseDay == null) {
+      value.monthCloseDay = 10;
+      db.prepare(`UPDATE settings SET value_json=? WHERE key='processControl'`).run(JSON.stringify(value));
+    }
   }
 }
 
@@ -94,7 +179,10 @@ function statusOf(items, load, baseline) {
   return 'ok';
 }
 
-export function processControl(db, { nowMs = Date.now(), settings = {}, system = {}, park = null } = {}) {
+// Потери процесса в деньгах (приоритет оптимизации): простаивающие машины
+// × медиана выручки машино-суток парка (живой норматив сегментации
+// клиентов, не новая константа). losses: { ключ процесса: { units, label } }.
+export function processControl(db, { nowMs = Date.now(), settings = {}, system = {}, park = null, losses = null, dayValue = null } = {}) {
   const cfg = settings.processControl || {};
   const windowDays = Number(cfg.windowDays ?? 14);
   const minDays = Number(cfg.minDays ?? 5);
@@ -111,8 +199,10 @@ export function processControl(db, { nowMs = Date.now(), settings = {}, system =
     const loads = past.map(row => row.load).filter(value => value != null);
     const baseline = loads.length >= minDays ? percentile(loads, pct) : null;
     const status = statusOf(items, load, baseline);
+    const lost = losses?.[proc.key];
+    const loss = lost && dayValue ? { units: lost.units, label: lost.label, perDay: Math.round(lost.units * dayValue) } : null;
     return { key: proc.key, stage: proc.stage, title: proc.title, owner: proc.owner, screen: proc.screen || '',
-      status, load, baseline, learning: baseline == null ? `норматив учится: ${loads.length} из ${minDays} сут` : '',
+      loss, status, load, baseline, learning: baseline == null ? `норматив учится: ${loads.length} из ${minDays} сут` : '',
       checks: items, week: past.slice(-7).map(row => ({ day: row.day, status: row.status, load: row.load })) };
   };
   const processes = [
@@ -120,7 +210,8 @@ export function processControl(db, { nowMs = Date.now(), settings = {}, system =
     ...SYSTEM_PROCESSES.map(proc => build(proc, (system[proc.key] || []).map(item => ({ kind: 'row', unit: '', note: '', tone: '', ...item }))))
   ];
   const count = status => processes.filter(proc => proc.status === status).length;
-  return { day: today, processes,
+  const lossTotal = processes.reduce((sum, proc) => sum + (proc.loss?.perDay || 0), 0);
+  return { day: today, processes, dayValue: dayValue || null, lossTotal,
     summary: { total: processes.length, ok: count('ok'), work: count('work'), bad: count('bad'), blind: count('none') },
     settings: { windowDays, minDays, alertPercentile: pct, enabled: cfg.enabled !== false } };
 }
