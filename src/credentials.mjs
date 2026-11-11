@@ -50,6 +50,31 @@ export function uniqueLogin(db, fullName, exceptId = '') {
   throw new Error('Не удалось подобрать свободный логин');
 }
 
+// Логин «по образцу» (как у всех, кому доступ выдан из справочника):
+// латиница фамилии, точка, инициалы, при совпадении — цифра. Прежние
+// учётки прода («Тарасов Е», «Planer», «Логист 1») — не по образцу:
+// при выдаче доступа такой логин заменяется стандартным (решение 11.11).
+export const isStandardLogin = login => /^[a-z0-9]+(\.[a-z0-9]+)?$/.test(String(login || ''));
+
+// Логины в настройках доступа (полный доступ к справочнику, затраты) —
+// при смене логина переписываются, чтобы человек не потерял доступ.
+function renameLoginInSettings(db, from, to) {
+  for (const [key, field] of [['staff', 'fullAccess'], ['expenses', 'access']]) {
+    const row = db.prepare('SELECT value_json FROM settings WHERE key=?').get(key);
+    if (!row) continue;
+    let value;
+    try { value = JSON.parse(row.value_json); } catch { continue; }
+    const list = String(value?.[field] || '').split(/[,;]+/).map(item => item.trim()).filter(Boolean);
+    if (!list.some(item => item.toLowerCase() === String(from).toLowerCase())) continue;
+    value[field] = list.map(item => item.toLowerCase() === String(from).toLowerCase() ? to : item).join(', ');
+    db.prepare('UPDATE settings SET value_json=? WHERE key=?').run(JSON.stringify(value), key);
+  }
+}
+
+const hasRoleSets = user => {
+  try { const sets = JSON.parse(user?.role_sets || '[]'); return Array.isArray(sets) && sets.length > 0; } catch { return false; }
+};
+
 // Временный пароль: без похожих символов (0/O, 1/l/I), три группы по
 // четыре — легко продиктовать и перепечатать с листка.
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -98,24 +123,29 @@ export function issueAccess(db, userId, { hashPassword, allowAdmin = false }) {
     return { ok: false, status: 403, error: 'Доступ администратора выдаёт только администратор' };
   }
   if (guestExpired(user)) return { ok: false, status: 422, error: 'Срок гостевого доступа истёк — продлите' };
-  const generated = !user.username || user.username.startsWith('emp-');
+  const generated = !user.username || user.username.startsWith('emp-') || !isStandardLogin(user.username);
   const username = generated ? uniqueLogin(db, user.full_name, user.id) : user.username;
+  const renamedFrom = generated && user.username && !user.username.startsWith('emp-') ? user.username : null;
+  if (renamedFrom) renameLoginInSettings(db, renamedFrom, username);
   const password = generatePassword();
   const reissue = String(user.password_hash || '').startsWith('scrypt$');
   db.prepare(`UPDATE users SET username=?, password_hash=?, must_change_password=1,
       updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(username, hashPassword(password), user.id);
   db.prepare(`DELETE FROM sessions WHERE user_id=?`).run(user.id);
   return { ok: true, id: user.id, fullName: user.full_name, position: user.job_role || '',
-    username, password, reissue, guestUntil: user.guest_until || null };
+    username, password, reissue, renamedFrom, guestUntil: user.guest_until || null };
 }
 
-// Массовая выдача: всем действующим с ролью, у кого входа ещё нет
-// (администраторов не трогает).
+// Массовая выдача: всем действующим с ролью, у кого входа ещё нет, и
+// людям включённых отделов (есть набор ролей) с логином не по образцу —
+// им стандартный логин и временный пароль, как всем (решение 11.11).
+// Администраторов и отделы, ещё не включённые (без набора), не трогает.
 export function issueAccessBulk(db, { hashPassword, ids = null }) {
   const rows = db.prepare(`SELECT * FROM users WHERE deleted_at IS NULL AND active=1
     ORDER BY full_name`).all()
     .filter(user => rolesOf(user).filter(Boolean).length && !rolesOf(user).includes('admin'))
-    .filter(user => !String(user.password_hash || '').startsWith('scrypt$'))
+    .filter(user => !String(user.password_hash || '').startsWith('scrypt$')
+      || (hasRoleSets(user) && !isStandardLogin(user.username)))
     .filter(user => !ids || ids.includes(user.id))
     .filter(user => !guestExpired(user));
   return rows.map(user => issueAccess(db, user.id, { hashPassword })).filter(item => item.ok);

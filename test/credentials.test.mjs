@@ -159,3 +159,30 @@ test('свой набор: на основе существующего, экр�
   assert.ok(updateRoleSet(db, made.id, { views: ['sales'] }, { creatorMoney: 'full' }).ok);
   assert.match(updateRoleSet(db, 'log_plan', { views: ['sales'] }, { creatorMoney: 'full' }).error, /Утверждённые/);
 });
+
+test('логин не по образцу (прежняя учётка прода) — при выдаче стандартный, как у всех; отделы без набора не трогаются', async t => {
+  const db = freshDb(t);
+  const { isStandardLogin } = await import('../src/credentials.mjs');
+  assert.ok(isStandardLogin('tarasov.ea') && isStandardLogin('tokareva.v2') && isStandardLogin('admin'));
+  assert.ok(!isStandardLogin('Тарасов Е') && !isStandardLogin('Planer') && !isStandardLogin('Логист 1'));
+  const insert = (fullName, username, sets) => {
+    const id = crypto.randomUUID();
+    db.prepare(`INSERT INTO users(id,username,full_name,password_hash,role,roles,active) VALUES(?,?,?,?,?,?,1)`)
+      .run(id, username, fullName, hashPassword('Old-password-2026'), 'mechanic', '["mechanic"]');
+    if (sets) assignRoleSets(db, id, sets);
+    return id;
+  };
+  const tarasov = insert('Тарасов Евгений Анатольевич', 'Тарасов Е', ['toir_head']);
+  const logist = insert('Токарева Вера', 'Токарева В', null); // отдел не включён
+  db.prepare(`INSERT INTO settings(key,value_json) VALUES('staff', ?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`)
+    .run(JSON.stringify({ fullAccess: 'Тарасов Е, nikulina' }));
+  const items = issueAccessBulk(db, { hashPassword });
+  assert.deepEqual(items.map(item => item.username), ['tarasov.ea']);
+  assert.equal(items[0].renamedFrom, 'Тарасов Е');
+  assert.equal(userRow(db, tarasov).must_change_password, 1);
+  assert.equal(userRow(db, logist).username, 'Токарева В', 'Логистика не включена — не трогаем');
+  assert.match(JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='staff'`).get().value_json).fullAccess, /tarasov\.ea/);
+  // Повторно — уже по образцу: в массовую не попадает, сброс сохраняет логин.
+  assert.equal(issueAccessBulk(db, { hashPassword }).length, 0);
+  assert.equal(issueAccess(db, tarasov, { hashPassword }).username, 'tarasov.ea');
+});
