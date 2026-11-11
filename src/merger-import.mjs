@@ -117,6 +117,8 @@ export function mergerPlan(db, dept, { snapshot = loadSnapshot(), overrides = {}
       roleSets: person.roleSets, roleTitles: person.roleSets.map(id => sets.get(id)?.title || id),
       unknownSets: person.roleSets.filter(id => !sets.has(id)),
       active: person.active, fireReason: person.fireReason || '',
+      // Гостевой режим из снимка (11.11): только просмотр по своей роли.
+      guest: Boolean(person.guest),
       how, action, applied: Boolean(match && done.has(match.id)),
       prod: match ? { id: match.id, name: match.full_name, username: match.username,
         roles: safeJson(match.roles, []), roleSets: safeJson(match.role_sets, []) } : null,
@@ -138,7 +140,8 @@ export function mergerPlan(db, dept, { snapshot = loadSnapshot(), overrides = {}
 
 const safeJson = (text, fallback) => { try { return JSON.parse(text || ''); } catch { return fallback; } };
 const stateOf = user => ({ roles: user.roles, role: user.role, role_sets: user.role_sets,
-  position_id: user.position_id, job_role: user.job_role, active: user.active, fired_at: user.fired_at });
+  position_id: user.position_id, job_role: user.job_role, active: user.active, fired_at: user.fired_at,
+  guest: user.guest });
 
 // Применить план отдела. Блокирует, если есть неоднозначные или
 // неизвестные наборы/должности (их решает руководитель в таблице).
@@ -170,7 +173,8 @@ export function applyMerger(db, dept, { snapshot = loadSnapshot(), overrides = {
           const assigned = assignRoleSets(db, made.id, row.roleSets);
           if (!assigned.ok) throw new Error(`${row.fullName}: ${assigned.error}`);
         }
-        log.run(dept, made.id, 1, '{}', JSON.stringify({ roleSets: row.roleSets, positionId: row.positionId }), by);
+        if (row.guest) db.prepare(`UPDATE users SET guest=1 WHERE id=?`).run(made.id);
+        log.run(dept, made.id, 1, '{}', JSON.stringify({ roleSets: row.roleSets, positionId: row.positionId, guest: row.guest }), by);
         result.created += 1;
         continue;
       }
@@ -187,7 +191,9 @@ export function applyMerger(db, dept, { snapshot = loadSnapshot(), overrides = {
         .run(row.positionId, position?.title || row.position, user.id);
       const assigned = assignRoleSets(db, user.id, row.roleSets);
       if (!assigned.ok) throw new Error(`${row.fullName}: ${assigned.error}`);
-      log.run(dept, user.id, 0, JSON.stringify(before), JSON.stringify({ roleSets: row.roleSets, positionId: row.positionId }), by);
+      // Гостевой режим только включается из снимка; уже стоящий на проде не снимается.
+      if (row.guest) db.prepare(`UPDATE users SET guest=1 WHERE id=?`).run(user.id);
+      log.run(dept, user.id, 0, JSON.stringify(before), JSON.stringify({ roleSets: row.roleSets, positionId: row.positionId, guest: row.guest }), by);
       result.updated += 1;
     }
     db.exec('COMMIT');
@@ -233,6 +239,7 @@ export function rollbackMerger(db, dept, { by = '' } = {}) {
             updated_at=CURRENT_TIMESTAMP WHERE id=?`)
           .run(before.roles ?? '[]', before.role ?? '', before.role_sets ?? '', before.position_id ?? null,
             before.job_role ?? '', before.active ?? 1, before.fired_at ?? null, row.user_id);
+        if (before.guest !== undefined) db.prepare(`UPDATE users SET guest=? WHERE id=?`).run(before.guest ? 1 : 0, row.user_id);
       }
     }
     db.prepare(`UPDATE merger_access_log SET rolled_back_at=CURRENT_TIMESTAMP WHERE dept=? AND rolled_back_at IS NULL`).run(dept);

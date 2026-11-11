@@ -98,3 +98,15 @@ test('полный доступ к справочнику: логин с про�
   assert.ok(!staffAccess({ username: 'Н', roles: '[]' }, { staff: { fullAccess: 'Дарья Н' } }), 'кусок логина — не логин');
   assert.ok(!staffAccess({ username: 'Дарья', roles: '[]' }, { staff: { fullAccess: 'Дарья Н' } }));
 });
+
+test('гостевой режим из снимка: включается при включении отдела, откат возвращает прежнее', t => {
+  const db = freshDb(t);
+  const snapshot = loadSnapshot();
+  const id = prodUser(db, 'Вахромеева М', 'Вахромеева М', ['logist', 'resource', 'dispatcher']);
+  assert.ok(applyMerger(db, 'log', { snapshot }).ok);
+  assert.equal(db.prepare('SELECT guest FROM users WHERE id=?').get(id).guest, 1);
+  assert.equal(db.prepare(`SELECT guest FROM users WHERE full_name='Лётова Ирина'`).get().guest, 1);
+  assert.equal(db.prepare(`SELECT guest FROM users WHERE full_name='Токарева Вера'`).get().guest, 0);
+  assert.ok(rollbackMerger(db, 'log').ok);
+  assert.equal(db.prepare('SELECT guest FROM users WHERE id=?').get(id).guest, 0);
+});
