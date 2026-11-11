@@ -595,6 +595,8 @@ export function formValues(form) {
 
 export async function logout() {
   await api('/api/auth/logout', { method: 'POST' });
+  // Новый вход начинается со стартового экрана, а не с прежнего.
+  try { sessionStorage.removeItem('pl_view'); } catch { /* приват-режим */ }
   location.href = '/login.html';
 }
 
