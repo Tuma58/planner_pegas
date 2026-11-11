@@ -2807,7 +2807,11 @@ async function autoRefreshTick(force = false) {
       // Э1 диеты тика (04.11): изменившееся доезжает дельтой (килобайты),
       // полный снимок 21 МБ — входам и плановому часовому рефрешу
       // (сходимость после пропущенных дельт и выпадения из окна истории).
-      if (info.sync && state.data?.sync && Date.now() - lastFullRefresh < 60 * 60_000) {
+      // Сотрудник занят (карточка, ввод, зажатая мышь) — полный снимок всё
+      // равно не применится; раньше он качался и выбрасывался КАЖДУЮ минуту
+      // (21,5 МБ и ~1,5 с сервера у всех — «подвисает», 11.11). Пока занят —
+      // дельтой; плановый полный снимок — когда освободится.
+      if (info.sync && state.data?.sync && (Date.now() - lastFullRefresh < 60 * 60_000 || userBusy())) {
         const applied = await applyDeltaTick(info, tickStarted);
         if (applied) { lastAutoRefresh = Date.now(); return; }
       }
@@ -2816,6 +2820,8 @@ async function autoRefreshTick(force = false) {
       return;
     }
   }
+  // Занят — полный снимок не качаем вовсе (следующий тик попробует снова).
+  if (!force && state.dataRev && userBusy()) return;
   // Полный снимок прокрутки: страница и все прокручиваемые области.
   const viewScroll = captureViewScroll();
   let fresh;
@@ -2874,6 +2880,12 @@ function mergeById(list, changed, sortKey, dropDeleted = false) {
 }
 
 // Дельта-тик (Э1): сверив паспорт разделов, забирает только изменившееся.
+// Щит ввода: карточка открыта, курсор в поле, мышь зажата.
+function userBusy() {
+  return Boolean(mouseHeld || byId('modalRoot')?.innerHTML.trim()
+    || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName));
+}
+
 // true — тик обслужен (или отложен щитом ввода до следующего), false —
 // нужен полный снимок (слишком большая дельта или ошибка).
 async function applyDeltaTick(info, tickStarted) {
