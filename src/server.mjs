@@ -17009,11 +17009,32 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json'
 };
 
-// Версия ассетов меняется при каждом старте сервера: HTML ссылается на
-// /assets/v<версия>/…, поэтому после деплоя браузеры (включая Safari с его
-// агрессивным кешем ES-модулей) получают новые URL и не смешивают версии.
+// Версия ассетов — отпечаток СОДЕРЖИМОГО public/ (11.11): HTML ссылается
+// на /assets/v<версия>/…, поэтому после деплоя с новым кодом браузеры
+// (включая Safari с его агрессивным кешем ES-модулей) получают новые URL
+// и не смешивают версии, а вкладки тихо перезагружаются. Раньше версия
+// была временем старта — любой перезапуск без изменений (лишняя
+// пересборка, ночной рестарт) гнал у всех волну перезагрузок с полным
+// снимком 21 МБ. Теперь перезапуск того же кода вкладки не трогает.
 // Относительные import'ы внутри модулей наследуют версионированный путь.
-const ASSET_VERSION = Date.now().toString(36);
+function assetFingerprint(root) {
+  const hash = createHash('sha1');
+  const walk = dir => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : 1)) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) { hash.update(path.relative(root, full)); hash.update(fs.readFileSync(full)); }
+    }
+  };
+  walk(root);
+  return hash.digest('hex').slice(0, 10);
+}
+const ASSET_VERSION = (() => {
+  try { return assetFingerprint(config.publicPath); } catch (error) {
+    console.error('версия ассетов по времени старта:', error.message);
+    return Date.now().toString(36);
+  }
+})();
 const VERSIONED_ASSETS = /^\/assets\/v[a-z0-9]+\//;
 
 // Страница нового графика работы (этап 1 перестройки Ресурса) лежит ВНЕ
