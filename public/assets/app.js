@@ -910,7 +910,8 @@ const NAV_GROUPS = [
     { title: 'Назначение', views: ['logist'] },
     { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
   { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
-    { title: '', views: ['reports', 'release', 'docs', 'resource', 'fleetplan', 'toboard', 'payroll'] }] },
+    // «ТО по парку» — экран ТОиР (решение руководителя 11.11).
+    { title: '', views: ['reports', 'release', 'docs', 'resource', 'fleetplan', 'payroll'] }] },
   { dept: 'toir', title: 'ТОиР', coef: 'КТГ', sub: [
     { title: '', views: ['reports', 'remzona', 'toboard', 'parts'] }] }
 ];
