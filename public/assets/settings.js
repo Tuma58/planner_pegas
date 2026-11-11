@@ -1349,7 +1349,7 @@ async function renderMerger() {
           return `<tr>
           <td>${escapeHtml(row.fullName)}${row.active ? '' : ' <span class="badge warn">уволен</span>'}${row.applied ? ' <span class="badge ok">включён</span>' : ''}</td>
           <td>${escapeHtml(row.position)}${row.positionKnown ? '' : ' <span class="badge bad">нет в структуре</span>'}</td>
-          <td>${escapeHtml(row.roleTitles.join(' + ') || 'без входа')}${row.unknownSets.length ? ' <span class="badge bad">набор не найден</span>' : ''}</td>
+          <td>${escapeHtml(row.roleTitles.join(' + ') || 'без входа')}${row.guest ? ' <span class="badge warn" title="Гостевой режим: только просмотр">👁 гость</span>' : ''}${row.unknownSets.length ? ' <span class="badge bad">набор не найден</span>' : ''}</td>
           <td>${row.prod ? `${escapeHtml(row.prod.name)} <small class="muted">${escapeHtml(row.prod.username)}</small>` : '<span class="muted">нет</span>'}
             ${row.candidates.length > 1 ? `<br><small class="muted">похожие: ${row.candidates.map(item => escapeHtml(item.name)).join(', ')}</small>` : ''}</td>
           <td><span class="badge ${tone}">${how}</span><br>${options(row)}</td>
