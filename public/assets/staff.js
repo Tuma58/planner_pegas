@@ -104,8 +104,8 @@ export async function renderStaff(container, context) {
   // BI-вид (04.11): плитки состава → секции «Офис»/«Водители» с .bi-table.
   const activeUsers = payload.users.filter(person => person.active);
   // С ролью, но без входа — кандидаты на массовую выдачу (админа не трогаем).
-  const noAccess = activeUsers.filter(person => person.roles?.length && !person.canLogin
-    && !person.roles.includes('admin'));
+  const noAccess = activeUsers.filter(person => person.roles?.length && !person.roles.includes('admin')
+    && (!person.canLogin || (person.roleSets?.length && !standardLogin(person.username))));
   const firedAll = payload.users.length - activeUsers.length;
   const withTg = activeUsers.filter(person => person.telegram).length;
   const driversNoCar = payload.drivers.filter(person => !person.vehiclePlate).length;
@@ -194,7 +194,7 @@ export async function renderStaff(container, context) {
   container.querySelector('#staffAddDriver').onclick = () => context.openDrivers?.();
   const issueAll = container.querySelector('#staffIssueAll');
   if (issueAll) issueAll.onclick = async () => {
-    if (!confirm(`Выдать логин и временный пароль ${noAccess.length} сотрудникам с ролью и без входа?\n\nПароли покажутся один раз — сразу распечатайте листок.`)) return;
+    if (!confirm(`Выдать логин и временный пароль ${noAccess.length} сотрудникам: с ролью и без входа, а также с прежним логином не по образцу?\n\nПароли покажутся один раз — сразу распечатайте листок.`)) return;
     try {
       const result = await api('/api/staff/access/bulk', { method: 'POST', body: JSON.stringify({}) });
       credentialsSheet(context, result.items, () => renderStaff(container, context));
@@ -385,7 +385,9 @@ export async function staffCardDialog(context, id, after) {
       ${person.externalGuest ? '<button class="button" id="scGuest">✎ Гостевой доступ</button>'
     : '<button class="button" id="scEdit">✎ Данные</button>'}
       ${person.active && person.roles?.length && (!person.roles.includes('admin') || isAdminUser(context))
-    ? `<button class="button ghost" id="scAccess" title="${person.canLogin ? 'Новый временный пароль; логин прежний; сотрудник сменит пароль при входе' : 'Логин и временный пароль — показываются один раз'}">${person.canLogin ? '↻ Сбросить пароль' : '🔐 Выдать доступ'}</button>` : ''}
+    ? (person.canLogin && standardLogin(person.username)
+      ? '<button class="button ghost" id="scAccess" title="Новый временный пароль; логин прежний; сотрудник сменит пароль при входе">↻ Сбросить пароль</button>'
+      : `<button class="button ghost" id="scAccess" title="${person.canLogin ? `Прежний логин «${escapeHtml(person.username)}» заменится стандартным; новый временный пароль` : 'Логин и временный пароль — показываются один раз'}">🔐 Выдать доступ</button>`) : ''}
       ${person.active
         ? '<button class="button ghost danger" id="scFire">✕ Уволить</button>'
         : '<button class="button ghost" id="scRestore">↩ Восстановить</button>'}
@@ -457,7 +459,9 @@ export async function staffCardDialog(context, id, after) {
   if (guestButton) guestButton.onclick = () => guestDialog(context, person, reopen);
   const accessButton = document.querySelector('#scAccess');
   if (accessButton) accessButton.onclick = async () => {
-    if (person.canLogin && !confirm(`Сбросить пароль «${person.fullName}»? Прежний перестанет работать, открытые сессии закроются.`)) return;
+    if (person.canLogin && !confirm(standardLogin(person.username)
+      ? `Сбросить пароль «${person.fullName}»? Прежний перестанет работать, открытые сессии закроются.`
+      : `Выдать «${person.fullName}» стандартный логин вместо «${person.username}» и временный пароль? Прежний вход перестанет работать, открытые сессии закроются.`)) return;
     try {
       const result = await api(`/api/staff/users/${id}/access`, { method: 'POST', body: JSON.stringify({}) });
       credentialsSheet(context, result.items, reopen);
@@ -733,6 +737,7 @@ const isAdminUser = context => (context.state.data?.user?.roles || []).includes(
 function accessTag(person) {
   if (!person.active || !person.roles?.length) return '';
   if (!person.canLogin) return '<small class="bi-tag warn" style="display:block" title="Роль есть, логина и пароля нет — «🔐 Выдать доступ»">входа нет</small>';
+  if (person.roleSets?.length && !standardLogin(person.username)) return `<small class="bi-tag warn" style="display:block" title="Прежний логин «${escapeHtml(person.username)}» — «🔐 Выдать доступ» даст стандартный логин и временный пароль, как всем">логин не по образцу</small>`;
   if (person.mustChangePassword) return '<small class="bi-tag" style="display:block" title="Выдан временный пароль — сотрудник ещё не входил и не сменил его">временный пароль</small>';
   return '';
 }
@@ -744,7 +749,7 @@ export function credentialsSheet(context, items, after) {
   const { showModal, closeModal } = context;
   if (!items?.length) { toast('Выдавать некому — у всех с ролью вход уже есть'); after?.(); return; }
   const origin = location.origin;
-  const rows = items.map(item => `<tr><td>${escapeHtml(item.fullName)}<small class="muted" style="display:block">${escapeHtml(item.position || '')}</small></td>
+  const rows = items.map(item => `<tr><td>${escapeHtml(item.fullName)}<small class="muted" style="display:block">${escapeHtml(item.position || '')}${item.renamedFrom ? ` · прежний логин «${escapeHtml(item.renamedFrom)}» больше не работает` : ''}</small></td>
     <td class="mono"><b>${escapeHtml(item.username)}</b></td><td class="mono"><b>${escapeHtml(item.password)}</b></td>
     <td><button type="button" class="button ghost small" data-cred-copy="${items.indexOf(item)}" title="Скопировать вход этого сотрудника">📋</button></td></tr>`).join('');
   showModal(`<div>
@@ -918,3 +923,6 @@ async function copyToClipboard(text) {
   area.select();
   try { document.execCommand('copy'); } finally { area.remove(); }
 }
+
+// Логин «по образцу» — как на сервере (credentials.isStandardLogin).
+const standardLogin = login => /^[a-z0-9]+(\.[a-z0-9]+)?$/.test(String(login || ''));
