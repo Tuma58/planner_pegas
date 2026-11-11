@@ -1216,7 +1216,7 @@ function renderMain() {
     byId('timeline').innerHTML = '<div class="empty-state">Загружаю ремзону…</div>';
     renderRemzona(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'dashboard') {
-    renderDashboard(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
+    renderDashboard(byId('timeline'), { state, can, onReload: reload, onSoftReload: softReload, showModal, closeModal });
   } else if (state.view === 'monitoring') {
     renderMonitoring(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'incidents') {
@@ -1245,7 +1245,7 @@ function renderMain() {
   } else if (state.view === 'routes') {
     renderRoutes(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'dispatcher') {
-    renderDispatcher(byId('timeline'), { state, can, showModal, closeModal, onReload: reload, openTrip });
+    renderDispatcher(byId('timeline'), { state, can, showModal, closeModal, onReload: reload, onSoftReload: softReload, openTrip });
   } else if (state.view === 'logist') {
     renderLogist(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip, openNewTrip,
@@ -2880,6 +2880,13 @@ function mergeById(list, changed, sortKey, dropDeleted = false) {
 }
 
 // Дельта-тик (Э1): сверив паспорт разделов, забирает только изменившееся.
+// Мягкое обновление для таймеров экранов (Диспетчер раз в 60 с, Дашборд
+// раз в 90 с): перерисовка на уже загруженных данных, без полного снимка.
+// Раньше таймеры звали reload() — 21,5 МБ с каждой открытой вкладки
+// диспетчера каждую минуту (главный источник подвисаний, найден 11.11 по
+// журналу веб-сервера). Свежие рейсы и заявки привозит общий тик дельтой.
+function softReload() { return state.data ? reload(state.data) : reload(); }
+
 // Щит ввода: карточка открыта, курсор в поле, мышь зажата.
 function userBusy() {
   return Boolean(mouseHeld || byId('modalRoot')?.innerHTML.trim()

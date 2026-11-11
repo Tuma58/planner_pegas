@@ -2704,7 +2704,7 @@ export async function renderDispatcher(container, context, options = {}) {
     if (state.view !== 'dispatcher') { clearInterval(state.dispatcherTimer); return; }
     if (document.querySelector('#modalRoot .modal')) return;
     if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
-    context.onReload();
+    (context.onSoftReload || context.onReload)();
   }, 60_000);
 
   container.querySelector('#dispatcherStale')?.addEventListener('toggle', event => {
