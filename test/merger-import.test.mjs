@@ -88,3 +88,13 @@ test('учётка прода без набора не получает ново
   assert.ok(effectivePermissions({ roles: '["admin"]', role_sets: '' }).includes('release:write'));
   assert.ok(effectivePermissions({ roles: '["techctl"]', role_sets: '' }).includes('release:write'));
 });
+
+test('полный доступ к справочнику: логин с пробелом («Дарья Н») понимается, прежние списки через пробел тоже', async () => {
+  const { staffAccess } = await import('../src/staff.mjs');
+  const user = { username: 'Дарья Н', roles: '["resource"]', role_sets: '["drv_head"]' };
+  assert.ok(staffAccess(user, { staff: { fullAccess: 'Дарья Н' } }));
+  assert.ok(staffAccess(user, { staff: { fullAccess: 'tokareva.v, Дарья Н' } }));
+  assert.ok(staffAccess({ username: 'nikulina', roles: '[]' }, { staff: { fullAccess: 'tokareva nikulina' } }));
+  assert.ok(!staffAccess({ username: 'Н', roles: '[]' }, { staff: { fullAccess: 'Дарья Н' } }), 'кусок логина — не логин');
+  assert.ok(!staffAccess({ username: 'Дарья', roles: '[]' }, { staff: { fullAccess: 'Дарья Н' } }));
+});
