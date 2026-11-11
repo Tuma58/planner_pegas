@@ -11,7 +11,7 @@ import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, tzAccess, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
-import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, validateExpense, fuelLitersOf } from './expenses.mjs';
+import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
@@ -16438,6 +16438,10 @@ async function api(request, response, url) {
     if (!user) return;
     const card = staffUserCard(db, match[0], url.searchParams.get('month'));
     if (!card) return errorJson(response, 404, 'Сотрудник не найден');
+    // Персональный доступ к «💸 Затратам» — галка в «✎ Данные» (11.11).
+    card.user.expensesAccess = expensesAccess(
+      db.prepare('SELECT * FROM users WHERE id=?').get(match[0]), settingsObject(db));
+    card.user.canSetExpenses = canManageAccess(user);
     return json(response, 200, card);
   }
   match = route(/^\/api\/staff\/users\/([^/]+)\/shifts$/, pathname);
@@ -16494,6 +16498,11 @@ async function api(request, response, url) {
     const result = updateStaffUser(db, match[0], body,
       { allowAdmin: hasPermission(user, 'users:write') });
     if (!result.ok) return errorJson(response, 422, result.error);
+    // Доступ к затратам — персонально, выдаёт руководитель направления.
+    if (body.expensesAccess !== undefined && canManageAccess(user)) {
+      const target = db.prepare(`SELECT username, roles FROM users WHERE id=?`).get(match[0]);
+      if (target && !rolesOf(target).includes('admin')) setExpensesAccess(db, target.username, Boolean(body.expensesAccess));
+    }
     // «Только просмотр» сотруднику (гостевой режим): не себе и не админу.
     if (body.readOnly !== undefined) {
       const target = db.prepare(`SELECT id, roles FROM users WHERE id=?`).get(match[0]);

@@ -23,6 +23,23 @@ export function expensesAccess(user, settings) {
   return allowed.includes(String(user.username || '').toLowerCase());
 }
 
+// Персональный доступ к затратам галкой в карточке сотрудника (11.11):
+// логин добавляется в настройку expenses.access или убирается из неё.
+export function setExpensesAccess(db, username, on) {
+  const login = String(username || '').trim();
+  if (!login) return false;
+  const row = db.prepare(`SELECT value_json FROM settings WHERE key='expenses'`).get();
+  let value = {};
+  try { value = JSON.parse(row?.value_json || '{}') || {}; } catch { value = {}; }
+  const list = String(value.access || '').split(/[,;]+/).map(item => item.trim()).filter(Boolean)
+    .filter(item => item.toLowerCase() !== login.toLowerCase());
+  if (on) list.push(login);
+  value.access = list.join(', ');
+  if (row) db.prepare(`UPDATE settings SET value_json=? WHERE key='expenses'`).run(JSON.stringify(value));
+  else db.prepare(`INSERT INTO settings(key,value_json) VALUES('expenses',?)`).run(JSON.stringify(value));
+  return true;
+}
+
 // Посев категорий: kind — характер затраты для будущего живого
 // норматива себестоимости (Э5): variable ложится на километры,
 // fixed — на машино-дни. nature — природа статьи (принцип руководителя

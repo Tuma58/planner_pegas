@@ -989,6 +989,8 @@ function viewAllowed(id) {
   if (!access || access.legacy) {
     return (state.data?.user?.roles || []).includes('admin') || LEGACY_VIEWS.includes(id);
   }
+  // «Затраты» — персональный доступ (галка в карточке), вне набора ролей.
+  if (id === 'expenses' && state.data?.user?.expensesAccess) return true;
   return access.views.includes(id);
 }
 const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];

@@ -351,6 +351,7 @@ export async function staffCardDialog(context, id, after) {
         <div class="dash-row"><span>Права (коды)</span><b>${escapeHtml(person.roleLabel)}</b></div>
         <div class="dash-row"><span>Инструкции</span><b>${person.guideAckAt ? `✍ ${fmtDate(person.guideAckAt)}` : '—'}</b></div>
         <div class="dash-row"><span>Учётка</span><b>${person.active ? 'активна' : 'отключена'}${person.externalGuest ? ` · гость до ${fmtDate(person.guestUntil)}` : person.guest ? ' · только просмотр' : ''}</b></div>
+        <div class="dash-row"><span>Затраты</span><b>${person.expensesAccess ? '💸 есть доступ' : '—'}</b></div>
         <div class="dash-row"><span>Пароль</span><b>${!person.canLogin ? 'не выдан'
     : person.mustChangePassword ? 'временный — сменит при входе'
       : `свой${person.passwordChangedAt ? ` с ${fmtDate(person.passwordChangedAt)}` : ''}`}</b></div>
@@ -551,6 +552,9 @@ function staffEditDialog(context, person, after) {
     ${person && !person.roles?.includes('admin') ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
       <input type="checkbox" name="readOnly" style="width:auto;height:auto;flex:none;margin:0" ${person.guest ? 'checked' : ''}>
       👁 только просмотр <small class="muted">(гостевой режим: видит экраны своей роли, ничего не меняет)</small></label><br>` : ''}
+    ${person?.canSetExpenses && !person.roles?.includes('admin') ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
+      <input type="checkbox" name="expensesAccess" style="width:auto;height:auto;flex:none;margin:0" ${person.expensesAccess ? 'checked' : ''}>
+      💸 доступ к «Затратам» <small class="muted">(экран учёта затрат: журнал, суммы, импорт — персонально)</small></label><br>` : ''}
     ${person ? `<label style="display:inline-flex;gap:6px;align-items:center;margin:4px 0">
       <input type="checkbox" name="dispatchExempt" style="width:auto;height:auto;flex:none;margin:0" ${person?.dispatchExempt ? 'checked' : ''}>
       не участвует в автораспределении диспетчерской
@@ -596,6 +600,8 @@ function staffEditDialog(context, person, after) {
     if (person) body.dispatchExempt = form.querySelector('[name="dispatchExempt"]')?.checked || false;
     if (person) body.escRole = String(values.get('escRole') || '');
     if (person) body.roleSets = pickedSets(form);
+    const expensesBox = form.querySelector('[name="expensesAccess"]');
+    if (person && expensesBox && expensesBox.checked !== Boolean(person.expensesAccess)) body.expensesAccess = expensesBox.checked;
     const readOnly = form.querySelector('[name="readOnly"]');
     if (person && readOnly && readOnly.checked !== Boolean(person.guest)) body.readOnly = readOnly.checked;
     try {
