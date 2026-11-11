@@ -1,4 +1,4 @@
-import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs, captureViewScroll, restoreViewScroll, setMoneyHidden } from './api.js';
+import { api, attachSearch, escapeHtml, formatDate, formatDateTime, formValues, logout, money, routeLabel, setTimeZone, setupTheme, timeZone, toLocalInput, toast, transitHours, wireSelectSearch, tripBusyUntilMs, tripBusyFromMs, captureViewScroll, restoreViewScroll, windowWarningModal, setMoneyHidden } from './api.js';
 import { renderGeoMap } from './map.js';
 import { renderMonitoring } from './monitoring.js';
 import { vehicleInfoDialog } from './vehicle-info.js';
@@ -673,9 +673,11 @@ function enableTripDrag(dayWidth) {
       }
       if (!payload) { renderTimeline(); return; }
       try {
-        await api(`/api/trips/${trip.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+        const result = await api(`/api/trips/${trip.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
         toast(targetVehicle ? 'Рейс перенесён на другую сцепку' : 'Сроки рейса обновлены');
         await reload();
+        // Мягкий сторож: рейс лёг поверх диспозиции (ремонт/стоянка).
+        windowWarningModal(showModal, [result.dispoWarning], '⚠ Рейс перенесён — проверьте');
       } catch (error) {
         toast(error.message, 'error');
         renderTimeline();
@@ -1607,13 +1609,15 @@ function openNewTrip(order = null) {
     const values = formValues(form);
     const calc = calculation(values.fromZoneId, values.toZoneId, values.revenueVat, values.customerName);
     try {
-      await api('/api/trips', { method: 'POST', body: JSON.stringify({
+      const result = await api('/api/trips', { method: 'POST', body: JSON.stringify({
         ...values, orderId: order?.id, distanceKm: calc.distance,
         revenueVat: Number(values.revenueVat || calc.gross)
       }) });
       closeModal();
       toast('Рейс добавлен');
       await reload();
+      // Мягкий сторож: рейс создан на борту, который по планеру стоит.
+      windowWarningModal(showModal, [result.dispoWarning], '⚠ Рейс добавлен — проверьте');
     } catch (error) { toast(error.message, 'error'); }
   };
 }
@@ -1704,10 +1708,12 @@ function openTrip(trip) {
       payload.confirmEarly = true;
     }
     try {
-      await api(`/api/trips/${trip.id}`, {
+      const result = await api(`/api/trips/${trip.id}`, {
         method: 'PATCH', body: JSON.stringify(payload)
       });
       closeModal(); toast('Рейс обновлен'); await reload();
+      // Мягкий сторож: борт рейса по планеру стоит (ремонт/без водителя…).
+      windowWarningModal(showModal, [result.dispoWarning], '⚠ Рейс сохранён — проверьте');
     } catch (error) { toast(error.message, 'error'); }
   };
   if (editable) byId('deleteTrip').onclick = async () => {
