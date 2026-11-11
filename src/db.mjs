@@ -11,6 +11,7 @@ import { migrateOrgStructure, migratePositionRoles } from './structure.mjs';
 import { migrateCredentials } from './credentials.mjs';
 import { migrateTicketKinds } from './helpdesk.mjs';
 import { migrateMerger } from './merger-import.mjs';
+import { migrateProcessControl } from './process-control.mjs';
 import { migrateGoals } from './goals.mjs';
 import { migrateAccess } from './access.mjs';
 import { migrateSignals } from './signals.mjs';
@@ -1452,6 +1453,7 @@ function migrateColumns(db) {
   migratePositionRoles(db);
   migrateCredentials(db);
   migrateMerger(db);
+  migrateProcessControl(db);
   migrateSignals(db);
   migrateGate(db);
   migrateRelease(db);

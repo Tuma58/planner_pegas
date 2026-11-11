@@ -1314,6 +1314,47 @@ async function renderTelephony() {
     }));
 }
 
+// ── 🧭 Контроль процессов (11.11) ──
+// Каждый процесс конвейера и системный контур: статус сейчас, проверки
+// (те же, что в рабочих местах сотрудников), след за неделю. Сторож раз
+// в 15 минут сообщает руководителю о переходах «стало хуже / восстановилось».
+const PC_STATUS = { ok: ['🟢 в норме', 'ok'], work: ['🟡 есть работа', 'warn'], bad: ['🔴 требует внимания', 'bad'], none: ['⚫ нет данных', ''] };
+const PC_DEPT = { staff: 'Штаб', log: 'Логистика', drv: 'Эксплуатация', toir: 'ТОиР' };
+const PC_DOT = { ok: '🟢', work: '🟡', bad: '🔴', none: '⚫' };
+async function renderControl() {
+  const data = await api('/api/process-control');
+  const s = data.summary;
+  const row = proc => {
+    const [label, tone] = PC_STATUS[proc.status] || PC_STATUS.none;
+    const checks = proc.checks.length ? proc.checks.slice(0, 8).map(item =>
+      `<div>${item.tone === 'neg' ? '🔴 ' : ''}${escapeHtml(item.label)}: <b>${item.value == null ? '—' : escapeHtml(String(item.value))}${escapeHtml(item.unit || '')}</b>${item.note ? ` <small class="muted">${escapeHtml(String(item.note).slice(0, 140))}</small>` : ''}</div>`).join('')
+      + (proc.checks.length > 8 ? `<small class="muted">ещё ${proc.checks.length - 8}</small>` : '')
+      : '<span class="muted">проверки не вернули данных — процесс без контроля</span>';
+    return `<tr>
+      <td class="mono">${escapeHtml(proc.stage)}</td>
+      <td><b>${escapeHtml(proc.title)}</b><br><small class="muted">${escapeHtml(PC_DEPT[proc.owner] || '')}${proc.screen ? ` · экран «${escapeHtml(proc.screen)}»` : ''}</small></td>
+      <td><span class="badge ${tone}">${label}</span>${proc.baseline != null ? `<br><small class="muted">очередь ${proc.load} · обычно до ${proc.baseline}</small>` : proc.learning ? `<br><small class="muted">${escapeHtml(proc.learning)}</small>` : ''}</td>
+      <td style="font-size:12.5px">${checks}</td>
+      <td style="white-space:nowrap" title="${proc.week.map(day => `${day.day}: ${day.load ?? '—'}`).join(' · ')}">${proc.week.map(day => PC_DOT[day.status] || '⚫').join('') || '<span class="muted">—</span>'}</td>
+    </tr>`;
+  };
+  content.innerHTML = biPage(biHead('Контроль процессов',
+    'Каждый процесс «заявка → деньги» и системные контуры под автоматическим контролем: что сейчас, что обычно, след за неделю. О переходах «стало хуже» и «восстановилось» планер сообщает сам — в ленту «⚙ Конвейер».',
+    '<button class="button ghost" id="pcRefresh">↻ Обновить</button>'), [
+    biSec('Сводка', `<div class="actions">
+      <span class="badge ok">🟢 в норме ${s.ok}</span> <span class="badge warn">🟡 есть работа ${s.work}</span>
+      <span class="badge bad">🔴 требуют внимания ${s.bad}</span> <span class="badge">⚫ без данных ${s.blind}</span>
+      <span class="muted">всего процессов ${s.total} · ${escapeHtml(data.day)}</span></div>
+      <p class="muted">«Хуже обычного» — очередь процесса выше своего же уровня за ${data.settings.windowDays} суток
+      (перцентиль ${data.settings.alertPercentile}, нужно не меньше ${data.settings.minDays} суток истории) или проверка в красной зоне по своей норме.
+      Пороги не зашиты: норматив каждый процесс выучивает из собственной истории.</p>`),
+    biSec('Процессы', `<div class="table-wrap bi-scroll"><table class="bi-table"><thead><tr>
+      <th>Этап</th><th>Процесс и владелец</th><th>Сейчас</th><th>Проверки</th><th>7 суток</th></tr></thead>
+      <tbody>${data.processes.map(row).join('')}</tbody></table></div>`, { flush: true })
+  ]);
+  byId('pcRefresh').onclick = () => render();
+}
+
 // ── Перенос «Слияния» по отделам (10.11) ──
 // Отдел включается загрузкой его людей из проверенного снимка: таблица
 // «кто кем станет» (сопоставление с учётками прода — авто, правится
@@ -1403,6 +1444,7 @@ async function render() {
     else if (state.section === 'integration') renderIntegration();
     else if (state.section === 'outbox') renderOutbox();
     else if (state.section === 'merger') await renderMerger();
+    else if (state.section === 'control') await renderControl();
   } catch (error) {
     toast(error.message, 'error');
   }
