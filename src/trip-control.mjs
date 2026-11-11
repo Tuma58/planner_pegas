@@ -69,6 +69,30 @@ export function idleDispoWarning(dispositions, startsAt, endsAt) {
     '«без водителя» и пересменку, ремонт закрывает ремзона';
 }
 
+// Мягкий сторож «рейс поверх диспозиции» (решение руководителя 11.11, разбор
+// р892ху58): жёсткий щит ремонта стоит только на пути назначения заявки, а
+// борт меняют и через карточку рейса / прямое создание рейса — там замена ТС
+// бывает аварийной, поэтому не блокируем, но создающий видит предупреждение,
+// механик при ремонте получает уведомление. Диспозицию не трогаем: ремонт
+// закрывает ремзона (запрос выпуска).
+export function tripDispoWarning(dispositions, startsAt, endsAt) {
+  const s = Date.parse(startsAt);
+  const e = Date.parse(endsAt);
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return null;
+  const hits = (dispositions || []).filter(d => IDLE_DISPO_LABELS[d.kind]
+    && Date.parse(d.starts_at) < e && Date.parse(d.ends_at) > s);
+  if (!hits.length) return null;
+  const until = value => String(value).slice(0, 16).replace('T', ' ');
+  const list = hits.map(d => `${IDLE_DISPO_LABELS[d.kind]} до ${until(d.ends_at)} UTC`).join(', ');
+  const repair = hits.some(d => d.kind === 'repair');
+  return `по планеру машина ${list} — рейс идёт поверх. ` +
+    (repair
+      ? 'Борт в ремонте: механик уведомлён — он скорректирует заезд или ответит, что машина не готова. '
+      : '') +
+    'Если борт реально поедет, «без водителя» и пересменку подрежет отметка выхода ' +
+    'на линию, остальное закрывают в Ресурсе';
+}
+
 // Какие диспозиции подрезает ФАКТ выхода машины на линию (вторая половина
 // того же заказа: диспозиции ставят «с запасом до конца недели», водитель
 // выходит раньше — хвост никто не снимает). Подрезаются только

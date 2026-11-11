@@ -90,7 +90,7 @@ import {
   gapStats, nextAssignedShare, relayTripSegments, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours, zoneLegKm,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleConflicts, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
 import { dailyOpsTail, dailyOpsText, dailySeries, lateUnloadByDay, opsReportData, renderOpsReportHtml, repairCarsByDay } from './ops-report.mjs';
 import { renderBriefDeckPdf } from './brief-deck-pdf.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
@@ -104,7 +104,7 @@ import {
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   noTrailerWarning, stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia,
-  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim
+  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim, tripDispoWarning
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
@@ -871,6 +871,32 @@ function trimIdleDispositions(vehicleId, atIso, user, source) {
       'Хвост снят автоматически; если машина вышла ошибочно — поправьте в Ресурсе',
       'vehicle', vehicleId);
   }
+}
+
+// Мягкий сторож «рейс поверх диспозиции» (решение руководителя 11.11, разбор
+// р892ху58: борт заменили на рейсе №6370 через карточку мимо жёсткого щита
+// назначения заявки — машина уехала, ремонт висел до 13-го). Правка карточки
+// рейса и прямое создание рейса не блокируются (замена ТС на линии бывает
+// аварийной), но создающий видит предупреждение, а при ремонте механик
+// получает уведомление. Диспозицию не трогаем — её закрывает ремзона.
+function tripDispoGuard(vehicleId, startsAt, endsAt, { callMechanic = false } = {}) {
+  if (!vehicleId || !startsAt || !endsAt) return null;
+  const dispos = db.prepare(`SELECT kind, starts_at, ends_at FROM vehicle_dispositions
+    WHERE vehicle_id=? AND kind IN ('repair','no_driver','shift','out')
+      AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+    .all(vehicleId, endsAt, startsAt);
+  const warning = tripDispoWarning(dispos, startsAt, endsAt);
+  if (!warning) return null;
+  const repair = dispos.find(d => d.kind === 'repair'
+    && Date.parse(d.starts_at) < Date.parse(endsAt) && Date.parse(d.ends_at) > Date.parse(startsAt));
+  if (repair && callMechanic) {
+    const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(vehicleId)?.plate || '';
+    notify('mechanic', `🔧⚠ На ${plate} назначен рейс, а борт в ремонте до ` +
+      `${String(repair.ends_at).slice(0, 16).replace('T', ' ')} (UTC). Если выпускаете — ` +
+      'скорректируйте заезд во вкладке «Ремзона»; если машина не готова — сообщите ' +
+      'диспетчеру, нужна замена ТС', 'vehicle', vehicleId);
+  }
+  return warning;
 }
 
 // ── Объявления на табло ──
@@ -10238,7 +10264,13 @@ async function api(request, response, url) {
     const automatic = integrationPublic().writePolicy === 'automatic';
     queueOutbox(db, 'trips', id, 'create', tripOutboxPayload(id), automatic);
     audit(db, user, 'create', 'trip', id, trip, requestIp(request));
-    return json(response, 201, { id });
+    // Мягкий сторож: рейс создан на борту, который по планеру стоит
+    // (ремонт/без водителя/пересменка/выведен) — предупреждение в ответе,
+    // механик при ремонте уведомлён. Не блокирует.
+    const dispoWarning = ['plan', 'run'].includes(trip.status)
+      ? tripDispoGuard(trip.vehicleId, trip.startsAt, trip.endsAt, { callMechanic: true })
+      : null;
+    return json(response, 201, { id, ...(dispoWarning ? { dispoWarning } : {}) });
   }
 
   match = route(/^\/api\/trips\/([^/]+)$/, pathname);
@@ -10529,7 +10561,18 @@ async function api(request, response, url) {
         assistantHint = { ...hint, context: match[0] };
       }
     }
-    return json(response, 200, { ok: true, ...(assistantHint ? { assistantHint } : {}) });
+    // Мягкий сторож: борт сменился или рейс передвинут — проверяем, не лёг
+    // ли он поверх активной диспозиции (ремонт/стоянка). Механика зовём
+    // только при смене ТС: сдвиг дат — рабочая рутина логиста.
+    let dispoWarning = null;
+    if (['plan', 'run'].includes(merged.status) &&
+        (merged.vehicleId !== current.vehicle_id || merged.startsAt !== current.starts_at
+          || merged.endsAt !== current.ends_at)) {
+      dispoWarning = tripDispoGuard(merged.vehicleId, merged.startsAt, merged.endsAt,
+        { callMechanic: merged.vehicleId !== current.vehicle_id });
+    }
+    return json(response, 200, { ok: true, ...(assistantHint ? { assistantHint } : {}),
+      ...(dispoWarning ? { dispoWarning } : {}) });
   }
   if (match && request.method === 'DELETE') {
     const user = requirePermission(request, response, 'trips:write');
@@ -14779,6 +14822,32 @@ async function api(request, response, url) {
         JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status<>'fired' AND d.vehicle_id IS NOT NULL
         GROUP BY d.vehicle_id HAVING COUNT(*)>1`).all()
         .map(row => ({ label: row.plate, sub: row.names })));
+    // Чистота графика (ревизия 11.11, кейс р892ху58): конфликтные дни
+    // мост закреплений молча пропускает — борт остаётся «без водителя»,
+    // а виновник штрафов определяется по отпускнику из карточки.
+    {
+      const conflicts = (() => {
+        try { return scheduleConflicts(db); }
+        catch (error) { console.error('сторож графика:', error.message); return null; }
+      })();
+      add('schedule_double', '⚡ Двое держат борт в графике',
+        'Конфликтные дни не попадают в закрепления — машина числится без водителя; подрежьте план или замещение',
+        (conflicts?.doubleHolders || []).map(g => ({ label: g.plate,
+          sub: `${g.names} · дней ${g.days.length} (${g.days[0].slice(5)}…${g.days[g.days.length - 1].slice(5)})` })));
+      add('schedule_dup_rows', '📑 Один человек двумя строками графика',
+        'Строки-дубли задваивают план и путают мост — объедините план в одной строке, лишнюю удалите',
+        (conflicts?.dupRows || []).map(g => ({ label: g.driver, sub: g.rows.join(' + ') })));
+      // Сверка диспозиций с планом графика (заказ 11.11): мост односторонний
+      // (график → планер), ручная диспозиция план людей не меняет — покажем.
+      const daysLabel = days => `${days.length} дн (${days[0].slice(5)}${days.length > 1 ? `…${days[days.length - 1].slice(5)}` : ''})`;
+      add('schedule_dispo', '⛔ Машина стоит, а водитель в графике работает',
+        'Диспозиция ремонт/без водителя/выведена при рабочем коде держателя — перепланируйте человека (замещение) или снимите диспозицию',
+        (conflicts?.dispoWork || []).map(g => ({ label: g.plate,
+          sub: `${g.kind} · в графике ${g.driver} · ${daysLabel(g.days)}` })));
+      add('schedule_shift_nop', '🔁 Пересменка в ганте без «П» в графике',
+        'Пересменку поставили руками в ганте — в плане графика кода «П» нет, явка и доплаты её не увидят',
+        (conflicts?.shiftNoP || []).map(g => ({ label: g.plate, sub: daysLabel(g.days) })));
+    }
     add('drv_fired_linked', '🚪 Уволенные, оставшиеся в закреплениях', 'vehicle_id у уволенного или ФИО в карточке работающего ТС',
       db.prepare(`SELECT d.full_name, v.plate FROM drivers d
         LEFT JOIN vehicles v ON v.id=d.vehicle_id
