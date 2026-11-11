@@ -84,7 +84,7 @@ export function replaceVehicleDialog(trip, data, context) {
   document.querySelectorAll('[data-replace-vehicle]').forEach(button =>
     button.addEventListener('click', async () => {
       try {
-        await api(`/api/trips/${trip.id}`, {
+        const result = await api(`/api/trips/${trip.id}`, {
           method: 'PATCH', body: JSON.stringify({ vehicleId: button.dataset.replaceVehicle,
             relayNote: document.getElementById('relayNote')?.value?.trim() || undefined })
         });
@@ -92,6 +92,8 @@ export function replaceVehicleDialog(trip, data, context) {
         toast(relay ? 'Перецеп оформлен — звенья и делёж выручки в карточке рейса'
           : 'ТС заменено — рейс переставлен в плане');
         await context.onReload();
+        // Мягкий сторож: новый борт по планеру стоит (ремонт/без водителя…).
+        windowWarningModal(context.showModal, [result.dispoWarning], '⚠ ТС заменено — проверьте');
       } catch (error) { toast(error.message, 'error'); }
     }));
 }

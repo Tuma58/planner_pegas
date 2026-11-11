@@ -82,7 +82,7 @@ import {
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   noTrailerWarning, stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia,
-  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim
+  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim, tripDispoWarning
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
@@ -808,6 +808,32 @@ function trimIdleDispositions(vehicleId, atIso, user, source) {
       'Хвост снят автоматически; если машина вышла ошибочно — поправьте в Ресурсе',
       'vehicle', vehicleId);
   }
+}
+
+// Мягкий сторож «рейс поверх диспозиции» (решение руководителя 11.11, разбор
+// р892ху58: борт заменили на рейсе №6370 через карточку мимо жёсткого щита
+// назначения заявки — машина уехала, ремонт висел до 13-го). Правка карточки
+// рейса и прямое создание рейса не блокируются (замена ТС на линии бывает
+// аварийной), но создающий видит предупреждение, а при ремонте механик
+// получает уведомление. Диспозицию не трогаем — её закрывает ремзона.
+function tripDispoGuard(vehicleId, startsAt, endsAt, { callMechanic = false } = {}) {
+  if (!vehicleId || !startsAt || !endsAt) return null;
+  const dispos = db.prepare(`SELECT kind, starts_at, ends_at FROM vehicle_dispositions
+    WHERE vehicle_id=? AND kind IN ('repair','no_driver','shift','out')
+      AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
+    .all(vehicleId, endsAt, startsAt);
+  const warning = tripDispoWarning(dispos, startsAt, endsAt);
+  if (!warning) return null;
+  const repair = dispos.find(d => d.kind === 'repair'
+    && Date.parse(d.starts_at) < Date.parse(endsAt) && Date.parse(d.ends_at) > Date.parse(startsAt));
+  if (repair && callMechanic) {
+    const plate = db.prepare('SELECT plate FROM vehicles WHERE id=?').get(vehicleId)?.plate || '';
+    notify('mechanic', `🔧⚠ На ${plate} назначен рейс, а борт в ремонте до ` +
+      `${String(repair.ends_at).slice(0, 16).replace('T', ' ')} (UTC). Если выпускаете — ` +
+      'скорректируйте заезд во вкладке «Ремзона»; если машина не готова — сообщите ' +
+      'диспетчеру, нужна замена ТС', 'vehicle', vehicleId);
+  }
+  return warning;
 }
 
 // ── Объявления на табло ──
@@ -9848,7 +9874,13 @@ async function api(request, response, url) {
     const automatic = integrationPublic().writePolicy === 'automatic';
     queueOutbox(db, 'trips', id, 'create', tripOutboxPayload(id), automatic);
     audit(db, user, 'create', 'trip', id, trip, requestIp(request));
-    return json(response, 201, { id });
+    // Мягкий сторож: рейс создан на борту, который по планеру стоит
+    // (ремонт/без водителя/пересменка/выведен) — предупреждение в ответе,
+    // механик при ремонте уведомлён. Не блокирует.
+    const dispoWarning = ['plan', 'run'].includes(trip.status)
+      ? tripDispoGuard(trip.vehicleId, trip.startsAt, trip.endsAt, { callMechanic: true })
+      : null;
+    return json(response, 201, { id, ...(dispoWarning ? { dispoWarning } : {}) });
   }
 
   match = route(/^\/api\/trips\/([^/]+)$/, pathname);
@@ -10135,7 +10167,18 @@ async function api(request, response, url) {
         assistantHint = { ...hint, context: match[0] };
       }
     }
-    return json(response, 200, { ok: true, ...(assistantHint ? { assistantHint } : {}) });
+    // Мягкий сторож: борт сменился или рейс передвинут — проверяем, не лёг
+    // ли он поверх активной диспозиции (ремонт/стоянка). Механика зовём
+    // только при смене ТС: сдвиг дат — рабочая рутина логиста.
+    let dispoWarning = null;
+    if (['plan', 'run'].includes(merged.status) &&
+        (merged.vehicleId !== current.vehicle_id || merged.startsAt !== current.starts_at
+          || merged.endsAt !== current.ends_at)) {
+      dispoWarning = tripDispoGuard(merged.vehicleId, merged.startsAt, merged.endsAt,
+        { callMechanic: merged.vehicleId !== current.vehicle_id });
+    }
+    return json(response, 200, { ok: true, ...(assistantHint ? { assistantHint } : {}),
+      ...(dispoWarning ? { dispoWarning } : {}) });
   }
   if (match && request.method === 'DELETE') {
     const user = requirePermission(request, response, 'trips:write');

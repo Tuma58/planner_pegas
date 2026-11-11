@@ -12,7 +12,7 @@ import { attendanceEffective, attendanceSummary, attendanceTimesheet, chatGroups
 import { upsertPulled } from '../src/odata.mjs';
 import { ipInSubnets, normalizeAllowedSubnets, parseCidr } from '../src/network-access.mjs';
 import { decryptSecret, encryptSecret, hashPassword, verifyPassword } from '../src/security.mjs';
-import { ensureTripStops, noTrailerWarning, rescheduleTripStops, transitWindowWarning, idleDispoWarning, dispositionsToTrim } from '../src/trip-control.mjs';
+import { ensureTripStops, noTrailerWarning, rescheduleTripStops, transitWindowWarning, idleDispoWarning, dispositionsToTrim, tripDispoWarning } from '../src/trip-control.mjs';
 import { matchVehicles, placeOf } from '../public/assets/sales.js';
 import { cleanFileName, uploadMimeOf } from '../src/uploads.mjs';
 import { DOCK_GAP_FALLBACK, dockGapDays, matchRingCycles, ringLoadData } from '../src/rings.mjs';
@@ -5799,6 +5799,27 @@ test('сторож «перегон поверх диспозиции» и ав�
   assert.deepEqual(toTrim.map(d => d.kind).sort(), ['no_driver', 'shift'],
     'подрезаются только накрывающие момент «без водителя» и пересменка');
   assert.deepEqual(dispositionsToTrim(dispos, 'не дата'), []);
+});
+
+test('мягкий сторож «рейс поверх диспозиции»: предупреждение с ремонтом и без', () => {
+  // Разбор р892ху58 (11.11): борт заменили на рейсе через карточку мимо
+  // жёсткого щита назначения заявки — машина уехала, ремонт висел до 13-го.
+  const dispos = [
+    { kind: 'repair', starts_at: '2026-11-10T00:00:00.000Z', ends_at: '2026-11-13T00:00:00.000Z' },
+    { kind: 'no_driver', starts_at: '2026-11-09T00:00:00.000Z', ends_at: '2026-11-10T00:00:00.000Z' }
+  ];
+  // Рейс 11–12.11 пересекает только ремонт — предупреждение зовёт механика.
+  const warn = tripDispoWarning(dispos, '2026-11-11T18:00:00.000Z', '2026-11-12T17:00:00.000Z');
+  assert.ok(warn && warn.includes('в ремонте до 2026-11-13 00:00'), warn);
+  assert.ok(warn.includes('механик уведомлён'), warn);
+  assert.ok(!warn.includes('без водителя до'), '«без водителя» кончился до рейса: ' + warn);
+  // Без ремонта — обычный текст без зова механика.
+  const idle = tripDispoWarning(
+    [{ kind: 'shift', starts_at: '2026-11-11T00:00:00.000Z', ends_at: '2026-11-12T00:00:00.000Z' }],
+    '2026-11-11T18:00:00.000Z', '2026-11-12T17:00:00.000Z');
+  assert.ok(idle && idle.includes('на пересменке') && !idle.includes('механик'), idle);
+  // Рейс после диспозиций — тишина.
+  assert.equal(tripDispoWarning(dispos, '2026-11-14T00:00:00.000Z', '2026-11-15T00:00:00.000Z'), null);
 });
 
 test('счётчик использования: таблица ui_usage копит открытия по дню, ключу и сотруднику', t => {
