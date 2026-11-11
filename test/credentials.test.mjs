@@ -154,7 +154,7 @@ test('свой набор: на основе существующего, экр�
   const set = roleSets(db).find(item => item.id === made.id);
   assert.deepEqual(set.views, ['sales', 'routes']);
   assert.equal(set.scope, 'log');
-  assert.deepEqual(set.codes, ['sales']);
+  assert.deepEqual(set.codes, ['sales', 'logist', 'dispatcher']); // логистика управляет рейсами целиком (11.11)
   assert.equal(set.money, 'none');
   assert.ok(updateRoleSet(db, made.id, { views: ['sales'] }, { creatorMoney: 'full' }).ok);
   assert.match(updateRoleSet(db, 'log_plan', { views: ['sales'] }, { creatorMoney: 'full' }).error, /Утверждённые/);
