@@ -9954,8 +9954,13 @@ async function api(request, response, url) {
   }
   // Переключатель назначения: есть → снять, нет → поставить.
   if (request.method === 'POST' && pathname === '/api/staff-shifts') {
-    const user = requirePermission(request, response, 'shifts:write');
+    // График смен ведёт руководитель (shifts:write) или тот, у кого полный
+    // доступ к справочнику сотрудников (перенос по отделам 11.11: Никулина).
+    const user = requireUser(request, response);
     if (!user) return;
+    if (!hasPermission(user, 'shifts:write') && !staffAccess(user, settingsObject(db))) {
+      return errorJson(response, 403, 'Недостаточно прав');
+    }
     const body = await readJson(request);
     // Табель (заказ руководителя 11.10): точная установка дня — один вид
     // на день (Д/Н/ОТ/Б) или очистка; прежний переключатель не тронут.

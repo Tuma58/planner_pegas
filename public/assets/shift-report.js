@@ -213,7 +213,9 @@ const DAY_MS = 86_400_000;
 const WEEKDAYS = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
 
 export async function scheduleDialog(context, anchorDay = '') {
-  const canWrite = typeof context.can === 'function' ? context.can('shifts:write') : true;
+  // График смен: руководитель (shifts:write) или полный доступ к справочнику.
+  const canWrite = typeof context.can === 'function'
+    ? context.can('shifts:write') || Boolean(context.state?.data?.user?.staffAccess) : true;
   // Неделя с понедельника, в которую попадает опорный день.
   const anchorMs = Date.parse(`${anchorDay || new Date().toISOString().slice(0, 10)}T00:00:00Z`);
   const monday = anchorMs - ((new Date(anchorMs).getUTCDay() + 6) % 7) * DAY_MS;

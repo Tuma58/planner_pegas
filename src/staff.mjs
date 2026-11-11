@@ -15,9 +15,17 @@ import { positionById, positionOptions } from './structure.mjs';
 export function staffAccess(user, settings) {
   if (!user) return false;
   if (effectivePermissions(user).includes('staff:write')) return true;
-  const allowed = String(settings?.staff?.fullAccess || '')
-    .split(/[,;\s]+/).map(item => item.trim().toLowerCase()).filter(Boolean);
-  return allowed.includes(String(user.username || '').toLowerCase());
+  // Разделитель — запятая/точка с запятой: логины бывают с пробелом
+  // («Дарья Н»). Прежняя запись через пробел тоже понимается.
+  const raw = String(settings?.staff?.fullAccess || '');
+  const login = String(user.username || '').trim().toLowerCase();
+  if (!login) return false;
+  const byComma = raw.split(/[,;]+/).map(item => item.trim().toLowerCase()).filter(Boolean);
+  // Через пробел — только латинские логины прежнего формата («tokareva
+  // nikulina»), чтобы кусок «Н» из «Дарья Н» не стал чужим логином.
+  const bySpace = raw.split(/[,;\s]+/).map(item => item.trim().toLowerCase())
+    .filter(item => /^[a-z0-9._-]+$/.test(item));
+  return byComma.includes(login) || bySpace.includes(login);
 }
 
 // Единый список: офисные + водители, с должностями и телефонами.
