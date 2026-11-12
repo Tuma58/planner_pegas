@@ -112,6 +112,39 @@ export function setPrefs(db, user, roomKey, { pinned, muted }) {
   return { ok: true };
 }
 
+// Закрепить/открепить сообщение в переписке (Э4): может любой, кому
+// переписка видна (как в Битрикс24). Штамп reacted_at — для синка
+// открытых вкладок (откреп иначе не доехал бы: pinned_at становится NULL).
+export function togglePin(db, user, messageId) {
+  const message = db.prepare(`SELECT * FROM messages WHERE id=?`).get(Number(messageId));
+  if (!message || message.deleted_at) return { ok: false, status: 404, error: 'Сообщение не найдено' };
+  if (message.kind !== 'user') return { ok: false, status: 422, error: 'Закрепляются только сообщения людей' };
+  const pin = !message.pinned_at;
+  db.prepare(`UPDATE messages SET pinned_at=?, pinned_by_name=?, reacted_at=CURRENT_TIMESTAMP
+    WHERE id=?`).run(pin ? new Date().toISOString() : null,
+    pin ? (user.full_name || user.username) : null, message.id);
+  return { ok: true, pinned: pin };
+}
+
+// Прочитанность в группах (Э4): кто из участников дочитал докуда — для
+// «✓✓ N» у своих сообщений. Для общего канала участники = все активные.
+export function roomReads(db, roomKey, userId) {
+  const norm = normRoomKey(roomKey, userId);
+  let members;
+  if (roomKey.startsWith('group:')) {
+    members = db.prepare(`SELECT u.id, u.full_name name FROM chat_members m
+      JOIN users u ON u.id=m.user_id WHERE m.chat_id=?`).all(roomKey.slice(6));
+  } else if (roomKey === 'all') {
+    members = db.prepare(`SELECT id, full_name name FROM users
+      WHERE active=1 AND deleted_at IS NULL`).all();
+  } else return [];
+  const reads = new Map(db.prepare(`SELECT user_id, last_read_id FROM chat_reads
+    WHERE room_key=?`).all(norm).map(row => [row.user_id, row.last_read_id]));
+  return members.filter(member => member.id !== userId && reads.has(member.id))
+    .map(member => ({ name: member.name, lastReadId: reads.get(member.id) }))
+    .slice(0, 100);
+}
+
 // Видно ли сообщение пользователю — та же логика, что у выдачи ленты
 // (отдача вложений проверяет адресность: личный файл чужому не уйдёт).
 export function canSeeMessage(db, userId, userRoles, message) {

@@ -115,3 +115,30 @@ test('мессенджер Э2–Э3: реакции, прочтение, pin/mu
     { notifyUser: name => pinged.push(name) });
   assert.deepEqual(pinged, ['Борис Р']);
 });
+
+test('мессенджер Э4: закрепление сообщений и прочитанность в группах', t => {
+  const db = freshDb(t);
+  const anna = addUser(db, 'u3-anna', 'Анна Т');
+  const boris = addUser(db, 'u3-boris', 'Борис Т');
+  const kate = addUser(db, 'u3-kate', 'Катя Т');
+  const { togglePin, setRead, roomReads } = msgModule;
+  // pin: toggle любой видящий; откреп ставит штамп синка
+  const sent = sendMessage(db, anna, { text: 'важное' });
+  assert.equal(togglePin(db, boris, sent.id).pinned, true);
+  let row = db.prepare('SELECT pinned_at, pinned_by_name FROM messages WHERE id=?').get(sent.id);
+  assert.ok(row.pinned_at);
+  assert.equal(row.pinned_by_name, 'Борис Т');
+  assert.equal(togglePin(db, anna, sent.id).pinned, false);
+  row = db.prepare('SELECT pinned_at, reacted_at FROM messages WHERE id=?').get(sent.id);
+  assert.equal(row.pinned_at, null);
+  assert.ok(row.reacted_at); // откреп доедет до вкладок через since
+  // прочитанность общего канала: Борис дочитал, Катя нет
+  setRead(db, boris, 'all', sent.id);
+  setRead(db, kate, 'all', sent.id - 1);
+  const reads = roomReads(db, 'all', anna.id);
+  const readBoris = reads.find(item => item.name === 'Борис Т');
+  const readKate = reads.find(item => item.name === 'Катя Т');
+  assert.ok(readBoris && readBoris.lastReadId >= sent.id);
+  assert.ok(readKate && readKate.lastReadId < sent.id);
+  assert.ok(!reads.some(item => item.name === 'Анна Т')); // сам автор не в списке
+});

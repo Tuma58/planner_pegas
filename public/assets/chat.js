@@ -164,6 +164,8 @@ export function setupChat(state) {
   // Докуда дочитал собеседник в активной личке (галочки ✓✓) и кто печатает.
   let peerReadId = null;
   let typingNames = [];
+  // Прочитанность активной группы/общего: [{name, lastReadId}].
+  let roomReadsList = [];
   // Прикреплённый, но ещё не отправленный файл: {id, name, mime}.
   let pendingMedia = null;
   // Закрепления и «тишина» переписок (серверные, ключи нормализованные).
@@ -368,9 +370,13 @@ export function setupChat(state) {
           data-react="${emoji}" data-react-msg="${message.id}"
           title="${escapeHtml(group.names.join(', '))}">${emoji} ${group.count}</button>`).join('')}</div>`
       : '';
-    // Галочки доставки в личке: ✓ отправлено, ✓✓ собеседник открыл переписку.
+    // Галочки: в личке ✓/✓✓, в группе и общем — «✓✓ N» (сколько прочитало).
+    const readers = roomReadsList.filter(item => item.lastReadId >= message.id);
     const ticks = own && active?.key?.startsWith('dm:')
-      ? `<span class="chat-ticks">${peerReadId !== null && message.id <= peerReadId ? '✓✓' : '✓'}</span>` : '';
+      ? `<span class="chat-ticks">${peerReadId !== null && message.id <= peerReadId ? '✓✓' : '✓'}</span>`
+      : own && (active?.key === 'all' || active?.key?.startsWith('group:')) && readers.length
+        ? `<span class="chat-ticks" title="Прочитали: ${escapeHtml(readers.map(item => item.name).join(', '))}">✓✓ ${readers.length}</span>`
+        : '';
     // @упоминания подсвечиваются в тексте.
     const textHtml = escapeHtml(message.text)
       .replace(/(^|\s)(@[\wа-яёА-ЯЁ.]+)/g, '$1<b class="chat-mention">$2</b>');
@@ -389,6 +395,8 @@ export function setupChat(state) {
             ${message.kind === 'user' ? `<button type="button" class="chat-act" data-react-pick="${message.id}" title="Реакция">😊</button>` : ''}
             ${message.kind === 'user' && active && !['auto', 'personal'].includes(active.key)
     ? `<button type="button" class="chat-act" data-reply-msg="${message.id}" title="Ответить цитатой">↩</button>` : ''}
+            ${message.kind === 'user' ? `<button type="button" class="chat-act" data-pin-msg="${message.id}"
+              title="${message.pinned_at ? 'Открепить' : 'Закрепить в переписке'}">📍</button>` : ''}
             <button type="button" class="chat-act" data-copy-msg="${message.id}" title="Скопировать текст">📋</button>
             <button type="button" class="chat-act" data-forward-msg="${message.id}" title="Переслать в другую переписку">↪</button>
             ${editableByMe(message)
@@ -521,6 +529,25 @@ export function setupChat(state) {
     if (replyMessage) { startReply(replyMessage); return; }
     const editMessage = find('edit-msg');
     if (editMessage) { startEdit(editMessage); return; }
+    const pinButton = event.target.closest('[data-pin-msg]');
+    if (pinButton) {
+      try {
+        await api(`/api/messages/${pinButton.dataset.pinMsg}/pin`, { method: 'POST' });
+        await poll();
+        renderDialog();
+      } catch (error) { toast(error.message, 'error'); }
+      return;
+    }
+    const gotoPin = event.target.closest('[data-pin-goto]');
+    if (gotoPin && !event.target.closest('[data-pin-msg]')) {
+      const row = list.querySelector(`.chat-bubble-row[data-msg-id="${gotoPin.dataset.pinGoto}"]`);
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.classList.add('chat-flash');
+        setTimeout(() => row.classList.remove('chat-flash'), 1600);
+      }
+      return;
+    }
     const reactPick = event.target.closest('[data-react-pick]');
     if (reactPick) {
       // Мини-поповер с шестью реакциями прямо у кнопки.
@@ -784,8 +811,19 @@ export function setupChat(state) {
       return;
     }
     const messages = allMessages.filter(m => roomKeyOf(m) === active.key);
-    list.innerHTML = messages.map(bubble).join('')
-      || '<div class="muted" style="padding:12px;text-align:center">Сообщений пока нет — напишите первое.</div>';
+    // Полоса закреплённых: свежие сверху, клик — прокрутка к сообщению.
+    const pinnedMessages = messages.filter(m => m.pinned_at && !m.deleted_at)
+      .sort((a, b) => b.pinned_at.localeCompare(a.pinned_at)).slice(0, 3);
+    const pinnedBar = pinnedMessages.length ? `<div class="chat-pinned">${pinnedMessages.map(m =>
+      `<div class="chat-pinned-row" data-pin-goto="${m.id}">
+        <span class="chat-pin-ico">📍</span>
+        <span class="chat-pin-body"><small>${escapeHtml(m.author_name)}${m.pinned_by_name
+        ? ` · закрепил(а) ${escapeHtml(m.pinned_by_name)}` : ''}</small>
+          <span>${escapeHtml((m.text || m.media_name || 'вложение').slice(0, 110))}</span></span>
+        <button type="button" class="chat-act" data-pin-msg="${m.id}" title="Открепить">✕</button>
+      </div>`).join('')}</div>` : '';
+    list.innerHTML = pinnedBar + (messages.map(bubble).join('')
+      || '<div class="muted" style="padding:12px;text-align:center">Сообщений пока нет — напишите первое.</div>');
     list.scrollTop = list.scrollHeight;
     el('chatDialogTitle').textContent = roomTitle(active.key);
     const sub = active.key === 'all' ? 'все сотрудники'
@@ -830,6 +868,24 @@ export function setupChat(state) {
         if (id && id <= peerReadId) node.textContent = '✓✓';
       });
     }
+    // Группа/общий: «✓✓ N» пересчитывается по свежим отметкам прочтения.
+    if (active.key === 'all' || active.key.startsWith('group:')) {
+      list.querySelectorAll('.chat-bubble-row.own').forEach(row => {
+        const id = Number(row.dataset.msgId || 0);
+        if (!id) return;
+        const readers = roomReadsList.filter(item => item.lastReadId >= id);
+        let node = row.querySelector('.chat-ticks');
+        if (!readers.length) { node?.remove(); return; }
+        if (!node) {
+          node = document.createElement('span');
+          node.className = 'chat-ticks';
+          row.querySelector('.chat-time')?.insertBefore(node,
+            row.querySelector('.chat-msg-actions'));
+        }
+        node.textContent = `✓✓ ${readers.length}`;
+        node.title = `Прочитали: ${readers.map(item => item.name).join(', ')}`;
+      });
+    }
   };
 
   const showHome = () => {
@@ -851,6 +907,7 @@ export function setupChat(state) {
     active = { key };
     peerReadId = null;
     typingNames = [];
+    roomReadsList = [];
     composing = { replyTo: null, editing: null };
     renderReplyBar();
     el('chatHomeHead').classList.add('hidden');
@@ -1068,17 +1125,18 @@ export function setupChat(state) {
     try {
       const activeKey = active && !['helpdesk', 'tz', 'kb'].includes(active.key) ? active.key : '';
       const { items, lastId: serverLast, changed: changedRows, serverNow, myOpenTasks,
-        typing, peerReadId: peerRead } =
+        typing, peerReadId: peerRead, reads } =
         await api(`/api/messages?after=${initial ? 0 : lastId}${pollSince && !initial
           ? `&since=${encodeURIComponent(pollSince)}` : ''}${activeKey
           ? `&room=${encodeURIComponent(activeKey)}` : ''}`);
       // «Печатает…» и прочитанность собеседника — для открытой переписки.
-      const typingText = (typing || []).join(', ');
-      const newPeerRead = peerRead === undefined ? null : peerRead;
-      const liveChanged = typingText !== typingNames.join(', ') || newPeerRead !== peerReadId;
       typingNames = typing || [];
       if (peerRead !== undefined) peerReadId = peerRead;
-      if (liveChanged && active) renderDialogLive();
+      roomReadsList = reads || [];
+      // Живые мелочи («печатает…», ✓✓) — каждым опросом, безусловно:
+      // это две точечные DOM-операции, сравнение состояний не стоит риска
+      // пропустить обновление (урок отладки 12.11).
+      if (active) renderDialogLive();
       if (serverNow) pollSince = serverNow;
       if (myOpenTasks !== undefined) {
         state.navBadges = state.navBadges || {};
@@ -1129,7 +1187,11 @@ export function setupChat(state) {
         if (active) { markSeen(); renderDialog(); } else if (isOpen()) renderRooms();
       }
       updateUnread();
-    } catch { /* сеть/сессия — попробуем в следующий цикл */ }
+    } catch (error) {
+      // Сеть/сессия — попробуем в следующий цикл; ошибку кода чата видно
+      // в консоли (молчаливый catch прятал их при разборах 12.11).
+      console.warn('чат: опрос не прошёл —', error.message);
+    }
   };
 
   const loadGroups = async () => {

@@ -115,8 +115,8 @@ import {
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
-import { canSeeMessage, deleteMessage, editMessage, normRoomKey, sendMessage, setPrefs,
-  setRead, toggleReaction } from './messenger.mjs';
+import { canSeeMessage, deleteMessage, editMessage, normRoomKey, roomReads, sendMessage,
+  setPrefs, setRead, togglePin, toggleReaction } from './messenger.mjs';
 
 // «Печатает…» в чате: комната → (пользователь → {имя, годен до}).
 // Эфемерно и только в памяти — после рестарта просто пусто.
@@ -13790,10 +13790,13 @@ async function api(request, response, url) {
           WHERE user_id=? AND room_key=?`).get(peer, norm)?.last_read_id ?? null;
       }
     }
+    // Прочитанность группы/общего канала — для «✓✓ N» у своих сообщений.
+    const reads = activeRoom && (activeRoom.startsWith('group:') || activeRoom === 'all')
+      ? roomReads(db, activeRoom, user.id) : [];
     return json(response, 200,
       { ...chatMessages(db, user.id, rolesOf(user), Number(url.searchParams.get('after') || 0),
         String(url.searchParams.get('since') || '').slice(0, 19)),
-      myOpenTasks, typing, peerReadId });
+      myOpenTasks, typing, peerReadId, reads });
   }
   // Групповые чаты: список моих групп, создание, правка состава/названия.
   if (request.method === 'GET' && pathname === '/api/chats') {
@@ -14053,6 +14056,21 @@ async function api(request, response, url) {
     if (!result.ok) return errorJson(response, result.status, result.error);
     return json(response, 200, result);
   }
+  // Закрепить/открепить сообщение (полоса над лентой переписки).
+  match = route(/^\/api\/messages\/(\d+)\/pin$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (Number(user.guest)) return errorJson(response, 403, 'Гостевой режим — только просмотр');
+    const target = db.prepare('SELECT * FROM messages WHERE id=?').get(Number(match[0]));
+    if (!target || !canSeeMessage(db, user.id, rolesOf(user), target)) {
+      return errorJson(response, 404, 'Сообщение не найдено');
+    }
+    const result = togglePin(db, user, match[0]);
+    if (!result.ok) return errorJson(response, result.status, result.error);
+    return json(response, 200, result);
+  }
+
   // Отметка «прочитано до id» (серверная — для галочек ✓✓ в личках).
   if (request.method === 'POST' && pathname === '/api/chat/read') {
     const user = requireUser(request, response);

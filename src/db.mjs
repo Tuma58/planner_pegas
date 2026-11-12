@@ -942,6 +942,9 @@ function migrateColumns(db) {
   ensure('messages', 'media_mime', 'TEXT');
   ensure('messages', 'media_name', 'TEXT');
   ensure('messages', 'reacted_at', 'TEXT');
+  // Закреплённые сообщения (Э4, 12.11): полоса над лентой переписки.
+  ensure('messages', 'pinned_at', 'TEXT');
+  ensure('messages', 'pinned_by_name', 'TEXT');
   ensure('chats', 'external_source', 'TEXT');
   ensure('chats', 'external_id', 'TEXT');
   ensure('trips', 'sum_confirmed_at', 'TEXT');
