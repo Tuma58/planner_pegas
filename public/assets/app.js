@@ -1088,8 +1088,16 @@ function renderViewTabs() {
       items.forEach(view => placed.add(view.id));
       return items.length ? (sub.title ? `<div class="nav-sub">${sub.title}</div>` : '') + items.map(link).join('') : '';
     }).join('');
+    // «⚠ Требует решения» живёт в блоке Логистики (заказ 12.11: чистка
+    // шапки) — пункт с красным счётчиком, клик открывает реестр.
+    const exceptionsItem = group.dept === 'log' ? (() => {
+      const count = Number(state.exceptions?.count || 0);
+      return `<button data-refaction="exceptions" class="navlink" title="Требует решения — реестр проблем">
+        <span class="nav-ico">⚠</span><span class="nav-t">Требует решения</span>
+        ${count ? `<span class="nav-badge">${count > 99 ? '99+' : count}</span>` : ''}</button>`;
+    })() : '';
     return subs ? `<div class="nav-block${group.dept ? ` dept-${group.dept}` : ' nav-common'}"><div class="blocktitle"><span>${group.title}</span>`
-      + (group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '') + `</div>${subs}</div>` : '';
+      + (group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '') + `</div>${subs}${exceptionsItem}</div>` : '';
   }).join('');
   // Экран вне групп (новый, ещё не разнесённый по отделам) не теряется.
   const rest = views.filter(view => !placed.has(view.id)
@@ -1111,6 +1119,7 @@ function renderViewTabs() {
       if (action === 'geo') openGeoMap();
       else if (action === 'customers') showCustomers();
       else if (action === 'addresses') openAddressBook();
+      else if (action === 'exceptions') openExceptions();
     }));
   // Экран вне набора (вход, смена роли) — первый экран из меню.
   if (!byIdView.has(state.view) && views.length) {
@@ -1348,7 +1357,23 @@ async function openReport(kind, from, to) {
 async function refreshExceptions() {
   try {
     state.exceptions = await api('/api/exceptions');
+    // Пункт «⚠ Требует решения» в навигаторе (чип из шапки переехал 12.11).
+    const navItem = document.querySelector('[data-refaction="exceptions"]');
+    if (navItem) {
+      const count = Number(state.exceptions.count || 0);
+      let badge = navItem.querySelector('.nav-badge');
+      if (!count) badge?.remove();
+      else {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'nav-badge';
+          navItem.appendChild(badge);
+        }
+        badge.textContent = count > 99 ? '99+' : String(count);
+      }
+    }
     const chip = byId('exceptionsChip');
+    if (!chip) return;
     // Плашка (решение руководителя 28.09): компактный бейдж, не мешает
     // визуализации; полный реестр — по клику, подпись — в тултипе.
     chip.textContent = state.exceptions.count ? `⚠ ${state.exceptions.count}` : '⚠';
@@ -3105,7 +3130,7 @@ setupVehicleHover(() => state.data);
 byId('callButton').onclick = () => callSearchDialog(callContext(), state.data);
 setupTheme();
 
-byId('exceptionsChip').onclick = openExceptions;
+
 
 const shiftGanttAnchor = direction => {
   const view = ganttView();

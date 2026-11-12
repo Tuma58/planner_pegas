@@ -3922,10 +3922,12 @@ export const GUIDES = [
           период у руководителя, «Отчёт дня», задания логисту и планированию.</li>
         <li><b>🧹 Шапка стала чище (12.11)</b>: «🗺 Карта» и «📚 Справочники»
           переехали в левое меню — блок «Справочники» внизу навигатора
-          (Карта геозон, Заказчики, Адреса — доступ прежний, у всех).
-          Кнопка настройки Telegram-уведомлений 📲 теперь в шапке чата,
-          рядом с настройками звука. В шапке остались: «?» справка,
-          💬 чат, «⚠ N» реестр «требует решения» и индикатор обновления.</li>
+          (Карта геозон, Заказчики, Адреса — доступ прежний). «⚠ Требует
+          решения» — теперь пункт в блоке «Логистика» с красным счётчиком.
+          Кнопка чата 💬 убрана — вход через вкладку «Мессенджер» (бейдж
+          непрочитанных на ней). Настройка Telegram 📲 и «?» инструкции
+          (с точкой «обновлено») — в шапке мессенджера. В шапке остался
+          только индикатор обновления.</li>
         <li><b>💬 Мессенджер — теперь и полноэкранная вкладка (12.11)</b>:
           в навигаторе, блок «Общее», доступен каждому — как Гант и Дашборд.
           Слева список переписок, справа лента; кнопка 💬 в шапке работает
@@ -4064,15 +4066,17 @@ export const GUIDES = [
 ];
 
 export function setupGuide({ views, activeView, showModal }) {
-  const toolbarEnd = document.querySelector('.toolbar-end');
-  if (!toolbarEnd || document.getElementById('guideToggle')) return;
+  // Кнопка живёт в шапке мессенджера (заказ 12.11 «изменения сотрудникам —
+  // в мессенджер»): точка «обновлено» видна и во вкладке, и в панели.
+  const chatHead = document.querySelector('.chat-panel #chatHomeHead');
+  if (!chatHead || document.getElementById('guideToggle')) return;
   const toggle = document.createElement('button');
   toggle.id = 'guideToggle';
-  // Единый ряд плашек правой зоны (28.09): круглые иконки одного вида.
-  toggle.className = 'tb-icon';
+  toggle.className = 'button ghost small';
   toggle.title = 'Инструкции сотрудников конвейера';
   toggle.textContent = '?';
-  toolbarEnd.prepend(toggle);
+  const anchor = chatHead.querySelector('#chatNew');
+  chatHead.insertBefore(toggle, anchor || null);
 
   const stamp = () => new Date().toLocaleDateString('ru-RU');
 
