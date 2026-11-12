@@ -119,14 +119,23 @@ export function setupChat(state) {
       <button class="button ghost small" id="chatBack">←</button>
       <span style="flex:1;min-width:0"><strong id="chatDialogTitle"></strong>
         <small class="muted" id="chatDialogSub" style="display:block"></small></span>
+      <button class="button ghost small" id="chatPin" title="Закрепить переписку сверху списка">📌</button>
+      <button class="button ghost small" id="chatMuteRoom" title="Без звука и всплывающих — счётчик остаётся">🔔</button>
       <button class="button ghost small hidden" id="chatGroupEdit" title="Состав и название группы">⚙</button>
       <button class="button ghost small hidden" id="chatDelete" title="Удалить переписку">🗑</button>
+    </div>
+    <div class="chat-search" id="chatSearchWrap">
+      <input id="chatSearchMsg" class="block-search" placeholder="🔎 Поиск по сообщениям…" autocomplete="off">
     </div>
     <div class="chat-rooms" id="chatRooms"></div>
     <div class="chat-list hidden" id="chatList"></div>
     <div class="chat-compose hidden" id="chatCompose"></div>
     <div class="chat-replybar hidden" id="chatReplyBar"></div>
+    <div class="chat-mentions hidden" id="chatMentions"></div>
     <form class="chat-form hidden" id="chatForm">
+      <button type="button" class="button ghost small" id="chatAttach" title="Прикрепить файл: фото, видео, документ">📎</button>
+      <input type="file" id="chatFile" class="hidden"
+        accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.md,.txt,.csv,.xlsx,.xls,.pdf,.docx,.doc">
       <input id="chatInput" placeholder="Сообщение…" autocomplete="off" maxlength="500">
       <button class="button small">➤</button>
     </form>`;
@@ -152,6 +161,16 @@ export function setupChat(state) {
   // Метка последнего опроса (время сервера) — по ней докачиваются правки
   // и удаления сообщений, сделанные коллегами между опросами.
   let pollSince = '';
+  // Докуда дочитал собеседник в активной личке (галочки ✓✓) и кто печатает.
+  let peerReadId = null;
+  let typingNames = [];
+  // Прикреплённый, но ещё не отправленный файл: {id, name, mime}.
+  let pendingMedia = null;
+  // Закрепления и «тишина» переписок (серверные, ключи нормализованные).
+  let prefs = [];
+  const normKey = key => key.startsWith('dm:')
+    ? `dm:${[key.slice(3), myId].sort().join(':')}` : key;
+  const prefOf = key => prefs.find(item => item.room_key === normKey(key)) || { pinned: 0, muted: 0 };
   // Активная переписка: {kind: 'all'|'auto'|'dm'|'group', id?: peerId|chatId}
   let active = null;
   let seen = {};
@@ -214,9 +233,40 @@ export function setupChat(state) {
         const hidden = hiddenRooms.find(item => item.room_key === key);
         return !hidden || (lastMsg[key]?.id || 0) > hidden.hidden_after;
       })
-      .sort((a, b) => (lastMsg[b]?.id || 0) - (lastMsg[a]?.id || 0));
+      .sort((a, b) => (prefOf(b).pinned - prefOf(a).pinned)
+        || (lastMsg[b]?.id || 0) - (lastMsg[a]?.id || 0));
     return [...pinned, ...rest].map(key => ({ key, last: lastMsg[key] || null }));
   };
+
+  // Поиск по всем моим перепискам (Э2): результаты встают вместо списка
+  // комнат, клик открывает переписку. Пустой ввод — обычный список.
+  let searchTimer = null;
+  el('chatSearchMsg').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(async () => {
+      const query = el('chatSearchMsg').value.trim();
+      if (query.length < 2) { renderRooms(); return; }
+      try {
+        const { items } = await api(`/api/messages/search?q=${encodeURIComponent(query)}`);
+        rooms.innerHTML = items.length ? items.map(message => {
+          const key = roomKeyOf(message);
+          return `<div class="chat-room" data-room="${key}">
+            <span class="chat-ava">${key === 'all' ? '📢' : key === 'auto' ? '⚙'
+              : key.startsWith('group:') ? '👥' : initials(message.author_name)}</span>
+            <span class="chat-room-body"><b>${escapeHtml(message.author_name)}</b>
+              <small class="muted" style="display:block">${escapeHtml(message.text.slice(0, 90))}</small>
+              <small class="muted">${formatDateTime(message.created_at.includes('Z')
+                ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')} · ${escapeHtml(roomTitle(key))}</small></span>
+          </div>`;
+        }).join('') : '<div class="muted" style="padding:12px;text-align:center">Ничего не найдено</div>';
+        rooms.querySelectorAll('[data-room]').forEach(row =>
+          row.addEventListener('click', () => {
+            el('chatSearchMsg').value = '';
+            openRoom(row.dataset.room);
+          }));
+      } catch { /* сеть */ }
+    }, 300);
+  });
 
   const renderRooms = () => {
     rooms.innerHTML = roomList().map(({ key, last }) => {
@@ -294,17 +344,49 @@ export function setupChat(state) {
         <small>${escapeHtml(message.reply_author || '…')}</small>
         <span>${message.reply_text ? escapeHtml(message.reply_text) : '<i class="muted">сообщение удалено</i>'}</span>
       </div>` : '';
-    return `<div class="chat-bubble-row ${own ? 'own' : ''}">
+    // Вложение: картинка/видео — сразу в пузыре, остальное — карточкой.
+    const mediaUrl = message.media_id ? `/api/chat-media/${message.media_id}` : '';
+    const media = !message.media_id ? ''
+      : /^image\//.test(message.media_mime || '')
+        ? `<a href="${mediaUrl}" target="_blank" rel="noopener"><img class="chat-media" src="${mediaUrl}" alt=""></a>`
+      : /^video\//.test(message.media_mime || '')
+        ? `<video class="chat-media" src="${mediaUrl}" controls preload="metadata"></video>`
+        : `<a class="chat-file" href="${mediaUrl}" target="_blank" rel="noopener">📄 ${escapeHtml(message.media_name || 'файл')}</a>`;
+    // Реакции: группировка по эмодзи, моя — подсвечена (повторный клик снимает).
+    let reactions = [];
+    try { reactions = JSON.parse(message.reactions || '[]'); } catch { reactions = []; }
+    const reactionGroups = {};
+    for (const item of reactions) {
+      (reactionGroups[item.emoji] = reactionGroups[item.emoji] || { count: 0, mine: false, names: [] });
+      reactionGroups[item.emoji].count += 1;
+      reactionGroups[item.emoji].names.push(item.name);
+      if (item.userId === myId) reactionGroups[item.emoji].mine = true;
+    }
+    const reactionsHtml = Object.keys(reactionGroups).length
+      ? `<div class="chat-reactions">${Object.entries(reactionGroups).map(([emoji, group]) =>
+        `<button type="button" class="chat-react-chip ${group.mine ? 'mine' : ''}"
+          data-react="${emoji}" data-react-msg="${message.id}"
+          title="${escapeHtml(group.names.join(', '))}">${emoji} ${group.count}</button>`).join('')}</div>`
+      : '';
+    // Галочки доставки в личке: ✓ отправлено, ✓✓ собеседник открыл переписку.
+    const ticks = own && active?.key?.startsWith('dm:')
+      ? `<span class="chat-ticks">${peerReadId !== null && message.id <= peerReadId ? '✓✓' : '✓'}</span>` : '';
+    // @упоминания подсвечиваются в тексте.
+    const textHtml = escapeHtml(message.text)
+      .replace(/(^|\s)(@[\wа-яёА-ЯЁ.]+)/g, '$1<b class="chat-mention">$2</b>');
+    return `<div class="chat-bubble-row ${own ? 'own' : ''}" data-msg-id="${message.id}">
       <div class="chat-bubble ${own ? 'own' : ''} ${auto ? 'auto' : ''} ${forMe(message) ? 'mine-target' : ''}">
         ${!own && (groupish || auto) ? `<small class="chat-author">${auto
           ? `⚙ Конвейер${message.target_role ? ` → ${ROLE_LABELS[message.target_role] || message.target_role}` : ''}`
           : escapeHtml(message.author_name)}</small>` : ''}
-        ${quote}
-        <div>${escapeHtml(message.text)}</div>
+        ${quote}${media}
+        ${message.text ? `<div>${textHtml}</div>` : ''}
+        ${reactionsHtml}
         <small class="chat-time">${formatDateTime(message.created_at.includes('Z')
           ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}${message.updated_at
-          ? ' <span class="muted" title="Автор правил сообщение">· изм.</span>' : ''}
+          ? ' <span class="muted" title="Автор правил сообщение">· изм.</span>' : ''}${ticks}
           <span class="chat-msg-actions">
+            ${message.kind === 'user' ? `<button type="button" class="chat-act" data-react-pick="${message.id}" title="Реакция">😊</button>` : ''}
             ${message.kind === 'user' && active && !['auto', 'personal'].includes(active.key)
     ? `<button type="button" class="chat-act" data-reply-msg="${message.id}" title="Ответить цитатой">↩</button>` : ''}
             <button type="button" class="chat-act" data-copy-msg="${message.id}" title="Скопировать текст">📋</button>
@@ -388,8 +470,19 @@ export function setupChat(state) {
   const replyBar = el('chatReplyBar');
   const renderReplyBar = () => {
     const target = composing.editing || composing.replyTo;
-    replyBar.classList.toggle('hidden', !target);
-    if (!target) { replyBar.innerHTML = ''; return; }
+    replyBar.classList.toggle('hidden', !target && !pendingMedia);
+    if (!target && !pendingMedia) { replyBar.innerHTML = ''; return; }
+    if (!target) {
+      replyBar.innerHTML = `<span class="chat-rb-icon">📎</span>
+        <span class="chat-rb-body"><small>Вложение</small>
+          <span>${escapeHtml(pendingMedia.name)}</span></span>
+        <button type="button" class="button ghost small" id="chatRbCancel">✕</button>`;
+      replyBar.querySelector('#chatRbCancel').onclick = () => {
+        pendingMedia = null;
+        renderReplyBar();
+      };
+      return;
+    }
     replyBar.innerHTML = `<span class="chat-rb-icon">${composing.editing ? '✎' : '↩'}</span>
       <span class="chat-rb-body"><small>${composing.editing ? 'Правка сообщения'
     : `Ответ: ${escapeHtml(target.author_name)}`}</small>
@@ -428,6 +521,39 @@ export function setupChat(state) {
     if (replyMessage) { startReply(replyMessage); return; }
     const editMessage = find('edit-msg');
     if (editMessage) { startEdit(editMessage); return; }
+    const reactPick = event.target.closest('[data-react-pick]');
+    if (reactPick) {
+      // Мини-поповер с шестью реакциями прямо у кнопки.
+      document.querySelector('.chat-react-pop')?.remove();
+      const pop = document.createElement('div');
+      pop.className = 'chat-react-pop';
+      pop.innerHTML = ['👍', '❤️', '😂', '😮', '😢', '🔥'].map(emoji =>
+        `<button type="button" data-pop-react="${emoji}">${emoji}</button>`).join('');
+      reactPick.closest('.chat-bubble').appendChild(pop);
+      pop.querySelectorAll('[data-pop-react]').forEach(button =>
+        button.addEventListener('click', async () => {
+          pop.remove();
+          try {
+            await api(`/api/messages/${reactPick.dataset.reactPick}/react`, { method: 'POST',
+              body: JSON.stringify({ emoji: button.dataset.popReact }) });
+            await poll();
+            renderDialog();
+          } catch (error) { toast(error.message, 'error'); }
+        }));
+      setTimeout(() => document.addEventListener('click',
+        () => pop.remove(), { once: true }), 0);
+      return;
+    }
+    const reactChip = event.target.closest('[data-react-msg]');
+    if (reactChip) {
+      try {
+        await api(`/api/messages/${reactChip.dataset.reactMsg}/react`, { method: 'POST',
+          body: JSON.stringify({ emoji: reactChip.dataset.react }) });
+        await poll();
+        renderDialog();
+      } catch (error) { toast(error.message, 'error'); }
+      return;
+    }
     const deleteTarget = find('delete-msg');
     if (deleteTarget) {
       if (!confirm('Удалить сообщение? Останется пометка «удалено».')) return;
@@ -670,7 +796,10 @@ export function setupChat(state) {
         const group = groups.find(item => item.id === active.key.slice(6));
         return group ? group.members.map(member => shortName(member.name)).join(', ') : '';
       })();
-    el('chatDialogSub').textContent = sub;
+    el('chatDialogSub').textContent = typingNames.length
+      ? `✏️ ${typingNames.join(', ')} печатает…` : sub;
+    el('chatDialogSub').dataset.sub = sub;
+    refreshRoomButtons();
     const group = active.key.startsWith('group:')
       ? groups.find(item => item.id === active.key.slice(6)) : null;
     el('chatGroupEdit').classList.toggle('hidden',
@@ -686,7 +815,25 @@ export function setupChat(state) {
       : active.key.startsWith('dm:') ? `Лично: ${shortName(roomTitle(active.key))}…` : 'Сообщение группе…';
   };
 
+  // Живые мелочи открытой переписки («печатает…», ✓✓) — без перерисовки ленты.
+  const renderDialogLive = () => {
+    if (!active) return;
+    const subNode = el('chatDialogSub');
+    if (subNode.dataset.sub !== undefined) {
+      subNode.textContent = typingNames.length
+        ? `✏️ ${typingNames.join(', ')} печатает…` : subNode.dataset.sub;
+    }
+    if (active.key.startsWith('dm:') && peerReadId !== null) {
+      list.querySelectorAll('.chat-bubble-row.own .chat-ticks').forEach(node => {
+        const row = node.closest('[data-msg-id]');
+        const id = Number(row?.dataset.msgId || 0);
+        if (id && id <= peerReadId) node.textContent = '✓✓';
+      });
+    }
+  };
+
   const showHome = () => {
+    el('chatSearchWrap').classList.remove('hidden');
     active = null;
     el('chatHomeHead').classList.remove('hidden');
     el('chatDialogHead').classList.add('hidden');
@@ -700,7 +847,10 @@ export function setupChat(state) {
   };
 
   function openRoom(key) {
+    el('chatSearchWrap').classList.add('hidden');
     active = { key };
+    peerReadId = null;
+    typingNames = [];
     composing = { replyTo: null, editing: null };
     renderReplyBar();
     el('chatHomeHead').classList.add('hidden');
@@ -716,11 +866,19 @@ export function setupChat(state) {
   }
 
   // «Прочитано» — только у открытой переписки.
+  let lastSentRead = {};
   function markSeen() {
     if (!isOpen() || !active) return;
     seen[active.key] = lastId;
     saveSeen();
     updateUnread();
+    // Серверная отметка (галочки ✓✓ у собеседника) — не чаще раза на id.
+    if (!['auto', 'helpdesk', 'tz', 'kb', 'personal'].includes(active.key)
+      && lastSentRead[active.key] !== lastId) {
+      lastSentRead[active.key] = lastId;
+      api('/api/chat/read', { method: 'POST',
+        body: JSON.stringify({ roomKey: active.key, lastId }) }).catch(() => {});
+    }
   }
 
   const updateUnread = () => {
@@ -833,6 +991,37 @@ export function setupChat(state) {
     return { groupView, box };
   };
 
+  const refreshRoomButtons = () => {
+    if (!active) return;
+    const pref = prefOf(active.key);
+    el('chatPin').textContent = pref.pinned ? '📍' : '📌';
+    el('chatPin').title = pref.pinned ? 'Открепить' : 'Закрепить переписку сверху списка';
+    el('chatMuteRoom').textContent = pref.muted ? '🔕' : '🔔';
+    el('chatMuteRoom').title = pref.muted ? 'Включить уведомления переписки'
+      : 'Без звука и всплывающих — счётчик остаётся';
+    const service = ['auto', 'personal', 'helpdesk', 'tz', 'kb'].includes(active.key);
+    el('chatPin').classList.toggle('hidden', service);
+    el('chatMuteRoom').classList.toggle('hidden', ['helpdesk', 'tz', 'kb'].includes(active.key));
+  };
+  const togglePref = async field => {
+    if (!active) return;
+    const pref = prefOf(active.key);
+    const next = { pinned: Boolean(pref.pinned), muted: Boolean(pref.muted) };
+    next[field] = !next[field];
+    try {
+      await api('/api/chat/prefs', { method: 'POST',
+        body: JSON.stringify({ roomKey: active.key, ...next }) });
+      const norm = normKey(active.key);
+      prefs = prefs.filter(item => item.room_key !== norm);
+      prefs.push({ room_key: norm, pinned: next.pinned ? 1 : 0, muted: next.muted ? 1 : 0 });
+      refreshRoomButtons();
+      toast(field === 'pinned' ? (next.pinned ? 'Закреплено' : 'Откреплено')
+        : (next.muted ? 'Переписка без звука' : 'Уведомления включены'));
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  el('chatPin').onclick = () => togglePref('pinned');
+  el('chatMuteRoom').onclick = () => togglePref('muted');
+
   el('chatDelete').onclick = async () => {
     if (!active) return;
     if (active.key.startsWith('dm:')) {
@@ -877,9 +1066,19 @@ export function setupChat(state) {
   // ── Поллинг ──
   const poll = async (initial = false) => {
     try {
-      const { items, lastId: serverLast, changed: changedRows, serverNow, myOpenTasks } =
+      const activeKey = active && !['helpdesk', 'tz', 'kb'].includes(active.key) ? active.key : '';
+      const { items, lastId: serverLast, changed: changedRows, serverNow, myOpenTasks,
+        typing, peerReadId: peerRead } =
         await api(`/api/messages?after=${initial ? 0 : lastId}${pollSince && !initial
-          ? `&since=${encodeURIComponent(pollSince)}` : ''}`);
+          ? `&since=${encodeURIComponent(pollSince)}` : ''}${activeKey
+          ? `&room=${encodeURIComponent(activeKey)}` : ''}`);
+      // «Печатает…» и прочитанность собеседника — для открытой переписки.
+      const typingText = (typing || []).join(', ');
+      const newPeerRead = peerRead === undefined ? null : peerRead;
+      const liveChanged = typingText !== typingNames.join(', ') || newPeerRead !== peerReadId;
+      typingNames = typing || [];
+      if (peerRead !== undefined) peerReadId = peerRead;
+      if (liveChanged && active) renderDialogLive();
       if (serverNow) pollSince = serverNow;
       if (myOpenTasks !== undefined) {
         state.navBadges = state.navBadges || {};
@@ -905,7 +1104,7 @@ export function setupChat(state) {
         const inThisRoom = isOpen() && active?.key === key;
         const targeted = key.startsWith('dm:') || (message.kind === 'auto' && forMe(message))
           || key.startsWith('group:');
-        if (!inThisRoom) {
+        if (!inThisRoom && !prefOf(key).muted) {
           const title = key.startsWith('dm:') ? `🔒 ${message.author_name}`
             : key.startsWith('group:') ? roomTitle(key)
             : message.kind === 'auto' ? '⚙ Конвейер' : `📢 ${message.author_name}`;
@@ -939,6 +1138,7 @@ export function setupChat(state) {
       groups = payload.items;
       hiddenRooms = payload.hidden || [];
       deletedGroups = payload.deleted || [];
+      prefs = payload.prefs || [];
     } catch { /* не критично */ }
   };
   const loadContacts = async () => {
@@ -990,10 +1190,69 @@ export function setupChat(state) {
     desktopNotify('Пегас-Авто', 'Всплывающие уведомления включены ✅');
     toast('Всплывающие уведомления включены');
   };
+  // 📎 вложение: файл грузится сразу, плашка видна до отправки сообщения.
+  el('chatAttach').onclick = () => el('chatFile').click();
+  el('chatFile').onchange = async () => {
+    const file = el('chatFile').files[0];
+    el('chatFile').value = '';
+    if (!file || !active) return;
+    if (file.size > 50 * 1024 * 1024) { toast('Файл больше 50 МБ', 'error'); return; }
+    el('chatAttach').disabled = true;
+    el('chatAttach').textContent = '⏳';
+    try {
+      const uploaded = await fetch('/api/chat-media', { method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent(file.name) }, body: file })
+        .then(async r => { if (!r.ok) throw new Error((await r.json()).error || 'Не загрузилось'); return r.json(); });
+      pendingMedia = uploaded;
+      renderReplyBar();
+      input.focus();
+    } catch (error) { toast(error.message, 'error'); }
+    el('chatAttach').disabled = false;
+    el('chatAttach').textContent = '📎';
+  };
+
+  // @упоминание: набрали @ — список людей, клик вставляет @Имя_Фамилия.
+  const mentionsBox = el('chatMentions');
+  const renderMentionHints = () => {
+    const value = input.value;
+    const caretWord = /(^|\s)@([\wа-яёА-ЯЁ.]*)$/.exec(value.slice(0, input.selectionStart ?? value.length));
+    if (!caretWord || !active || ['auto', 'personal', 'helpdesk', 'tz', 'kb'].includes(active.key)) {
+      mentionsBox.classList.add('hidden');
+      mentionsBox.innerHTML = '';
+      return;
+    }
+    const query = caretWord[2].toLowerCase().replace(/_/g, ' ');
+    const found = contacts.filter(person =>
+      person.full_name.toLowerCase().includes(query)).slice(0, 6);
+    if (!found.length) { mentionsBox.classList.add('hidden'); return; }
+    mentionsBox.classList.remove('hidden');
+    mentionsBox.innerHTML = found.map(person =>
+      `<button type="button" class="chat-mention-opt" data-mention="${escapeHtml(person.full_name)}">
+        ${escapeHtml(person.full_name)}</button>`).join('');
+    mentionsBox.querySelectorAll('[data-mention]').forEach(button =>
+      button.addEventListener('click', () => {
+        const name = button.dataset.mention.replace(/\s+/g, '_');
+        input.value = value.slice(0, input.selectionStart ?? value.length)
+          .replace(/@([\wа-яёА-ЯЁ.]*)$/, `@${name} `) + value.slice(input.selectionStart ?? value.length);
+        mentionsBox.classList.add('hidden');
+        input.focus();
+      }));
+  };
+
+  let typingSentAt = 0;
+  input.addEventListener('input', () => {
+    renderMentionHints();
+    if (!active || ['auto', 'personal', 'helpdesk', 'tz', 'kb'].includes(active.key)) return;
+    if (Date.now() - typingSentAt < 4000 || !input.value.trim()) return;
+    typingSentAt = Date.now();
+    api('/api/chat/typing', { method: 'POST',
+      body: JSON.stringify({ roomKey: active.key }) }).catch(() => {});
+  });
+
   el('chatForm').onsubmit = async event => {
     event.preventDefault();
     const text = input.value.trim();
-    if (!text || !active || active.key === 'auto') return;
+    if ((!text && !pendingMedia) || !active || active.key === 'auto') return;
     try {
       if (composing.editing) {
         // Правка существующего: PATCH, пузырь обновляется на месте.
@@ -1007,9 +1266,15 @@ export function setupChat(state) {
         if (active.key.startsWith('dm:')) payload.recipientId = active.key.slice(3);
         if (active.key.startsWith('group:')) payload.chatId = active.key.slice(6);
         if (composing.replyTo) payload.replyToId = composing.replyTo.id;
+        if (pendingMedia) { payload.mediaId = pendingMedia.id; payload.mediaName = pendingMedia.name; }
+        // @упоминания: совпадение @Имя_Фамилия с людьми из справочника.
+        const mentions = contacts.filter(person =>
+          text.includes(`@${person.full_name.replace(/\s+/g, '_')}`)).map(person => person.id);
+        if (mentions.length) payload.mentions = mentions;
         await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
       }
       input.value = '';
+      pendingMedia = null;
       composing = { replyTo: null, editing: null };
       renderReplyBar();
       await poll();

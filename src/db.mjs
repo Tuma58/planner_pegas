@@ -230,6 +230,31 @@ CREATE TABLE IF NOT EXISTS chat_hidden (
   hidden_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(user_id, room_key)
 );
+-- Мессенджер Э3 (12.11): реакции, закрепление/тишина переписок,
+-- серверные отметки прочтения (галочки ✓✓ и кросс-девайс в будущем).
+CREATE TABLE IF NOT EXISTS message_reactions (
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  user_name TEXT NOT NULL DEFAULT '',
+  emoji TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(message_id, user_id, emoji)
+);
+CREATE TABLE IF NOT EXISTS chat_prefs (
+  user_id TEXT NOT NULL REFERENCES users(id),
+  room_key TEXT NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  muted INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id, room_key)
+);
+CREATE TABLE IF NOT EXISTS chat_reads (
+  user_id TEXT NOT NULL REFERENCES users(id),
+  room_key TEXT NOT NULL,
+  last_read_id INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id, room_key)
+);
 CREATE TABLE IF NOT EXISTS customer_profiles (
   customer_name TEXT PRIMARY KEY,
   inn TEXT NOT NULL DEFAULT '', segment TEXT NOT NULL DEFAULT '',
@@ -911,6 +936,12 @@ function migrateColumns(db) {
   ensure('messages', 'deleted_at', 'TEXT');
   ensure('messages', 'external_source', 'TEXT');
   ensure('messages', 'external_id', 'TEXT');
+  // Мессенджер Э2 (12.11): вложения в сообщениях и штамп реакции —
+  // по нему открытые вкладки коллег узнают о новых реакциях (since).
+  ensure('messages', 'media_id', 'TEXT');
+  ensure('messages', 'media_mime', 'TEXT');
+  ensure('messages', 'media_name', 'TEXT');
+  ensure('messages', 'reacted_at', 'TEXT');
   ensure('chats', 'external_source', 'TEXT');
   ensure('chats', 'external_id', 'TEXT');
   ensure('trips', 'sum_confirmed_at', 'TEXT');

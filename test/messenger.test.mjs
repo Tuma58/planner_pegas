@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '../src/db.mjs';
 import { hashPassword } from '../src/security.mjs';
+import * as msgModule from '../src/messenger.mjs';
 import { deleteMessage, editMessage, sendMessage } from '../src/messenger.mjs';
 import { chatMessages } from '../src/planner-service.mjs';
 
@@ -70,4 +71,47 @@ test('мессенджер: ответ-цитата живёт в своей п�
   // Удаление чужого обычным пользователем — отказ.
   const borisMsg = sendMessage(db, boris, { text: 'моё' });
   assert.ok(!deleteMessage(db, anna, borisMsg.id).ok);
+});
+
+test('мессенджер Э2–Э3: реакции, прочтение, pin/mute, видимость вложений', t => {
+  const db = freshDb(t);
+  const anna = addUser(db, 'u2-anna', 'Анна Р');
+  const boris = addUser(db, 'u2-boris', 'Борис Р');
+  const { toggleReaction, setRead, setPrefs, normRoomKey, canSeeMessage, REACTION_SET } = msgModule;
+  // реакции: toggle ставит и снимает, чужая реакция живёт отдельно
+  const sent = sendMessage(db, anna, { text: 'реагируйте' });
+  assert.ok(toggleReaction(db, boris, sent.id, '👍').added);
+  assert.ok(toggleReaction(db, anna, sent.id, '👍').added);
+  assert.equal(toggleReaction(db, boris, sent.id, '👍').added, false); // снял
+  const rows = db.prepare('SELECT user_id FROM message_reactions WHERE message_id=?').all(sent.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].user_id, anna.id);
+  assert.ok(!toggleReaction(db, anna, sent.id, '🤡').ok); // вне набора
+  assert.ok(REACTION_SET.includes('🔥'));
+  assert.ok(db.prepare('SELECT reacted_at FROM messages WHERE id=?').get(sent.id).reacted_at);
+  // normRoomKey: личка нормализуется одинаково с обеих сторон
+  assert.equal(normRoomKey(`dm:${boris.id}`, anna.id), normRoomKey(`dm:${anna.id}`, boris.id));
+  // прочтение: только вперёд
+  setRead(db, boris, `dm:${anna.id}`, 10);
+  setRead(db, boris, `dm:${anna.id}`, 5);
+  assert.equal(db.prepare('SELECT last_read_id FROM chat_reads WHERE user_id=?')
+    .get(boris.id).last_read_id, 10);
+  // pin/mute: частичное обновление не затирает второй флаг
+  setPrefs(db, anna, 'all', { pinned: true });
+  setPrefs(db, anna, 'all', { muted: true });
+  const pref = db.prepare('SELECT pinned, muted FROM chat_prefs WHERE user_id=?').get(anna.id);
+  assert.equal(pref.pinned, 1);
+  assert.equal(pref.muted, 1);
+  // видимость: личное сообщение видят только двое
+  const dm = sendMessage(db, anna, { text: 'секрет', recipientId: boris.id });
+  const dmRow = db.prepare('SELECT * FROM messages WHERE id=?').get(dm.id);
+  const kate = addUser(db, 'u2-kate', 'Катя Р');
+  assert.ok(canSeeMessage(db, anna.id, ['logist'], dmRow));
+  assert.ok(canSeeMessage(db, boris.id, ['logist'], dmRow));
+  assert.ok(!canSeeMessage(db, kate.id, ['logist'], dmRow));
+  // упоминание: уведомление уходит через notifyUser
+  const pinged = [];
+  sendMessage(db, anna, { text: 'привет @Борис_Р', mentions: [boris.id] },
+    { notifyUser: name => pinged.push(name) });
+  assert.deepEqual(pinged, ['Борис Р']);
 });

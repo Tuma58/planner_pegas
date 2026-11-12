@@ -71,6 +71,21 @@ export function helpdeskMediaMimeOf(fileName) {
   return boardMediaMimeOf(fileName) || HELPDESK_TEXT_TYPES[ext] || null;
 }
 
+// ── Вложения мессенджера (Э2, 12.11) ──
+// Фото, видео, документы в сообщениях: типы HELP DESK + pdf/docx —
+// в переписке ходят накладные и акты. Лимит как у заявок.
+export const chatMediaPath = path.join(path.dirname(config.databasePath), 'chat-media');
+export const MAX_CHAT_MEDIA_BYTES = 50 * 1024 * 1024;
+const CHAT_EXTRA_TYPES = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.doc': 'application/msword'
+};
+export function chatMediaMimeOf(fileName) {
+  const ext = path.extname(String(fileName || '').toLowerCase());
+  return helpdeskMediaMimeOf(fileName) || CHAT_EXTRA_TYPES[ext] || null;
+}
+
 // Имя файла из заголовка: без путей и управляющих символов; длинное имя
 // режется с сохранением расширения в хвосте.
 export function cleanFileName(raw) {

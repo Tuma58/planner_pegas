@@ -1399,7 +1399,9 @@ export function chatMessages(db, userId, userRoles = [], after = 0, changedSince
   // правленые — с updated_at, ответы — с хвостом цитаты (reply_*).
   const fields = `m.*,
     r.author_name reply_author,
-    CASE WHEN r.deleted_at IS NOT NULL THEN '' ELSE substr(r.text, 1, 120) END reply_text`;
+    CASE WHEN r.deleted_at IS NOT NULL THEN '' ELSE substr(r.text, 1, 120) END reply_text,
+    (SELECT json_group_array(json_object('emoji', x.emoji, 'userId', x.user_id, 'name', x.user_name))
+      FROM message_reactions x WHERE x.message_id=m.id) reactions`;
   const items = (after > 0
     ? db.prepare(`SELECT ${fields} FROM (SELECT * FROM messages WHERE id>? AND ${visible}
         ORDER BY id LIMIT 300) m
@@ -1415,9 +1417,9 @@ export function chatMessages(db, userId, userRoles = [], after = 0, changedSince
   let changed = [];
   if (changedSince) {
     changed = db.prepare(`SELECT ${fields} FROM (SELECT * FROM messages WHERE ${visible}
-        AND (updated_at >= ? OR deleted_at >= ?) ORDER BY id DESC LIMIT 100) m
+        AND (updated_at >= ? OR deleted_at >= ? OR reacted_at >= ?) ORDER BY id DESC LIMIT 100) m
         LEFT JOIN messages r ON r.id=m.reply_to_id ORDER BY m.id`)
-      .all(...params, changedSince, changedSince)
+      .all(...params, changedSince, changedSince, changedSince)
       .map(item => item.deleted_at ? { ...item, text: '' } : item);
   }
   return { items, lastId, changed, serverNow: new Date().toISOString().slice(0, 19).replace('T', ' ') };

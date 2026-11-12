@@ -2227,18 +2227,22 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .chat-panel.chat-page { position: static; width: auto; max-width: none; height: calc(100vh - 118px);
   border-left: 0; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
   display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden; margin: 12px 16px; }
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto; overflow: hidden; margin: 12px 16px; }
 .chat-page #chatHomeHead { grid-column: 1; grid-row: 1; border-right: 1px solid var(--line); display: flex !important; }
-.chat-page .chat-rooms { grid-column: 1; grid-row: 2 / 5; border-right: 1px solid var(--line);
+.chat-page .chat-search { grid-column: 1; grid-row: 2; border-right: 1px solid var(--line);
+  display: block !important; padding: 6px 10px; }
+.chat-page .chat-search input { width: 100%; }
+.chat-page .chat-rooms { grid-column: 1; grid-row: 3 / 6; border-right: 1px solid var(--line);
   display: block !important; overflow: auto; }
-.chat-page #chatDialogHead { grid-column: 2; grid-row: 1; }
+.chat-page #chatDialogHead { grid-column: 2; grid-row: 1 / 3; }
 .chat-page #chatDialogHead.hidden { display: flex !important; visibility: hidden; }
 .chat-page #chatBack { display: none; }
-.chat-page .chat-list { grid-column: 2; grid-row: 2; }
+.chat-page .chat-list { grid-column: 2; grid-row: 3; }
 .chat-page .chat-list.hidden { display: block !important; }
-.chat-page .chat-compose { grid-column: 2; grid-row: 2 / 5; overflow: auto; }
-.chat-page .chat-replybar { grid-column: 2; grid-row: 3; }
-.chat-page .chat-form { grid-column: 2; grid-row: 4; }
+.chat-page .chat-compose { grid-column: 2; grid-row: 3 / 6; overflow: auto; }
+.chat-page .chat-replybar { grid-column: 2; grid-row: 4; }
+.chat-page .chat-mentions { grid-column: 2; grid-row: 4; }
+.chat-page .chat-form { grid-column: 2; grid-row: 5; }
 .chat-page .chat-form.hidden { display: flex !important; visibility: hidden; }
 
 /* Цитата-ответ внутри пузыря */
@@ -2265,3 +2269,28 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   font-size: 10.5px; font-weight: 700; line-height: 1; border-radius: 9px;
   padding: 3px 5px; min-width: 18px; text-align: center; flex-shrink: 0; }
 [data-nav="collapsed"] .nav-badge { position: absolute; top: 1px; right: 4px; margin: 0; }
+
+/* ── Мессенджер Э2–Э3 (12.11): вложения, реакции, упоминания, поиск ── */
+.chat-search { padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.chat-search input { width: 100%; }
+.chat-media { max-width: min(320px, 100%); max-height: 260px; border-radius: 8px; display: block; margin: 3px 0; }
+.chat-file { display: inline-block; margin: 3px 0; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel2); text-decoration: none; }
+.chat-reactions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.chat-react-chip { border: 1px solid var(--line); background: var(--panel2); border-radius: 10px;
+  font-size: 12px; padding: 1px 7px; cursor: pointer; }
+.chat-react-chip.mine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.chat-bubble { position: relative; }
+.chat-react-pop { position: absolute; bottom: 100%; right: 0; z-index: 30; display: flex; gap: 2px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 4px 6px;
+  box-shadow: var(--shadow); }
+.chat-react-pop button { background: none; border: 0; font-size: 17px; cursor: pointer; padding: 2px 4px; }
+.chat-react-pop button:hover { transform: scale(1.25); }
+.chat-ticks { color: var(--accent); margin-left: 4px; font-weight: 700; }
+.chat-mention { color: var(--accent); font-weight: 650; }
+.chat-mentions { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px 14px;
+  border-top: 1px solid var(--line); background: var(--panel2); }
+.chat-mentions.hidden { display: none; }
+.chat-mention-opt { border: 1px solid var(--line); border-radius: 9px; background: var(--card);
+  padding: 3px 9px; cursor: pointer; font-size: 12.5px; }
+.chat-mention-opt:hover { border-color: var(--accent); }

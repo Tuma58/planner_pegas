@@ -7,7 +7,7 @@ import { config } from './config.mjs';
 import { audit, canonTrailerPlate, nextOrderNo, nextRouteNo, openDatabase, queueOutbox, roadKm, ROAD_FACTOR, settingsObject } from './db.mjs';
 import { request as httpsRequest } from 'node:https';
 import { ipInSubnets, normalizeAllowedSubnets } from './network-access.mjs';
-import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, cleanFileName, helpdeskMediaMimeOf, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
+import { INLINE_TYPES, MAX_BOARD_MEDIA_BYTES, MAX_CHAT_MEDIA_BYTES, MAX_FILES_PER_ORDER, MAX_HELPDESK_MEDIA_BYTES, MAX_UPLOAD_BYTES, boardMediaMimeOf, boardMediaPath, chatMediaMimeOf, chatMediaPath, cleanFileName, helpdeskMediaMimeOf, helpdeskMediaPath, uploadMimeOf, uploadsPath } from './uploads.mjs';
 import { HELPDESK_PROMO_DEFAULT_UNTIL, HELPDESK_STATUSES, helpdeskPromoDue, helpdeskStatusMessage, renderHelpdeskPosterSvg, tzAccess, validateTicket } from './helpdesk.mjs';
 import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHint, transitPhysicsHint } from './assistant.mjs';
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
@@ -115,7 +115,12 @@ import {
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
-import { deleteMessage, editMessage, sendMessage } from './messenger.mjs';
+import { canSeeMessage, deleteMessage, editMessage, normRoomKey, sendMessage, setPrefs,
+  setRead, toggleReaction } from './messenger.mjs';
+
+// «Печатает…» в чате: комната → (пользователь → {имя, годен до}).
+// Эфемерно и только в памяти — после рестарта просто пусто.
+const chatTyping = new Map();
 
 // Журнал неудачных логинов для fail2ban (living в data-томе рядом с БД);
 // простая ротация: файл больше 5 МБ обнуляется при старте.
@@ -13764,9 +13769,31 @@ async function api(request, response, url) {
     // идея руководителя по образцу Битрикс24).
     const myOpenTasks = db.prepare(`SELECT COUNT(*) c FROM arm_tasks
       WHERE to_user_id=? AND status IN ('new','work')`).get(user.id).c;
+    // Активная переписка клиента: кто печатает и докуда дочитал собеседник
+    // (галочки ✓✓ в личках) — только для неё, чтобы опрос оставался дёшев.
+    const activeRoom = String(url.searchParams.get('room') || '').slice(0, 80);
+    let typing = [];
+    let peerReadId = null;
+    if (activeRoom) {
+      const norm = normRoomKey(activeRoom, user.id);
+      const room = chatTyping.get(norm);
+      if (room) {
+        const now = Date.now();
+        typing = [...room.entries()].filter(([uid, item]) => uid !== user.id && item.until > now)
+          .map(([, item]) => item.name);
+        for (const [uid, item] of room.entries()) if (item.until <= Date.now()) room.delete(uid);
+        if (!room.size) chatTyping.delete(norm);
+      }
+      if (activeRoom.startsWith('dm:')) {
+        const peer = activeRoom.slice(3);
+        peerReadId = db.prepare(`SELECT last_read_id FROM chat_reads
+          WHERE user_id=? AND room_key=?`).get(peer, norm)?.last_read_id ?? null;
+      }
+    }
     return json(response, 200,
       { ...chatMessages(db, user.id, rolesOf(user), Number(url.searchParams.get('after') || 0),
-        String(url.searchParams.get('since') || '').slice(0, 19)), myOpenTasks });
+        String(url.searchParams.get('since') || '').slice(0, 19)),
+      myOpenTasks, typing, peerReadId });
   }
   // Групповые чаты: список моих групп, создание, правка состава/названия.
   if (request.method === 'GET' && pathname === '/api/chats') {
@@ -13775,6 +13802,10 @@ async function api(request, response, url) {
     const payload = {
       items: chatGroups(db, user.id),
       hidden: db.prepare('SELECT room_key, hidden_after FROM chat_hidden WHERE user_id=?')
+        .all(user.id),
+      // Закрепления и «тишина» переписок (Э3): ключи нормализованные
+      // (личка — dm:<меньший>:<больший>), фронт нормализует так же.
+      prefs: db.prepare('SELECT room_key, pinned, muted FROM chat_prefs WHERE user_id=?')
         .all(user.id)
     };
     // Корзина удалённых групп — администратору, для восстановления.
@@ -13893,7 +13924,7 @@ async function api(request, response, url) {
     if (!user) return;
     const body = await readJson(request);
     const text = String(body.text || '').trim().slice(0, 500);
-    if (!text) return errorJson(response, 422, 'Пустое сообщение');
+    if (!text && !body.mediaId) return errorJson(response, 422, 'Пустое сообщение');
     // Личное сообщение: адресат — действующий сотрудник, не сам себе.
     let recipientId = null;
     if (body.recipientId) {
@@ -13913,10 +13944,146 @@ async function api(request, response, url) {
       if (!membership) return errorJson(response, 403, 'Вы не участник этой группы');
       chatId = String(body.chatId);
     }
+    // Вложение: id от /api/chat-media; имя и тип берём из файла аудита
+    // загрузки не доверяя клиенту — тип строго по расширению.
+    let media = {};
+    if (body.mediaId) {
+      const mediaId = String(body.mediaId).replace(/[^\w-]/g, '');
+      if (!fs.existsSync(path.join(chatMediaPath, mediaId))) {
+        return errorJson(response, 422, 'Вложение не загружено');
+      }
+      const mediaName = cleanFileName(String(body.mediaName || 'файл'));
+      media = { mediaId, mediaName, mediaMime: chatMediaMimeOf(mediaName) || 'application/octet-stream' };
+    }
     const sent = sendMessage(db, user, { text, recipientId, chatId,
-      replyToId: body.replyToId || null });
+      replyToId: body.replyToId || null, ...media,
+      mentions: Array.isArray(body.mentions) ? body.mentions : [] },
+    { notifyUser: (fullName, note) => notifyUserByName(fullName, note) });
     if (!sent.ok) return errorJson(response, sent.status, sent.error);
     return json(response, 201, { ok: true, id: sent.id });
+  }
+
+  // ── Мессенджер Э2–Э3 (12.11) ──
+  // Вложение: клиент сперва загружает файл, затем шлёт сообщение с mediaId.
+  if (request.method === 'POST' && pathname === '/api/chat-media') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (Number(user.guest)) return errorJson(response, 403, 'Гостевой режим — только просмотр');
+    let rawName = String(request.headers['x-file-name'] || '');
+    try { rawName = decodeURIComponent(rawName); } catch { /* оставляем как есть */ }
+    const fileName = cleanFileName(rawName);
+    const mime = chatMediaMimeOf(fileName);
+    if (!fileName || !mime) {
+      return errorJson(response, 422, 'В сообщение можно фото, видео, текст, таблицу или документ: png, jpg, webp, gif, mp4, webm, mov, md, txt, csv, xlsx, xls, pdf, docx');
+    }
+    const content = await readRaw(request, MAX_CHAT_MEDIA_BYTES);
+    if (!content.length) return errorJson(response, 422, 'Файл пустой');
+    const id = randomUUID();
+    fs.mkdirSync(chatMediaPath, { recursive: true });
+    fs.writeFileSync(path.join(chatMediaPath, id), content);
+    audit(db, user, 'chat-media', 'message', id, { fileName, size: content.length }, requestIp(request));
+    return json(response, 201, { id, mime, name: fileName });
+  }
+  // Отдача вложения — только тем, кому видно само сообщение (личный файл
+  // чужому не уйдёт); до привязки к сообщению файл видит загрузивший.
+  if (request.method === 'GET' && pathname.startsWith('/api/chat-media/')) {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const id = pathname.split('/').pop().replace(/[^\w-]/g, '');
+    const message = db.prepare(`SELECT author_id, recipient_id, chat_id, kind, target_role,
+        media_mime, media_name FROM messages WHERE media_id=?`).get(id);
+    const filePath = path.join(chatMediaPath, id);
+    if (!fs.existsSync(filePath)) return errorJson(response, 404, 'Файл не найден');
+    if (message && !canSeeMessage(db, user.id, rolesOf(user), message)) {
+      return errorJson(response, 403, 'Файл из чужой переписки');
+    }
+    if (!message) {
+      const uploaded = db.prepare(`SELECT user_id FROM audit_log
+        WHERE action='chat-media' AND entity_id=? LIMIT 1`).get(id);
+      if (uploaded && uploaded.user_id !== user.id) return errorJson(response, 403, 'Файл ещё не отправлен');
+    }
+    const mime = message?.media_mime || chatMediaMimeOf(message?.media_name || '') || 'application/octet-stream';
+    const inline = /^(image|video)\//.test(mime) || mime === 'text/plain' || mime === 'application/pdf';
+    const size = fs.statSync(filePath).size;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range || ''));
+    const start = range && range[1] ? Number(range[1]) : 0;
+    const end = range && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (range && (start >= size || start > end)) {
+      response.writeHead(416, { 'Content-Range': `bytes */${size}` });
+      return response.end();
+    }
+    response.writeHead(range ? 206 : 200, {
+      'Content-Type': mime,
+      'Content-Length': end - start + 1,
+      'Accept-Ranges': 'bytes',
+      ...(message?.media_name ? { 'Content-Disposition':
+        `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(message.media_name)}` } : {}),
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {})
+    });
+    fs.createReadStream(filePath, { start, end }).pipe(response);
+    return;
+  }
+  // Поиск по моим перепискам: все видимые сообщения, свежие сверху.
+  if (request.method === 'GET' && pathname === '/api/messages/search') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const query = String(url.searchParams.get('q') || '').trim().slice(0, 80);
+    if (query.length < 2) return json(response, 200, { items: [] });
+    const rolesJson = JSON.stringify(rolesOf(user));
+    const items = db.prepare(`SELECT id, author_id, author_name, kind, text, target_role,
+        recipient_id, chat_id, created_at FROM messages
+      WHERE deleted_at IS NULL AND text LIKE ? ESCAPE '\\' AND (
+        (recipient_id IS NULL AND chat_id IS NULL AND kind='user')
+        OR (kind='auto' AND chat_id IS NULL AND recipient_id IS NULL
+            AND (target_role IS NULL OR target_role IN (SELECT value FROM json_each(?))))
+        OR recipient_id=? OR (author_id=? AND recipient_id IS NOT NULL)
+        OR chat_id IN (SELECT m.chat_id FROM chat_members m
+            JOIN chats c ON c.id=m.chat_id AND c.deleted_at IS NULL WHERE m.user_id=?))
+      ORDER BY id DESC LIMIT 50`)
+      .all(`%${query.replace(/[%_\\]/g, ch => '\\' + ch)}%`, rolesJson, user.id, user.id, user.id);
+    return json(response, 200, { items });
+  }
+  // Реакция на сообщение (toggle), короткий набор — REACTION_SET.
+  match = route(/^\/api\/messages\/(\d+)\/react$/, pathname);
+  if (match && request.method === 'POST') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = toggleReaction(db, user, match[0], String(body.emoji || ''));
+    if (!result.ok) return errorJson(response, result.status, result.error);
+    return json(response, 200, result);
+  }
+  // Отметка «прочитано до id» (серверная — для галочек ✓✓ в личках).
+  if (request.method === 'POST' && pathname === '/api/chat/read') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = setRead(db, user, String(body.roomKey || ''), body.lastId);
+    if (!result.ok) return errorJson(response, result.status, result.error);
+    return json(response, 200, { ok: true });
+  }
+  // Закрепить/заглушить переписку у себя.
+  if (request.method === 'POST' && pathname === '/api/chat/prefs') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = setPrefs(db, user, String(body.roomKey || ''),
+      { pinned: body.pinned, muted: body.muted });
+    if (!result.ok) return errorJson(response, result.status, result.error);
+    return json(response, 200, { ok: true });
+  }
+  // «Печатает…» — эфемерно, в памяти процесса (TTL 7 с, без базы).
+  if (request.method === 'POST' && pathname === '/api/chat/typing') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const norm = normRoomKey(String(body.roomKey || ''), user.id);
+    if (norm) {
+      const room = chatTyping.get(norm) || new Map();
+      room.set(user.id, { name: user.full_name || user.username, until: Date.now() + 7000 });
+      chatTyping.set(norm, room);
+    }
+    return json(response, 200, { ok: true });
   }
 
   // Правка и удаление своих сообщений (мессенджер, 12.11): окно 48 часов,
