@@ -1384,7 +1384,7 @@ export function demurrageSummary(db, nowMs = Date.now()) {
 //   (target_role входит в роли сотрудника; без target_role — всем);
 // личные — только отправитель и получатель;
 // группы — участники чата (chat_members). Поллинг инкрементальный по id.
-export function chatMessages(db, userId, userRoles = [], after = 0) {
+export function chatMessages(db, userId, userRoles = [], after = 0, changedSince = '') {
   const rolesJson = JSON.stringify(userRoles);
   const visible = `(
     (recipient_id IS NULL AND chat_id IS NULL AND kind='user')
@@ -1395,13 +1395,32 @@ export function chatMessages(db, userId, userRoles = [], after = 0) {
         JOIN chats c ON c.id=m.chat_id AND c.deleted_at IS NULL WHERE m.user_id=?)
   )`;
   const params = [rolesJson, userId, userId, userId];
-  const items = after > 0
-    ? db.prepare(`SELECT * FROM messages WHERE id>? AND ${visible} ORDER BY id LIMIT 300`)
-      .all(after, ...params)
-    : db.prepare(`SELECT * FROM (SELECT * FROM messages WHERE ${visible}
-        ORDER BY id DESC LIMIT 300) ORDER BY id`).all(...params);
+  // Удалённые отдаются строкой-заглушкой (пузырь «удалено» в ленте),
+  // правленые — с updated_at, ответы — с хвостом цитаты (reply_*).
+  const fields = `m.*,
+    r.author_name reply_author,
+    CASE WHEN r.deleted_at IS NOT NULL THEN '' ELSE substr(r.text, 1, 120) END reply_text`;
+  const items = (after > 0
+    ? db.prepare(`SELECT ${fields} FROM (SELECT * FROM messages WHERE id>? AND ${visible}
+        ORDER BY id LIMIT 300) m
+        LEFT JOIN messages r ON r.id=m.reply_to_id ORDER BY m.id`).all(after, ...params)
+    : db.prepare(`SELECT ${fields} FROM (SELECT * FROM messages WHERE ${visible}
+        ORDER BY id DESC LIMIT 300) m
+        LEFT JOIN messages r ON r.id=m.reply_to_id ORDER BY m.id`).all(...params))
+    .map(item => item.deleted_at ? { ...item, text: '' } : item);
   const lastId = db.prepare('SELECT MAX(id) id FROM messages').get().id || 0;
-  return { items, lastId };
+  // Правки и удаления между опросами: открытые у коллег вкладки заменяют
+  // такие сообщения на месте (новых id у правок нет — одним after их
+  // не увидеть). Сравнение строковое: формат CURRENT_TIMESTAMP стабилен.
+  let changed = [];
+  if (changedSince) {
+    changed = db.prepare(`SELECT ${fields} FROM (SELECT * FROM messages WHERE ${visible}
+        AND (updated_at >= ? OR deleted_at >= ?) ORDER BY id DESC LIMIT 100) m
+        LEFT JOIN messages r ON r.id=m.reply_to_id ORDER BY m.id`)
+      .all(...params, changedSince, changedSince)
+      .map(item => item.deleted_at ? { ...item, text: '' } : item);
+  }
+  return { items, lastId, changed, serverNow: new Date().toISOString().slice(0, 19).replace('T', ' ') };
 }
 
 // Группы пользователя со списком участников — для списка чатов.

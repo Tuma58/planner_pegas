@@ -903,6 +903,16 @@ function migrateColumns(db) {
   ensure('messages', 'recipient_id', 'TEXT');
   ensure('messages', 'chat_id', 'TEXT');
   ensure('chats', 'deleted_at', 'TEXT');
+  // Мессенджер (12.11): ответ-цитата, правка и мягкое удаление сообщений;
+  // external_* — фундамент моста во внешние мессенджеры (Битрикс24:
+  // message id / DIALOG_ID), чтобы при интеграции не перестраивать схему.
+  ensure('messages', 'reply_to_id', 'INTEGER');
+  ensure('messages', 'updated_at', 'TEXT');
+  ensure('messages', 'deleted_at', 'TEXT');
+  ensure('messages', 'external_source', 'TEXT');
+  ensure('messages', 'external_id', 'TEXT');
+  ensure('chats', 'external_source', 'TEXT');
+  ensure('chats', 'external_id', 'TEXT');
   ensure('trips', 'sum_confirmed_at', 'TEXT');
   ensure('trips', 'sum_confirmed_by', 'TEXT');
   ensure('trips', 'next_alert_at', 'TEXT');

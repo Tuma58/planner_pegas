@@ -115,6 +115,7 @@ import {
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
+import { deleteMessage, editMessage, sendMessage } from './messenger.mjs';
 
 // Журнал неудачных логинов для fail2ban (living в data-томе рядом с БД);
 // простая ротация: файл больше 5 МБ обнуляется при старте.
@@ -13759,7 +13760,8 @@ async function api(request, response, url) {
     const user = requireUser(request, response);
     if (!user) return;
     return json(response, 200,
-      chatMessages(db, user.id, rolesOf(user), Number(url.searchParams.get('after') || 0)));
+      chatMessages(db, user.id, rolesOf(user), Number(url.searchParams.get('after') || 0),
+        String(url.searchParams.get('since') || '').slice(0, 19)));
   }
   // Групповые чаты: список моих групп, создание, правка состава/названия.
   if (request.method === 'GET' && pathname === '/api/chats') {
@@ -13906,9 +13908,29 @@ async function api(request, response, url) {
       if (!membership) return errorJson(response, 403, 'Вы не участник этой группы');
       chatId = String(body.chatId);
     }
-    db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,recipient_id,chat_id)
-      VALUES(?,?,'user',?,?,?)`).run(user.id, user.full_name || user.username, text, recipientId, chatId);
-    return json(response, 201, { ok: true });
+    const sent = sendMessage(db, user, { text, recipientId, chatId,
+      replyToId: body.replyToId || null });
+    if (!sent.ok) return errorJson(response, sent.status, sent.error);
+    return json(response, 201, { ok: true, id: sent.id });
+  }
+
+  // Правка и удаление своих сообщений (мессенджер, 12.11): окно 48 часов,
+  // удаление мягкое — пузырь «удалено» остаётся, текст затирается.
+  match = route(/^\/api\/messages\/(\d+)$/, pathname);
+  if (match && request.method === 'PATCH') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const body = await readJson(request);
+    const result = editMessage(db, user, match[0], body.text);
+    if (!result.ok) return errorJson(response, result.status, result.error);
+    return json(response, 200, { ok: true });
+  }
+  if (match && request.method === 'DELETE') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const result = deleteMessage(db, user, match[0], { isAdmin: rolesOf(user).includes('admin') });
+    if (!result.ok) return errorJson(response, result.status, result.error);
+    return json(response, 200, { ok: true });
   }
 
   // ── Уточнение суммы по заявке клиента (подготовка выхода) ──

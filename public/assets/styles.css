@@ -2220,3 +2220,41 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
   padding: 10px 14px; cursor: pointer; font: inherit; color: inherit;
   box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 #callDock:hover { border-color: var(--accent); }
+
+/* ── 💬 Мессенджер: полноэкранная вкладка (12.11) ── */
+/* Та же панель чата, пересаженная в контейнер вкладки: слева — список
+   переписок (виден всегда), справа — лента активной переписки. */
+.chat-panel.chat-page { position: static; width: auto; max-width: none; height: calc(100vh - 118px);
+  border-left: 0; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+  display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden; margin: 12px 16px; }
+.chat-page #chatHomeHead { grid-column: 1; grid-row: 1; border-right: 1px solid var(--line); display: flex !important; }
+.chat-page .chat-rooms { grid-column: 1; grid-row: 2 / 5; border-right: 1px solid var(--line);
+  display: block !important; overflow: auto; }
+.chat-page #chatDialogHead { grid-column: 2; grid-row: 1; }
+.chat-page #chatDialogHead.hidden { display: flex !important; visibility: hidden; }
+.chat-page #chatBack { display: none; }
+.chat-page .chat-list { grid-column: 2; grid-row: 2; }
+.chat-page .chat-list.hidden { display: block !important; }
+.chat-page .chat-compose { grid-column: 2; grid-row: 2 / 5; overflow: auto; }
+.chat-page .chat-replybar { grid-column: 2; grid-row: 3; }
+.chat-page .chat-form { grid-column: 2; grid-row: 4; }
+.chat-page .chat-form.hidden { display: flex !important; visibility: hidden; }
+
+/* Цитата-ответ внутри пузыря */
+.chat-quote { border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 6px; padding: 3px 8px; margin: 2px 0 4px; font-size: 12px; }
+.chat-quote small { display: block; color: var(--accent); font-weight: 600; }
+.chat-quote span { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Плашка «Ответ/Правка» над полем ввода */
+.chat-replybar { display: flex; gap: 8px; align-items: center; padding: 6px 14px;
+  border-top: 1px solid var(--line); background: var(--panel2); font-size: 12.5px; }
+.chat-replybar.hidden { display: none; }
+.chat-rb-icon { color: var(--accent); font-size: 15px; }
+.chat-rb-body { flex: 1; min-width: 0; }
+.chat-rb-body small { display: block; color: var(--accent); font-weight: 600; }
+.chat-rb-body span { display: block; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Удалённое сообщение */
+.chat-bubble.deleted { opacity: .65; font-style: italic; }

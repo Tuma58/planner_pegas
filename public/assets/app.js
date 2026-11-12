@@ -14,7 +14,7 @@ import { fleetPlanDialog } from './fleet-plan.js';
 import { buildReport, wireReport } from './reports.js';
 import { assignDialog, editOrderDialog, renderSales, regionOfPlace } from './sales.js';
 import { renderLogist } from './logist.js';
-import { setupChat } from './chat.js';
+import { mountChatPage, setupChat, unmountChatPage } from './chat.js';
 import { setupGuide } from './guide.js';
 import { attendanceDialog, DISP_KINDS, parkScheduleKeeper, renderResource, timesheetDialog } from './resource.js';
 import { fireReasonDialog, renderStaff } from './staff.js';
@@ -853,6 +853,9 @@ const MAIN_VIEWS = [
   // АРМ «Моё рабочее место» (Э1, 07.11): пилотным должностям — первым.
   { id: 'arm', title: 'Моё рабочее место', show: () => Boolean(viewInSet('arm')) },
   { id: 'dashboard', title: 'Дашборд', show: () => true },
+  // 💬 Мессенджер (12.11): полноэкранный чат — доступен ВСЕМ, как Гант
+  // и Дашборд (решение руководителя).
+  { id: 'messenger', title: 'Мессенджер', show: () => true },
   // Обзор структуры СТ (блок 1 «Слияния», 05.11) — видят все.
   { id: 'structure', title: 'Структура', show: () => true },
   // Цели и задачи направления (блок 2 «Слияния», 07.11) — видят все.
@@ -907,7 +910,7 @@ const MAIN_VIEWS = [
 // отдельный блок «Общее» над отделами, без коэффициента.
 const NAV_GROUPS = [
   { dept: '', title: 'Общее', coef: '', sub: [
-    { title: '', views: ['arm', 'dashboard', 'gantt'] }] },
+    { title: '', views: ['arm', 'dashboard', 'gantt', 'messenger'] }] },
   // Штаб — «Панели» в порядке «Рабочей среды СТ» (скрин руководителя
   // 07.11): поле направления, обзор структуры, цели и задачи, ЦФО; новые
   // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
@@ -977,6 +980,8 @@ function renderCascade() {
 const LEGACY_VIEWS = ['gantt', 'sales', 'logist', 'routes', 'dispatcher', 'monitoring', 'resource', 'remzona',
   'incidents', 'flows', 'delivery', 'fleetplan', 'boss', 'expenses', 'staff', 'dashboard'];
 function viewAllowed(id) {
+  // Мессенджер доступен всем без оглядки на наборы (решение 12.11).
+  if (id === 'messenger') return true;
   const access = state.data?.user?.access;
   if (!access || access.legacy) {
     return (state.data?.user?.roles || []).includes('admin') || LEGACY_VIEWS.includes(id);
@@ -1126,6 +1131,9 @@ function renderMain() {
   // Нативный график (сессия 4): перед перерисовкой любого другого вида
   // живой узел графика паркуется в body, иначе innerHTML его снесёт.
   if (!(isResource && (state.resourceView || 'schedule') === 'schedule')) parkScheduleKeeper();
+  // Мессенджер — живой узел чата: перед рендером другого вида узел
+  // возвращается в body, иначе innerHTML его уничтожит (как у графика).
+  if (state.view !== 'messenger') unmountChatPage();
   // Ресурс — тоже гант: ему нужны навигация по месяцу и прокрутка, но его
   // канва скроллится внутри .resscroll (шапка фильтров закреплена), поэтому
   // класс .canvas (ширина по контенту) — только у Ганта.
@@ -1230,6 +1238,9 @@ function renderMain() {
     renderRemzona(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'dashboard') {
     renderDashboard(byId('timeline'), { state, can, onReload: reload, onSoftReload: softReload, showModal, closeModal });
+  } else if (state.view === 'messenger') {
+    byId('timeline').innerHTML = '';
+    mountChatPage(byId('timeline'));
   } else if (state.view === 'monitoring') {
     renderMonitoring(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'incidents') {

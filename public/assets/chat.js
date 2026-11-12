@@ -67,6 +67,16 @@ function desktopNotify(title, body) {
   } catch { /* не поддерживается */ }
 }
 
+// Управление полноэкранным режимом (вкладка «💬 Мессенджер»): заполняется
+// в setupChat, когда панель создана.
+let pageControls = null;
+export function mountChatPage(container) {
+  if (pageControls) pageControls.mount(container);
+}
+export function unmountChatPage() {
+  if (pageControls) pageControls.unmount();
+}
+
 export function setupChat(state) {
   const toolbarEnd = document.querySelector('.toolbar-end');
   if (!toolbarEnd || document.getElementById('chatToggle')) return;
@@ -112,6 +122,7 @@ export function setupChat(state) {
     <div class="chat-rooms" id="chatRooms"></div>
     <div class="chat-list hidden" id="chatList"></div>
     <div class="chat-compose hidden" id="chatCompose"></div>
+    <div class="chat-replybar hidden" id="chatReplyBar"></div>
     <form class="chat-form hidden" id="chatForm">
       <input id="chatInput" placeholder="Сообщение…" autocomplete="off" maxlength="500">
       <button class="button small">➤</button>
@@ -135,6 +146,9 @@ export function setupChat(state) {
   let hiddenRooms = [];   // скрытые у себя лички: [{room_key, hidden_after}]
   let deletedGroups = []; // корзина удалённых групп (только админ)
   let lastId = Number(localStorage.getItem('pl_chat_last') || 0);
+  // Метка последнего опроса (время сервера) — по ней докачиваются правки
+  // и удаления сообщений, сделанные коллегами между опросами.
+  let pollSince = '';
   // Активная переписка: {kind: 'all'|'auto'|'dm'|'group', id?: peerId|chatId}
   let active = null;
   let seen = {};
@@ -256,21 +270,45 @@ export function setupChat(state) {
       row.addEventListener('click', () => openRoom(row.dataset.room)));
   };
 
+  // Окно правки/удаления своих сообщений — как на сервере (48 часов).
+  const EDIT_WINDOW_MS = 48 * 3_600_000;
+  const editableByMe = message => message.kind === 'user' && message.author_id === myId
+    && !message.deleted_at
+    && Date.now() - Date.parse(message.created_at.includes('Z')
+      ? message.created_at : message.created_at.replace(' ', 'T') + 'Z') < EDIT_WINDOW_MS;
+
   const bubble = message => {
     const own = message.author_id === myId;
     const auto = message.kind === 'auto';
     const groupish = active?.key === 'all' || active?.key?.startsWith('group:');
+    if (message.deleted_at) {
+      return `<div class="chat-bubble-row ${own ? 'own' : ''}">
+        <div class="chat-bubble deleted ${own ? 'own' : ''}"><small class="muted">🗑 сообщение удалено</small></div>
+      </div>`;
+    }
+    // Цитата (ответ): короткий хвост оригинала, клик — ничего (якорей нет).
+    const quote = message.reply_to_id ? `<div class="chat-quote">
+        <small>${escapeHtml(message.reply_author || '…')}</small>
+        <span>${message.reply_text ? escapeHtml(message.reply_text) : '<i class="muted">сообщение удалено</i>'}</span>
+      </div>` : '';
     return `<div class="chat-bubble-row ${own ? 'own' : ''}">
       <div class="chat-bubble ${own ? 'own' : ''} ${auto ? 'auto' : ''} ${forMe(message) ? 'mine-target' : ''}">
         ${!own && (groupish || auto) ? `<small class="chat-author">${auto
           ? `⚙ Конвейер${message.target_role ? ` → ${ROLE_LABELS[message.target_role] || message.target_role}` : ''}`
           : escapeHtml(message.author_name)}</small>` : ''}
+        ${quote}
         <div>${escapeHtml(message.text)}</div>
         <small class="chat-time">${formatDateTime(message.created_at.includes('Z')
-          ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}
+          ? message.created_at : message.created_at.replace(' ', 'T') + 'Z')}${message.updated_at
+          ? ' <span class="muted" title="Автор правил сообщение">· изм.</span>' : ''}
           <span class="chat-msg-actions">
+            ${message.kind === 'user' && active && !['auto', 'personal'].includes(active.key)
+    ? `<button type="button" class="chat-act" data-reply-msg="${message.id}" title="Ответить цитатой">↩</button>` : ''}
             <button type="button" class="chat-act" data-copy-msg="${message.id}" title="Скопировать текст">📋</button>
             <button type="button" class="chat-act" data-forward-msg="${message.id}" title="Переслать в другую переписку">↪</button>
+            ${editableByMe(message)
+    ? `<button type="button" class="chat-act" data-edit-msg="${message.id}" title="Исправить (48 ч)">✎</button>
+       <button type="button" class="chat-act" data-delete-msg="${message.id}" title="Удалить (48 ч)">🗑</button>` : ''}
           </span></small>
       </div>
     </div>`;
@@ -342,18 +380,60 @@ export function setupChat(state) {
       }));
   };
 
-  // Делегированные действия на пузырях: копирование и пересылка.
+  // ── Ответ-цитата и правка: плашка над полем ввода ──
+  let composing = { replyTo: null, editing: null };
+  const replyBar = el('chatReplyBar');
+  const renderReplyBar = () => {
+    const target = composing.editing || composing.replyTo;
+    replyBar.classList.toggle('hidden', !target);
+    if (!target) { replyBar.innerHTML = ''; return; }
+    replyBar.innerHTML = `<span class="chat-rb-icon">${composing.editing ? '✎' : '↩'}</span>
+      <span class="chat-rb-body"><small>${composing.editing ? 'Правка сообщения'
+    : `Ответ: ${escapeHtml(target.author_name)}`}</small>
+        <span>${escapeHtml(target.text.slice(0, 120))}</span></span>
+      <button type="button" class="button ghost small" id="chatRbCancel">✕</button>`;
+    replyBar.querySelector('#chatRbCancel').onclick = () => {
+      if (composing.editing) input.value = '';
+      composing = { replyTo: null, editing: null };
+      renderReplyBar();
+    };
+  };
+  const startReply = message => {
+    composing = { replyTo: message, editing: null };
+    renderReplyBar();
+    input.focus();
+  };
+  const startEdit = message => {
+    composing = { replyTo: null, editing: message };
+    input.value = message.text;
+    renderReplyBar();
+    input.focus();
+  };
+
+  // Делегированные действия на пузырях: ответ, копирование, пересылка,
+  // правка и удаление своих.
   list.addEventListener('click', async event => {
-    const copyButton = event.target.closest('[data-copy-msg]');
-    if (copyButton) {
-      const message = allMessages.find(m => m.id === Number(copyButton.dataset.copyMsg));
-      if (message) { await copyText(message.text); toast('Сообщение скопировано'); }
-      return;
-    }
-    const forwardButton = event.target.closest('[data-forward-msg]');
-    if (forwardButton) {
-      const message = allMessages.find(m => m.id === Number(forwardButton.dataset.forwardMsg));
-      if (message) forwardView(message);
+    const find = attr => {
+      const button = event.target.closest(`[data-${attr}]`);
+      return button ? allMessages.find(m => m.id === Number(button.dataset[attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase())])) : null;
+    };
+    const copyMessage = find('copy-msg');
+    if (copyMessage) { await copyText(copyMessage.text); toast('Сообщение скопировано'); return; }
+    const forwardMessage = find('forward-msg');
+    if (forwardMessage) { forwardView(forwardMessage); return; }
+    const replyMessage = find('reply-msg');
+    if (replyMessage) { startReply(replyMessage); return; }
+    const editMessage = find('edit-msg');
+    if (editMessage) { startEdit(editMessage); return; }
+    const deleteTarget = find('delete-msg');
+    if (deleteTarget) {
+      if (!confirm('Удалить сообщение? Останется пометка «удалено».')) return;
+      try {
+        await api(`/api/messages/${deleteTarget.id}`, { method: 'DELETE' });
+        deleteTarget.text = '';
+        deleteTarget.deleted_at = new Date().toISOString();
+        renderDialog();
+      } catch (error) { toast(error.message, 'error'); }
     }
   });
 
@@ -618,6 +698,8 @@ export function setupChat(state) {
 
   function openRoom(key) {
     active = { key };
+    composing = { replyTo: null, editing: null };
+    renderReplyBar();
     el('chatHomeHead').classList.add('hidden');
     el('chatDialogHead').classList.remove('hidden');
     rooms.classList.add('hidden');
@@ -788,8 +870,19 @@ export function setupChat(state) {
   // ── Поллинг ──
   const poll = async (initial = false) => {
     try {
-      const { items, lastId: serverLast } = await api(`/api/messages?after=${initial ? 0 : lastId}`);
+      const { items, lastId: serverLast, changed: changedRows, serverNow } =
+        await api(`/api/messages?after=${initial ? 0 : lastId}${pollSince && !initial
+          ? `&since=${encodeURIComponent(pollSince)}` : ''}`);
+      if (serverNow) pollSince = serverNow;
       let changed = initial;
+      // Правки и удаления коллег: заменяем сообщения на месте (id прежний).
+      for (const row of changedRows || []) {
+        const index = allMessages.findIndex(m => m.id === row.id);
+        if (index >= 0 && JSON.stringify(allMessages[index]) !== JSON.stringify(row)) {
+          allMessages[index] = row;
+          changed = true;
+        }
+      }
       for (const message of items) {
         if (allMessages.some(m => m.id === message.id)) continue;
         allMessages.push(message);
@@ -890,17 +983,51 @@ export function setupChat(state) {
     event.preventDefault();
     const text = input.value.trim();
     if (!text || !active || active.key === 'auto') return;
-    const payload = { text };
-    if (active.key.startsWith('dm:')) payload.recipientId = active.key.slice(3);
-    if (active.key.startsWith('group:')) payload.chatId = active.key.slice(6);
     try {
-      await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
+      if (composing.editing) {
+        // Правка существующего: PATCH, пузырь обновляется на месте.
+        const target = composing.editing;
+        await api(`/api/messages/${target.id}`, { method: 'PATCH',
+          body: JSON.stringify({ text }) });
+        target.text = text;
+        target.updated_at = new Date().toISOString();
+      } else {
+        const payload = { text };
+        if (active.key.startsWith('dm:')) payload.recipientId = active.key.slice(3);
+        if (active.key.startsWith('group:')) payload.chatId = active.key.slice(6);
+        if (composing.replyTo) payload.replyToId = composing.replyTo.id;
+        await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
+      }
       input.value = '';
+      composing = { replyTo: null, editing: null };
+      renderReplyBar();
       await poll();
+      renderDialog();
     } catch (error) { toast(error.message, 'error'); }
   };
   // Жест в любом месте страницы активирует звук уведомлений.
   document.addEventListener('click', armAudio, { once: true });
+
+  // ── Полноэкранный режим «💬 Мессенджер» (вкладка в «Общем», 12.11) ──
+  // Та же панель и логика: узел переезжает в контейнер вкладки и обратно.
+  pageControls = {
+    mount(container) {
+      container.appendChild(panel);
+      panel.classList.add('chat-page');
+      panel.classList.remove('hidden');
+      el('chatClose').classList.add('hidden');
+      if (active) { markSeen(); renderDialog(); }
+      renderRooms();
+      updateUnread();
+    },
+    unmount() {
+      if (!panel.classList.contains('chat-page')) return;
+      panel.classList.remove('chat-page');
+      panel.classList.add('hidden');
+      el('chatClose').classList.remove('hidden');
+      document.body.appendChild(panel);
+    }
+  };
 
   Promise.all([loadContacts(), loadGroups()]).then(() => poll(true));
   setInterval(poll, POLL_MS);
