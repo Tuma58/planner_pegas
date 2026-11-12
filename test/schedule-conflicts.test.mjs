@@ -173,3 +173,53 @@ test('уволенные глушатся в графике: fired-метка, �
   // повторный вызов ничего не меняет
   assert.equal(muteFiredInSchedule(db).muted, 0);
 });
+
+test('синк: гонка двух сотрудников не возвращает переведённого водителя (авторазвод)', t => {
+  const db = freshDb(t);
+  // Базовое состояние: Иванов в резерве E-RES, экипаж E069 пуст.
+  applyScheduleSync(db, { since: 0, crews: {
+    'E-RES': { id: 'E-RES', ts: [], drv: [{ id: 'D10', fio: 'Иванов Иван', crew: 'E-RES', ts: '' }] },
+    E069: { id: 'E069', ts: [{ id: 'T69', tyagach: 'т869ат58', crew: 'E069' }], drv: [] }
+  } });
+  const base = Number(db.prepare(`SELECT value FROM app_meta WHERE key='schedule_rev'`).get().value);
+  // Сотрудник А (видел base): переносит Иванова E-RES → E069, шлёт оба экипажа.
+  applyScheduleSync(db, { since: base, crews: {
+    'E-RES': { id: 'E-RES', ts: [], drv: [] },
+    E069: { id: 'E069', ts: [{ id: 'T69', tyagach: 'т869ат58', crew: 'E069' }],
+      drv: [{ id: 'D10', fio: 'Иванов Иван', crew: 'E069', ts: 'T69' }] }
+  } });
+  // Сотрудник Б (тоже видел только base, про перенос не знает): шлёт свою
+  // устаревшую копию E-RES, где Иванов ещё в резерве.
+  applyScheduleSync(db, { since: base, crews: {
+    'E-RES': { id: 'E-RES', ts: [], drv: [{ id: 'D10', fio: 'Иванов Иван', crew: 'E-RES', ts: '' },
+      { id: 'D11', fio: 'Петров Пётр', crew: 'E-RES', ts: '' }] }
+  } });
+  const res = JSON.parse(db.prepare(`SELECT body FROM schedule_crews WHERE id='E-RES'`).get().body);
+  const e69 = JSON.parse(db.prepare(`SELECT body FROM schedule_crews WHERE id='E069'`).get().body);
+  // Иванов остался только в E069; работа Б (Петров в резерв) не потеряна.
+  assert.ok(!res.drv.some(d => d.id === 'D10'), 'устаревшая копия не вернула Иванова в резерв');
+  assert.ok(e69.drv.some(d => d.id === 'D10'), 'перенос сотрудника А цел');
+  assert.ok(res.drv.some(d => d.id === 'D11'), 'правка сотрудника Б не потеряна');
+  // Журнал получил запись авторазвода.
+  const note = db.prepare(`SELECT what FROM schedule_log WHERE author='планер' AND what LIKE 'авторазвод%'`).get();
+  assert.ok(note, 'авторазвод записан в журнал');
+  // Осознанный перенос: Б (с актуальным базисом) забирает Иванова к себе в E-RES.
+  const rev2 = Number(db.prepare(`SELECT value FROM app_meta WHERE key='schedule_rev'`).get().value);
+  applyScheduleSync(db, { since: rev2, crews: {
+    'E-RES': { id: 'E-RES', ts: [], drv: [{ id: 'D10', fio: 'Иванов Иван', crew: 'E-RES', ts: '' },
+      { id: 'D11', fio: 'Петров Пётр', crew: 'E-RES', ts: '' }] }
+  } });
+  const res2 = JSON.parse(db.prepare(`SELECT body FROM schedule_crews WHERE id='E-RES'`).get().body);
+  const e692 = JSON.parse(db.prepare(`SELECT body FROM schedule_crews WHERE id='E069'`).get().body);
+  assert.ok(res2.drv.some(d => d.id === 'D10'), 'свежий перенос применён');
+  assert.ok(!e692.drv.some(d => d.id === 'D10'), 'из прежнего экипажа водитель удалён');
+});
+
+test('синк: повторно присланная запись журнала не дублируется', t => {
+  const db = freshDb(t);
+  const entry = { t: '2026-11-12 14:21', a: 'Никулина', what: 'закреплён за т869ат58', who: 'Храбров' };
+  applyScheduleSync(db, { since: 0, crews: {}, remove: [], log: [entry] });
+  applyScheduleSync(db, { since: 0, crews: {}, remove: [], log: [entry] });
+  const n = db.prepare(`SELECT COUNT(*) c FROM schedule_log WHERE what='закреплён за т869ат58'`).get().c;
+  assert.equal(n, 1);
+});

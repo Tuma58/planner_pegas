@@ -127,7 +127,9 @@ function applyCrews(map){
 }
 function mergeLog(list){
   const seen=new Set(S.log.map(e=>e.t+'|'+e.a+'|'+e.what));
-  list.forEach(e=>{ if(!seen.has(e.t+'|'+e.a+'|'+e.what)) S.log.push(e); });
+  /* чужие записи пришли С СЕРВЕРА — пометка sent, иначе вкладка пересылала
+     их обратно как свои и журнал рос дублями ×число вкладок (фикс 12.11) */
+  list.forEach(e=>{ if(!seen.has(e.t+'|'+e.a+'|'+e.what)) S.log.push({...e, sent:true}); });
   S.log.sort((a,b)=>b.t.localeCompare(a.t));
   if(S.log.length>800) S.log.length=800;
 }

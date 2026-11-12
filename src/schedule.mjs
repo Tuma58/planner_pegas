@@ -32,6 +32,49 @@ export function applyScheduleSync(db, body = {}, userId = null) {
     rev = Number(metaGet(db, 'schedule_rev') || 0);
     if (Object.keys(crews).length || remove.length || log.length) {
       rev += 1;
+      // ── Сверка по водителю (12.11, боль эксплуатации) ──
+      // Перенос водителя меняет ДВА экипажа (исходный и целевой), а обмен
+      // идёт last-write-wins по экипажу: два сотрудника параллельно — и
+      // устаревшая копия исходного экипажа «возвращала» уже переведённого
+      // водителя (дубль в двух экипажах). Правило развода: водитель из
+      // присланного экипажа выбрасывается, если на сервере он уже в другом
+      // экипаже, который клиент прислал НЕ его и который менялся ПОСЛЕ
+      // базиса клиента (since) — чужой свежий перенос главнее устаревшей
+      // копии. Если же тот экипаж не менялся с базиса — это осознанный
+      // перенос клиента: водитель удаляется из прежнего экипажа на сервере.
+      const driverHome = new Map(); // d.id → { crewId, rev, fio }
+      for (const row of db.prepare('SELECT id, body, rev FROM schedule_crews').all()) {
+        try {
+          for (const d of (JSON.parse(row.body).drv || [])) {
+            if (d && d.id && !d.vac) driverHome.set(String(d.id), { crewId: row.id, rev: row.rev, fio: d.fio || '' });
+          }
+        } catch { /* битый блок не валит обмен */ }
+      }
+      const untangled = [];
+      const dropFromServerCrew = (crewId, drvId) => {
+        const row = db.prepare('SELECT body FROM schedule_crews WHERE id=?').get(crewId);
+        if (!row) return;
+        const bodyObj = JSON.parse(row.body);
+        bodyObj.drv = (bodyObj.drv || []).filter(d => String(d?.id) !== String(drvId));
+        db.prepare(`UPDATE schedule_crews SET body=?, rev=?, updated_by=?, updated_at=CURRENT_TIMESTAMP
+          WHERE id=?`).run(JSON.stringify(bodyObj), rev, userId, crewId);
+      };
+      for (const [id, crew] of Object.entries(crews)) {
+        const keep = [];
+        for (const d of (crew.drv || [])) {
+          const home = d && d.id && !d.vac ? driverHome.get(String(d.id)) : null;
+          if (!home || home.crewId === String(id).slice(0, 40) || crews[home.crewId]) { keep.push(d); continue; }
+          if (home.rev > since) {
+            // Чужой свежий перенос: в присланную копию не возвращаем.
+            untangled.push(`${d.fio || d.id}: остался в ${home.crewId}, копия в ${id} отброшена`);
+          } else {
+            // Осознанный перенос клиента: убрать из прежнего экипажа.
+            dropFromServerCrew(home.crewId, d.id);
+            keep.push(d);
+          }
+        }
+        crew.drv = keep;
+      }
       const upsert = db.prepare(`INSERT INTO schedule_crews(id,body,rev,updated_by,updated_at)
         VALUES(?,?,?,?,CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET body=excluded.body, rev=excluded.rev,
@@ -39,14 +82,24 @@ export function applyScheduleSync(db, body = {}, userId = null) {
       for (const [id, crew] of Object.entries(crews)) {
         upsert.run(String(id).slice(0, 40), JSON.stringify(crew), rev, userId);
       }
+      if (untangled.length) {
+        db.prepare(`INSERT INTO schedule_log(t,author,what,who,rev,user_id) VALUES(?,?,?,?,?,?)`)
+          .run(new Date().toISOString().slice(0, 19).replace('T', ' '), 'планер',
+            `авторазвод одновременных правок: ${untangled.join('; ')}`.slice(0, 400), '', rev, userId);
+      }
       const drop = db.prepare('DELETE FROM schedule_crews WHERE id=?');
       for (const id of remove) drop.run(String(id).slice(0, 40));
       const addLog = db.prepare(`INSERT INTO schedule_log(t,author,what,who,rev,user_id)
         VALUES(?,?,?,?,?,?)`);
+      // Дедуп (12.11): вкладка, получившая чужие записи с сервера, могла
+      // переслать их как свои — та же запись не пишется второй раз.
+      const logSeen = db.prepare(`SELECT 1 FROM schedule_log WHERE t=? AND author=? AND what=? AND who=?`);
       for (const entry of log.slice(0, 400)) {
-        addLog.run(String(entry.t || new Date().toISOString()).slice(0, 40),
+        const vals = [String(entry.t || new Date().toISOString()).slice(0, 40),
           String(entry.a || '').slice(0, 80), String(entry.what || '').slice(0, 400),
-          String(entry.who || '').slice(0, 120), rev, userId);
+          String(entry.who || '').slice(0, 120)];
+        if (logSeen.get(...vals)) continue;
+        addLog.run(...vals, rev, userId);
       }
       // Журнал не растёт бесконечно: как в прототипе, живут последние 800.
       db.prepare(`DELETE FROM schedule_log WHERE id NOT IN
