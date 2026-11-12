@@ -1225,6 +1225,26 @@ function migrateColumns(db) {
         ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
       COMMIT;`);
   }
+  // «Заезд на базу» (12.11.2026, кейс р259ун58): метку «загнать на базу
+  // проездом» ставили видом «ремонт», и жёсткий щит назначения закрывал
+  // борт. Отдельный вид base_visit назначение НЕ блокирует — только
+  // напоминает назначившему спланировать маршрут с заездом.
+  const dispositionsSqlBase = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='vehicle_dispositions'`).get()?.sql || '';
+  if (dispositionsSqlBase && !dispositionsSqlBase.includes("'base_visit'")) {
+    const rebuiltBase = dispositionsSqlBase
+      .replace(/CREATE TABLE\s+"?vehicle_dispositions"?/i, 'CREATE TABLE vehicle_dispositions_new')
+      .replace(/kind IN \([^)]*\)/i,
+        "kind IN ('reserve','repair','no_driver','shift','out','transfer','base_visit')");
+    db.exec(`BEGIN IMMEDIATE;
+      ${rebuiltBase};
+      INSERT INTO vehicle_dispositions_new SELECT * FROM vehicle_dispositions;
+      DROP TABLE vehicle_dispositions;
+      ALTER TABLE vehicle_dispositions_new RENAME TO vehicle_dispositions;
+      CREATE INDEX IF NOT EXISTS idx_vehicle_dispositions_period
+        ON vehicle_dispositions(vehicle_id,starts_at,ends_at);
+      COMMIT;`);
+  }
   // ── «Пусто» как назначение (15.09.2026, решение руководителя) ──
   // Период без водителя (driver_id NULL) — осознанная пустота в графике
   // закреплений: перекрывает постоянного, рисуется пустой ячейкой с

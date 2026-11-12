@@ -2328,7 +2328,7 @@ export function assignDialog(order, data, showModal, closeModal, onReload, optio
       closeModal();
       const warns = [created.windowWarning
         && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
-      created.trailerWarning];
+      created.trailerWarning, created.baseVisitHint];
       if (!windowWarningModal(showModal, warns)) {
         toast(options.autoConfirm
           ? 'ТС назначена и подтверждена — рейс у диспетчера'

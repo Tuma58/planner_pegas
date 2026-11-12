@@ -16,6 +16,7 @@ export const DISP_KINDS = [
   { kind: 'no_driver', label: 'Без водителя', short: 'без вод.', color: '#b06a55' },
   { kind: 'shift', label: 'Пересменка', short: 'пересм.', color: '#5e87ad' },
   { kind: 'transfer', label: 'Перегон порожним', short: 'перегон', color: '#7a8ea8' },
+  { kind: 'base_visit', label: '📸 Заезд на базу', short: 'заезд', color: '#4e9c82' },
   { kind: 'pending', label: 'Ждёт назначенного рейса', short: '⏭ ждёт рейса', color: '#5b8bd0' },
   { kind: 'idle', label: 'Без заказа', short: 'без заказа', color: '#8a7fb3' },
   { kind: 'out', label: 'Выведен', short: 'выведен', color: '#8f9aa6' }

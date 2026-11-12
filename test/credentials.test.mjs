@@ -212,3 +212,17 @@ test('старый логин на входе: кириллица и пробе�
   assert.ok(!isLegacyLoginAttempt(''));
   assert.ok(!isLegacyLoginAttempt(null));
 });
+
+test('диспозиция «заезд на базу»: вид принят базой (CHECK расширен миграцией 12.11)', t => {
+  const db = freshDb(t);
+  const type = db.prepare('SELECT id FROM vehicle_types LIMIT 1').get().id;
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get().id;
+  db.prepare(`INSERT INTO vehicles(id, plate, type_id, zone_id, status)
+    VALUES('v-base', 'т000тт00', ?, ?, 'work')`).run(type, zone);
+  db.prepare(`INSERT INTO vehicle_dispositions(id, vehicle_id, kind, starts_at, ends_at, note)
+    VALUES('d-base', 'v-base', 'base_visit', '2026-11-15T00:00:00.000Z', '2026-11-16T00:00:00.000Z',
+      'в Пензу на фото')`).run();
+  const row = db.prepare(`SELECT kind, note FROM vehicle_dispositions WHERE id='d-base'`).get();
+  assert.equal(row.kind, 'base_visit');
+  assert.equal(row.note, 'в Пензу на фото');
+});

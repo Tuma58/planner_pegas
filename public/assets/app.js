@@ -783,7 +783,7 @@ function renderLegend() {
   const stateChips = [
     { key: 'trip', label: 'в рейсе', color: 'var(--teal)' },
     { key: 'idle', label: 'простой', color: 'var(--warn)' },
-    ...DISP_KINDS.filter(item => ['reserve', 'repair', 'no_driver', 'shift', 'transfer'].includes(item.kind))
+    ...DISP_KINDS.filter(item => ['reserve', 'repair', 'no_driver', 'shift', 'transfer', 'base_visit'].includes(item.kind))
       .map(item => ({ key: item.kind, label: item.short, color: item.color }))
   ];
   byId('legend').innerHTML += `<span class="lg-sep"></span>` + stateChips.map(chip =>
@@ -2214,6 +2214,8 @@ function openDisposition(item = null, prefill = null) {
   const kinds = [
     ['repair', 'В ремонте'], ['no_driver', 'Без водителя'],
     ['shift', 'Пересменка'], ['out', 'Выведен'],
+    // «Заезд на базу» (12.11): напоминалка, назначение НЕ блокирует.
+    ['base_visit', '📸 Заезд на базу (не блокирует рейсы)'],
     ...(item?.kind === 'reserve' ? [['reserve', 'Резерв под заказ']] : [])
   ];
   const source = item || prefill;

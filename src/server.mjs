@@ -893,7 +893,17 @@ function tripDispoGuard(vehicleId, startsAt, endsAt, { callMechanic = false } = 
       AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)`)
     .all(vehicleId, endsAt, startsAt);
   const warning = tripDispoWarning(dispos, startsAt, endsAt);
-  if (!warning) return null;
+  // «Заезд на базу» не блокирует и не считается простоем — но рейс поверх
+  // него должен напомнить назначившему про заезд (12.11, кейс р259ун58).
+  const baseVisit = db.prepare(`SELECT ends_at, note FROM vehicle_dispositions
+    WHERE vehicle_id=? AND kind='base_visit'
+      AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)
+    ORDER BY ends_at DESC LIMIT 1`).get(vehicleId, endsAt, startsAt);
+  const baseHint = baseVisit
+    ? `📸 Просили заезд на базу до ${String(baseVisit.ends_at).slice(0, 16).replace('T', ' ')} UTC` +
+      `${baseVisit.note ? ` (${baseVisit.note})` : ''} — спланируйте маршрут с заездом`
+    : null;
+  if (!warning) return baseHint;
   const repair = dispos.find(d => d.kind === 'repair'
     && Date.parse(d.starts_at) < Date.parse(endsAt) && Date.parse(d.ends_at) > Date.parse(startsAt));
   if (repair && callMechanic) {
@@ -903,7 +913,7 @@ function tripDispoGuard(vehicleId, startsAt, endsAt, { callMechanic = false } = 
       'скорректируйте заезд во вкладке «Ремзона»; если машина не готова — сообщите ' +
       'диспетчеру, нужна замена ТС', 'vehicle', vehicleId);
   }
-  return warning;
+  return baseHint ? `${warning}. ${baseHint}` : warning;
 }
 
 // ── Объявления на табло ──
@@ -11454,10 +11464,21 @@ async function api(request, response, url) {
     // на интервале рейса не назначается (резерв — можно: он и означает
     // «обещана заказу»; перегон блокирует, пока не прибыл).
     const blockingDispo = db.prepare(`SELECT kind, ends_at FROM vehicle_dispositions
-      WHERE vehicle_id=? AND kind<>'reserve'
+      WHERE vehicle_id=? AND kind NOT IN ('reserve','base_visit')
         AND (kind<>'transfer' OR arrived_at IS NULL)
         AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)
       ORDER BY ends_at DESC LIMIT 1`).get(vehicle.id, endsAt, startsAt);
+    // «Заезд на базу» (12.11) — не блокирует и причину не требует: это
+    // напоминалка, а не недоступность. Назначившему — подсказка модалкой.
+    const baseVisit = db.prepare(`SELECT ends_at, note FROM vehicle_dispositions
+      WHERE vehicle_id=? AND kind='base_visit'
+        AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)
+      ORDER BY ends_at DESC LIMIT 1`).get(vehicle.id, endsAt, startsAt);
+    const baseVisitHint = baseVisit
+      ? `📸 ${vehicle.plate}: просили заезд на базу до ${baseVisit.ends_at.slice(0, 16).replace('T', ' ')} UTC` +
+        `${baseVisit.note ? ` (${baseVisit.note})` : ''} — спланируйте маршрут с заездом; ` +
+        'после заезда Эксплуатация снимет отметку в «Ресурсе»'
+      : null;
     if (blockingDispo) {
       const label = ({ repair: 'в ремонте', no_driver: 'без водителя', shift: 'на пересменке',
         out: 'выведена', transfer: 'в перегоне' })[blockingDispo.kind] || blockingDispo.kind;
@@ -11610,7 +11631,7 @@ async function api(request, response, url) {
       notify('logist', `${trailerWarning} (заявка №${order.order_no || '—'})`, 'trip', tripId,
         { category: 'no_trailer' });
     }
-    return { tripId, windowWarning, trailerWarning };
+    return { tripId, windowWarning, trailerWarning, baseVisitHint };
   }
   function confirmAssigned(tripId, order, vehicle, user) {
     applyDispatchStep(db, tripId, 'logist_confirm', user.id);
@@ -11656,7 +11677,7 @@ async function api(request, response, url) {
     const previousTrip = order.trip_id
       ? db.prepare('SELECT auto_assigned, vehicle_id, order_no FROM trips WHERE id=?').get(order.trip_id)
       : null;
-    const { tripId, windowWarning, trailerWarning } = assignOrderCore(order, vehicle, user,
+    const { tripId, windowWarning, trailerWarning, baseVisitHint } = assignOrderCore(order, vehicle, user,
       { distanceKm: body.distanceKm, dispoOverrideReason: body.dispoOverrideReason });
     if (previousTrip?.auto_assigned && previousTrip.vehicle_id !== vehicle.id) {
       reportAutoAssignIssue(`на рейсе №${previousTrip.order_no || '?'} человек заменил ТС `
@@ -11680,7 +11701,8 @@ async function api(request, response, url) {
           ? { recommendedVehicleId: draft.vehicle_id, overrideReason } : {}) },
       requestIp(request));
     return json(response, 201, { tripId, ...(windowWarning ? { windowWarning } : {}),
-      ...(trailerWarning ? { trailerWarning } : {}) });
+      ...(trailerWarning ? { trailerWarning } : {}),
+      ...(baseVisitHint ? { baseVisitHint } : {}) });
   }
 
   // ── Конструктор маршрутов: кольцевые цепочки заявок от базы до базы ──
@@ -13634,7 +13656,7 @@ async function api(request, response, url) {
     const user = requirePermission(request, response, dispositionPermission);
     if (!user) return;
     const body = await readJson(request);
-    const allowed = new Set(['reserve', 'repair', 'no_driver', 'shift', 'out']);
+    const allowed = new Set(['reserve', 'repair', 'no_driver', 'shift', 'out', 'base_visit']);
     if (!body.vehicleId || !allowed.has(body.kind)) {
       return errorJson(response, 422, 'ТС и вид диспозиции обязательны');
     }
@@ -13696,7 +13718,7 @@ async function api(request, response, url) {
     const startsAt = Date.parse(body.startsAt ?? current.starts_at);
     const endsAt = Date.parse(body.endsAt ?? current.ends_at);
     const kind = body.kind ?? current.kind;
-    if (!['reserve', 'repair', 'no_driver', 'shift', 'out'].includes(kind) || endsAt <= startsAt) {
+    if (!['reserve', 'repair', 'no_driver', 'shift', 'out', 'base_visit'].includes(kind) || endsAt <= startsAt) {
       return errorJson(response, 422, 'Некорректный интервал');
     }
     const patchVehicleId = body.vehicleId ?? current.vehicle_id;
