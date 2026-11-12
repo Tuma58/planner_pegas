@@ -980,8 +980,9 @@ function renderCascade() {
 const LEGACY_VIEWS = ['gantt', 'sales', 'logist', 'routes', 'dispatcher', 'monitoring', 'resource', 'remzona',
   'incidents', 'flows', 'delivery', 'fleetplan', 'boss', 'expenses', 'staff', 'dashboard'];
 function viewAllowed(id) {
-  // Мессенджер доступен всем без оглядки на наборы (решение 12.11).
-  if (id === 'messenger') return true;
+  // Мессенджер и дашборд доступны всем без оглядки на наборы
+  // (решения руководителя 12.11): общая видимость достижения плана.
+  if (id === 'messenger' || id === 'dashboard') return true;
   const access = state.data?.user?.access;
   if (!access || access.legacy) {
     return (state.data?.user?.roles || []).includes('admin') || LEGACY_VIEWS.includes(id);

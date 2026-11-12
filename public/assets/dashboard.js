@@ -857,6 +857,9 @@ export async function renderDashboard(container, context) {
       </div>
     </div>
     ${boardNotesHtml(context.state.data.boardNotes)}
+    ${(state.data?.user?.access && !state.data.user.access.legacy && state.data.user.access.money !== 'full')
+    ? `<div class="dash-money-note">🔒 Денежные показатели (план, выручка, прогноз) скрыты уровнем вашей
+        роли — нули здесь не провал плана. Темп видно по рейсам, дням и загрузке парка.</div>` : ''}
     <div class="tablo-layer" id="tabloLayer" hidden></div>
     <div class="tablo-dots" id="tabloDots" hidden></div>
     <div class="bi-kpis dash-kpis">

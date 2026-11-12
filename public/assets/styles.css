@@ -619,6 +619,9 @@ tbody tr:hover td { background: var(--hover); }
 .dd-pace { margin-top: 4px; font-size: var(--fs-sm); }
 .dd-pace.good { color: var(--ok); }
 .dd-pace.bad { color: var(--bad); font-weight: 650; }
+/* Дашборд открыт всем (12.11): пояснение ролям без денег, почему нули. */
+.dash-money-note { margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel); color: var(--muted); font-size: var(--fs-sm); }
 .dash-pace { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--muted); }
 .dash-pace.good b { color: var(--ok); }
 .dash-pace.bad b { color: var(--bad); }
