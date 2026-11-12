@@ -1023,6 +1023,24 @@ function viewTitle(view) {
   return view.title;
 }
 
+// Точечное обновление бейджей навигатора (зовёт чат каждые 20 с):
+// навигатор не перерисовывается — меняются только кружки с числами.
+function refreshNavBadges(state) {
+  for (const [id, raw] of Object.entries(state.navBadges || {})) {
+    const button = document.querySelector(`.navlink[data-view="${id}"]`);
+    if (!button) continue;
+    const count = Number(raw || 0);
+    let badge = button.querySelector('.nav-badge');
+    if (!count) { badge?.remove(); continue; }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'nav-badge';
+      button.appendChild(badge);
+    }
+    badge.textContent = count > 99 ? '99+' : String(count);
+  }
+}
+
 function renderViewTabs() {
   const views = MAIN_VIEWS.filter(view => view.show() && viewAllowed(view.id));
   const byIdView = new Map(views.map(view => [view.id, view]));
@@ -1030,8 +1048,12 @@ function renderViewTabs() {
   const link = view => {
     const [icon] = VIEW_META[view.id] || ['•'];
     const title = viewTitle(view);
+    // Количественный бейдж (идея руководителя 12.11, образец — Битрикс24):
+    // мессенджер — непрочитанные, АРМ — мои открытые задачи.
+    const count = Number(state.navBadges?.[view.id] || 0);
+    const badge = count > 0 ? `<span class="nav-badge">${count > 99 ? '99+' : count}</span>` : '';
     return `<button data-view="${view.id}" class="navlink${view.id === state.view ? ' active' : ''}" title="${title}">`
-      + `<span class="nav-ico">${icon}</span><span class="nav-t">${title}</span></button>`;
+      + `<span class="nav-ico">${icon}</span><span class="nav-t">${title}</span>${badge}</button>`;
   };
   const placed = new Set();
   // Мини-структура отдела (07.11): у руководителя отдела панели
@@ -3210,6 +3232,7 @@ try {
   renderViewTabs();
   renderMain();
   refreshExceptions();
+  state.refreshNavBadges = () => refreshNavBadges(state);
   setupChat(state);
   setupTelegramButton();
   setupGuide({

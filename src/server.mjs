@@ -13759,9 +13759,14 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/messages') {
     const user = requireUser(request, response);
     if (!user) return;
+    // Счётчик моих открытых задач АРМ едет с опросом чата (20 с) — им
+    // живёт бейдж на пункте «Моё рабочее место» в навигаторе (12.11,
+    // идея руководителя по образцу Битрикс24).
+    const myOpenTasks = db.prepare(`SELECT COUNT(*) c FROM arm_tasks
+      WHERE to_user_id=? AND status IN ('new','work')`).get(user.id).c;
     return json(response, 200,
-      chatMessages(db, user.id, rolesOf(user), Number(url.searchParams.get('after') || 0),
-        String(url.searchParams.get('since') || '').slice(0, 19)));
+      { ...chatMessages(db, user.id, rolesOf(user), Number(url.searchParams.get('after') || 0),
+        String(url.searchParams.get('since') || '').slice(0, 19)), myOpenTasks });
   }
   // Групповые чаты: список моих групп, создание, правка состава/названия.
   if (request.method === 'GET' && pathname === '/api/chats') {

@@ -2258,3 +2258,10 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 
 /* Удалённое сообщение */
 .chat-bubble.deleted { opacity: .65; font-style: italic; }
+
+/* Количественные бейджи навигатора (12.11, образец — Битрикс24) */
+.navlink { position: relative; }
+.navlink .nav-badge { margin-left: auto; background: var(--bad); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 1; border-radius: 9px;
+  padding: 3px 5px; min-width: 18px; text-align: center; flex-shrink: 0; }
+[data-nav="collapsed"] .nav-badge { position: absolute; top: 1px; right: 4px; margin: 0; }

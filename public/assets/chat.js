@@ -68,10 +68,13 @@ function desktopNotify(title, body) {
 }
 
 // Управление полноэкранным режимом (вкладка «💬 Мессенджер»): заполняется
-// в setupChat, когда панель создана.
+// в setupChat, когда панель создана. Если вкладка открылась раньше
+// (загрузка страницы прямо на мессенджере) — контейнер ждёт панель.
 let pageControls = null;
+let pendingPageContainer = null;
 export function mountChatPage(container) {
   if (pageControls) pageControls.mount(container);
+  else pendingPageContainer = container;
 }
 export function unmountChatPage() {
   if (pageControls) pageControls.unmount();
@@ -725,6 +728,10 @@ export function setupChat(state) {
     unreadBadge.textContent = total;
     unreadBadge.classList.toggle('hidden', total === 0);
     toggle.classList.toggle('has-unread', total > 0);
+    // Бейджи навигатора (12.11): мессенджер — непрочитанные, АРМ — задачи.
+    state.navBadges = state.navBadges || {};
+    state.navBadges.messenger = total;
+    state.refreshNavBadges?.();
   };
 
   // ── Новый диалог или группа ──
@@ -870,10 +877,14 @@ export function setupChat(state) {
   // ── Поллинг ──
   const poll = async (initial = false) => {
     try {
-      const { items, lastId: serverLast, changed: changedRows, serverNow } =
+      const { items, lastId: serverLast, changed: changedRows, serverNow, myOpenTasks } =
         await api(`/api/messages?after=${initial ? 0 : lastId}${pollSince && !initial
           ? `&since=${encodeURIComponent(pollSince)}` : ''}`);
       if (serverNow) pollSince = serverNow;
+      if (myOpenTasks !== undefined) {
+        state.navBadges = state.navBadges || {};
+        state.navBadges.arm = myOpenTasks;
+      }
       let changed = initial;
       // Правки и удаления коллег: заменяем сообщения на месте (id прежний).
       for (const row of changedRows || []) {
@@ -1012,6 +1023,7 @@ export function setupChat(state) {
   // Та же панель и логика: узел переезжает в контейнер вкладки и обратно.
   pageControls = {
     mount(container) {
+      pendingPageContainer = null;
       container.appendChild(panel);
       panel.classList.add('chat-page');
       panel.classList.remove('hidden');
@@ -1021,6 +1033,7 @@ export function setupChat(state) {
       updateUnread();
     },
     unmount() {
+      pendingPageContainer = null;
       if (!panel.classList.contains('chat-page')) return;
       panel.classList.remove('chat-page');
       panel.classList.add('hidden');
@@ -1029,6 +1042,10 @@ export function setupChat(state) {
     }
   };
 
+  // Вкладка мессенджера ждала панель с момента загрузки страницы.
+  if (pendingPageContainer && document.contains(pendingPageContainer)) {
+    pageControls.mount(pendingPageContainer);
+  }
   Promise.all([loadContacts(), loadGroups()]).then(() => poll(true));
   setInterval(poll, POLL_MS);
   // Группы (создание/удаление/восстановление коллегами) — раз в минуту.
