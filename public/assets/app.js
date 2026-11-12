@@ -1095,9 +1095,23 @@ function renderViewTabs() {
   const rest = views.filter(view => !placed.has(view.id)
     && !NAV_GROUPS.some(group => group.views.includes(view.id))
     && (!query || view.title.toLowerCase().includes(query)));
+  // «Справочники» в навигаторе (заказ руководителя 12.11: шапку чистим,
+  // Карта и справочники переезжают в левое меню — доступ всем, как был).
+  const refsHtml = `<div class="nav-block nav-common"><div class="blocktitle"><span>Справочники</span></div>
+    <button data-refaction="geo" class="navlink"><span class="nav-ico">🗺</span><span class="nav-t">Карта геозон</span></button>
+    <button data-refaction="customers" class="navlink"><span class="nav-ico">📒</span><span class="nav-t">Заказчики</span></button>
+    <button data-refaction="addresses" class="navlink"><span class="nav-ico">📍</span><span class="nav-t">Адреса</span></button>
+  </div>`;
   byId('viewTabs').innerHTML = views.length > 1
-    ? groupsHtml + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '')
+    ? groupsHtml + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '') + refsHtml
     : '';
+  byId('viewTabs').querySelectorAll('[data-refaction]').forEach(button =>
+    button.addEventListener('click', () => {
+      const action = button.dataset.refaction;
+      if (action === 'geo') openGeoMap();
+      else if (action === 'customers') showCustomers();
+      else if (action === 'addresses') openAddressBook();
+    }));
   // Экран вне набора (вход, смена роли) — первый экран из меню.
   if (!byIdView.has(state.view) && views.length) {
     const first = byId('viewTabs').querySelector('[data-view]')?.dataset.view;
@@ -1323,7 +1337,7 @@ async function openReport(kind, from, to) {
 // закрывается выбором пункта или кликом мимо.
 (() => {
   const menu = byId('refsMenu');
-  if (!menu) return;
+  if (!menu) return; // кнопка переехала в навигатор (12.11)
   document.addEventListener('click', event => {
     if (!menu.contains(event.target)) menu.removeAttribute('open');
   });
@@ -2545,14 +2559,16 @@ function openAddressBook(query = '', region = '') {
 // (только аварии / все уведомления). Кнопка видна, если админ настроил бота.
 function setupTelegramButton() {
   if (!state.data.settings.telegram?.enabled || byId('tgToggle')) return;
-  const toolbarEnd = document.querySelector('.toolbar-end');
-  if (!toolbarEnd) return;
+  // Кнопка живёт в шапке чата, рядом с настройками звука (чистка шапки
+  // 12.11): Телеграм настраивают один раз — место в тулбаре не окупала.
+  const chatSound = document.querySelector('.chat-panel .chat-sound');
+  if (!chatSound) return;
   const toggle = document.createElement('button');
   toggle.id = 'tgToggle';
-  toggle.className = 'tb-icon';
+  toggle.className = 'button ghost small';
   toggle.title = 'Уведомления планера в Telegram на телефон';
-  toggle.textContent = '🔔';
-  toolbarEnd.prepend(toggle);
+  toggle.textContent = '📲';
+  chatSound.prepend(toggle);
   toggle.onclick = async () => {
     const user = state.data.user;
     if (user.telegramLinked) {
@@ -3088,10 +3104,9 @@ const callContext = () => ({ state, can, showModal, closeModal, onReload: reload
 setupVehicleHover(() => state.data);
 byId('callButton').onclick = () => callSearchDialog(callContext(), state.data);
 setupTheme();
-byId('customersButton').onclick = showCustomers;
-byId('addressesButton').onclick = () => openAddressBook();
+
 byId('exceptionsChip').onclick = openExceptions;
-byId('geoButton').onclick = openGeoMap;
+
 const shiftGanttAnchor = direction => {
   const view = ganttView();
   const anchorIso = state.selectedDay || new Date().toISOString().slice(0, 10);
