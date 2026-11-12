@@ -2239,7 +2239,14 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 .chat-page #chatBack { display: none; }
 .chat-page .chat-list { grid-column: 2; grid-row: 3; }
 .chat-page .chat-list.hidden { display: block !important; }
-.chat-page .chat-compose { grid-column: 2; grid-row: 3 / 6; overflow: auto; }
+.chat-page .chat-compose { grid-column: 2; grid-row: 3 / 6; overflow: auto; background: var(--card); }
+/* Открыт композер (новая группа/личное, пересылка) — лента уступает ему
+   место, иначе они накладываются в одной ячейке сетки (баг 12.11:
+   «нажал создание группы — подвис чат») */
+.chat-page:has(.chat-compose:not(.hidden)) .chat-list { display: none !important; }
+.chat-page:has(.chat-compose:not(.hidden)) .chat-replybar,
+.chat-page:has(.chat-compose:not(.hidden)) .chat-mentions,
+.chat-page:has(.chat-compose:not(.hidden)) .chat-form { display: none !important; }
 .chat-page .chat-replybar { grid-column: 2; grid-row: 4; }
 .chat-page .chat-mentions { grid-column: 2; grid-row: 4; }
 .chat-page .chat-form { grid-column: 2; grid-row: 5; }

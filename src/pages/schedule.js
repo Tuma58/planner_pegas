@@ -497,6 +497,9 @@ function rowsFor(){
   const q=document.getElementById('fSearch').value.trim().toLowerCase();
   const onlyVac=document.getElementById('fVac').checked;
   return S.drv.filter(d=>{
+    /* Уволенные не выходят в графике (ТЗ Никулиной, 12.11): строку глушит
+       сервер (drv.fired), история живёт в данных и в табеле. */
+    if(d.fired) return false;
     if(f!=='Все' && d.filial!==f) return false;
     if(onlyVac && !d.vac) return false;
     if(q){

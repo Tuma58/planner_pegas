@@ -258,6 +258,53 @@ function loadCrews(db, ids = null) {
   return out;
 }
 
+// «Уволенные не должны выходить в графике» (ТЗ Никулиной, 12.11):
+// строка уволенного в экипаже глушится — помечается drv.fired (датой),
+// отвязывается от сцепки, будущий план с сегодняшнего дня чистится.
+// История до увольнения остаётся — её читает табель. Активный тёзка
+// (не уволенный с тем же каноном ФИО) строку защищает. Идемпотентно:
+// заглушенные повторно не трогаются, запись только при изменениях.
+export function muteFiredInSchedule(db, userId = null) {
+  const firedKeys = new Set();
+  for (const row of db.prepare(`SELECT full_name FROM drivers WHERE status='fired'`).all()) {
+    const key = canonFio(row.full_name);
+    if (key) firedKeys.add(key);
+  }
+  if (!firedKeys.size) return { muted: 0 };
+  for (const row of db.prepare(`SELECT full_name FROM drivers WHERE status<>'fired'`).all()) {
+    firedKeys.delete(canonFio(row.full_name));
+  }
+  if (!firedKeys.size) return { muted: 0 };
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const mkToday = todayIso.slice(0, 7);
+  const dayToday = Number(todayIso.slice(8, 10));
+  const changedCrews = {};
+  let muted = 0;
+  for (const [crewId, body] of loadCrews(db)) {
+    let changed = false;
+    for (const drv of body.drv || []) {
+      if (drv.vac || drv.fired) continue;
+      const key = canonFio(drv.fio);
+      if (!key || !firedKeys.has(key)) continue;
+      drv.fired = todayIso;
+      if (drv.ts) drv.ts = '';
+      for (const [mk, arr] of Object.entries(drv.plan || {})) {
+        if (!Array.isArray(arr) || mk < mkToday) continue;
+        const from = mk === mkToday ? dayToday : 1;
+        for (let i = from - 1; i < arr.length; i += 1) arr[i] = '';
+      }
+      changed = true;
+      muted += 1;
+    }
+    if (changed) changedCrews[crewId] = body;
+  }
+  if (!muted) return { muted: 0 };
+  applyScheduleSync(db, { crews: changedCrews,
+    log: [{ what: `уволенные заглушены в графике: ${muted} строк (авто)`, who: 'система' }] },
+  userId);
+  return { muted };
+}
+
 // Код дня водителя из план-слоя. r = {mk, d} не нужен: день ISO.
 const planCode = (drv, iso) => {
   const arr = (drv.plan || {})[iso.slice(0, 7)];

@@ -97,7 +97,7 @@ import {
   gapStats, nextAssignedShare, relayTripSegments, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours, zoneLegKm,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleConflicts, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, muteFiredInSchedule, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleConflicts, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
 import { dailyOpsTail, dailyOpsText, dailySeries, lateUnloadByDay, opsReportData, renderOpsReportHtml, repairCarsByDay } from './ops-report.mjs';
 import { renderBriefDeckPdf } from './brief-deck-pdf.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
@@ -4887,6 +4887,14 @@ function mergeDriverDoublesOnce() {
   } catch (error) { console.error('mergeDriverDoublesOnce:', error.message); }
 }
 setTimeout(mergeDriverDoublesOnce, 40_000);
+// Уволенные в графике (ТЗ Никулиной, 12.11): глушатся при старте —
+// идемпотентно, пишет только когда есть незаглушенные.
+setTimeout(() => {
+  try {
+    const { muted } = muteFiredInSchedule(db);
+    if (muted) console.log(`график: заглушены строки уволенных — ${muted}`);
+  } catch (error) { console.error('глушение уволенных в графике:', error.message); }
+}, 50_000);
 
 // ── Ночная автопроверка данных (заказ руководителя 23.10) ──
 // Неделя 21–23.10 показала класс тихих дефектов: устаревшие порожние
@@ -12115,6 +12123,12 @@ async function api(request, response, url) {
         String(body.phone ?? current.phone).trim(), status, vehicleId,
         absentFrom, absentTo, String(body.note ?? current.note).trim(),
         shift.on, shift.off, shift.anchor, match[0]);
+      // Увольнение: строка в графике глушится сразу (ТЗ Никулиной, 12.11) —
+      // без этого уволенный «выходит в графике» до ручной правки.
+      if (status === 'fired' && current.status !== 'fired') {
+        try { muteFiredInSchedule(db, user.id); }
+        catch (error) { console.error('глушение уволенного в графике:', error.message); }
+      }
       // Отпуск/болезнь с датами: закреплённая сцепка получает интервал
       // «без водителя» — календарь, потребность и задания видят это сразу.
       if (['vacation', 'sick'].includes(status) && vehicleId && absentFrom && absentTo &&

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '../src/db.mjs';
-import { applyScheduleSync, projectPlanToTable, scheduleConflicts,
+import { applyScheduleSync, muteFiredInSchedule, projectPlanToTable, scheduleConflicts,
   scheduleHolderMap, syncAssignBridge } from '../src/schedule.mjs';
 
 const freshDb = t => {
@@ -142,4 +142,34 @@ test('сверка диспозиций: стоянка при рабочем к
   applyScheduleSync(db, { since: 1, crews: { E099: crew }, log: [] });
   const after = scheduleConflicts(db);
   assert.equal(after.shiftNoP.length, 0);
+});
+
+test('уволенные глушатся в графике: fired-метка, отвязка от сцепки, будущее пусто, история цела', t => {
+  const db = freshDb(t);
+  db.prepare(`INSERT INTO drivers(id, full_name, status) VALUES('d-f', 'Ушедший Иван Иванович', 'fired')`).run();
+  db.prepare(`INSERT INTO drivers(id, full_name, status) VALUES('d-a', 'Оставшийся Пётр Петрович', 'active')`).run();
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = today.slice(0, 7);
+  const day = Number(today.slice(8, 10));
+  const days = new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate();
+  const plan = { [mk]: Array(days).fill('р') };
+  applyScheduleSync(db, { crews: { E900: { id: 'E900',
+    ts: [{ id: 'T1', tyagach: 'т900тт58', crew: 'E900' }],
+    drv: [
+      { id: 'D1', fio: 'Ушедший Иван Иванович', crew: 'E900', ts: 'T1', plan: JSON.parse(JSON.stringify(plan)) },
+      { id: 'D2', fio: 'Оставшийся Пётр Петрович', crew: 'E900', ts: '', plan: JSON.parse(JSON.stringify(plan)) }
+    ] } } });
+  const { muted } = muteFiredInSchedule(db);
+  assert.equal(muted, 1);
+  const body = JSON.parse(db.prepare(`SELECT body FROM schedule_crews WHERE id='E900'`).get().body);
+  const gone = body.drv.find(d => d.id === 'D1');
+  const alive = body.drv.find(d => d.id === 'D2');
+  assert.ok(gone.fired);
+  assert.equal(gone.ts, '');
+  assert.equal(gone.plan[mk][day - 1], ''); // с сегодняшнего дня пусто
+  if (day >= 2) assert.equal(gone.plan[mk][day - 2], 'р'); // вчера — история, цела
+  assert.ok(!alive.fired);
+  assert.equal(alive.plan[mk][day - 1], 'р');
+  // повторный вызов ничего не меняет
+  assert.equal(muteFiredInSchedule(db).muted, 0);
 });
