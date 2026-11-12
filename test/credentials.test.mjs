@@ -201,3 +201,14 @@ test('доступ к затратам галкой: логин добавляе
   assert.ok(!expensesAccess(user('Дарья Н'), settings()));
   assert.ok(expensesAccess(user('tarasov.ea'), settings()));
 });
+
+test('старый логин на входе: кириллица и пробел распознаются, новые логины — нет', async () => {
+  const { isLegacyLoginAttempt } = await import('../src/credentials.mjs');
+  assert.ok(isLegacyLoginAttempt('Дойкина О'));
+  assert.ok(isLegacyLoginAttempt('Логист-диспетчер'));
+  assert.ok(isLegacyLoginAttempt('Artem Salnikov')); // латиница с пробелом — тоже старый формат
+  assert.ok(!isLegacyLoginAttempt('doykina.o'));
+  assert.ok(!isLegacyLoginAttempt('admin'));
+  assert.ok(!isLegacyLoginAttempt(''));
+  assert.ok(!isLegacyLoginAttempt(null));
+});

@@ -63,7 +63,7 @@ import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, r
 import { applyMerger, mergerPlan, mergerStatus, rollbackMerger } from './merger-import.mjs';
 import { closeMonth, controlJournalChecks, processAlertText, processControl, processControlTick, recordClientError,
   recordDenial } from './process-control.mjs';
-import { changeOwnPassword, createGuest, guestExpired, issueAccess, issueAccessBulk, updateGuest } from './credentials.mjs';
+import { changeOwnPassword, createGuest, guestExpired, isLegacyLoginAttempt, issueAccess, issueAccessBulk, updateGuest } from './credentials.mjs';
 import { FIELD_META, JOINTS, directionData, fieldData, fieldLive, idleVehicles } from './field.mjs';
 import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } from './signals.mjs';
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
@@ -8450,13 +8450,24 @@ async function api(request, response, url) {
       ipAttempts.push(Date.now());
       loginAttempts.set(ipKey, ipAttempts);
       audit(db, user, 'login_failed', 'session', null, {}, clientIp);
+      // Логин старого образца, которого больше нет (выдача доступов
+      // 11.11 перевела всех на фамилия.и): человек со старым листком, не
+      // взлом — подсказываем и НЕ пишем в журнал fail2ban, иначе каждая
+      // смена логинов банит офисную машину на 2 часа. Внутренние лимиты
+      // попыток выше остаются. Для существующих учёток (в т.ч. старых
+      // кириллических) путь прежний.
+      const legacyMiss = !user && isLegacyLoginAttempt(body.username);
       // Журнал неудач — сырьё для fail2ban на хосте (файл в data-томе):
       // формат строки стабильный, по нему настроен failregex.
-      try {
-        fs.appendFileSync(authFailLogPath,
-          `${new Date().toISOString()} auth-fail ip=${clientIp} user=${String(body.username || '').slice(0, 30).replace(/\s/g, '_')}\n`);
-      } catch { /* журнал не критичен для входа */ }
-      return errorJson(response, 401, 'Неверный логин или пароль');
+      if (!legacyMiss) {
+        try {
+          fs.appendFileSync(authFailLogPath,
+            `${new Date().toISOString()} auth-fail ip=${clientIp} user=${String(body.username || '').slice(0, 30).replace(/\s/g, '_')}\n`);
+        } catch { /* журнал не критичен для входа */ }
+      }
+      return errorJson(response, 401, legacyMiss
+        ? 'Такого логина больше нет: с 11.11 логины латиницей вида ivanov.i. Возьмите у руководителя листок с новым логином и временным паролем'
+        : 'Неверный логин или пароль');
     }
     loginAttempts.delete(attemptKey);
     loginAttempts.delete(ipKey);

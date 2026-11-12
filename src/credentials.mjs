@@ -99,6 +99,17 @@ export function passwordProblem(next, { username = '', current = '' } = {}) {
   return '';
 }
 
+// Попытка входа логином старого образца (кириллица или пробел — так
+// выглядели учётки до перехода на фамилия.и при выдаче доступов 11.11).
+// Для НЕСУЩЕСТВУЮЩЕГО такого логина сервер отвечает подсказкой «возьмите
+// листок» и не кормит fail2ban: иначе каждая смена логинов банила бы
+// офисные машины на 2 часа (Токалова/Куликова 11.11, Дойкина 12.11).
+export function isLegacyLoginAttempt(username) {
+  const value = String(username || '').trim();
+  if (!value) return false;
+  return /[а-яё]/i.test(value) || /\s/.test(value);
+}
+
 const today = () => new Date().toISOString().slice(0, 10);
 
 // Гостевой доступ истёк — вход закрыт (сессии чистит проверка входа).

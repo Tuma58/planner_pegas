@@ -37,6 +37,20 @@ document.querySelector('#changeForm').addEventListener('submit', async event => 
 const phoneField = document.querySelector('[name="workPhone"]');
 try { phoneField.value = localStorage.getItem('pl_work_phone') || ''; } catch { /* приватный режим */ }
 
+// Живая подсказка про новые логины (12.11): человек со старым листком
+// набирает «Фамилия И» кириллицей — говорим про листок ещё до отправки,
+// не дожидаясь ошибки входа (сервер на такой логин отвечает тем же).
+const usernameField = document.querySelector('#loginForm [name="username"]');
+const legacyHint = document.createElement('div');
+legacyHint.className = 'muted';
+legacyHint.style.cssText = 'font-size:12px;margin-top:4px;display:none';
+legacyHint.textContent = '📋 С 11.11 логины латиницей вида ivanov.i — возьмите у руководителя листок с новым логином и временным паролем';
+usernameField.insertAdjacentElement('afterend', legacyHint);
+usernameField.addEventListener('input', () => {
+  const value = usernameField.value.trim();
+  legacyHint.style.display = /[а-яё]/i.test(value) || /\s/.test(value) ? '' : 'none';
+});
+
 document.querySelector('#loginForm').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.currentTarget;
