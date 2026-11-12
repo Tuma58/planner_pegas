@@ -142,3 +142,14 @@ test('мессенджер Э4: закрепление сообщений и п�
   assert.ok(readKate && readKate.lastReadId < sent.id);
   assert.ok(!reads.some(item => item.name === 'Анна Т')); // сам автор не в списке
 });
+
+test('лента конвейера: admin видит уведомления роли manager (руководитель = admin, 12.11)', t => {
+  const db = freshDb(t);
+  db.prepare(`INSERT INTO messages(author_name,kind,text,target_role)
+    VALUES('Конвейер','auto','📐 ТЗ: новое тех. задание','manager')`).run();
+  const admin = db.prepare(`SELECT id FROM users WHERE username='root-admin'`).get();
+  const viaAdmin = chatMessages(db, admin.id, ['admin']).items;
+  assert.ok(viaAdmin.some(item => item.text.includes('ТЗ: новое')));
+  const stranger = chatMessages(db, admin.id, ['logist']).items;
+  assert.ok(!stranger.some(item => item.text.includes('ТЗ: новое')));
+});

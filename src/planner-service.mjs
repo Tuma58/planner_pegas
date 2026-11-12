@@ -1385,7 +1385,12 @@ export function demurrageSummary(db, nowMs = Date.now()) {
 // личные — только отправитель и получатель;
 // группы — участники чата (chat_members). Поллинг инкрементальный по id.
 export function chatMessages(db, userId, userRoles = [], after = 0, changedSince = '') {
-  const rolesJson = JSON.stringify(userRoles);
+  // Руководитель направления работает под учёткой admin (решение 11.11),
+  // а уведомления «руководителю» адресуются роли manager — админ видит
+  // их тоже, иначе ТЗ и заявки уходят в пустоту (разбор 12.11).
+  const effectiveRoles = userRoles.includes('admin') && !userRoles.includes('manager')
+    ? [...userRoles, 'manager'] : userRoles;
+  const rolesJson = JSON.stringify(effectiveRoles);
   const visible = `(
     (recipient_id IS NULL AND chat_id IS NULL AND kind='user')
     OR (kind='auto' AND chat_id IS NULL AND recipient_id IS NULL

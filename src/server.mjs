@@ -14032,7 +14032,10 @@ async function api(request, response, url) {
     if (!user) return;
     const query = String(url.searchParams.get('q') || '').trim().slice(0, 80);
     if (query.length < 2) return json(response, 200, { items: [] });
-    const rolesJson = JSON.stringify(rolesOf(user));
+    // Админ видит и ленты «manager» — как в выдаче чата (разбор 12.11).
+    const searchRoles = rolesOf(user);
+    const rolesJson = JSON.stringify(searchRoles.includes('admin') && !searchRoles.includes('manager')
+      ? [...searchRoles, 'manager'] : searchRoles);
     const items = db.prepare(`SELECT id, author_id, author_name, kind, text, target_role,
         recipient_id, chat_id, created_at FROM messages
       WHERE deleted_at IS NULL AND text LIKE ? ESCAPE '\\' AND (
