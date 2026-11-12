@@ -107,7 +107,7 @@ export async function renderRemzona(container, context) {
         недоступность ТС по-прежнему ставится диспозицией в «Ресурсе»</p>
       ${can('fleet:write') ? '<div class="bi-actions"><button class="button small" id="rzNew">🚚 Новый заезд</button></div>' : ''}
     </div>
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       ${tile('В очереди', groups.queued.length, 'маш', 'dept-toir', 'ждут механика')}
       ${tile('В работе', groups.in_progress.length, 'маш', 'dept-toir', `открытых работ ${jobsLeft}`)}
       ${tile('Готовы', groups.ready.length, 'маш', groups.ready.length ? 'pos' : 'dept-toir', 'к выдаче')}

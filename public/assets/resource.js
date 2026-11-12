@@ -1581,7 +1581,7 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note ? ` · ${escape
   </section>` : '';
 
   const html = `<div class="resboard res-bi">
-    <div class="bi-kpis res-kpis">
+    <div class="bi-kpis bi-kpis-row res-kpis">
       <div class="metric dept-drv res-total"><span class="l">Сцепок в парке</span>
         <span class="v">${withState.length}<small>маш</small></span>
         <span class="d">${filter || query ? `показано ${visible.length}` : `на ${refDay.split('-').reverse().join('.')}`}</span></div>

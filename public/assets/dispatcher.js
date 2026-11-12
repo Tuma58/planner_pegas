@@ -1945,7 +1945,7 @@ export async function renderDispatcher(container, context, options = {}) {
         <input id="dispatcherSearch" class="block-search" placeholder="Поиск: ТС, водитель, заказчик, № — найдёт и сошедшие с доски"
           value="${escapeHtml(state.dispatcherQuery || '')}">
       </div>
-      <div class="bi-kpis disp-kpis">
+      <div class="bi-kpis bi-kpis-row disp-kpis">
         <div class="metric ${lateQuestions ? 'neg' : questions.length ? 'warn' : 'dept-drv'}"><span class="l">Вопросы водителей</span>
           <span class="v">${questions.length}</span><span class="d ${lateQuestions ? 'down' : ''}">просрочено ${lateQuestions} · норматив 10 мин</span></div>
         <div class="metric dept-drv"><span class="l">Активных карточек</span>
@@ -2274,7 +2274,7 @@ export async function renderDispatcher(container, context, options = {}) {
           value="${escapeHtml(state.dispatcherQuery || '')}">
       </div>
     </div>
-    <div class="bi-kpis disp-kpis">
+    <div class="bi-kpis bi-kpis-row disp-kpis">
       <div class="metric ${waitingLogist.length ? 'warn' : 'dept-drv'}"><span class="l">Ждут логиста</span>
         <span class="v">${waitingLogist.length}</span><span class="d">подтверждение рейса</span></div>
       <div class="metric dept-drv"><span class="l">В подготовке</span>

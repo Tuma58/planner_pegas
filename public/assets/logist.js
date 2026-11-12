@@ -721,7 +721,7 @@ export async function renderLogist(container, context) {
   const savedScrolls = captureScrolls(container);
   const html = `<div class="bi-page lg-page lg-logist">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — логисту', compact: true, open: state.logistQuestionsOpen })}
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric dept-log clickable ${focus === 'queue' ? 'open' : ''}" data-kpi="queue"
         title="Показать только очередь на назначение">
         <span class="l">Ждут назначения ТС</span><span class="v">${queue.length}<small>заявок</small></span>

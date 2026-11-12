@@ -436,7 +436,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     `<span class="lg-sw"><i${cls ? ` class="${cls}"` : ''} style="${style}"></i>${label}</span>`;
   renderCanvas(`<div class="bi-page lg-page lg-dpl${isTab ? '' : ' lg-dpl-modal'}">
     ${isTab ? '' : `<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>`}
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric dept-log" title="Сетка слотов на месяц: рейсы и выручка по ставкам, с НДС">
         <span class="l">План месяца · рейсов</span><span class="v">${Math.round(monthPlanN)}</span>
         <span class="d">${money(Math.round(monthPlanRv))}</span></div>

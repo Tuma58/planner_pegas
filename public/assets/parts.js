@@ -37,7 +37,7 @@ const stockCell = item => item.stock <= 0 ? `<span class="bi-tag neg">${qtyFmt(i
 
 function kpis(data) {
   const t = data.totals;
-  return `<div class="bi-kpis">
+  return `<div class="bi-kpis bi-kpis-row">
     <div class="metric dept-toir hero"><span class="l">Позиций</span><span class="v">${t.items}</span><span class="d">${t.empty} без остатка</span></div>
     <div class="metric ${t.below ? 'warn' : 'pos'} clickable" data-parts-tab="tobuy"><span class="l">Ниже минимума</span><span class="v">${t.below}</span>
       <span class="d">к закупке ${t.toBuy} поз.${data.money && t.buyCost ? ` · ≈${rub(t.buyCost)}` : ''}</span></div>
@@ -152,7 +152,7 @@ function normsTab(data) {
   const field = (name, label, step, hint) => `<label class="field">${label}
     <input type="number" min="0" step="${step}" name="${name}" value="${c[name]}" ${data.canSettings ? '' : 'disabled'} placeholder="${d[name]}">
     <small class="muted">${hint}</small></label>`;
-  return `<div class="bi-kpis">
+  return `<div class="bi-kpis bi-kpis-row">
       <div class="metric dept-toir"><span class="l">Срок поставки выучен</span><span class="v">${r.lead.learned}<small>из ${r.items}</small></span>
         <span class="d">ручной ${r.lead.manual} · по складу ${r.lead.park} · неизвестен ${r.lead.none}</span></div>
       <div class="metric"><span class="l">Медиана поставки склада</span><span class="v">${r.parkLead.days != null ? `${qtyFmt(r.parkLead.days)}<small>сут</small>` : '—'}</span>
@@ -313,7 +313,7 @@ async function itemCard(context, data, id, after) {
   context.showModal(`<div class="parts-card"><div class="parts-card-head"><h2>${escapeHtml(item.name)}</h2>
       ${item.code ? `<span class="bi-tag mono">${escapeHtml(item.code)}</span>` : ''}${item.archived ? '<span class="bi-tag warn">архив</span>' : ''}
       ${card.canWrite ? '<button type="button" class="button small ghost" data-pc="edit">✎ Изменить</button>' : ''}</div>
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric dept-toir"><span class="l">Остаток</span><span class="v">${qtyFmt(item.stock)}<small>${escapeHtml(item.unit)}</small></span>
         <span class="d">заказано ${qtyFmt(item.onOrder)}</span></div>
       <div class="metric ${item.below ? 'warn' : ''}"><span class="l">Неснижаемый</span><span class="v">${item.min.qty == null ? '—' : qtyFmt(item.min.qty)}</span>

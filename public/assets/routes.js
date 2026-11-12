@@ -458,7 +458,7 @@ export function renderRoutes(container, context) {
         <button class="button ghost small" id="routeTemplates"
           title="Типовые круги парка из сентябрьской сетки: экономика каждого и создание маршрута-заготовки одним нажатием">📚 Шаблоны кругов</button>` : ''}
       </div></div>
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric dept-log"><span class="l">Маршрутов в работе</span><span class="v">${routes.length}</span></div>
       <div class="metric"><span class="l">Черновики</span><span class="v">${routes.filter(r => r.status === 'draft').length}</span></div>
       <div class="metric dept-log"><span class="l">У логиста</span><span class="v">${routes.filter(r => r.status === 'handed').length}</span></div>

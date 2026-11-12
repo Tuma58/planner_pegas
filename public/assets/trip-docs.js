@@ -21,7 +21,7 @@ export async function renderTripDocs(container, context) {
     <div class="bi-sub"><h2>Документы после выгрузки</h2>
       <p>Рейсы, выгруженные с ${dt(data.since)}, у которых документы ещё не сданы. Норматив сдачи — ${data.norm != null ? `${String(data.norm).replace('.', ',')} сут (медиана факта за 60 дней)` : 'копится (нужно 5 сданных)'}.</p>
       <div class="bi-actions"><input id="dcSearch" placeholder="Машина, водитель, клиент, заказ" value="${escapeHtml(state.docsQuery || '')}"></div></div>
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric ${s.waiting ? 'warn' : 'pos'}"><span class="l">Ждут документов</span><span class="v">${s.waiting}</span></div>
       <div class="metric ${s.overdue ? 'neg' : 'pos'}"><span class="l">Дольше норматива</span><span class="v">${s.overdue}</span></div>
       <div class="metric"><span class="l">Сдано за 7 дней</span><span class="v">${s.returnedWeek}</span></div>

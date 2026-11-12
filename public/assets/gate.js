@@ -73,7 +73,7 @@ function draw(container, context) {
         <button data-gt-tab="post" class="${gs.tab === 'post' ? 'active' : ''}">Пост</button>
         <button data-gt-tab="report" class="${gs.tab === 'report' ? 'active' : ''}">Отчёт</button>
         ${data.rights.dir ? `<button data-gt-tab="dir" class="${gs.tab === 'dir' ? 'active' : ''}">Справочник</button>` : ''}</span></div></div>
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric"><span class="l">На стоянке</span><span class="v">${data.onsite.length}</span>
         <span class="d">🚛 ${counts('truck')} · 🚗 ${counts('personal')} · 🚙 ${counts('other')}</span></div>
       <div class="metric"><span class="l">За сутки</span><span class="v">${data.today.entries}<small>въезд</small></span>

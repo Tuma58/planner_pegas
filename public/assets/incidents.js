@@ -100,7 +100,7 @@ export async function renderIncidents(container, context) {
         title="Справочник складов LTL: названия, адреса, телефоны — для статуса «на складе»">🏬 Склады LTL</button>` : ''}
       <p>Завести внештатку: Диспетчер → карточка рейса → «⋯ Внештатная ситуация» → Акт / Возврат / Опоздание</p>
     </div>
-    <div class="bi-kpis disp-kpis">
+    <div class="bi-kpis bi-kpis-row disp-kpis">
       <div class="metric ${openOf('act').length ? 'warn' : 'dept-drv'}"><span class="l">📋 Акты открыты</span>
         <span class="v">${openOf('act').length}</span><span class="d">за период · ждут итога</span></div>
       <div class="metric ${openOf('return').length ? 'warn' : 'dept-drv'}"><span class="l">↩ Возвраты в работе</span>

@@ -272,7 +272,7 @@ export async function renderMonitoring(container, context) {
     // BI-каркас (04.11): ряд плиток → две секции (список | карта).
     // Плитки и список перерисовываются каждый тик, карта — нет.
     container.innerHTML = `<div class="bi-page mon-page">
-      <div class="bi-kpis" id="monKpis"></div>
+      <div class="bi-kpis bi-kpis-row" id="monKpis"></div>
       <div class="mon-wrap">
         <section class="section mon-list"><div class="sec-h"><span class="st">Парк на линии</span>
           <span class="hint">клик — машина на карте</span></div>

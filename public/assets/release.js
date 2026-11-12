@@ -28,7 +28,7 @@ export async function renderRelease(container, context) {
       <p>Чек-лист из отметок планера. «Выехал с базы» — подсказка КПП, не факт. Норматив подготовки — ${data.prepH ?? '—'} ч (регламент конвейера).</p>
       <div class="bi-actions"><span class="segmented">${[['', `Все ${s.total}`], ['risk', `Риск ${s.risk}`], ['late', `Просрочен ${s.late}`], ['wait', `Готовится ${s.wait}`], ['ready', `Готов ${s.ready}`], ['ok', `На линии ${s.onLine}`]]
     .map(([key, label]) => `<button data-rl-filter="${key}" class="${f === key ? 'active' : ''}">${label}</button>`).join('')}</span></div></div>
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric ${s.late ? 'neg' : 'pos'}"><span class="l">Выход прошёл, не на линии</span><span class="v">${s.late}</span></div>
       <div class="metric ${s.risk ? 'warn' : ''}"><span class="l">Риск: до выхода ≤ ${data.prepH ?? '—'} ч, не готов</span><span class="v">${s.risk}</span></div>
       <div class="metric"><span class="l">Готовы к выпуску</span><span class="v">${s.ready}</span></div>

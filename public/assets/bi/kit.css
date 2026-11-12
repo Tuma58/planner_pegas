@@ -28,6 +28,26 @@
 .metric.hero .v { font-size: 27px; }
 .metric.clickable { cursor: pointer; } .metric.clickable:hover { border-color: var(--accent); }
 
+/* Рабочий экран (под плитками живёт рабочая зона — список, доска, гант):
+   шапка НЕ растёт вниз. Плитки — всегда ОДИН компактный ряд; при
+   тесноте ряд прокручивается вбок, а не переносится. Применять классом
+   bi-kpis-row на экранах с рабочей зоной; панели-отчёты (поле, ЦФО,
+   дашборд) остаются многорядной сеткой .bi-kpis. */
+/* Двойной класс в селекторах — осознанно: kit.css подключён первым, и
+   экранные bi/<группа>.css иначе перекрывали бы компакт своей
+   специфичностью (.disp-bi .bi-kpis .skpi и т.п.) */
+.bi-kpis.bi-kpis-row { display: flex; flex-wrap: nowrap; overflow-x: auto; overflow-y: visible;
+  scrollbar-width: thin; align-items: stretch; }
+.bi-kpis.bi-kpis-row > * { flex: 1 1 150px; min-width: 132px; max-width: 260px; }
+.bi-kpis.bi-kpis-row.bi-kpis-row .metric, .bi-kpis.bi-kpis-row.bi-kpis-row .skpi { padding: 7px 13px 8px; gap: 1px; }
+.bi-kpis.bi-kpis-row.bi-kpis-row .metric .v, .bi-kpis.bi-kpis-row.bi-kpis-row .skpi .skv { font-size: 19px; line-height: 1.2; }
+.bi-kpis.bi-kpis-row.bi-kpis-row .metric .l, .bi-kpis.bi-kpis-row.bi-kpis-row .skpi .skl { font-size: 10.5px; }
+/* Полосы-сигналы над плитками (баннер дня, свёртка кругов и т.п.) —
+   в одну строку, пока влезают; баннер тянется, свёртки — по содержимому */
+.bi-strips { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; min-width: 0; }
+.bi-strips > :first-child { flex: 1 1 420px; min-width: 0; }
+.bi-strips > * { min-width: 0; }
+
 /* Сетка секций */
 .bi-grid { display: grid; gap: 14px; grid-template-columns: repeat(12, minmax(0, 1fr)); align-items: start; }
 .bi-grid > * { grid-column: span 12; min-width: 0; }

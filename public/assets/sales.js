@@ -1090,7 +1090,7 @@ export async function renderSales(container, context) {
     <small class="muted">сегодня: выгружено ${money(Math.round(dayM.dayDone || 0))} · едет ${money(Math.max(0, Math.round(dayM.dayExpected || 0)))}</small></div>`;
   const html = `<div class="saleswrap bi-page bi-sales">
     ${questionsStripHtml(questions, { title: '📞 Вопросы водителей — планированию', compact: true, open: state.salesQuestionsOpen })}
-    ${dayBannerHtml}${ringHolesHtml}
+    <div class="bi-strips">${dayBannerHtml}${ringHolesHtml}</div>
     <div class="salekpis bi-kpis sales-kpis">
       <div class="skpi metric dept-log clickable ${state.salesKpiOpen === 'clients' ? 'open' : ''} ${hotTotal ? 'skpi-hot' : ''}" data-kpi="clients"
         title="Клиенты с живыми заказами — выбор раскрывает клиента в левой колонке">

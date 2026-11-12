@@ -381,7 +381,7 @@ export async function renderFlows(container, context) {
       <button type="button" class="button ghost small" data-flow-preset="6">Неделя</button>
       </div>
     </div>
-    <div class="bi-kpis">
+    <div class="bi-kpis bi-kpis-row">
       <div class="metric dept-log"><span class="l">Зон в движении</span><span class="v">${tiles.length}</span>
         <span class="d">с потребностью или парком</span></div>
       <div class="metric ${deficit.length ? 'neg' : 'pos'}"><span class="l">Дефицит · направить</span>
