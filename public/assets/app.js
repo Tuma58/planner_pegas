@@ -473,7 +473,18 @@ ${escapeHtml(item.note)}` : ''}"><b>${meta.short}</b>${item.note && width > 90 ?
       <div class="vehicle-cell ${dayStatus.cls === 'idle' ? 'cell-idle' : ''}"><span class="vehicle-stripe"></span>
         <span class="vehicle-title res-vtitle"><strong class="mono vlink" data-vinfo="${vehicle.id}"
           title="Карточка ТС: рейс, простой, ремонт, отметки контролёра">${escapeHtml(vehicle.plate)}</strong>
-        <small>${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name)}${(() => {
+        <small>${(() => {
+          // Активная периодная подмена видна прямо в подписи ганта
+          // (ТЗ Никулиной, 12.11): машину ведёт подменный, не постоянный.
+          // Период самого постоянного (вахта на своей машине) — не подмена.
+          const sub = (state.data.driverAssignments || []).find(item =>
+            item.vehicle_id === vehicle.id &&
+            Date.parse(item.starts_at) <= nowMoment && Date.parse(item.ends_at) > nowMoment &&
+            String(item.driver_name || '').trim() !== String(vehicle.driver_name || '').trim());
+          return sub
+            ? `<span class="gantt-sub" title="Подмена до ${String(sub.ends_at).slice(0, 10).split('-').reverse().slice(0, 2).join('.')} · постоянный: ${escapeHtml(vehicle.driver_name || '—')}">${escapeHtml(sub.driver_name || '🚫 без водителя')} ⇄</span>`
+            : escapeHtml(vehicle.driver_name || 'без водителя');
+        })()} · ${escapeHtml(vehicle.type_name)}${(() => {
           // Накат заступившего водителя (24.10): км/сут с заступления —
           // для выравнивания нагрузки логистом прямо с Ганта.
           const rr = vehicle.run_rate;

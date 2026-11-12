@@ -5,7 +5,7 @@
 // здесь — управляют им.
 import { api, attachSearch, escapeHtml, formValues, formatDateTime, money, routeLabel, toast, dayPickerHtml, wireDayPicker, captureScrolls, restoreScrolls, renderInto, windowWarningModal } from './api.js';
 import { fleetPlanDialog } from './fleet-plan.js';
-import { vehicleZoneAt } from './transfer.js';
+import { transferPickVehicleDialog, vehicleZoneAt } from './transfer.js';
 import { demurrageChipHtml, wireDemurrageChip } from './demurrage.js';
 import { inSalesPortfolio, orderStage, waitingLabel } from './pipeline.js';
 import { DISP_KINDS } from './resource.js';
@@ -753,7 +753,9 @@ export async function renderLogist(container, context) {
     </div>
     <section class="section lg-filterbar">
       <div class="sec-h"><span class="st">Фильтры</span>
-        <span class="hint">геозона, субъект и период действуют на все секции экрана</span></div>
+        <span class="hint">геозона, субъект и период действуют на все секции экрана</span>
+        <div class="sec-actions"><button class="button ghost small" id="logistTransfer"
+          title="Оформить порожний перегон: выбрать машину, цель и точку назначения — как на Ресурсе">🚚 Перегон</button></div></div>
       <div class="sec-b"><div class="salesfilter lg-filters">
         <select id="logistState" title="Показать машины парка в выбранном состоянии: забронированные, в ремонте, без водителя, в перегоне">
           <option value="">Кому нужна работа</option>
@@ -867,6 +869,10 @@ export async function renderLogist(container, context) {
     state.logistQuery = value;
     return renderLogist(container, context);
   });
+  // Перегон с вкладки логиста (ТЗ Базуева 12.11): тот же диалог, что на
+  // Ресурсе — выбор машины, цель, точка; машина встаёт «в перегоне».
+  const transferButton = container.querySelector('#logistTransfer');
+  if (transferButton) transferButton.onclick = () => transferPickVehicleDialog(context);
   const dayIsoLocal = shift => new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
   container.querySelector('#logistFilterFrom').onchange = event => {
     state.logistFrom = event.currentTarget.value; rerender();

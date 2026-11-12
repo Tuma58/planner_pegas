@@ -4887,12 +4887,34 @@ function mergeDriverDoublesOnce() {
   } catch (error) { console.error('mergeDriverDoublesOnce:', error.message); }
 }
 setTimeout(mergeDriverDoublesOnce, 40_000);
+// Отвязка уволенного водителя от ТС (ТЗ Никулиной, 12.11): справочник
+// и подпись борта не должны держать уволенного. Подпись vehicles.driver_name
+// чистится только когда совпадает с его ФИО и машину не держит активный
+// тёзка — иначе снесли бы подпись живого водителя.
+function unlinkFiredDriver(driverId) {
+  try {
+    const driver = db.prepare(`SELECT id,full_name,vehicle_id FROM drivers WHERE id=?`).get(driverId);
+    if (!driver?.vehicle_id) return false;
+    db.prepare(`UPDATE vehicles SET driver_name='',updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND driver_name=? AND NOT EXISTS (SELECT 1 FROM drivers a
+        WHERE a.vehicle_id=vehicles.id AND a.status<>'fired' AND a.id<>?)`)
+      .run(driver.vehicle_id, driver.full_name, driver.id);
+    db.prepare(`UPDATE drivers SET vehicle_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(driver.id);
+    return true;
+  } catch (error) { console.error('отвязка уволенного от ТС:', error.message); return false; }
+}
+
 // Уволенные в графике (ТЗ Никулиной, 12.11): глушатся при старте —
 // идемпотентно, пишет только когда есть незаглушенные.
 setTimeout(() => {
   try {
     const { muted } = muteFiredInSchedule(db);
     if (muted) console.log(`график: заглушены строки уволенных — ${muted}`);
+    // Хвост той же заявки: ранее уволенные, оставшиеся в привязке к ТС.
+    const stale = db.prepare(`SELECT id FROM drivers
+      WHERE status='fired' AND vehicle_id IS NOT NULL`).all();
+    const unlinked = stale.filter(row => unlinkFiredDriver(row.id)).length;
+    if (unlinked) console.log(`справочник: уволенные отвязаны от ТС — ${unlinked}`);
   } catch (error) { console.error('глушение уволенных в графике:', error.message); }
 }, 50_000);
 
@@ -12146,6 +12168,7 @@ async function api(request, response, url) {
       // Увольнение: строка в графике глушится сразу (ТЗ Никулиной, 12.11) —
       // без этого уволенный «выходит в графике» до ручной правки.
       if (status === 'fired' && current.status !== 'fired') {
+        unlinkFiredDriver(match[0]);
         try { muteFiredInSchedule(db, user.id); }
         catch (error) { console.error('глушение уволенного в графике:', error.message); }
       }

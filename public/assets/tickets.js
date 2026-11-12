@@ -69,21 +69,45 @@ export function ticketCard(ticket, { canDecide, kb = false }) {
   </div>`;
 }
 
+// Черновик формы: входящий звонок или перерисовка открывают своё окно
+// поверх и сносят недописанное ТЗ (заявка Базуева 12.11) — введённое
+// сохраняется на каждый ввод и восстанавливается при следующем открытии.
+// Живёт сутки; чистится после успешной отправки.
+const draftKey = kind => `hdDraft:${kind}`;
+function loadDraft(kind) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(draftKey(kind)) || 'null');
+    if (!raw || Date.now() - (raw.ts || 0) > 86_400_000) return null;
+    return (raw.place || raw.problem || raw.expected) ? raw : null;
+  } catch { return null; }
+}
+function saveDraft(kind, form) {
+  try {
+    localStorage.setItem(draftKey(kind), JSON.stringify({
+      ts: Date.now(), place: form.place.value, problem: form.problem.value,
+      expected: form.expected.value, frequency: form.frequency.value
+    }));
+  } catch { /* приватное окно — некритично */ }
+}
+const clearDraft = kind => { try { localStorage.removeItem(draftKey(kind)); } catch { /* некритично */ } };
+
 // Форма — каркас тех.задания из пяти полей; onDone — после отправки
 // или отмены (перерисовать ленту).
 export function ticketForm(list, { kind = 'helpdesk', onDone }) {
   const text = TICKET_TEXT[kind];
+  const draft = loadDraft(kind);
   list.innerHTML = `<form class="hd-form" id="hdForm">
     <b>${text.formTitle}</b>
-    <input name="place" maxlength="120" placeholder="${escapeHtml(text.place)}">
-    <textarea name="problem" rows="3" maxlength="1000" required placeholder="${escapeHtml(text.problem)}"></textarea>
-    <textarea name="expected" rows="2" maxlength="1000" placeholder="Как должно быть (по-вашему)"></textarea>
+    ${draft ? '<small class="muted">↩ Черновик восстановлен — недописанное не пропало</small>' : ''}
+    <input name="place" maxlength="120" placeholder="${escapeHtml(text.place)}" value="${escapeHtml(draft?.place || '')}">
+    <textarea name="problem" rows="3" maxlength="1000" required placeholder="${escapeHtml(text.problem)}">${escapeHtml(draft?.problem || '')}</textarea>
+    <textarea name="expected" rows="2" maxlength="1000" placeholder="Как должно быть (по-вашему)">${escapeHtml(draft?.expected || '')}</textarea>
     <select name="frequency">
       <option value="">Как часто мешает…</option>
-      <option>мешает каждый день</option>
-      <option>несколько раз в неделю</option>
-      <option>иногда</option>
-      <option>случилось один раз</option>
+      <option ${draft?.frequency === 'мешает каждый день' ? 'selected' : ''}>мешает каждый день</option>
+      <option ${draft?.frequency === 'несколько раз в неделю' ? 'selected' : ''}>несколько раз в неделю</option>
+      <option ${draft?.frequency === 'иногда' ? 'selected' : ''}>иногда</option>
+      <option ${draft?.frequency === 'случилось один раз' ? 'selected' : ''}>случилось один раз</option>
     </select>
     <label><small class="muted">Скриншот, запись экрана, текст или таблица (по желанию)</small>
       <input type="file" name="media" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.md,.txt,.csv,.xlsx,.xls"></label>
@@ -93,7 +117,10 @@ export function ticketForm(list, { kind = 'helpdesk', onDone }) {
     </div>
     <small class="muted">${escapeHtml(text.footer)}</small>
   </form>`;
-  list.querySelector('#hdCancel').onclick = () => onDone?.();
+  // «Отмена» — осознанный отказ: черновик чистится; снос формы извне
+  // (звонок, перерисовка) черновик не трогает — он и спасает текст.
+  list.querySelector('#hdCancel').onclick = () => { clearDraft(kind); onDone?.(); };
+  list.querySelector('#hdForm').oninput = event => saveDraft(kind, event.currentTarget);
   list.querySelector('#hdForm').onsubmit = async event => {
     event.preventDefault();
     const form = event.target;
@@ -118,6 +145,7 @@ export function ticketForm(list, { kind = 'helpdesk', onDone }) {
         body.mediaName = file.name;
       }
       await api('/api/helpdesk', { method: 'POST', body: JSON.stringify(body) });
+      clearDraft(kind);
       toast(text.sent);
       onDone?.();
     } catch (error) {

@@ -449,6 +449,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .vehicle-title { display: grid; min-width: 0; }
 .vehicle-title strong { font-size: var(--fs-sm); }
 .vehicle-title small { max-width: 175px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+/* Подменный водитель в подписи ганта (12.11): выделен, ⇄ — знак подмены. */
+.gantt-sub { color: var(--warn); font-weight: 650; }
 .track { position: relative; }
 .track-grid { display: flex; height: 100%; }
 .grid-day { width: var(--day-width); flex: none; border-right: 1px solid var(--grid); }
