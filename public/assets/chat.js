@@ -7,6 +7,7 @@
 // работают, даже когда планер в фоновой вкладке. Поллинг raw JSON раз в 20 с.
 import { api, escapeHtml, formatDateTime, toast } from './api.js';
 import { kbSearch, kbSearchGuides } from './kb.js';
+import { openGuideSection } from './guide.js';
 import { mountTickets, ticketForm } from './tickets.js';
 import { GUIDES } from './guide.js';
 
@@ -529,6 +530,8 @@ export function setupChat(state) {
     if (replyMessage) { startReply(replyMessage); return; }
     const editMessage = find('edit-msg');
     if (editMessage) { startEdit(editMessage); return; }
+    const guideCard = event.target.closest('[data-open-guide]');
+    if (guideCard) { openGuideSection(guideCard.dataset.openGuide); return; }
     const pinButton = event.target.closest('[data-pin-msg]');
     if (pinButton) {
       try {
@@ -696,9 +699,10 @@ export function setupChat(state) {
       api('/api/kb/miss', { method: 'POST', body: JSON.stringify({ query }) }).catch(() => {});
     }
     return `${articles.map(item => kbArticleCard(item.article)).join('')}
-      ${guides.length ? `<div class="hd-top"><small class="muted">В инструкциях «?»:</small></div>
-        ${guides.map(item => `<div class="hd-card"><b>${escapeHtml(item.guide.title)}</b>
-          <small class="muted">откройте кнопку «?» в шапке — раздел «${escapeHtml(item.guide.title)}»</small></div>`).join('')}` : ''}
+      ${guides.length ? `<div class="hd-top"><small class="muted">В инструкциях:</small></div>
+        ${guides.map(item => `<div class="hd-card kb-guide-link" data-open-guide="${item.guide.id}"
+          title="Открыть инструкцию"><b>${escapeHtml(item.guide.title)}</b>
+          <small class="muted">нажмите — откроется раздел инструкции «${escapeHtml(item.guide.title)}»</small></div>`).join('')}` : ''}
       ${nothing ? `<div class="hd-card"><b>Ответа пока нет</b>
         <small class="muted">Вопрос записан — база знаний пополнится. Если дело срочное или это не вопрос, а проблема — оформите заявку:</small>
         <div class="hd-actions"><button class="button small" id="kbToHelpdesk">🛟 Оформить заявкой</button></div>

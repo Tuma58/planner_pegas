@@ -52,8 +52,10 @@ export async function renderIncidents(container, context) {
       ${item.qty ? `<div class="kbr"><b>${escapeHtml(item.qty)}</b></div>` : ''}
       ${isReturn ? `<div class="kbr"><span class="badge ${statusTone}">${statusLabel}</span>
         <small class="muted">${item.warehouse ? `📍 ${escapeHtml(item.warehouse)}` : item.closed_at ? '' : '📍 на борту'}</small></div>` : ''}
-      ${item.comment ? `<div class="kbr inc-note">${escapeHtml(item.comment)}</div>` : ''}
-      <div class="kbr"><small class="muted">${escapeHtml(item.created_by_name)} · ${tsf(item.created_at)}</small></div>
+      ${item.comment ? `<div class="kbr inc-note inc-note-multi">${escapeHtml(item.comment)}</div>` : ''}
+      <div class="kbr"><small class="muted">${escapeHtml(item.created_by_name)} · ${tsf(item.created_at)}</small>
+        ${canAct && !item.closed_at ? `<button class="chat-act" data-inc-comment="${item.id}"
+          title="Дописать комментарий — текст добавится с вашим именем">💬</button>` : ''}</div>
       ${item.closed_at ? `<div class="kbr inc-note">✓ ${escapeHtml(item.resolution)}
         <small class="muted">· ${escapeHtml(item.closed_by_name)} · ${tsf(item.closed_at)}</small></div>`
     : canAct && isReturn ? `<div class="kb-btns inc-ret-btns">
@@ -138,6 +140,20 @@ export async function renderIncidents(container, context) {
   container.querySelector('#incClosed').addEventListener('change', event => {
     state.incClosed = event.target.checked; renderIncidents(container, context);
   });
+  // Дописываемый комментарий (заявка Петрова, 12.11): добавляется строкой
+  // с именем и датой — история общения по внештатке живёт на карточке.
+  container.querySelectorAll('[data-inc-comment]').forEach(button =>
+    button.addEventListener('click', async () => {
+      const text = (prompt('Комментарий к внештатке (добавится с вашим именем):') || '').trim();
+      if (!text) return;
+      try {
+        await api(`/api/incidents/${button.dataset.incComment}/comment`,
+          { method: 'POST', body: JSON.stringify({ text }) });
+        toast('Комментарий добавлен');
+        renderIncidents(container, context);
+      } catch (error) { toast(error.message, 'error'); }
+    }));
+
   container.querySelectorAll('[data-inc-close]').forEach(button =>
     button.addEventListener('click', async () => {
       const resolution = (prompt('Итог: что решили и чем кончилось (обязательно):') || '').trim();

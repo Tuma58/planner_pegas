@@ -9266,6 +9266,26 @@ async function api(request, response, url) {
       { status: patch.status, warehouse: patch.warehouse }, requestIp(request));
     return json(response, 200, { ok: true });
   }
+  // Комментарий к внештатке по ходу дела (заявка Петрова, 12.11): текст
+  // дописывается к существующему с автором и временем — история диалога
+  // видна на карточке, как заметки «отработано» у диспетчера.
+  const incidentCommentMatch = route(/^\/api\/incidents\/([^/]+)\/comment$/, pathname);
+  if (incidentCommentMatch && request.method === 'POST') {
+    const user = requirePermission(request, response, 'trip-status:write');
+    if (!user) return;
+    const incident = db.prepare(`SELECT id, comment FROM trip_incidents WHERE id=?`)
+      .get(incidentCommentMatch[0]);
+    if (!incident) return errorJson(response, 404, 'Внештатка не найдена');
+    const text = String((await readJson(request)).text || '').trim().slice(0, 300);
+    if (!text) return errorJson(response, 422, 'Пустой комментарий');
+    const stampDate = new Date();
+    const stamp = `${String(stampDate.getUTCDate()).padStart(2, '0')}.${String(stampDate.getUTCMonth() + 1).padStart(2, '0')}`;
+    const line = `${text} — ${user.full_name || user.username}, ${stamp}`;
+    db.prepare(`UPDATE trip_incidents SET comment=CASE WHEN comment='' THEN ? ELSE comment || char(10) || ? END
+      WHERE id=?`).run(line, line, incident.id);
+    audit(db, user, 'incident-comment', 'incident', incident.id, { text }, requestIp(request));
+    return json(response, 200, { ok: true });
+  }
   // ── Запрос выпуска у ремзоны (заявка Базуева, решение 04.11) ──
   // Борт в ремонте не назначается; логист шлёт запрос — механик видит
   // его в «Ремзоне», правит заезд штатно и отвечает; автор получает

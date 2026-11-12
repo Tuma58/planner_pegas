@@ -1016,7 +1016,11 @@ input.warn-border { border-color: var(--warn); }
 }
 .modal { width: min(520px, 96vw); max-height: 90vh; overflow: auto; padding: 20px; border-radius: 13px; background: var(--card); box-shadow: 0 20px 70px rgb(0 0 0 / 30%); }
 .modal h2 { margin: 0 0 5px; color: var(--ink); font-size: 17px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px;
+  /* Перенос вместо выталкивания за край: ряд из 6 кнопок в быстрой
+     карточке выдавливал «Полную карточку» влево за модалку (заявка
+     Базуева, 12.11) */
+  flex-wrap: wrap; row-gap: 6px; }
 .toast {
   position: fixed; z-index: 100; bottom: 20px; left: 50%; translate: -50% 15px;
   padding: 9px 15px; border-radius: 8px; background: var(--navy); color: white;
@@ -2325,3 +2329,8 @@ body.res-compact .sched-table .sk-dim { font-size: 9px; }
 /* Кнопка-поповер чата убрана из шапки (12.11): вход — вкладка «Мессенджер»,
    узел и логика живут (бейджи, уведомления, полноэкранный режим). */
 #chatToggle { display: none; }
+/* Поиск по инструкции и кликабельные плашки справки (ТЗ Никулиной, 12.11) */
+mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; padding: 0 1px; }
+.kb-guide-link { cursor: pointer; }
+.kb-guide-link:hover { border-color: var(--accent); }
+.inc-note-multi { white-space: pre-line; }

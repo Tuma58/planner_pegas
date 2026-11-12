@@ -1851,6 +1851,11 @@ export const GUIDES = [
   {
     id: 'resource', updated: '2026-11-12', title: 'Ресурс',
     html: `<p class="guide-goal">Ваша задача — чтобы каждый день каждой сцепки был объяснён: работа, резерв или оформленная причина простоя.</p>
+      <p><b>🔎 Поиск по инструкции (12.11, ТЗ Никулиной).</b> В окне
+      инструкции над текстом есть поле поиска: введите слово — все
+      совпадения подсветятся, страница прокрутится к первому. Плашки
+      «В инструкциях» в комнате «❓ Справка» стали кликабельными — нажатие
+      открывает нужный раздел.</p>
       <p><b>🚫 Уволенные не выходят в графике (12.11, ТЗ Никулиной).</b>
       При увольнении водителя в справочнике его строка в «Графике работы»
       глушится сама: пропадает из сетки, отвязывается от сцепки, будущие
@@ -3685,8 +3690,12 @@ export const GUIDES = [
         половине строки.</p>`
   },
   {
-    id: 'incidents', updated: '2026-11-05', title: 'Внештатки',
-    html: `<p class="guide-goal">Акты, возвраты продукции и опоздания —
+    id: 'incidents', updated: '2026-11-12', title: 'Внештатки',
+    html: `<p><b>💬 Комментарии по ходу (12.11, заявка Петрова).</b> На
+      карточке открытой внештатки — кнопка 💬: текст добавляется к
+      истории с вашим именем и датой, как заметки «отработано» у
+      диспетчера. Вся переписка по случаю видна на карточке.</p>
+      <p class="guide-goal">Акты, возвраты продукции и опоздания —
       в одном месте, а не в памяти логистов (этап 1; заявка из
       🛟 HELP DESK).</p>
       <ul>
@@ -4065,6 +4074,13 @@ export const GUIDES = [
   }
 ];
 
+// Открыть инструкцию на разделе из любого места (плашки «❓ Справки»,
+// ТЗ Никулиной 12.11): заполняется в setupGuide.
+let guideOpener = null;
+export function openGuideSection(id) {
+  if (guideOpener) guideOpener(id);
+}
+
 export function setupGuide({ views, activeView, showModal }) {
   // Кнопка живёт в шапке мессенджера (заказ 12.11 «изменения сотрудникам —
   // в мессенджер»): точка «обновлено» видна и во вкладке, и в панели.
@@ -4122,6 +4138,8 @@ export function setupGuide({ views, activeView, showModal }) {
       <div class="guide-tabs">${available.map(guide =>
         `<button class="button small ${guide.id === active ? '' : 'ghost'}"
           data-guide="${guide.id}">${guide.title}${isNew(guide) ? ' <span class="guide-new-badge">обновлено</span>' : ''}</button>`).join('')}</div>
+      <input id="guideSearch" class="block-search" placeholder="🔎 Поиск по этой инструкции — слово подсветится"
+        style="width:100%;margin:8px 0 4px" autocomplete="off">
       <div class="guide-body">${body.html}</div>
       <div id="guideAckBar" style="margin:8px 0 0"></div>
       <div class="modal-actions">
@@ -4133,6 +4151,46 @@ export function setupGuide({ views, activeView, showModal }) {
     // Цифровое ознакомление (правило руководителя 14.09): подтверждение
     // редакции раздела кнопкой — приравнено к подписи; новая редакция
     // запрашивает подтверждение заново. Руководителю — счётчик и список.
+    // Поиск с подсветкой по открытому разделу (ТЗ Никулиной, 12.11):
+    // слово подсвечивается в тексте, прокрутка — к первому совпадению.
+    const searchField = document.getElementById('guideSearch');
+    const guideBody = document.querySelector('.guide .guide-body');
+    if (searchField && guideBody) {
+      const clearMarks = () => guideBody.querySelectorAll('mark.guide-hit').forEach(node =>
+        node.replaceWith(document.createTextNode(node.textContent)));
+      searchField.oninput = () => {
+        clearMarks();
+        guideBody.normalize();
+        const query = searchField.value.trim().toLowerCase();
+        if (query.length < 2) return;
+        const walker = document.createTreeWalker(guideBody, NodeFilter.SHOW_TEXT);
+        const targets = [];
+        while (walker.nextNode()) {
+          if (walker.currentNode.textContent.toLowerCase().includes(query)) targets.push(walker.currentNode);
+        }
+        let first = null;
+        for (const node of targets) {
+          const text = node.textContent;
+          const parts = [];
+          let rest = text;
+          let restLower = text.toLowerCase();
+          let index;
+          while ((index = restLower.indexOf(query)) >= 0) {
+            if (index) parts.push(document.createTextNode(rest.slice(0, index)));
+            const mark = document.createElement('mark');
+            mark.className = 'guide-hit';
+            mark.textContent = rest.slice(index, index + query.length);
+            parts.push(mark);
+            if (!first) first = mark;
+            rest = rest.slice(index + query.length);
+            restLower = restLower.slice(index + query.length);
+          }
+          if (rest) parts.push(document.createTextNode(rest));
+          node.replaceWith(...parts);
+        }
+        if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      };
+    }
     if (body.updated) {
       const bar = document.getElementById('guideAckBar');
       api('/api/guide-ack/mine').then(({ acks }) => {
@@ -4200,5 +4258,6 @@ export function setupGuide({ views, activeView, showModal }) {
       : 'Инструкции сотрудников конвейера';
   };
   refreshGuideBadge();
+  guideOpener = openGuide;
   toggle.onclick = () => openGuide(activeView());
 }
