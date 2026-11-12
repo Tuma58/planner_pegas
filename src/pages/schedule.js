@@ -1075,44 +1075,116 @@ document.getElementById('btnFact').onclick=()=>{
 };
 
 
-/* ---------- вкладка «Закрепление» ---------- */
+/* ---------- вкладка «Экипажи» (конструктор, 12.11 по заказу руководителя:
+   эксплуатация формирует экипажи — состав виден целиком, машины
+   переносятся между экипажами, свободные водители садятся в один шаг) */
+function nextCrewId(){
+  let n=0;
+  S.ts.concat(S.drv).forEach(x=>{ const m=/^E(\d+)$/.exec(x.crew||''); if(m) n=Math.max(n,Number(m[1])); });
+  return 'E'+String(n+1).padStart(3,'0');
+}
+function crewOptions(current){
+  const ids=[...new Set(S.ts.concat(S.drv).map(x=>x.crew).filter(Boolean))].sort();
+  return `<option value="">экипаж →</option>`+
+    ids.filter(id=>id!==current).map(id=>{
+      const mach=S.ts.filter(t=>t.crew===id).map(t=>t.tyagach).slice(0,2).join(', ');
+      return `<option value="${id}">${id}${mach?' · '+mach:''}</option>`;
+    }).join('')+`<option value="__new__">— новый экипаж —</option>`;
+}
+function tsOptionsAll(){
+  const byCrew={};
+  S.ts.slice().sort((a,b)=>(a.crew+a.tyagach).localeCompare(b.crew+b.tyagach)).forEach(t=>{
+    (byCrew[t.crew]=byCrew[t.crew]||[]).push(t);
+  });
+  return `<option value="">закрепить за…</option>`+Object.keys(byCrew).sort().map(cid=>
+    `<optgroup label="${cid}">${byCrew[cid].map(t=>{
+      const n=S.drv.filter(d=>d.ts===t.id && !d.vac).length;
+      return `<option value="${t.id}">${t.tyagach}${n?` (водителей: ${n})`:' (свободна)'}</option>`;
+    }).join('')}</optgroup>`).join('');
+}
 function renderFix(){
   const f=document.getElementById('xFilial').value;
   const q=document.getElementById('xSearch').value.trim().toLowerCase();
   const onlyFree=document.getElementById('xFree').checked;
-  const list=S.ts.filter(t=>{
-    if(f!=='Все' && t.filial!==f) return false;
-    const crew=S.drv.filter(d=>d.ts===t.id && !d.vac);
-    if(onlyFree && crew.length) return false;
+  /* группировка по экипажам: экипаж проходит фильтр, если матчится любой
+     его элемент — состав всегда виден целиком */
+  const crews={};
+  S.ts.forEach(t=>{ (crews[t.crew]=crews[t.crew]||{ts:[],drv:[]}).ts.push(t); });
+  S.drv.forEach(d=>{ (crews[d.crew]=crews[d.crew]||{ts:[],drv:[]}).drv.push(d); });
+  const ids=Object.keys(crews).sort((a,b)=>(a==='E-RES')-(b==='E-RES') || a.localeCompare(b));
+  let h=`<thead><tr><th>Тягач</th><th>Прицеп</th><th>Тип</th><th>Филиал</th>
+         <th>Закреплённые водители</th><th>Добавить водителя</th><th>Перенести</th><th></th></tr></thead><tbody>`;
+  let shownCrews=0;
+  ids.forEach(cid=>{
+    const c=crews[cid];
+    if(f!=='Все' && !c.ts.some(t=>t.filial===f) && !c.drv.some(d=>d.filial===f)) return;
+    if(onlyFree && !c.ts.some(t=>!S.drv.some(d=>d.ts===t.id && !d.vac))) return;
     if(q){
-      const hay=(t.tyagach+' '+t.pricep+' '+t.crew+' '+crew.map(d=>d.fio).join(' ')).toLowerCase();
-      if(!hay.includes(q)) return false;
+      const hay=(cid+' '+c.ts.map(t=>t.tyagach+' '+t.pricep).join(' ')+' '+
+        c.drv.map(d=>d.fio).join(' ')).toLowerCase();
+      if(!hay.includes(q)) return;
     }
-    return true;
-  });
-  const free=S.drv.filter(d=>!d.ts && !d.vac);
-  let h=`<thead><tr><th>Тягач</th><th>Прицеп</th><th>Тип</th><th>Филиал</th><th>Экипаж</th>
-         <th>Закреплённые водители</th><th>Добавить водителя</th><th></th></tr></thead><tbody>`;
-  list.forEach(t=>{
-    const crew=S.drv.filter(d=>d.ts===t.id);
-    h+=`<tr>
-      <td>${t.tyagach}${t.out?` <span class="tag out" title="выведен из эксплуатации с ${outDate(t)}">выведен</span>`:''}</td><td>${t.pricep}</td><td>${t.tip}</td>
-      <td><select class="inline" data-x="tsfil" data-id="${t.id}">
-          ${['Пенза','Москва'].map(x=>`<option ${t.filial===x?'selected':''}>${x}</option>`).join('')}</select></td>
-      <td>${t.crew}</td>
-      <td>${crew.length? crew.map(d=>`${d.vac
-            ? '<span class="vac">потребность</span> <button data-x="fillvac" data-id="'+d.id+'" title="вписать водителя">закрыть</button>'
-            : d.fio}
-            <button data-x="unpin" data-id="${d.id}" title="снять закрепление">×</button>`).join(' · ')
-          : '<span class="vac">нет водителя</span>'}</td>
-      <td><select class="inline" data-x="pin" data-id="${t.id}">${drvOptions(t.id)}</select></td>
-      <td><button data-x="delts" data-id="${t.id}" title="удалить строку из графика; борт, живой в справочнике планера, вернётся при достройке — продажу/списание оформляйте статусом «Выведен» в Справочнике ТС">удалить</button></td></tr>`;
+    shownCrews++;
+    const loose=c.drv.filter(d=>!d.ts && !d.vac);
+    const live=c.drv.filter(d=>!d.vac).length;
+    h+=`<tr class="crewhead"><td colspan="8"><b>${cid==='E-RES'?'Резерв (E-RES)':'Экипаж '+cid}</b>
+        · машин ${c.ts.length} · водителей ${live}
+        ${cid!=='E-RES'?`<button data-x="disband" data-id="${cid}" title="Водители открепляются и уходят в резерв, машины — в резерв. График людей сохраняется.">расформировать → в резерв</button>`:''}
+        </td></tr>`;
+    c.ts.forEach(t=>{
+      const pinned=S.drv.filter(d=>d.ts===t.id);
+      h+=`<tr>
+        <td>${t.tyagach}${t.out?` <span class="tag out" title="выведен из эксплуатации с ${outDate(t)}">выведен</span>`:''}</td><td>${t.pricep}</td><td>${t.tip}</td>
+        <td><select class="inline" data-x="tsfil" data-id="${t.id}">
+            ${['Пенза','Москва'].map(x=>`<option ${t.filial===x?'selected':''}>${x}</option>`).join('')}</select></td>
+        <td>${pinned.length? pinned.map(d=>`${d.vac
+              ? '<span class="vac">потребность</span> <button data-x="fillvac" data-id="'+d.id+'" title="вписать водителя">закрыть</button>'
+              : d.fio}
+              <button data-x="unpin" data-id="${d.id}" title="снять закрепление">×</button>`).join(' · ')
+            : '<span class="vac">нет водителя</span>'}</td>
+        <td><select class="inline" data-x="pin" data-id="${t.id}">${drvOptions(t.id)}</select></td>
+        <td><select class="inline" data-x="tscrew" data-id="${t.id}"
+            title="Перенести машину в другой экипаж — закреплённые за ней водители переедут вместе с ней">${crewOptions(cid)}</select></td>
+        <td><button data-x="delts" data-id="${t.id}" title="удалить строку из графика; борт, живой в справочнике планера, вернётся при достройке — продажу/списание оформляйте статусом «Выведен» в Справочнике ТС">удалить</button></td></tr>`;
+    });
+    loose.forEach(d=>{
+      h+=`<tr><td colspan="4" style="text-align:right" class="vac">в экипаже, без машины:</td>
+        <td>${d.fio}${d.tel?` <span class="hint">${d.tel}</span>`:''}</td>
+        <td><select class="inline" data-x="seat" data-id="${d.id}">${tsOptionsAll()}</select></td>
+        <td><select class="inline" data-x="drvcrew" data-id="${d.id}"
+            title="Перевести водителя в другой экипаж (без закрепления за машиной)">${crewOptions(cid)}</select></td>
+        <td></td></tr>`;
+    });
   });
   h+='</tbody>';
   document.getElementById('fixTable').innerHTML=h;
   const noDrv=S.ts.filter(t=>!S.drv.some(d=>d.ts===t.id && !d.vac)).length;
+  const free=S.drv.filter(d=>!d.ts && !d.vac);
   document.getElementById('fixMsg').innerHTML=
-    `Сцепок: <b style="color:var(--ink)">${S.ts.length}</b> · без закреплённого водителя: <b>${noDrv}</b> · водителей без машины: <b style="color:var(--ink)">${free.length}</b>`;
+    `Экипажей показано: <b style="color:var(--ink)">${shownCrews}</b> · сцепок всего: <b style="color:var(--ink)">${S.ts.length}</b> · без закреплённого водителя: <b>${noDrv}</b> · свободных водителей: <b style="color:var(--ink)">${free.length}</b> — они в «Резерве» внизу, сажаются селектом «закрепить за…»`;
+}
+/* перенос машины в экипаж: закреплённые за ней водители едут вместе */
+function moveTsToCrew(tsId, targetRaw){
+  const t=tsById(tsId); if(!t) return;
+  const target=targetRaw==='__new__'? nextCrewId() : targetRaw;
+  const riders=S.drv.filter(d=>d.ts===t.id);
+  const from=t.crew;
+  t.crew=target; riders.forEach(d=>{ d.crew=target; });
+  logAdd(`${t.tyagach} перенесена из ${from} в экипаж ${target}${riders.length?' вместе с: '+riders.map(d=>d.fio).join(', '):''}`, riders.map(d=>d.id));
+  save(); renderFix(); renderGrid(); fillZam();
+}
+function disbandCrew(cid){
+  const machines=S.ts.filter(t=>t.crew===cid);
+  const people=S.drv.filter(d=>d.crew===cid);
+  dialog('Расформировать '+cid,
+    `<p>Машины (${machines.length}) уйдут в резерв E-RES, водители (${people.filter(d=>!d.vac).length})
+        открепятся и тоже уйдут в резерв. Ленты графика людей сохранятся.</p>`,
+    'Расформировать', ()=>{
+      machines.forEach(t=>{ t.crew='E-RES'; });
+      people.forEach(d=>{ d.crew='E-RES'; d.ts=''; });
+      logAdd(`экипаж ${cid} расформирован: машины и люди в резерве`, people.map(d=>d.id));
+      save(); renderFix(); renderGrid(); fillZam();
+    });
 }
 document.getElementById('fixTable').addEventListener('change',e=>{
   const s=e.target.closest('select'); if(!s) return;
@@ -1122,10 +1194,20 @@ document.getElementById('fixTable').addEventListener('change',e=>{
     logAdd(t.tyagach+' переведён в филиал '+s.value, S.drv.filter(d=>d.ts===t.id).map(d=>d.id));
   }
   if(s.dataset.x==='pin' && s.value){ assignDriver(s.value, s.dataset.id); return; }
+  if(s.dataset.x==='tscrew' && s.value){ moveTsToCrew(s.dataset.id, s.value); return; }
+  if(s.dataset.x==='seat' && s.value){ assignDriver(s.dataset.id, s.value); return; }
+  if(s.dataset.x==='drvcrew' && s.value){
+    const d=S.drv.find(x=>x.id===s.dataset.id); if(!d) return;
+    const target=s.value==='__new__'? nextCrewId() : s.value;
+    const from=d.crew; d.crew=target; d.ts='';
+    logAdd(`переведён из ${from} в экипаж ${target} (без машины)`, [d.id]);
+    save(); renderFix(); renderGrid(); fillZam(); return;
+  }
   save(); renderFix(); renderGrid(); fillZam();
 });
 document.getElementById('fixTable').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
+  if(b.dataset.x==='disband'){ disbandCrew(b.dataset.id); return; }
   if(b.dataset.x==='fillvac'){ fillVacancy(b.dataset.id); return; }
   if(b.dataset.x==='unpin'){ const d=S.drv.find(x=>x.id===b.dataset.id);
     const t=tsById(d.ts); d.ts=''; logAdd('снят с '+(t?t.tyagach:'машины'), [d.id]); }

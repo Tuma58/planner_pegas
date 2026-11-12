@@ -212,3 +212,7 @@
   vertical-align: middle;
 }
 .schedview td select { padding: 1px 4px; font-size: 12px; }
+
+/* Конструктор экипажей (12.11): заголовок-карточка экипажа */
+.schedview tr.crewhead td{background:var(--head);border-top:2px solid var(--line);font-size:12px;padding:6px 8px}
+.schedview tr.crewhead button{margin-left:10px}
