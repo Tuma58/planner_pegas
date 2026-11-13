@@ -80,6 +80,8 @@ function renderGeneral() {
         <input id="kpiOwnSharePct" type="number" min="0" max="100" step="5" value="${goals.kpiOwnPct}"></label>
       <label class="field">Сигнал на стыке вовремя, ч <small class="muted">цель бдительности: от возникновения случая до «⚑ Сигнал»</small>
         <input id="signalTargetHours" type="number" min="0" step="0.5" value="${goals.signalTargetH}"></label>
+      <label class="field">Допуск сдвига пересменки при назначении, ч <small class="muted">рейс поверх пересменки без причины, если она сдвигается не дальше допуска; пусто = 24, ноль = допуска нет</small>
+        <input id="shiftAssignToleranceH" type="number" min="0" max="72" step="1" value="${calculation.shiftAssignToleranceH ?? ''}" placeholder="24"></label>
       <label class="field">КПП: личный транспорт стоит дольше, ч <small class="muted">подсветка в «🚧 КПП»</small>
         <input id="gateLongHours" type="number" min="1" step="1" value="${goals.gateLongH}"></label>
       <label class="field">Сроки документов — предупреждать за, дн <small class="muted">страховки, техосмотр, тахограф, допуски водителей</small>
@@ -155,6 +157,7 @@ async function saveGeneral() {
       kipTargetPct: numeric('kipTargetPct'),
       goalRevenueMln: numeric('goalRevenueMln'), fleetTarget: numeric('fleetTarget'),
       kpiOwnSharePct: numeric('kpiOwnSharePct'), signalTargetHours: numeric('signalTargetHours'),
+      shiftAssignToleranceH: byId('shiftAssignToleranceH').value === '' ? '' : numeric('shiftAssignToleranceH'),
       gateLongHours: numeric('gateLongHours'), docsWarnDays: numeric('docsWarnDays'),
       planHorizonDays: numeric('planHorizonDays'), driverRatePerKm: numeric('driverRatePerKm'),
       driverGuaranteePerDay: numeric('driverGuaranteePerDay'),

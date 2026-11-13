@@ -197,7 +197,7 @@ function pickOrderDialog(request, queue, data, context) {
         context.closeModal();
         const warns = [created.windowWarning
           && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
-        created.trailerWarning, created.baseVisitHint];
+        created.trailerWarning, created.baseVisitHint, created.shiftHint];
         if (!windowWarningModal(context.showModal, warns)) {
           toast(`${request.vehicle.plate} назначена — рейс у диспетчера`);
         }
@@ -945,7 +945,7 @@ export async function renderLogist(container, context) {
         });
         const warns = [created.windowWarning
           && `🤝 Транзит не помещается в окно клиента: ${created.windowWarning}`,
-        created.trailerWarning, created.baseVisitHint];
+        created.trailerWarning, created.baseVisitHint, created.shiftHint];
         if (!windowWarningModal(context.showModal, warns)) {
           toast('Назначено по ночному подбору — рейс ушёл диспетчеру');
         }

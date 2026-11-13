@@ -5840,3 +5840,17 @@ test('счётчик использования: таблица ui_usage коп�
   assert.equal(row.opens, 3);
   assert.equal(row.users, 2);
 });
+
+test('допуск пересменки: рейс в пределах ±суток назначается, накрывающий — нет', async () => {
+  const { shiftWithinTolerance } = await import('../src/trip-control.mjs');
+  const tol = 24 * 3_600_000;
+  const shift = { starts_at: '2026-11-15T08:00:00.000Z', ends_at: '2026-11-15T12:00:00.000Z' };
+  // Рейс кончается через 10 ч после пересменки — она сдвинется в допуске.
+  assert.equal(shiftWithinTolerance(shift, '2026-11-14T00:00:00.000Z', '2026-11-15T22:00:00.000Z', tol), true);
+  // Рейс начинается за 10 ч до пересменки и едет далеко — сдвиг назад в допуске.
+  assert.equal(shiftWithinTolerance(shift, '2026-11-14T22:00:00.000Z', '2026-11-18T00:00:00.000Z', tol), true);
+  // Рейс накрывает всё окно [−24ч, +24ч] — пересменку исполнить нельзя.
+  assert.equal(shiftWithinTolerance(shift, '2026-11-13T12:00:00.000Z', '2026-11-17T00:00:00.000Z', tol), false);
+  // Нулевой допуск = прежний порядок: любое накрытие окна без допуска.
+  assert.equal(shiftWithinTolerance(shift, '2026-11-14T00:00:00.000Z', '2026-11-15T22:00:00.000Z', 0), false);
+});

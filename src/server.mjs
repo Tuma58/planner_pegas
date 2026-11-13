@@ -111,7 +111,8 @@ import {
   listTripStops, rescheduleTripStops, resetDriverNotificationOnVehicleChange, shiftWorsensWindow, stampStopsFromStatus,
   backToPreparationOnVehicleChange, tripHasMovementFacts,
   noTrailerWarning, stopsWithEstimates, syncTripFromStops, syncTripStopsWithVia,
-  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim, tripDispoWarning
+  transitWindowWarning, tripDelayMs, idleDispoWarning, dispositionsToTrim, tripDispoWarning,
+  shiftWithinTolerance
 } from './trip-control.mjs';
 import { sendSms, smscBalance } from './smsc.mjs';
 import { sendMail } from './mail.mjs';
@@ -11519,11 +11520,28 @@ async function api(request, response, url) {
     // приходит и из черновиков, и из API — машина в ремонте/без водителя
     // на интервале рейса не назначается (резерв — можно: он и означает
     // «обещана заказу»; перегон блокирует, пока не прибыл).
-    const blockingDispo = db.prepare(`SELECT kind, ends_at FROM vehicle_dispositions
+    const crossingDispos = db.prepare(`SELECT kind, starts_at, ends_at FROM vehicle_dispositions
       WHERE vehicle_id=? AND kind NOT IN ('reserve','base_visit')
         AND (kind<>'transfer' OR arrived_at IS NULL)
         AND datetime(starts_at) < datetime(?) AND datetime(ends_at) > datetime(?)
-      ORDER BY ends_at DESC LIMIT 1`).get(vehicle.id, endsAt, startsAt);
+      ORDER BY ends_at DESC`).all(vehicle.id, endsAt, startsAt);
+    // Допуск пересменки (заказ руководителя 13.11): пересменка со сдвигом
+    // в пределах допуска не требует причины — рейс назначается свободно,
+    // логист получает подсказку, Ресурс видит рейс в ганте, факт выхода
+    // подрежет пересменку как обычно. Допуск — настройка (ч), пусто = 24,
+    // ноль осознанный (допуска нет); кламп здравого смысла 0–72 ч.
+    const shiftTolMs = Math.min(72, Math.max(0,
+      settings.shiftAssignToleranceH === '' || settings.shiftAssignToleranceH == null
+        ? 24 : Number(settings.shiftAssignToleranceH) || 0)) * 3_600_000;
+    const toleratedShifts = crossingDispos.filter(d => d.kind === 'shift' &&
+      shiftWithinTolerance(d, startsAt, endsAt, shiftTolMs));
+    const blockingDispo = crossingDispos.find(d => !toleratedShifts.includes(d)) || null;
+    const shiftHint = toleratedShifts.length
+      ? `🔄 ${vehicle.plate}: пересменка ${toleratedShifts.map(d =>
+          `${d.starts_at.slice(0, 16).replace('T', ' ')}–${d.ends_at.slice(11, 16)} UTC`).join(', ')}` +
+        ` — рейс в допуске ±${Math.round(shiftTolMs / 3_600_000)} ч, пересменка сдвинется.` +
+        ' Ресурс видит рейс в ганте; факт выхода подрежет пересменку сам'
+      : null;
     // «Заезд на базу» (12.11) — не блокирует и причину не требует: это
     // напоминалка, а не недоступность. Назначившему — подсказка модалкой.
     const baseVisit = db.prepare(`SELECT ends_at, note FROM vehicle_dispositions
@@ -11687,7 +11705,7 @@ async function api(request, response, url) {
       notify('logist', `${trailerWarning} (заявка №${order.order_no || '—'})`, 'trip', tripId,
         { category: 'no_trailer' });
     }
-    return { tripId, windowWarning, trailerWarning, baseVisitHint };
+    return { tripId, windowWarning, trailerWarning, baseVisitHint, shiftHint };
   }
   function confirmAssigned(tripId, order, vehicle, user) {
     applyDispatchStep(db, tripId, 'logist_confirm', user.id);
@@ -11733,7 +11751,7 @@ async function api(request, response, url) {
     const previousTrip = order.trip_id
       ? db.prepare('SELECT auto_assigned, vehicle_id, order_no FROM trips WHERE id=?').get(order.trip_id)
       : null;
-    const { tripId, windowWarning, trailerWarning, baseVisitHint } = assignOrderCore(order, vehicle, user,
+    const { tripId, windowWarning, trailerWarning, baseVisitHint, shiftHint } = assignOrderCore(order, vehicle, user,
       { distanceKm: body.distanceKm, dispoOverrideReason: body.dispoOverrideReason });
     if (previousTrip?.auto_assigned && previousTrip.vehicle_id !== vehicle.id) {
       reportAutoAssignIssue(`на рейсе №${previousTrip.order_no || '?'} человек заменил ТС `
@@ -11758,7 +11776,7 @@ async function api(request, response, url) {
       requestIp(request));
     return json(response, 201, { tripId, ...(windowWarning ? { windowWarning } : {}),
       ...(trailerWarning ? { trailerWarning } : {}),
-      ...(baseVisitHint ? { baseVisitHint } : {}) });
+      ...(baseVisitHint ? { baseVisitHint } : {}), ...(shiftHint ? { shiftHint } : {}) });
   }
 
   // ── Конструктор маршрутов: кольцевые цепочки заявок от базы до базы ──

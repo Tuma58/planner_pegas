@@ -2353,9 +2353,15 @@ function openDisposition(item = null, prefill = null) {
       for (const slot of dp.slots) byWd[slot.weekday] += slot.per_day * ((slot.transit_hours || 24) + 8) / 24;
       const WDL = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
       const order = byWd.map((need, wd) => ({ wd, need: Math.round(need) })).sort((a, b) => b.need - a.need);
+      // Допуск логистов (13.11): точное время пересменки открывает им
+      // назначение рейсов вокруг неё в пределах допуска из Настроек.
+      const tolRaw = state.data.settings?.calculation?.shiftAssignToleranceH;
+      const tolH = tolRaw === '' || tolRaw == null ? 24 : Number(tolRaw) || 0;
       hint.innerHTML = `⚖ Пики сетки: <b>${order.slice(0, 2).map(item => `${WDL[item.wd]} (${item.need})`).join(', ')}</b>
         · свободнее: ${order.slice(-2).reverse().map(item => `${WDL[item.wd]} (${item.need})`).join(', ')}
-        — пересменку лучше ставить на свободные дни.`;
+        — пересменку лучше ставить на свободные дни.${tolH > 0
+          ? `<br>⏱ Укажите точное время в полях «С»/«До»: логисты смогут назначать рейсы
+        с допуском ±${tolH} ч вокруг пересменки без причины — чем точнее время, тем шире им коридор.` : ''}`;
       hint.style.display = '';
     } catch { hint.style.display = 'none'; }
   };
