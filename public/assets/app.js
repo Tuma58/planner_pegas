@@ -3146,6 +3146,22 @@ const callContext = () => ({ state, can, showModal, closeModal, onReload: reload
 // текущее состояние и следующее задание, без клика и без запроса к серверу.
 setupVehicleHover(() => state.data);
 byId('callButton').onclick = () => callSearchDialog(callContext(), state.data);
+// 🔍 Единая кнопка поиска (ТЗ Никулиной, утверждена руководителем 13.11):
+// одно место на всех экранах — правая зона тулбара. Клик находит поисковое
+// поле текущего экрана (тулбар или рабочая зона, модалки не в счёт),
+// фокусирует и подсвечивает; на экране без поиска — поиск по экранам.
+byId('globalSearch').onclick = () => {
+  const field = [...document.querySelectorAll(
+    '.toolbar input[type="search"], .toolbar input[placeholder*="оиск"], main input[type="search"], main input[placeholder*="оиск"]')]
+    .find(el => el.offsetParent && el.id !== 'navSearch');
+  const target = field || byId('navSearch');
+  if (!field) toast('На этом экране своего поиска нет — открыл поиск по экранам');
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  target.focus();
+  target.classList.remove('search-flash');
+  void target.offsetWidth; // перезапуск анимации при повторном клике
+  target.classList.add('search-flash');
+};
 setupTheme();
 
 

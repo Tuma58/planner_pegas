@@ -378,6 +378,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--teal); bord
 .tb-menu-list .button { width: 100%; justify-content: flex-start; }
 
 .sync-state { color: var(--ok); font-size: var(--fs-sm); }
+/* 🔍 Единая кнопка поиска (ТЗ Никулиной, 13.11): контрастная, одно место
+   на всех экранах — правая зона тулбара. */
+.search-btn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 650; }
+.search-btn:hover { filter: brightness(1.08); }
+/* Подсветка найденного поля: двойная вспышка рамкой акцента. */
+.search-flash { animation: searchFlash 1.2s ease-out; }
+@keyframes searchFlash {
+  0%, 45% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 65%, transparent); border-color: var(--accent); }
+  25%, 70% { box-shadow: 0 0 0 1px transparent; }
+  100% { box-shadow: none; }
+}
 
 .planner-layout { display: grid; grid-template-columns: minmax(0, 1fr) 350px; min-height: 0; }
 .planner-layout.full { grid-template-columns: 1fr; }
