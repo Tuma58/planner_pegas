@@ -21,6 +21,7 @@ import { migrateTripDocs } from './trip-docs.mjs';
 import { migrateSafety } from './safety.mjs';
 import { migrateVehicleCards, migrateWaybillHou } from './vehicle-card.mjs';
 import { migrateGibdd } from './gibdd.mjs';
+import { migrateBitrix } from './bitrix24.mjs';
 import { migrateCrm } from './crm.mjs';
 import { migrateTurnover, seedTurnoverSettings } from './turnover.mjs';
 import { migrateParts } from './parts.mjs';
@@ -472,6 +473,7 @@ export function openDatabase(databasePath, admin, options = {}) {
   // После сида: миграция читает settings.calculation (на свежей базе
   // настройки появляются только в seed).
   migrateGibdd(db);
+  migrateBitrix(db);
   migrateWeightFrames(db);
   migrateParkingZones(db);
   seedDrivers(db);

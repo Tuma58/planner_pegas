@@ -72,6 +72,7 @@ import { DOC_KINDS, docsBoard, markDocs } from './trip-docs.mjs';
 import { SAFETY_KINDS, addSafetyEvent, closeSafetyEvent, safetyBoard } from './safety.mjs';
 import { docsDueAll, toStatusAll, vehicleCardApi } from './vehicle-card.mjs';
 import { payrollApi } from './payroll.mjs';
+import { bitrixCall, bitrixConnector, linkedChats, migrateBitrix, mirrorToBitrix, pollBitrixRooms } from './bitrix24.mjs';
 import { crmApi, markTripPaid, syncContractDays } from './crm.mjs';
 import { turnoverApi } from './turnover.mjs';
 import { partsApi } from './parts.mjs';
@@ -131,6 +132,7 @@ try {
     fs.truncateSync(authFailLogPath, 0);
   }
 } catch { /* нет прав/файла — появится при первой неудаче */ }
+const bitrixDecrypt = value => { try { return decryptSecret(value, config.appSecret); } catch { return null; } };
 const db = openDatabase(config.databasePath, config.admin, {
   initialAllowedSubnets: config.initialAllowedSubnets
 });
@@ -553,6 +555,14 @@ function integrationPublic() {
         WHERE key='dornet_sync_last'`).get()?.value || 'null');
       return { baseUrl: row?.base_url || 'https://back.dornet.ru', enabled: Boolean(row?.enabled),
         hasToken: Boolean(row?.token_cipher), cid, lastSuccessAt: row?.last_success_at, last };
+    })(),
+    bitrix24: (() => {
+      const row = db.prepare(`SELECT enabled,last_success_at,token_cipher
+        FROM integration_connectors WHERE id='bitrix24'`).get();
+      return { enabled: Boolean(row?.enabled), hasToken: Boolean(row?.token_cipher),
+        lastSuccessAt: row?.last_success_at || null,
+        linked: db.prepare(`SELECT COUNT(*) c FROM chats
+          WHERE external_source='bitrix24' AND deleted_at IS NULL`).get().c };
     })(),
     onlinegibdd: (() => {
       const row = db.prepare(`SELECT enabled,last_success_at,token_cipher
@@ -4888,6 +4898,18 @@ function mergeDriverDoublesOnce() {
   } catch (error) { console.error('mergeDriverDoublesOnce:', error.message); }
 }
 setTimeout(mergeDriverDoublesOnce, 40_000);
+// Мост Б24 (Э1, 13.11): поллинг входящих раз в минуту — только когда
+// коннектор включён и есть привязанные комнаты; busy-щит от наложений.
+let bitrixPollBusy = false;
+setInterval(async () => {
+  if (bitrixPollBusy) return;
+  bitrixPollBusy = true;
+  try {
+    const connector = bitrixConnector(db, bitrixDecrypt);
+    if (connector && linkedChats(db).length) await pollBitrixRooms(db, bitrixDecrypt);
+  } catch (error) { console.warn('мост Б24, цикл:', error.message); }
+  bitrixPollBusy = false;
+}, 60_000);
 // Отвязка уволенного водителя от ТС (ТЗ Никулиной, 12.11): справочник
 // и подпись борта не должны держать уволенного. Подпись vehicles.driver_name
 // чистится только когда совпадает с его ФИО и машину не держит активный
@@ -13997,6 +14019,44 @@ async function api(request, response, url) {
         .map(item => ({ ...item, roles: rolesOf(item) }))
     });
   }
+  // ── Мост Битрикс24, Э1 (13.11): администрирование ──
+  // Список чатов Б24, которые видит служебный пользователь вебхука, —
+  // для выбора привязки (его нужно ДОБАВИТЬ в чат, который мостим).
+  if (request.method === 'GET' && pathname === '/api/bitrix/chats') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).includes('admin')) return errorJson(response, 403, 'Только администратор');
+    const connector = bitrixConnector(db, bitrixDecrypt);
+    if (!connector) return errorJson(response, 422, 'Мост Битрикс24 не настроен или выключен (Настройки → Интеграции)');
+    try {
+      const result = await bitrixCall(connector, 'im.recent.list', { SKIP_OPENLINES: 'Y' });
+      const items = (result.items || []).map(item => ({ dialogId: String(item.id),
+        type: item.type, title: item.title }));
+      return json(response, 200, { items, linked: linkedChats(db) });
+    } catch (error) { return errorJson(response, 502, error.message); }
+  }
+  // Привязка/отвязка группы планера к диалогу Б24.
+  if (request.method === 'POST' && pathname === '/api/bitrix/link') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!rolesOf(user).includes('admin')) return errorJson(response, 403, 'Только администратор');
+    const body = await readJson(request);
+    const chat = db.prepare(`SELECT id, title FROM chats WHERE id=? AND deleted_at IS NULL`)
+      .get(String(body.chatId || ''));
+    if (!chat) return errorJson(response, 404, 'Группа планера не найдена');
+    const dialogId = String(body.dialogId || '').trim();
+    db.prepare(`UPDATE chats SET external_source=?, external_id=? WHERE id=?`)
+      .run(dialogId ? 'bitrix24' : null, dialogId || null, chat.id);
+    audit(db, user, 'bitrix-link', 'chat', chat.id, { dialogId }, requestIp(request));
+    return json(response, 200, { ok: true, chat: chat.title, dialogId: dialogId || null });
+  }
+  // Приёмник исходящего вебхука Б24 (мгновенная доставка — страховкой
+  // остаётся поллинг): любое событие просто дёргает внеочередной опрос.
+  if (request.method === 'POST' && pathname === '/api/bitrix/webhook') {
+    await readRaw(request, 256 * 1024).catch(() => null);
+    setTimeout(() => { pollBitrixRooms(db, bitrixDecrypt).catch(() => {}); }, 500);
+    return json(response, 200, { ok: true });
+  }
   if (request.method === 'POST' && pathname === '/api/messages') {
     const user = requireUser(request, response);
     if (!user) return;
@@ -14038,6 +14098,10 @@ async function api(request, response, url) {
       mentions: Array.isArray(body.mentions) ? body.mentions : [] },
     { notifyUser: (fullName, note) => notifyUserByName(fullName, note) });
     if (!sent.ok) return errorJson(response, sent.status, sent.error);
+    // Мост Б24 (Э1, 13.11): сообщение привязанной группы зеркалится в
+    // Битрикс асинхронно — отправка планера от моста не зависит.
+    if (chatId) mirrorToBitrix(db, bitrixDecrypt, { messageId: sent.id, chatId,
+      authorName: user.full_name || user.username, text });
     return json(response, 201, { ok: true, id: sent.id });
   }
 
@@ -17283,6 +17347,26 @@ async function api(request, response, url) {
           : connector.token_cipher,
         Number(Boolean(body.dornet.enabled)),
         JSON.stringify({ cid: Number(body.dornet.cid) || 0 }));
+    }
+    if (body.bitrix24) {
+      const connector = db.prepare(`SELECT * FROM integration_connectors WHERE id='bitrix24'`).get();
+      db.prepare(`UPDATE integration_connectors SET token_cipher=?,enabled=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id='bitrix24'`).run(
+        body.bitrix24.webhookUrl
+          ? encryptSecret(String(body.bitrix24.webhookUrl).trim(), config.appSecret)
+          : connector.token_cipher,
+        Number(Boolean(body.bitrix24.enabled)));
+      // id служебного пользователя вебхука — чтобы мост не зеркалил свои
+      // же сообщения обратно; тянется сразу при сохранении URL.
+      if (body.bitrix24.webhookUrl) {
+        (async () => {
+          try {
+            const self = await bitrixCall({ url: String(body.bitrix24.webhookUrl).trim().replace(/\/+$/, '') }, 'user.current');
+            db.prepare(`UPDATE integration_connectors SET config_json=? WHERE id='bitrix24'`)
+              .run(JSON.stringify({ selfId: String(self?.ID || '') }));
+          } catch (error) { console.warn('мост Б24, user.current:', error.message); }
+        })();
+      }
     }
     if (body.onlinegibdd) {
       const connector = db.prepare(`SELECT * FROM integration_connectors WHERE id='onlinegibdd'`).get();

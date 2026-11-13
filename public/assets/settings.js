@@ -663,6 +663,22 @@ function renderIntegration() {
         <button class="button secondary" id="dornetSync" type="button">Загрузить период</button>
         <span class="muted">Бэкафилл истории: введите токен и CID, выберите период (до года) и жмите — кнопка сохранит настройки сама.</span>
       </div>`, { span: 's6' }),
+    biSec('Битрикс24 — мост мессенджера', `
+      <div class="fields">
+        <label class="field">URL входящего вебхука ${cfg.bitrix24?.hasToken ? '(сохранён)' : ''}<input id="b24Webhook" type="password"
+          placeholder="${cfg.bitrix24?.hasToken ? 'оставьте пустым, чтобы не менять' : 'Б24 → Разработчикам → Входящий вебхук (права im, user)'}" autocomplete="new-password"></label>
+      </div>
+      <label class="check"><input id="b24Enabled" type="checkbox" ${cfg.bitrix24?.enabled ? 'checked' : ''}> Включить мост</label>
+      <p class="muted">Группа планера, привязанная к чату Битрикса, живёт в обе стороны:
+        наши сообщения уходят туда от служебного пользователя с именем автора,
+        тамошние появляются у нас с пометкой «(Б24)». Привязано групп:
+        <b>${cfg.bitrix24?.linked ?? 0}</b>${cfg.bitrix24?.lastSuccessAt
+          ? ` · последний приём ${formatDate(cfg.bitrix24.lastSuccessAt, { dateStyle: 'short', timeStyle: 'short' })}` : ''}.
+        Служебного пользователя Б24 нужно добавить в каждый мостимый чат.</p>
+      <div class="actions">
+        <button class="button secondary" id="b24Link" type="button">🌉 Привязать группу к чату Б24</button>
+        <span class="muted">Кнопка сохранит вебхук сама, покажет чаты Битрикса и группы планера.</span>
+      </div>`, { span: 's6' }),
     biSec('OnlineГИБДД — штрафы', `
       <div class="fields">
         <label class="field">Ключ API ${cfg.onlinegibdd?.hasToken ? '(сохранен)' : ''}<input id="gibddToken" type="password"
@@ -747,6 +763,43 @@ function renderIntegration() {
         .map(([label, count]) => `${label} ${count}`).join(' · ');
       toast(`Dornet: добавлено ${result.added}${detail ? ` (${detail})` : ''}` +
         (result.errors?.length ? ` · ошибки: ${result.errors[0]}` : ''));
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  // Мост Б24: привязка группы планера к чату Битрикса (Э1, 13.11).
+  byId('b24Link').onclick = async () => {
+    try {
+      byId('b24Enabled').checked = true;
+      await api('/api/admin/integration', { method: 'PUT', body: JSON.stringify({ bitrix24: {
+        webhookUrl: byId('b24Webhook').value.trim(), enabled: true } }) });
+      const [b24, mine] = await Promise.all([api('/api/bitrix/chats'), api('/api/chats')]);
+      const groups = (mine.items || []).filter(item => item.id && item.title);
+      if (!groups.length) { toast('Сначала создайте группу в Мессенджере (вы должны быть её участником)', 'error'); return; }
+      const linkedBy = new Map((b24.linked || []).map(item => [item.id, item.external_id]));
+      showModal(`<h2>🌉 Мост с Битрикс24</h2>
+        <p class="muted">Выберите группу планера и чат Битрикса — переписка пойдёт в обе стороны.
+          Служебный пользователь Б24 должен состоять в выбранном чате. Пустой чат Б24 = отвязать.</p>
+        <label class="field">Группа планера<select id="b24Group">
+          ${groups.map(group => `<option value="${escapeHtml(String(group.id))}">
+            ${escapeHtml(group.title)}${linkedBy.get(String(group.id)) ? ' · 🌉 уже привязана' : ''}</option>`).join('')}
+        </select></label>
+        <label class="field">Чат Битрикса<select id="b24Dialog">
+          <option value="">— отвязать —</option>
+          ${(b24.items || []).map(item => `<option value="${escapeHtml(item.dialogId)}">
+            ${escapeHtml(item.title || item.dialogId)}${item.type === 'user' ? ' · личка' : ''}</option>`).join('')}
+        </select></label>
+        <div class="modal-actions">
+          <button type="button" class="button ghost" data-close>Отмена</button>
+          <button type="button" class="button" id="b24LinkGo">Привязать</button>
+        </div>`);
+      byId('b24LinkGo').onclick = async () => {
+        try {
+          const result = await api('/api/bitrix/link', { method: 'POST', body: JSON.stringify({
+            chatId: byId('b24Group').value, dialogId: byId('b24Dialog').value }) });
+          toast(result.dialogId ? `Привязано: «${result.chat}» ↔ ${result.dialogId}` : `Отвязано: «${result.chat}»`);
+          closeModal();
+          await loadAdmin();
+        } catch (error) { toast(error.message, 'error'); }
+      };
     } catch (error) { toast(error.message, 'error'); }
   };
   byId('gibddSync').onclick = async () => {
@@ -852,6 +905,10 @@ async function saveIntegration() {
     onlinegibdd: {
       token: byId('gibddToken').value,
       enabled: byId('gibddEnabled').checked
+    },
+    bitrix24: {
+      webhookUrl: byId('b24Webhook').value.trim(),
+      enabled: byId('b24Enabled').checked
     }
   };
   try {

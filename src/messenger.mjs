@@ -57,6 +57,26 @@ export function sendMessage(db, user, { text, recipientId = null, chatId = null,
 // хватает, зоопарк эмодзи превращает ленту в шум.
 export const REACTION_SET = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 
+// Входящее сообщение внешнего мессенджера (мост Б24, Э1 13.11): пишется
+// в привязанную группу от имени внешнего автора, дедуп по external_id —
+// поллинг и вебхук могут принести одно и то же сообщение дважды.
+export function receiveExternalMessage(db, { chatId, authorName, text, mediaNote = '',
+  externalSource, externalId }) {
+  if (!chatId || !externalSource || !externalId) return { ok: false, error: 'нет привязки' };
+  const seen = db.prepare(`SELECT 1 FROM messages
+    WHERE external_source=? AND external_id=? LIMIT 1`).get(externalSource, String(externalId));
+  if (seen) return { ok: false, duplicate: true };
+  const clean = `${String(text || '').trim()}${mediaNote ? `${text ? '\n' : ''}${mediaNote}` : ''}`
+    .slice(0, 500);
+  if (!clean) return { ok: false, error: 'пусто' };
+  const info = db.prepare(`INSERT INTO messages(author_name,kind,text,chat_id,
+      external_source,external_id)
+    VALUES(?,'user',?,?,?,?)`).run(
+    String(authorName || 'Битрикс24').slice(0, 80), clean, chatId,
+    externalSource, String(externalId));
+  return { ok: true, id: Number(info.lastInsertRowid) };
+}
+
 export function toggleReaction(db, user, messageId, emoji) {
   if (!REACTION_SET.includes(emoji)) return { ok: false, status: 422, error: 'Неизвестная реакция' };
   const message = db.prepare(`SELECT id, deleted_at FROM messages WHERE id=?`).get(Number(messageId));

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { openDatabase } from '../src/db.mjs';
 import { hashPassword } from '../src/security.mjs';
 import * as msgModule from '../src/messenger.mjs';
-import { deleteMessage, editMessage, sendMessage } from '../src/messenger.mjs';
+import { deleteMessage, editMessage, receiveExternalMessage, sendMessage } from '../src/messenger.mjs';
 import { chatMessages } from '../src/planner-service.mjs';
 
 function freshDb(t) {
@@ -152,4 +152,27 @@ test('лента конвейера: admin видит уведомления р�
   assert.ok(viaAdmin.some(item => item.text.includes('ТЗ: новое')));
   const stranger = chatMessages(db, admin.id, ['logist']).items;
   assert.ok(!stranger.some(item => item.text.includes('ТЗ: новое')));
+});
+
+test('мост Б24: входящее пишется в привязанную группу, дубль отбрасывается', t => {
+  const db = freshDb(t);
+  const admin = db.prepare(`SELECT id, full_name, username FROM users LIMIT 1`).get();
+  db.prepare(`INSERT INTO chats(id,title,created_by,external_source,external_id)
+    VALUES('g-b24','Мост-тест',?, 'bitrix24','chat152061')`).run(admin.id);
+  const first = receiveExternalMessage(db, { chatId: 'g-b24', authorName: 'Надежда Васина (Б24)',
+    text: 'привет из Битрикса', externalSource: 'bitrix24', externalId: 777001 });
+  assert.equal(first.ok, true);
+  const dup = receiveExternalMessage(db, { chatId: 'g-b24', authorName: 'Надежда Васина (Б24)',
+    text: 'привет из Битрикса', externalSource: 'bitrix24', externalId: 777001 });
+  assert.equal(dup.ok, false);
+  assert.equal(dup.duplicate, true);
+  const rows = db.prepare(`SELECT author_name, text, external_id FROM messages
+    WHERE chat_id='g-b24'`).all();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].author_name, 'Надежда Васина (Б24)');
+  // вложение без текста — пометка о файле
+  const media = receiveExternalMessage(db, { chatId: 'g-b24', authorName: 'Б24',
+    text: '', mediaNote: '📎 вложение в Битрикс24 (1) — откройте там',
+    externalSource: 'bitrix24', externalId: 777002 });
+  assert.equal(media.ok, true);
 });
