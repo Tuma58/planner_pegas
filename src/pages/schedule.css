@@ -216,3 +216,8 @@
 /* Конструктор экипажей (12.11): заголовок-карточка экипажа */
 .schedview tr.crewhead td{background:var(--head);border-top:2px solid var(--line);font-size:12px;padding:6px 8px}
 .schedview tr.crewhead button{margin-left:10px}
+
+/* Ремонт из планера в строке машины (13.11): не «без водителя» */
+.schedview td.mday.rem{background:#e8d8ef;color:#7a4e93;font-weight:700}
+/* Незаданный режим вахты — подсветка селекта (переработка не считается) */
+.schedview select.rez-missing{border-color:var(--warn);color:var(--warn)}

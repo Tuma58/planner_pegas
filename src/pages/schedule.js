@@ -601,9 +601,33 @@ function dayStats(days,set,filial,occ){
        не «в работе» и не «без водителя» */
     const alive=fleetTs.filter(t=>!outOn(t,r));
     const busy=alive.filter(t=>O[t.id] && O[t.id][i]).length;
-    return {v,zam,otp,bl,per,rem, fleet:alive.length, busy, free:Math.max(alive.length-busy,0)};
+    /* в ремонте по планеру — не «без водителя» (ТЗ Никулиной 13.11) */
+    const inRepair=alive.filter(t=>!(O[t.id] && O[t.id][i]) && repairOn(t,r)).length;
+    return {v,zam,otp,bl,per,rem, fleet:alive.length, busy, free:Math.max(alive.length-busy-inRepair,0)};
   });
 }
+
+/* ---------- ремонты планера (ТЗ Никулиной 13.11, кейс т947ук58) ----------
+   Машина в ремонт-диспозиции не «без водителя»: день красится ремонтом и
+   не идёт в счётчик. Карта госномер(без пробелов)→Set(isoДни), обновление
+   при загрузке и раз в 10 минут. */
+let REPAIRS={};
+const plateKey=s=>String(s||'').toLowerCase().replace(/\s+/g,'');
+async function loadRepairs(){
+  try{
+    const r=await fetch('/api/schedule/repairs'); if(!r.ok) return;
+    const map={};
+    for(const row of (await r.json()).repairs||[]){
+      const k=plateKey(row.plate); map[k]=map[k]||new Set();
+      let d=Date.parse(String(row.starts_at).slice(0,10)+'T12:00:00Z');
+      const e=Date.parse(row.ends_at);
+      for(; d<e; d+=86_400_000) map[k].add(new Date(d).toISOString().slice(0,10));
+    }
+    REPAIRS=map; redraw();
+  }catch(e){ /* планер недоступен — график живёт сам */ }
+}
+setInterval(loadRepairs, 600_000);
+const repairOn=(t,r)=>REPAIRS[plateKey(t.tyagach)]?.has(dayIso(r)) || false;
 
 /* ---------- отрисовка графика ---------- */
 let selected=new Set(), view=[], DAYS=[];
@@ -738,6 +762,8 @@ function renderGrid(){
           const hMark = hs ? `<span class="hitch" title="с этого дня прицеп ${hs.trailer||'снят'}${hs.planned?' (план)':''}">🔗</span>` : '';
           if(c && c.conflict) return `<td class="mday conflict${we}" title="двое: ${c.drv.fio} и ${c.second.fio}">!!${hMark}</td>`;
           if(c) return `<td class="mday v${we}${hcls}" title="${(c.drv.fio||'подмена')}${title?' · '+title:''}">${shortFio(c.drv.fio)||'—'}${hMark}</td>`;
+          /* машина в ремонте по планеру — не «без водителя» (ТЗ 13.11) */
+          if(repairOn(t,r)) return `<td class="mday rem${we}" title="${dayLabel(r)}: в ремонте (диспозиция планера) — водитель не требуется">Р${hMark}</td>`;
           return `<td class="mday gap${we}" title="${dayLabel(r)}: машина без водителя">${hMark}</td>`;
         }).join('');
         h+=`<tr class="${first?'crew-top':''} machine">`+
@@ -789,8 +815,9 @@ function renderGrid(){
                  return until? `<span class="pfill part" title="в видимом периоде есть пустые дни плана; последняя запись — ${until}">→${until}</span>`
                              : `<span class="pfill none" title="план пуст — строка не расписана">пуст</span>`;
                })()}</td>`,
-            `<td class="fix" style="left:${LEFT[2]}px"><select class="inline" data-act="rez" data-id="${dr.id}">
-               ${REZ.map(r=>`<option ${dr.rezhim===r?'selected':''}>${r||'—'}</option>`).join('')}</select></td>`,
+            `<td class="fix" style="left:${LEFT[2]}px"><select class="inline${dr.rezhim?'':' rez-missing'}" data-act="rez" data-id="${dr.id}"
+               title="${dr.rezhim?'режим вахты '+dr.rezhim:'режим не задан — выберите, иначе переработка не считается'}">
+               ${REZ.map(r=>`<option value="${r}" ${dr.rezhim===r?'selected':''}>${r||'режим…'}</option>`).join('')}</select></td>`,
             `<td class="fix ${lim&&run>lim?'over':''}" style="left:${LEFT[3]}px">${run||''}</td>`,
             `<td class="fix ${ovp||ovf?'over':''}" style="left:${LEFT[4]}px"
                  title="${lim? 'дней сверх вахты '+dr.rezhim+' за период: план '+ovp+', факт '+ovf : 'режим не задан — переработка не считается'}">
@@ -1140,7 +1167,8 @@ function renderFix(){
         <td>${pinned.length? pinned.map(d=>`${d.vac
               ? '<span class="vac">потребность</span> <button data-x="fillvac" data-id="'+d.id+'" title="вписать водителя">закрыть</button>'
               : d.fio}
-              <button data-x="unpin" data-id="${d.id}" title="снять закрепление">×</button>`).join(' · ')
+              <button data-x="unpin" data-id="${d.id}" title="снять закрепление (водитель останется в экипаже без машины)">×</button>
+              ${d.vac?'':`<button data-x="release" data-id="${d.id}" title="освободить: снять с машины и убрать из экипажа — водитель уходит в «Резерв» как свободный (ТЗ Никулиной 13.11)">⇣ в резерв</button>`}`).join(' · ')
             : '<span class="vac">нет водителя</span>'}</td>
         <td><select class="inline" data-x="pin" data-id="${t.id}">${drvOptions(t.id)}</select></td>
         <td><select class="inline" data-x="tscrew" data-id="${t.id}"
@@ -1148,12 +1176,12 @@ function renderFix(){
         <td><button data-x="delts" data-id="${t.id}" title="удалить строку из графика; борт, живой в справочнике планера, вернётся при достройке — продажу/списание оформляйте статусом «Выведен» в Справочнике ТС">удалить</button></td></tr>`;
     });
     loose.forEach(d=>{
-      h+=`<tr><td colspan="4" style="text-align:right" class="vac">в экипаже, без машины:</td>
+      h+=`<tr><td colspan="4" style="text-align:right" class="vac">${cid==='E-RES'?'свободен:':'в экипаже, без машины:'}</td>
         <td>${d.fio}${d.tel?` <span class="hint">${d.tel}</span>`:''}</td>
         <td><select class="inline" data-x="seat" data-id="${d.id}">${tsOptionsAll()}</select></td>
         <td><select class="inline" data-x="drvcrew" data-id="${d.id}"
             title="Перевести водителя в другой экипаж (без закрепления за машиной)">${crewOptions(cid)}</select></td>
-        <td></td></tr>`;
+        <td>${cid==='E-RES'?'':`<button data-x="release" data-id="${d.id}" title="убрать из экипажа — водитель уходит в «Резерв» как свободный">⇣ в резерв</button>`}</td></tr>`;
     });
   });
   h+='</tbody>';
@@ -1209,6 +1237,13 @@ document.getElementById('fixTable').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
   if(b.dataset.x==='disband'){ disbandCrew(b.dataset.id); return; }
   if(b.dataset.x==='fillvac'){ fillVacancy(b.dataset.id); return; }
+  if(b.dataset.x==='release'){
+    const d=S.drv.find(x=>x.id===b.dataset.id); if(!d) return;
+    const t=tsById(d.ts), from=d.crew;
+    d.ts=''; d.crew='E-RES';
+    logAdd(`освобождён${t?' (снят с '+t.tyagach+')':''}: из ${from} в резерв, свободен`, [d.id]);
+    save(); renderFix(); renderGrid(); fillZam(); return;
+  }
   if(b.dataset.x==='unpin'){ const d=S.drv.find(x=>x.id===b.dataset.id);
     const t=tsById(d.ts); d.ts=''; logAdd('снят с '+(t?t.tyagach:'машины'), [d.id]); }
   if(b.dataset.x==='delts'){
@@ -1489,3 +1524,4 @@ document.getElementById('sMonth').addEventListener('input',renderSum);
 function redraw(){ rebuildMonths(); fillMonthSelects(); fillZam(); renderGrid(); renderFix(); renderSum(); renderLog(); }
 redraw();
 startSync();
+loadRepairs();

@@ -14774,6 +14774,15 @@ async function api(request, response, url) {
     return json(response, 200, result);
   }
   // Достройка графика из планера (машины/водители, которых в нём нет).
+  if (request.method === 'GET' && pathname === '/api/schedule/repairs') {
+    // Ремонты планера для графика (ТЗ Никулиной 13.11, кейс т947ук58):
+    // машина в ремонт-диспозиции не должна считаться «без водителя» —
+    // график красит такие дни как ремонт, а не как нарушение.
+    const rows = db.prepare(`SELECT v.plate, d.starts_at, d.ends_at
+      FROM vehicle_dispositions d JOIN vehicles v ON v.id=d.vehicle_id
+      WHERE d.kind='repair' AND datetime(d.ends_at) > datetime('now','-60 day')`).all();
+    return json(response, 200, { repairs: rows });
+  }
   if (request.method === 'POST' && pathname === '/api/schedule/augment') {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;
