@@ -31,7 +31,7 @@
     <label class="fchip"><input type="checkbox" id="fGap"> машины с простоем</label>
     <label class="fchip"><input type="checkbox" id="fConf"> нарушения</label>
     <label class="fchip" title="только строки, где в видимом периоде остались пустые дни плана — что ещё не отработано"><input type="checkbox" id="fUnplanned"> план не заполнен</label>
-    <label>Поиск <input type="text" id="fSearch" placeholder="ФИО или госномер" size="16"></label>
+    <label>Поиск <input type="text" id="fSearch" placeholder="Поиск: ФИО или госномер" size="16"></label>
     <button id="btnAttendance" title="Явка водителей на день — ручная правда поверх автофакта графика (откроется в планере)">Явка</button>
     <button id="btnTimesheet" title="Табель за период: Я/РВ/В/ОТ/Б/ПР, печать для ФОТ — считается из факт-слоя этого графика (откроется в планере)">📋 Табель</button>
     <details class="tools" id="toolsMenu">
@@ -69,7 +69,7 @@
 <section class="pane" id="pane-fix">
   <div class="bar">
     <label>Филиал <select id="xFilial"><option>Все</option><option>Пенза</option><option>Москва</option></select></label>
-    <label>Поиск <input type="text" id="xSearch" placeholder="госномер, ФИО, экипаж" size="20"></label>
+    <label>Поиск <input type="text" id="xSearch" placeholder="Поиск: госномер, ФИО, экипаж" size="20"></label>
     <label><input type="checkbox" id="xFree"> только без водителя</label>
     <button id="btnAddTs">Добавить сцепку</button>
     <button id="btnAddDrv">Добавить водителя</button>
@@ -192,7 +192,7 @@
 <section class="pane" id="pane-log">
   <div class="bar">
     <label>Автор <select id="lWho"><option>Все</option></select></label>
-    <label>Поиск <input type="text" id="lSearch" placeholder="водитель, экипаж, код" size="22"></label>
+    <label>Поиск <input type="text" id="lSearch" placeholder="Поиск: водитель, экипаж, код" size="22"></label>
     <button id="btnLogCsv">Выгрузить журнал</button>
     <span class="hint" id="logInfo"></span>
   </div>

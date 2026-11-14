@@ -14845,7 +14845,13 @@ async function api(request, response, url) {
     const rows = db.prepare(`SELECT v.plate, d.starts_at, d.ends_at
       FROM vehicle_dispositions d JOIN vehicles v ON v.id=d.vehicle_id
       WHERE d.kind='repair' AND datetime(d.ends_at) > datetime('now','-60 day')`).all();
-    return json(response, 200, { repairs: rows });
+    // Режимы вахты — настройка руководителя (ТЗ Никулиной 13.11,
+    // концепция живых нормативов: зашитый список стал нормативом).
+    // Пусто = прежний состав; формат строго Н/М — остальное отбрасывается.
+    const modes = String(settingsObject(db).calculation?.shiftModes || '')
+      .split(',').map(item => item.trim()).filter(item => /^\d{1,3}\s*\/\s*\d{1,3}$/.test(item))
+      .map(item => item.replace(/\s+/g, ''));
+    return json(response, 200, { repairs: rows, modes });
   }
   if (request.method === 'POST' && pathname === '/api/schedule/augment') {
     const user = requirePermission(request, response, 'fleet:write');

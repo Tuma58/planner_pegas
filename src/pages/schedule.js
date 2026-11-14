@@ -22,7 +22,12 @@ function rebuildMonths(){ MK=(S.months||[]).slice().sort(); MON={}; MK.forEach(k
 const CODES = [['в','вахта / в рейсе','v'],['отп','отпуск','otp'],['бл','больничный','bl'],
                ['бс','без сохранения','bs'],['П','пересмена','P'],['РП','ремонт + пересмена','RP'],
                ['Р','ремонт','R'],['','снять код','']];
-const REZ = ['','45/15','30/15','20/20','15/15'];
+/* Режимы вахты — норматив руководителя (Настройки → «Режимы вахты»,
+   ТЗ Никулиной 13.11); зашитый список остаётся фолбэком до загрузки.
+   Уже назначенный водителю режим не теряется, даже если его убрали из
+   настройки, — он дорабатывает своё и виден в селекте этой строки. */
+let REZ = ['','45/15','30/15','20/20','15/15'];
+const rezList=cur=>cur && !REZ.includes(cur)? [...REZ, cur] : REZ;
 const KEY = 'pegas-grafik-v2';
 /* некоторые браузеры запрещают хранилище при открытии файла с диска — не падаем */
 const LS = (()=>{ const mem={};
@@ -372,7 +377,7 @@ function fillVacancy(dId){
         График останется как есть, поменяется только фамилия.</p>
      <p><label>ФИО <input id="vFio" size="36" placeholder="Иванов Иван Иванович"></label></p>
      <p><label>Телефон <input id="vTel" size="22" placeholder="+7 ..."></label></p>
-     <p><label>Режим <select id="vRez">${REZ.map(r=>`<option ${d.rezhim===r?'selected':''}>${r||'—'}</option>`).join('')}</select></label></p>`,
+     <p><label>Режим <select id="vRez">${rezList(d.rezhim).map(r=>`<option ${d.rezhim===r?'selected':''}>${r||'—'}</option>`).join('')}</select></label></p>`,
     'Записать водителя', box=>{
       const fio=box.querySelector('#vFio').value.trim();
       if(!fio){ box.querySelector('#vFio').style.borderColor='var(--warn)'; return false; }
@@ -616,14 +621,18 @@ const plateKey=s=>String(s||'').toLowerCase().replace(/\s+/g,'');
 async function loadRepairs(){
   try{
     const r=await fetch('/api/schedule/repairs'); if(!r.ok) return;
+    const data=await r.json();
     const map={};
-    for(const row of (await r.json()).repairs||[]){
+    for(const row of data.repairs||[]){
       const k=plateKey(row.plate); map[k]=map[k]||new Set();
       let d=Date.parse(String(row.starts_at).slice(0,10)+'T12:00:00Z');
       const e=Date.parse(row.ends_at);
       for(; d<e; d+=86_400_000) map[k].add(new Date(d).toISOString().slice(0,10));
     }
-    REPAIRS=map; redraw();
+    REPAIRS=map;
+    /* режимы вахты из настройки руководителя (пусто = прежний состав) */
+    if(Array.isArray(data.modes) && data.modes.length) REZ=['', ...data.modes];
+    redraw();
   }catch(e){ /* планер недоступен — график живёт сам */ }
 }
 setInterval(loadRepairs, 600_000);
@@ -817,7 +826,7 @@ function renderGrid(){
                })()}</td>`,
             `<td class="fix" style="left:${LEFT[2]}px"><select class="inline${dr.rezhim?'':' rez-missing'}" data-act="rez" data-id="${dr.id}"
                title="${dr.rezhim?'режим вахты '+dr.rezhim:'режим не задан — выберите, иначе переработка не считается'}">
-               ${REZ.map(r=>`<option value="${r}" ${dr.rezhim===r?'selected':''}>${r||'режим…'}</option>`).join('')}</select></td>`,
+               ${rezList(dr.rezhim).map(r=>`<option value="${r}" ${dr.rezhim===r?'selected':''}>${r||'режим…'}</option>`).join('')}</select></td>`,
             `<td class="fix ${lim&&run>lim?'over':''}" style="left:${LEFT[3]}px">${run||''}</td>`,
             `<td class="fix ${ovp||ovf?'over':''}" style="left:${LEFT[4]}px"
                  title="${lim? 'дней сверх вахты '+dr.rezhim+' за период: план '+ovp+', факт '+ovf : 'режим не задан — переработка не считается'}">
