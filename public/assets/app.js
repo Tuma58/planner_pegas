@@ -7,7 +7,6 @@ import { renderBoss } from './boss.js';
 import { renderRoutes } from './routes.js';
 import { renderDashboard } from './dashboard.js';
 import { renderFlows } from './flows.js';
-import { renderPrografik } from './prografik.js';
 import { renderIncidents } from './incidents.js';
 import { renderExpenses } from './expenses.js';
 import { deliveryPlanDialog } from './delivery-plan.js';
@@ -852,9 +851,6 @@ const MAIN_VIEWS = [
   // «⚠ Внештатки» (Э1, 03.11): акты, возвраты, опоздания — видна всем,
   // заводит инциденты диспетчер из карточки рейса.
   { id: 'incidents', title: 'Внештатки', show: () => true },
-  // «Производственный график» (Э1, 14.11): один экран вместо трёх —
-  // виден тем же, кому видна хоть одна из объединяемых вкладок.
-  { id: 'prografik', title: 'Производственный график', show: () => can('orders:write') || can('trips:write') || can('fleet:write') || can('reports:read') },
   { id: 'flows', title: 'Потоки', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
@@ -934,7 +930,7 @@ const NAV_GROUPS = [
     { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi', 'reports'] },
     { title: 'Работа Штаба', views: ['boss', 'staff', 'payroll', 'payments', 'expenses', 'safety', 'gate'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
-    { title: 'Планирование и анализ', views: ['prografik', 'reports', 'logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
+    { title: 'Планирование и анализ', views: ['reports', 'logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
     { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
   { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
@@ -970,7 +966,6 @@ const VIEW_META = {
   logist: ['⇄', 'Назначение рейсов на машины'],
   routes: ['⌖', 'Конструктор маршрутов из точек'],
   gantt: ['▦', 'Сцепки и рейсы на календаре'],
-  prografik: ['▦', 'Один экран: спрос, свободные машины и деньги по зонам и дням'],
   flows: ['⇶', 'Потоки грузов между зонами'],
   delivery: ['▥', 'План вывоза по клиентам'],
   dispatcher: ['◎', 'Доска контроля рейсов: выход, погрузка, путь, выгрузка'],
@@ -994,14 +989,11 @@ function renderCascade() {
 // включён) видит только экраны прежнего планера — новые экраны Слияния
 // приходят вместе с набором. Администратор видит всё.
 const LEGACY_VIEWS = ['gantt', 'sales', 'logist', 'routes', 'dispatcher', 'monitoring', 'resource', 'remzona',
-  'incidents', 'flows', 'delivery', 'fleetplan', 'prografik', 'boss', 'expenses', 'staff', 'dashboard'];
+  'incidents', 'flows', 'delivery', 'fleetplan', 'boss', 'expenses', 'staff', 'dashboard'];
 function viewAllowed(id) {
   // Мессенджер и дашборд доступны всем без оглядки на наборы
   // (решения руководителя 12.11): общая видимость достижения плана.
   if (id === 'messenger' || id === 'dashboard') return true;
-  // Производственный график (Э1, 14.11): его видит тот, кому видна хоть
-  // одна из объединяемых вкладок — наборы ролей не трогаем до Э4.
-  if (id === 'prografik') return ['flows', 'delivery', 'fleetplan'].some(view => viewAllowed(view));
   const access = state.data?.user?.access;
   if (!access || access.legacy) {
     return (state.data?.user?.roles || []).includes('admin') || LEGACY_VIEWS.includes(id);
@@ -1312,8 +1304,6 @@ function renderMain() {
     renderIncidents(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'expenses') {
     renderExpenses(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
-  } else if (state.view === 'prografik') {
-    renderPrografik(byId('timeline'), { state, can, onReload: reload, showModal, closeModal });
   } else if (state.view === 'flows') {
     renderFlows(byId('timeline'), {
       state, can, onReload: reload, showModal, closeModal, openTrip,

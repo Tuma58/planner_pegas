@@ -2350,23 +2350,3 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .kb-guide-link { cursor: pointer; }
 .kb-guide-link:hover { border-color: var(--accent); }
 .inc-note-multi { white-space: pre-line; }
-
-/* ── «Производственный график» Э1 (14.11): зоны × дни ── */
-.pg-wrap { overflow: auto; max-height: calc(100vh - 220px); }
-.pg-table { border-collapse: collapse; width: 100%; font-size: var(--fs-sm); }
-.pg-table th, .pg-table td { border: 1px solid var(--border2); padding: 3px 5px; text-align: center; min-width: 54px; }
-.pg-table thead th { position: sticky; top: 0; background: var(--panel); z-index: 2; }
-.pg-table .pg-zone { text-align: left; position: sticky; left: 0; background: var(--panel); min-width: 150px; max-width: 210px; z-index: 1; }
-.pg-row { cursor: pointer; }
-.pg-row:hover .pg-zone { background: var(--canvas); }
-.pg-table td.pg-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); }
-.pg-table td.pg-bad { background: color-mix(in srgb, var(--bad) 18%, transparent); }
-.pg-table td.pg-ok { color: var(--ok); }
-.pg-table .pg-today { box-shadow: inset 0 0 0 2px var(--accent); }
-.pg-gap { color: var(--bad); }
-.pg-free { color: var(--ok); white-space: nowrap; }
-.pg-money { display: block; color: var(--muted); font-size: var(--fs-xs); }
-.pg-cust td { background: color-mix(in srgb, var(--canvas) 55%, transparent); font-size: var(--fs-xs); }
-.pg-vehcell { text-align: left !important; }
-.pg-veh { display: inline-block; margin: 1px 4px 1px 0; white-space: nowrap; }
-.pg-balance td { position: sticky; bottom: 0; background: var(--panel); font-weight: 650; border-top: 2px solid var(--border); }
