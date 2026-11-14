@@ -21,15 +21,16 @@ export function sendMessage(db, user, { text, recipientId = null, chatId = null,
   if (!clean && !mediaId) return { ok: false, status: 422, error: 'Пустое сообщение' };
   let reply = null;
   if (replyToId) {
-    reply = db.prepare(`SELECT id, recipient_id, chat_id, author_id, kind, target_role FROM messages
+    reply = db.prepare(`SELECT id, recipient_id, chat_id, author_id FROM messages
       WHERE id=? AND deleted_at IS NULL`).get(Number(replyToId));
-    // Ответ живёт строго в той же переписке, что и оригинал (аудит OWASP
-    // 14.11): прежняя проверка пускала ответ на ЧУЖУЮ личку адресата
-    // (B↔C), и цитата в 120 символов уезжала в переписку A↔B. Ошибка одна
-    // на «нет» и «чужое» — существование сообщения не подсказываем.
-    if (!reply || !sameReplyRoom(reply, user.id, { chatId, recipientId })) {
-      return { ok: false, status: 422, error: 'Ответ должен быть в той же переписке' };
-    }
+    if (!reply) return { ok: false, status: 422, error: 'Сообщение, на которое отвечаете, не найдено' };
+    // Ответ живёт в той же переписке, что и оригинал — подмена адресата
+    // ответом недопустима (личное не утечёт в общий и наоборот).
+    const sameRoom = (reply.chat_id || null) === (chatId || null)
+      && ((reply.recipient_id || null) === (recipientId || null)
+        || reply.author_id === recipientId
+        || (reply.recipient_id === user.id && reply.author_id === (recipientId || null)));
+    if (!sameRoom) return { ok: false, status: 422, error: 'Ответ должен быть в той же переписке' };
   }
   const info = db.prepare(`INSERT INTO messages(author_id,author_name,kind,text,recipient_id,
       chat_id,reply_to_id,media_id,media_mime,media_name,external_source,external_id)
@@ -50,24 +51,6 @@ export function sendMessage(db, user, { text, recipientId = null, chatId = null,
       `💬 ${user.full_name || user.username} упомянул вас ${where}: ${clean.slice(0, 160)}`);
   }
   return { ok: true, id };
-}
-
-// Та же ли переписка у ответа и оригинала: группа — тот же chat_id
-// (членство отправителя сервер проверяет на входе); личка — ровно пара
-// {я, собеседник}; общий канал — только общедоступные сообщения (личные,
-// групповые и адресованные роли уведомления в общий не цитируются).
-export function sameReplyRoom(reply, userId, { chatId = null, recipientId = null } = {}) {
-  const me = String(userId);
-  if (chatId) return String(reply.chat_id || '') === String(chatId);
-  if (reply.chat_id) return false;
-  if (recipientId) {
-    const peer = String(recipientId);
-    const author = String(reply.author_id ?? '');
-    const target = String(reply.recipient_id ?? '');
-    return (author === me && target === peer) || (author === peer && target === me);
-  }
-  if (reply.recipient_id) return false;
-  return !(reply.kind === 'auto' && reply.target_role);
 }
 
 // Набор реакций — осознанно короткий (как в Битрикс24): шесть смыслов

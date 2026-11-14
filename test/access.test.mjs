@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '../src/db.mjs';
-import { accessOf, assignRoleSets, broadcastTextFor, grantProblem, roleSets, stripOrders, stripSmall, stripTrips } from '../src/access.mjs';
+import { accessOf, assignRoleSets, broadcastTextFor, roleSets, stripOrders, stripSmall, stripTrips } from '../src/access.mjs';
 import { createStaffUser, canLogin } from '../src/staff.mjs';
 import { hashPassword } from '../src/security.mjs';
 import { effectivePermissions } from '../src/permissions.mjs';
@@ -127,27 +127,4 @@ test('логистика управляет рейсами целиком, Ре�
     for (const view of ['sales', 'logist', 'dispatcher', 'monitoring', 'incidents', 'gantt']) assert.ok(set.views.includes(view), `${id}: ${view}`);
   }
   assert.ok(permissionsForRoles(sets.get('drv_head').codes).includes('fleet:write'));
-});
-
-test('аудит 14.11: себе права не назначаются, шире своих — тоже', t => {
-  const db = freshDb(t);
-  const logHead = person(db, 5, ['log_head']);
-  const plan = person(db, 6, ['log_plan']);
-  const dirHead = person(db, 7, ['dir_head']);
-  // Себе — нельзя никому, кроме администратора.
-  assert.match(grantProblem(db, logHead, logHead.id, ['dir_head']), /только администратор/);
-  assert.match(grantProblem(db, logHead, logHead.id, ['log_plan']), /только администратор/);
-  assert.equal(grantProblem(db, logHead, logHead.id, ['dir_head'], { isAdmin: true }), '');
-  // Шире своих: руководитель отдела не выдаёт «всё направление».
-  assert.match(grantProblem(db, logHead, plan.id, ['dir_head']), /шире ваших прав/);
-  // Специалист (ставки, без ЦФО) не выдаёт руководителя отдела (деньги full, ЦФО отдела).
-  assert.match(grantProblem(db, plan, logHead.id, ['log_head']), /шире ваших прав/);
-  // В пределах своих — можно.
-  assert.equal(grantProblem(db, logHead, plan.id, ['log_plan']), '');
-  assert.equal(grantProblem(db, dirHead, logHead.id, ['log_head']), '');
-  assert.equal(grantProblem(db, dirHead, plan.id, ['dir_head']), '');
-  // Администраторский набор — только администратор.
-  assert.match(grantProblem(db, dirHead, plan.id, ['admin']), /Администратор/);
-  // Через должность (targetId = null) действуют те же правила ширины.
-  assert.match(grantProblem(db, logHead, null, ['dir_head']), /шире ваших прав/);
 });

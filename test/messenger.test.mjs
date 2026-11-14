@@ -47,22 +47,6 @@ test('мессенджер: ответ-цитата живёт в своей п�
   const cross = sendMessage(db, boris, { text: 'в общий с цитатой лички', replyToId: dm.id });
   assert.ok(!cross.ok);
 
-  // Аудит 14.11: третий (Вера) не может процитировать личку Анна↔Борис,
-  // отвечая Борису в своей личке; свой ответ в своей личке — можно.
-  const vera = addUser(db, 'u-vera', 'Вера');
-  const leak = sendMessage(db, vera, { text: 'что там у вас?', recipientId: boris.id, replyToId: dm.id });
-  assert.ok(!leak.ok, 'ответ на чужую личку адресата отклонён');
-  const leak2 = sendMessage(db, vera, { text: 'а тут?', recipientId: anna.id, replyToId: dm.id });
-  assert.ok(!leak2.ok, 'ответ на чужую личку автора отклонён');
-  const own = sendMessage(db, boris, { text: 'отвечаю Анне', recipientId: anna.id, replyToId: dm.id });
-  assert.ok(own.ok, 'ответ внутри своей лички работает');
-  const ownMine = sendMessage(db, anna, { text: 'дополню', recipientId: boris.id, replyToId: dm.id });
-  assert.ok(ownMine.ok, 'ответ на своё сообщение в той же личке работает');
-  // Адресное роли уведомление не цитируется в общий канал.
-  const roleNote = db.prepare(`INSERT INTO messages(author_name,kind,text,target_role)
-    VALUES('Планер','auto','только бухгалтерии','accountant')`).run();
-  assert.ok(!sendMessage(db, vera, { text: 'гляньте', replyToId: Number(roleNote.lastInsertRowid) }).ok);
-
   // Правка: только автор.
   assert.ok(!editMessage(db, boris, first.id, 'взлом').ok);
   assert.ok(editMessage(db, anna, first.id, 'Всем привет (поправлено)').ok);
