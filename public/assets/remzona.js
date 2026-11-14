@@ -4,6 +4,7 @@
 // влияет на подбор, гант и занятость машин — копит собственные факты,
 // из которых позже выучатся нормативы длительности работ.
 import { api, escapeHtml, formatDateTime, toast, renderInto } from './api.js';
+import { readXlsx } from './xlsx-read.js';
 
 const PURPOSES = ['ТО', 'плановый ремонт', 'поломка на линии', 'ДТП', 'шины', 'документы', 'прочее'];
 const STATUS_LABEL = {
@@ -105,7 +106,9 @@ export async function renderRemzona(container, context) {
     <div class="bi-sub"><h2>Заказ-наряды механика</h2>
       <p>блок автономен: на подбор машин и гант пока не влияет —
         недоступность ТС по-прежнему ставится диспозицией в «Ресурсе»</p>
-      ${can('fleet:write') ? '<div class="bi-actions"><button class="button small" id="rzNew">🚚 Новый заезд</button></div>' : ''}
+      ${can('fleet:write') ? `<div class="bi-actions">
+        <label class="button ghost small" title="Выгрузка 1С:УАТ с листами «Заявки на ремонт», «Работы по заявкам», «Ремонтные листы» — повторная загрузка обновляет, не дублирует">⬆ История из 1С<input type="file" id="rzImport" accept=".xlsx" hidden></label>
+        <button class="button small" id="rzNew">🚚 Новый заезд</button></div>` : ''}
     </div>
     <div class="bi-kpis bi-kpis-row">
       ${tile('В очереди', groups.queued.length, 'маш', 'dept-toir', 'ждут механика')}
@@ -120,7 +123,9 @@ export async function renderRemzona(container, context) {
       <div class="sec-b"><div class="list">${releaseRows}</div></div>
     </section>` : ''}
     <div class="bi-board rz-board">${columns}</div>
+    <div id="rzHistory"></div>
   </div>`);
+  renderToirHistory(container.querySelector('#rzHistory'));
   container.querySelectorAll('[data-rz-release]').forEach(button =>
     button.addEventListener('click', async () => {
       const action = button.dataset.rzAction;
@@ -137,6 +142,17 @@ export async function renderRemzona(container, context) {
       } catch (error) { toast(error.message, 'error'); }
     }));
   const refresh = () => renderRemzona(container, context);
+  container.querySelector('#rzImport')?.addEventListener('change', async event => {
+    const file = event.currentTarget.files[0];
+    event.currentTarget.value = '';
+    if (!file) return;
+    toast('Разбираю выгрузку — листы большие, подождите…');
+    try {
+      const result = await importToirFile(file);
+      toast(`История ТОиР: заявок новых ${result.requests.added}, обновлено ${result.requests.updated}, работ ${result.requests.jobs}, РЛ ${result.sheets.count}${result.requests.skipped.length ? `, пропущено ${result.requests.skipped.length} (прицепы — в деньгах РЛ)` : ''}`);
+      refresh();
+    } catch (error) { toast(error.message, 'error'); }
+  });
   container.querySelector('#rzNew')?.addEventListener('click', () => {
     const vehicles = (state.data.vehicles || []).filter(vehicle => vehicle.status === 'work')
       .slice().sort((a, b) => a.plate.localeCompare(b.plate, 'ru'));
@@ -205,4 +221,82 @@ export async function renderRemzona(container, context) {
     api(`/api/repairs/jobs/${button.dataset.rjdel}`, { method: 'DELETE' })
       .then(refresh).catch(error => toast(error.message, 'error'));
   }));
+}
+
+// ── 📜 История ТОиР из 1С (14.11) ──
+// Сводка живёт под доской: месяцы × группы, топ бортов по деньгам.
+// Деньги сервер отдаёт по правам (money=full/отчёты) — иначе прочерки.
+const rub = value => value == null ? '—' : `${Math.round(value).toLocaleString('ru-RU')} ₽`;
+
+async function renderToirHistory(container) {
+  if (!container) return;
+  let data;
+  try { data = await api('/api/repairs/history'); } catch { return; }
+  if (!data.totals.n) return; // истории ещё нет — секцию не показываем
+  container.innerHTML = `<section class="section dept-toir">
+    <div class="sec-h"><span class="st">📜 История ТОиР из 1С</span>
+      <span class="hint">${data.totals.n.toLocaleString('ru-RU')} РЛ · ${escapeHtml(data.totals.mn || '')}–${escapeHtml(data.totals.mx || '')} · итог ${rub(data.totals.rub)}</span></div>
+    <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Месяц</th><th>По группам</th></tr></thead>
+      <tbody>${data.months.map(month => `<tr><td>${escapeHtml(month.month)}</td>
+        <td>${month.groups.map(group => `<span class="bi-tag">${escapeHtml(group.group)}: ${group.n}${group.rub == null ? '' : ` · ${rub(group.rub)}`}</span>`).join(' ')}</td></tr>`).join('')}</tbody></table></div>
+    <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Борт (топ по деньгам)</th><th class="r">РЛ</th><th class="r">Часы</th><th class="r">Итого</th></tr></thead>
+      <tbody>${data.topVehicles.map(row => `<tr><td>${escapeHtml(row.plate)} <span class="muted">${escapeHtml(row.vehicle_kind || '')}</span></td>
+        <td class="num">${row.n}</td><td class="num">${row.hours == null ? '—' : Math.round(row.hours).toLocaleString('ru-RU')}</td><td class="num">${rub(row.rub)}</td></tr>`).join('')}</tbody></table></div>
+  </section>`;
+}
+
+// Разбор выгрузки 1С: три листа, колонки ищем по заголовкам.
+async function importToirFile(file) {
+  const headerMap = rows => {
+    const header = rows[0].map(cell => String(cell || '').toLowerCase().trim());
+    return { header, col: part => header.findIndex(cell => cell.startsWith(part)) };
+  };
+  const value = (row, index) => index >= 0 ? String(row[index] ?? '').trim() : '';
+  const requestsRows = await readXlsx(file, 'Заявки на ремонт');
+  const req = headerMap(requestsRows);
+  const rq = {
+    no: req.col('номер заявки'), date: req.col('дата'), plate: req.col('тс'),
+    purpose: req.col('назначение (как в планере)'), status: req.col('статус (как в планере)'),
+    status1c: req.col('статус (1с)'), complaint: req.col('причина обращения'),
+    defects: req.col('неисправности'), rec: req.col('рекомендации'), note: req.col('комментарий'),
+    km: req.col('пробег'), planOut: req.col('окончание (план)'), arrived: req.col('факт заезда'),
+    finished: req.col('факт окончания'), started: req.col('передан в работу'), released: req.col('выполнен')
+  };
+  if (rq.no < 0 || rq.plate < 0) throw new Error('Не похоже на выгрузку ТОиР: нет листа «Заявки на ремонт» с колонками «Номер заявки», «ТС»');
+  const requests = requestsRows.slice(1).filter(row => value(row, rq.no)).map(row => ({
+    externalNo: value(row, rq.no), createdAt: value(row, rq.date), plate: value(row, rq.plate),
+    purpose: value(row, rq.purpose), status: value(row, rq.status), status1c: value(row, rq.status1c),
+    complaint: value(row, rq.complaint), defects: value(row, rq.defects), recommendations: value(row, rq.rec),
+    note: value(row, rq.note), odometerKm: value(row, rq.km), plannedOut: value(row, rq.planOut),
+    arrivedAt: value(row, rq.arrived), finishedAt: value(row, rq.finished),
+    workStartedAt: value(row, rq.started), releasedAt: value(row, rq.released)
+  }));
+  const worksRows = await readXlsx(file, 'Работы по заявкам');
+  const wk = headerMap(worksRows);
+  const wc = { no: wk.col('номер заявки'), line: wk.col('строка'), title: wk.col('неисправность'), confirmed: wk.col('работа подтверждена') };
+  const works = worksRows.slice(1).filter(row => value(row, wc.no)).map(row => ({
+    externalNo: value(row, wc.no), line: value(row, wc.line) || 1,
+    title: value(row, wc.title), confirmed: value(row, wc.confirmed)
+  }));
+  const sheetRows = await readXlsx(file, 'Ремонтные листы');
+  const sh = headerMap(sheetRows);
+  const sc = {
+    no: sh.col('номер рл'), month: sh.col('месяц'), plate: sh.col('тс'), vkind: sh.col('тягач'),
+    kind: sh.col('вид обслуживания'), group: sh.col('группа'), status: sh.col('статус'),
+    started: sh.col('начало'), finished: sh.col('окончание'), hours: sh.col('часов в ремонте'),
+    km: sh.col('пробег'), works: sh.col('работы атп'), partsStock: sh.col('запчасти со склада'),
+    outsourced: sh.col('ремонт сторонний'), partsBought: sh.col('запчасти покупные'),
+    tires: sh.col('шины'), wash: sh.col('мойка'), total: sh.col('итого без ндс'),
+    pay: sh.col('вид оплаты'), reqKey: sh.col('заявка на ремонт')
+  };
+  const sheets = sheetRows.slice(1).filter(row => value(row, sc.no)).map(row => ({
+    externalNo: value(row, sc.no), month: value(row, sc.month), plate: value(row, sc.plate),
+    vehicleKind: value(row, sc.vkind), kind: value(row, sc.kind), groupKind: value(row, sc.group),
+    status: value(row, sc.status), startedAt: value(row, sc.started), finishedAt: value(row, sc.finished),
+    hours: value(row, sc.hours), odometerKm: value(row, sc.km), worksRub: value(row, sc.works),
+    partsStockRub: value(row, sc.partsStock), outsourcedRub: value(row, sc.outsourced),
+    partsBoughtRub: value(row, sc.partsBought), tiresRub: value(row, sc.tires), washRub: value(row, sc.wash),
+    totalRub: value(row, sc.total), payKind: value(row, sc.pay), requestKey: value(row, sc.reqKey)
+  }));
+  return api('/api/repairs/import', { method: 'POST', body: JSON.stringify({ requests, works, sheets }) });
 }

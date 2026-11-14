@@ -78,6 +78,7 @@ import { turnoverApi } from './turnover.mjs';
 import { partsApi } from './parts.mjs';
 import { armApi, driverArmData, driverTaskAction, dueControlPoints } from './arm.mjs';
 import { bridgeData } from './bridge.mjs';
+import { importRepairRequests, importRepairSheets, toirHistoryBoard } from './toir-import.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { applyPositionSet, archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -13396,6 +13397,33 @@ async function api(request, response, url) {
       JOIN vehicles v ON v.id=r.vehicle_id
       WHERE r.status='open' OR r.created_at > datetime('now','-7 days')
       ORDER BY CASE r.status WHEN 'open' THEN 0 ELSE 1 END, r.created_at DESC`).all() });
+  }
+  // 📥 История ТОиР из 1С (14.11): заявки+работы+РЛ одним запросом,
+  // идемпотентный апсерт по номерам документов. Лимит тела повышен —
+  // выгрузка за 4 месяца ≈ 6 МБ.
+  if (request.method === 'POST' && pathname === '/api/repairs/import') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request, 24_000_000);
+    const requests = importRepairRequests(db, body.requests, body.works);
+    const sheets = importRepairSheets(db, body.sheets);
+    audit(db, user, 'import', 'repair_orders', 'toir-1c', {
+      added: requests.added, updated: requests.updated, jobs: requests.jobs,
+      sheets: sheets.count, skipped: requests.skipped.length + sheets.skipped.length }, requestIp(request));
+    return json(response, 200, { ok: true, requests, sheets });
+  }
+  // Сводка истории ТОиР (месяцы × статьи, топ бортов) — для вкладки.
+  if (request.method === 'GET' && pathname === '/api/repairs/history') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const board = toirHistoryBoard(db);
+    // Деньги — только уровню «все суммы» (как везде в планере).
+    if (accessOf(db, user).money !== 'full' && !hasPermission(user, 'reports:read')) {
+      for (const month of board.months) for (const group of month.groups) group.rub = null;
+      for (const row of board.topVehicles) row.rub = null;
+      board.totals.rub = null;
+    }
+    return json(response, 200, board);
   }
   if (request.method === 'POST' && pathname === '/api/repairs') {
     const user = requirePermission(request, response, 'fleet:write');
