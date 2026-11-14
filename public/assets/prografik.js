@@ -366,6 +366,7 @@ export async function renderPrografik(container, context) {
         <button data-h="month" class="${horizon === 'month' ? 'active' : ''}">Месяц</button>
       </div>
       <input id="pgSearch" class="block-search" placeholder="Поиск: зона, клиент, борт" value="${escapeHtml(state.prografikQuery || '')}">
+      <button class="button ghost" id="pgFormBtn" title="Выгрузка → следующий рейс: кто выгружается в зоне и уже имеет план, но ещё не загружен (отчёт логистики)">⏳ Формирование</button>
       <button class="button ghost" id="pgTvBtn" title="Крупные карточки баланса для табло">📺 Табло</button>
       <button class="button ghost" id="pgLegend" title="Что значат цвета и числа">ⓘ Как читать</button>
     </div>
@@ -401,6 +402,7 @@ export async function renderPrografik(container, context) {
     return rerender();
   });
   container.querySelector('#pgTvBtn').onclick = () => { state.prografikTv = true; rerender(); };
+  container.querySelector('#pgFormBtn').onclick = () => formationDialog(pg, context);
   container.querySelectorAll('[data-task]').forEach(button => button.onclick = () => {
     const task = liveTasks[Number(button.dataset.task)];
     if (task) zoneDayDialog(task.zone, task.day, pg, context, rerender);
@@ -428,6 +430,11 @@ export async function renderPrografik(container, context) {
       свободна в этот день, но следующий рейс уже назначен: занять её можно
       только тем, что успеет вернуться к погрузке. В ячейках «⏳N» — сколько
       из свободных уже ждут рейс.</p>
+      <p><b>⏳ Формирование</b> (кнопка сверху) — отчёт логистики: кто
+      выгрузился или выгружается по плану в зоне за дату, у кого следующий
+      рейс уже в плане, но погрузка не началась, и каков зазор между
+      выгрузкой и следующей погрузкой. Ниже — выгружающиеся там же БЕЗ
+      следующего рейса (им нужна работа, клик — чем занять).</p>
       <p><b>✏ Черновик</b>: кнопки ✏ копят решения в панель снизу — баланс
       пересчитывается сразу, в планер ничего не уходит. «Применить» создаёт
       заявки и назначения по-настоящему и показывает отчёт по каждому пункту.</p>
@@ -747,6 +754,96 @@ function vehicleDayDialog(vehicleId, iso, pg, context, rerender) {
       label: `бронь ${slot.customer_name} ${zone}→${slot.to_name}` });
     closeModal(); rerender();
   });
+}
+
+// ── Отчёт «⏳ Формирование» (ТЗ Базуева, дословно: «ТС, которые планово
+// или по факту выгрузились в регионе (либо выгружаются в указанную
+// дату), имеющие следующий рейс в плане, но ещё не загруженные по этому
+// рейсу») ── срез по зоне выгрузки и дате: выгрузка (факт/план) →
+// следующий рейс → зазор. Вторым списком — выгружающиеся там же БЕЗ
+// следующего рейса (нарушение правила «у машины на линии назначен
+// следующий рейс» — им нужна работа).
+function formationDialog(pg, context) {
+  const { state, showModal } = context;
+  const mskDayOf = value => new Date(Date.parse(value) + 3 * 3_600_000).toISOString().slice(0, 10);
+  const filters = state.prografikFormFlt || (state.prografikFormFlt = { zone: '', day: pg.todayIso });
+  const zonesList = [...new Set(pg.trips.map(trip => trip.to_name))].sort((a, b) => a.localeCompare(b, 'ru'));
+
+  const build = () => {
+    const rows = []; const noNext = [];
+    for (const vehicle of pg.vehicles) {
+      // Выгрузки машины в выбранную дату (и зону, если выбрана).
+      const unloads = pg.trips.filter(trip => trip.vehicle_id === vehicle.id
+        && trip.status !== 'rejected'
+        && mskDayOf(trip.unloaded_at || trip.ends_at) === filters.day
+        && (!filters.zone || trip.to_name === filters.zone));
+      if (!unloads.length) continue;
+      const unload = unloads.sort((a, b) => String(b.unloaded_at || b.ends_at)
+        .localeCompare(String(a.unloaded_at || a.ends_at)))[0];
+      const unloadAt = Date.parse(unload.unloaded_at || unload.ends_at);
+      const isFact = Boolean(unload.unloaded_at) || ['unloaded', 'done', 'paid'].includes(unload.status);
+      // Следующий рейс в плане, погрузка ещё не началась (status='plan';
+      // run/unloaded = уже загружен и поехал — такие ТЗ не просит).
+      let next = null;
+      for (const trip of pg.trips) {
+        if (trip.vehicle_id !== vehicle.id || trip.status !== 'plan') continue;
+        const starts = Date.parse(trip.starts_at);
+        if (starts >= unloadAt && (!next || starts < Date.parse(next.starts_at))) next = trip;
+      }
+      const item = { vehicle, unload, unloadAt, isFact, next };
+      if (next) rows.push(item); else noNext.push(item);
+    }
+    rows.sort((a, b) => a.unloadAt - b.unloadAt);
+    noNext.sort((a, b) => a.unloadAt - b.unloadAt);
+    return { rows, noNext };
+  };
+
+  const gapText = (unloadAt, next) => {
+    const hours = Math.round((Date.parse(next.starts_at) - unloadAt) / 3_600_000);
+    const text = hours >= 48 ? `${Math.round(hours / 24)} сут` : `${hours} ч`;
+    return hours > 24 ? `<b class="pg-warn2">${text}</b>` : text;
+  };
+  const render = () => {
+    const { rows, noNext } = build();
+    document.getElementById('pgFormBody').innerHTML = `
+      ${rows.length ? `<table class="pg-form-table"><tr>
+        <th>ТС · водитель</th><th>Выгрузка</th><th>Следующий рейс (в плане, не загружен)</th><th>Зазор</th></tr>
+        ${rows.map(({ vehicle, unload, unloadAt, isFact, next }) => `<tr>
+          <td><b class="mono">${escapeHtml(vehicle.plate)}</b><br><small class="muted">${escapeHtml(vehicle.driver_name || 'без водителя')}</small></td>
+          <td>${escapeHtml(unload.customer_name || '')} · ${escapeHtml(unload.from_name)}→<b>${escapeHtml(unload.to_name)}</b><br>
+            <small class="${isFact ? 'muted' : 'pg-warn2'}">${isFact ? '✓ факт' : '◌ по плану'} · ${formatDateTime(unload.unloaded_at || unload.ends_at)}</small></td>
+          <td>${escapeHtml(next.customer_name || '')} · ${escapeHtml(next.from_name)}→${escapeHtml(next.to_name)}<br>
+            <small class="muted">погрузка ${formatDateTime(next.starts_at)}${next.from_name !== unload.to_name ? ` · подача из ${escapeHtml(unload.to_name)}` : ' · там же'}</small></td>
+          <td>${gapText(unloadAt, next)}</td></tr>`).join('')}</table>`
+    : '<p class="muted">Под эти условия машин нет: либо нет выгрузок в дату/зону, либо у выгрузившихся не назначен следующий рейс (смотрите список ниже).</p>'}
+      ${noNext.length ? `<h3>⚠ Выгружаются там же БЕЗ следующего рейса <small class="muted">— нарушение правила «у машины на линии назначен следующий рейс», им нужна работа</small></h3>
+        <div>${noNext.map(({ vehicle, unload, isFact }) =>
+    `<button class="button ghost small" data-formfree="${vehicle.id}|${mskDayOf(unload.unloaded_at || unload.ends_at)}"
+      title="${escapeHtml(unload.from_name)}→${escapeHtml(unload.to_name)} · ${isFact ? 'факт' : 'план'} ${formatDateTime(unload.unloaded_at || unload.ends_at)} — клик: чем занять">🆓 ${escapeHtml(vehicle.plate)} <small class="muted">· ${escapeHtml(unload.to_name)}</small></button>`).join(' ')}</div>` : ''}`;
+    document.querySelectorAll('[data-formfree]').forEach(button => button.onclick = () => {
+      const [vehicleId, iso] = button.dataset.formfree.split('|');
+      context.closeModal();
+      vehicleDayDialog(vehicleId, iso, pg, context, () => {});
+    });
+  };
+
+  showModal(`<div class="sales-modal pg-modal pg-form"><h2>⏳ Формирование · выгрузка → следующий рейс</h2>
+    <p class="muted">Машины, выгрузившиеся (✓ факт) или выгружающиеся по плану (◌) в зоне за дату,
+      у которых следующий рейс уже в плане, но погрузка ещё не началась.</p>
+    <div class="bi-kpis-row" style="margin-bottom:8px">
+      <select id="pgFormZone"><option value="">— все зоны выгрузки —</option>
+        ${zonesList.map(zone => `<option value="${escapeHtml(zone)}" ${zone === filters.zone ? 'selected' : ''}>${escapeHtml(zone)}</option>`).join('')}</select>
+      <input type="date" id="pgFormDay" value="${filters.day}" min="${pg.days[0]}" max="${pg.days[pg.days.length - 1]}">
+    </div>
+    <div id="pgFormBody"></div>
+    <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div></div>`);
+  document.getElementById('pgFormZone').onchange = event => { filters.zone = event.target.value; render(); };
+  document.getElementById('pgFormDay').onchange = event => {
+    const value = event.target.value;
+    if (value >= pg.days[0] && value <= pg.days[pg.days.length - 1]) { filters.day = value; render(); }
+    else toast('Дата вне открытого месяца — переключите месяц стрелками на графике', 'error');
+  };
+  render();
 }
 
 // ── «Применить» черновика (Э5): пункты выполняются штатными вызовами ──
