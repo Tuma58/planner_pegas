@@ -8667,6 +8667,24 @@ async function api(request, response, url) {
   }
 
   if (request.method === 'GET' && pathname === '/api/auth/me') {
+    // СТЕНДОВЫЙ автовход (лаборатория, не для прода): переменная
+    // LAB_AUTOLOGIN называет учётку, и первый же «кто я» без сессии
+    // создаёт её сам — руководитель смотрит стенд без пароля. Двойная
+    // защита: на проде (NODE_ENV=production) переменная игнорируется.
+    if (process.env.LAB_AUTOLOGIN && !config.isProduction && !currentUser(request)) {
+      const labUser = db.prepare('SELECT * FROM users WHERE username=? COLLATE NOCASE')
+        .get(String(process.env.LAB_AUTOLOGIN));
+      if (labUser && labUser.active) {
+        const token = newSessionToken();
+        db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
+          .run(tokenHash(token), labUser.id,
+            new Date(Date.now() + config.sessionTtlMs).toISOString());
+        audit(db, labUser, 'login', 'session', null, { lab: 'autologin' }, requestIp(request));
+        return json(response, 200, { user: publicUser(labUser) }, {
+          'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}${config.secureCookies ? '; Secure' : ''}`
+        });
+      }
+    }
     const user = requireUser(request, response);
     return user && json(response, 200, { user: publicUser(user) });
   }
