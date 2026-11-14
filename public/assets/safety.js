@@ -17,7 +17,12 @@ const culpTag = value => value === 'guilty' ? '<span class="bi-tag neg">вино
 export async function renderSafety(container, context) {
   const { state } = context;
   const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
-  const from = state.safetyFrom || `${today.slice(0, 7)}-01`;
+  // Период по умолчанию — 6 месяцев, в тон блоку «Динамика»: ДТП и
+  // претензионные дела живут дольше месяца, с «1-го числа» журнал и
+  // сводка по водителям открывались пустыми (руководитель, 14.11).
+  const defaultFrom = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 6, 1))
+    .toISOString().slice(0, 10);
+  const from = state.safetyFrom || defaultFrom;
   let data;
   try {
     data = await api(`/api/safety?from=${from}&to=${today}`);
