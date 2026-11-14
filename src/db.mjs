@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { hashPassword } from './security.mjs';
+import { SECRET_MARK, hashPassword, redactSecrets } from './security.mjs';
 import { normalizeAllowedSubnets } from './network-access.mjs';
 import { defaultSettings, distances, legacyZoneColors, vehicleTypes, zoneMetadata, zones } from './seed.mjs';
 import { ROUND_TEMPLATES, roundRevenue } from '../public/assets/rounds.js';
@@ -1746,6 +1746,7 @@ function migrateColumns(db) {
   CREATE INDEX IF NOT EXISTS idx_orders_returned ON orders(returned_at) WHERE returned_at IS NOT NULL`);
   db.exec(`CREATE TABLE IF NOT EXISTS messages_archive AS SELECT * FROM messages WHERE 0`);
   db.exec(`CREATE TABLE IF NOT EXISTS audit_log_archive AS SELECT * FROM audit_log WHERE 0`);
+  scrubAuditSecrets(db);
   // Назначение поверх диспозиции (заявка Базуева, решение руководителя
   // 04.11): пересменка/резерв и прочее НЕ-ремонт назначается с
   // обязательной причиной — причины копятся здесь и анализируются через
@@ -2179,7 +2180,33 @@ export function settingsObject(db) {
 export function audit(db, user, action, entity, entityId, details = {}, ip = '') {
   db.prepare(`INSERT INTO audit_log(id,user_id,action,entity,entity_id,details_json,ip)
     VALUES(?,?,?,?,?,?,?)`).run(
-    randomUUID(), user?.id || null, action, entity, entityId || null, asJson(details), ip);
+    randomUUID(), user?.id || null, action, entity, entityId || null, asJson(redactSecrets(details)), ip);
+}
+
+// Разовая чистка журнала (аудит OWASP 14.11): секреты, уже записанные в
+// audit_log и архив до появления redactSecrets, заменяются отметкой.
+// Идемпотентно — метка в app_meta; число вычищенных строк — в лог.
+export function scrubAuditSecrets(db) {
+  if (db.prepare(`SELECT 1 FROM app_meta WHERE key='audit_secrets_scrub_v1'`).get()) return 0;
+  let changed = 0;
+  for (const table of ['audit_log', 'audit_log_archive']) {
+    const exists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(table);
+    if (!exists) continue;
+    const update = db.prepare(`UPDATE ${table} SET details_json=? WHERE id=?`);
+    for (const row of db.prepare(`SELECT id, details_json FROM ${table}
+        WHERE details_json LIKE '%oken%' OR details_json LIKE '%assword%'
+          OR details_json LIKE '%ecret%' OR details_json LIKE '%ebhook%' OR details_json LIKE '%pi_ey%'
+          OR details_json LIKE '%piKey%'`).all()) {
+      let parsed;
+      try { parsed = JSON.parse(row.details_json); } catch { continue; }
+      const clean = JSON.stringify(redactSecrets(parsed));
+      if (clean !== row.details_json) { update.run(clean, row.id); changed += 1; }
+    }
+  }
+  db.prepare(`INSERT OR IGNORE INTO app_meta(key,value) VALUES('audit_secrets_scrub_v1',?)`)
+    .run(JSON.stringify({ at: new Date().toISOString(), changed, mark: SECRET_MARK }));
+  if (changed) console.log(`🔐 журнал аудита: вычищены секреты в ${changed} строках`);
+  return changed;
 }
 
 export function queueOutbox(db, entity, entityId, operation, payload, automatic = false) {

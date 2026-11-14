@@ -58,7 +58,7 @@ import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShi
 import { directionGoals } from '../public/assets/goals-core.js';
 import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
-import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, roleSets, stripOrders, stripSmall, stripTrips,
+import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, grantProblem, roleSets, stripOrders, stripSmall, stripTrips,
   updateRoleSet } from './access.mjs';
 import { applyMerger, mergerPlan, mergerStatus, rollbackMerger } from './merger-import.mjs';
 import { closeMonth, controlJournalChecks, processAlertText, processControl, processControlTick, recordClientError,
@@ -180,7 +180,12 @@ function plannerSettings() {
   // задан, сам токен виден в настройках отдельным запросом администратору.
   // bodyCompat — совместимость кузовов автоподбора: клиент («Потоки»,
   // подсказки назначения) обязан фильтровать теми же правилами, что сервер.
-  const { telegram, ...rest } = settings;
+  const { telegram, monitoring, ...rest } = settings;
+  // Pilot-GPS (аудит OWASP 14.11): логин/пароль API уходили в общий
+  // bootstrap любому вошедшему, включая гостя. Наружу — только признаки;
+  // форма мониторинга читает учётку из /api/admin/settings.
+  if (monitoring) rest.monitoring = { baseUrl: monitoring.baseUrl || '',
+    hasLogin: Boolean(monitoring.login), hasPassword: Boolean(monitoring.password) };
   // Живой пакет скоростей — фронту: transitHours в карточках продаж,
   // хвосты подгона и дедлайны назначения считают тем же каноном, что
   // сервер (этап 2 проекта «Скорости»).
@@ -16777,8 +16782,13 @@ async function api(request, response, url) {
   if (match && (request.method === 'PATCH' || request.method === 'DELETE')) {
     const user = requireStaffAccess(request, response);
     if (!user) return;
+    const positionBody = request.method === 'DELETE' ? null : await readJson(request);
+    if (positionBody?.roleSet) {
+      const problem = grantProblem(db, user, null, [String(positionBody.roleSet)], { isAdmin: hasPermission(user, 'users:write') });
+      if (problem) return errorJson(response, 403, problem);
+    }
     const result = request.method === 'DELETE' ? archivePosition(db, match[0])
-      : updatePosition(db, match[0], await readJson(request));
+      : updatePosition(db, match[0], positionBody);
     if (!result.ok) return errorJson(response, result.status || 422, result.error);
     audit(db, user, request.method === 'DELETE' ? 'archive' : 'update', 'position', match[0],
       result.after || { title: result.title }, requestIp(request));
@@ -16788,6 +16798,10 @@ async function api(request, response, url) {
     const user = requireStaffAccess(request, response);
     if (!user) return;
     const body = await readJson(request);
+    if (body.roleSet) {
+      const problem = grantProblem(db, user, null, [String(body.roleSet)], { isAdmin: hasPermission(user, 'users:write') });
+      if (problem) return errorJson(response, 403, problem);
+    }
     const result = createPosition(db, body);
     if (!result.ok) return errorJson(response, result.status || 422, result.error);
     audit(db, user, 'create', 'position', result.id, { title: body.title, headcount: body.headcount }, requestIp(request));
@@ -16831,14 +16845,18 @@ async function api(request, response, url) {
     const user = requireStaffAccess(request, response);
     if (!user) return;
     const body = await readJson(request);
-    const result = createStaffUser(db, { ...body, roles: [] },
-      { allowAdmin: hasPermission(user, 'users:write'), hashPassword });
-    if (!result.ok) return errorJson(response, 422, result.error);
     // Права по должности (10.11): набор не указан — берётся набор должности.
     if (!Array.isArray(body.roleSets)) {
       const positionSet = positionById(db, body.positionId)?.role_set;
       if (positionSet) body.roleSets = [positionSet];
     }
+    if (Array.isArray(body.roleSets)) {
+      const problem = grantProblem(db, user, null, body.roleSets, { isAdmin: hasPermission(user, 'users:write') });
+      if (problem) return errorJson(response, 403, problem);
+    }
+    const result = createStaffUser(db, { ...body, roles: [] },
+      { allowAdmin: hasPermission(user, 'users:write'), hashPassword });
+    if (!result.ok) return errorJson(response, 422, result.error);
     // Роль = набор под должность (07.11): коды прав пишет assignRoleSets.
     if (Array.isArray(body.roleSets) && body.roleSets.length) {
       const assigned = assignRoleSets(db, result.id, body.roleSets, { allowAdmin: hasPermission(user, 'users:write') });
@@ -16854,6 +16872,15 @@ async function api(request, response, url) {
     const user = requireStaffAccess(request, response);
     if (!user) return;
     if (match[0] === user.id) return errorJson(response, 422, 'Свой пароль меняйте в меню «Сменить пароль»');
+    // Аудит 14.11: сброс пароля = захват учётки — учётку с правами шире
+    // своих сбрасывает только администратор.
+    if (!hasPermission(user, 'users:write')) {
+      const target = db.prepare(`SELECT role_sets FROM users WHERE id=?`).get(match[0]);
+      const ids = (() => { try { return JSON.parse(target?.role_sets || '[]'); } catch { return []; } })();
+      if (grantProblem(db, user, null, Array.isArray(ids) ? ids : [], { isAdmin: false })) {
+        return errorJson(response, 403, 'Пароль этого сотрудника сбрасывает администратор — у него права шире ваших');
+      }
+    }
     const result = issueAccess(db, match[0], { hashPassword, allowAdmin: hasPermission(user, 'users:write') });
     if (!result.ok) return errorJson(response, result.status || 422, result.error);
     audit(db, user, result.reissue ? 'password-reset' : 'issue-access', 'staff', match[0],
@@ -17008,6 +17035,11 @@ async function api(request, response, url) {
     const user = requireStaffAccess(request, response);
     if (!user) return;
     const body = await readJson(request);
+    // Наборы прав — проверка ДО любых записей: себе и шире своих нельзя.
+    if (Array.isArray(body.roleSets)) {
+      const problem = grantProblem(db, user, match[0], body.roleSets, { isAdmin: hasPermission(user, 'users:write') });
+      if (problem) return errorJson(response, 403, problem);
+    }
     const result = updateStaffUser(db, match[0], body,
       { allowAdmin: hasPermission(user, 'users:write') });
     if (!result.ok) return errorJson(response, 422, result.error);

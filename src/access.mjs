@@ -351,6 +351,30 @@ export function accessOf(db, user) {
     scope: { all, depts }, views: [...new Set(sets.flatMap(set => set.views))], money, cfo };
 }
 
+// Кто вправе выдать наборы (аудит OWASP 14.11): кадровик с доступом к
+// штату мог назначить СЕБЕ «Руководителя направления» (все права записи,
+// деньги «все», ЦФО «все»). Правило: свои наборы меняет только
+// администратор; не-администратор не выдаёт набор шире своего доступа —
+// по уровню денег, области («всё направление») и ЦФО. Возврат — текст
+// отказа или ''. targetId = null — назначение через должность.
+const CFO_RANK = { all: 3, dept: 2, '': 1 };
+export function grantProblem(db, actor, targetId, ids, { isAdmin = false } = {}) {
+  if (isAdmin) return '';
+  if (targetId && String(targetId) === String(actor?.id)) return 'Свои права меняет только администратор';
+  const own = accessOf(db, actor);
+  const byId = new Map(roleSets(db).map(set => [set.id, set]));
+  for (const id of (Array.isArray(ids) ? ids : []).filter(Boolean)) {
+    const set = byId.get(id);
+    if (!set) continue; // неизвестный набор отклонит assignRoleSets
+    if (set.codes.includes('admin')) return 'Роль «Администратор» назначает только администратор';
+    const wider = RANK[set.money] > RANK[own.money]
+      || (set.scope === 'all' && !own.scope.all)
+      || (CFO_RANK[set.cfo || ''] > CFO_RANK[own.cfo || '']);
+    if (wider) return `Набор «${set.title}» шире ваших прав — его назначает администратор или руководитель направления`;
+  }
+  return '';
+}
+
 // Назначение наборов сотруднику: коды прав набора пишутся в users.roles
 // (мост к прежней модели), набор — в users.role_sets. Пусто — без роли и
 // без входа. Набор с кодом admin назначает только администратор.

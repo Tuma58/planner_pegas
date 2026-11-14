@@ -84,6 +84,20 @@ export function telegramOwnContact(message) {
   return { ok: true, phone: contact.phone_number };
 }
 
+// Секреты не живут в журнале (аудит OWASP 14.11): при сохранении
+// интеграций в audit_log открытым текстом уходили вебхук Б24 (секрет в
+// самом URL), токен телематики, пароль РН-Карт. Любое НЕпустое строковое
+// значение под ключом-секретом заменяется отметкой «изменено» — факт
+// смены виден, значение нет. Признаки (hasToken: true) не трогаются.
+const SECRET_KEY = /(pass(word)?|token|secret|webhook_?url|api_?key|private_?key|cookie|authorization)$/i;
+export const SECRET_MARK = '«скрыто»';
+export function redactSecrets(value, depth = 0) {
+  if (depth > 8 || value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(item => redactSecrets(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+    SECRET_KEY.test(key) && typeof item === 'string' && item ? SECRET_MARK : redactSecrets(item, depth + 1)]));
+}
+
 export function safeEqual(a = '', b = '') {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));

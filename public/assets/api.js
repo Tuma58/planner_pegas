@@ -353,10 +353,12 @@ export function undoToast(message, undoFn) {
   setTimeout(() => { if (button.isConnected && !button.disabled) element.remove(); }, 8000);
 }
 
+// Аудит OWASP 14.11: прежний textContent→innerHTML не экранировал кавычки,
+// а функция стоит в ~250 атрибутах (title="…", value="…") — заметка с `"`
+// вписывала в разметку свои атрибуты у всех, кто открыл экран.
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export function escapeHtml(value = '') {
-  const element = document.createElement('span');
-  element.textContent = String(value);
-  return element.innerHTML;
+  return String(value ?? '').replace(/[&<>"']/g, ch => HTML_ESCAPES[ch]);
 }
 
 // Всплывающее окно предупреждений назначения (решение руководителя 05.11:
