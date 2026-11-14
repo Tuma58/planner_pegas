@@ -13,6 +13,7 @@ import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHi
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
+import { prografikData } from './prografik.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
 const perf = createPerfRegistry();
@@ -12917,6 +12918,22 @@ async function api(request, response, url) {
         FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(monthEnd, monthStart),
       rounds: db.prepare(`SELECT p.vehicle_id, p.round_key, p.note FROM vehicle_round_plans p`).all()
     });
+  }
+
+  // ── «Производственный график» Э3: единый балансовый слой ──
+  // Матрица зоны×дни, баланс и сигналы — одной серверной функцией
+  // (src/prografik.mjs); сегменты клиентов — тем же живым нормативом,
+  // что и в плане вывоза. Право как у плана парка.
+  if (request.method === 'GET' && pathname === '/api/prografik') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const month = /^\d{4}-\d{2}$/.test(String(url.searchParams.get('month')))
+      ? url.searchParams.get('month')
+      : new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 7);
+    const data = prografikData(db, month);
+    data.segments = Object.fromEntries([...new Set(data.slots.map(slot => slot.customer_name))]
+      .map(name => [name, customerSegment(name)]).filter(([, info]) => info));
+    return json(response, 200, data);
   }
 
   // Задание из «Регулятора баланса»: логист/руководитель отправляет рычаг
