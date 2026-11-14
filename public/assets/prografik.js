@@ -36,6 +36,25 @@ async function loadData(month, force = false) {
 }
 export const invalidatePrografik = () => { cache.ts = 0; };
 
+// Следующий назначенный рейс машины после дня iso (логика Базуева/КИП
+// «у машины на линии назначен следующий рейс»): свободна СЕГОДНЯ, но
+// рейс уже стоит — это ⏳ «ждёт рейс», а не чистый 🆓: занять её можно
+// только тем, что успеет до погрузки, и это видно, а не выясняется
+// после назначения. Свободна и БЕЗ следующего — настоящий резерв.
+function nextTripAfter(pg, vehicleId, iso) {
+  const dayEnd = Date.parse(`${iso}T00:00:00Z`) - 3 * 3_600_000 + DAY_MS;
+  let best = null;
+  for (const trip of pg.trips) {
+    if (trip.vehicle_id !== vehicleId || trip.status !== 'plan') continue;
+    const starts = Date.parse(trip.starts_at);
+    if (starts >= dayEnd && (!best || starts < best.starts)) best = { starts, trip };
+  }
+  return best?.trip || null;
+}
+const waitBadge = trip => trip
+  ? ` — уже назначен рейс ${trip.from_name}→${trip.to_name} с ${formatDateTime(trip.starts_at)}`
+  : '';
+
 // ── Черновик «что если» (Э5): локальный список решений пользователя ──
 const draftOf = state => state.prografikDraft || (state.prografikDraft = []);
 const draftBusy = (state, vehicleId, iso) =>
@@ -137,6 +156,10 @@ export async function renderPrografik(container, context) {
         // и пустота там — план, а не пожар). Прошлое — тихий факт.
         const inHorizon = iso >= todayIso && iso <= pg.horizonEnd;
         const past = iso < todayIso;
+        // ⏳ — свободна, но уже назначен следующий рейс (логика Базуева):
+        // такие считаются в свободных, но помечаются отдельно.
+        const waiting = inHorizon ? (pg.freeByDay[iso]?.[zone] || [])
+          .filter(index => nextTripAfter(pg, pg.vehicles[index].id, iso)).length : 0;
         let body; let tone = '';
         if (past) {
           body = `<span class="pg-dim">${c.started ? `везли ${c.started}` : '·'}</span>
@@ -144,20 +167,20 @@ export async function renderPrografik(container, context) {
         } else if (inHorizon && c.gap > c.free) {
           tone = 'pg-bad';
           body = `<b class="pg-lack">−${fmtCars(c.gap - c.free)} маш.</b>
-            <small class="pg-sub">надо ${fmtCars(c.gap)} · есть ${c.free}</small>`;
+            <small class="pg-sub">надо ${fmtCars(c.gap)} · есть ${c.free}${waiting ? ` (⏳${waiting})` : ''}</small>`;
         } else if (inHorizon && c.gap >= 0.05) {
           tone = 'pg-warn';
           body = `<span>работа ${fmtCars(c.gap)}</span>
-            <small class="pg-sub">машин хватает (${c.free})</small>`;
+            <small class="pg-sub">машин хватает (${c.free}${waiting ? `, ⏳${waiting}` : ''})</small>`;
         } else if (inHorizon) {
-          body = c.free ? `<span class="pg-free">🚛${c.free} своб.</span>` : '<span class="pg-dim">·</span>';
+          body = c.free ? `<span class="pg-free">🚛${c.free} своб.${waiting ? ` <span class="pg-wait">⏳${waiting}</span>` : ''}</span>` : '<span class="pg-dim">·</span>';
         } else {
           body = `${c.gap >= 0.05 ? `<span class="pg-dim">план ${fmtCars(c.gap)}</span>` : '<span class="pg-dim">·</span>'}
             ${c.free ? `<small class="pg-sub">🚛${c.free}</small>` : ''}`;
         }
         return `<td class="${tone} ${iso === todayIso ? 'pg-today' : ''} ${iso === focusDay ? 'pg-focus' : ''}">
           <button class="pg-cellbtn" data-cell="${escapeHtml(zone)}|${iso}"
-            title="${escapeHtml(zone)} · ${dayLabel(iso)}: спрос без машины ${fmtGap(c.gap)} (сетка ${c.planned}, заявок без ТС ${c.unassigned}), свободно ${c.free}, вышло в рейс ${c.started} — клик: разбор и кандидаты">
+            title="${escapeHtml(zone)} · ${dayLabel(iso)}: спрос без машины ${fmtGap(c.gap)} (сетка ${c.planned}, заявок без ТС ${c.unassigned}), свободно ${c.free}${waiting ? `, из них ⏳${waiting} уже ждут назначенный рейс` : ''}, вышло в рейс ${c.started} — клик: разбор и кандидаты">
             ${body}
           </button></td>`;
       }).join('');
@@ -232,8 +255,12 @@ export async function renderPrografik(container, context) {
               const dayDispo = pg.dispositions.filter(item => item.vehicle_id === vehicle.id
                 && Date.parse(item.starts_at) < dayStart + DAY_MS && Date.parse(item.ends_at) > dayStart);
               if (!dayTrips.length && !dayDispo.length) {
+                const next = nextTripAfter(pg, vehicle.id, iso);
                 return `<td class="${iso === todayIso ? 'pg-today' : ''}"><button class="pg-cellbtn pg-freebtn"
-                  data-vfree="${vehicle.id}|${iso}" title="${escapeHtml(vehicle.plate)} свободна ${dayLabel(iso)} — клик: чем занять">🆓</button></td>`;
+                  data-vfree="${vehicle.id}|${iso}" title="${escapeHtml(vehicle.plate)} свободна ${dayLabel(iso)}${next
+    ? `${escapeHtml(waitBadge(next))} — занять можно тем, что успеет до погрузки`
+    : ' и следующего рейса НЕТ — настоящий резерв, клик: чем занять'}">${next
+    ? `<span class="pg-wait">⏳ до ${String(next.starts_at).slice(8, 10)}.${String(next.starts_at).slice(5, 7)}</span>` : '🆓'}</button></td>`;
               }
               const marks = [
                 ...dayTrips.map(trip => {
@@ -396,6 +423,11 @@ export async function renderPrografik(container, context) {
       (🟢 внесено и назначено · 🟡 внесено, нет машины · 🔴 день настал, заявок
       меньше плана) и машины зоны по дням (рейс, 🔧 ремонт, 👤 без водителя,
       🆓 свободна — клик подскажет, чем занять).</p>
+      <p><b>🆓 или ⏳ — две разные «свободы».</b> 🆓 — свободна и следующего
+      рейса нет: настоящий резерв, без работы простаивает. <b>⏳ до 16.11</b> —
+      свободна в этот день, но следующий рейс уже назначен: занять её можно
+      только тем, что успеет вернуться к погрузке. В ячейках «⏳N» — сколько
+      из свободных уже ждут рейс.</p>
       <p><b>✏ Черновик</b>: кнопки ✏ копят решения в панель снизу — баланс
       пересчитывается сразу, в планер ничего не уходит. «Применить» создаёт
       заявки и назначения по-настоящему и показывает отчёт по каждому пункту.</p>
@@ -449,14 +481,16 @@ function candidatesFor(state, pg, fromName, windowFrom, order = null) {
     .slice(0, 6);
 }
 
-function candidateRow(candidate, pg, action) {
+function candidateRow(candidate, pg, action, iso = '') {
   const round = (pg.rounds || []).find(item => item.vehicle_id === candidate.vehicle.id);
+  const next = iso ? nextTripAfter(pg, candidate.vehicle.id, iso) : null;
   return `<div class="pg-cand"><span style="flex:1;min-width:0">
     <b class="mono">${escapeHtml(candidate.vehicle.plate)}</b>
     <small class="muted"> · ${escapeHtml(candidate.vehicle.type_name || '')}
       · ${escapeHtml(candidate.vehicle.driver_name || 'без водителя')}${candidate.emptyKm != null ? ` · подгон ~${candidate.emptyKm} км${candidate.approx ? ' (по зоне)' : ''}` : ''}${candidate.readyAt ? ` · ${candidate.ready ? 'готова с' : '⚠ готова только с'} ${formatDateTime(candidate.readyAt)}` : ''}</small>
     ${round ? `<span class="badge">🎡 ${escapeHtml(String(round.round_key).toUpperCase())}</span>` : ''}
     ${candidate.stillRunning ? '<small class="pg-warn2"> · 🛣 ещё в рейсе, освобождение расчётное</small>' : ''}
+    ${next ? `<small class="pg-wait" title="Свободна в этот день, но рейс уже стоит в плане${escapeHtml(waitBadge(next))}"> · ⏳ждёт рейс с ${formatDateTime(next.starts_at)} — успеть вернуться</small>` : ''}
     <span class="badge ${candidate.inZone ? 'ok' : 'warn'}">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.region || candidate.zoneName || 'перегон')}</span>
   </span>${action}</div>`;
 }
@@ -496,10 +530,13 @@ function zoneDayDialog(zone, iso, pg, context, rerender) {
     if (candidates[index]) usedBest.add(candidates[index].vehicle.id);
     return [order.id, index];
   }));
-  const bestLine = candidate => candidate
-    ? `<span class="pg-best">лучший: <b class="mono">${escapeHtml(candidate.vehicle.plate)}</b>
-        <small class="muted">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.region || candidate.zoneName || 'перегон')}${candidate.emptyKm != null ? ` · подгон ~${candidate.emptyKm} км` : ''}${candidate.ready === false ? ' · ⚠ успеет не сразу' : ''}</small></span>`
-    : '<span class="pg-warn2">свободных совместимых машин нет</span>';
+  const bestLine = candidate => {
+    if (!candidate) return '<span class="pg-warn2">свободных совместимых машин нет</span>';
+    const next = nextTripAfter(pg, candidate.vehicle.id, iso);
+    return `<span class="pg-best">лучший: <b class="mono">${escapeHtml(candidate.vehicle.plate)}</b>
+        <small class="muted">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.region || candidate.zoneName || 'перегон')}${candidate.emptyKm != null ? ` · подгон ~${candidate.emptyKm} км` : ''}${candidate.ready === false ? ' · ⚠ успеет не сразу' : ''}</small>
+        ${next ? `<small class="pg-wait" title="Рейс уже стоит в плане${escapeHtml(waitBadge(next))}">· ⏳ждёт рейс с ${String(next.starts_at).slice(8, 10)}.${String(next.starts_at).slice(5, 7)}</small>` : ''}</span>`;
+  };
   const ordersHtml = dayOrders.map(order => {
     const candidates = candsByOrder.get(order.id) || [];
     const bestIdx = bestIdxByOrder.get(order.id) || 0;
@@ -536,9 +573,13 @@ function zoneDayDialog(zone, iso, pg, context, rerender) {
           title="Каждой заявке — её лучший кандидат, разными машинами; применить можно потом разом">✏ Все лучшие в черновик</button>` : ''}</h3>
     ${ordersHtml}
     <h3>По сетке должны ехать — заявка ещё не внесена</h3>${gapsHtml}
-    <h3>Свободные машины зоны <small class="muted">(клик — чем занять)</small></h3>
-    <div>${freeIdx.map(index => `<button class="button ghost small" data-vopen="${pg.vehicles[index].id}"
-      title="${escapeHtml(pg.vehicles[index].driver_name || 'без водителя')} — чем занять">🆓 ${escapeHtml(pg.vehicles[index].plate)}</button>`).join(' ')
+    <h3>Свободные машины зоны <small class="muted">(клик — чем занять; ⏳ — уже назначен следующий рейс)</small></h3>
+    <div>${freeIdx.map(index => {
+    const vehicle = pg.vehicles[index];
+    const next = nextTripAfter(pg, vehicle.id, iso);
+    return `<button class="button ghost small${next ? ' pg-waitbtn' : ''}" data-vopen="${vehicle.id}"
+      title="${escapeHtml(vehicle.driver_name || 'без водителя')}${next ? escapeHtml(waitBadge(next)) : ' — следующего рейса нет, настоящий резерв'}">${next ? '⏳' : '🆓'} ${escapeHtml(vehicle.plate)}</button>`;
+  }).join(' ')
     || '<span class="muted">свободных нет — кандидаты у заявок приедут перегоном из соседних зон</span>'}</div>
     <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div></div>`);
 
@@ -592,7 +633,7 @@ function zoneDayDialog(zone, iso, pg, context, rerender) {
       .filter(({ index }) => index !== bestIdx)
       .map(({ candidate, index }) => candidateRow(candidate, pg,
         `<span style="white-space:nowrap"><button class="button ghost small" data-draft="${orderId}|${index}">✏</button>
-        ${can('trips:write') ? `<button class="button small" data-now="${orderId}|${index}">Назначить</button>` : ''}</span>`)).join('');
+        ${can('trips:write') ? `<button class="button small" data-now="${orderId}|${index}">Назначить</button>` : ''}</span>`, iso)).join('');
     box.hidden = false;
     wireOrderButtons(box);
   });
@@ -614,7 +655,7 @@ function zoneDayDialog(zone, iso, pg, context, rerender) {
     const candidates = candidatesFor(state, pg, zone, windowDefault,
       { body_type: last.bodyType || '', from_point: last.fromPoint || '' });
     box.innerHTML = candidates.map((candidate, index) => candidateRow(candidate, pg,
-      `<button class="button ghost small" data-bookdraft="${index}">✏ бронь + машина</button>`)).join('')
+      `<button class="button ghost small" data-bookdraft="${index}">✏ бронь + машина</button>`, iso)).join('')
       || '<p class="muted">Свободных машин нет.</p>';
     box.hidden = false;
     box.querySelectorAll('[data-bookdraft]').forEach(element => element.onclick = () => {
@@ -658,10 +699,14 @@ function vehicleDayDialog(vehicleId, iso, pg, context, rerender) {
     }).filter(slot => slot.miss > 0).slice(0, 4);
   const round = (pg.rounds || []).find(item => item.vehicle_id === vehicleId);
 
-  showModal(`<div class="sales-modal pg-modal"><h2>🆓 ${escapeHtml(vehicle.plate)} · ${dayLabel(iso)}</h2>
+  const nextPlanned = nextTripAfter(pg, vehicleId, iso);
+  showModal(`<div class="sales-modal pg-modal"><h2>${nextPlanned ? '⏳' : '🆓'} ${escapeHtml(vehicle.plate)} · ${dayLabel(iso)}</h2>
     <p class="muted">${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
       ${zone ? ` · позиция: ${escapeHtml(zone)}` : ' · зона не ясна'}
       ${round ? ` · 🎡 круг ${escapeHtml(String(round.round_key).toUpperCase())}` : ''}</p>
+    ${nextPlanned ? `<p class="pg-waitnote">⏳ Свободна в этот день, но рейс уже стоит в плане${escapeHtml(waitBadge(nextPlanned))}.
+      Занимайте только тем, что успеет вернуться к погрузке, — иначе снимете её с назначенного рейса.</p>`
+    : '<p class="pg-oknote">🆓 Следующего рейса нет — настоящий резерв: без работы машина простаивает.</p>'}
     <h3>Чем занять — заявки дня без машины <small class="muted">(по деньгам, своя зона первой)</small></h3>
     ${work.map((order, index) => `<div class="pg-item"><div>
       <b>№ ${escapeHtml(String(order.order_no || '—'))}</b> ${escapeHtml(order.customer_name)}
