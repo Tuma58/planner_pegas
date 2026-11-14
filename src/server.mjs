@@ -85,7 +85,7 @@ import { autoFillExtensions, callOnTrackedNumber, dutyPhoneDigits, ensureBeeline
 import { METRICS, handoffMetrics, listInitiatives, listSnapshots, moneyMetrics,
   operationMetrics, takeSnapshot } from './project160.mjs';
 import {
-  decryptSecret, encryptSecret, hashPassword, newSessionToken, parseCookies, tokenHash, verifyPassword
+  decryptSecret, encryptSecret, hashPassword, newSessionToken, parseCookies, safeEqual, telegramOwnContact, tokenHash, verifyPassword
 } from './security.mjs';
 import { DORNET_SERVICES, dornetChunks, dornetExpenseRows } from './dornet.mjs';
 import { gibddBoard, importSts, mapApiFines, normCdi, plateParts, upsertGibddFines } from './gibdd.mjs';
@@ -5739,13 +5739,26 @@ async function processDriverUpdate(update, token) {
       if (!chatId) return;
       // Привязка по контакту
       if (message.contact?.phone_number) {
-        const phone = digitsPhone(message.contact.phone_number);
+        const own = telegramOwnContact(message);
+        if (!own.ok) {
+          audit(db, null, 'driver-tg-link-denied', 'telegram', String(message.from?.id || chatId),
+            { reason: own.reason, chatType: message.chat?.type || '' }, 'driver-bot');
+          if (message.chat?.type === 'private') tgApi('sendMessage', { chat_id: chatId,
+            text: 'Привязать можно только свой номер — нажмите кнопку «📱 Поделиться контактом» ниже, а не отправляйте карточку из записной книжки.',
+            reply_markup: { keyboard: [[{ text: '📱 Поделиться контактом', request_contact: true }]],
+              resize_keyboard: true, one_time_keyboard: true } }, token);
+          return;
+        }
+        const phone = digitsPhone(own.phone);
         const driver = phone.length === 10 ? db.prepare(`SELECT * FROM drivers
           WHERE status<>'fired' AND replace(replace(replace(replace(replace(COALESCE(phone,''),'+',''),' ',''),'-',''),'(',''),')','') LIKE ?
           LIMIT 1`).get(`%${phone}`) : null;
         if (driver) {
+          // Перепривязка с другого аккаунта — видимый след в журнале.
+          const previousChat = driver.telegram_chat_id && driver.telegram_chat_id !== chatId ? driver.telegram_chat_id : null;
           db.prepare(`UPDATE drivers SET telegram_chat_id=? WHERE id=?`).run(chatId, driver.id);
-          audit(db, null, 'driver-tg-link', 'driver', driver.id, { via: 'contact' }, 'driver-bot');
+          audit(db, null, 'driver-tg-link', 'driver', driver.id,
+            { via: 'contact', ...(previousChat ? { relinkedFrom: previousChat } : {}) }, 'driver-bot');
           tgApi('sendMessage', { chat_id: chatId,
             text: `✅ Привязано: ${driver.full_name}. Сюда будут приходить задания на рейсы — этапы отмечайте кнопками. Вопрос диспетчеру можно написать прямо здесь.`,
             reply_markup: { keyboard: [[{ text: '📋 Моё задание' }]],
@@ -10986,7 +10999,7 @@ async function api(request, response, url) {
   }
   match = route(/^\/api\/telegram\/webhook\/(staff|driver)$/, pathname);
   if (match && request.method === 'POST') {
-    if (request.headers['x-telegram-bot-api-secret-token'] !== telegramWebhookSecret()) {
+    if (!safeEqual(request.headers['x-telegram-bot-api-secret-token'] || '', telegramWebhookSecret())) {
       return errorJson(response, 403, 'нет');
     }
     const update = await readJson(request);

@@ -66,6 +66,24 @@ export function parseCookies(header = '') {
   }));
 }
 
+// Привязка водителя к боту по контакту (аудит 14.11): принимаем ТОЛЬКО
+// собственный контакт отправителя (кнопка request_contact шлёт его с
+// user_id == from.id) и только в личном чате. Чужая карточка из
+// записной книжки (user_id другой или пуст) или контакт в группе —
+// отказ: иначе по одному лишь номеру телефона можно было стать любым
+// водителем — видеть его рейсы и ставить отметки этапов.
+export function telegramOwnContact(message) {
+  const contact = message?.contact;
+  if (!contact?.phone_number) return { ok: false, reason: 'no_contact' };
+  if (message?.chat?.type !== 'private') return { ok: false, reason: 'not_private' };
+  const fromId = message?.from?.id;
+  if (fromId == null || contact.user_id == null || String(contact.user_id) !== String(fromId)) {
+    return { ok: false, reason: 'foreign_contact' };
+  }
+  if (String(message.chat.id) !== String(fromId)) return { ok: false, reason: 'not_private' };
+  return { ok: true, phone: contact.phone_number };
+}
+
 export function safeEqual(a = '', b = '') {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
