@@ -28,6 +28,22 @@ function freedThresholdOf(waves, fleetSize) {
     samples: waves.length, raw, learned: p80 !== null };
 }
 
+// Живой горизонт актуальности: за сколько дней до погрузки реально
+// вносятся заявки (медиана по 60 суткам). Дальше этого горизонта пустые
+// дни — не тревога, а ещё не внесённый план: красить их красным нельзя,
+// иначе всё будущее горит и настоящие дефициты тонут. Кламп 1–14,
+// фолбэк до накопления факта — 2 дня.
+function bookingHorizonDays(db, todayIso) {
+  const rows = db.prepare(`SELECT julianday(window_from) - julianday(created_at) d
+    FROM orders WHERE deleted_at IS NULL AND status<>'cancelled'
+      AND created_at >= datetime(?, '-60 day')
+      AND julianday(window_from) >= julianday(created_at)`).all(todayIso);
+  const values = rows.map(row => row.d).filter(value => Number.isFinite(value));
+  const median = values.length >= 30 ? percentile(values, 0.5) : null;
+  return { value: Math.min(14, Math.max(1, Math.round(median ?? 2))),
+    samples: values.length, raw: median, learned: median !== null };
+}
+
 export function prografikData(db, month) {
   const daysInMonth = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
   const days = Array.from({ length: daysInMonth }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
@@ -190,16 +206,9 @@ export function prografikData(db, month) {
     if (days[index] >= todayIso) futureWaves.push(freedOf(index).length);
   }
   const norms = { freed: freedThresholdOf(futureWaves, vehicles.length) };
+  // Дефициты машин идут не сюда, а в список задач с кнопкой «Разобрать»
+  // (ниже): сигнальные чипы — только фон (сетка клиентов, волны машин).
   const signals = [];
-  for (const [index, iso] of days.entries()) {
-    if (iso < todayIso) continue;
-    const [gap, free] = balance[index];
-    if (gap - free > 0) {
-      signals.push({ kind: 'deficit', day: iso,
-        title: `Дефицит ${Math.ceil(gap - free)} маш · ${iso.slice(8, 10)}.${iso.slice(5, 7)}`,
-        sub: `спрос ${gap} · свободно ${free}` });
-    }
-  }
   // Незакрытая сетка по клиентам (будущие дни): план слота минус вышедшие
   // рейсы минус уже внесённые заявки дня — то, под что нет даже заявки.
   const gridGapByCustomer = new Map();
@@ -240,7 +249,39 @@ export function prografikData(db, month) {
       sub: `${freed.slice(0, 5).map(vehicle => vehicle.plate).join(', ')}${freed.length > 5 ? '…' : ''} — ресурс под новые заявки` });
   }
 
+  // ── Задачи: конкретные действия в пределах горизонта актуальности ──
+  // «Не хватает машин в зоне-дне» с деньгами под угрозой — руководитель
+  // и логист видят, ЧТО делать, а не только матрицу. Кнопка «Разобрать»
+  // на клиенте открывает готовый разбор этой ячейки.
+  norms.horizon = bookingHorizonDays(db, todayIso);
+  const horizonEnd = new Date(Date.parse(todayIso) + norms.horizon.value * DAY_MS)
+    .toISOString().slice(0, 10);
+  const tasks = [];
+  for (const [index, iso] of days.entries()) {
+    if (iso < todayIso || iso > horizonEnd) continue;
+    for (const zone of zoneSet) {
+      const [gap, free] = cells[zone][index];
+      if (gap <= free) continue;
+      const missing = Math.ceil(gap - free);
+      // Деньги под угрозой: ставки заявок без ТС + ставки незакрытых слотов.
+      const wd = weekdayOf(iso);
+      const ordersMoney = openOrders.reduce((sum, order) =>
+        sum + (order.from_name === zone && mskDay(order.window_from) === iso
+          ? Number(order.rate_vat || 0) : 0), 0);
+      const slotsMoney = slots.reduce((sum, slot) => {
+        if (slot.from_name !== zone || slot.weekday !== wd) return sum;
+        const have = (legFacts[`${slot.customer_name}|${zone}|${slot.to_name}|${iso}`] || [0])[0];
+        const miss = Math.max(0, Math.round(slot.per_day) - have);
+        return sum + miss * Number(slot.rate || 0);
+      }, 0);
+      tasks.push({ zone, day: iso, missing, free,
+        unassigned: cells[zone][index][5], money: Math.round(ordersMoney + slotsMoney) });
+    }
+  }
+  tasks.sort((a, b) => a.day.localeCompare(b.day) || b.money - a.money || b.missing - a.missing);
+
   return { month, daysInMonth, days, todayIso, zones, cells, balance,
-    freeByDay, totalByDay, signals: signals.slice(0, 8), norms, legFacts,
+    freeByDay, totalByDay, signals: signals.slice(0, 8), tasks: tasks.slice(0, 8),
+    horizonEnd, norms, legFacts,
     slots, orders: openOrders, trips, dispositions, vehicles, rounds, lastPoints };
 }

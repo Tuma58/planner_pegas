@@ -2416,5 +2416,13 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .pg-tv-card .n.bad { color: var(--bad); }
 .pg-tv-card .n.ok { color: var(--ok); }
 .pg-tv-card .s { color: var(--muted); }
+.pg-tasks { border: 1px solid var(--border); border-left: 5px solid var(--bad); border-radius: 10px; background: var(--panel); padding: 8px 14px; margin-bottom: 8px; }
+.pg-tasks-ok { border-left-color: var(--ok); color: var(--muted); }
+.pg-tasks-head { font-weight: 650; margin-bottom: 4px; }
+.pg-task { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0; border-top: 1px dashed var(--border2); }
+.pg-task .button { margin-left: auto; }
+.pg-lack { color: var(--bad); font-size: var(--fs-md); white-space: nowrap; }
+.pg-sub { display: block; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.pg-dim { color: var(--muted); opacity: .75; }
 .pg-moveban { border: 1px dashed var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--muted); font-size: var(--fs-sm); padding: 5px 10px; margin-bottom: 8px; }
 .pg-moveban button { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }

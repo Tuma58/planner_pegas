@@ -93,13 +93,23 @@ export async function renderPrografik(container, context) {
     return { show: legs || orders || vehs, auto: legs || orders || vehs };
   };
 
-  // ── Сигнальная полоса ──
+  // ── Задачи: что сделать в ближайшие дни (главный блок экрана) ──
+  const draftCut = task => Math.max(0, task.missing - draftClosed(state, task.zone, task.day));
+  const liveTasks = (pg.tasks || []).filter(task => draftCut(task) > 0);
+  const tasksHtml = liveTasks.length ? `<div class="pg-tasks">
+    <div class="pg-tasks-head">❗ Что сделать по ${dayLabel(pg.horizonEnd)} включительно
+      <small class="muted">— дальше заявки обычно ещё не внесены (срок выучен по факту), там пусто — это план, не тревога</small></div>
+    ${liveTasks.map((task, index) => `<div class="pg-task">
+      <b>${dayLabel(task.day)}</b> · ${escapeHtml(task.zone)}:
+      не хватает <b class="pg-gap">${draftCut(task)} маш.</b>
+      <small class="muted">заявок без машины ${task.unassigned}, свободных в зоне ${task.free}${moneyVisible && task.money ? `, под угрозой ${shortMoney(task.money)} ₽` : ''}</small>
+      <button class="button small" data-task="${index}">Разобрать</button>
+    </div>`).join('')}</div>`
+    : `<div class="pg-tasks pg-tasks-ok">✅ По ${dayLabel(pg.horizonEnd)} включительно машин хватает на весь внесённый спрос${draft.length ? ' (с учётом черновика)' : ''}.</div>`;
   const signalsHtml = (pg.signals || []).map((signal, index) => `
     <button class="pg-sig ${signal.kind}" data-sig="${index}"
-      title="${signal.kind === 'deficit' ? 'Показать день — решения в красных ячейках'
-    : signal.kind === 'grid' ? 'Сфокусировать график на клиенте' : 'Показать день освобождений'}">
-      <b>${escapeHtml(signal.title)}</b><span>${escapeHtml(signal.sub)}</span></button>`).join('')
-    || '<span class="muted" style="padding:4px 8px">Сигналов нет — спрос и парк в балансе</span>';
+      title="${signal.kind === 'grid' ? 'Сфокусировать график на клиенте' : 'Показать день освобождений'}">
+      <b>${escapeHtml(signal.title)}</b><span>${escapeHtml(signal.sub)}</span></button>`).join('');
 
   // ── Сетка ──
   const headRow = `<tr><th class="pg-zone">Зона · состав</th>${days.map(iso =>
@@ -113,13 +123,33 @@ export async function renderPrografik(container, context) {
       const cells = dayIdxs.map((dayIdx, column) => {
         const iso = days[column];
         const c = cellOf(zone, dayIdx);
-        const tone = c.gap > 0 && !c.free ? 'pg-bad' : c.gap > 0 ? 'pg-warn' : '';
+        // Одно главное число на ячейку. Красное «−N» — НЕ ХВАТАЕТ машин
+        // (только в горизонте актуальности: дальше заявки ещё не внесены,
+        // и пустота там — план, а не пожар). Прошлое — тихий факт.
+        const inHorizon = iso >= todayIso && iso <= pg.horizonEnd;
+        const past = iso < todayIso;
+        let body; let tone = '';
+        if (past) {
+          body = `<span class="pg-dim">${c.started ? `везли ${c.started}` : '·'}</span>
+            ${moneyVisible && c.income ? `<small class="pg-money">${shortMoney(c.income)}</small>` : ''}`;
+        } else if (inHorizon && c.gap > c.free) {
+          tone = 'pg-bad';
+          body = `<b class="pg-lack">−${Math.ceil(c.gap - c.free)} маш.</b>
+            <small class="pg-sub">надо ${fmtGap(c.gap)} · есть ${c.free}</small>`;
+        } else if (inHorizon && c.gap >= 0.05) {
+          tone = 'pg-warn';
+          body = `<span>работа ${fmtGap(c.gap)}</span>
+            <small class="pg-sub">машин хватает (${c.free})</small>`;
+        } else if (inHorizon) {
+          body = c.free ? `<span class="pg-free">🚛${c.free} своб.</span>` : '<span class="pg-dim">·</span>';
+        } else {
+          body = `${c.gap >= 0.05 ? `<span class="pg-dim">план ${fmtGap(c.gap)}</span>` : '<span class="pg-dim">·</span>'}
+            ${c.free ? `<small class="pg-sub">🚛${c.free}</small>` : ''}`;
+        }
         return `<td class="${tone} ${iso === todayIso ? 'pg-today' : ''} ${iso === focusDay ? 'pg-focus' : ''}">
           <button class="pg-cellbtn" data-cell="${escapeHtml(zone)}|${iso}"
-            title="${escapeHtml(zone)} · ${dayLabel(iso)}: сетка ${c.planned}, заявок без ТС ${c.unassigned}, вышло ${c.started}, свободно ${c.free} — клик: разбор и кандидаты">
-            ${c.gap >= 0.05 ? `<b class="pg-gap">▲${fmtGap(c.gap)}</b>` : (c.planned || c.started ? '<span class="pg-okdot">·</span>' : '')}
-            ${c.free ? `<span class="pg-free">🚛${c.free}</span>` : ''}
-            ${moneyVisible && c.income ? `<small class="pg-money">${shortMoney(c.income)}</small>` : ''}
+            title="${escapeHtml(zone)} · ${dayLabel(iso)}: спрос без машины ${fmtGap(c.gap)} (сетка ${c.planned}, заявок без ТС ${c.unassigned}), свободно ${c.free}, вышло в рейс ${c.started} — клик: разбор и кандидаты">
+            ${body}
           </button></td>`;
       }).join('');
       const periodMoney = dayIdxs.reduce((sum, dayIdx) => sum + (pg.cells[zone]?.[dayIdx]?.[2] || 0), 0);
@@ -236,9 +266,13 @@ export async function renderPrografik(container, context) {
     const gap = Math.max(0, gapRaw - closed);
     const free = Object.keys(pg.freeByDay[iso] || {})
       .reduce((sum, zone) => sum + freeDraftCut(zone, iso), 0);
-    const tone = gap > free ? 'pg-bad' : gap >= 0.05 ? 'pg-warn' : '';
-    return `<td class="${tone} ${iso === todayIso ? 'pg-today' : ''}">▲${fmtGap(gap)} · 🚛${free}
-      ${moneyVisible && income ? `<small class="pg-money">${shortMoney(income)}</small>` : ''}</td>`;
+    const inHorizon = iso >= todayIso && iso <= pg.horizonEnd;
+    const tone = inHorizon && gap > free ? 'pg-bad' : '';
+    const label = iso < todayIso ? `<span class="pg-dim">${moneyVisible && income ? shortMoney(income) : '·'}</span>`
+      : inHorizon && gap > free ? `<b class="pg-lack">−${Math.ceil(gap - free)} маш.</b>`
+        : `<span>${inHorizon ? 'хватает' : 'план'} ${fmtGap(gap)} · 🚛${free}</span>`;
+    return `<td class="${tone} ${iso === todayIso ? 'pg-today' : ''}">${label}
+      ${iso >= todayIso && moneyVisible && income ? `<small class="pg-money">${shortMoney(income)}</small>` : ''}</td>`;
   }).join('');
   const periodTotal = dayIdxs.reduce((sum, dayIdx) => sum + pg.balance[dayIdx][2], 0);
   const balanceRow = `<tr class="pg-balance"><td class="pg-zone"><b>Баланс парка</b>
@@ -271,9 +305,11 @@ export async function renderPrografik(container, context) {
     const iso = pg.days[dayIdx];
     const [gap, free, income] = pg.balance[dayIdx];
     const deficit = Math.ceil(gap - free);
+    const inHorizon = iso <= pg.horizonEnd;
+    const n = inHorizon && deficit > 0 ? `−${deficit} маш.` : inHorizon ? 'машин хватает' : `план ${fmtGap(gap)}`;
     return `<div class="pg-tv-card ${iso === todayIso ? 'now' : ''}">
           <div class="d">${dayLabel(iso)}</div>
-          <div class="n ${deficit > 0 ? 'bad' : 'ok'}">${deficit > 0 ? `−${deficit} маш` : 'баланс ✓'}</div>
+          <div class="n ${inHorizon && deficit > 0 ? 'bad' : inHorizon ? 'ok' : ''}">${n}</div>
           <div class="s">спрос ${fmtGap(gap)} · свободно ${free}${moneyVisible && income ? `<br>${shortMoney(income)}` : ''}</div>
         </div>`;
   }).join('')}</div></div>`;
@@ -281,7 +317,8 @@ export async function renderPrografik(container, context) {
 
   const savedScrolls = captureScrolls(container);
   const html = `<div class="bi-page pg-page">
-    <div class="pg-signals">${signalsHtml}</div>
+    ${tasksHtml}
+    ${signalsHtml ? `<div class="pg-signals">${signalsHtml}</div>` : ''}
     <div class="bi-kpis bi-kpis-row">
       <div class="segmented" id="pgMonthNav">
         <button data-m="-1" title="Предыдущий месяц">‹</button>
@@ -294,7 +331,7 @@ export async function renderPrografik(container, context) {
       </div>
       <input id="pgSearch" class="block-search" placeholder="Поиск: зона, клиент, борт" value="${escapeHtml(state.prografikQuery || '')}">
       <button class="button ghost" id="pgTvBtn" title="Крупные карточки баланса для табло">📺 Табло</button>
-      <span class="muted" style="margin-left:auto">ячейка — разбор и кандидаты · 🆓 — чем занять · ✏ копит черновик</span>
+      <button class="button ghost" id="pgLegend" title="Что значат цвета и числа">ⓘ Как читать</button>
     </div>
     <section class="section"><div class="sec-b pg-wrap">
       <table class="pg-table"><thead>${headRow}</thead>
@@ -328,6 +365,32 @@ export async function renderPrografik(container, context) {
     return rerender();
   });
   container.querySelector('#pgTvBtn').onclick = () => { state.prografikTv = true; rerender(); };
+  container.querySelectorAll('[data-task]').forEach(button => button.onclick = () => {
+    const task = liveTasks[Number(button.dataset.task)];
+    if (task) zoneDayDialog(task.zone, task.day, pg, context, rerender);
+  });
+  container.querySelector('#pgLegend')?.addEventListener('click', () => context.showModal(
+    `<div class="sales-modal pg-modal"><h2>ⓘ Как читать график</h2>
+      <p><b>Верхний блок «Что сделать»</b> — готовый список: где и в какой день
+      не хватает машин. Кнопка «Разобрать» открывает этот день с кандидатами.</p>
+      <p><b>Сетка.</b> Строка — зона погрузки (по выручке), колонка — день.</p>
+      <p>🔴 <b>−3 маш.</b> — в этот день в зоне не хватает трёх машин на внесённый
+      спрос. Это пожар — кликните и закройте кандидатами.</p>
+      <p>🟡 <b>работа 5</b> — спрос есть, свободных машин хватает: осталось
+      назначить (клик — кандидаты).</p>
+      <p><b>🚛4 своб.</b> — работы нет, машины простаивают: клик по зоне покажет,
+      чем их занять.</p>
+      <p><span class="pg-dim">план 6</span> серым — день дальше «${pg.norms?.horizon?.value || 2} дн.»:
+      туда заявки обычно ещё не внесены (срок система выучила по факту),
+      это ожидаемая сетка, не тревога.</p>
+      <p><b>Клик по названию зоны</b> — состав: плечи клиентов «заявки/план»
+      (🟢 внесено и назначено · 🟡 внесено, нет машины · 🔴 день настал, заявок
+      меньше плана) и машины зоны по дням (рейс, 🔧 ремонт, 👤 без водителя,
+      🆓 свободна — клик подскажет, чем занять).</p>
+      <p><b>✏ Черновик</b>: кнопки ✏ копят решения в панель снизу — баланс
+      пересчитывается сразу, в планер ничего не уходит. «Применить» создаёт
+      заявки и назначения по-настоящему и показывает отчёт по каждому пункту.</p>
+      <div class="modal-actions"><button class="button" data-close>Понятно</button></div></div>`));
   container.querySelector('#pgTvExit')?.addEventListener('click', () => { state.prografikTv = false; rerender(); });
   container.querySelectorAll('.pg-sig[data-sig]').forEach(element => element.onclick = () => {
     const signal = pg.signals[Number(element.dataset.sig)];
