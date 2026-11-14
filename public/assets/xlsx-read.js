@@ -72,7 +72,7 @@ export const excelDate = value => {
   return new Date(ms).toISOString().slice(0, 10);
 };
 
-export async function readXlsx(file) {
+export async function readXlsx(file, wantedSheet = null) {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('Браузер не поддерживает чтение xlsx — обновите браузер');
   }
@@ -85,9 +85,25 @@ export async function readXlsx(file) {
       shared.push(texts.join(''));
     }
   }
-  // Первый лист: ищем sheet1, иначе любой sheet*.xml.
-  const sheetName = files['xl/worksheets/sheet1.xml'] ? 'xl/worksheets/sheet1.xml'
-    : Object.keys(files).find(name => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
+  // Какой лист читать: по имени (через workbook.xml + rels), иначе первый.
+  let sheetName = null;
+  if (wantedSheet) {
+    const wbXml = await readEntry(files, 'xl/workbook.xml');
+    const relsXml = await readEntry(files, 'xl/_rels/workbook.xml.rels');
+    const rid = wbXml && [...wbXml.matchAll(/<sheet [^>]*\/?>/g)]
+      .map(m => m[0])
+      .filter(tag => unescapeXml((tag.match(/name="([^"]*)"/) || ['', ''])[1]) === wantedSheet)
+      .map(tag => (tag.match(/r:id="([^"]*)"/) || [])[1])[0];
+    // Порядок атрибутов в rels произвольный (Target бывает раньше Id).
+    const relTag = rid && relsXml && [...relsXml.matchAll(/<Relationship [^>]*\/?>/g)]
+      .map(m => m[0]).find(tag => tag.includes(`Id="${rid}"`));
+    const target = relTag && (relTag.match(/Target="([^"]*)"/) || [])[1];
+    if (target) sheetName = target.startsWith('/') ? target.slice(1) : `xl/${target}`;
+    if (!sheetName) throw new Error(`В xlsx нет листа «${wantedSheet}»`);
+  } else {
+    sheetName = files['xl/worksheets/sheet1.xml'] ? 'xl/worksheets/sheet1.xml'
+      : Object.keys(files).find(name => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
+  }
   const sheetXml = await readEntry(files, sheetName);
   if (!sheetXml) throw new Error('В xlsx не найден лист с данными');
   const rows = [];

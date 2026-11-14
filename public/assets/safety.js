@@ -3,9 +3,16 @@
 // расследованием и мерами, допуски и инструктажи со сроками, водители без
 // действующего допуска.
 import { api, escapeHtml, renderInto, toast } from './api.js';
+import { excelDate, readXlsx } from './xlsx-read.js';
 
 const ruDay = iso => iso ? String(iso).slice(0, 10).split('-').reverse().join('.') : '—';
 const fmtRub = value => `${Math.round(Number(value) || 0).toLocaleString('ru-RU')} ₽`;
+const ruMonth = iso => {
+  const [year, month] = String(iso).split('-').map(Number);
+  return `${['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'][month - 1]} ${year}`;
+};
+const culpTag = value => value === 'guilty' ? '<span class="bi-tag neg">виновны</span>'
+  : value === 'notguilty' ? '<span class="bi-tag pos">не виновны</span>' : '';
 
 export async function renderSafety(container, context) {
   const { state } = context;
@@ -24,9 +31,13 @@ export async function renderSafety(container, context) {
     <div class="bi-sub"><h2>Безопасность движения</h2>
       <p>ДТП, нарушения и режим труда и отдыха — с расследованием и мерами; допуски и инструктажи — со сроками. Медосмотр и техконтроль выпуска — на экране «Выпуск».</p>
       <div class="bi-actions"><input type="date" id="sfFrom" value="${from}">
-        ${data.canWrite ? '<button class="button primary" id="sfAdd">＋ Событие</button>' : ''}</div></div>
+        ${data.canWrite ? `<label class="button ghost" title="Выгрузка 1С:УАТ с листом «ДТП» — повторная загрузка обновляет, а не дублирует">⬆ Импорт ДТП из 1С<input type="file" id="sfImport" accept=".xlsx" hidden></label>
+        <button class="button primary" id="sfAdd">＋ Событие</button>` : ''}</div></div>
     <div class="bi-kpis">
-      <div class="metric ${s.dtp ? 'neg' : 'pos'}"><span class="l">ДТП за период</span><span class="v">${s.dtp}</span></div>
+      <div class="metric ${s.dtp ? 'neg' : 'pos'}"><span class="l">ДТП за период</span><span class="v">${s.dtp}</span>
+        ${s.dtpGuilty || s.dtpNotGuilty ? `<span class="d">виновны ${s.dtpGuilty} · не виновны ${s.dtpNotGuilty}</span>` : ''}</div>
+      <div class="metric"><span class="l">ДТП на 1 млн км</span><span class="v">${s.per1m == null ? '—' : s.per1m.toLocaleString('ru-RU')}</span>
+        <span class="d">пробег ${Math.round(s.periodKm / 1000).toLocaleString('ru-RU')} тыс. км</span></div>
       <div class="metric ${s.rto ? 'warn' : ''}"><span class="l">Нарушения РТО</span><span class="v">${s.rto}</span></div>
       <div class="metric ${s.pdd ? 'warn' : ''}"><span class="l">Нарушения ПДД</span><span class="v">${s.pdd}</span></div>
       <div class="metric ${s.open ? 'warn' : ''}"><span class="l">Открытые расследования</span><span class="v">${s.open}</span></div>
@@ -36,6 +47,25 @@ export async function renderSafety(container, context) {
       <div class="metric ${g.burning.length ? 'neg' : ''}"><span class="l">Скидка 50 % горит</span><span class="v">${g.burning.length}</span><span class="d">порог ${data.warnDays} дн</span></div>` : ''}
     </div>
     <div class="bi-grid">
+      <section class="section s6"><div class="sec-h"><span class="st">ДТП — динамика 6 месяцев</span><span class="hint">аварийность — на фактический пробег рейсов</span></div>
+        <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Месяц</th><th class="r">ДТП</th><th class="r">виновны</th><th class="r">не виновны</th><th class="r">пробег, тыс. км</th><th class="r">на 1 млн км</th></tr></thead>
+        <tbody>${(data.months || []).map(row => `<tr>
+          <td>${ruMonth(row.month)}</td><td class="num">${row.dtp || ''}</td>
+          <td class="num">${row.guilty ? `<span class="bi-tag neg">${row.guilty}</span>` : ''}</td>
+          <td class="num">${row.notguilty || ''}</td>
+          <td class="num">${Math.round(row.km / 1000).toLocaleString('ru-RU')}</td>
+          <td class="num">${row.per1m == null ? '—' : row.per1m.toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></section>
+      <section class="section s6"><div class="sec-h"><span class="st">Дела страховых — открытые ДТП</span><span class="hint">от старых к свежим; возраст — дни с ДТП</span></div>
+        ${(data.claimFunnel || []).length ? `<div class="sec-b sf-tags">${data.claimFunnel.map(step => `<span class="bi-tag">${escapeHtml(step.label)}: <b>${step.count}</b></span>`).join(' ')}</div>` : ''}
+        <div class="sec-b flush"><table class="bi-table"><thead><tr><th>№ 1С · дата</th><th>Машина · водитель</th><th>Этап</th><th class="r">Возраст, дн</th></tr></thead>
+        <tbody>${(data.claims || []).slice().sort((a, b) => b.ageDays - a.ageDays).slice(0, 60).map(row => `<tr>
+          <td>${escapeHtml(row.external_no || '—')}<div class="muted">${ruDay(row.happened_on)}</div></td>
+          <td>${escapeHtml(row.plate)}${row.driver_name ? `<div class="muted">${escapeHtml(row.driver_name)}</div>` : ''}</td>
+          <td>${escapeHtml((data.claimLabels || {})[row.claim_status] || row.claim_status || '—')}${row.claim_no ? `<div class="muted">дело ${escapeHtml(row.claim_no)}</div>` : ''} ${culpTag(row.culpability)}</td>
+          <td class="num">${row.ageDays}</td></tr>`).join('')
+    || '<tr><td colspan="4" class="muted">открытых дел нет</td></tr>'}</tbody></table></div></section>
+      ${(data.byVehicle || []).length ? `<section class="section s6"><div class="sec-h"><span class="st">Машины по ДТП периода</span></div>
+        <div class="sec-b sf-tags">${data.byVehicle.slice(0, 40).map(row => `<span class="bi-tag ${row.guilty ? 'neg' : ''}">${escapeHtml(row.plate)}: ${row.dtp}${row.guilty ? ` (виновны ${row.guilty})` : ''}</span>`).join(' ')}</div></section>` : ''}
       <section class="section s6"><div class="sec-h"><span class="st">Открытые расследования</span></div>
         <div class="sec-b flush"><table class="bi-table"><tbody>${data.open.map(row => `<tr>
           <td>${ruDay(row.happened_on)}<div class="muted">${escapeHtml(data.kinds[row.kind])}</div></td>
@@ -73,8 +103,8 @@ export async function renderSafety(container, context) {
       </section>` : ''}
       <section class="section"><div class="sec-h"><span class="st">Журнал за период</span></div>
         <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Дата</th><th>Вид</th><th>Водитель · машина</th><th>Что произошло</th><th>Меры</th><th>Статус</th></tr></thead>
-        <tbody>${data.events.map(row => `<tr><td>${ruDay(row.happened_on)}</td><td>${escapeHtml(data.kinds[row.kind])}</td>
-          <td>${escapeHtml(row.driver_name)}${row.plate ? ` · ${escapeHtml(row.plate)}` : ''}</td><td>${escapeHtml(row.description)}${row.valid_until ? ` <span class="muted">до ${ruDay(row.valid_until)}</span>` : ''}</td>
+        <tbody>${data.events.map(row => `<tr><td>${ruDay(row.happened_on)}</td><td>${escapeHtml(data.kinds[row.kind])}${row.external_no ? `<div class="muted">${escapeHtml(row.external_no)}</div>` : ''} ${culpTag(row.culpability)}</td>
+          <td>${escapeHtml(row.driver_name)}${row.plate ? ` · ${escapeHtml(row.plate)}` : ''}</td><td>${escapeHtml(row.description)}${row.valid_until ? ` <span class="muted">до ${ruDay(row.valid_until)}</span>` : ''}${row.claim_status ? `<div class="muted">СК: ${escapeHtml((data.claimLabels || {})[row.claim_status] || row.claim_status)}${row.paid_rub ? ` · выплачено ${fmtRub(row.paid_rub)}` : ''}</div>` : ''}</td>
           <td>${escapeHtml(row.measures)}</td><td>${row.status === 'open' ? '<span class="bi-tag warn">расследуется</span>' : '<span class="bi-tag pos">закрыто</span>'}</td></tr>`).join('')
     || '<tr><td colspan="6" class="muted">записей нет</td></tr>'}</tbody></table></div></section>
     </div>
@@ -82,6 +112,21 @@ export async function renderSafety(container, context) {
   const rerender = () => renderSafety(container, context);
   container.querySelector('#sfFrom').onchange = event => { state.safetyFrom = event.currentTarget.value; rerender(); };
   container.querySelector('#sfAdd')?.addEventListener('click', () => addDialog(context, data, rerender));
+  container.querySelector('#sfImport')?.addEventListener('change', async event => {
+    const file = event.currentTarget.files[0];
+    event.currentTarget.value = '';
+    if (!file) return;
+    try {
+      const result = await importDtpFile(file);
+      toast(`Импорт ДТП: новых ${result.added}, обновлено ${result.updated}${result.skipped.length ? `, пропущено ${result.skipped.length}` : ''}`);
+      if (result.skipped.length) {
+        context.showModal(`<h2>Импорт: пропущенные строки</h2>
+          <div class="sec-b">${result.skipped.slice(0, 50).map(line => `<div>${escapeHtml(line)}</div>`).join('')}</div>
+          <div class="modal-actions"><button class="button" data-close>Понятно</button></div>`);
+      }
+      rerender();
+    } catch (error) { toast(error.message); }
+  });
   // Штраф → расследование: событие «Нарушение ПДД» с заполненными полями.
   container.querySelectorAll('[data-sf-fine]').forEach(button => {
     button.onclick = () => {
@@ -111,6 +156,44 @@ export async function renderSafety(container, context) {
   });
 }
 
+// Выгрузка 1С:УАТ: лист «ДТП», колонки находим по заголовкам (порядок в
+// 1С может меняться). Дата — excel-число с временем.
+async function importDtpFile(file) {
+  const rows = await readXlsx(file, 'ДТП');
+  if (!rows.length) throw new Error('Лист «ДТП» пуст');
+  const header = rows[0].map(cell => String(cell || '').toLowerCase().trim());
+  const col = part => header.findIndex(cell => cell.startsWith(part));
+  const columns = {
+    externalNo: col('номер'), date: col('дата и время'), plate: col('тс'), driverName: col('водитель'),
+    culpability: col('виновность'), place: col('место'), damage: col('поврежден'),
+    analysis: col('анализ'), comment: col('комментар'), claimStatus: col('статус'),
+    claimNo: col('номер дела'), paidRub: col('выплачено ск'), members: col('участники')
+  };
+  if (columns.externalNo < 0 || columns.date < 0 || columns.plate < 0) {
+    throw new Error('Не похоже на выгрузку ДТП из 1С: нет колонок «Номер», «Дата и время», «ТС»');
+  }
+  const value = (row, key) => columns[key] >= 0 ? String(row[columns[key]] ?? '').trim() : '';
+  const body = rows.slice(1)
+    .filter(row => value(row, 'externalNo'))
+    .map(row => {
+      const members = value(row, 'members');
+      // Тягач сцепки — фолбэк привязки, когда «ТС» — прицеп (их нет в парке).
+      const paired = (members.match(/сцепке с\s*([а-яёa-z]{1,2}\s?\d{3,4}\s?[а-яёa-z]{0,2}\s?\d{2,3})/i) || [])[1] || '';
+      return {
+        externalNo: value(row, 'externalNo'),
+        happenedOn: excelDate(value(row, 'date')) || String(value(row, 'date')).slice(0, 10),
+        plate: value(row, 'plate'), pairedPlate: paired, driverName: value(row, 'driverName'),
+        culpability: value(row, 'culpability'), place: value(row, 'place'),
+        damage: value(row, 'damage') + (/сцепк/i.test(members) ? `\nУчастники: ${members}` : ''),
+        analysis: value(row, 'analysis'), comment: value(row, 'comment'),
+        claimStatus: value(row, 'claimStatus'), claimNo: value(row, 'claimNo'),
+        paidRub: Number(value(row, 'paidRub')) || 0
+      };
+    });
+  if (!body.length) throw new Error('В листе «ДТП» нет строк с номером документа');
+  return api('/api/safety/import', { method: 'POST', body: JSON.stringify({ rows: body }) });
+}
+
 function addDialog(context, data, after, preset = {}) {
   const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
   context.showModal(`<form id="sfForm"><h2>Событие безопасности движения</h2>
@@ -120,6 +203,8 @@ function addDialog(context, data, after, preset = {}) {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <label class="field">Дата <input type="date" name="happenedOn" value="${preset.happenedOn || today}" required></label>
       <label class="field">Действует до <small class="muted">(допуск, инструктаж)</small><input type="date" name="validUntil"></label></div>
+    <label class="field">Виновность <small class="muted">(для ДТП)</small><select name="culpability">
+      <option value="">— не определена —</option><option value="guilty">виновны</option><option value="notguilty">не виновны</option></select></label>
     <label class="field">Что произошло <textarea name="description" rows="3">${escapeHtml(preset.description || '')}</textarea></label>
     <label class="field">Меры <textarea name="measures" rows="2"></textarea></label>
     <div class="form-error" id="sfErr"></div>
@@ -127,7 +212,7 @@ function addDialog(context, data, after, preset = {}) {
   document.querySelector('#sfForm').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
-    const body = Object.fromEntries(['kind', 'driverId', 'vehicleId', 'happenedOn', 'validUntil', 'description', 'measures'].map(key => [key, form[key].value]));
+    const body = Object.fromEntries(['kind', 'driverId', 'vehicleId', 'happenedOn', 'validUntil', 'description', 'measures', 'culpability'].map(key => [key, form[key].value]));
     try {
       await api('/api/safety', { method: 'POST', body: JSON.stringify(body) });
       toast('Сохранено');

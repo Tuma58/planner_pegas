@@ -69,7 +69,7 @@ import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } fro
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
 import { RELEASE_ITEMS, releaseBoard, techFail, techPass } from './release.mjs';
 import { DOC_KINDS, docsBoard, markDocs } from './trip-docs.mjs';
-import { SAFETY_KINDS, addSafetyEvent, closeSafetyEvent, safetyBoard } from './safety.mjs';
+import { CLAIM_LABELS, SAFETY_KINDS, addSafetyEvent, closeSafetyEvent, importDtpRows, safetyBoard } from './safety.mjs';
 import { docsDueAll, toStatusAll, vehicleCardApi } from './vehicle-card.mjs';
 import { payrollApi } from './payroll.mjs';
 import { bitrixCall, bitrixConnector, linkedChats, migrateBitrix, mirrorToBitrix, pollBitrixRooms } from './bitrix24.mjs';
@@ -16438,7 +16438,7 @@ async function api(request, response, url) {
       const warnDays = directionGoals(settingsObject(db).calculation).docsWarnDays;
       const gibddEnabled = Boolean(db.prepare(`SELECT enabled FROM integration_connectors
         WHERE id='onlinegibdd'`).get()?.enabled);
-      return json(response, 200, { ...safetyBoard(db, { from, to, warnDays }), kinds: SAFETY_KINDS,
+      return json(response, 200, { ...safetyBoard(db, { from, to, warnDays }), kinds: SAFETY_KINDS, claimLabels: CLAIM_LABELS,
         gibdd: { ...gibddBoard(db, { from, to, warnDays }), enabled: gibddEnabled,
           last: JSON.parse(db.prepare(`SELECT value FROM app_meta
             WHERE key='gibdd_sync_last'`).get()?.value || 'null') },
@@ -16458,6 +16458,17 @@ async function api(request, response, url) {
         notify('manager', `🛡 ДТП: ${String(body.description || '').slice(0, 140)} — расследование открыто (${name})`, null, null, { category: 'other' });
       }
       return json(response, 201, { id: result.id });
+    }
+    // Импорт ДТП из выгрузки 1С:УАТ (лист «ДТП» разбирает браузер):
+    // идемпотентный апсерт по внешнему номеру документа.
+    if (request.method === 'POST' && pathname === '/api/safety/import') {
+      const body = await readJson(request);
+      const rows = Array.isArray(body.rows) ? body.rows.slice(0, 3000) : [];
+      if (!rows.length) return errorJson(response, 422, 'В файле не нашлось строк ДТП');
+      const result = importDtpRows(db, rows, name);
+      audit(db, user, 'import', 'safety_event', 'dtp-1c', {
+        added: result.added, updated: result.updated, skipped: result.skipped.length }, requestIp(request));
+      return json(response, 200, result);
     }
     const safetyMatch = route(/^\/api\/safety\/([\w-]+)\/close$/, pathname);
     if (safetyMatch && request.method === 'POST') {
