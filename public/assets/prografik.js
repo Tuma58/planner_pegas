@@ -17,8 +17,11 @@ import { bodyTypeCompatible, matchVehicles, resolveAddress } from './sales.js';
 const DAY_MS = 86_400_000;
 const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 const dayLabel = iso => `${WD[new Date(`${iso}T12:00:00Z`).getUTCDay()]} ${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
-// Спрос сетки бывает дробным (0,5 машины/день) — до одного знака.
+// Спрос сетки бывает дробным (0,5 машины/день): на экране — целые
+// «в машинах» (вверх: недобор честнее завысить, чем спрятать), точное
+// значение остаётся в подсказке ячейки.
 const fmtGap = value => String(Math.round(value * 10) / 10).replace('.', ',');
+const fmtCars = value => String(Math.ceil(Math.round(value * 10) / 10));
 const shortMoney = value => value >= 1_000_000
   ? `${(value / 1_000_000).toFixed(1).replace('.', ',')} млн`
   : value ? `${Math.round(value / 1000)} т` : '';
@@ -116,7 +119,13 @@ export async function renderPrografik(container, context) {
     `<th class="${iso === todayIso ? 'pg-today' : ''} ${iso === focusDay ? 'pg-focus' : ''}">${dayLabel(iso)}</th>`).join('')}
     <th title="Выручка зоны за видимый период">Период</th></tr>`;
 
+  // Пустые за период зоны (ни спроса, ни машин, ни денег) — шум: прячем.
+  const zoneAlive = zone => dayIdxs.some(dayIdx => {
+    const raw = pg.cells[zone]?.[dayIdx] || [0, 0, 0];
+    return raw[0] >= 0.05 || raw[2] > 0 || (pg.freeByDay[pg.days[dayIdx]]?.[zone] || []).length > 0;
+  });
   const zoneRows = pg.zones
+    .filter(({ zone }) => zoneAlive(zone))
     .map(({ zone }) => ({ zone, match: zoneMatches(zone) }))
     .filter(({ match }) => match.show)
     .map(({ zone, match }) => {
@@ -134,16 +143,16 @@ export async function renderPrografik(container, context) {
             ${moneyVisible && c.income ? `<small class="pg-money">${shortMoney(c.income)}</small>` : ''}`;
         } else if (inHorizon && c.gap > c.free) {
           tone = 'pg-bad';
-          body = `<b class="pg-lack">−${Math.ceil(c.gap - c.free)} маш.</b>
-            <small class="pg-sub">надо ${fmtGap(c.gap)} · есть ${c.free}</small>`;
+          body = `<b class="pg-lack">−${fmtCars(c.gap - c.free)} маш.</b>
+            <small class="pg-sub">надо ${fmtCars(c.gap)} · есть ${c.free}</small>`;
         } else if (inHorizon && c.gap >= 0.05) {
           tone = 'pg-warn';
-          body = `<span>работа ${fmtGap(c.gap)}</span>
+          body = `<span>работа ${fmtCars(c.gap)}</span>
             <small class="pg-sub">машин хватает (${c.free})</small>`;
         } else if (inHorizon) {
           body = c.free ? `<span class="pg-free">🚛${c.free} своб.</span>` : '<span class="pg-dim">·</span>';
         } else {
-          body = `${c.gap >= 0.05 ? `<span class="pg-dim">план ${fmtGap(c.gap)}</span>` : '<span class="pg-dim">·</span>'}
+          body = `${c.gap >= 0.05 ? `<span class="pg-dim">план ${fmtCars(c.gap)}</span>` : '<span class="pg-dim">·</span>'}
             ${c.free ? `<small class="pg-sub">🚛${c.free}</small>` : ''}`;
         }
         return `<td class="${tone} ${iso === todayIso ? 'pg-today' : ''} ${iso === focusDay ? 'pg-focus' : ''}">
@@ -249,8 +258,8 @@ export async function renderPrografik(container, context) {
               ${bars}<td></td></tr>`;
           }).join('');
         const sections = [];
-        if (legRows) sections.push(`<tr class="pg-sect"><td class="pg-zone">— спрос: плечи клиентов</td><td colspan="${days.length + 1}"></td></tr>${legRows}`);
-        if (vehRows) sections.push(`<tr class="pg-sect"><td class="pg-zone">— ресурс: машины зоны</td><td colspan="${days.length + 1}"></td></tr>${vehRows}`);
+        if (legRows) sections.push(`<tr class="pg-sect"><td class="pg-zone">— клиенты зоны</td><td colspan="${days.length + 1}">в клетке: заявок дня / план сетки · 🟢 всё с машинами · 🟡 есть заявки без машины · 🔴 день настал, заявок меньше плана</td></tr>${legRows}`);
+        if (vehRows) sections.push(`<tr class="pg-sect"><td class="pg-zone">— машины в зоне</td><td colspan="${days.length + 1}">занятость по дням: рейс · 🔧 ремонт · 👤 без водителя · 🔁 пересменка · 🆓 свободна (клик — чем занять)</td></tr>${vehRows}`);
         detail = sections.join('');
       }
       return `<tr class="pg-row" data-zone="${escapeHtml(zone)}">
@@ -269,8 +278,8 @@ export async function renderPrografik(container, context) {
     const inHorizon = iso >= todayIso && iso <= pg.horizonEnd;
     const tone = inHorizon && gap > free ? 'pg-bad' : '';
     const label = iso < todayIso ? `<span class="pg-dim">${moneyVisible && income ? shortMoney(income) : '·'}</span>`
-      : inHorizon && gap > free ? `<b class="pg-lack">−${Math.ceil(gap - free)} маш.</b>`
-        : `<span>${inHorizon ? 'хватает' : 'план'} ${fmtGap(gap)} · 🚛${free}</span>`;
+      : inHorizon && gap > free ? `<b class="pg-lack">−${fmtCars(gap - free)} маш.</b>`
+        : `<span>${inHorizon ? 'хватает' : 'план'} ${fmtCars(gap)} · 🚛${free}</span>`;
     return `<td class="${tone} ${iso === todayIso ? 'pg-today' : ''}">${label}
       ${iso >= todayIso && moneyVisible && income ? `<small class="pg-money">${shortMoney(income)}</small>` : ''}</td>`;
   }).join('');
@@ -306,11 +315,11 @@ export async function renderPrografik(container, context) {
     const [gap, free, income] = pg.balance[dayIdx];
     const deficit = Math.ceil(gap - free);
     const inHorizon = iso <= pg.horizonEnd;
-    const n = inHorizon && deficit > 0 ? `−${deficit} маш.` : inHorizon ? 'машин хватает' : `план ${fmtGap(gap)}`;
+    const n = inHorizon && deficit > 0 ? `−${deficit} маш.` : inHorizon ? 'машин хватает' : `план ${fmtCars(gap)}`;
     return `<div class="pg-tv-card ${iso === todayIso ? 'now' : ''}">
           <div class="d">${dayLabel(iso)}</div>
           <div class="n ${inHorizon && deficit > 0 ? 'bad' : inHorizon ? 'ok' : ''}">${n}</div>
-          <div class="s">спрос ${fmtGap(gap)} · свободно ${free}${moneyVisible && income ? `<br>${shortMoney(income)}` : ''}</div>
+          <div class="s">спрос ${fmtCars(gap)} · свободно ${free}${moneyVisible && income ? `<br>${shortMoney(income)}` : ''}</div>
         </div>`;
   }).join('')}</div></div>`;
   })() : '';
@@ -455,6 +464,7 @@ function candidateRow(candidate, pg, action) {
 // ── Диалог ячейки: разбор спроса зоны за день + решения (Э2) ──
 function zoneDayDialog(zone, iso, pg, context, rerender) {
   const { state, can, showModal, closeModal } = context;
+  const moneyVisible = (state.data?.user?.access?.money ?? 'full') === 'full';
   const draft = draftOf(state);
   const weekday = new Date(`${iso}T12:00:00Z`).getUTCDay();
   const mskDayOf = value => new Date(Date.parse(value) + 3 * 3_600_000).toISOString().slice(0, 10);
@@ -472,53 +482,83 @@ function zoneDayDialog(zone, iso, pg, context, rerender) {
     .filter(index => !draftBusy(state, pg.vehicles[index].id, iso));
   const windowDefault = new Date(Date.parse(iso) + 5 * 3_600_000).toISOString(); // 08:00 МСК
 
-  const ordersHtml = dayOrders.map(order => `<div class="pg-item">
+  // Кандидаты считаются сразу: лучший — прямо в строке заявки, остальные
+  // раскрываются «ещё». Меньше кликов до решения.
+  const candsByOrder = new Map(dayOrders.map(order =>
+    [order.id, candidatesFor(state, pg, zone, order.window_from, order)]));
+  // Жадное распределение «лучших»: одна машина не предлагается лучшей
+  // двум заявкам сразу — иначе план из диалога неисполним.
+  const usedBest = new Set();
+  const bestIdxByOrder = new Map(dayOrders.map(order => {
+    const candidates = candsByOrder.get(order.id) || [];
+    let index = candidates.findIndex(candidate => !usedBest.has(candidate.vehicle.id));
+    if (index < 0) index = 0;
+    if (candidates[index]) usedBest.add(candidates[index].vehicle.id);
+    return [order.id, index];
+  }));
+  const bestLine = candidate => candidate
+    ? `<span class="pg-best">лучший: <b class="mono">${escapeHtml(candidate.vehicle.plate)}</b>
+        <small class="muted">${candidate.inZone ? 'в зоне' : escapeHtml(candidate.region || candidate.zoneName || 'перегон')}${candidate.emptyKm != null ? ` · подгон ~${candidate.emptyKm} км` : ''}${candidate.ready === false ? ' · ⚠ успеет не сразу' : ''}</small></span>`
+    : '<span class="pg-warn2">свободных совместимых машин нет</span>';
+  const ordersHtml = dayOrders.map(order => {
+    const candidates = candsByOrder.get(order.id) || [];
+    const bestIdx = bestIdxByOrder.get(order.id) || 0;
+    const best = candidates[bestIdx];
+    return `<div class="pg-item">
     <div><b>№ ${escapeHtml(String(order.order_no || '—'))}</b> ${escapeHtml(order.customer_name)}
       · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
-      <small class="muted">· окно ${formatDateTime(order.window_from)}${order.body_type ? ` · ${escapeHtml(order.body_type)}` : ''}${Number(order.rate_vat) ? ` · ${money(order.rate_vat)}` : ''}</small>
-      <button class="button ghost small" data-cands="${order.id}">Кандидаты ▾</button></div>
-    <div class="pg-cands" id="cands-${order.id}" hidden></div></div>`).join('')
-    || '<p class="muted">Заявок без машины на этот день в зоне нет.</p>';
+      <small class="muted">· окно ${formatDateTime(order.window_from)}${order.body_type ? ` · ${escapeHtml(order.body_type)}` : ''}${moneyVisible && Number(order.rate_vat) ? ` · ${money(order.rate_vat)}` : ''}</small></div>
+    <div class="pg-bestrow">${bestLine(best)}
+      ${best ? `<span style="white-space:nowrap;margin-left:auto">
+        <button class="button ghost small" data-draft="${order.id}|${bestIdx}" title="Отложить решение в черновик">✏ в черновик</button>
+        ${can('trips:write') ? `<button class="button small" data-now="${order.id}|${bestIdx}">Назначить</button>` : ''}
+        ${candidates.length > 1 ? `<button class="button ghost small" data-more="${order.id}">ещё ${candidates.length - 1} ▾</button>` : ''}</span>` : ''}</div>
+    <div class="pg-cands" id="cands-${order.id}" hidden></div></div>`;
+  }).join('') || '<p class="muted">Все заявки этого дня в зоне уже с машинами.</p>';
 
   const gapsHtml = gaps.length ? gaps.map((slot, index) => `<div class="pg-item">
     <div>▦ ${escapeHtml(slot.customer_name)} · ${escapeHtml(zone)}→${escapeHtml(slot.to_name)}
-      <small class="muted">· не закрыто ${slot.miss} · ставка сетки ${money(slot.rate || 0)}</small>
-      ${can('orders:write') ? `<button class="button ghost small" data-book="${index}">✏ Заявка в черновик</button>
-      <button class="button ghost small" data-bookveh="${index}">✏ С машиной ▾</button>` : '<small class="muted">бронируют продажи</small>'}
+      <small class="muted">· должны ехать ещё ${slot.miss} · ставка ${money(slot.rate || 0)}</small>
+      ${can('orders:write') ? `<span style="white-space:nowrap;margin-left:auto">
+      <button class="button ghost small" data-book="${index}" title="Создать заявку по слоту при «Применить»">✏ Заявка в черновик</button>
+      <button class="button ghost small" data-bookveh="${index}" title="Заявка + машина одним решением">✏ С машиной ▾</button></span>` : '<small class="muted">заявку вносят продажи</small>'}
     </div><div class="pg-cands" id="bookcands-${index}" hidden></div></div>`).join('')
-    : '<p class="muted">Сетка этого дня закрыта заявками.</p>';
+    : '<p class="muted">По сетке на этот день всё внесено.</p>';
 
+  const missTotal = gaps.reduce((sum, slot) => sum + slot.miss, 0);
   showModal(`<div class="sales-modal pg-modal"><h2>${escapeHtml(zone)} · ${dayLabel(iso)}</h2>
-    <p class="muted">Заявок без ТС ${dayOrders.length} · дыр сетки ${gaps.reduce((sum, slot) => sum + slot.miss, 0)}
-      · свободно в зоне ${freeIdx.length} · в черновике по ячейке ${draftClosed(state, zone, iso)}</p>
-    <h3>Спрос без машины</h3>${ordersHtml}
-    <h3>Сетка без заявок</h3>${gapsHtml}
-    <h3>Свободные машины зоны</h3>
+    <p class="muted">${dayOrders.length ? `заявок ждут машину: ${dayOrders.length}` : 'заявки дня закрыты'}
+      · ${missTotal ? `по сетке не внесено: ${missTotal}` : 'сетка внесена'}
+      · свободных в зоне: ${freeIdx.length}${draftClosed(state, zone, iso) ? ` · в черновике: ${draftClosed(state, zone, iso)}` : ''}</p>
+    <h3>Заявки ждут машину
+      ${dayOrders.filter(order => (candsByOrder.get(order.id) || [])[bestIdxByOrder.get(order.id) || 0]).length > 1
+    ? `<button class="button ghost small" data-allbest style="margin-left:8px"
+          title="Каждой заявке — её лучший кандидат, разными машинами; применить можно потом разом">✏ Все лучшие в черновик</button>` : ''}</h3>
+    ${ordersHtml}
+    <h3>По сетке должны ехать — заявка ещё не внесена</h3>${gapsHtml}
+    <h3>Свободные машины зоны <small class="muted">(клик — чем занять)</small></h3>
     <div>${freeIdx.map(index => `<button class="button ghost small" data-vopen="${pg.vehicles[index].id}"
       title="${escapeHtml(pg.vehicles[index].driver_name || 'без водителя')} — чем занять">🆓 ${escapeHtml(pg.vehicles[index].plate)}</button>`).join(' ')
-    || '<span class="muted">свободных нет — смотрите кандидатов у заявок (перегон из соседних зон)</span>'}</div>
+    || '<span class="muted">свободных нет — кандидаты у заявок приедут перегоном из соседних зон</span>'}</div>
     <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div></div>`);
 
-  // Кандидаты на заявку: ✏ в черновик / назначить сразу.
-  document.querySelectorAll('[data-cands]').forEach(button => button.onclick = () => {
-    const order = dayOrders.find(item => item.id === button.dataset.cands);
-    const box = document.getElementById(`cands-${order.id}`);
-    if (!box.hidden) { box.hidden = true; return; }
-    const candidates = candidatesFor(state, pg, zone, order.window_from, order);
-    box.innerHTML = candidates.map((candidate, index) => candidateRow(candidate, pg,
-      `<span style="white-space:nowrap"><button class="button ghost small" data-draft="${order.id}|${index}">✏</button>
-      ${can('trips:write') ? `<button class="button small" data-now="${order.id}|${index}">Назначить</button>` : ''}</span>`)).join('')
-      || '<p class="muted">Свободных совместимых машин к окну нет — двигать окно или перегонять.</p>';
-    box.hidden = false;
-    box.querySelectorAll('[data-draft]').forEach(element => element.onclick = () => {
-      const candidate = candidates[Number(element.dataset.draft.split('|')[1])];
+  // Решение по заявке: лучший кандидат в строке, «ещё» — остальные.
+  const wireOrderButtons = root => {
+    root.querySelectorAll('[data-draft]').forEach(element => element.onclick = () => {
+      const [orderId, candIdx] = element.dataset.draft.split('|');
+      const order = dayOrders.find(item => item.id === orderId);
+      const candidate = (candsByOrder.get(orderId) || [])[Number(candIdx)];
+      if (!order || !candidate) return;
       draft.push({ kind: 'assign', day: iso, zone, orderId: order.id, orderNo: order.order_no,
         vehicleId: candidate.vehicle.id, plate: candidate.vehicle.plate,
         label: `${order.customer_name} ${zone}→${order.to_name}` });
       closeModal(); rerender();
     });
-    box.querySelectorAll('[data-now]').forEach(element => element.onclick = async () => {
-      const candidate = candidates[Number(element.dataset.now.split('|')[1])];
+    root.querySelectorAll('[data-now]').forEach(element => element.onclick = async () => {
+      const [orderId, candIdx] = element.dataset.now.split('|');
+      const order = dayOrders.find(item => item.id === orderId);
+      const candidate = (candsByOrder.get(orderId) || [])[Number(candIdx)];
+      if (!order || !candidate) return;
       try {
         await api(`/api/orders/${order.id}/assign`, { method: 'POST',
           body: JSON.stringify({ vehicleId: candidate.vehicle.id, autoConfirm: true }) });
@@ -526,6 +566,35 @@ function zoneDayDialog(zone, iso, pg, context, rerender) {
         closeModal(); invalidatePrografik(); await context.onReload();
       } catch (error) { toast(error.message, 'error'); }
     });
+  };
+  wireOrderButtons(document);
+  document.querySelector('[data-allbest]')?.addEventListener('click', () => {
+    let taken = 0;
+    for (const order of dayOrders) {
+      const candidate = (candsByOrder.get(order.id) || [])[bestIdxByOrder.get(order.id) || 0];
+      if (!candidate) continue;
+      draft.push({ kind: 'assign', day: iso, zone, orderId: order.id, orderNo: order.order_no,
+        vehicleId: candidate.vehicle.id, plate: candidate.vehicle.plate,
+        label: `${order.customer_name} ${zone}→${order.to_name}` });
+      taken += 1;
+    }
+    toast(`В черновике ${taken} решений — проверьте панель внизу и жмите «Применить»`);
+    closeModal(); rerender();
+  });
+  document.querySelectorAll('[data-more]').forEach(button => button.onclick = () => {
+    const orderId = button.dataset.more;
+    const box = document.getElementById(`cands-${orderId}`);
+    if (!box.hidden) { box.hidden = true; return; }
+    const candidates = candsByOrder.get(orderId) || [];
+    const bestIdx = bestIdxByOrder.get(orderId) || 0;
+    box.innerHTML = candidates
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ index }) => index !== bestIdx)
+      .map(({ candidate, index }) => candidateRow(candidate, pg,
+        `<span style="white-space:nowrap"><button class="button ghost small" data-draft="${orderId}|${index}">✏</button>
+        ${can('trips:write') ? `<button class="button small" data-now="${orderId}|${index}">Назначить</button>` : ''}</span>`)).join('');
+    box.hidden = false;
+    wireOrderButtons(box);
   });
   // Дыра сетки: бронь (заявка из плана) без машины или сразу с машиной.
   document.querySelectorAll('[data-book]').forEach(button => button.onclick = () => {
@@ -593,7 +662,7 @@ function vehicleDayDialog(vehicleId, iso, pg, context, rerender) {
     <p class="muted">${escapeHtml(vehicle.driver_name || 'без водителя')} · ${escapeHtml(vehicle.type_name || '')}
       ${zone ? ` · позиция: ${escapeHtml(zone)}` : ' · зона не ясна'}
       ${round ? ` · 🎡 круг ${escapeHtml(String(round.round_key).toUpperCase())}` : ''}</p>
-    <h3>Чем занять (заявки без ТС)</h3>
+    <h3>Чем занять — заявки дня без машины <small class="muted">(по деньгам, своя зона первой)</small></h3>
     ${work.map((order, index) => `<div class="pg-item"><div>
       <b>№ ${escapeHtml(String(order.order_no || '—'))}</b> ${escapeHtml(order.customer_name)}
       · ${escapeHtml(order.from_name)}→${escapeHtml(order.to_name)}
@@ -601,7 +670,7 @@ function vehicleDayDialog(vehicleId, iso, pg, context, rerender) {
       <span style="white-space:nowrap"><button class="button ghost small" data-wdraft="${index}">✏</button>
       ${can('trips:write') ? `<button class="button small" data-wnow="${index}">Назначить</button>` : ''}</span>
     </div></div>`).join('') || '<p class="muted">Открытых заявок на день нет.</p>'}
-    <h3>Сетка зоны без заявок</h3>
+    <h3>По сетке должны ехать — заявка ещё не внесена</h3>
     ${gaps.map((slot, index) => `<div class="pg-item"><div>▦ ${escapeHtml(slot.customer_name)}
       · ${escapeHtml(zone)}→${escapeHtml(slot.to_name)}
       <small class="muted">· не закрыто ${slot.miss} · ставка ${money(slot.rate || 0)}</small>
