@@ -1055,20 +1055,28 @@ function refreshNavBadges(state) {
 
 // Сворачиваемые блоки меню (заказ руководителя 14.11: «неудобно
 // вертикальное пролистывание»): клик по заголовку блока прячет его
-// экраны, выбор запоминается; блок с активным экраном всегда раскрыт,
-// поиск экрана показывает всё. Первый раз — свёрнуто всё, кроме
-// «Общего» и блока текущего экрана.
+// экраны, выбор запоминается и ГЛАВНЕЕ автораскрытия — свёрнутый
+// вручную блок (включая Штаб с активным экраном) остаётся свёрнутым.
+// Пока ничего не настроено — свёрнуто всё, кроме «Общего» и блока
+// текущего экрана; поиск экрана показывает всё.
 const NAV_CLOSED_KEY = 'pl_nav_closed';
-function navClosedSet() {
+function navClosedSaved() {
   try {
     const saved = JSON.parse(localStorage.getItem(NAV_CLOSED_KEY) || 'null');
     if (Array.isArray(saved)) return new Set(saved);
   } catch { /* приват-режим */ }
-  return new Set(['staff', 'log', 'drv', 'toir', 'refs']);
+  return null;
 }
-function navToggleBlock(key) {
-  const closed = navClosedSet();
-  if (closed.has(key)) closed.delete(key); else closed.add(key);
+// Переключаем от ВИДИМОГО состояния: при первом клике (ничего не
+// сохранено) слепок текущего вида становится сохранённым выбором.
+let navActiveKey = '';
+function navToggleBlock(key, nowClosed) {
+  let closed = navClosedSaved();
+  if (!closed) {
+    closed = new Set(['staff', 'log', 'drv', 'toir', 'refs']);
+    if (navActiveKey) closed.delete(navActiveKey);
+  }
+  if (nowClosed) closed.delete(key); else closed.add(key);
   try { localStorage.setItem(NAV_CLOSED_KEY, JSON.stringify([...closed])); } catch { /* приват-режим */ }
   renderViewTabs();
 }
@@ -1077,7 +1085,9 @@ function renderViewTabs() {
   const views = MAIN_VIEWS.filter(view => view.show() && viewAllowed(view.id));
   const byIdView = new Map(views.map(view => [view.id, view]));
   const query = (byId('navSearch')?.value || '').trim().toLowerCase();
-  const navClosed = navClosedSet();
+  const navSaved = navClosedSaved();
+  const navClosed = navSaved || new Set(['staff', 'log', 'drv', 'toir', 'refs']);
+  navActiveKey = '';
   // Заголовок-переключатель: стрелка + счётчик скрытых экранов.
   const blockTitle = (key, title, chip, closedNow, hidden) =>
     `<div class="blocktitle nav-toggle" data-navtoggle="${key}"><span><span class="nav-chev">${closedNow ? '▸' : '▾'}</span>${title}${closedNow && hidden ? ` <span class="nav-hidden-n">${hidden}</span>` : ''}</span>${chip}</div>`;
@@ -1135,7 +1145,10 @@ function renderViewTabs() {
     if (!subs) return '';
     const key = group.dept || 'common';
     const active = subs.includes(`data-view="${state.view}"`) && subs.includes(' active');
-    const closedNow = Boolean(!query && !active && navClosed.has(key));
+    if (active) navActiveKey = key;
+    // Сохранённый выбор главнее автораскрытия: вручную свёрнутый блок
+    // (даже с активным экраном) остаётся свёрнутым (заказ 14.11: Штаб).
+    const closedNow = Boolean(!query && navClosed.has(key) && (navSaved || !active));
     const hidden = (subs.match(/data-view=/g) || []).length + (exceptionsItem ? 1 : 0);
     return `<div class="nav-block${group.dept ? ` dept-${group.dept}` : ' nav-common'}${closedNow ? ' nav-closed' : ''}">`
       + blockTitle(key, group.title, group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '', closedNow, hidden)
@@ -1157,7 +1170,8 @@ function renderViewTabs() {
     ? groupsHtml + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '') + refsHtml
     : '';
   byId('viewTabs').querySelectorAll('[data-navtoggle]').forEach(title =>
-    title.addEventListener('click', () => navToggleBlock(title.dataset.navtoggle)));
+    title.addEventListener('click', () => navToggleBlock(title.dataset.navtoggle,
+      title.closest('.nav-block').classList.contains('nav-closed'))));
   byId('viewTabs').querySelectorAll('[data-refaction]').forEach(button =>
     button.addEventListener('click', () => {
       const action = button.dataset.refaction;
