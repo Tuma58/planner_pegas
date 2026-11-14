@@ -2350,3 +2350,16 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .kb-guide-link { cursor: pointer; }
 .kb-guide-link:hover { border-color: var(--accent); }
 .inc-note-multi { white-space: pre-line; }
+
+/* ── Сворачиваемость: блоки меню и секции БДД (заказ руководителя 14.11:
+   «хаотично разбросано, поля с развёртыванием» + меню без прокрутки) ── */
+.blocktitle.nav-toggle { cursor: pointer; user-select: none; }
+.blocktitle.nav-toggle:hover span:first-child { color: var(--accent); }
+.nav-chev { display: inline-block; width: 12px; font-size: 10px; opacity: .55; }
+.nav-hidden-n { font-size: 10px; opacity: .5; }
+.nav-block.nav-closed .navlink, .nav-block.nav-closed .nav-sub { display: none; }
+.sf-page .section > .sec-h { cursor: pointer; user-select: none; }
+.sf-page .section > .sec-h:hover .st { color: var(--accent); }
+.sec-chev { display: inline-block; width: 14px; font-size: 11px; opacity: .55; }
+.section.sec-closed > .sec-b { display: none; }
+.sec-n { font-size: 11px; font-weight: 600; background: var(--chip, rgba(127,127,127,.15)); border-radius: 9px; padding: 1px 7px; margin-left: 6px; }

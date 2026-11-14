@@ -1053,10 +1053,34 @@ function refreshNavBadges(state) {
   }
 }
 
+// Сворачиваемые блоки меню (заказ руководителя 14.11: «неудобно
+// вертикальное пролистывание»): клик по заголовку блока прячет его
+// экраны, выбор запоминается; блок с активным экраном всегда раскрыт,
+// поиск экрана показывает всё. Первый раз — свёрнуто всё, кроме
+// «Общего» и блока текущего экрана.
+const NAV_CLOSED_KEY = 'pl_nav_closed';
+function navClosedSet() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(NAV_CLOSED_KEY) || 'null');
+    if (Array.isArray(saved)) return new Set(saved);
+  } catch { /* приват-режим */ }
+  return new Set(['staff', 'log', 'drv', 'toir', 'refs']);
+}
+function navToggleBlock(key) {
+  const closed = navClosedSet();
+  if (closed.has(key)) closed.delete(key); else closed.add(key);
+  try { localStorage.setItem(NAV_CLOSED_KEY, JSON.stringify([...closed])); } catch { /* приват-режим */ }
+  renderViewTabs();
+}
+
 function renderViewTabs() {
   const views = MAIN_VIEWS.filter(view => view.show() && viewAllowed(view.id));
   const byIdView = new Map(views.map(view => [view.id, view]));
   const query = (byId('navSearch')?.value || '').trim().toLowerCase();
+  const navClosed = navClosedSet();
+  // Заголовок-переключатель: стрелка + счётчик скрытых экранов.
+  const blockTitle = (key, title, chip, closedNow, hidden) =>
+    `<div class="blocktitle nav-toggle" data-navtoggle="${key}"><span><span class="nav-chev">${closedNow ? '▸' : '▾'}</span>${title}${closedNow && hidden ? ` <span class="nav-hidden-n">${hidden}</span>` : ''}</span>${chip}</div>`;
   const link = view => {
     const [icon] = VIEW_META[view.id] || ['•'];
     const title = viewTitle(view);
@@ -1108,8 +1132,14 @@ function renderViewTabs() {
         <span class="nav-ico">⚠</span><span class="nav-t">Требует решения</span>
         ${count ? `<span class="nav-badge">${count > 99 ? '99+' : count}</span>` : ''}</button>`;
     })() : '';
-    return subs ? `<div class="nav-block${group.dept ? ` dept-${group.dept}` : ' nav-common'}"><div class="blocktitle"><span>${group.title}</span>`
-      + (group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '') + `</div>${subs}${exceptionsItem}</div>` : '';
+    if (!subs) return '';
+    const key = group.dept || 'common';
+    const active = subs.includes(`data-view="${state.view}"`) && subs.includes(' active');
+    const closedNow = Boolean(!query && !active && navClosed.has(key));
+    const hidden = (subs.match(/data-view=/g) || []).length + (exceptionsItem ? 1 : 0);
+    return `<div class="nav-block${group.dept ? ` dept-${group.dept}` : ' nav-common'}${closedNow ? ' nav-closed' : ''}">`
+      + blockTitle(key, group.title, group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '', closedNow, hidden)
+      + `${subs}${exceptionsItem}</div>`;
   }).join('');
   // Экран вне групп (новый, ещё не разнесённый по отделам) не теряется.
   const rest = views.filter(view => !placed.has(view.id)
@@ -1117,7 +1147,8 @@ function renderViewTabs() {
     && (!query || view.title.toLowerCase().includes(query)));
   // «Справочники» в навигаторе (заказ руководителя 12.11: шапку чистим,
   // Карта и справочники переезжают в левое меню — доступ всем, как был).
-  const refsHtml = `<div class="nav-block nav-common"><div class="blocktitle"><span>Справочники</span></div>
+  const refsClosed = Boolean(!query && navClosed.has('refs'));
+  const refsHtml = `<div class="nav-block nav-common${refsClosed ? ' nav-closed' : ''}">${blockTitle('refs', 'Справочники', '', refsClosed, 3)}
     <button data-refaction="geo" class="navlink"><span class="nav-ico">🗺</span><span class="nav-t">Карта геозон</span></button>
     <button data-refaction="customers" class="navlink"><span class="nav-ico">📒</span><span class="nav-t">Заказчики</span></button>
     <button data-refaction="addresses" class="navlink"><span class="nav-ico">📍</span><span class="nav-t">Адреса</span></button>
@@ -1125,6 +1156,8 @@ function renderViewTabs() {
   byId('viewTabs').innerHTML = views.length > 1
     ? groupsHtml + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '') + refsHtml
     : '';
+  byId('viewTabs').querySelectorAll('[data-navtoggle]').forEach(title =>
+    title.addEventListener('click', () => navToggleBlock(title.dataset.navtoggle)));
   byId('viewTabs').querySelectorAll('[data-refaction]').forEach(button =>
     button.addEventListener('click', () => {
       const action = button.dataset.refaction;

@@ -27,6 +27,12 @@ export async function renderSafety(container, context) {
   }
   const s = data.summary;
   const g = data.gibdd;
+  // Поля с развёртыванием (заказ руководителя 14.11): секции свёрнуты,
+  // в заголовке — счётчик; раскрытые запоминаются в браузере.
+  let sfOpen;
+  try { sfOpen = new Set(JSON.parse(localStorage.getItem('pl_sf_open') || '[]')); } catch { sfOpen = new Set(); }
+  const secCls = key => sfOpen.has(key) ? '' : ' sec-closed';
+  const secHead = (key, title, count, hint = '') => `<div class="sec-h"><span class="st"><span class="sec-chev">${sfOpen.has(key) ? '▾' : '▸'}</span>${title}${count ? `<span class="sec-n">${count}</span>` : ''}</span>${hint ? `<span class="hint">${hint}</span>` : ''}</div>`;
   if (!renderInto(container, `<div class="bi-page sf-page">
     <div class="bi-sub"><h2>Безопасность движения</h2>
       <p>ДТП, нарушения и режим труда и отдыха — с расследованием и мерами; допуски и инструктажи — со сроками. Медосмотр и техконтроль выпуска — на экране «Выпуск».</p>
@@ -47,7 +53,7 @@ export async function renderSafety(container, context) {
       <div class="metric ${g.burning.length ? 'neg' : ''}"><span class="l">Скидка 50 % горит</span><span class="v">${g.burning.length}</span><span class="d">порог ${data.warnDays} дн</span></div>` : ''}
     </div>
     <div class="bi-grid">
-      <section class="section s6"><div class="sec-h"><span class="st">ДТП — динамика 6 месяцев</span><span class="hint">аварийность — на фактический пробег рейсов</span></div>
+      <section class="section s6${secCls('dyn')}" data-sec="dyn">${secHead('dyn', 'ДТП — динамика 6 месяцев', '', 'аварийность — на фактический пробег рейсов')}
         <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Месяц</th><th class="r">ДТП</th><th class="r">виновны</th><th class="r">не виновны</th><th class="r">пробег, тыс. км</th><th class="r">на 1 млн км</th></tr></thead>
         <tbody>${(data.months || []).map(row => `<tr>
           <td>${ruMonth(row.month)}</td><td class="num">${row.dtp || ''}</td>
@@ -55,7 +61,7 @@ export async function renderSafety(container, context) {
           <td class="num">${row.notguilty || ''}</td>
           <td class="num">${Math.round(row.km / 1000).toLocaleString('ru-RU')}</td>
           <td class="num">${row.per1m == null ? '—' : row.per1m.toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></section>
-      <section class="section s6"><div class="sec-h"><span class="st">Дела страховых — открытые ДТП</span><span class="hint">от старых к свежим; возраст — дни с ДТП</span></div>
+      <section class="section s6${secCls('claims')}" data-sec="claims">${secHead('claims', 'Дела страховых — открытые ДТП', (data.claims || []).length, 'от старых к свежим; возраст — дни с ДТП')}
         ${(data.claimFunnel || []).length ? `<div class="sec-b sf-tags">${data.claimFunnel.map(step => `<span class="bi-tag">${escapeHtml(step.label)}: <b>${step.count}</b></span>`).join(' ')}</div>` : ''}
         <div class="sec-b flush"><table class="bi-table"><thead><tr><th>№ 1С · дата</th><th>Машина · водитель</th><th>Этап</th><th class="r">Возраст, дн</th></tr></thead>
         <tbody>${(data.claims || []).slice().sort((a, b) => b.ageDays - a.ageDays).slice(0, 60).map(row => `<tr>
@@ -64,27 +70,27 @@ export async function renderSafety(container, context) {
           <td>${escapeHtml((data.claimLabels || {})[row.claim_status] || row.claim_status || '—')}${row.claim_no ? `<div class="muted">дело ${escapeHtml(row.claim_no)}</div>` : ''} ${culpTag(row.culpability)}</td>
           <td class="num">${row.ageDays}</td></tr>`).join('')
     || '<tr><td colspan="4" class="muted">открытых дел нет</td></tr>'}</tbody></table></div></section>
-      ${(data.byVehicle || []).length ? `<section class="section s6"><div class="sec-h"><span class="st">Машины по ДТП периода</span></div>
+      ${(data.byVehicle || []).length ? `<section class="section s6${secCls('veh')}" data-sec="veh">${secHead('veh', 'Машины по ДТП периода', data.byVehicle.length)}
         <div class="sec-b sf-tags">${data.byVehicle.slice(0, 40).map(row => `<span class="bi-tag ${row.guilty ? 'neg' : ''}">${escapeHtml(row.plate)}: ${row.dtp}${row.guilty ? ` (виновны ${row.guilty})` : ''}</span>`).join(' ')}</div></section>` : ''}
-      <section class="section s6"><div class="sec-h"><span class="st">Открытые расследования</span></div>
+      <section class="section s6${secCls('inv')}" data-sec="inv">${secHead('inv', 'Открытые расследования', data.open.length)}
         <div class="sec-b flush"><table class="bi-table"><tbody>${data.open.map(row => `<tr>
           <td>${ruDay(row.happened_on)}<div class="muted">${escapeHtml(data.kinds[row.kind])}</div></td>
           <td>${escapeHtml(row.driver_name || row.plate)}<div class="muted">${escapeHtml(row.description)}</div></td>
           <td>${data.canWrite ? `<button class="button small" data-sf-close="${row.id}">Закрыть с мерами</button>` : ''}</td></tr>`).join('')
     || '<tr><td class="muted">нет</td></tr>'}</tbody></table></div></section>
-      <section class="section s6"><div class="sec-h"><span class="st">Допуски и инструктажи — истекают и просрочены</span></div>
+      <section class="section s6${secCls('terms')}" data-sec="terms">${secHead('terms', 'Допуски и инструктажи — истекают и просрочены', data.terms.length)}
         <div class="sec-b flush"><table class="bi-table"><tbody>${data.terms.map(row => `<tr>
           <td>${escapeHtml(row.driver_name)}</td><td>${escapeHtml(data.kinds[row.kind])}</td>
           <td class="num"><span class="bi-tag ${row.termStatus === 'expired' ? 'neg' : 'warn'}">${row.termStatus === 'expired' ? 'истёк' : 'до'} ${ruDay(row.valid_until)}</span></td></tr>`).join('')
     || '<tr><td class="muted">сроки в порядке</td></tr>'}</tbody></table></div></section>
-      <section class="section s6"><div class="sec-h"><span class="st">Водители по событиям периода</span><span class="hint">ДТП весят больше</span></div>
+      <section class="section s6${secCls('drv')}" data-sec="drv">${secHead('drv', 'Водители по событиям периода', data.byDriver.length, 'ДТП весят больше')}
         <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Водитель</th><th class="r">ДТП</th><th class="r">РТО</th><th class="r">ПДД</th></tr></thead>
         <tbody>${data.byDriver.map(row => `<tr><td>${escapeHtml(row.name)}</td><td class="num">${row.dtp}</td><td class="num">${row.rto}</td><td class="num">${row.pdd}</td></tr>`).join('')
     || '<tr><td colspan="4" class="muted">событий нет</td></tr>'}</tbody></table></div></section>
-      <section class="section s6"><div class="sec-h"><span class="st">Без действующего допуска</span><span class="hint">внесите допуск в журнал</span></div>
+      <section class="section s6${secCls('adm')}" data-sec="adm">${secHead('adm', 'Без действующего допуска', data.withoutAdmission.length, 'внесите допуск в журнал')}
         <div class="sec-b sf-tags">${data.withoutAdmission.slice(0, 80).map(row => `<span class="bi-tag">${escapeHtml(row.name)}</span>`).join(' ') || '<span class="muted">все допущены</span>'}</div></section>
-      ${g ? `<section class="section"><div class="sec-h"><span class="st">Штрафы ГИБДД за период</span>
-        <span class="hint">${g.enabled ? (g.last?.at ? `обновлено ${ruDay(g.last.at)} · виновник — по закреплению на момент нарушения` : 'синхронизаций ещё не было') : 'коннектор OnlineГИБДД выключен — Настройки → Интеграции'}</span></div>
+      ${g ? `<section class="section${secCls('fines')}" data-sec="fines">${secHead('fines', 'Штрафы ГИБДД за период', g.fines.length,
+    g.enabled ? (g.last?.at ? `обновлено ${ruDay(g.last.at)} · виновник — по закреплению на момент нарушения` : 'синхронизаций ещё не было') : 'коннектор OnlineГИБДД выключен — Настройки → Интеграции')}
         <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Нарушение</th><th>Машина · водитель</th><th>Статья · место</th><th class="r">Сумма</th><th>Скидка до</th><th>Статус</th>${data.canWrite ? '<th></th>' : ''}</tr></thead>
         <tbody>${g.fines.slice(0, 200).map(fine => `<tr>
           <td>${ruDay(fine.offense_on)}${fine.offense_time ? ` ${escapeHtml(fine.offense_time)}` : ''}</td>
@@ -101,7 +107,7 @@ export async function renderSafety(container, context) {
         ${g.withoutSts.length ? `<div class="sec-b"><span class="muted">Без СТС в паспорте ТС — не на мониторинге (${g.withoutSts.length}): ${g.withoutSts.slice(0, 40).map(escapeHtml).join(', ')}${g.withoutSts.length > 40 ? '…' : ''}</span></div>` : ''}
         ${g.last?.unknownCdi?.length ? `<div class="sec-b"><span class="muted">В сервисе есть СТС, которых нет в паспортах ТС: ${g.last.unknownCdi.slice(0, 10).map(escapeHtml).join(', ')}</span></div>` : ''}
       </section>` : ''}
-      <section class="section"><div class="sec-h"><span class="st">Журнал за период</span></div>
+      <section class="section${secCls('log')}" data-sec="log">${secHead('log', 'Журнал за период', data.events.length)}
         <div class="sec-b flush"><table class="bi-table"><thead><tr><th>Дата</th><th>Вид</th><th>Водитель · машина</th><th>Что произошло</th><th>Меры</th><th>Статус</th></tr></thead>
         <tbody>${data.events.map(row => `<tr><td>${ruDay(row.happened_on)}</td><td>${escapeHtml(data.kinds[row.kind])}${row.external_no ? `<div class="muted">${escapeHtml(row.external_no)}</div>` : ''} ${culpTag(row.culpability)}</td>
           <td>${escapeHtml(row.driver_name)}${row.plate ? ` · ${escapeHtml(row.plate)}` : ''}</td><td>${escapeHtml(row.description)}${row.valid_until ? ` <span class="muted">до ${ruDay(row.valid_until)}</span>` : ''}${row.claim_status ? `<div class="muted">СК: ${escapeHtml((data.claimLabels || {})[row.claim_status] || row.claim_status)}${row.paid_rub ? ` · выплачено ${fmtRub(row.paid_rub)}` : ''}</div>` : ''}</td>
@@ -110,6 +116,16 @@ export async function renderSafety(container, context) {
     </div>
   </div>`)) return;
   const rerender = () => renderSafety(container, context);
+  // Клик по заголовку секции — развернуть/свернуть, выбор запоминается.
+  container.querySelectorAll('[data-sec] > .sec-h').forEach(head => {
+    head.addEventListener('click', () => {
+      const section = head.closest('[data-sec]');
+      const opened = section.classList.toggle('sec-closed') === false;
+      if (opened) sfOpen.add(section.dataset.sec); else sfOpen.delete(section.dataset.sec);
+      try { localStorage.setItem('pl_sf_open', JSON.stringify([...sfOpen])); } catch { /* приват-режим */ }
+      head.querySelector('.sec-chev').textContent = opened ? '▾' : '▸';
+    });
+  });
   container.querySelector('#sfFrom').onchange = event => { state.safetyFrom = event.currentTarget.value; rerender(); };
   container.querySelector('#sfAdd')?.addEventListener('click', () => addDialog(context, data, rerender));
   container.querySelector('#sfImport')?.addEventListener('change', async event => {
