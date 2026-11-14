@@ -56,7 +56,7 @@ import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek
 import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { directionGoals } from '../public/assets/goals-core.js';
-import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
+import { archiveGoal, goalsData, goalsDigestLine, goalsOrphans, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
 import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, roleSets, stripOrders, stripSmall, stripTrips,
   updateRoleSet } from './access.mjs';
@@ -76,7 +76,8 @@ import { bitrixCall, bitrixConnector, linkedChats, migrateBitrix, mirrorToBitrix
 import { crmApi, markTripPaid, syncContractDays } from './crm.mjs';
 import { turnoverApi } from './turnover.mjs';
 import { partsApi } from './parts.mjs';
-import { armApi, driverArmData, driverTaskAction } from './arm.mjs';
+import { armApi, driverArmData, driverTaskAction, dueControlPoints } from './arm.mjs';
+import { bridgeData } from './bridge.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { applyPositionSet, archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -976,6 +977,19 @@ setInterval(watchWrap('runUnloadWatch', runUnloadWatch), 10 * 60_000);
 // Сквозной контроль (блок 4 «Слияния», 07.11): детектор стыков открывает
 // случаи и сам закрывает устранённые — каждые 5 минут.
 setInterval(watchWrap('runJointSignals', () => detectSignals(db)), 5 * 60_000);
+// ⏰ Точки контроля делегированных задач (Фридман, 14.11): в момент
+// наступления автору уходит разовое личное напоминание «проверьте
+// исполнение» — делегирование без контроля не существует.
+function runControlPoints() {
+  for (const task of dueControlPoints(db)) {
+    if (!task.from_name) continue;
+    const due = String(task.due_at || '').slice(0, 16).replace('T', ' ');
+    notifyUserByName(task.from_name,
+      `⏰ Точка контроля: «${task.title}» (исполнитель ${task.to_name}, срок ${due}) — проверьте исполнение. Открыть: «Моё рабочее место».`,
+      'arm_task', task.id);
+  }
+}
+setInterval(watchWrap('runControlPoints', runControlPoints), 5 * 60_000);
 
 // ── 🧭 Контроль процессов (11.11) ──
 // Системные проверки: входы, сторожа, скорость. Проверки процессов
@@ -8586,6 +8600,16 @@ async function api(request, response, url) {
     });
   }
 
+  // ── ⚓ «Мостик недели» (Фридман, 14.11): еженедельный обзор руководителя ──
+  if (pathname === '/api/bridge' && request.method === 'GET') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    const canRead = hasPermission(user, 'reports:read') || (!access.legacy && access.views.includes('field'));
+    if (!canRead) return errorJson(response, 403, '«Мостик недели» — обзор руководителя');
+    const weeksBack = Math.max(0, Math.min(12, Number(url.searchParams.get('back')) || 0));
+    return json(response, 200, bridgeData(db, { weeksBack }));
+  }
   // ── 🧭 Контроль процессов (11.11): руководитель направления ──
   if (pathname === '/api/process-control' && request.method === 'GET') {
     const user = requirePermission(request, response, 'reports:read');
@@ -16325,6 +16349,7 @@ async function api(request, response, url) {
     const data = scopeGoals(goalsData(db, ctx), access.scope, ctx);
     const initiatives = goalsInitiatives();
     return json(response, 200, { ...data, month: ctx.month, from: ctx.from, to: ctx.to,
+      orphans: goalsOrphans(db),
       goals: access.scope.all ? ctx.goals : null,
       canEdit: staffAccess(user, settingsObject(db)) && access.scope.all,
       initiatives: Object.fromEntries(Object.entries(initiatives).filter(([key]) => access.scope.depts.includes(key))) });

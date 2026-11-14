@@ -27,6 +27,7 @@ import { renderGate } from './gate.js';
 import { renderRelease } from './release.js';
 import { renderTripDocs } from './trip-docs.js';
 import { renderSafety } from './safety.js';
+import { renderBridge } from './bridge.js';
 import { renderToBoard } from './vehicle-card.js';
 import { renderPayroll } from './payroll.js';
 import { renderCrm, renderPayments } from './crm.js';
@@ -910,7 +911,10 @@ const MAIN_VIEWS = [
   { id: 'payroll', title: 'ФОТ водителей', show: () => Boolean(viewInSet('payroll') || (legacyAccess() && can('users:write'))) },
   { id: 'crm', title: 'CRM', show: () => Boolean(viewInSet('crm') || (legacyAccess() && (can('orders:write') || can('reports:read')))) },
   { id: 'payments', title: 'К оплате', show: () => Boolean(viewInSet('payments') || (legacyAccess() && can('payments:write'))) },
-  { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
+  { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) },
+  // ⚓ «Мостик недели» (Фридман, 14.11) — еженедельный обзор руководителя.
+  { id: 'bridge', title: 'Мостик недели', show: () => Boolean(can('reports:read')
+    || (state.data?.user?.access && !state.data.user.access.legacy && state.data.user.access.views?.includes('field'))) }
 ];
 
 // Навигатор по структуре направления СТ (как в «Рабочей среде СТ»):
@@ -927,7 +931,7 @@ const NAV_GROUPS = [
   // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
   // блоков. Ниже — рабочие экраны Штаба.
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi', 'reports'] },
+    { title: 'Панели', views: ['field', 'bridge', 'structure', 'goals', 'cfo', 'kpi', 'reports'] },
     { title: 'Работа Штаба', views: ['boss', 'staff', 'payroll', 'payments', 'expenses', 'safety', 'gate'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['reports', 'logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
@@ -944,6 +948,7 @@ const VIEW_META = {
   field: ['◉', 'Поле управления отдела: коэффициент, потери, стыки, очереди, люди, деньги'],
   docs: ['📄', 'Документы после выгрузки: что сдано, что ждём, просрочка по нормативу'],
   safety: ['🛡', 'Безопасность движения: ДТП, нарушения, режим труда и отдыха, допуски'],
+  bridge: ['⚓', 'Мостик недели: выполнено, сорвано с причинами, точки контроля, переносы, хаос'],
   logreports: ['▤', 'Отчёты отдела логистики: сводный, экономика по клиентам и типам ТС'],
   arm: ['🧭', 'Моё рабочее место: анализ, план, выполнение и задачи — по вашей должности'],
   reports: ['▤', 'Мои отчёты: отчёты по уровням — откуда цифры, кто видит, как открыть'],
@@ -1000,6 +1005,9 @@ function viewAllowed(id) {
   }
   // «Затраты» — персональный доступ (галка в карточке), вне набора ролей.
   if (id === 'expenses' && state.data?.user?.expensesAccess) return true;
+  // «Мостик недели» — руководители: «Поле» в наборе (своего кода у
+  // наборов нет; сервер пускает по тем же правам).
+  if (id === 'bridge') return access.views.includes('field');
   return access.views.includes(id);
 }
 const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];
@@ -1293,6 +1301,8 @@ function renderMain() {
     renderField(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'docs') {
     renderTripDocs(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'bridge') {
+    renderBridge(byId('timeline'), { state, showModal, closeModal });
   } else if (state.view === 'safety') {
     renderSafety(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'arm') {

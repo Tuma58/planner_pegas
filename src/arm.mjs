@@ -449,6 +449,52 @@ export function migrateArm(db) {
   // to_driver_id, to_user_id пустой.
   const cols = db.prepare('PRAGMA table_info(arm_tasks)').all().map(col => col.name);
   if (!cols.includes('to_driver_id')) db.exec('ALTER TABLE arm_tasks ADD COLUMN to_driver_id TEXT');
+  // Дисциплина Фридмана (14.11): у каждой поставленной задачи есть точка
+  // контроля (по умолчанию = срок) с разовым напоминанием автору; перенос
+  // срока — только с причиной, со счётчиком и журналом переносов.
+  if (!cols.includes('control_at')) db.exec('ALTER TABLE arm_tasks ADD COLUMN control_at TEXT');
+  if (!cols.includes('control_notified_at')) db.exec('ALTER TABLE arm_tasks ADD COLUMN control_notified_at TEXT');
+  if (!cols.includes('postpone_count')) db.exec('ALTER TABLE arm_tasks ADD COLUMN postpone_count INTEGER NOT NULL DEFAULT 0');
+  if (!cols.includes('postpone_log')) db.exec(`ALTER TABLE arm_tasks ADD COLUMN postpone_log TEXT NOT NULL DEFAULT '[]'`);
+}
+
+// Перенос срока задачи — только автор, только открытая, причина
+// обязательна. Счётчик растёт, журнал хранит откуда/куда/почему; задача
+// с двумя и более переносами всплывает на «Мостике недели» — там её
+// дробят, делегируют иначе или честно снимают (логика Фридмана).
+export function postponeTask(db, user, id, body = {}, nowMs = Date.now()) {
+  const task = db.prepare('SELECT * FROM arm_tasks WHERE id=?').get(id);
+  if (!task) return { status: 404, error: 'Задача не найдена' };
+  if (task.from_user_id !== user.id) return { status: 403, error: 'Срок переносит тот, кто поставил задачу' };
+  if (!['new', 'work'].includes(task.status)) return { status: 409, error: 'Задача уже закрыта' };
+  const reason = String(body.reason || '').trim().slice(0, 300);
+  if (reason.length < 3) return { status: 422, error: 'Назовите причину переноса — по причинам правим оценки' };
+  const due = body.dueAt && Number.isFinite(Date.parse(body.dueAt)) ? new Date(Date.parse(body.dueAt)).toISOString() : null;
+  if (!due) return { status: 422, error: 'Укажите новый срок' };
+  if (Date.parse(due) < nowMs - 60_000) return { status: 422, error: 'Новый срок уже прошёл' };
+  if (due === task.due_at) return { status: 422, error: 'Срок не изменился' };
+  let log = [];
+  try { log = JSON.parse(task.postpone_log || '[]'); } catch { log = []; }
+  log.push({ at: new Date(nowMs).toISOString(), from: task.due_at, to: due, reason });
+  // Точка контроля, стоявшая на прежнем сроке, едет вместе с ним.
+  const control = task.control_at === task.due_at ? due : task.control_at;
+  db.prepare(`UPDATE arm_tasks SET due_at=?, control_at=?, control_notified_at=NULL,
+      postpone_count=postpone_count+1, postpone_log=?, updated_at=? WHERE id=?`)
+    .run(due, control, JSON.stringify(log).slice(0, 8000), new Date(nowMs).toISOString(), id);
+  return { ok: true, task, due, count: task.postpone_count + 1, reason };
+}
+
+// Наступившие точки контроля: открытые задачи, у которых момент контроля
+// прошёл, а напоминание ещё не уходило. Отмечаем и возвращаем — автору
+// уходит личное напоминание «проверьте исполнение».
+export function dueControlPoints(db, nowMs = Date.now()) {
+  const now = new Date(nowMs).toISOString();
+  const rows = db.prepare(`SELECT * FROM arm_tasks WHERE status IN ('new','work')
+    AND control_at IS NOT NULL AND control_at<=? AND control_notified_at IS NULL
+    AND from_user_id IS NOT NULL ORDER BY control_at LIMIT 50`).all(now);
+  const mark = db.prepare(`UPDATE arm_tasks SET control_notified_at=? WHERE id=?`);
+  for (const row of rows) mark.run(now, row.id);
+  return rows;
 }
 
 // Водителю ставит задачу Эксплуатация (руководитель, начальник колонны,
@@ -509,9 +555,13 @@ export function addTask(db, from, fromAccess, body, nowMs = Date.now()) {
   if (!due) return { status: 422, error: 'Укажите срок' };
   if (Date.parse(due) < nowMs - 60_000) return { status: 422, error: 'Срок уже прошёл' };
   const id = randomUUID();
-  db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_name,dept_key,title,body,about,due_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', to.id, to.full_name || '',
-    deptOf(db, to), title, String(body.body || '').trim().slice(0, 2000), String(body.about || '').trim().slice(0, 200), due);
+  // Точка контроля обязательна у делегированного (Фридман): своя дата
+  // или по умолчанию — срок задачи.
+  const control = body.controlAt && Number.isFinite(Date.parse(body.controlAt))
+    ? new Date(Date.parse(body.controlAt)).toISOString() : due;
+  db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_name,dept_key,title,body,about,due_at,control_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', to.id, to.full_name || '',
+    deptOf(db, to), title, String(body.body || '').trim().slice(0, 2000), String(body.about || '').trim().slice(0, 200), due, control);
   return { ok: true, id, to };
 }
 
@@ -531,9 +581,11 @@ export function addDriverTask(db, from, fromAccess, body, nowMs = Date.now()) {
   const f = taskFields(body, nowMs);
   if (f.error) return f;
   const id = randomUUID();
-  db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_driver_id,to_name,dept_key,title,body,about,due_at)
-    VALUES(?,?,?,'',?,?,'drv',?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', driver.id, driver.full_name,
-    f.title, f.body, f.about, f.due);
+  const control = body.controlAt && Number.isFinite(Date.parse(body.controlAt))
+    ? new Date(Date.parse(body.controlAt)).toISOString() : f.due;
+  db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_driver_id,to_name,dept_key,title,body,about,due_at,control_at)
+    VALUES(?,?,?,'',?,?,'drv',?,?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', driver.id, driver.full_name,
+    f.title, f.body, f.about, f.due, control);
   return { ok: true, id, driver };
 }
 
@@ -596,8 +648,10 @@ function tasksWidgets(db, user, nowMs, readOnly) {
     });
   const given = db.prepare(`SELECT * FROM arm_tasks WHERE from_user_id=? AND status IN ('new','work') ORDER BY due_at`).all(user.id)
     .map(task => ({ kind: 'task', id: task.id, label: `${task.to_name}: ${task.title}`, mineGiven: true,
-      tag: `${TASK_STATUS[task.status]} · ${dueLabel(task.due_at, nowMs)}`,
-      tone: task.due_at && Date.parse(task.due_at) < nowMs ? 'neg' : '', actions: readOnly ? [] : ['cancel'],
+      tag: `${TASK_STATUS[task.status]} · ${dueLabel(task.due_at, nowMs)}`
+        + (task.postpone_count ? ` · переносов ${task.postpone_count}` : ''),
+      tone: task.due_at && Date.parse(task.due_at) < nowMs ? 'neg' : task.postpone_count >= 2 ? 'warn' : '',
+      actions: readOnly ? [] : ['postpone', 'cancel'],
       source: 'arm_tasks · поставлена мной' }));
   return { mine, given };
 }
@@ -732,6 +786,20 @@ export async function armApi(ctx) {
     audit(db, user, 'create', 'arm_task', result.id, { to: result.to.id, title: body.title }, requestIp(request));
     notify(result.to.id, `☑ Задача от ${user.full_name || user.username}: ${String(body.title).trim()} — срок ${dueLabel(new Date(Date.parse(body.dueAt)).toISOString(), Date.now()).replace('срок ', '')}. Открыть: «Моё рабочее место».`);
     json(response, 201, { id: result.id });
+    return true;
+  }
+  // Перенос срока (Фридман, 14.11): автор, причина обязательна; после
+  // второго переноса задача всплывает на «Мостике недели».
+  const postponed = pathname.match(/^\/api\/arm\/tasks\/([^/]+)\/postpone$/);
+  if (postponed && method === 'POST') {
+    const body = await readJson(request) || {};
+    const result = postponeTask(db, user, decodeURIComponent(postponed[1]), body);
+    if (!result.ok) { errorJson(response, result.status, result.error); return true; }
+    audit(db, user, 'postpone', 'arm_task', result.task.id, { due: result.due, reason: result.reason, count: result.count }, requestIp(request));
+    if (result.task.to_user_id) {
+      notify(result.task.to_user_id, `☑ Задача «${result.task.title}» перенесена: ${dueLabel(result.due, Date.now())} — ${result.reason} (${user.full_name || user.username}).`);
+    }
+    json(response, 200, { ok: true, count: result.count });
     return true;
   }
   const match = pathname.match(/^\/api\/arm\/tasks\/([^/]+)$/);

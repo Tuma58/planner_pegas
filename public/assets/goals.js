@@ -68,6 +68,11 @@ export async function renderGoals(container, context) {
         <span class="v">${s.ok}<small>в норме</small></span>
         <span class="d">близко ${s.near} · мимо ${s.miss} · справочно ${s.info} · без источника ${s.none}</span></div>
     </div>
+    ${data.orphans && (data.orphans.goalsWithoutTasks.length || data.orphans.tasksWithoutGoal.length) ? `
+      <div class="gl-orphans">${[
+    ...data.orphans.goalsWithoutTasks.map(item => `⚠ Цель без единой задачи (${escapeHtml(item.dept)}): «${escapeHtml(item.title)}»`),
+    ...data.orphans.tasksWithoutGoal.map(item => `⚠ Задача без цели отдела (${escapeHtml(item.dept)}): «${escapeHtml(item.title)}»`)
+  ].join('<br>')} — дерево целей с дырами не управляет: допишите задачи или цель.</div>` : ''}
     <div class="bi-grid">
       ${data.scoped ? '' : `<section class="section">
         <div class="sec-h"><span class="st">Стратегические цели</span>
