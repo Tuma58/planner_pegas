@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -8182,28 +8183,56 @@ function normalizeTrip(body) {
   };
 }
 
-let bootstrapCache = { at: 0, shared: '', rev: '' };
+let bootstrapCache = { at: 0, shared: '', sharedBuf: Buffer.alloc(0), rev: '' };
 // Тяжёлые разделы полного снимка (trips/orders) — свой короткий кэш:
 // в тиках они едут дельтой, полный нужен входам и часовому рефрешу.
-let heavyCache = { at: 0, json: '' };
+let heavyCache = { at: 0, json: '', buf: Buffer.alloc(0) };
 // Варианты стартовой выдачи по уровню денег роли-набора (поле управления,
 // 07.11): коммерческую тайну режет СЕРВЕР. Полный вариант — прежний кэш;
 // урезанные собираются из него лениво и живут, пока жив исходник.
+// Кэши — Буферы: отдача снимка пишет их в сокет по ссылке, без склейки
+// мегабайтных строк на каждый вход (heap OOM 15.11: несколько
+// параллельных входов × 21 МБ строка + 42 МБ буфер пробили кучу 256 МБ).
 const moneyVariants = { smallAt: 0, small: {}, heavyAt: 0, heavy: {} };
-function smallFor(money) {
-  if (money === 'full') return bootstrapCache.shared;
+function smallBufFor(money) {
+  if (money === 'full') return bootstrapCache.sharedBuf;
   if (moneyVariants.smallAt !== bootstrapCache.at) moneyVariants.small = {};
   moneyVariants.smallAt = bootstrapCache.at;
-  return (moneyVariants.small[money] ||= JSON.stringify(stripSmall(JSON.parse(bootstrapCache.shared), money)));
+  return (moneyVariants.small[money] ||= Buffer.from(
+    JSON.stringify(stripSmall(JSON.parse(bootstrapCache.shared), money))));
 }
-function heavyFor(money) {
-  if (money !== 'none') return heavyCache.json;
+function heavyBufFor(money) {
+  if (money !== 'none') return heavyCache.buf;
   if (moneyVariants.heavyAt !== heavyCache.at) moneyVariants.heavy = {};
   moneyVariants.heavyAt = heavyCache.at;
   return (moneyVariants.heavy[money] ||= (() => {
     const parsed = JSON.parse(`{${heavyCache.json}}`);
-    return `"trips":${JSON.stringify(stripTrips(parsed.trips, money))},"orders":${JSON.stringify(stripOrders(parsed.orders, money))}`;
+    return Buffer.from(`"trips":${JSON.stringify(stripTrips(parsed.trips, money))},"orders":${JSON.stringify(stripOrders(parsed.orders, money))}`);
   })());
+}
+
+// Отдача JSON, собранного из готовых кусков (строки-шапки и кэшированные
+// Буферы), с gzip-потоком, когда клиент его принимает (браузеры — все):
+// вход 21 МБ ужимается до ~3,5 МБ, а сервер не держит целую строку ответа.
+function sendJsonParts(request, response, parts) {
+  const headers = { 'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store', Vary: 'Accept-Encoding' };
+  if (/\bgzip\b/.test(String(request.headers['accept-encoding'] || ''))) {
+    headers['Content-Encoding'] = 'gzip';
+    response.writeHead(200, headers);
+    // level 1: ~6× сжатие JSON за десятки мс; обрыв клиента не роняет
+    // процесс — потоки гасят друг друга.
+    const gz = zlib.createGzip({ level: 1 });
+    gz.on('error', () => response.destroy());
+    response.on('error', () => gz.destroy());
+    gz.pipe(response);
+    for (const part of parts) gz.write(part);
+    return gz.end();
+  }
+  headers['Content-Length'] = parts.reduce((sum, part) => sum + Buffer.byteLength(part), 0);
+  response.writeHead(200, headers);
+  for (const part of parts) response.write(part);
+  return response.end();
 }
 
 // Сборка «мелких» секций снимка (всё, кроме trips/orders): стоит до
@@ -8256,7 +8285,7 @@ function rebuildSmallCache() {
     // кандидатов чужого направления бейджем круга.
     roundPlans: db.prepare('SELECT vehicle_id, round_key FROM vehicle_round_plans').all()
   });
-  bootstrapCache = { at: Date.now(), shared,
+  bootstrapCache = { at: Date.now(), shared, sharedBuf: Buffer.from(shared),
     rev: createHash('sha1').update(shared).digest('hex').slice(0, 16) };
 }
 let smallRebuildTimer = null;
@@ -8772,11 +8801,10 @@ async function api(request, response, url) {
     // part=small: только мелкие секции + паспорт — тик забирает их,
     // когда изменился их собственный hash, без 17 МБ рейсов и заявок.
     if (!dateFilter && url.searchParams.get('part') === 'small') {
-      const body = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
-        `"sync":${JSON.stringify(syncInfo)},` + smallFor(accessOf(db, user).money).slice(1);
-      response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
-        'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
-      return response.end(body);
+      const prefix = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
+        `"sync":${JSON.stringify(syncInfo)},`;
+      return sendJsonParts(request, response,
+        [prefix, smallBufFor(accessOf(db, user).money).subarray(1)]);
     }
     // Дельта тяжёлых разделов: только строки, изменённые с «since»
     // клиента (>= и дедуп по id на клиенте — одновременные правки одной
@@ -8858,16 +8886,16 @@ async function api(request, response, url) {
     // тяжёлые разделы собираются с коротким кэшем — вход утром у всех
     // одновременно не перепечатывает 17 МБ по разу на человека.
     if (!heavyCache.json || Date.now() - heavyCache.at > 10_000) {
-      heavyCache = { at: Date.now(),
-        json: `"trips":${JSON.stringify(listTrips(''))},"orders":${JSON.stringify(listOrders())}` };
+      const fragment = `"trips":${JSON.stringify(listTrips(''))},"orders":${JSON.stringify(listOrders())}`;
+      heavyCache = { at: Date.now(), json: fragment, buf: Buffer.from(fragment) };
     }
     const money = accessOf(db, user).money;
-    const body = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
-      `"sync":${JSON.stringify(syncInfo)},${heavyFor(money)},` +
-      smallFor(money).slice(1);
-    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
-      'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
-    return response.end(body);
+    const prefix = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
+      `"sync":${JSON.stringify(syncInfo)},`;
+    // subarray(1) срезает «{» мелкой части без копии — куски уходят в
+    // сокет (или gzip-поток) по ссылке на общий кэш.
+    return sendJsonParts(request, response,
+      [prefix, heavyBufFor(money), ',', smallBufFor(money).subarray(1)]);
   }
 
   // ── CRM-карточка клиента: сводка, контакты, журнал, реквизиты ──
