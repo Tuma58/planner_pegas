@@ -12994,9 +12994,12 @@ async function api(request, response, url) {
   // ── «Производственный график» Э3: единый балансовый слой ──
   // Матрица зоны×дни, баланс и сигналы — одной серверной функцией
   // (src/prografik.mjs); сегменты клиентов — тем же живым нормативом,
-  // что и в плане вывоза. Право как у плана парка.
+  // что и в плане вывоза. Вкладка доступна всем (16.11), поэтому право —
+  // любой вошедший (как дашборд); у ролей без planner:read раньше было
+  // 403 и пустой экран. Деньги уровню money≠full вырезает СЕРВЕР —
+  // клиентский гейт лишь прячет, а payload не должен их нести.
   if (request.method === 'GET' && pathname === '/api/prografik') {
-    const user = requirePermission(request, response, 'planner:read');
+    const user = requireUser(request, response);
     if (!user) return;
     const month = /^\d{4}-\d{2}$/.test(String(url.searchParams.get('month')))
       ? url.searchParams.get('month')
@@ -13004,6 +13007,16 @@ async function api(request, response, url) {
     const data = prografikData(db, month);
     data.segments = Object.fromEntries([...new Set(data.slots.map(slot => slot.customer_name))]
       .map(name => [name, customerSegment(name)]).filter(([, info]) => info));
+    if (accessOf(db, user).money !== 'full') {
+      for (const zone of Object.keys(data.cells)) for (const cell of data.cells[zone]) cell[2] = 0;
+      for (const row of data.balance) row[2] = 0;
+      for (const item of data.zones) item.money = 0;
+      for (const task of data.tasks || []) task.money = 0;
+      for (const order of data.orders) order.rate_vat = 0;
+      for (const trip of data.trips) trip.revenue_vat = 0;
+      for (const slot of data.slots) slot.rate = 0;
+      for (const key of Object.keys(data.legFacts || {})) data.legFacts[key][2] = 0;
+    }
     return json(response, 200, data);
   }
 
