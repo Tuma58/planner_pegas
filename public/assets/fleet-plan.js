@@ -347,6 +347,7 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
     </div>`;
   renderCanvas(`${isTab ? '' : `<h2>🚛 План парка — ${MONTHS[monthNum - 1]} ${year}</h2>`}
     <div class="bi-page fp-page${isTab ? ' fp-tab' : ''}">
+    ${isTab ? '<div class="pg-moveban">▦ Свободный ресурс и спрос этого экрана уже собраны в «Производственном графике» — <button type="button" data-pg-go>открыть единый экран</button>; круги и регулятор баланса пока живут здесь.</div>' : ''}
     ${fpKpis}
     <section class="section dept-drv fp-sec">
     <div class="sec-h"><span class="st">Сетка машин на месяц</span>
@@ -405,6 +406,9 @@ export async function fleetPlanDialog(context, month = '', filters = {}, cachedP
 
   if (canvasSame) return; // тихий тик: данные и разметка не менялись
   syncPlanStickyTops();
+  // Переходный период Э4: плашка ведёт в единый «Производственный график».
+  document.querySelector('[data-pg-go]')?.addEventListener('click', () =>
+    document.querySelector('#viewTabs [data-view="prografik"]')?.click());
 
   const rerender = (newMonth = plan.month) => fleetPlanDialog(context, newMonth, {
     query: document.getElementById('fpQuery')?.value ?? flt.query,

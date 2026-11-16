@@ -436,6 +436,7 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
     `<span class="lg-sw"><i${cls ? ` class="${cls}"` : ''} style="${style}"></i>${label}</span>`;
   renderCanvas(`<div class="bi-page lg-page lg-dpl${isTab ? '' : ' lg-dpl-modal'}">
     ${isTab ? '' : `<h2>📅 План вывоза — ${MONTHS[monthNum - 1]} ${year}</h2>`}
+    ${isTab ? '<div class="pg-moveban">▦ Спрос, свободные машины и деньги этого экрана уже собраны в «Производственном графике» — <button type="button" data-pg-go>открыть единый экран</button>; правка сетки слотов пока живёт здесь.</div>' : ''}
     <div class="bi-kpis bi-kpis-row">
       <div class="metric dept-log" title="Сетка слотов на месяц: рейсы и выручка по ставкам, с НДС">
         <span class="l">План месяца · рейсов</span><span class="v">${Math.round(monthPlanN)}</span>
@@ -508,6 +509,9 @@ export async function deliveryPlanDialog(context, month = '', filters = {}, cach
 
   if (canvasSame) return; // тихий тик: данные и разметка не менялись
   syncPlanStickyTops();
+  // Переходный период Э4: плашка ведёт в единый «Производственный график».
+  document.querySelector('[data-pg-go]')?.addEventListener('click', () =>
+    document.querySelector('#viewTabs [data-view="prografik"]')?.click());
 
   const rerender = (newMonth = plan.month) => deliveryPlanDialog(context, newMonth, {
     query: document.getElementById('dplQuery')?.value ?? flt.query,

@@ -371,6 +371,7 @@ export async function renderFlows(container, context) {
   const surplusTs = sumOf(surplus, tile => tile.balance);
   const noVehicleTotal = sumOf(tiles, tile => tile.noVehicle.length);
   const sameMarkup = !renderInto(container, `<div class="bi-page lg-page lg-flows">
+    <div class="pg-moveban">▦ Потоки «потребность ↔ ресурс» уже собраны в «Производственном графике» — <button type="button" data-pg-go>открыть единый экран</button>.</div>
     <div class="salesfilter bi-sub lg-flowbar">
       <h2>🔀 Потоки между зонами</h2>
       <p>потребности против доступного ресурса за период</p>
@@ -413,6 +414,9 @@ export async function renderFlows(container, context) {
     </div>` : '<div class="section"><div class="bi-empty">В выбранном периоде нет ни потребностей, ни движения парка.</div></div>'}
   </div>`);
   if (sameMarkup) return; // тихий тик: разметка не менялась
+  // Переходный период Э4: плашка ведёт в единый «Производственный график».
+  container.querySelector('[data-pg-go]')?.addEventListener('click', () =>
+    document.querySelector('#viewTabs [data-view="prografik"]')?.click());
 
   wireRangePicker(container, 'flowsFrom', 'flowsTo', (from, to) => {
     state.flowsFrom = from;

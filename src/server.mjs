@@ -14,6 +14,7 @@ import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHi
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
+import { prografikData } from './prografik.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
 const perf = createPerfRegistry();
@@ -8720,6 +8721,24 @@ async function api(request, response, url) {
   }
 
   if (request.method === 'GET' && pathname === '/api/auth/me') {
+    // СТЕНДОВЫЙ автовход (лаборатория, не для прода): переменная
+    // LAB_AUTOLOGIN называет учётку, и первый же «кто я» без сессии
+    // создаёт её сам — руководитель смотрит стенд без пароля. Двойная
+    // защита: на проде (NODE_ENV=production) переменная игнорируется.
+    if (process.env.LAB_AUTOLOGIN && !config.isProduction && !currentUser(request)) {
+      const labUser = db.prepare('SELECT * FROM users WHERE username=? COLLATE NOCASE')
+        .get(String(process.env.LAB_AUTOLOGIN));
+      if (labUser && labUser.active) {
+        const token = newSessionToken();
+        db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)')
+          .run(tokenHash(token), labUser.id,
+            new Date(Date.now() + config.sessionTtlMs).toISOString());
+        audit(db, labUser, 'login', 'session', null, { lab: 'autologin' }, requestIp(request));
+        return json(response, 200, { user: publicUser(labUser) }, {
+          'Set-Cookie': `planner_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}${config.secureCookies ? '; Secure' : ''}`
+        });
+      }
+    }
     const user = requireUser(request, response);
     return user && json(response, 200, { user: publicUser(user) });
   }
@@ -12970,6 +12989,22 @@ async function api(request, response, url) {
         FROM vehicle_dispositions WHERE starts_at<? AND ends_at>?`).all(monthEnd, monthStart),
       rounds: db.prepare(`SELECT p.vehicle_id, p.round_key, p.note FROM vehicle_round_plans p`).all()
     });
+  }
+
+  // ── «Производственный график» Э3: единый балансовый слой ──
+  // Матрица зоны×дни, баланс и сигналы — одной серверной функцией
+  // (src/prografik.mjs); сегменты клиентов — тем же живым нормативом,
+  // что и в плане вывоза. Право как у плана парка.
+  if (request.method === 'GET' && pathname === '/api/prografik') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const month = /^\d{4}-\d{2}$/.test(String(url.searchParams.get('month')))
+      ? url.searchParams.get('month')
+      : new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 7);
+    const data = prografikData(db, month);
+    data.segments = Object.fromEntries([...new Set(data.slots.map(slot => slot.customer_name))]
+      .map(name => [name, customerSegment(name)]).filter(([, info]) => info));
+    return json(response, 200, data);
   }
 
   // Задание из «Регулятора баланса»: логист/руководитель отправляет рычаг
