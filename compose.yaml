@@ -6,7 +6,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: "${PLANNER_MEM_LIMIT:-512m}"
+          # 512m давали Node кучу ~256 МБ: несколько параллельных входов
+          # (bootstrap ~21 МБ каждый) уронили планер 15.11 по heap OOM.
+          memory: "${PLANNER_MEM_LIMIT:-1536m}"
           cpus: "${PLANNER_CPU_LIMIT:-1.0}"
           pids: 256
     ports:
@@ -28,7 +30,7 @@ services:
       SYNC_WORKER_EMBEDDED: "false"
       # IPv6-маршрута у LXC нет, а резолвер отдаёт AAAA первым — Node
       # должен предпочитать IPv4 (телеграм и любые будущие интеграции).
-      NODE_OPTIONS: "--dns-result-order=ipv4first"
+      NODE_OPTIONS: "--dns-result-order=ipv4first --max-old-space-size=1024"
       COOKIE_SECURE: "${COOKIE_SECURE:-true}"
       TRUST_PROXY: "${TRUST_PROXY:-true}"
       INITIAL_ALLOWED_SUBNETS: "${INITIAL_ALLOWED_SUBNETS:-0.0.0.0/0,::/0}"
