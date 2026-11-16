@@ -18,6 +18,7 @@ export const REPORT_TITLES = {
   vehicles: 'Аналитика по сцепкам',
   conflicts: 'История конфликтов',
   'rejected-orders': 'Реестр заявок',
+  'resource-day': 'Ресурс за день',
   history: 'История отчётных периодов'
 };
 
@@ -118,6 +119,28 @@ export function deviationsFor(data, fromMs, toMs, nowMs = Date.now()) {
 }
 
 export async function buildReport(kind, from, to, data) {
+  // «Ресурс за день» (ТЗ Базуева 16.11): свой лёгкий срез без денег —
+  // общий /api/reports ему не нужен. Дата отчёта — поле «с» периода.
+  if (kind === 'resource-day') {
+    const rd = await api(`/api/reports/resource-day?date=${from}`);
+    const catRows = rd.order
+      .filter(key => rd.counters[key])
+      .map(key => `<h4>${escapeHtml(rd.titles[key])} <span class="scount">${rd.counters[key]}</span></h4>
+        <table class="rtable bi-table"><thead><tr><th>Сцепка</th><th>Водитель</th><th>Тип</th><th>Что именно</th></tr></thead>
+        <tbody>${rd.rows.filter(row => row.category === key).map(row =>
+    `<tr><td class="mono">${escapeHtml(row.plate)}${row.trailer ? ` / ${escapeHtml(row.trailer)}` : ''}</td>
+          <td>${escapeHtml(row.driver || '—')}</td><td>${escapeHtml(row.type || '')}</td>
+          <td>${escapeHtml(row.detail || '')}</td></tr>`).join('')}</tbody></table>`).join('');
+    return `<h3>🚛 Ресурс за день · ${fmtDay(rd.day)}</h3>
+      <div class="rsums">
+        <span class="rsum">Парк: <b>${rd.fleet}</b>${rd.fleet !== rd.fleetWork ? ` <small class="muted">(в работе ${rd.fleetWork})</small>` : ''}</span>
+        ${rd.order.map(key => rd.counters[key]
+    ? `<span class="rsum">${escapeHtml(rd.titles[key])}: <b>${rd.counters[key]}</b></span>` : '').join('')}</div>
+      <div class="geohint">Срез за МСК-сутки ${fmtDay(rd.day)} (дата «с» в выборе периода). Категория машины — по
+        главному занятию дня: рейс главнее ремонта, ремонт главнее пересменки. «Простой без
+        оформления» — машина в работе парка, но за день ни рейса, ни диспозиции.</div>
+      ${catRows || '<p class="muted">Парк пуст.</p>'}`;
+  }
   const report = await api(`/api/reports?from=${from}&to=${to}`);
   const u = report.utilization;
   const md = u.machineDays;

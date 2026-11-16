@@ -14,6 +14,7 @@ import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHi
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
+import { resourceDayData } from './resource-day.mjs';
 import { prografikData } from './prografik.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
@@ -11011,6 +11012,16 @@ async function api(request, response, url) {
     if (!user) return;
     const day = String(url.searchParams.get('day') || new Date().toISOString().slice(0, 10)).slice(0, 10);
     return json(response, 200, shiftPlanFact(db, day));
+  }
+  // «Ресурс за день» (ТЗ Базуева 16.11): срез парка по состояниям за
+  // МСК-день — без денег, доступен любому планерному праву.
+  if (request.method === 'GET' && pathname === '/api/reports/resource-day') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const fallback = new Date(Date.now() + 3 * 3_600_000 - 86_400_000).toISOString().slice(0, 10);
+    const day = String(url.searchParams.get('date') || fallback).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return errorJson(response, 422, 'Некорректная дата');
+    return json(response, 200, resourceDayData(db, day));
   }
   if (request.method === 'GET' && pathname === '/api/monitoring/control') {
     const user = requireUser(request, response);

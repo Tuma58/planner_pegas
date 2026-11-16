@@ -315,6 +315,25 @@ export async function renderPrografik(container, context) {
     <small class="muted">спрос▲ · свободно · ₽</small></td>${balanceCells}
     <td>${moneyVisible ? `<b>${shortMoney(periodTotal)}</b>` : ''}</td></tr>`;
 
+  // Пересменки по дням (ТЗ Базуева 16.11): счётчик в строке под сеткой,
+  // клик — список бортов с текущим и следующим рейсом. Данные уже в
+  // payload (диспозиции «пересменка»), сервер не трогаем.
+  const shiftsOfDay = iso => {
+    const dayStart = Date.parse(`${iso}T00:00:00Z`) - 3 * 3_600_000;
+    return pg.dispositions.filter(item => item.kind === 'shift'
+      && Date.parse(item.starts_at) < dayStart + DAY_MS && Date.parse(item.ends_at) > dayStart);
+  };
+  const shiftCells = dayIdxs.map((dayIdx, column) => {
+    const iso = days[column];
+    const count = shiftsOfDay(iso).length;
+    return `<td class="${iso === todayIso ? 'pg-today' : ''}">${count
+      ? `<button class="pg-cellbtn" data-shifts="${iso}"
+          title="Пересменок ${dayLabel(iso)}: ${count} — клик: борта, текущий и следующий рейс">🔁 ${count}</button>`
+      : '<span class="pg-dim">·</span>'}</td>`;
+  }).join('');
+  const shiftsRow = `<tr class="pg-balance"><td class="pg-zone"><b>🔁 Пересменки</b>
+    <small class="muted">клик — борта и рейсы</small></td>${shiftCells}<td></td></tr>`;
+
   // ── Черновик (панель) ──
   const canApply = can('trips:write') || can('orders:write');
   const draftPanel = draft.length ? `<div class="pg-draft">
@@ -373,7 +392,7 @@ export async function renderPrografik(container, context) {
     <section class="section"><div class="sec-b pg-wrap">
       <table class="pg-table"><thead>${headRow}</thead>
         <tbody>${zoneRows || '<tr><td class="muted" style="padding:14px">Нет данных за период</td></tr>'}</tbody>
-        <tfoot>${balanceRow}</tfoot></table>
+        <tfoot>${shiftsRow}${balanceRow}</tfoot></table>
     </div></section>
     ${draftPanel}${tvHtml}</div>`;
   if (!renderInto(container, html)) { restoreScrolls(container, savedScrolls); return; }
@@ -403,6 +422,8 @@ export async function renderPrografik(container, context) {
   });
   container.querySelector('#pgTvBtn').onclick = () => { state.prografikTv = true; rerender(); };
   container.querySelector('#pgFormBtn').onclick = () => formationDialog(pg, context);
+  container.querySelectorAll('[data-shifts]').forEach(button =>
+    button.onclick = () => shiftsDialog(pg, context, button.dataset.shifts));
   container.querySelectorAll('[data-task]').forEach(button => button.onclick = () => {
     const task = liveTasks[Number(button.dataset.task)];
     if (task) zoneDayDialog(task.zone, task.day, pg, context, rerender);
@@ -844,6 +865,49 @@ function formationDialog(pg, context) {
     else toast('Дата вне открытого месяца — переключите месяц стрелками на графике', 'error');
   };
   render();
+}
+
+// Пересменки дня (ТЗ Базуева 16.11): какие борта на пересменке, какой
+// рейс машина закончила (текущий к началу пересменки) и каким выйдет.
+function shiftsDialog(pg, context, iso) {
+  const { showModal } = context;
+  const dayStart = Date.parse(`${iso}T00:00:00Z`) - 3 * 3_600_000;
+  const DAY = 86_400_000;
+  const list = pg.dispositions
+    .filter(item => item.kind === 'shift'
+      && Date.parse(item.starts_at) < dayStart + DAY && Date.parse(item.ends_at) > dayStart)
+    .sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
+  const tripLine = trip => trip
+    ? `${escapeHtml(trip.customer_name || '')} · ${escapeHtml(trip.from_name)}→${escapeHtml(trip.to_name)}
+       <small class="muted">· ${formatDateTime(trip.starts_at)}</small>`
+    : '<span class="muted">—</span>';
+  const rows = list.map(item => {
+    const vehicle = pg.vehicles.find(entry => entry.id === item.vehicle_id);
+    const trips = pg.trips.filter(trip => trip.vehicle_id === item.vehicle_id);
+    const startMs = Date.parse(item.starts_at);
+    // Текущий — последний рейс, начавшийся до пересменки; следующий —
+    // первый после её начала (окно данных — открытый месяц графика).
+    let current = null; let next = null;
+    for (const trip of trips) {
+      const starts = Date.parse(trip.starts_at);
+      if (starts <= startMs && (!current || starts > Date.parse(current.starts_at))) current = trip;
+      if (starts > startMs && (!next || starts < Date.parse(next.starts_at))) next = trip;
+    }
+    return `<tr>
+      <td><b class="mono">${escapeHtml(vehicle?.plate || '')}</b><br>
+        <small class="muted">${escapeHtml(vehicle?.driver_name || 'без водителя')}</small></td>
+      <td><small class="muted">${formatDateTime(item.starts_at)} → ${formatDateTime(item.ends_at)}</small>
+        ${item.note ? `<br><small>${escapeHtml(item.note)}</small>` : ''}</td>
+      <td>${tripLine(current)}</td>
+      <td>${tripLine(next)}</td></tr>`;
+  }).join('');
+  showModal(`<div class="sales-modal pg-modal pg-form"><h2>🔁 Пересменки · ${dayLabel(iso)}</h2>
+    <p class="muted">Борта на пересменке в этот день: когда стоит, какой рейс закончила машина
+      и каким выходит (рейсы — в пределах открытого месяца графика).</p>
+    ${rows ? `<table class="pg-form-table"><tr>
+      <th>ТС · водитель</th><th>Пересменка</th><th>Текущий рейс</th><th>Следующий рейс</th></tr>${rows}</table>`
+    : '<p class="muted">Пересменок в этот день нет.</p>'}
+    <div class="modal-actions"><button class="button ghost" data-close>Закрыть</button></div></div>`);
 }
 
 // ── «Применить» черновика (Э5): пункты выполняются штатными вызовами ──
