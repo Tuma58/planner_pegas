@@ -7,7 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openDatabase } from '../src/db.mjs';
 import { docsBoard, docsNorm, markDocs } from '../src/trip-docs.mjs';
-import { addSafetyEvent, closeSafetyEvent, safetyBoard } from '../src/safety.mjs';
+import { addSafetyEvent, closeSafetyEvent, importDtpRows, safetyBoard } from '../src/safety.mjs';
 import { accessOf, assignRoleSets } from '../src/access.mjs';
 import { createStaffUser } from '../src/staff.mjs';
 import { hashPassword } from '../src/security.mjs';
@@ -69,6 +69,51 @@ test('журнал БДД: ДТП требует описания, рассле�
   assert.equal(board.summary.dtp, 1);
   assert.equal(board.terms[0].termStatus, 'soon');
   assert.ok(!board.withoutAdmission.some(row => row.id === driverId));
+});
+
+test('импорт ДТП из 1С: идемпотентный апсерт, виновность, воронка СК и динамика', t => {
+  const db = freshDb(t);
+  const vehicle = db.prepare(`SELECT id, plate FROM vehicles LIMIT 1`).get();
+  db.prepare(`INSERT INTO drivers(id,full_name,status) VALUES('dtp-drv','Семёнов Пётр Петрович','active')`).run();
+  const rows = [
+    { externalNo: 'ПА000000125', happenedOn: '2026-08-01', plate: ` ${vehicle.plate.toUpperCase()} `,
+      driverName: 'Семенов Петр Петрович', culpability: 'виновны', place: 'г. Москва',
+      damage: 'правый угол', analysis: 'осмотр 04.08', comment: 'будет выплата',
+      claimStatus: 'РемонтАТП', claimNo: '', paidRub: 0 },
+    { externalNo: 'ПА000000126', happenedOn: '2026-09-10', plate: 'зз9999 99', pairedPlate: vehicle.plate,
+      driverName: 'Семёнов Пётр Петрович', culpability: 'не виновны', place: 'Пенза',
+      damage: 'бампер', analysis: '', comment: '', claimStatus: 'Выполнен', claimNo: '188349/26', paidRub: 8000 },
+    { externalNo: '', happenedOn: '2026-09-11', plate: 'x', driverName: '', culpability: '', claimStatus: '' }
+  ];
+  const first = importDtpRows(db, rows, 'БДД', '2026-11-14T08:00:00.000Z');
+  assert.deepEqual([first.added, first.updated, first.skipped.length], [2, 0, 1]);
+  const saved = db.prepare(`SELECT * FROM safety_events WHERE external_no='ПА000000125'`).get();
+  assert.equal(saved.vehicle_id, vehicle.id); // госномер сматчился с пробелами и регистром
+  assert.equal(saved.driver_id, 'dtp-drv'); // ФИО сматчилось без «ё»
+  assert.equal(saved.culpability, 'guilty');
+  assert.equal(saved.status, 'open');
+  const done = db.prepare(`SELECT * FROM safety_events WHERE external_no='ПА000000126'`).get();
+  assert.equal(done.status, 'closed'); // «Выполнен» в 1С = закрыто
+  assert.equal(done.culpability, 'notguilty');
+  assert.equal(done.paid_rub, 8000);
+  assert.equal(done.vehicle_id, vehicle.id); // прицеп не найден → привязка к тягачу сцепки
+  assert.equal(done.plate, 'зз9999 99'); // но номер прицепа в тексте сохранён
+  // Повторный импорт: обновление, не дубль; продвижение этапа видно.
+  rows[0].claimStatus = 'НаправлениеСТОА';
+  const second = importDtpRows(db, rows, 'БДД', '2026-11-15T08:00:00.000Z');
+  assert.deepEqual([second.added, second.updated], [0, 2]);
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM safety_events WHERE kind='dtp'`).get().n, 2);
+  assert.equal(db.prepare(`SELECT claim_status FROM safety_events WHERE external_no='ПА000000125'`).get().claim_status, 'НаправлениеСТОА');
+  // Отчётность: воронка открытых дел, динамика 6 месяцев, виновность в сводке.
+  const board = safetyBoard(db, { from: '2026-08-01', to: '2026-11-14', warnDays: 30, nowMs: Date.parse('2026-11-14T10:00:00Z') });
+  assert.equal(board.summary.dtpGuilty, 1);
+  assert.equal(board.summary.dtpNotGuilty, 1);
+  assert.equal(board.summary.paidRub, 8000);
+  assert.equal(board.months.length, 6);
+  assert.equal(board.months.at(-1).month, '2026-11');
+  assert.equal(board.months.find(row => row.month === '2026-08').dtp, 1);
+  assert.deepEqual(board.claimFunnel, [{ stage: 'НаправлениеСТОА', label: 'направление СТОА', count: 1 }]);
+  assert.ok(board.claims[0].ageDays > 100); // дело с августа — возраст виден
 });
 
 test('роли: БДД — журнал без денег; руководитель логистики — «Отчёты отдела»', t => {

@@ -28,6 +28,7 @@ import { renderGate } from './gate.js';
 import { renderRelease } from './release.js';
 import { renderTripDocs } from './trip-docs.js';
 import { renderSafety } from './safety.js';
+import { renderBridge } from './bridge.js';
 import { renderToBoard } from './vehicle-card.js';
 import { renderPayroll } from './payroll.js';
 import { renderCrm, renderPayments } from './crm.js';
@@ -914,7 +915,10 @@ const MAIN_VIEWS = [
   { id: 'payroll', title: 'ФОТ водителей', show: () => Boolean(viewInSet('payroll') || (legacyAccess() && can('users:write'))) },
   { id: 'crm', title: 'CRM', show: () => Boolean(viewInSet('crm') || (legacyAccess() && (can('orders:write') || can('reports:read')))) },
   { id: 'payments', title: 'К оплате', show: () => Boolean(viewInSet('payments') || (legacyAccess() && can('payments:write'))) },
-  { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) }
+  { id: 'cfo', title: 'ЦФО и затраты', show: () => Boolean(state.data?.user?.cfoScope) },
+  // ⚓ «Мостик недели» (Фридман, 14.11) — еженедельный обзор руководителя.
+  { id: 'bridge', title: 'Мостик недели', show: () => Boolean(can('reports:read')
+    || (state.data?.user?.access && !state.data.user.access.legacy && state.data.user.access.views?.includes('field'))) }
 ];
 
 // Навигатор по структуре направления СТ (как в «Рабочей среде СТ»):
@@ -931,7 +935,7 @@ const NAV_GROUPS = [
   // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
   // блоков. Ниже — рабочие экраны Штаба.
   { dept: 'staff', title: 'Штаб', coef: 'КЭИП', sub: [
-    { title: 'Панели', views: ['field', 'structure', 'goals', 'cfo', 'kpi', 'reports'] },
+    { title: 'Панели', views: ['field', 'bridge', 'structure', 'goals', 'cfo', 'kpi', 'reports'] },
     { title: 'Работа Штаба', views: ['boss', 'staff', 'payroll', 'payments', 'expenses', 'safety', 'gate'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
     { title: 'Планирование и анализ', views: ['prografik', 'reports', 'logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
@@ -948,6 +952,7 @@ const VIEW_META = {
   field: ['◉', 'Поле управления отдела: коэффициент, потери, стыки, очереди, люди, деньги'],
   docs: ['📄', 'Документы после выгрузки: что сдано, что ждём, просрочка по нормативу'],
   safety: ['🛡', 'Безопасность движения: ДТП, нарушения, режим труда и отдыха, допуски'],
+  bridge: ['⚓', 'Мостик недели: выполнено, сорвано с причинами, точки контроля, переносы, хаос'],
   logreports: ['▤', 'Отчёты отдела логистики: сводный, экономика по клиентам и типам ТС'],
   arm: ['🧭', 'Моё рабочее место: анализ, план, выполнение и задачи — по вашей должности'],
   reports: ['▤', 'Мои отчёты: отчёты по уровням — откуда цифры, кто видит, как открыть'],
@@ -1008,6 +1013,9 @@ function viewAllowed(id) {
   }
   // «Затраты» — персональный доступ (галка в карточке), вне набора ролей.
   if (id === 'expenses' && state.data?.user?.expensesAccess) return true;
+  // «Мостик недели» — руководители: «Поле» в наборе (своего кода у
+  // наборов нет; сервер пускает по тем же правам).
+  if (id === 'bridge') return access.views.includes('field');
   return access.views.includes(id);
 }
 const DEPT_PANELS = ['field', 'structure', 'goals', 'cfo', 'kpi'];
@@ -1061,10 +1069,44 @@ function refreshNavBadges(state) {
   }
 }
 
+// Сворачиваемые блоки меню (заказ руководителя 14.11: «неудобно
+// вертикальное пролистывание»): клик по заголовку блока прячет его
+// экраны, выбор запоминается и ГЛАВНЕЕ автораскрытия — свёрнутый
+// вручную блок (включая Штаб с активным экраном) остаётся свёрнутым.
+// Пока ничего не настроено — свёрнуто всё, кроме «Общего» и блока
+// текущего экрана; поиск экрана показывает всё.
+const NAV_CLOSED_KEY = 'pl_nav_closed';
+function navClosedSaved() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(NAV_CLOSED_KEY) || 'null');
+    if (Array.isArray(saved)) return new Set(saved);
+  } catch { /* приват-режим */ }
+  return null;
+}
+// Переключаем от ВИДИМОГО состояния: при первом клике (ничего не
+// сохранено) слепок текущего вида становится сохранённым выбором.
+let navActiveKey = '';
+function navToggleBlock(key, nowClosed) {
+  let closed = navClosedSaved();
+  if (!closed) {
+    closed = new Set(['staff', 'log', 'drv', 'toir', 'refs']);
+    if (navActiveKey) closed.delete(navActiveKey);
+  }
+  if (nowClosed) closed.delete(key); else closed.add(key);
+  try { localStorage.setItem(NAV_CLOSED_KEY, JSON.stringify([...closed])); } catch { /* приват-режим */ }
+  renderViewTabs();
+}
+
 function renderViewTabs() {
   const views = MAIN_VIEWS.filter(view => view.show() && viewAllowed(view.id));
   const byIdView = new Map(views.map(view => [view.id, view]));
   const query = (byId('navSearch')?.value || '').trim().toLowerCase();
+  const navSaved = navClosedSaved();
+  const navClosed = navSaved || new Set(['staff', 'log', 'drv', 'toir', 'refs']);
+  navActiveKey = '';
+  // Заголовок-переключатель: стрелка + счётчик скрытых экранов.
+  const blockTitle = (key, title, chip, closedNow, hidden) =>
+    `<div class="blocktitle nav-toggle" data-navtoggle="${key}"><span><span class="nav-chev">${closedNow ? '▸' : '▾'}</span>${title}${closedNow && hidden ? ` <span class="nav-hidden-n">${hidden}</span>` : ''}</span>${chip}</div>`;
   const link = view => {
     const [icon] = VIEW_META[view.id] || ['•'];
     const title = viewTitle(view);
@@ -1116,8 +1158,17 @@ function renderViewTabs() {
         <span class="nav-ico">⚠</span><span class="nav-t">Требует решения</span>
         ${count ? `<span class="nav-badge">${count > 99 ? '99+' : count}</span>` : ''}</button>`;
     })() : '';
-    return subs ? `<div class="nav-block${group.dept ? ` dept-${group.dept}` : ' nav-common'}"><div class="blocktitle"><span>${group.title}</span>`
-      + (group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '') + `</div>${subs}${exceptionsItem}</div>` : '';
+    if (!subs) return '';
+    const key = group.dept || 'common';
+    const active = subs.includes(`data-view="${state.view}"`) && subs.includes(' active');
+    if (active) navActiveKey = key;
+    // Сохранённый выбор главнее автораскрытия: вручную свёрнутый блок
+    // (даже с активным экраном) остаётся свёрнутым (заказ 14.11: Штаб).
+    const closedNow = Boolean(!query && navClosed.has(key) && (navSaved || !active));
+    const hidden = (subs.match(/data-view=/g) || []).length + (exceptionsItem ? 1 : 0);
+    return `<div class="nav-block${group.dept ? ` dept-${group.dept}` : ' nav-common'}${closedNow ? ' nav-closed' : ''}">`
+      + blockTitle(key, group.title, group.coef ? `<span class="owner-chip chip-${group.dept}">${group.coef}</span>` : '', closedNow, hidden)
+      + `${subs}${exceptionsItem}</div>`;
   }).join('');
   // Экран вне групп (новый, ещё не разнесённый по отделам) не теряется.
   const rest = views.filter(view => !placed.has(view.id)
@@ -1125,7 +1176,8 @@ function renderViewTabs() {
     && (!query || view.title.toLowerCase().includes(query)));
   // «Справочники» в навигаторе (заказ руководителя 12.11: шапку чистим,
   // Карта и справочники переезжают в левое меню — доступ всем, как был).
-  const refsHtml = `<div class="nav-block nav-common"><div class="blocktitle"><span>Справочники</span></div>
+  const refsClosed = Boolean(!query && navClosed.has('refs'));
+  const refsHtml = `<div class="nav-block nav-common${refsClosed ? ' nav-closed' : ''}">${blockTitle('refs', 'Справочники', '', refsClosed, 3)}
     <button data-refaction="geo" class="navlink"><span class="nav-ico">🗺</span><span class="nav-t">Карта геозон</span></button>
     <button data-refaction="customers" class="navlink"><span class="nav-ico">📒</span><span class="nav-t">Заказчики</span></button>
     <button data-refaction="addresses" class="navlink"><span class="nav-ico">📍</span><span class="nav-t">Адреса</span></button>
@@ -1133,6 +1185,9 @@ function renderViewTabs() {
   byId('viewTabs').innerHTML = views.length > 1
     ? groupsHtml + (rest.length ? `<div class="nav-block"><div class="blocktitle"><span>Прочее</span></div>${rest.map(link).join('')}</div>` : '') + refsHtml
     : '';
+  byId('viewTabs').querySelectorAll('[data-navtoggle]').forEach(title =>
+    title.addEventListener('click', () => navToggleBlock(title.dataset.navtoggle,
+      title.closest('.nav-block').classList.contains('nav-closed'))));
   byId('viewTabs').querySelectorAll('[data-refaction]').forEach(button =>
     button.addEventListener('click', () => {
       const action = button.dataset.refaction;
@@ -1254,6 +1309,8 @@ function renderMain() {
     renderField(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'docs') {
     renderTripDocs(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
+  } else if (state.view === 'bridge') {
+    renderBridge(byId('timeline'), { state, showModal, closeModal });
   } else if (state.view === 'safety') {
     renderSafety(byId('timeline'), { state, can, showModal, closeModal, onReload: reload });
   } else if (state.view === 'arm') {

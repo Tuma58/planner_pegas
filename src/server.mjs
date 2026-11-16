@@ -57,7 +57,7 @@ import { assignBoardCards, dispatcherShiftLoad, escalateOverdueCards, heroOfWeek
 import { canLogin, createStaffUser, fireStaffUser, restoreStaffUser, setStaffShifts, staffAccess,
   staffList, staffShifts, staffUserCard, updateStaffUser } from './staff.mjs';
 import { directionGoals } from '../public/assets/goals-core.js';
-import { archiveGoal, goalsData, goalsDigestLine, saveGoal, scopeGoals } from './goals.mjs';
+import { archiveGoal, goalsData, goalsDigestLine, goalsOrphans, saveGoal, scopeGoals } from './goals.mjs';
 import { cfoData, cfoScope } from './cfo.mjs';
 import { ALL_VIEWS, accessOf, assignRoleSets, broadcastTextFor, createRoleSet, roleSets, stripOrders, stripSmall, stripTrips,
   updateRoleSet } from './access.mjs';
@@ -70,14 +70,16 @@ import { acceptSignal, detectSignals, raiseSignal, signalKpi, signalRights } fro
 import { KPI_DEPTS, kpiDept } from './kpi.mjs';
 import { RELEASE_ITEMS, releaseBoard, techFail, techPass } from './release.mjs';
 import { DOC_KINDS, docsBoard, markDocs } from './trip-docs.mjs';
-import { SAFETY_KINDS, addSafetyEvent, closeSafetyEvent, safetyBoard } from './safety.mjs';
+import { CLAIM_LABELS, SAFETY_KINDS, addSafetyEvent, closeSafetyEvent, importDtpRows, safetyBoard } from './safety.mjs';
 import { docsDueAll, toStatusAll, vehicleCardApi } from './vehicle-card.mjs';
 import { payrollApi } from './payroll.mjs';
 import { bitrixCall, bitrixConnector, linkedChats, migrateBitrix, mirrorToBitrix, pollBitrixRooms } from './bitrix24.mjs';
 import { crmApi, markTripPaid, syncContractDays } from './crm.mjs';
 import { turnoverApi } from './turnover.mjs';
 import { partsApi } from './parts.mjs';
-import { armApi, driverArmData, driverTaskAction } from './arm.mjs';
+import { armApi, driverArmData, driverTaskAction, dueControlPoints } from './arm.mjs';
+import { bridgeData } from './bridge.mjs';
+import { importRepairRequests, importRepairSheets, toirHistoryBoard } from './toir-import.mjs';
 import { GATE_TYPES, gateCancel, gateDirectory, gateEdit, gateExitAt, gateHints, gateOnsite, gateRegister, gateReport, normPlate } from './gate.mjs';
 import { applyPositionSet, archivePosition, createPosition, positionById, saveGroup, scopeStructure, structureData, updatePosition,
   userDept } from './structure.mjs';
@@ -977,6 +979,19 @@ setInterval(watchWrap('runUnloadWatch', runUnloadWatch), 10 * 60_000);
 // Сквозной контроль (блок 4 «Слияния», 07.11): детектор стыков открывает
 // случаи и сам закрывает устранённые — каждые 5 минут.
 setInterval(watchWrap('runJointSignals', () => detectSignals(db)), 5 * 60_000);
+// ⏰ Точки контроля делегированных задач (Фридман, 14.11): в момент
+// наступления автору уходит разовое личное напоминание «проверьте
+// исполнение» — делегирование без контроля не существует.
+function runControlPoints() {
+  for (const task of dueControlPoints(db)) {
+    if (!task.from_name) continue;
+    const due = String(task.due_at || '').slice(0, 16).replace('T', ' ');
+    notifyUserByName(task.from_name,
+      `⏰ Точка контроля: «${task.title}» (исполнитель ${task.to_name}, срок ${due}) — проверьте исполнение. Открыть: «Моё рабочее место».`,
+      'arm_task', task.id);
+  }
+}
+setInterval(watchWrap('runControlPoints', runControlPoints), 5 * 60_000);
 
 // ── 🧭 Контроль процессов (11.11) ──
 // Системные проверки: входы, сторожа, скорость. Проверки процессов
@@ -8587,6 +8602,16 @@ async function api(request, response, url) {
     });
   }
 
+  // ── ⚓ «Мостик недели» (Фридман, 14.11): еженедельный обзор руководителя ──
+  if (pathname === '/api/bridge' && request.method === 'GET') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    const access = accessOf(db, user);
+    const canRead = hasPermission(user, 'reports:read') || (!access.legacy && access.views.includes('field'));
+    if (!canRead) return errorJson(response, 403, '«Мостик недели» — обзор руководителя');
+    const weeksBack = Math.max(0, Math.min(12, Number(url.searchParams.get('back')) || 0));
+    return json(response, 200, bridgeData(db, { weeksBack }));
+  }
   // ── 🧭 Контроль процессов (11.11): руководитель направления ──
   if (pathname === '/api/process-control' && request.method === 'GET') {
     const user = requirePermission(request, response, 'reports:read');
@@ -13408,6 +13433,33 @@ async function api(request, response, url) {
       WHERE r.status='open' OR r.created_at > datetime('now','-7 days')
       ORDER BY CASE r.status WHEN 'open' THEN 0 ELSE 1 END, r.created_at DESC`).all() });
   }
+  // 📥 История ТОиР из 1С (14.11): заявки+работы+РЛ одним запросом,
+  // идемпотентный апсерт по номерам документов. Лимит тела повышен —
+  // выгрузка за 4 месяца ≈ 6 МБ.
+  if (request.method === 'POST' && pathname === '/api/repairs/import') {
+    const user = requirePermission(request, response, 'fleet:write');
+    if (!user) return;
+    const body = await readJson(request, 24_000_000);
+    const requests = importRepairRequests(db, body.requests, body.works);
+    const sheets = importRepairSheets(db, body.sheets);
+    audit(db, user, 'import', 'repair_orders', 'toir-1c', {
+      added: requests.added, updated: requests.updated, jobs: requests.jobs,
+      sheets: sheets.count, skipped: requests.skipped.length + sheets.skipped.length }, requestIp(request));
+    return json(response, 200, { ok: true, requests, sheets });
+  }
+  // Сводка истории ТОиР (месяцы × статьи, топ бортов) — для вкладки.
+  if (request.method === 'GET' && pathname === '/api/repairs/history') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const board = toirHistoryBoard(db);
+    // Деньги — только уровню «все суммы» (как везде в планере).
+    if (accessOf(db, user).money !== 'full' && !hasPermission(user, 'reports:read')) {
+      for (const month of board.months) for (const group of month.groups) group.rub = null;
+      for (const row of board.topVehicles) row.rub = null;
+      board.totals.rub = null;
+    }
+    return json(response, 200, board);
+  }
   if (request.method === 'POST' && pathname === '/api/repairs') {
     const user = requirePermission(request, response, 'fleet:write');
     if (!user) return;
@@ -16360,6 +16412,7 @@ async function api(request, response, url) {
     const data = scopeGoals(goalsData(db, ctx), access.scope, ctx);
     const initiatives = goalsInitiatives();
     return json(response, 200, { ...data, month: ctx.month, from: ctx.from, to: ctx.to,
+      orphans: goalsOrphans(db),
       goals: access.scope.all ? ctx.goals : null,
       canEdit: staffAccess(user, settingsObject(db)) && access.scope.all,
       initiatives: Object.fromEntries(Object.entries(initiatives).filter(([key]) => access.scope.depts.includes(key))) });
@@ -16468,7 +16521,7 @@ async function api(request, response, url) {
       const warnDays = directionGoals(settingsObject(db).calculation).docsWarnDays;
       const gibddEnabled = Boolean(db.prepare(`SELECT enabled FROM integration_connectors
         WHERE id='onlinegibdd'`).get()?.enabled);
-      return json(response, 200, { ...safetyBoard(db, { from, to, warnDays }), kinds: SAFETY_KINDS,
+      return json(response, 200, { ...safetyBoard(db, { from, to, warnDays }), kinds: SAFETY_KINDS, claimLabels: CLAIM_LABELS,
         gibdd: { ...gibddBoard(db, { from, to, warnDays }), enabled: gibddEnabled,
           last: JSON.parse(db.prepare(`SELECT value FROM app_meta
             WHERE key='gibdd_sync_last'`).get()?.value || 'null') },
@@ -16488,6 +16541,17 @@ async function api(request, response, url) {
         notify('manager', `🛡 ДТП: ${String(body.description || '').slice(0, 140)} — расследование открыто (${name})`, null, null, { category: 'other' });
       }
       return json(response, 201, { id: result.id });
+    }
+    // Импорт ДТП из выгрузки 1С:УАТ (лист «ДТП» разбирает браузер):
+    // идемпотентный апсерт по внешнему номеру документа.
+    if (request.method === 'POST' && pathname === '/api/safety/import') {
+      const body = await readJson(request);
+      const rows = Array.isArray(body.rows) ? body.rows.slice(0, 3000) : [];
+      if (!rows.length) return errorJson(response, 422, 'В файле не нашлось строк ДТП');
+      const result = importDtpRows(db, rows, name);
+      audit(db, user, 'import', 'safety_event', 'dtp-1c', {
+        added: result.added, updated: result.updated, skipped: result.skipped.length }, requestIp(request));
+      return json(response, 200, result);
     }
     const safetyMatch = route(/^\/api\/safety\/([\w-]+)\/close$/, pathname);
     if (safetyMatch && request.method === 'POST') {

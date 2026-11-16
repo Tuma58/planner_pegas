@@ -226,3 +226,49 @@ test('чек-лист 07.11: снабжение — без выручки рей
   const mech = userWith(db, ['toir_mech']);
   assert.equal(partsRights({ user: mech, access: accessOf(db, mech), hasPermission }).money, false);
 });
+
+test('Фридман: переносы с причиной и счётчиком, точка контроля, мостик недели', async t => {
+  const { postponeTask, dueControlPoints } = await import('../src/arm.mjs');
+  const { bridgeData, weekStart } = await import('../src/bridge.mjs');
+  const { goalsOrphans } = await import('../src/goals.mjs');
+  const db = freshDb(t);
+  const author = placed(db, ['log_assign'], 7);
+  const doer = placed(db, ['log_ctrl'], 8);
+  const access = accessOf(db, author);
+  const nowMs = Date.now();
+  const due = new Date(nowMs + 864e5).toISOString();
+  const made = addTask(db, author, access, { toUserId: doer.id, title: 'Закрыть брони недели', dueAt: due }, nowMs);
+  assert.ok(made.ok);
+  // Точка контроля по умолчанию = срок.
+  assert.equal(db.prepare('SELECT control_at FROM arm_tasks WHERE id=?').get(made.id).control_at, due);
+  // Перенос: только автор, причина обязательна, счётчик растёт, контроль едет.
+  assert.equal(postponeTask(db, doer, made.id, { dueAt: due, reason: 'хочу' }, nowMs).status, 403);
+  assert.equal(postponeTask(db, author, made.id, { dueAt: due, reason: '' }, nowMs).status, 422);
+  const due2 = new Date(nowMs + 2 * 864e5).toISOString();
+  assert.ok(postponeTask(db, author, made.id, { dueAt: due2, reason: 'исполнитель на рейсе' }, nowMs).ok);
+  const due3 = new Date(nowMs + 3 * 864e5).toISOString();
+  const second = postponeTask(db, author, made.id, { dueAt: due3, reason: 'снова рейс' }, nowMs);
+  assert.equal(second.count, 2);
+  const saved = db.prepare('SELECT * FROM arm_tasks WHERE id=?').get(made.id);
+  assert.equal(saved.control_at, due3); // контроль ехал вместе со сроком
+  assert.equal(JSON.parse(saved.postpone_log).length, 2);
+  // Наступившая точка контроля отдаётся один раз.
+  db.prepare('UPDATE arm_tasks SET control_at=? WHERE id=?').run(new Date(nowMs - 60_000).toISOString(), made.id);
+  assert.equal(dueControlPoints(db, nowMs).length, 1);
+  assert.equal(dueControlPoints(db, nowMs).length, 0);
+  // Сорванная задача с причиной — в «сорвано» мостика этой недели.
+  const failTask = addTask(db, author, access, { toUserId: doer.id, title: 'Сверить табель', dueAt: due }, nowMs);
+  taskAction(db, doer, failTask.id, 'fail', 'не успел из-за аврала', nowMs);
+  const bridge = bridgeData(db, { nowMs });
+  assert.ok(bridge.failed.some(task => task.title === 'Сверить табель' && /аврала/.test(task.result)));
+  assert.ok(bridge.rebounced.some(task => task.id === made.id && task.postpones === 2));
+  assert.ok(bridge.controls.some(task => task.id === made.id));
+  assert.equal(bridge.chaos.weeks.length, 5);
+  assert.ok(weekStart(nowMs).getTime() <= nowMs);
+  // Висяки: задача без цели отдела видна.
+  db.prepare(`INSERT INTO org_goals(id,kind,dept_key,title,metric_key,sort) VALUES('g-t1','task','log','Сирота','',999)`).run();
+  db.prepare(`UPDATE org_goals SET archived_at=CURRENT_TIMESTAMP WHERE kind='dept' AND dept_key='log'`).run();
+  const orphans = goalsOrphans(db);
+  assert.ok(orphans.tasksWithoutGoal.some(item => item.title === 'Сирота'));
+  assert.ok(bridgeData(db, { nowMs }).goals.tasksWithoutGoal.length >= 1);
+});

@@ -10,7 +10,7 @@ import { mountTickets, ticketForm } from './tickets.js';
 
 const ZONE_ICON = { analysis: '◔', plan: '▦', exec: '▶', tasks: '☑' };
 const ZONE_HINT = { analysis: 'мои показатели', plan: 'сегодня · завтра', exec: 'сейчас', tasks: 'на мне' };
-const ACTION_LABEL = { take: '▶ Беру', done: '✓ Сделано', fail: '✗ Не сделано', cancel: '✕ Снять' };
+const ACTION_LABEL = { take: '▶ Беру', done: '✓ Сделано', fail: '✗ Не сделано', cancel: '✕ Снять', postpone: '⏲ Перенести' };
 const num = value => value == null ? '—' : Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
 const go = screen => screen ? `<button class="link-btn arm-go" data-goto="${escapeHtml(screen)}" title="Открыть рабочий экран">→</button>` : '';
 
@@ -70,6 +70,7 @@ async function newTaskDialog(context, after) {
       `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}${person.position ? ` · ${escapeHtml(person.position)}` : ''}</option>`).join('')}</optgroup>`).join('')}</select></label>
     <label class="field">Что сделать <input name="title" maxlength="300" required placeholder="Закрыть брони Корса до вечера"></label>
     <label class="field">Срок <input type="datetime-local" name="dueAt" value="${tomorrow}" required></label>
+    <label class="field">Точка контроля <small class="muted">когда проверить исполнение; пусто = в срок задачи</small><input type="datetime-local" name="controlAt"></label>
     <label class="field">К чему относится <small class="muted">рейс, машина, клиент — по желанию</small><input name="about" maxlength="200"></label>
     <label class="field">Подробности <textarea name="body" rows="3"></textarea></label>
     <p class="muted">Задачу можно поставить коллеге своего отдела; Эксплуатация — и водителю. Между отделами — стыки и «⚑ Сигнал».</p>
@@ -80,10 +81,34 @@ async function newTaskDialog(context, after) {
     const form = event.currentTarget;
     const body = Object.fromEntries(['toUserId', 'title', 'about', 'body'].map(key => [key, form[key].value]));
     body.dueAt = form.dueAt.value ? new Date(form.dueAt.value).toISOString() : '';
+    body.controlAt = form.controlAt.value ? new Date(form.controlAt.value).toISOString() : '';
     try {
       await api('/api/arm/tasks', { method: 'POST', body: JSON.stringify(body) });
       context.closeModal(); toast('Задача поставлена — исполнитель получил уведомление'); after();
     } catch (error) { document.querySelector('#armTaskErr').textContent = error.message; }
+  });
+}
+
+// Перенос срока (Фридман, 14.11): причина обязательна — по причинам
+// правятся оценки; после второго переноса задача всплывает на «Мостике».
+function postponeDialog(context, id, after) {
+  const tomorrow = new Date(Date.now() + 27 * 3_600_000).toISOString().slice(0, 16);
+  context.showModal(`<form id="armPpForm"><h2>⏲ Перенести срок</h2>
+    <label class="field">Новый срок <input type="datetime-local" name="dueAt" value="${tomorrow}" required></label>
+    <label class="field">Причина переноса <small class="muted">обязательно</small><input name="reason" maxlength="300" required placeholder="исполнитель на рейсе до пятницы"></label>
+    <p class="muted">Перенос считается: после второго задача попадает на «Мостик недели» — там её дробят, делегируют иначе или снимают.</p>
+    <div class="form-error" id="armPpErr"></div>
+    <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button primary">Перенести</button></div></form>`);
+  document.querySelector('#armPpForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+      const out = await api(`/api/arm/tasks/${encodeURIComponent(id)}/postpone`, { method: 'POST',
+        body: JSON.stringify({ dueAt: new Date(form.dueAt.value).toISOString(), reason: form.reason.value }) });
+      context.closeModal();
+      toast(out.count >= 2 ? `Перенесено (${out.count}-й раз) — задача попадёт на «Мостик недели»` : 'Срок перенесён, исполнитель уведомлён');
+      after();
+    } catch (error) { document.querySelector('#armPpErr').textContent = error.message; }
   });
 }
 
@@ -147,7 +172,11 @@ export async function renderArm(container, context) {
     const goto = event.target.closest('[data-goto]');
     if (goto) { document.querySelector(`#viewTabs [data-view="${goto.dataset.goto}"]`)?.click(); return; }
     const act = event.target.closest('[data-arm-act]');
-    if (act) { taskAct(act.dataset.armTask, act.dataset.armAct, rerender); return; }
+    if (act) {
+      if (act.dataset.armAct === 'postpone') postponeDialog(context, act.dataset.armTask, rerender);
+      else taskAct(act.dataset.armTask, act.dataset.armAct, rerender);
+      return;
+    }
     if (event.target.closest('#armNewTask')) newTaskDialog(context, rerender);
     if (event.target.closest('#armTz')) tzDialog(context, data.tz, false, rerender);
     if (event.target.closest('#armTzNew')) tzDialog(context, data.tz, true, rerender);

@@ -198,6 +198,23 @@ export function archiveGoal(db, id) {
   return { ok: true, title: current.title };
 }
 
+// Висяки (Фридман, 14.11): цель отдела без единой задачи и задачи
+// отдела без цели — дерево целей с дырами не управляет; плюс задачи
+// без живого показателя (их светофор всегда пуст).
+export function goalsOrphans(db) {
+  const rows = db.prepare(`SELECT kind, dept_key, title, metric_key FROM org_goals WHERE archived_at IS NULL`).all();
+  const hasTask = dept => rows.some(row => row.kind === 'task' && row.dept_key === dept);
+  const hasGoal = dept => rows.some(row => row.kind === 'dept' && row.dept_key === dept);
+  return {
+    goalsWithoutTasks: rows.filter(row => row.kind === 'dept' && !hasTask(row.dept_key))
+      .map(row => ({ dept: row.dept_key, title: row.title })),
+    tasksWithoutGoal: rows.filter(row => row.kind === 'task' && !hasGoal(row.dept_key))
+      .map(row => ({ dept: row.dept_key, title: row.title })),
+    noMetric: rows.filter(row => row.kind === 'task' && (!row.metric_key || row.metric_key.startsWith('pending:')))
+      .map(row => ({ dept: row.dept_key, title: row.title }))
+  };
+}
+
 // Строка для «📐 Нормативов недели»: светофор задач и сдвиг к прошлой неделе.
 export function goalsDigestLine(summary, last) {
   const shift = last && Number.isFinite(last.ok) ? ` (было ${last.ok}/${last.near}/${last.miss})` : '';
