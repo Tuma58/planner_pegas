@@ -803,14 +803,18 @@ function formationDialog(pg, context) {
         .localeCompare(String(a.unloaded_at || a.ends_at)))[0];
       const unloadAt = Date.parse(unload.unloaded_at || unload.ends_at);
       const isFact = Boolean(unload.unloaded_at) || ['unloaded', 'done', 'paid'].includes(unload.status);
-      // Следующий рейс в плане, погрузка ещё не началась (status='plan';
-      // run/unloaded = уже загружен и поехал — такие ТЗ не просит).
+      // Первый СЛЕДУЮЩИЙ рейс машины любого статуса. Если он уже не
+      // «план» (run/unloaded — загрузилась и поехала), машина не предмет
+      // формирования: прежний поиск «только план» перескакивал через
+      // идущий рейс и показывал более поздний план с ложным зазором
+      // (т913ат58 16.11: 9 из 31 строки за три дня были такими).
       let next = null;
       for (const trip of pg.trips) {
-        if (trip.vehicle_id !== vehicle.id || trip.status !== 'plan') continue;
+        if (trip.vehicle_id !== vehicle.id) continue;
         const starts = Date.parse(trip.starts_at);
         if (starts >= unloadAt && (!next || starts < Date.parse(next.starts_at))) next = trip;
       }
+      if (next && next.status !== 'plan') continue; // уже загружена следующим — едет
       const item = { vehicle, unload, unloadAt, isFact, next };
       if (next) rows.push(item); else noNext.push(item);
     }
