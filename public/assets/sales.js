@@ -1239,6 +1239,8 @@ export async function renderSales(container, context) {
               <select id="salesViaKind" title="Тип операции" style="width:110px">
                 <option value="D">Выгрузка</option><option value="P">Погрузка</option>
               </select>
+              <input id="salesViaAt" type="datetime-local" style="width:190px"
+                title="План прибытия на точку по её местным часам — можно оставить пустым">
               <button type="button" class="button ghost small" id="salesViaAdd">+</button>
             </div>
           </div>
@@ -1426,21 +1428,31 @@ export async function renderSales(container, context) {
   };
   const redrawVia = () => {
     container.querySelector('#salesViaChips').innerHTML = via.map((item, index) =>
-      `<span class="via-chip">${item.kind === 'P' ? '⬆' : '⬇'} ${escapeHtml(item.point.slice(0, 30))}
+      `<span class="via-chip">${item.kind === 'P' ? '⬆' : '⬇'} ${escapeHtml(item.point.slice(0, 30))}${item.at
+        ? ` · 🕐 ${escapeHtml(fmtDateTime(item.at))}${escapeHtml(localTimeHint(item.point, item.at))}` : ''}
         <button type="button" data-via-del="${index}" title="Убрать пункт">×</button></span>`).join('')
       || '<small class="muted">прямой рейс без заездов</small>';
     container.querySelectorAll('[data-via-del]').forEach(button =>
       button.addEventListener('click', () => { via.splice(Number(button.dataset.viaDel), 1); redrawVia(); }));
     salesPlannedKm();
   };
+  // Время точки (заявка Базуева 09.11): вводится по местным часам пункта —
+  // как в «✏ Корректировке»; перевод в МСК тем же mskFromLocal.
+  const viaAtInput = container.querySelector('#salesViaAt');
+  const refreshViaAt = wireLocalTimeHint(viaAtInput,
+    () => container.querySelector('#salesViaPoint')?.value || '');
+  container.querySelector('#salesViaPoint').addEventListener('input', refreshViaAt);
   container.querySelector('#salesViaAdd').addEventListener('click', () => {
     const input = container.querySelector('#salesViaPoint');
     const address = resolveAddress(data, input.value);
     const point = address ? address.name : input.value.trim();
     if (!point) return;
     if (!address) toast('Промежуточный пункт не из справочника — в километраж не войдёт', 'error');
-    via.push({ point, kind: container.querySelector('#salesViaKind').value, addressId: address?.id || null });
+    via.push({ point, kind: container.querySelector('#salesViaKind').value, addressId: address?.id || null,
+      at: viaAtInput?.value ? mskFromLocal(new Date(viaAtInput.value).toISOString(), point) : null });
     input.value = '';
+    if (viaAtInput) viaAtInput.value = '';
+    refreshViaAt();
     redrawVia();
   });
   redrawVia();
