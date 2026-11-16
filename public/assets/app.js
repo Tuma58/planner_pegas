@@ -853,9 +853,11 @@ const MAIN_VIEWS = [
   // «⚠ Внештатки» (Э1, 03.11): акты, возвраты, опоздания — видна всем,
   // заводит инциденты диспетчер из карточки рейса.
   { id: 'incidents', title: 'Внештатки', show: () => true },
-  // «Производственный график» (Э1, 14.11): один экран вместо трёх —
-  // виден тем же, кому видна хоть одна из объединяемых вкладок.
-  { id: 'prografik', title: 'Производственный график', show: () => can('orders:write') || can('trips:write') || can('fleet:write') || can('reports:read') },
+  // «Производственный график» (Э1–Э5, перенос из лаборатории 16.11):
+  // один экран вместо трёх — доступен ВСЕМ, как Гант и Дашборд (решение
+  // руководителя 16.11). Деньги по-прежнему только уровню money=full,
+  // назначения и черновик «Применить» — только правам записи.
+  { id: 'prografik', title: 'Производственный график', show: () => true },
   { id: 'flows', title: 'Потоки', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'delivery', title: 'План вывоза', show: () => can('orders:write') || can('trips:write') || can('reports:read') },
   { id: 'fleetplan', title: 'План парка', show: () => can('trips:write') || can('fleet:write') || can('reports:read') },
@@ -1001,12 +1003,10 @@ function renderCascade() {
 const LEGACY_VIEWS = ['gantt', 'sales', 'logist', 'routes', 'dispatcher', 'monitoring', 'resource', 'remzona',
   'incidents', 'flows', 'delivery', 'fleetplan', 'prografik', 'boss', 'expenses', 'staff', 'dashboard'];
 function viewAllowed(id) {
-  // Мессенджер и дашборд доступны всем без оглядки на наборы
-  // (решения руководителя 12.11): общая видимость достижения плана.
-  if (id === 'messenger' || id === 'dashboard') return true;
-  // Производственный график (Э1, 14.11): его видит тот, кому видна хоть
-  // одна из объединяемых вкладок — наборы ролей не трогаем до Э4.
-  if (id === 'prografik') return ['flows', 'delivery', 'fleetplan'].some(view => viewAllowed(view));
+  // Мессенджер, дашборд и производственный график доступны всем без
+  // оглядки на наборы (решения руководителя 12.11 и 16.11): общая
+  // видимость достижения плана и единый экран планирования.
+  if (id === 'messenger' || id === 'dashboard' || id === 'prografik') return true;
   const access = state.data?.user?.access;
   if (!access || access.legacy) {
     return (state.data?.user?.roles || []).includes('admin') || LEGACY_VIEWS.includes(id);
