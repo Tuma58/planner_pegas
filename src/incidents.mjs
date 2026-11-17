@@ -12,9 +12,19 @@ export const INCIDENT_KINDS = {
   late: 'Опоздание'
 };
 
-// Инциденты периода: ручные (trip_incidents) + авто-опоздания из
-// отметок (факт прибытия позже плана больше часа — тот же порог, что
-// в отчётах опозданий).
+// Опоздание = факт прибытия позже плана больше часа — тот же порог,
+// что в отчётах опозданий.
+const LATE_WHERE = `s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
+      AND julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24
+      AND datetime(s.actual_arrival) >= datetime(?) AND datetime(s.actual_arrival) < datetime(?)`;
+
+// Счётчик опозданий >1 ч за период — для АРМ и сводок, без выборки строк.
+export function lateCount(db, fromIso, toIso) {
+  return db.prepare(`SELECT COUNT(*) c FROM trip_stops s
+    JOIN trips t ON t.id=s.trip_id WHERE ${LATE_WHERE}`).get(fromIso, toIso).c;
+}
+
+// Инциденты периода: ручные (trip_incidents) + авто-опоздания из отметок.
 export function incidentsData(db, fromIso, toIso) {
   const manual = db.prepare(`SELECT i.*, v.plate vehicle_plate, t.customer_name,
       t.from_point, t.to_point,
@@ -26,9 +36,7 @@ export function incidentsData(db, fromIso, toIso) {
     ORDER BY i.created_at DESC LIMIT 500`).all(fromIso, toIso);
   // Опозданий >1 ч за месяц — сотни: наверх крупнейшие (они и есть
   // боль), общий счётчик — строкой на вкладке.
-  const lateWhere = `s.actual_arrival IS NOT NULL AND s.planned_arrival IS NOT NULL
-      AND julianday(s.actual_arrival) - julianday(s.planned_arrival) > 1.0/24
-      AND datetime(s.actual_arrival) >= datetime(?) AND datetime(s.actual_arrival) < datetime(?)`;
+  const lateWhere = LATE_WHERE;
   const autoLate = db.prepare(`SELECT s.trip_id, s.kind stop_kind, s.point,
       s.planned_arrival, s.actual_arrival, v.plate vehicle_plate, t.customer_name,
       t.from_point, t.to_point,

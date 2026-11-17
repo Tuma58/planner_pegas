@@ -303,3 +303,22 @@ test('шаблоны «Что сделать» (ТЗ Базуева 17.11): пр
   assert.ok(postponeTask(db, author, made.id, { dueAt: due2, reason: 'исполнитель на рейсе' }, nowMs).ok);
   assert.equal(db.prepare('SELECT control_at FROM arm_tasks WHERE id=?').get(made.id).control_at, due2);
 });
+
+test('карточки логиста-диспетчера (ТЗ Базуева 17.11): доска, график завтра, внештатки', t => {
+  const db = freshDb(t);
+  const logist = placed(db, ['log_assign'], 7);
+  const vehicle = db.prepare('SELECT id FROM vehicles LIMIT 1').get();
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get();
+  const baseline = armData(db, logist, 'log_assign').zones.exec.find(item => item.label === 'Ждут логиста').value;
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
+  db.prepare(`INSERT INTO trips(id,vehicle_id,from_zone_id,to_zone_id,starts_at,ends_at,status,distance_km,revenue_vat)
+    VALUES(?,?,?,?,?,?,'plan',0,0)`).run(randomUUID(), vehicle.id, zone.id, zone.id, future, later);
+  const data = armData(db, logist, 'log_assign');
+  const wait = data.zones.exec.find(item => item.label === 'Ждут логиста');
+  assert.equal(wait.value, baseline + 1); // план без подтверждения логиста
+  assert.ok(data.zones.exec.some(item => item.label === 'Доска диспетчерской' && item.screen === 'dispatcher'));
+  assert.ok(data.zones.exec.some(item => item.label.startsWith('Акты на выгрузке') && item.screen === 'incidents'));
+  assert.ok(data.zones.plan.some(item => item.label.includes('График на завтра') && item.screen === 'prografik'));
+  assert.ok(data.zones.plan.some(item => item.label === 'Дефицит машин на завтра'));
+});

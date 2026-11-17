@@ -14,7 +14,9 @@
 // Виджет: { kind: 'metric' | 'row' | 'task', label, value?, unit?, norm?,
 //   tone?: 'pos'|'warn'|'neg'|'', note?, screen?, source }.
 
-import { attendanceSummary, currentShift, myShiftStats, nextAssignedShare } from './planner-service.mjs';
+import { attendanceSummary, currentShift, demurrageSummary, myShiftStats, nextAssignedShare } from './planner-service.mjs';
+import { prografikData } from './prografik.mjs';
+import { lateCount } from './incidents.mjs';
 import { fieldLive } from './field.mjs';
 import { docsBoard } from './trip-docs.mjs';
 import { toStatusAll } from './vehicle-card.mjs';
@@ -154,6 +156,60 @@ const W = {
     return [
       { kind: 'row', label: 'Очередь нарядов', value: queued, screen: 'remzona', source: 'repair_orders' },
       { kind: 'row', label: 'ТО скоро или просрочено', value: due, tone: due ? 'warn' : 'pos', screen: 'toboard', source: 'toStatusAll (нормы паспортов ТС)' }
+    ];
+  },
+
+  // ── Карточки логиста-диспетчера (ТЗ Базуева afee116d, «делаем» 17.11):
+  // доска диспетчерской, график на завтра, внештатки — тонкие обёртки
+  // над существующими расчётами, своих формул нет.
+  disp_board: ({ db }) => {
+    const t = db.prepare(`SELECT
+        SUM(CASE WHEN status='plan' AND logist_confirmed_at IS NULL THEN 1 ELSE 0 END) wait,
+        SUM(CASE WHEN status='plan' AND logist_confirmed_at IS NOT NULL THEN 1 ELSE 0 END) prep,
+        SUM(CASE WHEN status='run' THEN 1 ELSE 0 END) line
+      FROM trips WHERE status IN ('plan','run')`).get();
+    const idle = safe(() => demurrageSummary(db))?.openCount ?? 0;
+    const source = 'доска диспетчерской (trips; те же колонки, что на «🗂 Доске»)';
+    return [
+      { kind: 'metric', label: 'Ждут логиста', value: t.wait || 0, tone: t.wait ? 'warn' : 'pos', note: 'подтверждение рейса', source },
+      { kind: 'metric', label: 'В подготовке', value: t.prep || 0, tone: '', note: '1С · задание · выход', source },
+      { kind: 'metric', label: 'На линии', value: t.line || 0, tone: '', note: 'контроль рейсов', source },
+      { kind: 'metric', label: 'Простои П/В', value: idle, tone: idle ? 'warn' : 'pos', note: 'сверх норматива сейчас', source: 'demurrageSummary (норматив из Настроек)' },
+      { kind: 'row', label: 'Доска диспетчерской', value: (t.wait || 0) + (t.prep || 0) + (t.line || 0), note: 'рейсов в работе', screen: 'dispatcher', source }
+    ];
+  },
+  graph_tomorrow: ({ db, nowMs }) => {
+    const tomorrow = mskDay(nowMs, 1);
+    const pg = safe(() => prografikData(db, tomorrow.slice(0, 7)));
+    const index = pg ? pg.days.indexOf(tomorrow) : -1;
+    if (index < 0) return null;
+    let plan = 0;
+    let deficit = 0;
+    for (const zone of Object.keys(pg.cells)) {
+      const [gap, free, , planned] = pg.cells[zone][index];
+      plan += planned;
+      // Та же формула, что в задачах графика: не хватает = спрос сверх свободных.
+      if (gap > free) deficit += Math.ceil(gap - free);
+    }
+    const label = `${tomorrow.slice(8, 10)}.${tomorrow.slice(5, 7)}`;
+    return [
+      { kind: 'row', label: `График на завтра (${label}): план сетки`, value: Math.round(plan),
+        note: 'машин по слотам клиентов', screen: 'prografik', source: 'prografikData (сетка клиентов)' },
+      { kind: 'row', label: 'Дефицит машин на завтра', value: deficit, tone: deficit ? 'warn' : 'pos',
+        note: deficit ? 'спрос выше свободных — «Разобрать» на графике' : 'машин хватает',
+        screen: 'prografik', source: 'prografikData (спрос против свободных машин)' }
+    ];
+  },
+  incident_counts: ({ db, nowMs }) => {
+    const open = kind => db.prepare(`SELECT COUNT(*) n FROM trip_incidents WHERE kind=? AND closed_at IS NULL`).get(kind).n;
+    const acts = open('act');
+    const returns = open('return');
+    const late = safe(() => lateCount(db, new Date(nowMs - 7 * DAY).toISOString(), new Date(nowMs).toISOString())) ?? 0;
+    const source = 'внештатки (trip_incidents · отметки trip_stops)';
+    return [
+      { kind: 'row', label: 'Акты на выгрузке · открытые', value: acts, tone: acts ? 'warn' : 'pos', screen: 'incidents', source },
+      { kind: 'row', label: 'Возвраты · открытые', value: returns, tone: returns ? 'warn' : 'pos', screen: 'incidents', source },
+      { kind: 'row', label: 'Опоздания >1 ч за 7 суток', value: late, tone: '', screen: 'incidents', source }
     ];
   },
 
@@ -378,7 +434,10 @@ function queuesOf(db, dept, keys) {
 // ── Реестр должностей (набор роли → виджеты по зонам) ──
 // Э1 — пилот; остальные наборы добавляются строкой (Э3).
 export const ARM_ROLES = {
-  log_assign: { analysis: ['my_shift', 'next_share'], plan: ['log_plan'], exec: ['log_queues_assign', 'my_holds'],
+  // Карточки Базуева (17.11): доска и внештатки — в «Выполнении», график
+  // завтра — в «Плане»; блок «План» ТЗ уже жил в log_plan.
+  log_assign: { analysis: ['my_shift', 'next_share'], plan: ['log_plan', 'graph_tomorrow'],
+    exec: ['disp_board', 'log_queues_assign', 'my_holds', 'incident_counts'],
     tasks: [['process_marks', 'logist'], ['joint_cases', 'drv_log', 'logist'], 'my_helpdesk'] },
   log_ctrl: { analysis: ['my_shift', 'late_unload'], plan: ['ctrl_plan'], exec: ['log_queues_ctrl', 'cash_collect'],
     tasks: [['process_marks', 'dispatcher'], 'my_helpdesk'] },

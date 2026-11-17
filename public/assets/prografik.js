@@ -11,7 +11,7 @@
 // 📺 ТВ-режим — сигналы и карточки баланса по дням. Старые вкладки живут
 // до Э4 (на них плашки-ссылки сюда).
 import { api, apiConfirmable, escapeHtml, formatDateTime, money, renderInto,
-  captureScrolls, restoreScrolls, attachSearch, toast } from './api.js';
+  captureScrolls, restoreScrolls, attachSearch, toast, locationGroupOf } from './api.js';
 import { bodyTypeCompatible, matchVehicles, resolveAddress } from './sales.js';
 
 const DAY_MS = 86_400_000;
@@ -788,7 +788,10 @@ function formationDialog(pg, context) {
   const { state, showModal } = context;
   const mskDayOf = value => new Date(Date.parse(value) + 3 * 3_600_000).toISOString().slice(0, 10);
   const filters = state.prografikFormFlt || (state.prografikFormFlt = { zone: '', day: pg.todayIso });
-  const zonesList = [...new Set(pg.trips.map(trip => trip.to_name))].sort((a, b) => a.localeCompare(b, 'ru'));
+  // Анализ местонахождения: сибирские зоны выбираются одной группой
+  // «Восток (Сибирь)» (решение руководителя 17.11, ТЗ 81a24290);
+  // в строках машина показывает свою настоящую зону.
+  const zonesList = [...new Set(pg.trips.map(trip => locationGroupOf(trip.to_name)))].sort((a, b) => a.localeCompare(b, 'ru'));
 
   const build = () => {
     const rows = []; const noNext = [];
@@ -797,7 +800,7 @@ function formationDialog(pg, context) {
       const unloads = pg.trips.filter(trip => trip.vehicle_id === vehicle.id
         && trip.status !== 'rejected'
         && mskDayOf(trip.unloaded_at || trip.ends_at) === filters.day
-        && (!filters.zone || trip.to_name === filters.zone));
+        && (!filters.zone || locationGroupOf(trip.to_name) === filters.zone));
       if (!unloads.length) continue;
       const unload = unloads.sort((a, b) => String(b.unloaded_at || b.ends_at)
         .localeCompare(String(a.unloaded_at || a.ends_at)))[0];
