@@ -266,3 +266,23 @@ test('стартовые настройки текучести: пишутся �
   seedTurnoverSettings(db); // ноль руководителя — осознанное значение
   assert.equal(JSON.parse(db.prepare(`SELECT value_json FROM settings WHERE key='turnover'`).get().value_json).targetPct, 0);
 });
+
+test('ручные даты приёма/увольнения с форм (17.11) переживают синхронизацию', t => {
+  const db = freshDb(t);
+  september(db);
+  migrateTurnover(db);
+  // Приём с датой из формы «Новый водитель»: источник manual.
+  db.prepare(`INSERT INTO drivers(id,full_name,status,hired_on,hired_source)
+    VALUES('m1','Ручной Приём Тест','active','2026-09-10','manual')`).run();
+  // Увольнение с датой из формы: manual + причина.
+  db.prepare(`INSERT INTO drivers(id,full_name,status,hired_on,hired_source,fired_on,fired_source,fired_kind,fired_reason)
+    VALUES('m2','Ручное Увольнение Тест','fired','2026-09-05','manual','2026-09-20','manual','real','По собственному желанию')`).run();
+  syncTurnoverDates(db);
+  const m1 = db.prepare('SELECT hired_on, hired_source FROM drivers WHERE id=?').get('m1');
+  assert.deepEqual({ ...m1 }, { hired_on: '2026-09-10', hired_source: 'manual' });
+  const m2 = db.prepare('SELECT fired_on, fired_source, fired_reason FROM drivers WHERE id=?').get('m2');
+  assert.deepEqual({ ...m2 }, { fired_on: '2026-09-20', fired_source: 'manual', fired_reason: 'По собственному желанию' });
+  // Текучесть видит ручное увольнение в своём месяце.
+  const out = driverTurnover(db, { from: '2026-09-01', to: '2026-09-30', today: '2026-10-01' });
+  assert.ok(out.recentFired.some(x => x.id === 'm2' && x.firedOn === '2026-09-20'));
+});

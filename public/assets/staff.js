@@ -13,8 +13,14 @@ export const FIRE_REASONS = ['По собственному желанию', 'Д
   'Не прошёл испытательный срок', 'Сокращение / реорганизация', 'Перевод', 'Иное'];
 
 export function fireReasonDialog({ showModal, closeModal }, fullName, note, onConfirm) {
+  // Дата увольнения (заказ руководителя 17.11): последний день работы,
+  // как дата приёма при создании; по умолчанию — сегодня. Уходит вторым
+  // аргументом onConfirm — водительские вызовы шлют её на сервер.
+  const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
   showModal(`<form id="fireForm"><h2>Увольнение · ${escapeHtml(fullName)}</h2>
     ${note ? `<p class="muted">${escapeHtml(note)}</p>` : ''}
+    <label class="field">Дата увольнения <small class="muted">последний день работы — от неё считаются стаж и текучесть</small>
+      <input name="firedOn" type="date" value="${today}" required></label>
     <label class="field">Причина<select name="reason">${FIRE_REASONS.map(reason =>
     `<option>${reason}</option>`).join('')}</select></label>
     <label class="field">Комментарий <small class="muted">(обязателен при «Иное»)</small>
@@ -33,7 +39,7 @@ export function fireReasonDialog({ showModal, closeModal }, fullName, note, onCo
       return;
     }
     try {
-      await onConfirm(comment ? `${reason} — ${comment}` : reason);
+      await onConfirm(comment ? `${reason} — ${comment}` : reason, String(values.get('firedOn') || ''));
       closeModal();
     } catch (exception) { error.textContent = exception.message; }
   });

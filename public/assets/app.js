@@ -2087,8 +2087,8 @@ function openDriversDirectory() {
     button.onclick = () => {
       const driver = byDriver(button.dataset.drvFire);
       fireReasonDialog({ showModal, closeModal }, driver.full_name,
-        'Сцепка будет откреплена, история сохранится.', async reason => {
-          await api(`/api/drivers/${driver.id}`, { method: 'DELETE', body: JSON.stringify({ reason }) });
+        'Сцепка будет откреплена, история сохранится.', async (reason, firedOn) => {
+          await api(`/api/drivers/${driver.id}`, { method: 'DELETE', body: JSON.stringify({ reason, firedOn }) });
           toast('Водитель уволен');
           await reload();
           back();
@@ -2171,8 +2171,8 @@ async function driverCardDialog(driver, after) {
   const dcFire = byId('dcFire');
   if (dcFire) dcFire.onclick = () => fireReasonDialog({ showModal, closeModal }, d.full_name,
     'Сцепка будет откреплена, история сохранится; вернуть можно через «Водители → Уволенные».',
-    async reason => {
-      await api(`/api/drivers/${d.id}`, { method: 'DELETE', body: JSON.stringify({ reason }) });
+    async (reason, firedOn) => {
+      await api(`/api/drivers/${d.id}`, { method: 'DELETE', body: JSON.stringify({ reason, firedOn }) });
       toast('Водитель уволен');
       await reload();
       after?.();
@@ -2236,6 +2236,8 @@ async function driverCardDialog(driver, after) {
 function driverEditDialog(driver, after) {
   showModal(`<form id="driverForm"><h2>${driver ? 'Карточка водителя' : 'Новый водитель'}</h2>
     <label class="field">ФИО<input name="fullName" value="${escapeHtml(driver?.full_name || '')}" required></label>
+    ${driver ? '' : `<label class="field">Дата приёма <small class="muted">от неё считаются стаж и текучесть</small>
+      <input name="hiredOn" type="date" value="${new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10)}" required></label>`}
     <label class="field">Телефон<input name="phone" value="${escapeHtml(driver?.phone || '')}"></label>
     <label class="field">Примечание<input name="note" value="${escapeHtml(driver?.note || '')}"></label>
     <div class="field"><span>Вахтовый график <small class="muted">(пусто — без вахты; при закреплении

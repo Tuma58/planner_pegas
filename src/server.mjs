@@ -12224,10 +12224,13 @@ async function api(request, response, url) {
     }
     const id = randomUUID();
     const shift = parseShift(body);
-    db.prepare(`INSERT INTO drivers(id,full_name,phone,note,shift_on,shift_off,shift_anchor)
-      VALUES(?,?,?,?,?,?,?)`).run(
+    // Дата приёма с формы (заказ руководителя 17.11): источник manual —
+    // syncTurnoverDates ручное не перетирает днём создания записи.
+    const hiredOn = /^\d{4}-\d{2}-\d{2}$/.test(String(body.hiredOn || '')) ? String(body.hiredOn) : null;
+    db.prepare(`INSERT INTO drivers(id,full_name,phone,note,shift_on,shift_off,shift_anchor,hired_on,hired_source)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(
       id, name, String(body.phone || '').trim(), String(body.note || '').trim(),
-      shift.on, shift.off, shift.anchor);
+      shift.on, shift.off, shift.anchor, hiredOn, hiredOn ? 'manual' : null);
     audit(db, user, 'create', 'driver', id, body, requestIp(request));
     return json(response, 201, { id });
   }
@@ -12362,6 +12365,9 @@ async function api(request, response, url) {
     const body = await readJson(request).catch(() => ({}));
     const reason = String(body.reason || '').trim();
     if (reason.length < 3) return errorJson(response, 422, 'Укажите причину увольнения');
+    // Дата увольнения с формы (заказ руководителя 17.11): последний день
+    // работы; источник manual — syncTurnoverDates ручное не трогает.
+    const firedOn = /^\d{4}-\d{2}-\d{2}$/.test(String(body.firedOn || '')) ? String(body.firedOn) : null;
     db.exec('BEGIN IMMEDIATE');
     try {
       if (current.vehicle_id) {
@@ -12372,12 +12378,16 @@ async function api(request, response, url) {
       // и пинги не уйдут уволенному; сцепка откреплена выше.
       db.prepare(`UPDATE drivers SET status='fired',vehicle_id=NULL,telegram_chat_id=NULL,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(match[0]);
+      if (firedOn) {
+        db.prepare(`UPDATE drivers SET fired_on=?, fired_source='manual', fired_kind='real',
+          fired_reason=? WHERE id=?`).run(firedOn, reason, match[0]);
+      }
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
     }
-    audit(db, user, 'delete', 'driver', match[0], { soft: true, reason }, requestIp(request));
+    audit(db, user, 'delete', 'driver', match[0], { soft: true, reason, firedOn }, requestIp(request));
     return json(response, 200, { ok: true });
   }
 
