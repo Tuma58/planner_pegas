@@ -15866,7 +15866,29 @@ async function api(request, response, url) {
       const planNet = planNetForPeriod(
         db.prepare('SELECT period_start, target_net FROM revenue_plans').all(), from, toExcl);
       const kmTarget = Number(settingsObject(db).calculation?.dailyKmTarget ?? 500) || 500;
+      // Прогнозные цифры (заказ руководителя 17.11): когда период касается
+      // текущего месяца — прогноз месяца тем же каноном, что дашборд
+      // (forecastMonth, плановые даты), план месяца и «нужно в день».
+      const forecastBlock = (() => {
+        const todayIso = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+        const curMonth = todayIso.slice(0, 7);
+        if (from.slice(0, 7) !== curMonth && to.slice(0, 7) !== curMonth) return null;
+        const fc = forecastMonth(db);
+        const monthPlan = Number(db.prepare(
+          `SELECT target_net FROM revenue_plans WHERE substr(period_start,1,7)=?`)
+          .get(curMonth)?.target_net || 0);
+        const monthEnd = new Date(Date.UTC(Number(curMonth.slice(0, 4)),
+          Number(curMonth.slice(5, 7)), 1)).toISOString().slice(0, 10);
+        const daysLeft = Math.max(1, Math.round(
+          (Date.parse(monthEnd) - Date.parse(todayIso)) / 86_400_000));
+        return { month: curMonth, monthPlan: Math.round(monthPlan),
+          forecast: fc.forecast, donePast: fc.plannedPast,
+          gap: monthPlan ? Math.round(fc.forecast - monthPlan) : null,
+          daysLeft,
+          needPerDay: monthPlan ? Math.max(0, Math.round((monthPlan - fc.plannedPast) / daysLeft)) : null };
+      })();
       return {
+        forecast: forecastBlock,
         from, to, days, fleet,
         ...cur,
         // Э3 внештаток (03.11): акты/возвраты периода + открытые возвраты.

@@ -912,6 +912,12 @@ function briefDialog(context) {
       `Опозданий на выгрузку: ${r.lateUnload} из ${r.lateFacts}${latePct != null ? ` (${latePct}%)` : ''}${delta(latePct, prevLatePct, false)}`,
       r.planNet ? `Выручка б/НДС: план ${rub(r.planNet)} · факт ${rub(r.factNet)} · ${r.planPct}%${delta(r.factNet, p.factNet)}`
         : `Выручка б/НДС: факт ${rub(r.factNet)} (план на период не задан)${delta(r.factNet, p.factNet)}`,
+      // Прогнозные цифры месяца (17.11): тот же канон, что дашборд.
+      r.forecast ? `Прогноз месяца: ${rub(r.forecast.forecast)}${r.forecast.monthPlan
+        ? ` против цели ${rub(r.forecast.monthPlan)} (${r.forecast.gap >= 0 ? '+' : '−'}${rub(Math.abs(r.forecast.gap))})`
+        : ' (цель месяца не задана)'}` : null,
+      r.forecast?.needPerDay != null ? `До цели месяца: сделано ${rub(r.forecast.donePast)} · ` +
+        `осталось ${r.forecast.daysLeft} дн · нужно ${rub(r.forecast.needPerDay)}/день` : null,
       r.planPerDay ? `Темп на парк: план ${rub(r.planPerDay)}/сут · факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`
         : `Темп на парк: факт ${rub(r.factPerDay)}/сут${delta(r.factPerDay, p.factPerDay)}`,
       `Средний чек: ${rub(r.avgCheck)}${delta(r.avgCheck, p.avgCheck)}`,

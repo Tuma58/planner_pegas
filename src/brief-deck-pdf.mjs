@@ -139,8 +139,24 @@ export function renderBriefDeckPdf(deck) {
     ['Без водителя, м-дни', String(B.noDriverMd), deltaStr(B.noDriverMd, P.noDriverMd),
       B.noDriverMd <= (P.noDriverMd || 0) ? C.green : C.red]
   ]);
-  pdf.text(ML, 380, 'Выручка и рейсы — по дате фактической выгрузки; план периода — доля месячных планов на эти дни; пробег — отчёт «Пробеги» (журнал одометров с фолбэками).',
-    { size: 7.5, color: C.sub });
+  // Прогнозная строка (17.11): период касается текущего месяца —
+  // прогноз месяца тем же каноном, что дашборд (B.forecast с сервера).
+  if (B.forecast) {
+    const F = B.forecast;
+    pdf.rect(ML, 352, W - ML - MR, 34, { fill: C.card });
+    pdf.rect(ML, 352, 4, 34, { fill: F.gap != null && F.gap < 0 ? C.orange : C.green });
+    pdf.text(ML + 16, 366, 'Прогноз месяца', { size: 9, font: 'B', color: C.ink });
+    pdf.text(ML + 16, 380, `${comma((F.forecast / 1e6).toFixed(1))} млн` +
+      (F.monthPlan ? ` против цели ${comma((F.monthPlan / 1e6).toFixed(0))} млн` +
+        ` (${F.gap >= 0 ? '+' : '−'}${comma((Math.abs(F.gap) / 1e6).toFixed(1))})` : ' · цель месяца не задана') +
+      (F.needPerDay != null ? ` · сделано ${comma((F.donePast / 1e6).toFixed(1))} · осталось ${F.daysLeft} дн — нужно ${comma((F.needPerDay / 1e6).toFixed(2))} млн/день` : ''),
+      { size: 10, color: F.gap != null && F.gap < 0 ? C.orange : C.green });
+    pdf.text(ML, 398, 'Выручка и рейсы — по дате фактической выгрузки; план периода — доля месячных планов на эти дни; пробег — отчёт «Пробеги»; прогноз — по плановым датам, как на дашборде.',
+      { size: 7.5, color: C.sub });
+  } else {
+    pdf.text(ML, 380, 'Выручка и рейсы — по дате фактической выгрузки; план периода — доля месячных планов на эти дни; пробег — отчёт «Пробеги» (журнал одометров с фолбэками).',
+      { size: 7.5, color: C.sub });
+  }
   footer();
 
   // ── 3. КТГ · КВЛ · КИП (формулы «Рабочей среды СТ», 05.11) ──
@@ -337,6 +353,9 @@ export function renderBriefDeckPdf(deck) {
       `· Пробег ${Math.round(B.km / 1000)} т.км, ${B.kmPerDayPerVehicle} км/сут на машину при цели ${B.kmTarget}.`,
       B.incidents && (B.incidents.counts.act || B.incidents.counts.return)
         ? `· Внештатки: актов ${B.incidents.counts.act} · возвратов ${B.incidents.counts.return}${B.incidents.returnsClosed ? ` (закрыто ${B.incidents.returnsClosed})` : ''}.`
+        : null,
+      B.forecast && B.forecast.monthPlan
+        ? `· Прогноз месяца ${comma((B.forecast.forecast / 1e6).toFixed(1))} млн против цели ${comma((B.forecast.monthPlan / 1e6).toFixed(0))}: ${B.forecast.gap >= 0 ? 'цель достижима с запасом' : `не хватает ${comma((Math.abs(B.forecast.gap) / 1e6).toFixed(1))} млн — нужно ${comma(((B.forecast.needPerDay || 0) / 1e6).toFixed(2))} млн/день до конца месяца`}.`
         : null
     ].filter(Boolean);
     facts.forEach((line, i) => pdf.text(ML, 292 + i * 22, line, { size: 9.5, color: C.text2 }));
