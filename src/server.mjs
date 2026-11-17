@@ -104,7 +104,7 @@ import {
   gapStats, nextAssignedShare, relayTripSegments, reportSnapshot, resolveZone, staffReport, transitHours, tripBusyRange, tripsWithoutNext, upcomingCustomerDates, vehicleUtilization, zoneLegHours, zoneLegKm,
   currentShift, shiftReport, deliveryPlan, seedDeliverySlots, myShiftStats, driverRatings
 } from './planner-service.mjs';
-import { applyScheduleSync, augmentScheduleFromPlanner, muteFiredInSchedule, projectPlanToTable, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleConflicts, scheduleHolderMap, syncAssignBridge, syncShiftBridge } from './schedule.mjs';
+import { applyScheduleSync, augmentScheduleFromPlanner, muteFiredInSchedule, projectPlanToTable, pushAbsenceToSchedule, pushAttendanceBatch, pushAttendanceToSchedule, runScheduleAutoFact, scheduleConflicts, scheduleHolderMap, syncAssignBridge, syncCardsFromSchedule, syncShiftBridge } from './schedule.mjs';
 import { dailyOpsTail, dailyOpsText, dailySeries, lateUnloadByDay, opsReportData, renderOpsReportHtml, repairCarsByDay } from './ops-report.mjs';
 import { renderBriefDeckPdf } from './brief-deck-pdf.mjs';
 import { renderOpsReportPdf } from './ops-report-pdf.mjs';
@@ -12329,6 +12329,17 @@ async function api(request, response, url) {
         try { muteFiredInSchedule(db, user.id); }
         catch (error) { console.error('глушение уволенного в графике:', error.message); }
       }
+      // Отпуск/болезнь с датами: период уходит и в план-слой Графика
+      // (заказ 17.11: карточка и график идут одинаково) — явка, табель
+      // и подбор видят одно и то же.
+      if (['vacation', 'sick'].includes(status) && absentFrom && absentTo &&
+          Date.parse(absentTo) > Date.parse(absentFrom)) {
+        try {
+          const cells = pushAbsenceToSchedule(db, String(body.fullName ?? current.full_name),
+            absentFrom, absentTo, status, 'карточка', user.id);
+          if (cells) console.log(`карточка → график: ${status} ${current.full_name}, клеток ${cells}`);
+        } catch (error) { console.error('карточка → график:', error.message); }
+      }
       // Отпуск/болезнь с датами: закреплённая сцепка получает интервал
       // «без водителя» — календарь, потребность и задания видят это сразу.
       if (['vacation', 'sick'].includes(status) && vehicleId && absentFrom && absentTo &&
@@ -15014,6 +15025,13 @@ async function api(request, response, url) {
         syncVehicleDriverNames(db);
         if (asg.made) console.log(`график → закрепления: периодов ${asg.made} (${asg.days} машино-дней)`);
       } catch (error) { console.error('график → закрепления:', error.message); }
+      // Мост «график → карточка» (заказ 17.11): план-период отп/бл,
+      // накрывающий сегодня, фиксируется в карточке водителя; истёкший —
+      // возвращает в строй. Карточка, явка и справочник видят одно.
+      try {
+        const cards = syncCardsFromSchedule(db, Object.keys(body.crews));
+        if (cards) console.log(`график → карточки: отсутствий синхронизировано ${cards}`);
+      } catch (error) { console.error('график → карточки:', error.message); }
     }
     return json(response, 200, result);
   }

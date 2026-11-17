@@ -223,3 +223,36 @@ test('синк: повторно присланная запись журнал�
   const n = db.prepare(`SELECT COUNT(*) c FROM schedule_log WHERE what='закреплён за т869ат58'`).get().c;
   assert.equal(n, 1);
 });
+
+test('мосты карточка ↔ график (17.11): отсутствие идёт в обе стороны, явка закрывается планом', async t => {
+  const db = freshDb(t);
+  const { pushAbsenceToSchedule, syncCardsFromSchedule } = await import('../src/schedule.mjs');
+  const { attendanceSummary } = await import('../src/planner-service.mjs');
+  const driver = db.prepare(`SELECT id, full_name FROM drivers WHERE status='active' LIMIT 1`).get();
+  const today = new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10);
+  const plus = days => new Date(Date.parse(`${today}T12:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+  // Водитель в графике (пустой план).
+  applyScheduleSync(db, { crews: { 'c-brg': { id: 'c-brg',
+    ts: [], drv: [{ id: 'd-brg', fio: driver.full_name, plan: {}, fact: {} }] } } });
+
+  // Карточка → график: отпуск с датами проставляет план-коды «отп».
+  const cells = pushAbsenceToSchedule(db, driver.full_name, today, plus(4), 'vacation');
+  assert.equal(cells, 5);
+  const { scheduleAttendanceFor } = await import('../src/schedule.mjs');
+  assert.equal(scheduleAttendanceFor(db, driver.full_name, plus(2)).plan, 'отп');
+
+  // План «отп» без факта закрывает явку автоматически (не «нужна отметка»).
+  const summary = attendanceSummary(db, today);
+  assert.ok(summary.byReason.vacation >= 1, 'отпуск по плану графика виден в явке');
+
+  // График → карточка: период зафиксировался в карточке водителя.
+  const cards = syncCardsFromSchedule(db, null);
+  assert.ok(cards >= 1);
+  const row = db.prepare('SELECT status, absent_from, absent_to FROM drivers WHERE id=?').get(driver.id);
+  assert.equal(row.status, 'vacation');
+  assert.equal(String(row.absent_from).slice(0, 10), today);
+  assert.equal(String(row.absent_to).slice(0, 10), plus(4));
+
+  // Повторный прогон ничего не меняет (идемпотентность).
+  assert.equal(syncCardsFromSchedule(db, null), 0);
+});

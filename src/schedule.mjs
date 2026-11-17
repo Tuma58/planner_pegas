@@ -376,6 +376,100 @@ const setFact = (drv, iso, code) => {
   }
   drv.fact[mk][Number(iso.slice(8, 10)) - 1] = code;
 };
+const setPlan = (drv, iso, code) => {
+  drv.plan = drv.plan || {};
+  const mk = iso.slice(0, 7);
+  if (!drv.plan[mk]) {
+    const days = new Date(Number(mk.slice(0, 4)), Number(mk.slice(5, 7)), 0).getDate();
+    drv.plan[mk] = Array(days).fill('');
+  }
+  drv.plan[mk][Number(iso.slice(8, 10)) - 1] = code;
+};
+const nextDayIso = iso => new Date(Date.parse(`${iso}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+const prevDayIso = iso => new Date(Date.parse(`${iso}T12:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+
+// ── Мост «карточка → график» (заказ руководителя 17.11: отметки в
+// графике и карточке идут одинаково). «Отсутствие» с датами проставляет
+// план-коды отп/бл на период — в пустые клетки и поверх «в»; осознанные
+// коды, поставленные руками, не затираются. До 92 дней — сторож от
+// кривых дат.
+export function pushAbsenceToSchedule(db, fio, fromIso, toIso, kind, author = 'карточка', userId = null) {
+  const code = kind === 'sick' ? 'бл' : 'отп';
+  const from = String(fromIso || '').slice(0, 10);
+  const to = String(toIso || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) return 0;
+  if ((Date.parse(to) - Date.parse(from)) / 86_400_000 > 92) return 0;
+  const hit = scheduleFioMap(db).get(canonFio(fio));
+  if (!hit) return 0;
+  const fresh = loadCrews(db, [hit.crewId]).get(hit.crewId);
+  if (!fresh) return 0;
+  const drv = (fresh.drv || []).find(row => canonFio(row.fio) === canonFio(fio));
+  if (!drv) return 0;
+  let written = 0;
+  for (let day = from; day <= to; day = nextDayIso(day)) {
+    const current = planCode(drv, day);
+    if (current === code) continue;
+    if (current && current !== 'в') continue;
+    setPlan(drv, day, code);
+    written += 1;
+  }
+  if (!written) return 0;
+  applyScheduleSync(db, { since: Number(metaGet(db, 'schedule_rev') || 0),
+    crews: { [hit.crewId]: fresh },
+    log: [{ t: new Date().toISOString(), a: author,
+      what: `карточка: ${code === 'бл' ? 'больничный' : 'отпуск'} ${drv.fio} ${from}…${to}`, who: drv.fio }] }, userId);
+  return written;
+}
+
+// ── Мост «график → карточка» (та же симметрия): непрерывный план-период
+// отп/бл, накрывающий сегодня, фиксируется в карточке водителя — статус
+// и даты отсутствия; явка, подбор и справочник видят одно и то же.
+// Период кончился или кода нет — статус отпуск/болен с истёкшими датами
+// возвращается в строй (симметрия снятия). Уволенных не трогаем.
+export function syncCardsFromSchedule(db, crewIds = null, nowMs = Date.now()) {
+  const today = new Date(nowMs + 3 * 3_600_000).toISOString().slice(0, 10);
+  const crews = loadCrews(db, crewIds);
+  const index = buildFioIndex(db);
+  const get = db.prepare('SELECT id, status, absent_from, absent_to FROM drivers WHERE id=?');
+  const put = db.prepare(`UPDATE drivers SET status=?, absent_from=?, absent_to=?,
+    updated_at=CURRENT_TIMESTAMP WHERE id=?`);
+  let updated = 0;
+  for (const crew of crews.values()) {
+    for (const drv of crew.drv || []) {
+      const id = resolveFio(index, drv.fio);
+      if (!id) continue;
+      const row = get.get(id);
+      if (!row || row.status === 'fired') continue;
+      const codeToday = planCode(drv, today);
+      if (codeToday === 'отп' || codeToday === 'бл') {
+        let from = today;
+        for (let step = 0; step < 92; step += 1) {
+          const prev = prevDayIso(from);
+          if (planCode(drv, prev) !== codeToday) break;
+          from = prev;
+        }
+        let to = today;
+        for (let step = 0; step < 92; step += 1) {
+          const next = nextDayIso(to);
+          if (planCode(drv, next) !== codeToday) break;
+          to = next;
+        }
+        const status = codeToday === 'бл' ? 'sick' : 'vacation';
+        const absentFrom = `${from}T00:00`;
+        const absentTo = `${to}T23:59`;
+        if (row.status === status && row.absent_from === absentFrom && row.absent_to === absentTo) continue;
+        put.run(status, absentFrom, absentTo, id);
+        updated += 1;
+      } else if (['vacation', 'sick'].includes(row.status)
+          && row.absent_to && String(row.absent_to).slice(0, 10) < today) {
+        // Период в графике кончился, даты карточки истекли — в строй.
+        put.run('active', null, null, id);
+        updated += 1;
+      }
+    }
+  }
+  return updated;
+}
 
 // ── Этап 3 перестройки (запуск руководителя 24.09): явка и табель
 // читают ФАКТ-СЛОЙ графика, ручная отметка явки пишется обратно.

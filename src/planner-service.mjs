@@ -863,6 +863,14 @@ export function attendanceEffective(db, day) {
       return { ...base, status: 'present', reason: '', source: 'auto',
         auto: 'в рейсе', overwork: Boolean(restByShift || absentCard) };
     }
+    // План-код отпуска/больничного закрывает день и без факта (заказ
+    // 17.11: явка — только внештатное; рейс выше — работа в отпуск
+    // остаётся сверхвахтой).
+    if (sched && !sched.fact && (sched.plan === 'отп' || sched.plan === 'бл')) {
+      return { ...base, status: 'absent',
+        reason: sched.plan === 'бл' ? 'sick' : 'vacation', source: 'auto',
+        auto: sched.plan === 'бл' ? 'график: больничный (план)' : 'график: отпуск (план)' };
+    }
     if (absentCard) {
       return { ...base, status: 'absent',
         reason: driver.status === 'sick' ? 'sick' : 'vacation', source: 'auto',
