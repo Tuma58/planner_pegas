@@ -930,8 +930,10 @@ const MAIN_VIEWS = [
 // Гант и Дашборд — общие для всех отделов (решение руководителя 05.11):
 // отдельный блок «Общее» над отделами, без коэффициента.
 const NAV_GROUPS = [
+  // Прографик — в «Общем» (решение руководителя 16–17.11: доступен всем,
+  // как Гант и Дашборд; в блоке «Логистика» он был невидим чужим отделам).
   { dept: '', title: 'Общее', coef: '', sub: [
-    { title: '', views: ['arm', 'dashboard', 'gantt', 'messenger'] }] },
+    { title: '', views: ['arm', 'dashboard', 'gantt', 'prografik', 'messenger'] }] },
   // Штаб — «Панели» в порядке «Рабочей среды СТ» (скрин руководителя
   // 07.11): поле направления, обзор структуры, цели и задачи, ЦФО; новые
   // панели (KPI, процессы, отчёты, P&L, машино-дни…) встают сюда по мере
@@ -940,7 +942,7 @@ const NAV_GROUPS = [
     { title: 'Панели', views: ['field', 'bridge', 'structure', 'goals', 'cfo', 'kpi', 'reports'] },
     { title: 'Работа Штаба', views: ['boss', 'staff', 'payroll', 'payments', 'expenses', 'safety', 'gate'] }] },
   { dept: 'log', title: 'Логистика', coef: 'КИП', sub: [
-    { title: 'Планирование и анализ', views: ['prografik', 'reports', 'logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
+    { title: 'Планирование и анализ', views: ['reports', 'logreports', 'crm', 'sales', 'routes', 'delivery', 'flows'] },
     { title: 'Назначение', views: ['logist'] },
     { title: 'Контроль', views: ['dispatcher', 'monitoring', 'incidents'] }] },
   { dept: 'drv', title: 'Эксплуатация', coef: 'КВЛ', sub: [
