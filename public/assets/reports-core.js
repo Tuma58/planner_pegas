@@ -85,6 +85,11 @@ export const REPORTS = [
     open: { feed: 'понедельник 08:00 · табло, сутки' } },
 
   // ── Месяц / период ──
+  { id: 'ops-period', level: 'period', dept: 'drv', alsoDepts: ['log'],
+    title: '🚛 Эксплуатация за период (ресурс, машино-дни, люди)',
+    source: 'opsPeriodData (канон ресурса по дням + явка + текучесть + внештатки) · /api/reports/ops-period (заказ руководителя 17.11)',
+    money: 'none', need: ['reports'],
+    open: { kind: 'ops-period' } },
   { id: 'brief', level: 'period', dept: '', title: '⚡ Сводка периода (печать и PDF-колода)',
     source: 'briefReportData (reportSnapshot + mileageData) · /api/brief-report, /api/brief-deck.pdf', money: 'full', need: ['reports'],
     open: { view: 'boss', bossView: 'classic' } },

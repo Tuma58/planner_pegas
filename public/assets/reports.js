@@ -19,6 +19,7 @@ export const REPORT_TITLES = {
   conflicts: 'История конфликтов',
   'rejected-orders': 'Реестр заявок',
   'resource-day': 'Ресурс за день',
+  'ops-period': 'Эксплуатация за период',
   history: 'История отчётных периодов'
 };
 
@@ -140,6 +141,62 @@ export async function buildReport(kind, from, to, data) {
         главному занятию дня: рейс главнее ремонта, ремонт главнее пересменки. «Простой без
         оформления» — машина в работе парка, но за день ни рейса, ни диспозиции.</div>
       ${catRows || '<p class="muted">Парк пуст.</p>'}`;
+  }
+  // «Эксплуатация за период» (заказ руководителя 17.11): свой эндпоинт,
+  // деньги сервер добавляет только уровню «все».
+  if (kind === 'ops-period') {
+    const d = await api(`/api/reports/ops-period?from=${from}&to=${to}`);
+    const planPct = d.md.plan ? Math.round(d.md.sum.line / d.md.plan * 1000) / 10 : 0;
+    const perDay = value => d.days.length ? Math.round(value / d.days.length * 10) / 10 : 0;
+    const lossParts = ['repair', 'no_driver', 'idle', 'shift', 'reserve']
+      .filter(key => d.md.sum[key])
+      .map(key => `${escapeHtml(d.titles[key])} <b>${d.md.sum[key]}</b> <small class="muted">(~${perDay(d.md.sum[key])}/день)</small>`);
+    const attByDay = new Map(d.attendance.map(a => [a.day, a]));
+    const dayRows = d.days.map(({ day, counters, fleetWork }) => {
+      const a = attByDay.get(day) || {};
+      return `<tr><td>${fmtDay(day)}</td><td class="num"><b>${counters.line}</b></td>
+        <td class="num">${counters.repair}</td><td class="num">${counters.shift}</td>
+        <td class="num">${counters.no_driver}</td><td class="num">${counters.idle}</td>
+        <td class="num">${fleetWork}</td>
+        <td class="num">${a.present ?? '—'}</td><td class="num">${a.unmarked ? `<span class="pg-warn2">${a.unmarked}</span>` : (a.unmarked ?? '—')}</td></tr>`;
+    }).join('');
+    const turnoverRows = (d.turnover?.byMonth || []).map(m =>
+      `<tr><td>${escapeHtml(m.month)}</td><td class="num">${m.hired}</td><td class="num">${m.fired}</td>
+       <td class="num">${m.turnoverPct > (d.turnover.targetPct || 0) ? `<b class="pg-warn2">${m.turnoverPct}%</b>` : `${m.turnoverPct}%`}</td></tr>`).join('');
+    const firedRows = (d.turnover?.recentFired || []).slice(0, 12).map(f =>
+      `<tr><td>${escapeHtml(f.name)}</td><td>${fmtDay(f.firedOn)}</td>
+       <td class="num">${f.tenureDays != null ? (f.tenureDays < 90 ? `<b class="pg-warn2">${f.tenureDays}</b>` : f.tenureDays) : '—'}</td>
+       <td>${escapeHtml(f.reason || '')}</td></tr>`).join('');
+    const inc = d.incidents;
+    return `<h3>🚛 Эксплуатация за период · ${fmtDay(d.from)} — ${fmtDay(d.to)}</h3>
+      <div class="rsums">
+        <span class="rsum">Машино-дни план: <b>${d.md.plan}</b></span>
+        <span class="rsum">Факт на линии: <b>${d.md.sum.line}</b> <small class="muted">(${planPct}%)</small></span>
+        <span class="rsum">Потеряно: <b>${d.md.lost}</b></span>
+        ${d.money ? `<span class="rsum">Нетто периода: <b>${rub(d.money.net)}</b></span>
+        <span class="rsum">₽/машино-день линии: <b>${rub(d.money.perLineDay)}</b></span>
+        <span class="rsum">Цена потерь: <b class="pg-warn2">${rub(d.money.lost)}</b></span>` : ''}</div>
+      <div class="geohint">План = рабочий парк каждого дня периода (без выведенных); категории — канон «Ресурса за день»
+        (рейс главнее ремонта, ремонт главнее пересменки). ${d.money ? 'Цена потерь — живой норматив периода: нетто выгрузок на машино-день линии, не зашитая ставка.' : ''}</div>
+      <h4>Потери по причинам <small class="muted">— машино-дни</small></h4>
+      <p>${lossParts.join(' · ') || '<span class="muted">потерь нет</span>'}</p>
+      <h4>По дням</h4>
+      <table class="rtable bi-table"><thead><tr><th>День</th><th class="num">На линии</th><th class="num">Ремонт</th>
+        <th class="num">Пересм.</th><th class="num">Без экип.</th><th class="num">Простой</th><th class="num">Парк</th>
+        <th class="num">Явка</th><th class="num">Нет отметки</th></tr></thead><tbody>${dayRows}</tbody></table>
+      ${d.staffing != null ? `<p class="muted">Укомплектованность: <b>${(Math.round(d.staffing * 100) / 100).toLocaleString('ru-RU')}</b> экипажа на машину${d.staffingTarget ? ` при цели ${d.staffingTarget}` : ''}.</p>` : ''}
+      ${turnoverRows ? `<h4>Текучесть <small class="muted">— месяцы, пересекающие период · цель ${d.turnover.targetPct}%/мес</small></h4>
+      <table class="rtable bi-table"><thead><tr><th>Месяц</th><th class="num">Нанято</th><th class="num">Уволено</th><th class="num">Текучесть</th></tr></thead>
+        <tbody>${turnoverRows}</tbody></table>` : ''}
+      ${firedRows ? `<h4>Уволенные в период <small class="muted">— стаж меньше 90 дней подсвечен</small></h4>
+      <table class="rtable bi-table"><thead><tr><th>Водитель</th><th>Дата</th><th class="num">Стаж, дн</th><th>Причина</th></tr></thead>
+        <tbody>${firedRows}</tbody></table>` : ''}
+      ${inc ? `<h4>Внештатки периода</h4>
+      <div class="rsums"><span class="rsum">Акты: <b>${inc.counts.act}</b></span>
+        <span class="rsum">Возвраты: <b>${inc.counts.return}</b> <small class="muted">(закрыто ${inc.returnsClosed})</small></span>
+        <span class="rsum">Опоздания ручные: <b>${inc.counts.late}</b></span>
+        <span class="rsum">Авто-опоздания &gt;1 ч: <b>${inc.autoLate}</b></span>
+        <span class="rsum">Возвратов открыто сейчас: <b>${inc.openReturns.length}</b></span></div>` : ''}`;
   }
   const report = await api(`/api/reports?from=${from}&to=${to}`);
   const u = report.utilization;

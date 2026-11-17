@@ -3,6 +3,14 @@
 // резерв, простой. Только чтение существующих таблиц: рейсы, диспозиции
 // (канон состояний Ресурса) и заказ-наряды Ремзоны как дополнение, когда
 // диспозиция ремонта не оформлена. Никаких новых порогов и констант.
+// Ниже — «Эксплуатация за период» (заказ руководителя 17.11): тот же
+// канон по каждому дню периода + машино-дни план/факт, явка, текучесть,
+// внештатки. Деньги (цена потерь) — живой норматив из факта периода.
+
+import { attendanceSummary } from './planner-service.mjs';
+import { driverTurnover } from './turnover.mjs';
+import { incidentsSummary, lateCount } from './incidents.mjs';
+import { DONE_STATUSES, calcSettings, doneDayOf, tripNet } from './money.mjs';
 
 const MSK_MS = 3 * 3_600_000;
 const DAY_MS = 86_400_000;
@@ -89,4 +97,73 @@ export function resourceDayData(db, dayIso) {
     counters, order: ORDER, titles: RESOURCE_DAY_TITLES,
     rows: rows.sort((a, b) => ORDER.indexOf(a.category) - ORDER.indexOf(b.category)
       || a.plate.localeCompare(b.plate)) };
+}
+
+// «Эксплуатация за период» — отчёт руководителя отдела эксплуатации.
+// Дни ресурса тем же каноном (без поимённых строк — счётчиками),
+// план машино-дней = рабочий парк каждого дня, факт = на линии;
+// цена потерь — из факта периода (нетто выгрузок / машино-день линии),
+// а не зашитой ставкой. withMoney решает сервер по уровню денег.
+export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.now() } = {}) {
+  const todayIso = new Date(nowMs + MSK_MS).toISOString().slice(0, 10);
+  if (to > todayIso) to = todayIso; // будущие дни — не машино-дни
+  const dayCount = Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS) + 1;
+  if (!(dayCount >= 1)) return { error: 'Период пуст' };
+  if (dayCount > 92) return { error: 'Период до 92 дней — возьмите квартал или меньше' };
+
+  const days = [];
+  const mdSum = Object.fromEntries(ORDER.map(key => [key, 0]));
+  let mdPlan = 0;
+  const attendance = [];
+  let staffing = null;
+  let staffingTarget = null;
+  for (let i = 0; i < dayCount; i += 1) {
+    const day = new Date(Date.parse(from) + i * DAY_MS).toISOString().slice(0, 10);
+    const r = resourceDayData(db, day);
+    days.push({ day, counters: r.counters, fleet: r.fleet, fleetWork: r.fleetWork });
+    for (const key of ORDER) mdSum[key] += r.counters[key] || 0;
+    mdPlan += r.fleetWork;
+    try {
+      const a = attendanceSummary(db, day);
+      attendance.push({ day, present: a.present, absent: a.absent, unmarked: a.unmarked });
+      staffing = a.staffing; staffingTarget = a.staffingTarget;
+    } catch { attendance.push({ day, present: null, absent: null, unmarked: null }); }
+  }
+  const mdLost = mdPlan - mdSum.line;
+
+  // Деньги: живой норматив периода — нетто выгрузок на машино-день линии.
+  let money = null;
+  if (withMoney && mdSum.line > 0) {
+    const calc = calcSettings(db);
+    const net = db.prepare(`SELECT t.revenue_vat, t.cash, t.customer_name, t.unloaded_at, t.ends_at, t.status
+        FROM trips t WHERE t.status<>'rejected'`).all()
+      .filter(trip => DONE_STATUSES.has(trip.status) || trip.unloaded_at)
+      .filter(trip => { const day = doneDayOf(trip); return day >= from && day <= to; })
+      .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
+    const perLineDay = net / mdSum.line;
+    money = { net: Math.round(net), perLineDay: Math.round(perLineDay),
+      lost: Math.round(mdLost * perLineDay) };
+  }
+
+  const fromIso = new Date(Date.parse(`${from}T00:00:00Z`) - MSK_MS).toISOString();
+  const toIso = new Date(Date.parse(`${to}T00:00:00Z`) - MSK_MS + DAY_MS).toISOString();
+  const incidents = (() => {
+    try {
+      return { ...incidentsSummary(db, fromIso, toIso), autoLate: lateCount(db, fromIso, toIso) };
+    } catch { return null; }
+  })();
+  const turnover = (() => {
+    try {
+      const t = driverTurnover(db);
+      return { byMonth: (t.byMonth || []).filter(m => m.to >= from && m.from <= to),
+        targetPct: t.targetPct,
+        recentFired: (t.recentFired || []).filter(f => f.firedOn >= from && f.firedOn <= to)
+          .map(f => ({ name: f.name, firedOn: f.firedOn, tenureDays: f.tenureDays, reason: f.reason })) };
+    } catch { return null; }
+  })();
+
+  return { from, to, days, order: ORDER, titles: RESOURCE_DAY_TITLES,
+    md: { plan: mdPlan, sum: mdSum, lost: mdLost },
+    attendance, staffing, staffingTarget,
+    incidents, turnover, money };
 }

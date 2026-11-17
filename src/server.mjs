@@ -14,7 +14,7 @@ import { HINT_RULES, gateHintForCustomer, hintShownRecently, hintStats, recordHi
 import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, incidentsSummary, returnStatusChange, returnStuckDays, returnsStuck } from './incidents.mjs';
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
-import { resourceDayData } from './resource-day.mjs';
+import { opsPeriodData, resourceDayData } from './resource-day.mjs';
 import { prografikData } from './prografik.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
@@ -11022,6 +11022,23 @@ async function api(request, response, url) {
     const day = String(url.searchParams.get('date') || fallback).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return errorJson(response, 422, 'Некорректная дата');
     return json(response, 200, resourceDayData(db, day));
+  }
+  // «Эксплуатация за период» (заказ руководителя 17.11): ресурс по дням,
+  // план/факт машино-дней, явка, текучесть, внештатки. Деньги (цена
+  // потерь) — только уровню денег «все».
+  if (request.method === 'GET' && pathname === '/api/reports/ops-period') {
+    const user = requirePermission(request, response, 'planner:read');
+    if (!user) return;
+    const yesterday = new Date(Date.now() + 3 * 3_600_000 - 86_400_000).toISOString().slice(0, 10);
+    const from = String(url.searchParams.get('from') || yesterday).slice(0, 10);
+    const to = String(url.searchParams.get('to') || from).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) {
+      return errorJson(response, 422, 'Некорректный период');
+    }
+    const withMoney = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+    const data = opsPeriodData(db, from, to, { withMoney });
+    if (data.error) return errorJson(response, 422, data.error);
+    return json(response, 200, data);
   }
   if (request.method === 'GET' && pathname === '/api/monitoring/control') {
     const user = requireUser(request, response);

@@ -1030,7 +1030,8 @@ function renderLogReports(container) {
   const to = state.logReportsTo || today;
   const kinds = [['summary', 'Сводный отчёт за период'], ['clients', 'Экономика по клиентам'], ['econ', 'Экономика по типам ТС'],
     ['client-fleet', 'Машино-ёмкость клиентов'], ['rejected', 'Отклонённые рейсы'], ['rejected-orders', 'Реестр заявок'], ['execution', 'Контроль выполнения рейсов'],
-    ['resource-day', 'Ресурс за день (дата «с»)']];
+    ['resource-day', 'Ресурс за день (дата «с»)'],
+    ['ops-period', 'Эксплуатация за период (ресурс, машино-дни, люди)']];
   container.innerHTML = `<div class="bi-page"><div class="bi-sub"><h2>Отчёты отдела логистики</h2>
       <p>Отчёты периода по клиентам, экономике и исполнению — открываются окном с печатью и PDF.</p>
       <div class="bi-actions"><input type="date" id="lrFrom" value="${from}"> — <input type="date" id="lrTo" value="${to}"></div></div>

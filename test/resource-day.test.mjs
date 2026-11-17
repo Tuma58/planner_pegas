@@ -60,3 +60,42 @@ test('ресурс за день: категории по приоритету, 
   const nextDay = resourceDayData(db, '2026-11-16');
   assert.notEqual(nextDay.rows.find(row => row.plate === onShift.plate)?.category, 'shift');
 });
+
+test('эксплуатация за период: машино-дни сходятся, деньги — живой норматив периода', async t => {
+  const db = freshDb(t);
+  const { opsPeriodData } = await import('../src/resource-day.mjs');
+  const vehicles = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' ORDER BY plate LIMIT 2`).all();
+  const zone = db.prepare(`SELECT id FROM zones LIMIT 1`).get().id;
+  // Выгруженный рейс в периоде (нетто считается) и ремонт на оба дня.
+  db.prepare(`INSERT INTO trips(id, vehicle_id, from_zone_id, to_zone_id, starts_at, ends_at,
+      unloaded_at, status, customer_name, distance_km, revenue_vat) VALUES(?,?,?,?,?,?,?,?,?,0,122000)`)
+    .run(randomUUID(), vehicles[0].id, zone, zone, '2026-11-14T06:00:00.000Z', '2026-11-14T20:00:00.000Z',
+      '2026-11-14T21:00:00.000Z', 'done', 'Тест-клиент');
+  db.prepare(`INSERT INTO vehicle_dispositions(id, vehicle_id, kind, starts_at, ends_at, note)
+      VALUES(?,?,?,?,?,?)`)
+    .run(randomUUID(), vehicles[1].id, 'repair', '2026-11-13T00:00:00.000Z', '2026-11-17T00:00:00.000Z', '');
+
+  const nowMs = Date.parse('2026-11-17T09:00:00Z');
+  const d = opsPeriodData(db, '2026-11-14', '2026-11-15', { withMoney: true, nowMs });
+  assert.equal(d.days.length, 2);
+  // План = рабочий парк каждого дня; сумма категорий дня = парк.
+  assert.equal(d.md.plan, d.days.reduce((sum, day) => sum + day.fleetWork, 0));
+  for (const day of d.days) {
+    const total = d.order.reduce((sum, key) => sum + day.counters[key], 0);
+    assert.equal(total, day.fleet, day.day);
+  }
+  assert.equal(d.md.sum.line, 1, 'один машино-день на линии');
+  assert.ok(d.md.sum.repair >= 2, 'ремонт в оба дня');
+  assert.equal(d.md.lost, d.md.plan - d.md.sum.line);
+  // Деньги: нетто 122000/1.22=100000, на 1 машино-день линии; без права денег — null.
+  assert.equal(d.money.net, 100000);
+  assert.equal(d.money.perLineDay, 100000);
+  assert.equal(d.money.lost, d.md.lost * 100000);
+  assert.equal(opsPeriodData(db, '2026-11-14', '2026-11-15', { nowMs }).money, null);
+  // Будущее обрезается по сегодня, слишком длинный период — отказ.
+  assert.equal(opsPeriodData(db, '2026-11-16', '2026-12-31', { nowMs }).to, '2026-11-17');
+  assert.ok(opsPeriodData(db, '2026-01-01', '2026-11-15', { nowMs }).error);
+  // Явка и внештатки присутствуют строками.
+  assert.equal(d.attendance.length, 2);
+  assert.ok(d.incidents && typeof d.incidents.autoLate === 'number');
+});
