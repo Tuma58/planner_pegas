@@ -60,32 +60,69 @@ function zoneHtml(zone, title, items, data, field) {
 
 async function newTaskDialog(context, after) {
   let people;
-  try { people = (await api('/api/arm/people')).people; } catch (error) { toast(error.message); return; }
+  let templates = [];
+  try {
+    people = (await api('/api/arm/people')).people;
+    templates = (await api('/api/arm/task-templates').catch(() => ({ templates: [] }))).templates || [];
+  } catch (error) { toast(error.message); return; }
   if (!people.length) { toast('Некому поставить задачу: в вашем отделе пока нет коллег с учётной записью'); return; }
-  const tomorrow = new Date(Date.now() + 27 * 3_600_000).toISOString().slice(0, 16);
+  // Срок по умолчанию +2 часа (ТЗ Базуева 17.11); datetime-local ждёт местное время.
+  const local = ms => new Date(ms - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  const due = local(Date.now() + 2 * 3_600_000);
+  const tplOptions = () => `<option value="">—</option>${templates.map((text, index) =>
+    `<option value="${index}">${escapeHtml(text.length > 90 ? `${text.slice(0, 87)}…` : text)}</option>`).join('')}`;
   context.showModal(`<form id="armTaskForm"><h2>☑ Поставить задачу</h2>
     <label class="field">Кому <select name="toUserId" required><option value="">—</option>${[['Коллеги', people.filter(person => !person.driver)],
     ['Водители (задача придёт в приложение «Мой рейс»)', people.filter(person => person.driver)]].filter(([, list]) => list.length)
     .map(([label, list]) => `<optgroup label="${escapeHtml(label)}">${list.map(person =>
       `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}${person.position ? ` · ${escapeHtml(person.position)}` : ''}</option>`).join('')}</optgroup>`).join('')}</select></label>
-    <label class="field">Что сделать <input name="title" maxlength="300" required placeholder="Закрыть брони Корса до вечера"></label>
-    <label class="field">Срок <input type="datetime-local" name="dueAt" value="${tomorrow}" required></label>
-    <label class="field">Точка контроля <small class="muted">когда проверить исполнение; пусто = в срок задачи</small><input type="datetime-local" name="controlAt"></label>
+    <label class="field">Шаблон <small class="muted">подставит текст в «Что сделать»</small>
+      <select name="tpl" id="armTpl">${tplOptions()}</select></label>
+    <label class="field">Что сделать <input name="title" maxlength="300" required placeholder="Закрыть брони Корса до вечера">
+      <small><button type="button" class="link-btn" id="armTplSave">💾 сохранить текст как шаблон</button>
+      <button type="button" class="link-btn" id="armTplDel" hidden>🗑 удалить выбранный шаблон</button></small></label>
+    <label class="field">Срок <input type="datetime-local" name="dueAt" value="${due}" required></label>
+    <label class="field">Точка контроля <small class="muted">когда проверить исполнение; пусто = в срок задачи, раньше срока нельзя</small><input type="datetime-local" name="controlAt" min="${due}"></label>
     <label class="field">К чему относится <small class="muted">рейс, машина, клиент — по желанию</small><input name="about" maxlength="200"></label>
     <label class="field">Подробности <textarea name="body" rows="3"></textarea></label>
     <p class="muted">Задачу можно поставить коллеге своего отдела; Эксплуатация — и водителю. Между отделами — стыки и «⚑ Сигнал».</p>
     <div class="form-error" id="armTaskErr"></div>
     <div class="modal-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button primary">Поставить</button></div></form>`);
-  document.querySelector('#armTaskForm').addEventListener('submit', async event => {
+  const form = document.querySelector('#armTaskForm');
+  const error = message => { document.querySelector('#armTaskErr').textContent = message; };
+  const tplSelect = form.querySelector('#armTpl');
+  tplSelect.addEventListener('change', () => {
+    if (tplSelect.value !== '') form.title.value = templates[Number(tplSelect.value)] || '';
+    form.querySelector('#armTplDel').hidden = tplSelect.value === '';
+  });
+  form.querySelector('#armTplSave').addEventListener('click', async () => {
+    try {
+      const out = await api('/api/arm/task-templates', { method: 'POST', body: JSON.stringify({ text: form.title.value }) });
+      templates = out.templates; tplSelect.innerHTML = tplOptions(); error('');
+      toast('Шаблон сохранён — появится в списке у всех, кто ставит задачи');
+    } catch (err) { error(err.message); }
+  });
+  form.querySelector('#armTplDel').addEventListener('click', async () => {
+    if (tplSelect.value === '') return;
+    try {
+      const out = await api(`/api/arm/task-templates/${tplSelect.value}`, { method: 'DELETE' });
+      templates = out.templates; tplSelect.innerHTML = tplOptions();
+      form.querySelector('#armTplDel').hidden = true; error('');
+    } catch (err) { error(err.message); }
+  });
+  form.dueAt.addEventListener('change', () => { form.controlAt.min = form.dueAt.value; });
+  form.addEventListener('submit', async event => {
     event.preventDefault();
-    const form = event.currentTarget;
+    if (form.controlAt.value && form.controlAt.value < form.dueAt.value) {
+      error('Точка контроля не может быть раньше срока задачи'); return;
+    }
     const body = Object.fromEntries(['toUserId', 'title', 'about', 'body'].map(key => [key, form[key].value]));
     body.dueAt = form.dueAt.value ? new Date(form.dueAt.value).toISOString() : '';
     body.controlAt = form.controlAt.value ? new Date(form.controlAt.value).toISOString() : '';
     try {
       await api('/api/arm/tasks', { method: 'POST', body: JSON.stringify(body) });
       context.closeModal(); toast('Задача поставлена — исполнитель получил уведомление'); after();
-    } catch (error) { document.querySelector('#armTaskErr').textContent = error.message; }
+    } catch (err) { error(err.message); }
   });
 }
 

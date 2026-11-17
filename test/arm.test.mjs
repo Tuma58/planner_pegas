@@ -124,7 +124,10 @@ test('Э2: задачи ставят в своём отделе (руковод�
   assert.equal(addTask(db, logist, acc(logist), { toUserId: mech.id, title: 'x', dueAt: due }).status, 403);
   assert.equal(addTask(db, logist, acc(logist), { toUserId: ctrl.id, title: '', dueAt: due }).status, 422);
   assert.equal(addTask(db, logist, acc(logist), { toUserId: ctrl.id, title: 'Проверить наличные', dueAt: '' }).status, 422);
-  const created = addTask(db, logist, acc(logist), { toUserId: ctrl.id, title: 'Проверить наличные', dueAt: due, about: 'рейс 123' });
+  // Точка контроля не раньше срока (ТЗ Базуева 17.11); равная сроку — можно.
+  const earlier = new Date(Date.now() + 43_200_000).toISOString();
+  assert.equal(addTask(db, logist, acc(logist), { toUserId: ctrl.id, title: 'Проверить', dueAt: due, controlAt: earlier }).status, 422);
+  const created = addTask(db, logist, acc(logist), { toUserId: ctrl.id, title: 'Проверить наличные', dueAt: due, about: 'рейс 123', controlAt: due });
   assert.ok(created.ok);
   // В АРМ исполнителя — с действиями; у автора — «Я поставил».
   const forCtrl = armData(db, ctrl, 'log_ctrl');
@@ -271,4 +274,32 @@ test('Фридман: переносы с причиной и счётчиком
   const orphans = goalsOrphans(db);
   assert.ok(orphans.tasksWithoutGoal.some(item => item.title === 'Сирота'));
   assert.ok(bridgeData(db, { nowMs }).goals.tasksWithoutGoal.length >= 1);
+});
+
+test('шаблоны «Что сделать» (ТЗ Базуева 17.11): предустановка, добавление, дубль, удаление', async t => {
+  const db = freshDb(t);
+  const { taskTemplates, addTaskTemplate, removeTaskTemplate, postponeTask } = await import('../src/arm.mjs');
+  // Первое чтение сеет предустановленный шаблон про состояние ТС.
+  const seeded = taskTemplates(db);
+  assert.equal(seeded.length, 1);
+  assert.ok(/Домашнем регионе/.test(seeded[0]));
+  // Добавление, защита от пустого и дубля.
+  assert.ok(addTaskTemplate(db, '  Закрыть брони недели  ').ok);
+  assert.ok(addTaskTemplate(db, 'Закрыть брони недели').error);
+  assert.ok(addTaskTemplate(db, '   ').error);
+  assert.deepEqual(taskTemplates(db).at(-1), 'Закрыть брони недели');
+  // Удаление по индексу; кривой индекс список не трогает.
+  assert.equal(removeTaskTemplate(db, 1).length, 1);
+  assert.equal(removeTaskTemplate(db, 99).length, 1);
+  // Перенос срока подтягивает отставшую точку контроля (контроль не раньше срока).
+  const author = placed(db, ['log_assign'], 7);
+  const doer = placed(db, ['log_ctrl'], 8);
+  const nowMs = Date.now();
+  const due = new Date(nowMs + 3_600_000).toISOString();
+  const made = addTask(db, author, accessOf(db, author), { toUserId: doer.id, title: 'Шаблонная', dueAt: due, controlAt: due }, nowMs);
+  assert.ok(made.ok);
+  const due2 = new Date(nowMs + 7_200_000).toISOString();
+  db.prepare('UPDATE arm_tasks SET control_at=? WHERE id=?').run(new Date(nowMs + 1_800_000).toISOString(), made.id);
+  assert.ok(postponeTask(db, author, made.id, { dueAt: due2, reason: 'исполнитель на рейсе' }, nowMs).ok);
+  assert.equal(db.prepare('SELECT control_at FROM arm_tasks WHERE id=?').get(made.id).control_at, due2);
 });

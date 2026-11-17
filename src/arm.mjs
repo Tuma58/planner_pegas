@@ -476,8 +476,10 @@ export function postponeTask(db, user, id, body = {}, nowMs = Date.now()) {
   let log = [];
   try { log = JSON.parse(task.postpone_log || '[]'); } catch { log = []; }
   log.push({ at: new Date(nowMs).toISOString(), from: task.due_at, to: due, reason });
-  // Точка контроля, стоявшая на прежнем сроке, едет вместе с ним.
-  const control = task.control_at === task.due_at ? due : task.control_at;
+  // Точка контроля, стоявшая на прежнем сроке, едет вместе с ним; отставшую
+  // от нового срока подтягиваем — контроль не бывает раньше срока.
+  const control = task.control_at === task.due_at || Date.parse(task.control_at) < Date.parse(due)
+    ? due : task.control_at;
   db.prepare(`UPDATE arm_tasks SET due_at=?, control_at=?, control_notified_at=NULL,
       postpone_count=postpone_count+1, postpone_log=?, updated_at=? WHERE id=?`)
     .run(due, control, JSON.stringify(log).slice(0, 8000), new Date(nowMs).toISOString(), id);
@@ -559,10 +561,43 @@ export function addTask(db, from, fromAccess, body, nowMs = Date.now()) {
   // или по умолчанию — срок задачи.
   const control = body.controlAt && Number.isFinite(Date.parse(body.controlAt))
     ? new Date(Date.parse(body.controlAt)).toISOString() : due;
+  // Контроль не раньше срока: проверять исполнение до дедлайна бессмысленно (ТЗ Базуева 17.11).
+  if (Date.parse(control) < Date.parse(due)) return { status: 422, error: 'Точка контроля не может быть раньше срока задачи' };
   db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_name,dept_key,title,body,about,due_at,control_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', to.id, to.full_name || '',
     deptOf(db, to), title, String(body.body || '').trim().slice(0, 2000), String(body.about || '').trim().slice(0, 200), due, control);
   return { ok: true, id, to };
+}
+
+// ── Шаблоны поля «Что сделать» (ТЗ Базуева 17.11). Общий список в
+// app_meta (без миграций); при первом чтении сеется предустановленный
+// шаблон опроса состояния ТС в домашнем регионе. Кап 30 — защита
+// списка от разрастания, не бизнес-порог.
+const TASK_TEMPLATE_PRESET = 'Выяснить состояние ТС в Домашнем регионе (исправность тягача, наличие водителя, готовность к рейсу). Необходима информация, когда ТС можно планировать в рейс, а не только текущий статус';
+const saveTaskTemplates = (db, list) => db.prepare(`INSERT INTO app_meta(key,value) VALUES('arm_task_templates',?)
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(JSON.stringify(list));
+export function taskTemplates(db) {
+  const raw = db.prepare(`SELECT value FROM app_meta WHERE key='arm_task_templates'`).get()?.value;
+  if (raw == null) { saveTaskTemplates(db, [TASK_TEMPLATE_PRESET]); return [TASK_TEMPLATE_PRESET]; }
+  try { const list = JSON.parse(raw); return Array.isArray(list) ? list.map(String) : []; } catch { return []; }
+}
+export function addTaskTemplate(db, text) {
+  const clean = String(text || '').trim().slice(0, 300);
+  if (!clean) return { error: 'Сначала напишите текст в «Что сделать» — он и станет шаблоном' };
+  const list = taskTemplates(db);
+  if (list.includes(clean)) return { error: 'Такой шаблон уже есть' };
+  if (list.length >= 30) return { error: 'Шаблонов уже 30 — удалите ненужные' };
+  list.push(clean);
+  saveTaskTemplates(db, list);
+  return { ok: true, templates: list };
+}
+export function removeTaskTemplate(db, index) {
+  const list = taskTemplates(db);
+  if (Number.isInteger(index) && index >= 0 && index < list.length) {
+    list.splice(index, 1);
+    saveTaskTemplates(db, list);
+  }
+  return list;
 }
 
 const taskFields = (body, nowMs) => {
@@ -583,6 +618,7 @@ export function addDriverTask(db, from, fromAccess, body, nowMs = Date.now()) {
   const id = randomUUID();
   const control = body.controlAt && Number.isFinite(Date.parse(body.controlAt))
     ? new Date(Date.parse(body.controlAt)).toISOString() : f.due;
+  if (Date.parse(control) < Date.parse(f.due)) return { status: 422, error: 'Точка контроля не может быть раньше срока задачи' };
   db.prepare(`INSERT INTO arm_tasks(id,from_user_id,from_name,to_user_id,to_driver_id,to_name,dept_key,title,body,about,due_at,control_at)
     VALUES(?,?,?,'',?,?,'drv',?,?,?,?,?)`).run(id, from.id, from.full_name || from.username || '', driver.id, driver.full_name,
     f.title, f.body, f.about, f.due, control);
@@ -771,6 +807,25 @@ export async function armApi(ctx) {
   }
   if (pathname === '/api/arm/people' && method === 'GET') {
     json(response, 200, { people: peopleFor(db, user, access), canViewOthers: isHead(access) || isDirection(access) });
+    return true;
+  }
+  // Шаблоны «Что сделать» (ТЗ Базуева 17.11): общий список, доступен
+  // каждому, кто ставит задачи.
+  if (pathname === '/api/arm/task-templates' && method === 'GET') {
+    json(response, 200, { templates: taskTemplates(db) });
+    return true;
+  }
+  if (pathname === '/api/arm/task-templates' && method === 'POST') {
+    const body = await readJson(request) || {};
+    const result = addTaskTemplate(db, body.text);
+    if (!result.ok) { errorJson(response, 422, result.error); return true; }
+    audit(db, user, 'create', 'arm_task_template', '', { text: String(body.text || '').slice(0, 120) }, requestIp(request));
+    json(response, 201, { templates: result.templates });
+    return true;
+  }
+  const tplMatch = pathname.match(/^\/api\/arm\/task-templates\/(\d+)$/);
+  if (tplMatch && method === 'DELETE') {
+    json(response, 200, { templates: removeTaskTemplate(db, Number(tplMatch[1])) });
     return true;
   }
   if (pathname === '/api/arm/tasks' && method === 'POST') {
