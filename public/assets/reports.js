@@ -28,6 +28,20 @@ const rub = value => `${Math.round(Number(value || 0)).toLocaleString('ru-RU')} 
 // Обработчики отчёта «Показатели сотрудников»: селект должности (admin).
 // Вызывается из openReport после вставки разметки в модал.
 export function wireReport(kind, { reopen }) {
+  // «Эксплуатация за период»: выбор периода прямо в окне (заказ 17.11 —
+  // пикер хаба неочевиден) и PDF-презентация с сервера.
+  if (kind === 'ops-period') {
+    document.getElementById('opReload')?.addEventListener('click', () => {
+      const from = document.getElementById('opFrom')?.value;
+      const to = document.getElementById('opTo')?.value;
+      if (from && to && to >= from) reopen(from, to);
+    });
+    document.getElementById('opPdf')?.addEventListener('click', event => {
+      const { from, to } = event.currentTarget.dataset;
+      window.location.assign(`/reports/ops-period/pdf?from=${from}&to=${to}`);
+    });
+    return;
+  }
   // Отчёт водителей: кнопка «💾 Сохранить в PDF» — файл с сервера
   // (CSP запрещает инлайн-обработчики, вешаем здесь).
   if (kind === 'drivers') {
@@ -170,6 +184,12 @@ export async function buildReport(kind, from, to, data) {
        <td>${escapeHtml(f.reason || '')}</td></tr>`).join('');
     const inc = d.incidents;
     return `<h3>🚛 Эксплуатация за период · ${fmtDay(d.from)} — ${fmtDay(d.to)}</h3>
+      <div class="bi-actions no-print" style="margin:2px 0 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label class="muted">Период:</label>
+        <input type="date" id="opFrom" value="${d.from}"> — <input type="date" id="opTo" value="${d.to}">
+        <button type="button" class="button ghost small" id="opReload">⟳ Пересчитать</button>
+        <button type="button" class="button small" id="opPdf" data-from="${d.from}" data-to="${d.to}">📑 Презентация (PDF)</button>
+      </div>
       <div class="rsums">
         <span class="rsum">Машино-дни план: <b>${d.md.plan}</b></span>
         <span class="rsum">Факт на линии: <b>${d.md.sum.line}</b> <small class="muted">(${planPct}%)</small></span>

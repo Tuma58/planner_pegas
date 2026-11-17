@@ -15,6 +15,7 @@ import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, inc
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
 import { opsPeriodData, resourceDayData } from './resource-day.mjs';
+import { renderOpsPeriodPdf } from './ops-period-pdf.mjs';
 import { prografikData } from './prografik.mjs';
 
 // ⚙ Скорость (Э0, 04.11): реестр таймингов API и клиентских маячков.
@@ -17929,6 +17930,30 @@ export const server = http.createServer(async (request, response) => {
       response.writeHead(200, { 'Content-Type': 'application/pdf',
         'Content-Length': pdf.length, 'Cache-Control': 'no-cache',
         'Content-Disposition': `attachment; filename="drivers-report_${from}_${to}.pdf"` });
+      return response.end(pdf);
+    }
+    else if (url.pathname === '/reports/ops-period/pdf') {
+      // PDF-презентация «Эксплуатация за период» (заказ руководителя
+      // 17.11) — те же opsPeriodData, что экранный отчёт; деньги —
+      // только уровню «все».
+      const user = currentUser(request);
+      if (!user) { response.writeHead(302, { Location: '/' }); return response.end(); }
+      const from = String(url.searchParams.get('from') || '').slice(0, 10);
+      const to = String(url.searchParams.get('to') || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) {
+        response.writeHead(422, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return response.end('Нужны from и to (ГГГГ-ММ-ДД)');
+      }
+      const withMoney = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+      const periodData = opsPeriodData(db, from, to, { withMoney });
+      if (periodData.error) {
+        response.writeHead(422, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return response.end(periodData.error);
+      }
+      const pdf = renderOpsPeriodPdf(periodData);
+      response.writeHead(200, { 'Content-Type': 'application/pdf',
+        'Content-Length': pdf.length, 'Cache-Control': 'no-cache',
+        'Content-Disposition': `attachment; filename="ops-period_${from}_${to}.pdf"` });
       return response.end(pdf);
     }
     else if (url.pathname === '/ops-report/pdf') {

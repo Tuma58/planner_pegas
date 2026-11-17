@@ -1416,7 +1416,9 @@ async function openReport(kind, from, to) {
         <button type="button" class="button" data-close>Закрыть</button>
       </div>`, 'wide printable');
     byId('reportPrint').onclick = () => window.print();
-    wireReport(kind, { reopen: () => openReport(kind, from, to) });
+    // reopen принимает новый период (пикер в окне «Эксплуатации за
+    // период»); без аргументов — прежние даты, как раньше.
+    wireReport(kind, { reopen: (newFrom, newTo) => openReport(kind, newFrom || from, newTo || to) });
   } catch (error) {
     toast(error.message, 'error');
     closeModal();
