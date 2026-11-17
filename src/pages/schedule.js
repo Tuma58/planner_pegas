@@ -341,10 +341,14 @@ function dialog(title, body, okLabel, onOk){
   const first=box.querySelector('input,select'); if(first) first.focus();
 }
 const byFio=(a,b)=>(a.fio||'').localeCompare(b.fio||'');
+/* «Живой» водитель для списков и счётчиков: не в отпуске и не уволен.
+   Уволенные (drv.fired) не предлагаются ни в «свободных», ни в
+   назначении — порядок 17.11 после кейса «уволенные в резерве». */
+const alive=d=>!d.vac&&!d.fired;
 /* в списке — и свободные, и уже занятые: занятого можно перенести одним действием */
 function drvOptions(curTs){
-  const free=S.drv.filter(d=>!d.ts && !d.vac).sort(byFio);
-  const busy=S.drv.filter(d=>d.ts && !d.vac && d.ts!==curTs).sort(byFio);
+  const free=S.drv.filter(d=>!d.ts && alive(d)).sort(byFio);
+  const busy=S.drv.filter(d=>d.ts && alive(d) && d.ts!==curTs).sort(byFio);
   let h='<option value="">— назначить водителя —</option>';
   if(free.length) h+='<optgroup label="свободные">'+
     free.map(d=>`<option value="${d.id}">${d.fio}</option>`).join('')+'</optgroup>';
@@ -696,7 +700,7 @@ function renderGrid(){
         badN=Object.keys(bad).length;
   const kp=[
     {v:liveEnd, l:'сцепок'},
-    {v:set.filter(d=>!d.vac).length, l:'водителей'},
+    {v:set.filter(alive).length, l:'водителей'},
     {v:md+' / '+cap, l:'машинодни'},
     {v:cap?Math.round(md/cap*100)+'%':'—', l:'укомплектовано'},
     {v:outCnt, l:'выведено ТС в периоде', zero:true},
@@ -1030,8 +1034,8 @@ function outsideAsg(e){ const box=document.getElementById('asgPick');
   if(box && !box.contains(e.target)) closeAsgPicker(); }
 function openAsgPicker(tsId, btn){
   closeAsgPicker();
-  const free=S.drv.filter(d=>!d.ts && !d.vac).sort(byFio);
-  const busy=S.drv.filter(d=>d.ts && !d.vac && d.ts!==tsId).sort(byFio);
+  const free=S.drv.filter(d=>!d.ts && alive(d)).sort(byFio);
+  const busy=S.drv.filter(d=>d.ts && alive(d) && d.ts!==tsId).sort(byFio);
   const box=document.createElement('div');
   box.id='asgPick'; box.className='asg-pop';
   box.innerHTML='<input id="asgQ" placeholder="фамилия — клик или Enter назначает" autocomplete="off">'+
@@ -1134,7 +1138,7 @@ function tsOptionsAll(){
   });
   return `<option value="">закрепить за…</option>`+Object.keys(byCrew).sort().map(cid=>
     `<optgroup label="${cid}">${byCrew[cid].map(t=>{
-      const n=S.drv.filter(d=>d.ts===t.id && !d.vac).length;
+      const n=S.drv.filter(d=>d.ts===t.id && alive(d)).length;
       return `<option value="${t.id}">${t.tyagach}${n?` (водителей: ${n})`:' (свободна)'}</option>`;
     }).join('')}</optgroup>`).join('');
 }
@@ -1154,15 +1158,15 @@ function renderFix(){
   ids.forEach(cid=>{
     const c=crews[cid];
     if(f!=='Все' && !c.ts.some(t=>t.filial===f) && !c.drv.some(d=>d.filial===f)) return;
-    if(onlyFree && !c.ts.some(t=>!S.drv.some(d=>d.ts===t.id && !d.vac))) return;
+    if(onlyFree && !c.ts.some(t=>!S.drv.some(d=>d.ts===t.id && alive(d)))) return;
     if(q){
       const hay=(cid+' '+c.ts.map(t=>t.tyagach+' '+t.pricep).join(' ')+' '+
         c.drv.map(d=>d.fio).join(' ')).toLowerCase();
       if(!hay.includes(q)) return;
     }
     shownCrews++;
-    const loose=c.drv.filter(d=>!d.ts && !d.vac);
-    const live=c.drv.filter(d=>!d.vac).length;
+    const loose=c.drv.filter(d=>!d.ts && alive(d));
+    const live=c.drv.filter(alive).length;
     h+=`<tr class="crewhead"><td colspan="8"><b>${cid==='E-RES'?'Резерв (E-RES)':'Экипаж '+cid}</b>
         · машин ${c.ts.length} · водителей ${live}
         ${cid!=='E-RES'?`<button data-x="disband" data-id="${cid}" title="Водители открепляются и уходят в резерв, машины — в резерв. График людей сохраняется.">расформировать → в резерв</button>`:''}
@@ -1195,8 +1199,8 @@ function renderFix(){
   });
   h+='</tbody>';
   document.getElementById('fixTable').innerHTML=h;
-  const noDrv=S.ts.filter(t=>!S.drv.some(d=>d.ts===t.id && !d.vac)).length;
-  const free=S.drv.filter(d=>!d.ts && !d.vac);
+  const noDrv=S.ts.filter(t=>!S.drv.some(d=>d.ts===t.id && alive(d))).length;
+  const free=S.drv.filter(d=>!d.ts && alive(d));
   document.getElementById('fixMsg').innerHTML=
     `Экипажей показано: <b style="color:var(--ink)">${shownCrews}</b> · сцепок всего: <b style="color:var(--ink)">${S.ts.length}</b> · без закреплённого водителя: <b>${noDrv}</b> · свободных водителей: <b style="color:var(--ink)">${free.length}</b> — они в «Резерве» внизу, сажаются селектом «закрепить за…»`;
 }
@@ -1214,7 +1218,7 @@ function disbandCrew(cid){
   const machines=S.ts.filter(t=>t.crew===cid);
   const people=S.drv.filter(d=>d.crew===cid);
   dialog('Расформировать '+cid,
-    `<p>Машины (${machines.length}) уйдут в резерв E-RES, водители (${people.filter(d=>!d.vac).length})
+    `<p>Машины (${machines.length}) уйдут в резерв E-RES, водители (${people.filter(alive).length})
         открепятся и тоже уйдут в резерв. Ленты графика людей сохранятся.</p>`,
     'Расформировать', ()=>{
       machines.forEach(t=>{ t.crew='E-RES'; });
@@ -1367,7 +1371,7 @@ function renderSum(){
     const md=st.reduce((a,x)=>a+x.busy,0), cap=st.reduce((a,x)=>a+x.fleet,0);
     cards.push(`<div class="card"><h3>${f==='Все'?'Оба филиала':'Филиал '+f}</h3><table>
       <tr><td>Сцепок</td><td>${fleet}</td></tr>
-      <tr><td>Водителей</td><td>${set.filter(d=>!d.vac).length}</td></tr>
+      <tr><td>Водителей</td><td>${set.filter(alive).length}</td></tr>
       <tr><td>Вакансий</td><td>${set.filter(d=>d.vac).length}</td></tr>
       <tr><td>Машинодни план</td><td>${md} / ${cap}</td></tr>
       <tr><td>Покрытие</td><td>${cap?Math.round(md/cap*100):0}%</td></tr>
