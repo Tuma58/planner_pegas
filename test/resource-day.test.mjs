@@ -98,4 +98,9 @@ test('эксплуатация за период: машино-дни сходя
   // Явка и внештатки присутствуют строками.
   assert.equal(d.attendance.length, 2);
   assert.ok(d.incidents && typeof d.incidents.autoLate === 'number');
+  // Штат: общее число, принято/уволено и больничные за период.
+  assert.ok(d.staff);
+  assert.ok(Number.isFinite(d.staff.headcount), 'штат из табеля');
+  assert.ok(Number.isFinite(d.staff.hired) && Number.isFinite(d.staff.fired), 'принято/уволено из driverTurnover за период');
+  assert.equal(d.staff.sickDays, d.attendance.reduce((sum, a) => sum + (a.sick || 0), 0));
 });

@@ -158,7 +158,8 @@ export async function buildReport(kind, from, to, data) {
         <td class="num">${counters.repair}</td><td class="num">${counters.shift}</td>
         <td class="num">${counters.no_driver}</td><td class="num">${counters.idle}</td>
         <td class="num">${fleetWork}</td>
-        <td class="num">${a.present ?? '—'}</td><td class="num">${a.unmarked ? `<span class="pg-warn2">${a.unmarked}</span>` : (a.unmarked ?? '—')}</td></tr>`;
+        <td class="num">${a.present ?? '—'}</td><td class="num">${a.sick ?? '—'}</td>
+        <td class="num">${a.unmarked ? `<span class="pg-warn2">${a.unmarked}</span>` : (a.unmarked ?? '—')}</td></tr>`;
     }).join('');
     const turnoverRows = (d.turnover?.byMonth || []).map(m =>
       `<tr><td>${escapeHtml(m.month)}</td><td class="num">${m.hired}</td><td class="num">${m.fired}</td>
@@ -180,10 +181,17 @@ export async function buildReport(kind, from, to, data) {
         (рейс главнее ремонта, ремонт главнее пересменки). ${d.money ? 'Цена потерь — живой норматив периода: нетто выгрузок на машино-день линии, не зашитая ставка.' : ''}</div>
       <h4>Потери по причинам <small class="muted">— машино-дни</small></h4>
       <p>${lossParts.join(' · ') || '<span class="muted">потерь нет</span>'}</p>
+      ${d.staff ? `<h4>Штат водителей</h4>
+      <div class="rsums">
+        <span class="rsum">Всего: <b>${d.staff.headcount ?? '—'}</b>${d.staff.headcountAvg ? ` <small class="muted">(в среднем за период ${(Math.round(d.staff.headcountAvg * 10) / 10).toLocaleString('ru-RU')})</small>` : ''}</span>
+        <span class="rsum">Принято: <b>${d.staff.hired ?? '—'}</b></span>
+        <span class="rsum">Уволено: <b>${d.staff.fired ?? '—'}</b></span>
+        <span class="rsum">Больничных, чел.-дней: <b>${d.staff.sickDays}</b></span>
+        ${d.staff.turnoverPct != null ? `<span class="rsum">Текучесть периода: ${d.turnover?.targetPct != null && d.staff.turnoverPct > d.turnover.targetPct ? `<b class="pg-warn2">${d.staff.turnoverPct}%</b>` : `<b>${d.staff.turnoverPct}%</b>`}${d.turnover?.targetPct != null ? ` <small class="muted">(цель ${d.turnover.targetPct}%/мес)</small>` : ''}</span>` : ''}</div>` : ''}
       <h4>По дням</h4>
       <table class="rtable bi-table"><thead><tr><th>День</th><th class="num">На линии</th><th class="num">Ремонт</th>
         <th class="num">Пересм.</th><th class="num">Без экип.</th><th class="num">Простой</th><th class="num">Парк</th>
-        <th class="num">Явка</th><th class="num">Нет отметки</th></tr></thead><tbody>${dayRows}</tbody></table>
+        <th class="num">Явка</th><th class="num">Больничный</th><th class="num">Нет отметки</th></tr></thead><tbody>${dayRows}</tbody></table>
       ${d.staffing != null ? `<p class="muted">Укомплектованность: <b>${(Math.round(d.staffing * 100) / 100).toLocaleString('ru-RU')}</b> экипажа на машину${d.staffingTarget ? ` при цели ${d.staffingTarget}` : ''}.</p>` : ''}
       ${turnoverRows ? `<h4>Текучесть <small class="muted">— месяцы, пересекающие период · цель ${d.turnover.targetPct}%/мес</small></h4>
       <table class="rtable bi-table"><thead><tr><th>Месяц</th><th class="num">Нанято</th><th class="num">Уволено</th><th class="num">Текучесть</th></tr></thead>

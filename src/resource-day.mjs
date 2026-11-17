@@ -117,6 +117,8 @@ export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.no
   const attendance = [];
   let staffing = null;
   let staffingTarget = null;
+  let headcount = null;
+  let sickDays = 0;
   for (let i = 0; i < dayCount; i += 1) {
     const day = new Date(Date.parse(from) + i * DAY_MS).toISOString().slice(0, 10);
     const r = resourceDayData(db, day);
@@ -125,9 +127,12 @@ export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.no
     mdPlan += r.fleetWork;
     try {
       const a = attendanceSummary(db, day);
-      attendance.push({ day, present: a.present, absent: a.absent, unmarked: a.unmarked });
+      const sick = a.byReason?.sick || 0;
+      attendance.push({ day, present: a.present, absent: a.absent, unmarked: a.unmarked, sick });
       staffing = a.staffing; staffingTarget = a.staffingTarget;
-    } catch { attendance.push({ day, present: null, absent: null, unmarked: null }); }
+      headcount = a.drivers ?? headcount;
+      sickDays += sick;
+    } catch { attendance.push({ day, present: null, absent: null, unmarked: null, sick: null }); }
   }
   const mdLost = mdPlan - mdSum.line;
 
@@ -152,11 +157,15 @@ export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.no
       return { ...incidentsSummary(db, fromIso, toIso), autoLate: lateCount(db, fromIso, toIso) };
     } catch { return null; }
   })();
+  // Штат и текучесть — канон driverTurnover ЗА ПЕРИОД отчёта (не с начала
+  // учёта): принято/уволено/средняя численность/процент — его же цифры.
   const turnover = (() => {
     try {
-      const t = driverTurnover(db);
+      const t = driverTurnover(db, { from, to });
       return { byMonth: (t.byMonth || []).filter(m => m.to >= from && m.from <= to),
         targetPct: t.targetPct,
+        hired: t.hired, fired: t.fired, turnoverPct: t.turnoverPct,
+        headcountAvg: t.headcountAvg,
         recentFired: (t.recentFired || []).filter(f => f.firedOn >= from && f.firedOn <= to)
           .map(f => ({ name: f.name, firedOn: f.firedOn, tenureDays: f.tenureDays, reason: f.reason })) };
     } catch { return null; }
@@ -165,5 +174,8 @@ export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.no
   return { from, to, days, order: ORDER, titles: RESOURCE_DAY_TITLES,
     md: { plan: mdPlan, sum: mdSum, lost: mdLost },
     attendance, staffing, staffingTarget,
+    staff: { headcount, sickDays, hired: turnover?.hired ?? null,
+      fired: turnover?.fired ?? null, turnoverPct: turnover?.turnoverPct ?? null,
+      headcountAvg: turnover?.headcountAvg ?? null },
     incidents, turnover, money };
 }
