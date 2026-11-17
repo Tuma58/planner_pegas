@@ -177,8 +177,9 @@ function paceSlideHtml(state) {
       ${tile('Прогноз', mln(m.forecast), m.forecast >= m.monthPlan ? 'good' : 'warn')}
       ${tile('Осталось до цели', mln(left), '', `дней: ${m.remainingDays}`)}
       ${tile('Нужно в день', mln(m.dayPlan))}
-      ${tile('Вчера выгружено', mln(m.days.yesterday.done),
-    m.days.yesterday.done >= m.dayPlan ? 'good' : 'bad')}
+      ${tile('Вчера', mln(m.days.yesterday.booked),
+    m.days.yesterday.booked >= m.dayPlan ? 'good' : 'bad',
+    `отбито ${mln(Math.max(0, m.days.yesterday.booked - m.days.yesterday.expected))}`)}
       ${tile('Сегодня забито', mln(m.days.today.booked))}
       ${tile('Завтра забито', mln(m.days.tomorrow.booked))}
     </div>`;
@@ -277,12 +278,15 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     return ends >= dayStart && ends < dayEnd;
   });
   const dayFact = dayTrips.reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-  // Факт действительно прошедших дней: только выгрузки до начала сегодняшних
-  // суток. Забронированное будущее (и незакрытый сегодняшний день) сюда не
-  // входит — иначе темп и план дня искажаются ещё не привезённой выручкой.
-  // КАНОН выгрузок (28.09, сверка с отбивкой «Отчёта дня»): «выгружено
-  // за день» считается по дате ФАКТИЧЕСКОЙ выгрузки (фолбэк — расчётная),
-  // как во всех отчётах; «забито» остаётся планом по расчётной дате.
+  // ЕДИНЫЙ КАНОН ДАТ (решение руководителя 17.11: «на дашборде две цифры
+  // за вчера — прийти к единой системе»). День рейса ВЕЗДЕ на дашборде —
+  // ПЛАНОВАЯ дата выгрузки (ends_at), как в прогнозе (решение 08.10) и
+  // графике месяца: отметки диспетчеров опаздывают и не должны двигать
+  // выручку между днями. Фактические отметки не исчезли — они показываются
+  // раскладкой «отбито · ждут отметки» (дисциплина отметок, прежний канон
+  // 28.09), но главная цифра дня и темп месяца считаются по плановым датам.
+  const factPast = monthTrips.filter(trip => Date.parse(trip.ends_at) < dayStart)
+    .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   const doneStatuses = new Set(['unloaded', 'done', 'paid']);
   // Даты в базе — UTC, но часть исторических без суффикса «Z»: голый
   // Date.parse читал их ЛОКАЛЬНЫМ временем (+3 МСК), и рейсы у границы
@@ -293,10 +297,6 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     return Date.parse(raw + (raw.includes('Z') || raw.includes('+') ? '' : 'Z'));
   };
   const doneTrips = activeTrips.filter(trip => doneStatuses.has(trip.status));
-  const factPast = doneTrips.filter(trip => {
-    const ts = doneTs(trip);
-    return ts >= monthStart && ts < dayStart;
-  }).reduce((sum, trip) => sum + tripNet(trip, calc), 0);
   const dayDone = doneTrips.filter(trip => {
     const ts = doneTs(trip);
     return ts >= dayStart && ts < dayEnd;
@@ -524,8 +524,10 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
     dayPace: { due: dueByNow, done: dayDone, diff: dayDone - dueByNow },
     dayLoads: { count: dayLoads.length, sum: dayLoadsSum,
       online: dayLoads.filter(trip => trip.on_line_at).length },
-    monthPace: { schedule: monthPlan * dayOfMonth / daysInMonth, fact: factPast + dayDone,
-      diff: factPast + dayDone - monthPlan * dayOfMonth / daysInMonth },
+    // Темп месяца — тоже по плановым датам (канон 17.11): прошедшие дни +
+    // сегодняшние выгрузки, чей плановый срок уже наступил.
+    monthPace: { schedule: monthPlan * dayOfMonth / daysInMonth, fact: factPast + dueByNow,
+      diff: factPast + dueByNow - monthPlan * dayOfMonth / daysInMonth },
     forecast, daysInMonth, dayOfMonth,
     remainingDays, dayTripsCount: dayTrips.length,
     avgDayCheck: dayTrips.length ? dayFact / dayTrips.length : 0,
@@ -730,9 +732,10 @@ export async function renderDashboard(container, context) {
   const fmtDayShort = iso => new Intl.DateTimeFormat('ru-RU',
     { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${iso}T12:00:00Z`));
   const dayCard = (day, title, mode) => {
-    // Прошедший день оценивается по ФАКТУ выгрузок (канон отбивки),
-    // сегодня/завтра — по забитому (план дня).
-    const factOf = mode === 'past' ? day.done : day.booked;
+    // Единый канон дат (17.11): ЛЮБОЙ день оценивается по выгрузкам с
+    // плановой датой этого дня — как график месяца и прогноз. Отметки
+    // диспетчеров видны раскладкой «отбито · ждут отметки» ниже.
+    const factOf = day.booked;
     const pct = day.plan ? Math.min(999, Math.round(factOf / day.plan * 100)) : 0;
     const met = day.plan != null && factOf >= day.plan;
     let verdict = '';
@@ -740,8 +743,8 @@ export async function renderDashboard(container, context) {
       verdict = '<span class="muted">план соседнего месяца — не считается</span>';
     } else if (mode === 'past') {
       verdict = met
-        ? `✅ выполнен ${day.plan ? `+${money(Math.round(day.done - day.plan))}` : ''}`
-        : `✗ недобор ${money(Math.round(day.plan - day.done))} — перетёк в план сегодня`;
+        ? `✅ выполнен ${day.plan ? `+${money(Math.round(day.booked - day.plan))}` : ''}`
+        : `✗ недобор ${money(Math.round(day.plan - day.booked))} — перетёк в план сегодня`;
     } else if (day.gap > 0) {
       verdict = `⛔ добрать: <b>${money(Math.round(day.gap))}</b>`;
     } else {
@@ -755,20 +758,23 @@ export async function renderDashboard(container, context) {
       <div class="sec-b">
       <div class="dd-nums">
         <div class="dd-plan"><span>план</span><b>${day.plan != null ? money(Math.round(day.plan)) : '—'}</b></div>
-        <div class="dd-fact"><span>${mode === 'past' ? 'факт выгрузок' : 'забито'}</span>
+        <div class="dd-fact"><span>${mode === 'past' ? 'выгрузки дня' : 'забито'}</span>
           <b>${money(Math.round(factOf))}</b>
           ${day.plan ? `<em>${pct}%</em>` : ''}</div>
       </div>
       ${(() => {
         const base = day.plan || day.booked || 1;
-        const donePart = Math.min(100, day.done / base * 100);
+        // Раскладка прошедшего дня — внутри его ПЛАНОВЫХ выгрузок:
+        // отбитая часть + ожидающая отметки часть = «выгрузки дня» целиком.
+        const doneOf = mode === 'past' ? Math.max(0, day.booked - day.expected) : day.done;
+        const donePart = Math.min(100, doneOf / base * 100);
         const restPart = Math.max(0, Math.min(100 - donePart, day.expected / base * 100));
         return `<div class="dash-gauge split"><i class="ok" style="width:${donePart.toFixed(1)}%"></i><i
           class="${mode === 'past' ? 'lag' : 'ride'}" style="width:${restPart.toFixed(1)}%"></i></div>`;
       })()}
       <div class="dd-split">${mode === 'past'
-        ? `выгружено ${money(Math.round(day.done))}${day.expected > 0.5
-            ? ` · <span class="danger">не выгружено ${money(Math.round(day.expected))}</span>` : ''}`
+        ? `отбито ${money(Math.round(Math.max(0, day.booked - day.expected)))}${day.expected > 0.5
+            ? ` · <span class="danger" title="Плановая выгрузка была в этот день, отметки ещё нет: едет с опозданием или диспетчер не отбил">⏳ ждут отметки ${money(Math.round(day.expected))}</span>` : ''}`
         : `выгружено${mode === 'future' ? ' досрочно' : ''} ${money(Math.round(day.done))} · едет ${money(Math.round(day.expected))} · ${day.trips} рейс.`}</div>
       ${mode !== 'past' && day.unassigned ? `<div class="dd-pot"
         title="Внесённые заявки без назначенного ТС с окном выгрузки этого дня: в план выручки заявка попадает после назначения машины">⚡ потенциал ${money(Math.round(day.potential))} — ждут ТС ${day.unassigned} заявок на ${money(Math.round(day.unassignedSum))}</div>` : ''}
