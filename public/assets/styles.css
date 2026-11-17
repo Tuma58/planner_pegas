@@ -2352,6 +2352,25 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .inc-note-multi { white-space: pre-line; }
 
 /* ── «Производственный график» Э1 (14.11): зоны × дни ── */
+/* Полировка 17.11 (заказ руководителя): шапка-витрина с метриками,
+   задачи карточками, панель без переносов — BI-канон страницы. */
+.pg-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+.pg-head h2 { margin: 0 0 2px; }
+.pg-head p { margin: 0; color: var(--muted); font-size: var(--fs-sm); }
+/* Специфичность выше .bi-kpis из bi/kit.css (он грузится после). */
+.pg-head .pg-kpis { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.pg-head .pg-kpis .metric { min-width: 128px; flex: 0 1 auto; }
+.pg-task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 8px; }
+.pg-task { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border2); border-radius: 10px; padding: 7px 10px; background: var(--canvas); text-align: left; }
+.pg-task .button { margin: 4px 0 0; align-self: flex-end; }
+.pg-task-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-toolbar { align-items: center; }
+.pg-toolbar .button { white-space: nowrap; }
+.pg-toolbar .block-search { flex: 1; min-width: 170px; }
+.pg-table tbody .pg-row:hover td { background: color-mix(in srgb, var(--canvas) 70%, transparent); }
+.pg-table tbody .pg-row:hover td.pg-warn { background: color-mix(in srgb, var(--warn) 24%, transparent); }
+.pg-table tbody .pg-row:hover td.pg-bad { background: color-mix(in srgb, var(--bad) 26%, transparent); }
+.pg-table td.pg-today, .pg-table th.pg-today { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .pg-wrap { overflow: auto; max-height: calc(100vh - 220px); }
 .pg-table { border-collapse: collapse; width: 100%; font-size: var(--fs-sm); }
 .pg-table th, .pg-table td { border: 1px solid var(--border2); padding: 3px 5px; text-align: center; min-width: 54px; }
@@ -2423,8 +2442,6 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .pg-tasks { border: 1px solid var(--border); border-left: 5px solid var(--bad); border-radius: 10px; background: var(--panel); padding: 8px 14px; margin-bottom: 8px; }
 .pg-tasks-ok { border-left-color: var(--ok); color: var(--muted); }
 .pg-tasks-head { font-weight: 650; margin-bottom: 4px; }
-.pg-task { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0; border-top: 1px dashed var(--border2); }
-.pg-task .button { margin-left: auto; }
 .pg-lack { color: var(--bad); font-size: var(--fs-md); white-space: nowrap; }
 .pg-sub { display: block; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .pg-dim { color: var(--muted); opacity: .75; }

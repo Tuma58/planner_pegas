@@ -121,12 +121,12 @@ export async function renderPrografik(container, context) {
   const tasksHtml = liveTasks.length ? `<div class="pg-tasks">
     <div class="pg-tasks-head">❗ Что сделать по ${dayLabel(pg.horizonEnd)} включительно
       <small class="muted">— дальше заявки обычно ещё не внесены (срок выучен по факту), там пусто — это план, не тревога</small></div>
-    ${liveTasks.map((task, index) => `<div class="pg-task">
-      <b>${dayLabel(task.day)}</b> · ${escapeHtml(task.zone)}:
-      не хватает <b class="pg-gap">${draftCut(task)} маш.</b>
-      <small class="muted">заявок без машины ${task.unassigned}, свободных в зоне ${task.free}${moneyVisible && task.money ? `, под угрозой ${shortMoney(task.money)} ₽` : ''}</small>
-      <button class="button small" data-task="${index}">Разобрать</button>
-    </div>`).join('')}</div>`
+    <div class="pg-task-grid">${liveTasks.map((task, index) => `<div class="pg-task">
+      <span class="pg-task-t"><b>${dayLabel(task.day)}</b> · ${escapeHtml(task.zone)}:
+        не хватает <b class="pg-gap">${draftCut(task)} маш.</b></span>
+      <small class="muted">без машины ${task.unassigned} · свободных ${task.free}${moneyVisible && task.money ? ` · под угрозой ${shortMoney(task.money)} ₽` : ''}</small>
+      <button class="button ghost small" data-task="${index}">Разобрать →</button>
+    </div>`).join('')}</div></div>`
     : `<div class="pg-tasks pg-tasks-ok">✅ По ${dayLabel(pg.horizonEnd)} включительно машин хватает на весь внесённый спрос${draft.length ? ' (с учётом черновика)' : ''}.</div>`;
   const signalsHtml = (pg.signals || []).map((signal, index) => `
     <button class="pg-sig ${signal.kind}" data-sig="${index}"
@@ -370,11 +370,46 @@ export async function renderPrografik(container, context) {
   }).join('')}</div></div>`;
   })() : '';
 
+  // ── Шапка-витрина (BI-канон, полировка 17.11): страница доступна всем,
+  // как Дашборд и Гант — главные числа горизонта плитками, вид не меняет
+  // ни одной цифры (всё из уже посчитанного payload).
+  const deficitTotal = liveTasks.reduce((sum, task) => sum + draftCut(task), 0);
+  const todayBalance = pg.days.includes(todayIso) ? pg.balance[todayIdx] : null;
+  const todayShifts = shiftsOfDay(todayIso).length;
+  const horizonDays = Math.max(0, Math.round((Date.parse(pg.horizonEnd) - Date.parse(todayIso)) / DAY_MS)) + 1;
+  const kpisHtml = `<div class="bi-kpis pg-kpis">
+    <div class="metric ${deficitTotal ? 'warn' : 'pos'}" title="Сумма дефицитов из списка «Что сделать» (с учётом черновика)">
+      <span class="l">Дефицит до ${dayLabel(pg.horizonEnd)}</span>
+      <span class="v">${deficitTotal ? `−${deficitTotal}` : '0'}<small>маш.</small></span>
+      <span class="d">${deficitTotal ? 'разбор — кнопками ниже' : 'машин хватает'}</span></div>
+    ${todayBalance ? `<div class="metric" title="Строка «Баланс парка» за сегодня">
+      <span class="l">Сегодня</span>
+      <span class="v">${fmtCars(todayBalance[0])}<small>спрос</small></span>
+      <span class="d">свободно ${todayBalance[1]} маш.</span></div>` : ''}
+    <div class="metric" title="Горизонт актуальности внесённых заявок — выучен по факту внесения">
+      <span class="l">Горизонт заявок</span>
+      <span class="v">${horizonDays}<small>дн.</small></span>
+      <span class="d">дальше — план, не тревога</span></div>
+    <div class="metric" title="Строка «Пересменки» за сегодня">
+      <span class="l">Пересменки сегодня</span>
+      <span class="v">${todayShifts}</span>
+      <span class="d">клик в строке под сеткой</span></div>
+    ${moneyVisible ? `<div class="metric" title="Сумма строки «Баланс парка» за видимый период">
+      <span class="l">Выгрузки периода</span>
+      <span class="v">${shortMoney(periodTotal)}</span>
+      <span class="d">по зонам — в колонке «Период»</span></div>` : ''}
+  </div>`;
+
   const savedScrolls = captureScrolls(container);
   const html = `<div class="bi-page pg-page">
+    <div class="bi-sub pg-head">
+      <div><h2>▦ Производственный график</h2>
+        <p>Спрос, свободные машины${moneyVisible ? ' и деньги' : ''} по зонам и дням — решения прямо в ячейке</p></div>
+      ${kpisHtml}
+    </div>
     ${tasksHtml}
     ${signalsHtml ? `<div class="pg-signals">${signalsHtml}</div>` : ''}
-    <div class="bi-kpis bi-kpis-row">
+    <div class="bi-kpis bi-kpis-row pg-toolbar">
       <div class="segmented" id="pgMonthNav">
         <button data-m="-1" title="Предыдущий месяц">‹</button>
         <button disabled style="min-width:84px">${month.slice(5, 7)}.${month.slice(0, 4)}</button>
@@ -385,9 +420,9 @@ export async function renderPrografik(container, context) {
         <button data-h="month" class="${horizon === 'month' ? 'active' : ''}">Месяц</button>
       </div>
       <input id="pgSearch" class="block-search" placeholder="Поиск: зона, клиент, борт" value="${escapeHtml(state.prografikQuery || '')}">
-      <button class="button ghost" id="pgFormBtn" title="Выгрузка → следующий рейс: кто выгружается в зоне и уже имеет план, но ещё не загружен (отчёт логистики)">⏳ Формирование</button>
-      <button class="button ghost" id="pgTvBtn" title="Крупные карточки баланса для табло">📺 Табло</button>
-      <button class="button ghost" id="pgLegend" title="Что значат цвета и числа">ⓘ Как читать</button>
+      <button class="button ghost small" id="pgFormBtn" title="Выгрузка → следующий рейс: кто выгружается в зоне и уже имеет план, но ещё не загружен (отчёт логистики)">⏳ Формирование</button>
+      <button class="button ghost small" id="pgTvBtn" title="Крупные карточки баланса для табло">📺 Табло</button>
+      <button class="button ghost small" id="pgLegend" title="Что значат цвета и числа">ⓘ Как читать</button>
     </div>
     <section class="section"><div class="sec-b pg-wrap">
       <table class="pg-table"><thead>${headRow}</thead>
