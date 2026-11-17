@@ -25,7 +25,8 @@ export function renderOpsPeriodPdf(data) {
   pdf.addFont('R', FONT_R);
   pdf.addFont('B', FONT_B);
   const period = `${fmtFull(data.from)} — ${fmtFull(data.to)}`;
-  const pages = 5;
+  const pages = data.goals ? 6 : 5;
+  let slideNo = 1;
   let y = 0;
 
   const slideHead = (n, title) => {
@@ -117,9 +118,33 @@ export function renderOpsPeriodPdf(data) {
   ], { h: 72 });
   foot('Цифры — канон планера: resourceDayData по дням · attendanceSummary · driverTurnover за период · incidentsSummary');
 
-  // ── Слайд 2 · ресурс по дням ──
+  // ── Слайд · против целей отдела (когда цели есть в «Целях и задачах») ──
+  if (data.goals) {
+    pdf.page();
+    slideHead(++slideNo, 'Против целей отдела');
+    const toneColor = { ok: BRAND.pos, near: BRAND.warn, miss: BRAND.neg };
+    const toneLabel = { ok: 'в цели', near: 'рядом', miss: 'мимо', info: 'справочно', none: 'нет данных' };
+    for (const item of data.goals.items.slice(0, 7)) {
+      const m = item.metric || {};
+      const color = toneColor[m.tone] || BRAND.muted;
+      pdf.circle(ML + 5, y - 4, 4, { fill: color });
+      pdf.text(ML + 18, y, `${item.kind === 'dept' ? 'ЦЕЛЬ ОТДЕЛА: ' : ''}${item.title}`, { size: 11.5, font: item.kind === 'dept' ? 'B' : 'R' });
+      const valueText = m.value != null ? `${String(m.value).replace('.', ',')}${m.unit ? ` ${m.unit}` : ''}` : '—';
+      const targetText = m.target != null ? ` / цель ${String(m.target).replace('.', ',')}` : '';
+      pdf.text(W - MR, y, `${valueText}${targetText} · ${toneLabel[m.tone] || '—'}`,
+        { size: 11.5, font: 'B', align: 'right', color });
+      y += 10;
+      pdf.text(ML + 18, y, m.label || '', { size: 8.5, color: BRAND.muted });
+      y += 20;
+    }
+    y += 6;
+    para(`Каскад за период (канон «Сводного отчёта»): КТГ ${data.goals.cascade.ktg ?? '—'} · КВЛ ${data.goals.cascade.kvl ?? '—'} · КИП ${data.goals.cascade.kip ?? '—'} · КЭИП ${data.goals.cascade.keip ?? '—'}. Узкие места каскада видны по первым красным ступеням.`, { size: 10, color: BRAND.muted });
+    foot('Источник: «Цели и задачи» отдела эксплуатации · живые метрики evalMetric за период отчёта');
+  }
+
+  // ── Слайд · ресурс по дням ──
   pdf.page();
-  slideHead(2, 'Ресурс парка по дням');
+  slideHead(++slideNo, 'Ресурс парка по дням');
   // До 16 дней — бары по дням; длиннее — агрегация по неделям (среднее).
   let bars = days.map(d => ({ label: dayLabel(d.day), line: d.counters.line }));
   let barNote = 'Машин на линии в день';
@@ -153,9 +178,9 @@ export function renderOpsPeriodPdf(data) {
   para(`Начало → конец периода: на линии ${first.line} → ${last.line}, в ремонте ${first.repair} → ${last.repair}, без экипажа ${first.no_driver} → ${last.no_driver}, простой без оформления ${first.idle} → ${last.idle}. Пересменок за период ${md.sum.shift} машино-дней.`);
   foot('Источник: отчёт «Ресурс за день» по каждому дню · сумма категорий = парк, расхождений нет');
 
-  // ── Слайд 3 · план/факт машино-дней ──
+  // ── Слайд · план/факт машино-дней ──
   pdf.page();
-  slideHead(3, 'План / факт машино-дней');
+  slideHead(++slideNo, 'План / факт машино-дней');
   kpi([
     { v: md.plan, l: 'план: рабочий парк каждого дня периода' },
     { v: md.sum.line, l: `факт на линии = ${String(planPct).replace('.', ',')}% фонда` },
@@ -191,9 +216,9 @@ export function renderOpsPeriodPdf(data) {
   bullet(`Простой без оформления ~${String(perDay(md.sum.idle)).replace('.', ',')} в день — вопрос логистики: машина подана, задания нет.`);
   foot(`Раскладка сходится до машино-дня: ${md.sum.line} на линии + потери и выведенные = календарь парка`);
 
-  // ── Слайд 4 · люди ──
+  // ── Слайд · люди ──
   pdf.page();
-  slideHead(4, 'Люди: явка, штат, текучесть');
+  slideHead(++slideNo, 'Люди: явка, штат, текучесть');
   kpi([
     { v: presentMin != null ? `${presentMin}–${presentMax}` : '—', l: `явка водителей в день (в штате ${staff.headcount ?? '—'})` },
     { v: staff.sickDays ?? 0, l: 'больничных человеко-дней за период' },
@@ -211,9 +236,9 @@ export function renderOpsPeriodPdf(data) {
   }
   foot('Источники: табель (attendanceSummary) · текучесть (driverTurnover за период отчёта)');
 
-  // ── Слайд 5 · внештатки ──
+  // ── Слайд · внештатки ──
   pdf.page();
-  slideHead(5, 'Внештатные ситуации');
+  slideHead(++slideNo, 'Внештатные ситуации');
   const inc = data.incidents || { counts: { act: 0, return: 0, late: 0 }, returnsClosed: 0, openReturns: [], autoLate: 0 };
   kpi([
     { v: inc.counts.act, l: 'актов на выгрузке за период' },

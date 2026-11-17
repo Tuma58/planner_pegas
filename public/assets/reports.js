@@ -199,6 +199,18 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Цена потерь: <b class="pg-warn2">${rub(d.money.lost)}</b></span>` : ''}</div>
       <div class="geohint">План = рабочий парк каждого дня периода (без выведенных); категории — канон «Ресурса за день»
         (рейс главнее ремонта, ремонт главнее пересменки). ${d.money ? 'Цена потерь — живой норматив периода: нетто выгрузок на машино-день линии, не зашитая ставка.' : ''}</div>
+      ${d.goals ? `<h4>Против целей отдела <small class="muted">— «Цели и задачи», живые метрики за период</small></h4>
+      <table class="rtable bi-table"><thead><tr><th></th><th>Показатель</th><th class="num">Факт</th><th class="num">Цель</th><th>Статус</th></tr></thead>
+      <tbody>${d.goals.items.map(item => {
+      const m = item.metric || {};
+      const toneLabel = { ok: '✅ в цели', near: '🟡 рядом', miss: '🔴 мимо', info: 'справочно', none: '—' }[m.tone] || '—';
+      return `<tr><td>${item.kind === 'dept' ? '<b>Цель отдела</b>' : 'Задача'}: ${escapeHtml(item.title)}</td>
+        <td>${escapeHtml(m.label || '')}</td>
+        <td class="num"><b>${m.value ?? '—'}</b>${m.unit && m.value != null ? ` ${escapeHtml(m.unit)}` : ''}</td>
+        <td class="num">${m.target ?? '—'}</td>
+        <td>${m.tone === 'miss' ? `<b class="pg-warn2">${toneLabel}</b>` : toneLabel}</td></tr>`;
+    }).join('')}</tbody></table>
+      <p class="muted">Каскад за период (канон «Сводного отчёта»): КТГ ${d.goals.cascade.ktg ?? '—'} · КВЛ ${d.goals.cascade.kvl ?? '—'} · КИП ${d.goals.cascade.kip ?? '—'} · КЭИП ${d.goals.cascade.keip ?? '—'}.</p>` : ''}
       <h4>Потери по причинам <small class="muted">— машино-дни</small></h4>
       <p>${lossParts.join(' · ') || '<span class="muted">потерь нет</span>'}</p>
       ${d.staff ? `<h4>Штат водителей</h4>

@@ -7,10 +7,13 @@
 // канон по каждому дню периода + машино-дни план/факт, явка, текучесть,
 // внештатки. Деньги (цена потерь) — живой норматив из факта периода.
 
-import { attendanceSummary } from './planner-service.mjs';
+import { attendanceSummary, nextAssignedShare, reportSnapshot } from './planner-service.mjs';
 import { driverTurnover } from './turnover.mjs';
 import { incidentsSummary, lateCount } from './incidents.mjs';
 import { DONE_STATUSES, calcSettings, doneDayOf, tripNet } from './money.mjs';
+import { evalMetric } from './goals.mjs';
+import { structureData } from './structure.mjs';
+import { directionGoals } from '../public/assets/goals-core.js';
 
 const MSK_MS = 3 * 3_600_000;
 const DAY_MS = 86_400_000;
@@ -171,11 +174,53 @@ export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.no
     } catch { return null; }
   })();
 
+  // «Против целей отдела» (заказ руководителя 17.11): цели и задачи
+  // dept='drv' из «Целей и задач» с живыми метриками канонного
+  // evalMetric за период отчёта. Каскад (КТГ/КВЛ/КИП) — из
+  // reportSnapshot, те же цифры, что в «Сводном отчёте»; своих формул
+  // нет, как велит канон целей.
+  const goals = (() => {
+    try {
+      const safe = fn => { try { return fn(); } catch { return null; } };
+      const snap = safe(() => reportSnapshot(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`));
+      const u = snap?.utilization || {};
+      const pct = v => v == null ? null : Math.round(v * 1000) / 10;
+      const structure = safe(() => structureData(db));
+      const toirDept = structure?.depts.find(dept => dept.key === 'toir');
+      const repairs = db.prepare(`SELECT arrived_at, released_at FROM repair_orders
+        WHERE status='released' AND released_at>=? AND released_at<? AND arrived_at IS NOT NULL`).all(from, to)
+        .map(row => (Date.parse(row.released_at) - Date.parse(row.arrived_at)) / 864e5)
+        .filter(d => Number.isFinite(d) && d >= 0).sort((a, b) => a - b);
+      const ctx = {
+        month: from.slice(0, 7), from, to,
+        goals: directionGoals(calcSettings(db)),
+        park: { ktg: pct(u.ktg), kvl: pct(u.kvl), kip: pct(u.kip), koef: pct(u.overall), fleet: snap?.fleetCount ?? null },
+        snap, mileage: null,
+        staffing: structure ? {
+          toir: toirDept?.headcount ? Math.round(toirDept.fact / toirDept.headcount * 100) : null,
+          drivers: structure.totals.driverHeadcount
+            ? Math.round(structure.totals.drivers / structure.totals.driverHeadcount * 100) : null
+        } : null,
+        repairDays: repairs.length ? +repairs[Math.floor(repairs.length / 2)].toFixed(1) : null,
+        fines: db.prepare(`SELECT COUNT(*) n FROM expenses WHERE category_id='fines'
+          AND spent_on>=? AND spent_on<?`).get(from, to).n,
+        nextAssigned: safe(() => nextAssignedShare(db, `${from}T00:00:00.000Z`, `${to}T00:00:00.000Z`).pct),
+        helpdeskOpen: null
+      };
+      const items = db.prepare(`SELECT kind, title, metric_key FROM org_goals
+        WHERE archived_at IS NULL AND dept_key='drv' AND kind IN ('dept','task')
+        ORDER BY CASE kind WHEN 'dept' THEN 0 ELSE 1 END, sort`).all()
+        .map(row => ({ kind: row.kind, title: row.title, metric: evalMetric(row.metric_key, ctx) }));
+      return items.length ? { items,
+        cascade: { ktg: pct(u.ktg), kvl: pct(u.kvl), kip: pct(u.kip), keip: pct(u.overall) } } : null;
+    } catch { return null; }
+  })();
+
   return { from, to, days, order: ORDER, titles: RESOURCE_DAY_TITLES,
     md: { plan: mdPlan, sum: mdSum, lost: mdLost },
     attendance, staffing, staffingTarget,
     staff: { headcount, sickDays, hired: turnover?.hired ?? null,
       fired: turnover?.fired ?? null, turnoverPct: turnover?.turnoverPct ?? null,
       headcountAvg: turnover?.headcountAvg ?? null },
-    incidents, turnover, money };
+    goals, incidents, turnover, money };
 }

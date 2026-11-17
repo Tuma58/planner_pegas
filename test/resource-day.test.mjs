@@ -104,3 +104,17 @@ test('эксплуатация за период: машино-дни сходя
   assert.ok(Number.isFinite(d.staff.hired) && Number.isFinite(d.staff.fired), 'принято/уволено из driverTurnover за период');
   assert.equal(d.staff.sickDays, d.attendance.reduce((sum, a) => sum + (a.sick || 0), 0));
 });
+
+test('«против целей отдела» в отчёте за период: цель drv с метрикой и каскад', async t => {
+  const db = freshDb(t);
+  const { opsPeriodData } = await import('../src/resource-day.mjs');
+  const nowMs = Date.parse('2026-11-17T09:00:00Z');
+  const d = opsPeriodData(db, '2026-11-10', '2026-11-16', { nowMs });
+  assert.ok(d.goals, 'блок целей присутствует');
+  assert.ok(d.goals.items.length >= 1);
+  const dept = d.goals.items.find(item => item.kind === 'dept');
+  assert.ok(dept, 'цель отдела есть');
+  assert.equal(dept.metric.label.slice(0, 3), 'КВЛ');
+  assert.ok(['ok', 'near', 'miss', 'info', 'none'].includes(dept.metric.tone));
+  assert.ok('kvl' in d.goals.cascade);
+});
