@@ -87,7 +87,9 @@ export function renderOpsPeriodPdf(data) {
   const foot = text => pdf.text(ML, H - 24, text, { size: 7.6, color: BRAND.muted });
 
   const md = data.md;
-  const planPct = md.plan ? Math.round(md.sum.line / md.plan * 1000) / 10 : 0;
+  // Работа = линия + перегоны (18.11): перегон — часть задания, не потеря.
+  const mdWork = md.work ?? (md.sum.line + (md.sum.transfer || 0));
+  const planPct = md.plan ? Math.round(mdWork / md.plan * 1000) / 10 : 0;
   const days = data.days;
   const perDay = value => days.length ? Math.round(value / days.length * 10) / 10 : 0;
   const staff = data.staff || {};
@@ -109,7 +111,7 @@ export function renderOpsPeriodPdf(data) {
   pdf.rect(ML, y, 240, 2.4, { fill: teal });
   y += 44;
   kpi([
-    { v: `${md.sum.line} из ${md.plan}`, l: `машино-дней на линии — ${String(planPct).replace('.', ',')}% рабочего фонда` },
+    { v: `${mdWork} из ${md.plan}`, l: `машино-дней в работе (линия${md.sum.transfer ? ' + перегоны' : ''}) — ${String(planPct).replace('.', ',')}% рабочего фонда` },
     { v: md.lost, l: data.money ? `потеряно машино-дней ≈ ${rub(data.money.lost)}` : 'потеряно машино-дней', hot: md.lost > 0 },
     { v: staff.headcount ?? '—', l: `водителей в штате · принято ${staff.hired ?? '—'} · уволено ${staff.fired ?? '—'}` },
     { v: staff.turnoverPct != null ? `${String(staff.turnoverPct).replace('.', ',')} %` : '—',
@@ -183,7 +185,7 @@ export function renderOpsPeriodPdf(data) {
   slideHead(++slideNo, 'План / факт машино-дней');
   kpi([
     { v: md.plan, l: 'план: рабочий парк каждого дня периода' },
-    { v: md.sum.line, l: `факт на линии = ${String(planPct).replace('.', ',')}% фонда` },
+    { v: mdWork, l: `в работе = ${String(planPct).replace('.', ',')}% фонда (линия ${md.sum.line}${md.sum.transfer ? ` + перегоны ${md.sum.transfer}` : ''})` },
     { v: md.lost, l: 'потеряно машино-дней', hot: md.lost > 0 },
     data.money
       ? { v: `≈ ${rub(data.money.lost)}`, l: `цена потерь по факту периода (${rub(data.money.perLineDay)}/машино-день линии)`, hot: md.lost > 0 }
@@ -214,7 +216,7 @@ export function renderOpsPeriodPdf(data) {
   bullet(`Ремонт ~${String(perDay(md.sum.repair)).replace('.', ',')} машин в день — вопрос ТОиР: очередь нарядов и запчасти;`);
   bullet(`Без экипажа ~${String(perDay(md.sum.no_driver)).replace('.', ',')} в день — вопрос найма${data.staffing != null && data.staffingTarget ? `: укомплектованность ${String(Math.round(data.staffing * 100) / 100).replace('.', ',')} при цели ${String(data.staffingTarget).replace('.', ',')}` : ''};`);
   bullet(`Простой без оформления ~${String(perDay(md.sum.idle)).replace('.', ',')} в день — вопрос логистики: машина подана, задания нет.`);
-  foot(`Раскладка сходится до машино-дня: ${md.sum.line} на линии + потери и выведенные = календарь парка`);
+  foot(`Раскладка сходится до машино-дня: ${mdWork} в работе (линия + перегоны) + потери и выведенные = календарь парка`);
 
   // ── Слайд · люди ──
   pdf.page();

@@ -168,7 +168,8 @@ export function directionData(ctx, live) {
       { key: 'out', label: 'Выведены', value: -(md.out || 0), dept: 'toir' },
       { key: 'noDriver', label: 'Без водителя и пересменки · Эксплуатация', value: -((md.noDriver || 0) + (md.shift || 0)), dept: 'drv' },
       { key: 'idle', label: 'Простой без задания · Логистика', value: -(md.idle || 0), dept: 'log' },
-      { key: 'work', label: 'Под заданием', value: md.work || 0, total: true }
+      // Перегоны — работа (18.11): раньше падали в «Выведены» и резали каскад.
+      { key: 'work', label: 'Под заданием и перегоны', value: (md.work || 0) + (md.transfer || 0), total: true }
     ] : [],
     joints: JOINTS.map(joint => {
       const found = (live.staff?.joints || []).find(item => item.key === joint.key);

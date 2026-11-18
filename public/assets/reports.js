@@ -160,7 +160,8 @@ export async function buildReport(kind, from, to, data) {
   // деньги сервер добавляет только уровню «все».
   if (kind === 'ops-period') {
     const d = await api(`/api/reports/ops-period?from=${from}&to=${to}`);
-    const planPct = d.md.plan ? Math.round(d.md.sum.line / d.md.plan * 1000) / 10 : 0;
+    const mdWork = d.md.work ?? (d.md.sum.line + (d.md.sum.transfer || 0));
+    const planPct = d.md.plan ? Math.round(mdWork / d.md.plan * 1000) / 10 : 0;
     const perDay = value => d.days.length ? Math.round(value / d.days.length * 10) / 10 : 0;
     const lossParts = ['repair', 'no_driver', 'idle', 'shift', 'reserve']
       .filter(key => d.md.sum[key])
@@ -169,6 +170,7 @@ export async function buildReport(kind, from, to, data) {
     const dayRows = d.days.map(({ day, counters, fleetWork }) => {
       const a = attByDay.get(day) || {};
       return `<tr><td>${fmtDay(day)}</td><td class="num"><b>${counters.line}</b></td>
+        <td class="num">${counters.transfer || 0}</td>
         <td class="num">${counters.repair}</td><td class="num">${counters.shift}</td>
         <td class="num">${counters.no_driver}</td><td class="num">${counters.idle}</td>
         <td class="num">${fleetWork}</td>
@@ -192,7 +194,7 @@ export async function buildReport(kind, from, to, data) {
       </div>
       <div class="rsums">
         <span class="rsum">Машино-дни план: <b>${d.md.plan}</b></span>
-        <span class="rsum">Факт на линии: <b>${d.md.sum.line}</b> <small class="muted">(${planPct}%)</small></span>
+        <span class="rsum">В работе: <b>${mdWork}</b> <small class="muted">(${planPct}% · линия ${d.md.sum.line}${d.md.sum.transfer ? ` + перегоны ${d.md.sum.transfer}` : ''})</small></span>
         <span class="rsum">Потеряно: <b>${d.md.lost}</b></span>
         ${d.money ? `<span class="rsum">Нетто периода: <b>${rub(d.money.net)}</b></span>
         <span class="rsum">₽/машино-день линии: <b>${rub(d.money.perLineDay)}</b></span>
@@ -221,7 +223,7 @@ export async function buildReport(kind, from, to, data) {
         <span class="rsum">Больничных, чел.-дней: <b>${d.staff.sickDays}</b></span>
         ${d.staff.turnoverPct != null ? `<span class="rsum">Текучесть периода: ${d.turnover?.targetPct != null && d.staff.turnoverPct > d.turnover.targetPct ? `<b class="pg-warn2">${d.staff.turnoverPct}%</b>` : `<b>${d.staff.turnoverPct}%</b>`}${d.turnover?.targetPct != null ? ` <small class="muted">(цель ${d.turnover.targetPct}%/мес)</small>` : ''}</span>` : ''}</div>` : ''}
       <h4>По дням</h4>
-      <table class="rtable bi-table"><thead><tr><th>День</th><th class="num">На линии</th><th class="num">Ремонт</th>
+      <table class="rtable bi-table"><thead><tr><th>День</th><th class="num">На линии</th><th class="num">Перегон</th><th class="num">Ремонт</th>
         <th class="num">Пересм.</th><th class="num">Без экип.</th><th class="num">Простой</th><th class="num">Парк</th>
         <th class="num">Явка</th><th class="num">Больничный</th><th class="num">Нет отметки</th></tr></thead><tbody>${dayRows}</tbody></table>
       ${d.staffing != null ? `<p class="muted">Укомплектованность: <b>${(Math.round(d.staffing * 100) / 100).toLocaleString('ru-RU')}</b> экипажа на машину${d.staffingTarget ? ` при цели ${d.staffingTarget}` : ''}.</p>` : ''}

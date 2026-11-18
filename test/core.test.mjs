@@ -1710,6 +1710,9 @@ test('занятость по факту: вывод на линию раньш�
     on_line_at: null, unloaded_at: '2026-08-21T02:00:00.000Z' };
   assert.equal(dayStateOf([brief], [], day21, now), 'idle');
   assert.equal(dayStateOf([brief], [{ kind: 'repair', starts_at: '2026-08-21T08:00:00.000Z', ends_at: '2026-08-21T14:00:00.000Z' }], day21, now), 'repair');
+  // Перегон — рабочий машино-день (18.11), незнакомый вид — по-прежнему out.
+  assert.equal(dayStateOf([], [{ kind: 'transfer', starts_at: '2026-08-21T06:00:00.000Z', ends_at: '2026-08-21T20:00:00.000Z' }], day21, now), 'transfer');
+  assert.equal(dayStateOf([], [{ kind: 'out', starts_at: '2026-08-20T00:00:00.000Z', ends_at: '2026-08-25T00:00:00.000Z' }], day21, now), 'out');
   assert.equal(dayStateOf([], [{ kind: 'reserve', starts_at: '2026-08-21T00:00:00.000Z', ends_at: '2026-08-22T00:00:00.000Z' }], day21, now), 'idle', 'резерв день не объясняет');
 });
 

@@ -20,9 +20,9 @@ const DAY_MS = 86_400_000;
 
 // Приоритет категории, когда день машины сложный (утром пересменка, днём
 // рейс): рейс главнее всего, дальше — по убыванию «занятости».
-const ORDER = ['line', 'repair', 'shift', 'no_driver', 'reserve', 'out', 'idle'];
+const ORDER = ['line', 'transfer', 'repair', 'shift', 'no_driver', 'reserve', 'out', 'idle'];
 export const RESOURCE_DAY_TITLES = {
-  line: 'На линии', repair: 'В ремонте', shift: 'Пересменка',
+  line: 'На линии', transfer: 'Перегон', repair: 'В ремонте', shift: 'Пересменка',
   no_driver: 'Без экипажа', reserve: 'Резерв', out: 'Выведена', idle: 'Простой без оформления'
 };
 
@@ -76,7 +76,7 @@ export function resourceDayData(db, dayIso) {
       category = 'repair';
       detail = `заказ-наряд Ремзоны: ${order.purpose || 'ремонт'}`;
     }
-    for (const kind of ['reserve', 'no_driver', 'shift', 'repair']) {
+    for (const kind of ['reserve', 'no_driver', 'shift', 'repair', 'transfer']) {
       if (kinds.has(kind)) {
         category = kind === 'reserve' ? 'reserve' : kind;
         const item = vehDispo.find(entry => entry.kind === kind);
@@ -137,18 +137,20 @@ export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.no
       sickDays += sick;
     } catch { attendance.push({ day, present: null, absent: null, unmarked: null, sick: null }); }
   }
-  const mdLost = mdPlan - mdSum.line;
+  // Работа = линия + перегоны (18.11): перегон — часть задания, не потеря.
+  const mdWork = mdSum.line + mdSum.transfer;
+  const mdLost = mdPlan - mdWork;
 
-  // Деньги: живой норматив периода — нетто выгрузок на машино-день линии.
+  // Деньги: живой норматив периода — нетто выгрузок на рабочий машино-день.
   let money = null;
-  if (withMoney && mdSum.line > 0) {
+  if (withMoney && mdWork > 0) {
     const calc = calcSettings(db);
     const net = db.prepare(`SELECT t.revenue_vat, t.cash, t.customer_name, t.unloaded_at, t.ends_at, t.status
         FROM trips t WHERE t.status<>'rejected'`).all()
       .filter(trip => DONE_STATUSES.has(trip.status) || trip.unloaded_at)
       .filter(trip => { const day = doneDayOf(trip); return day >= from && day <= to; })
       .reduce((sum, trip) => sum + tripNet(trip, calc), 0);
-    const perLineDay = net / mdSum.line;
+    const perLineDay = net / mdWork;
     money = { net: Math.round(net), perLineDay: Math.round(perLineDay),
       lost: Math.round(mdLost * perLineDay) };
   }
@@ -217,7 +219,7 @@ export function opsPeriodData(db, from, to, { withMoney = false, nowMs = Date.no
   })();
 
   return { from, to, days, order: ORDER, titles: RESOURCE_DAY_TITLES,
-    md: { plan: mdPlan, sum: mdSum, lost: mdLost },
+    md: { plan: mdPlan, sum: mdSum, work: mdWork, lost: mdLost },
     attendance, staffing, staffingTarget,
     staff: { headcount, sickDays, hired: turnover?.hired ?? null,
       fired: turnover?.fired ?? null, turnoverPct: turnover?.turnoverPct ?? null,

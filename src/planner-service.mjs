@@ -985,8 +985,11 @@ export function dayStateOf(trips, dispositions, dayStartMs, nowMs = Date.now()) 
     const ms = overlap(Date.parse(row.starts_at), Date.parse(row.ends_at));
     if (ms >= DAY_STATE_MIN_MS && (!best || ms > best.ms)) best = { ms, kind: row.kind };
   }
+  // Перегон (transfer) — рабочий машино-день: машина едет к погрузке по
+  // заданию (разбор 18.11: 252 МД ноября падали в «выведена» и резали
+  // КТГ/КЭИП на ~12 пунктов). Прочие незнакомые виды — по-прежнему out.
   if (best) return best.kind === 'repair' ? 'repair' : best.kind === 'no_driver' ? 'noDriver'
-    : best.kind === 'shift' ? 'shift' : 'out';
+    : best.kind === 'shift' ? 'shift' : best.kind === 'transfer' ? 'transfer' : 'out';
   const tripMs = trips.reduce((sum, trip) => {
     const range = tripBusyRange(trip, nowMs);
     return sum + overlap(range.from, range.to);
@@ -1091,7 +1094,7 @@ export function reportSnapshot(db, fromValue, toValue) {
   const byVehicleTrips = Map.groupBy(tripRows, row => row.vehicle_id);
   const dayCount = countedDays;
   const fromMs = Date.parse(from);
-  const machineDays = { work: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
+  const machineDays = { work: 0, transfer: 0, repair: 0, noDriver: 0, shift: 0, idle: 0, out: 0 };
   for (const vehicle of fleet) {
     const vehicleDispositions = byVehicleDispositions.get(vehicle.id) || [];
     const vehicleTrips = byVehicleTrips.get(vehicle.id) || [];
@@ -1108,15 +1111,17 @@ export function reportSnapshot(db, fromValue, toValue) {
     sum + Math.max(0, (Date.parse(trip.ends_at) - Date.parse(trip.starts_at)) / 86_400_000), 0);
   const marginPerTripDay = tripDaysTotal ? contribution / tripDaysTotal : 0;
   const normDays = calendarDays * utilizationTarget;
-  const lostProfit = Math.max(0, normDays - machineDays.work) * marginPerTripDay;
+  // Работа = рейсы + перегоны: перегон — часть задания (18.11).
+  const workAndTransfer = machineDays.work + machineDays.transfer;
+  const lostProfit = Math.max(0, normDays - workAndTransfer) * marginPerTripDay;
   const utilization = {
     vehicles: fleet.length, days: dayCount, periodDays: Math.round(days),
     futureDays: Math.max(0, Math.round(days) - dayCount), calendarDays, machineDays,
-    techDays, lineDays, workDays: machineDays.work, idleDays: machineDays.idle,
+    techDays, lineDays, workDays: workAndTransfer, idleDays: machineDays.idle,
     ktg: calendarDays ? techDays / calendarDays : 0,
     kvl: techDays ? lineDays / techDays : 0,
-    kip: lineDays ? machineDays.work / lineDays : 0,
-    overall: calendarDays ? machineDays.work / calendarDays : 0,
+    kip: lineDays ? workAndTransfer / lineDays : 0,
+    overall: calendarDays ? workAndTransfer / calendarDays : 0,
     utilizationTarget, normDays: Math.round(normDays),
     marginPerTripDay: Math.round(marginPerTripDay),
     lostProfit: Math.round(lostProfit)

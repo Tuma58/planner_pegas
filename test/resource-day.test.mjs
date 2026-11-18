@@ -118,3 +118,21 @@ test('«против целей отдела» в отчёте за период
   assert.ok(['ok', 'near', 'miss', 'info', 'none'].includes(dept.metric.tone));
   assert.ok('kvl' in d.goals.cascade);
 });
+
+test('перегон — рабочая категория (18.11): видна в ресурсе и не считается потерей', async t => {
+  const db = freshDb(t);
+  const { opsPeriodData } = await import('../src/resource-day.mjs');
+  const vehicle = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' LIMIT 1`).get();
+  db.prepare(`INSERT INTO vehicle_dispositions(id, vehicle_id, kind, starts_at, ends_at, note)
+    VALUES(?,?,?,?,?,?)`)
+    .run(randomUUID(), vehicle.id, 'transfer', '2026-11-14T02:00:00.000Z', '2026-11-15T20:00:00.000Z', 'подача к погрузке');
+  const day = resourceDayData(db, '2026-11-14');
+  assert.equal(day.rows.find(row => row.plate === vehicle.plate)?.category, 'transfer');
+  const total = day.order.reduce((sum, key) => sum + day.counters[key], 0);
+  assert.equal(total, day.fleet, 'сумма категорий с перегоном сходится');
+  const nowMs = Date.parse('2026-11-17T09:00:00Z');
+  const d = opsPeriodData(db, '2026-11-14', '2026-11-15', { nowMs });
+  assert.ok(d.md.sum.transfer >= 2);
+  assert.equal(d.md.work, d.md.sum.line + d.md.sum.transfer);
+  assert.equal(d.md.lost, d.md.plan - d.md.work, 'перегон не в потерях');
+});
