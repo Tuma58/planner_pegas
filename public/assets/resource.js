@@ -1163,6 +1163,14 @@ function renderResourceTasks(container, context, refDay, withState) {
     return !(data.driverAssignments || []).some(item => item.vehicle_id === driver.vehicle_id &&
       Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
   });
+  // Отпускники/больные с закреплённой машиной без подмены (разбор 19.11,
+  // кейс о940оо58 и систематика: Серков/Танцырев/Рожнов) — та же боль,
+  // что межвахта без подмены, но по статусу карточки.
+  const absentDrivers = (data.drivers || []).filter(driver => {
+    if (!driver.vehicle_id || !['vacation', 'sick'].includes(driver.status)) return false;
+    return !(data.driverAssignments || []).some(item => item.vehicle_id === driver.vehicle_id &&
+      Date.parse(item.starts_at) <= nowMs && Date.parse(item.ends_at) > nowMs);
+  });
 
   // Плашка (решение руководителя 28.09): панель по умолчанию свёрнута в
   // узкую полоску с числом — гант Ресурса получает всю ширину; клик
@@ -1242,6 +1250,18 @@ function renderResourceTasks(container, context, refDay, withState) {
   container.querySelector('#taskPhones')?.addEventListener('click', () => context.openDrivers?.());
   container.querySelector('#taskAttendance')?.addEventListener('click', () => attendanceDialog(context));
 
+  }).join('')}</div></div>` : ''}
+    ${absentDrivers.length ? `<div class="task-sec"><b>🌴 Отпуск/больничный с машиной без подмены (${absentDrivers.length})</b>
+      <div class="list" style="margin-top:6px">${absentDrivers.slice(0, 6).map(driver => {
+    const vehicle = (data.vehicles || []).find(v => v.id === driver.vehicle_id);
+    return `<div class="list-item" style="flex-wrap:wrap">
+          <span style="flex:1;min-width:0"><strong>${escapeHtml(driver.full_name)}</strong>
+            <small class="muted" style="display:block">сцепка ${escapeHtml(vehicle?.plate || '—')}
+              · ${driver.status === 'sick' ? 'больничный' : 'отпуск'}${driver.absent_to ? ` до ${String(driver.absent_to).slice(0, 10)}` : ''}</small></span>
+          <button class="button small" data-task-assign-driver="${driver.vehicle_id}"
+            data-gap-from="${refDay}" data-gap-to="${new Date(Date.parse(`${refDay}T00:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10)}"
+            title="Назначить подменного водителя на период">Подменный</button>
+        </div>`;
   }).join('')}</div></div>` : ''}
     ${noDriverTasks.length ? `<div class="task-sec"><b>👤 Назначить водителя на ТС (${noDriverTasks.length})</b>
       <div class="list" style="margin-top:6px">${noDriverTasks.slice(0, 8).map(task => `
