@@ -2989,7 +2989,7 @@ function driverForTrip(trip) {
   // КАНОН (08.10): сперва действующий период из графика — задание в бот
   // должно уйти тому, кто реально за рулём, а не прежнему по справочнику.
   const active = activeDriverFor(db, trip.vehicle_id, trip.starts_at || undefined);
-  if (active.source === 'period') {
+  if (active.source === 'period' || active.source === 'handover') {
     if (active.empty || !active.driverId) return null; // водитель не определён — не слать никому
     const byPeriod = db.prepare(`SELECT d.* FROM drivers d WHERE d.id=? AND d.status<>'fired'
       AND d.telegram_chat_id IS NOT NULL`).get(active.driverId);

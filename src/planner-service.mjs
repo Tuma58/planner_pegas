@@ -570,8 +570,26 @@ export function activeDriverFor(db, vehicleId, at = new Date().toISOString()) {
       driverId: period.driver_id || null, name: period.full_name || '',
       phone: period.phone || '', telegramChatId: period.telegram_chat_id || null };
   }
-  const permanent = db.prepare(`SELECT id, full_name, phone, telegram_chat_id FROM drivers
+  const permanent = db.prepare(`SELECT id, full_name, phone, telegram_chat_id, status FROM drivers
     WHERE vehicle_id=? AND status<>'fired' LIMIT 1`).get(vehicleId);
+  if (permanent && !['vacation', 'sick'].includes(permanent.status)) {
+    return { source: 'permanent', empty: false, driverId: permanent.id,
+      name: permanent.full_name, phone: permanent.phone || '',
+      telegramChatId: permanent.telegram_chat_id || null };
+  }
+  // День передачи (кейс о940оо58, 19.11): постоянный в отпуске/болен, а
+  // дневное закрепление подменного кончилось ровно сегодня — до
+  // пересменки машина физически у сдающего, он и «за рулём» для витрины,
+  // телефонии и заданий; принимающий начнётся своим периодом с завтра.
+  const handover = db.prepare(`SELECT a.driver_id, d.full_name, d.phone, d.telegram_chat_id
+    FROM driver_assignments a LEFT JOIN drivers d ON d.id=a.driver_id
+    WHERE a.vehicle_id=? AND substr(a.ends_at,1,10)=? AND a.driver_id IS NOT NULL
+    ORDER BY a.created_at DESC LIMIT 1`).get(vehicleId, day);
+  if (handover && handover.driver_id) {
+    return { source: 'handover', empty: false, driverId: handover.driver_id,
+      name: handover.full_name || '', phone: handover.phone || '',
+      telegramChatId: handover.telegram_chat_id || null };
+  }
   if (permanent) {
     return { source: 'permanent', empty: false, driverId: permanent.id,
       name: permanent.full_name, phone: permanent.phone || '',

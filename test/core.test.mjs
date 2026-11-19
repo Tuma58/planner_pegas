@@ -5857,3 +5857,35 @@ test('допуск пересменки: рейс в пределах ±суто
   // Нулевой допуск = прежний порядок: любое накрытие окна без допуска.
   assert.equal(shiftWithinTolerance(shift, '2026-11-14T00:00:00.000Z', '2026-11-15T22:00:00.000Z', 0), false);
 });
+
+test('день передачи (кейс о940оо58, 19.11): отпускник не «за рулём», витрина показывает сдающего', async t => {
+  const { activeDriverFor, createDriverAssignment, syncVehicleDriverNames } =
+    await import('../src/planner-service.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pegas-hnd-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const db = openDatabase(path.join(directory, 'planner.db'), {
+    username: 'root-admin', password: 'Temporary-password-2026', fullName: 'Администратор'
+  });
+  t.after(() => db.close());
+  const vehicle = db.prepare(`SELECT id FROM vehicles WHERE status='work' LIMIT 1`).get();
+  db.prepare(`UPDATE drivers SET vehicle_id=NULL WHERE vehicle_id=?`).run(vehicle.id);
+  // Постоянный в отпуске; подменный закреплён дневными интервалами моста,
+  // последний кончается РОВНО сегодня (день пересменки) — дырка.
+  db.prepare(`INSERT INTO drivers(id,full_name,vehicle_id,status) VALUES('hnd-perm','Отпускник О',?, 'vacation')`)
+    .run(vehicle.id);
+  db.prepare(`INSERT INTO drivers(id,full_name,status,telegram_chat_id) VALUES('hnd-sub','Сдающий С','active','tg-hnd')`).run();
+  const day = new Date().toISOString().slice(0, 10);
+  const dayBefore = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  createDriverAssignment(db, { driverId: 'hnd-sub', vehicleId: vehicle.id,
+    startsAt: dayBefore, endsAt: day });
+  const active = activeDriverFor(db, vehicle.id);
+  assert.equal(active.source, 'handover', 'день передачи — сдающий, не отпускник');
+  assert.equal(active.name, 'Сдающий С');
+  assert.equal(active.telegramChatId, 'tg-hnd');
+  // Витрина карточки ТС тоже показывает сдающего.
+  syncVehicleDriverNames(db);
+  assert.equal(db.prepare(`SELECT driver_name FROM vehicles WHERE id=?`).get(vehicle.id).driver_name, 'Сдающий С');
+  // Постоянный вернулся в строй — канон снова называет его.
+  db.prepare(`UPDATE drivers SET status='active' WHERE id='hnd-perm'`).run();
+  assert.equal(activeDriverFor(db, vehicle.id).name, 'Отпускник О');
+});
