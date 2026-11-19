@@ -98,3 +98,22 @@ test('потери в деньгах: простаивающие машины ×
   assert.equal(data.lossTotal, 72_000);
   assert.equal(processControl(db, { settings, system: sys(0), losses, dayValue: null }).lossTotal, 0);
 });
+
+test('передачи Эксплуатация ↔ Логистика (регламент 19.11): проверки считают и попадают в контроль', async t => {
+  const db = freshDb(t);
+  const { armWidget } = await import('../src/arm.mjs');
+  const ctx = { db, user: null, nowMs: Date.now(), settings: {}, money: 'none', park: () => null };
+  const res = armWidget('handoff_resource_plan', ctx)[0];
+  assert.ok(res && typeof res.value === 'number', 'ресурс-план считает число');
+  assert.ok(res.label.includes('17:00'));
+  const trips = armWidget('handoff_trip_plan', ctx)[0];
+  assert.ok(trips && typeof trips.value === 'number', 'план рейсов считает число');
+  const toir = armWidget('repair_plan_dates', ctx)[0];
+  assert.ok(toir && typeof toir.value === 'number', 'фундамент ТОиР считает число');
+  const data = processControl(db, { nowMs: Date.now(), settings: {} });
+  for (const key of ['handoff_drv_log', 'handoff_log_drv']) {
+    const proc = data.processes.find(p => p.key === key);
+    assert.ok(proc, key + ' в реестре');
+    assert.ok(proc.checks.length >= 1 && typeof proc.load === 'number');
+  }
+});

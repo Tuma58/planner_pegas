@@ -21,7 +21,15 @@ export const PROCESSES = [
   { key: 'crew', stage: 'А5', title: 'Экипаж и выпуск на линию', owner: 'drv', screen: 'release',
     checks: [['drv_shift_queue'], ['attendance_today'], ['release_today'], ['release_requests']] },
   { key: 'tech', stage: 'А6', title: 'Техготовность: ремонт, ТО, запчасти', owner: 'toir', screen: 'remzona',
-    checks: [['toir_queues'], ['repair_on_time'], ['parts_buy']] },
+    // repair_plan_dates — фундамент передачи ТОиР→Эксплуатация (регламент
+    // 19.11; активное внедрение — с декабря, пока копит историю).
+    checks: [['toir_queues'], ['repair_on_time'], ['parts_buy'], ['repair_plan_dates']] },
+  // Передачи Эксплуатация ↔ Логистика (регламент руководителя 19.11):
+  // прогноз на завтра передан = данные стоят в планере к дедлайну.
+  { key: 'handoff_drv_log', stage: 'Передачи', title: 'Передача: ресурс-план парка на завтра (Эксплуатация → Логистика, 17:00)',
+    owner: 'drv', screen: 'prografik', checks: [['handoff_resource_plan']] },
+  { key: 'handoff_log_drv', stage: 'Передачи', title: 'Передача: план рейсов на завтра (Логистика → Эксплуатация, 18:00)',
+    owner: 'log', screen: 'logist', checks: [['handoff_trip_plan']] },
   { key: 'gate', stage: 'А7', title: 'КПП: въезд и выезд', owner: 'staff', screen: 'gate',
     checks: [['gate']] },
   { key: 'trip', stage: 'А8–А9', title: 'Рейс в пути и выгрузка', owner: 'log', screen: 'dispatcher',

@@ -16,6 +16,7 @@
 
 import { attendanceSummary, currentShift, demurrageSummary, myShiftStats, nextAssignedShare } from './planner-service.mjs';
 import { prografikData } from './prografik.mjs';
+import { scheduleHolderMap } from './schedule.mjs';
 import { lateCount } from './incidents.mjs';
 import { fieldLive } from './field.mjs';
 import { docsBoard } from './trip-docs.mjs';
@@ -211,6 +212,44 @@ const W = {
       { kind: 'row', label: 'Возвраты · открытые', value: returns, tone: returns ? 'warn' : 'pos', screen: 'incidents', source },
       { kind: 'row', label: 'Опоздания >1 ч за 7 суток', value: late, tone: '', screen: 'incidents', source }
     ];
+  },
+
+  // ── Передачи Эксплуатация ↔ Логистика (регламент руководителя 19.11:
+  // между отделами передаётся ПРОГНОЗ на завтра; проверки меряют, что
+  // прогноз передан — живой норматив истории красит «хуже обычного»).
+  handoff_resource_plan: ({ db, nowMs }) => {
+    const tomorrow = mskDay(nowMs, 1);
+    const d0 = dayStartIso(tomorrow);
+    const d1 = dayStartIso(mskDay(nowMs, 2));
+    const vehicles = db.prepare(`SELECT id FROM vehicles WHERE status='work'`).all();
+    const withTrip = new Set(db.prepare(`SELECT DISTINCT vehicle_id FROM trips
+      WHERE status<>'rejected' AND starts_at<? AND COALESCE(unloaded_at, ends_at)>?`).all(d1, d0).map(r => r.vehicle_id));
+    const withDispo = new Set(db.prepare(`SELECT DISTINCT vehicle_id FROM vehicle_dispositions
+      WHERE starts_at<? AND ends_at>?`).all(d1, d0).map(r => r.vehicle_id));
+    const holders = safe(() => scheduleHolderMap(db));
+    const undecided = vehicles.filter(v => !withTrip.has(v.id) && !withDispo.has(v.id)
+      && !holders?.holder?.get(`${v.id}|${tomorrow}`)).length;
+    return { kind: 'row', label: 'Ресурс-план на завтра: бортов без состояния (дедлайн 17:00)',
+      value: undecided, tone: undecided ? 'warn' : 'pos', screen: 'prografik',
+      source: 'рейсы + диспозиции + план графика · регламент передач 19.11' };
+  },
+  handoff_trip_plan: ({ db, nowMs }) => {
+    const d0 = dayStartIso(mskDay(nowMs, 1));
+    const d1 = dayStartIso(mskDay(nowMs, 2));
+    const n = db.prepare(`SELECT COUNT(*) n FROM orders WHERE deleted_at IS NULL AND trip_id IS NULL
+      AND status NOT IN ('rejected','cancelled') AND window_from>=? AND window_from<?`).get(d0, d1).n;
+    return { kind: 'row', label: 'План рейсов на завтра: заявок без ТС (дедлайн 18:00)',
+      value: n, tone: n ? 'warn' : 'pos', screen: 'logist',
+      source: 'orders завтрашнего окна · регламент передач 19.11' };
+  },
+  // Фундамент передачи ТОиР (активное внедрение — с декабря): план выхода
+  // из ремонта существует, только если у наряда стоит плановая дата.
+  repair_plan_dates: ({ db }) => {
+    const n = db.prepare(`SELECT COUNT(*) n FROM repair_orders
+      WHERE status IN ('queued','in_progress') AND (planned_out IS NULL OR planned_out='')`).get().n;
+    return { kind: 'row', label: 'Наряды без даты планового выхода (фундамент передачи ТОиР)',
+      value: n, tone: n ? 'warn' : 'pos', screen: 'remzona',
+      source: 'repair_orders.planned_out · регламент передач 19.11' };
   },
 
   // Выполнение
