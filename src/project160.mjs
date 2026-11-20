@@ -271,7 +271,7 @@ export function metricValue(db, key, fromIso, toIso) {
       // Средний простой сцепки между рейсами: от освобождения (факт выгрузки,
       // иначе план) до старта следующего рейса. Август: 0,85 дня на рейс —
       // машина в рейсе лишь 66% рабочего времени; каждый час зазора по парку
-      // стоит ~770 ₽ маржи на машину. Цель — 8 часов.
+      // стоит ~713 ₽ маржи на машину (DAY_MARGIN/24). Цель — 8 часов.
       const rows = db.prepare(`SELECT vehicle_id, starts_at,
           COALESCE(unloaded_at, ends_at) done_at
         FROM trips WHERE status<>'rejected' AND starts_at>=? AND starts_at<?

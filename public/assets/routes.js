@@ -578,10 +578,11 @@ export function renderRoutes(container, context) {
   const roundTemplatesDialog = () => {
     const zoneByName = name => (data.reference.zones || []).find(zone => zone.name === name);
     context.showModal(`<h2>📚 Шаблоны кругов</h2>
-      <p class="muted">Типовые циклы парка из сентябрьской сетки плана вывоза и ставок августа.
+      <p class="muted">Типовые циклы парка, пересчитанные по факту 13 недель (медианы
+        нетто-ставок и км по направлениям, объёмы — фактические циклы в месяц).
         Маржа — над переменными 70 ₽/км; машин — на весь месячный объём шаблона при
         сегодняшнем зазоре стыковки (0,85 дня на плечо).
-        Правило времени: <b>ожидание груза оправдано, пока ставка спота ÷ 18,5 т₽ больше дней
+        Правило времени: <b>ожидание груза оправдано, пока ставка спота ÷ ${(DAY_MARGIN / 1000).toFixed(1).replace('.', ',')} т₽ больше дней
         ожидания</b> — иначе порожний перегон выгоднее, он возвращает машину в круг.</p>
       <div class="list" style="max-height:56vh;overflow:auto">
         ${ROUND_TEMPLATES.map(round => `<div class="list-item ordrow">
