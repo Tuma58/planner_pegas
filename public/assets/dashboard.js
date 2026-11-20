@@ -1193,6 +1193,16 @@ export async function renderDashboard(container, context) {
   container.querySelectorAll('[data-goview]').forEach(tile =>
     tile.addEventListener('click', () => goView(tile.dataset.goview)));
 
+  // Лента бежит с постоянной спокойной скоростью (поправка руководителя
+  // 20.11 «чуть медленнее»): длительность — от ширины содержимого, а не
+  // фиксированная, иначе длинная лента неслась бы, а короткая ползла.
+  const tapeEl = container.querySelector('.dash-tape');
+  if (tapeEl) {
+    const PX_PER_SECOND = 38;
+    tapeEl.style.animationDuration =
+      `${Math.max(40, Math.round(tapeEl.scrollWidth / 2 / PX_PER_SECOND))}s`;
+  }
+
   // «Подробности дня»: выбор свернуть/развернуть переживает перерисовку.
   const details = container.querySelector('.dash-details');
   details?.addEventListener('toggle', () => { state.dashDetailsOpen = details.open; });

@@ -750,7 +750,8 @@ input.warn-border { border-color: var(--warn); }
 #dashRoot:fullscreen, #dashRoot.dash-tv, .tablo-layer, .tablo-dots, .cockpit {
   --paper: #0d1220; --card: #161d2e; --line: #293249; --soft: #1f2840;
   --ink: #e9edf8; --muted: #9aa6c2; --faint: #6a7694;
-  --teal: #5b7be6; --accent: #5b7be6; --ok: #3ecf8e; --warn: #e2ad46; --bad: #f2666e; }
+  --teal: #5b7be6; --accent: #5b7be6; --ok: #3ecf8e; --warn: #e2ad46; --bad: #f2666e;
+  --accent-soft: #223055; --border2: #293249; --navy: #1b2f7a; --plan: #6a7694; }
 #dashRoot:fullscreen, #dashRoot.dash-tv { background: var(--paper); color: var(--ink); overflow: auto;
   padding: 3vh 3.5vw; display: flex; flex-direction: column; justify-content: space-evenly; max-width: none; }
 :is(#dashRoot:fullscreen, #dashRoot.dash-tv) :is(.dash-goal, .dash-day, .dash-role) {
@@ -2529,9 +2530,8 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .dash-tape .down { color: #ffb3b8; }
 .dash-tape-wrap:hover .dash-tape { animation-play-state: paused; }
 @keyframes dash-tape-run { to { transform: translateX(-50%); } }
-.dash-tv .dash-tape-wrap { position: fixed; left: 10px; right: 10px; bottom: 8px;
-  z-index: 40; border-radius: 12px; padding: 12px 0; }
-.dash-tv .dash-tape { font-size: 21px; }
+.dash-tv .dash-tape-wrap { position: static; margin: 10px 0 4px; border-radius: 12px; padding: 12px 0; }
+.dash-tv .dash-tape { font-size: 22px; }
 
 /* Контрольные точки + лучшие экипажи (табло Э3, 20.11) */
 .dash-cps-b { display: flex; flex-direction: column; gap: 8px; }
@@ -2583,3 +2583,25 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
   font-size: 16px; font-weight: 800; line-height: 1; cursor: pointer; padding: 0; }
 .nav-back:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .nav-back:disabled { opacity: .35; cursor: default; }
+
+/* ТВ-режим: экран-прототип заполняет ВЕСЬ телевизор (поправка 20.11:
+   «на табло узкая полоска») — без потолка ширины, сетка тянется на
+   всю высоту, график и плашки растут вместе с ней, лента внизу потока */
+#dashRoot.dash-tv { max-width: none; display: flex; flex-direction: column; }
+#dashRoot.dash-tv .dash-proto { flex: 1; min-height: 0; margin-bottom: 0; }
+#dashRoot.dash-tv .dash-proto > .section,
+#dashRoot.dash-tv .dash-proto-col3 { min-height: 0; }
+#dashRoot.dash-tv .dash-showcase .dash-spark { min-height: 220px; }
+#dashRoot.dash-tv .dash-fc .fc-v { font-size: clamp(44px, 4.5vw, 84px); }
+#dashRoot.dash-tv .dash-fc .fc-gap { font-size: clamp(22px, 2vw, 36px); }
+#dashRoot.dash-tv .dash-fact-plate { font-size: clamp(16px, 1.4vw, 24px); }
+#dashRoot.dash-tv .dash-need { font-size: clamp(17px, 1.5vw, 26px); }
+#dashRoot.dash-tv .dash-need b { font-size: clamp(19px, 1.7vw, 30px); }
+#dashRoot.dash-tv .pq .pq-v { font-size: clamp(30px, 2.6vw, 48px); }
+#dashRoot.dash-tv .pq .pq-l { font-size: clamp(13px, 1vw, 18px); }
+#dashRoot.dash-tv .pq .pq-d { font-size: clamp(13px, 1.1vw, 19px); }
+#dashRoot.dash-tv .pq .pq-spark { height: clamp(22px, 2.6vh, 42px); }
+#dashRoot.dash-tv .cp .cp-l { font-size: clamp(15px, 1.2vw, 22px); }
+#dashRoot.dash-tv .cp .cp-v { font-size: clamp(26px, 2.4vw, 44px); }
+#dashRoot.dash-tv .cp .cp-t { font-size: clamp(14px, 1.1vw, 20px); }
+#dashRoot.dash-tv .crew-row { font-size: clamp(16px, 1.4vw, 26px); }
