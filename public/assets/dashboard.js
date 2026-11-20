@@ -396,7 +396,7 @@ function showcaseHtml(metrics, monthLabel, sparkSvg = '') {
       <div class="dash-fact-plate">Факт: забито <b>${shortMln(metrics.monthFact)}</b> ·
         выгружено <b>${shortMln(metrics.monthDone)}</b> · ${donePct}% цели</div>
       ${sparkSvg}
-      <div class="dash-need">⏱ Чтобы попасть в цель — <b>${money(Math.round(metrics.dayPlan))} в день</b>
+      <div class="dash-need">⏱ Чтобы попасть в цель — <b>${shortMln(metrics.dayPlan)} в день</b>
         · осталось дней: ${metrics.remainingDays}</div>
     </div></section>`;
 }
@@ -730,7 +730,7 @@ export function dashboardMetrics(data, nowMs = Date.now()) {
 // Столбики выручки по дням месяца: прошлые и сегодня — насыщенные,
 // будущие (забронированные выгрузки) — полупрозрачные; пунктир — средний
 // дневной темп для цели месяца.
-function monthSpark(data, metrics, nowMs) {
+function monthSpark(data, metrics, nowMs, chartH = 74) {
   const calc = data.settings.calculation;
   const now = new Date(nowMs);
   const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
@@ -741,7 +741,7 @@ function monthSpark(data, metrics, nowMs) {
   });
   const avgTarget = metrics.monthPlan / metrics.daysInMonth;
   const maxValue = Math.max(avgTarget, ...daily) * 1.05;
-  const W = 620, H = 74, gap = 2;
+  const W = 620, H = chartH, gap = 2;
   const barW = (W - gap * metrics.daysInMonth) / metrics.daysInMonth;
   const bars = daily.map((value, idx) => {
     const h = Math.max(1.5, value / maxValue * (H - 16));
@@ -1043,7 +1043,7 @@ export async function renderDashboard(container, context) {
     const moneyLimited = state.data?.user?.access && !state.data.user.access.legacy
       && state.data.user.access.money !== 'full';
     const col1 = moneyLimited ? ''
-      : showcaseHtml(metrics, monthLabel, monthSpark(state.data, metrics, Date.now()));
+      : showcaseHtml(metrics, monthLabel, monthSpark(state.data, metrics, Date.now(), 170));
     const col3 = controlSectionHtml(control);
     return `<div class="dash-proto ${col1 ? '' : 'no-money'}">
       ${col1}
