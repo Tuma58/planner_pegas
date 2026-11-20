@@ -15,8 +15,9 @@ import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, inc
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
 import { opsPeriodData, resourceDayData } from './resource-day.mjs';
-import { tabloPulse } from './tablo.mjs';
+import { tabloPulse, tabloTape } from './tablo.mjs';
 const tabloPulseCache = { ts: 0, value: null };
+const tabloTapeCache = { ts: 0, value: null };
 import { renderOpsPeriodPdf } from './ops-period-pdf.mjs';
 import { prografikData } from './prografik.mjs';
 
@@ -11033,6 +11034,20 @@ async function api(request, response, url) {
     const pulse = tabloPulseCache.value;
     return json(response, 200, moneyFull ? pulse
       : { ...pulse, quotes: pulse.quotes.filter(quote => !['net', 'rate'].includes(quote.key)) });
+  }
+  // Лента событий табло (Э2, 20.11): выгрузки, новые рейсы, выходы на
+  // линию и из ремонта за 12 часов. Кэш минута; суммы — по уровню денег.
+  if (request.method === 'GET' && pathname === '/api/tablo-tape') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!tabloTapeCache.value || Date.now() - tabloTapeCache.ts > 60_000) {
+      tabloTapeCache.value = tabloTape(db);
+      tabloTapeCache.ts = Date.now();
+    }
+    const moneyFull = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+    const tape = tabloTapeCache.value;
+    return json(response, 200, moneyFull ? tape
+      : { ...tape, events: tape.events.map(event => ({ ...event, amount: null })) });
   }
   if (request.method === 'GET' && pathname === '/api/reports/resource-day') {
     const user = requirePermission(request, response, 'planner:read');

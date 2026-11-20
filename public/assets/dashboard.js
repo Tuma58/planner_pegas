@@ -259,6 +259,33 @@ async function pulseData(state) {
   return state.tabloPulse.data;
 }
 
+// Лента событий (Э2): бегущая строка выгрузок, новых рейсов, выходов
+// на линию и из ремонта. Кэш минута — в такт серверному.
+async function tapeData(state) {
+  if (state.tabloTape && Date.now() - state.tabloTape.ts < 60_000) {
+    return state.tabloTape.data;
+  }
+  try {
+    const data = await api('/api/tablo-tape');
+    state.tabloTape = { ts: Date.now(), data };
+  } catch {
+    state.tabloTape = state.tabloTape || { ts: Date.now(), data: null };
+  }
+  return state.tabloTape.data;
+}
+
+function tapeHtml(tape) {
+  if (!tape?.events?.length) return '';
+  const items = tape.events.map(event => {
+    const arrow = event.tone === 'down' ? '▼' : '▲';
+    const amount = event.amount ? ` · +${Math.round(event.amount / 1000)} т₽` : '';
+    return `<span class="${event.tone}">${arrow} ${tabloHm(event.ts)} ${escapeHtml(event.text)}${amount}</span>`;
+  }).join('');
+  // Содержимое дублируется для бесшовного кольца CSS-анимации.
+  return `<div class="dash-tape-wrap" title="Лента дня: выгрузки, новые рейсы, выходы на линию и из ремонта за 12 часов">
+    <div class="dash-tape">${items}${items}</div></div>`;
+}
+
 // Куда ведёт клик по плашке пульса: каждая цифра — дверь в свой экран.
 // Список через пробел — первая вкладка, доступная роли (см. goView).
 const PULSE_VIEWS = {
@@ -798,6 +825,7 @@ export async function renderDashboard(container, context) {
   const { state } = context;
   const metrics = dashboardMetrics(state.data);
   const pulse = await pulseData(state);
+  const tape = await tapeData(state);
   const donePct = Math.min(100, pctOf(metrics.monthFact, metrics.monthPlan));
   const dayPct = pctOf(metrics.dayFact, metrics.dayPlan);
   const monthLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', timeZone: 'UTC' })
@@ -955,6 +983,7 @@ export async function renderDashboard(container, context) {
     ${(state.data?.user?.access && !state.data.user.access.legacy && state.data.user.access.money !== 'full')
     ? '' : showcaseHtml(metrics, monthLabel)}
     ${pulseSectionHtml(pulse)}
+    ${tapeHtml(tape)}
     <div class="bi-kpis dash-kpis">
       <div class="metric hero dept-staff" title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">
         <span class="l">Выручка бНДС · ${escapeHtml(monthLabel)} · забито</span>

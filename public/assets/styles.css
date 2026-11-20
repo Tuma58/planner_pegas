@@ -2513,3 +2513,17 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .dash-tv .pq .pq-v { font-size: 34px; }
 .dash-tv .pq .pq-l { font-size: 14px; }
 .dash-tv .pq .pq-d { font-size: 15px; }
+
+/* Лента событий табло (Э2, 20.11): бегущая строка пульса дня */
+.dash-tape-wrap { margin: 0 0 10px; background: var(--navy); border-radius: 10px;
+  padding: 8px 0; overflow: hidden; white-space: nowrap; }
+.dash-tape { display: inline-block; white-space: nowrap; font-size: 15px; color: #fff;
+  font-variant-numeric: tabular-nums; animation: dash-tape-run 60s linear infinite; }
+.dash-tape span { margin: 0 22px; }
+.dash-tape .up { color: #7fe3ae; }
+.dash-tape .down { color: #ffb3b8; }
+.dash-tape-wrap:hover .dash-tape { animation-play-state: paused; }
+@keyframes dash-tape-run { to { transform: translateX(-50%); } }
+.dash-tv .dash-tape-wrap { position: fixed; left: 10px; right: 10px; bottom: 8px;
+  z-index: 40; border-radius: 12px; padding: 12px 0; }
+.dash-tv .dash-tape { font-size: 21px; }
