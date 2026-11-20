@@ -2529,8 +2529,6 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .dash-tv .dash-tape { font-size: 21px; }
 
 /* Контрольные точки + лучшие экипажи (табло Э3, 20.11) */
-.dash-ctrl-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; margin-bottom: 10px; }
-@media (max-width: 900px) { .dash-ctrl-grid { grid-template-columns: 1fr; } }
 .dash-cps-b { display: flex; flex-direction: column; gap: 8px; }
 .cp { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center;
   text-align: left; font: inherit; color: var(--ink); cursor: pointer;
@@ -2552,3 +2550,19 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .dash-tv .cp .cp-v { font-size: 30px; }
 .dash-tv .cp .cp-t { font-size: 16px; }
 .dash-tv .crew-row { font-size: 20px; }
+
+/* Экран-прототип одним верхом (20.11): три колонки + лента, остальное — details */
+.dash-proto { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px;
+  margin-bottom: 10px; align-items: stretch; }
+.dash-proto.no-money { grid-template-columns: 1.2fr 1fr; }
+.dash-proto > .section { margin-bottom: 0; }
+.dash-proto-col3 { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.dash-proto-col3 .section { flex: 1; margin-bottom: 0; }
+@media (max-width: 1100px) { .dash-proto, .dash-proto.no-money { grid-template-columns: 1fr; } }
+.dash-showcase .dash-spark { height: 84px; margin: 8px 0 2px; }
+.dash-details { margin-top: 4px; }
+.dash-details > summary { cursor: pointer; user-select: none; font-weight: 800;
+  font-size: 13px; color: var(--muted); padding: 8px 4px; letter-spacing: .04em; }
+.dash-details > summary:hover { color: var(--accent); }
+.dash-details[open] > summary { margin-bottom: 6px; }
+.dash-tv .dash-details { display: none; }
