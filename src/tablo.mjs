@@ -168,7 +168,7 @@ export function tabloControl(db, { nowMs = Date.now() } = {}) {
   const crews = [...byVehicle.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
     .map(([vehicleId, net]) => {
       let driver = null;
-      try { driver = activeDriverFor(db, vehicleId, y0)?.full_name || null; } catch { /* имя — украшение */ }
+      try { driver = activeDriverFor(db, vehicleId, y0)?.name || null; } catch { /* имя — украшение */ }
       return { plate: plates.get(vehicleId) || '', driver, net: Math.round(net) };
     });
   return { day: y0, checkpoints, crews };
