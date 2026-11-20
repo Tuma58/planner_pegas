@@ -15,6 +15,8 @@ import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, inc
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
 import { opsPeriodData, resourceDayData } from './resource-day.mjs';
+import { tabloPulse } from './tablo.mjs';
+const tabloPulseCache = { ts: 0, value: null };
 import { renderOpsPeriodPdf } from './ops-period-pdf.mjs';
 import { prografikData } from './prografik.mjs';
 
@@ -11016,6 +11018,22 @@ async function api(request, response, url) {
   }
   // «Ресурс за день» (ТЗ Базуева 16.11): срез парка по состояниям за
   // МСК-день — без денег, доступен любому планерному праву.
+  // Пульс табло (Э1 нового дашборда, 20.11): показатели дня против своей
+  // медианы. Кэш 5 минут — расчёт гоняет resourceDayData по 14 дням, а
+  // табло автообновляется; данные дневной зернистости чаще не меняются.
+  if (request.method === 'GET' && pathname === '/api/tablo-pulse') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!tabloPulseCache.value || Date.now() - tabloPulseCache.ts > 5 * 60_000) {
+      tabloPulseCache.value = tabloPulse(db);
+      tabloPulseCache.ts = Date.now();
+    }
+    // Уровень денег роли: без «полных денег» нетто и ставка не отдаются.
+    const moneyFull = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+    const pulse = tabloPulseCache.value;
+    return json(response, 200, moneyFull ? pulse
+      : { ...pulse, quotes: pulse.quotes.filter(quote => !['net', 'rate'].includes(quote.key)) });
+  }
   if (request.method === 'GET' && pathname === '/api/reports/resource-day') {
     const user = requirePermission(request, response, 'planner:read');
     if (!user) return;

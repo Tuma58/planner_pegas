@@ -2472,3 +2472,44 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 
 /* Висяки дерева целей и мостик (Фридман, 14.11) */
 .gl-orphans { margin: 6px 0 10px; padding: 8px 12px; border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 6px; font-size: 13px; }
+
+/* Новое табло Э1 (20.11): витрина «прогноз → факт → темп» и пульс дня */
+.dash-showcase { margin-bottom: 10px; cursor: pointer; }
+.dash-showcase.lack { border-left: 4px solid var(--warn); }
+.dash-showcase.met { border-left: 4px solid var(--ok); }
+.dash-fc { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.dash-fc .fc-l { font-size: 12px; letter-spacing: .1em; font-weight: 800; text-transform: uppercase; color: var(--muted); }
+.dash-fc .fc-v { font-size: clamp(30px, 3.2vw, 44px); font-weight: 800; font-variant-numeric: tabular-nums;
+  color: var(--warn); }
+.dash-showcase.met .dash-fc .fc-v { color: var(--ok); }
+.dash-fc .fc-gap { font-size: clamp(16px, 1.6vw, 22px); font-weight: 800; font-variant-numeric: tabular-nums; }
+.dash-fc .fc-gap.pos { color: var(--ok); }
+.dash-fc .fc-gap.neg { color: var(--bad); }
+.dash-fact-plate { margin-top: 8px; padding: 8px 12px; border-radius: 8px; font-size: 14px;
+  background: color-mix(in srgb, var(--ok) 9%, var(--card)); border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.dash-fact-plate b { font-variant-numeric: tabular-nums; }
+.dash-need { margin-top: 7px; padding: 7px 12px; border-left: 3px solid var(--accent);
+  background: var(--accent-soft); border-radius: 6px; font-size: 14px; }
+.dash-pulse-sec { margin-bottom: 10px; }
+.dash-pulse { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.pq { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left;
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px 6px;
+  background: var(--soft); cursor: pointer; font: inherit; color: var(--ink); }
+.pq:hover { border-color: var(--accent); }
+.pq .pq-l { font-size: 11.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.pq .pq-v { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.pq .pq-v small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 3px; }
+.pq .pq-d { font-size: 12px; font-weight: 700; color: var(--muted); }
+.pq.good .pq-d { color: var(--ok); }
+.pq.bad .pq-d { color: var(--bad); }
+.pq .pq-spark { width: 100%; height: 26px; margin-top: 3px; }
+.pq .pq-spark polyline { fill: none; stroke: var(--plan); stroke-width: 2; }
+.pq.good .pq-spark polyline { stroke: var(--ok); }
+.pq.bad .pq-spark polyline { stroke: var(--bad); }
+/* ТВ-режим: витрина и пульс крупнее — читаются с дальней стены */
+.dash-tv .dash-fc .fc-v { font-size: 64px; }
+.dash-tv .dash-fc .fc-gap { font-size: 28px; }
+.dash-tv .dash-fact-plate, .dash-tv .dash-need { font-size: 19px; }
+.dash-tv .pq .pq-v { font-size: 34px; }
+.dash-tv .pq .pq-l { font-size: 14px; }
+.dash-tv .pq .pq-d { font-size: 15px; }

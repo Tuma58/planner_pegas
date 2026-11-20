@@ -243,6 +243,91 @@ async function renderTablo(state) {
   layer.hidden = false;
 }
 
+// Пульс табло (Э1 нового дашборда, 20.11): показатели дня против своей
+// нормы (медианы последних дней — живой норматив сервера). Кэш 5 минут —
+// в такт серверному; рендер никогда не ждёт сеть дольше первого раза.
+async function pulseData(state) {
+  if (state.tabloPulse && Date.now() - state.tabloPulse.ts < 5 * 60_000) {
+    return state.tabloPulse.data;
+  }
+  try {
+    const data = await api('/api/tablo-pulse');
+    state.tabloPulse = { ts: Date.now(), data };
+  } catch {
+    state.tabloPulse = state.tabloPulse || { ts: Date.now(), data: null };
+  }
+  return state.tabloPulse.data;
+}
+
+// Куда ведёт клик по плашке пульса: каждая цифра — дверь в свой экран.
+// Список через пробел — первая вкладка, доступная роли (см. goView).
+const PULSE_VIEWS = {
+  online: 'resource', keip: 'reports logreports', net: 'reports logreports',
+  rate: 'reports logreports', nocrew: 'prografik resource', transfer: 'dispatcher gantt'
+};
+
+function pulseSparkSvg(spark) {
+  const clean = spark.map(value => Number(value) || 0);
+  const max = Math.max(...clean, 1);
+  const min = Math.min(...clean, 0);
+  const span = Math.max(1e-6, max - min);
+  const points = clean.map((value, idx) =>
+    `${(idx / Math.max(1, clean.length - 1) * 100).toFixed(1)},${(24 - (value - min) / span * 20).toFixed(1)}`);
+  return `<svg class="pq-spark" viewBox="0 0 100 26" preserveAspectRatio="none">
+    <polyline points="${points.join(' ')}"/></svg>`;
+}
+
+function pulseSectionHtml(pulse) {
+  if (!pulse?.quotes?.length) return '';
+  const fmt = value => value == null ? '—'
+    : Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+  const tiles = pulse.quotes.map(quote => {
+    const arrow = quote.delta == null || Math.abs(quote.delta) < 1e-9 ? '●'
+      : quote.delta > 0 ? '▲' : '▼';
+    const deltaText = quote.delta == null ? 'нормы ещё нет'
+      : `${quote.delta > 0 ? '+' : ''}${fmt(quote.delta)} к норме ${fmt(quote.norm)}`;
+    return `<button class="pq ${quote.tone}" data-goview="${PULSE_VIEWS[quote.key] || 'reports'}"
+      title="Норма — медиана своих последних дней (живой норматив). Клик — открыть свой экран">
+      <span class="pq-l">${escapeHtml(quote.label)}</span>
+      <b class="pq-v">${fmt(quote.value)}<small>${escapeHtml(quote.unit)}</small></b>
+      <span class="pq-d">${arrow} ${deltaText}</span>
+      ${pulseSparkSvg(quote.spark)}</button>`;
+  }).join('');
+  return `<section class="section dash-pulse-sec">
+    <div class="sec-h"><span class="st">📈 Показатели дня · против своей нормы</span>
+      <span class="hint">норма — медиана своих последних дней · стрелка — сегодня к норме · клик — свой экран</span></div>
+    <div class="sec-b dash-pulse">${tiles}</div></section>`;
+}
+
+// Витрина цели: ПРОГНОЗ первым (регламент 19.11 — смотрим вперёд),
+// факт — плашкой под ним, затем нужный темп. Числа — канон dashboardMetrics.
+function showcaseHtml(metrics, monthLabel) {
+  const gap = metrics.forecast - metrics.monthPlan;
+  const donePct = Math.min(100, pctOf(metrics.monthFact, metrics.monthPlan));
+  return `<section class="section dash-showcase ${gap >= 0 ? 'met' : 'lack'}" data-goview="reports"
+    title="Прогноз по плановым датам выгрузки · клик — отчёты">
+    <div class="sec-h"><span class="st">🎯 ${escapeHtml(monthLabel)} · прогноз и цель</span>
+      <span class="hint">прогноз — медианы дней недели по плановым датам, факту отметки не мешают</span></div>
+    <div class="sec-b">
+      <div class="dash-fc"><span class="fc-l">Прогноз месяца</span>
+        <b class="fc-v">${shortMln(metrics.forecast)}</b>
+        <span class="fc-gap ${gap >= 0 ? 'pos' : 'neg'}">${gap >= 0 ? '+' : '−'}${shortMln(Math.abs(gap))} к цели ${shortMln(metrics.monthPlan)}</span></div>
+      <div class="dash-fact-plate">Факт: забито <b>${shortMln(metrics.monthFact)}</b> ·
+        выгружено <b>${shortMln(metrics.monthDone)}</b> · ${donePct}% цели</div>
+      <div class="dash-need">⏱ Чтобы попасть в цель — <b>${money(Math.round(metrics.dayPlan))} в день</b>
+        · осталось дней: ${metrics.remainingDays}</div>
+    </div></section>`;
+}
+
+// Переход «цифра — дверь в свой экран»: первая вкладка списка, которая
+// есть у роли в навигаторе; нет ни одной — клик просто ничего не делает.
+function goView(views) {
+  for (const view of String(views || '').split(/\s+/)) {
+    const button = document.querySelector(`.navlink[data-view="${view}"]`);
+    if (button) { button.click(); return; }
+  }
+}
+
 // SQLite CURRENT_TIMESTAMP пишет «YYYY-MM-DD HH:MM:SS» в UTC — приводим к ISO.
 const tsMs = value => value ? Date.parse(String(value).replace(' ', 'T') +
   (String(value).includes('Z') || String(value).includes('+') ? '' : 'Z')) : NaN;
@@ -712,8 +797,8 @@ function normBadge(fact, usual) {
 export async function renderDashboard(container, context) {
   const { state } = context;
   const metrics = dashboardMetrics(state.data);
+  const pulse = await pulseData(state);
   const donePct = Math.min(100, pctOf(metrics.monthFact, metrics.monthPlan));
-  const forecastPct = pctOf(metrics.forecast, metrics.monthPlan);
   const dayPct = pctOf(metrics.dayFact, metrics.dayPlan);
   const monthLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', timeZone: 'UTC' })
     .format(new Date());
@@ -848,7 +933,6 @@ export async function renderDashboard(container, context) {
   // цифрами месяца → сетка секций (месяц по дням, вчера/сегодня/завтра,
   // плашки ролей). Цифры и подсказки — прежние, из dashboardMetrics.
   const paceOk = metrics.monthPace.diff >= 0;
-  const forecastTone = forecastPct >= 100 ? 'pos' : forecastPct >= 90 ? 'warn' : 'neg';
   const inTripPct = pctOf(metrics.fleet.inTrip, canUse);
   const html = `<div class="dashwrap bi-page" id="dashRoot">
     <div class="bi-sub dash-top">
@@ -868,6 +952,9 @@ export async function renderDashboard(container, context) {
         роли — нули здесь не провал плана. Темп видно по рейсам, дням и загрузке парка.</div>` : ''}
     <div class="tablo-layer" id="tabloLayer" hidden></div>
     <div class="tablo-dots" id="tabloDots" hidden></div>
+    ${(state.data?.user?.access && !state.data.user.access.legacy && state.data.user.access.money !== 'full')
+    ? '' : showcaseHtml(metrics, monthLabel)}
+    ${pulseSectionHtml(pulse)}
     <div class="bi-kpis dash-kpis">
       <div class="metric hero dept-staff" title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">
         <span class="l">Выручка бНДС · ${escapeHtml(monthLabel)} · забито</span>
@@ -877,18 +964,10 @@ export async function renderDashboard(container, context) {
         <span class="l">Выгружено</span>
         <span class="v">${money(Math.round(metrics.monthDone))}</span>
         <span class="d">с начала месяца</span></div>
-      <div class="metric ${forecastTone}" title="Прогноз по ПЛАНОВЫМ датам выгрузки (08.10): прошедшие дни месяца — что должно было выгрузиться по расчёту, оставшиеся — не меньше забитого и не меньше медианы того же дня недели за 5 недель. Отметки выгрузки на цифру не влияют — поздние отметки её не дёргают">
-        <span class="l">Прогноз <small>(без НДС, по плановым датам)</small></span>
-        <span class="v">${shortMln(metrics.forecast)}</span>
-        <span class="d">${forecastPct}% цели</span></div>
       <div class="metric ${paceOk ? 'pos' : 'neg'}" title="По графику к концу ${metrics.dayOfMonth}-го: ${shortMln(metrics.monthPace.schedule)} · выгружено: ${shortMln(metrics.monthPace.fact)}">
         <span class="l">${paceOk ? 'Опережение графика' : 'Отставание от графика'}</span>
         <span class="v">${paceOk ? '+' : '−'}${shortMln(Math.abs(metrics.monthPace.diff))}</span>
         <span class="d">график ${shortMln(metrics.monthPace.schedule)} · факт ${shortMln(metrics.monthPace.fact)}</span></div>
-      <div class="metric dept-staff" title="Чтобы успеть к цели, дальше нужно столько в день">
-        <span class="l">Нужно в день</span>
-        <span class="v">${money(Math.round(metrics.dayPlan))}</span>
-        <span class="d">осталось дней: ${metrics.remainingDays}</span></div>
       <div class="metric" title="Гарантированная база месяца, НЕ прогноз: выгружено + уже назначенное доедет (минус риск отклонений по доле последних 14 дней). Заявки вносятся на 1–3 дня вперёд, поэтому в середине месяца эта цифра всегда сильно меньше прогноза — вторая половина месяца ещё не внесена">
         <span class="l">💼 Уже в кармане</span>
         <span class="v">${shortMln(metrics.forecastHonest)}</span>
@@ -1021,6 +1100,10 @@ export async function renderDashboard(container, context) {
   // Раскрытие плашек ролей: список за цифрой (заявки / рейсы / машины).
   container.querySelectorAll('[data-dash-detail]').forEach(row =>
     row.addEventListener('click', () => dashDetailDialog(row.dataset.dashDetail, metrics, context.state.data, context)));
+
+  // Каждая цифра — дверь в свой экран (правило нового табло, 20.11).
+  container.querySelectorAll('[data-goview]').forEach(tile =>
+    tile.addEventListener('click', () => goView(tile.dataset.goview)));
 
   // Бары «наполняются» при каждой отрисовке: вставляем нулевыми и через
   // кадр отпускаем к целевой ширине (CSS transition делает движение).
