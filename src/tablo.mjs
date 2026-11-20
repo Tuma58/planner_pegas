@@ -6,6 +6,8 @@
 // деньги — канон tripNet; своих формул у пульса нет.
 import { resourceDayData } from './resource-day.mjs';
 import { calcSettings, tripNet, DONE_STATUSES } from './money.mjs';
+import { armWidget } from './arm.mjs';
+import { demurrageSummary, activeDriverFor } from './planner-service.mjs';
 
 const DAY_MS = 86_400_000;
 const MSK_MS = 3 * 3_600_000;
@@ -115,6 +117,61 @@ export function tabloTape(db, { nowMs = Date.now(), limit = 40 } = {}) {
   return { labelMode,
     events: events.filter(event => Number.isFinite(event.ts))
       .sort((a, b) => b.ts - a.ts).slice(0, limit) };
+}
+
+// Контрольные точки и лучшие экипажи (Э3, 20.11). Контрольные точки —
+// ТЕ ЖЕ сторожа передач, что в АРМ (armWidget — никаких своих формул):
+// заявки завтра без ТС (дедлайн 18:00), борта без состояния (17:00),
+// плюс открытый демередж. Дедлайны — из регламента передач 19.11, МСК.
+// Лучшие экипажи — топ по нетто вчерашних выгрузок, водитель — канон
+// activeDriverFor. Суммы вырезает роут по уровню денег роли.
+export function tabloControl(db, { nowMs = Date.now() } = {}) {
+  const checkpoints = [];
+  const widget = (key, deadline, label, screen) => {
+    try {
+      const out = armWidget(key, { db, nowMs });
+      const row = Array.isArray(out) ? out[0] : out;
+      if (row && row.value != null) {
+        checkpoints.push({ key, label, count: row.value, deadline, screen,
+          tone: row.value ? 'bad' : 'good' });
+      }
+    } catch { /* сторож недоступен — точка просто не показывается */ }
+  };
+  widget('handoff_trip_plan', '18:00', 'Заявки завтра без ТС — передача Эксплуатации', 'logist');
+  widget('handoff_resource_plan', '17:00', 'Борта без состояния на завтра — передача Логистике', 'prografik');
+  try {
+    const demurrage = demurrageSummary(db, nowMs);
+    if (demurrage.openCount) {
+      checkpoints.push({ key: 'demurrage', label: 'Демередж открыт',
+        count: demurrage.openCount, amount: Math.round(demurrage.openAmount || 0),
+        deadline: null, screen: 'dispatcher', tone: 'warn' });
+    }
+  } catch { /* как выше */ }
+
+  // Лучшие экипажи вчера: нетто выгрузок по бортам, водитель — канон.
+  const calc = calcSettings(db);
+  const y0 = new Date(nowMs + 3 * 3_600_000 - DAY_MS).toISOString().slice(0, 10);
+  const byVehicle = new Map();
+  const tsOf = value => {
+    const raw = String(value || '').replace(' ', 'T');
+    return Date.parse(raw + (raw.includes('Z') || raw.includes('+') ? '' : 'Z'));
+  };
+  for (const trip of db.prepare(`SELECT vehicle_id, revenue_vat, cash, customer_name,
+      unloaded_at, ends_at, status FROM trips
+    WHERE status IN ('unloaded','done','paid') AND unloaded_at IS NOT NULL
+      AND unloaded_at >= ?`).all(`${y0}`)) {
+    const day = new Date(tsOf(trip.unloaded_at) + 3 * 3_600_000).toISOString().slice(0, 10);
+    if (day !== y0) continue;
+    byVehicle.set(trip.vehicle_id, (byVehicle.get(trip.vehicle_id) || 0) + tripNet(trip, calc));
+  }
+  const plates = new Map(db.prepare('SELECT id, plate FROM vehicles').all().map(v => [v.id, v.plate]));
+  const crews = [...byVehicle.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([vehicleId, net]) => {
+      let driver = null;
+      try { driver = activeDriverFor(db, vehicleId, y0)?.full_name || null; } catch { /* имя — украшение */ }
+      return { plate: plates.get(vehicleId) || '', driver, net: Math.round(net) };
+    });
+  return { day: y0, checkpoints, crews };
 }
 
 export function tabloPulse(db, { nowMs = Date.now() } = {}) {

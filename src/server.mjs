@@ -15,9 +15,10 @@ import { INCIDENT_KINDS, RETURN_STATUSES, incidentNotifyText, incidentsData, inc
 import { CFO_KEYS, expenseFingerprint, expensesAccess, expensesSummary, setExpensesAccess, validateExpense, fuelLitersOf } from './expenses.mjs';
 import { createPerfRegistry } from './perf.mjs';
 import { opsPeriodData, resourceDayData } from './resource-day.mjs';
-import { tabloPulse, tabloTape } from './tablo.mjs';
+import { tabloPulse, tabloTape, tabloControl } from './tablo.mjs';
 const tabloPulseCache = { ts: 0, value: null };
 const tabloTapeCache = { ts: 0, value: null };
+const tabloControlCache = { ts: 0, value: null };
 import { renderOpsPeriodPdf } from './ops-period-pdf.mjs';
 import { prografikData } from './prografik.mjs';
 
@@ -11048,6 +11049,21 @@ async function api(request, response, url) {
     const tape = tabloTapeCache.value;
     return json(response, 200, moneyFull ? tape
       : { ...tape, events: tape.events.map(event => ({ ...event, amount: null })) });
+  }
+  // Контрольные точки + лучшие экипажи (табло Э3, 20.11): сторожа
+  // передач из АРМ и топ экипажей вчера. Кэш 2 мин; деньги по роли.
+  if (request.method === 'GET' && pathname === '/api/tablo-control') {
+    const user = requireUser(request, response);
+    if (!user) return;
+    if (!tabloControlCache.value || Date.now() - tabloControlCache.ts > 120_000) {
+      tabloControlCache.value = tabloControl(db);
+      tabloControlCache.ts = Date.now();
+    }
+    const moneyFull = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+    const control = tabloControlCache.value;
+    return json(response, 200, moneyFull ? control : { ...control,
+      checkpoints: control.checkpoints.map(point => ({ ...point, amount: null })),
+      crews: control.crews.map(crew => ({ ...crew, net: null })) });
   }
   if (request.method === 'GET' && pathname === '/api/reports/resource-day') {
     const user = requirePermission(request, response, 'planner:read');

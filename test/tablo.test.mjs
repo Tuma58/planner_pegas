@@ -97,3 +97,38 @@ test('лента: настройка tapeTripLabel=customer переключае
   assert.match(event.text, /Коралл ООО/);
   assert.equal(tape.labelMode, 'customer');
 });
+
+// Контрольные точки + лучшие экипажи (Э3).
+import { tabloControl } from '../src/tablo.mjs';
+
+test('контрольные точки: заявка завтра без ТС попадает в сторож 18:00', t => {
+  const db = freshDb(t);
+  const zone = db.prepare('SELECT id FROM zones LIMIT 1').get();
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  db.prepare(`INSERT INTO orders(id, customer_name, from_zone_id, to_zone_id, rate_vat, window_from, window_to, status)
+    VALUES(?, 'Коралл ООО', ?, ?, 120000, ?, ?, 'new')`)
+    .run(randomUUID(), zone.id, zone.id, `${tomorrow}T05:00:00.000Z`, `${tomorrow}T10:00:00.000Z`);
+  const control = tabloControl(db);
+  const point = control.checkpoints.find(item => item.key === 'handoff_trip_plan');
+  assert.ok(point, 'сторож плана рейсов на месте');
+  assert.equal(point.deadline, '18:00');
+  assert.ok(point.count >= 1);
+  assert.equal(point.tone, 'bad');
+});
+
+test('лучшие экипажи: вчерашняя выгрузка выводит борт в топ', t => {
+  const db = freshDb(t);
+  const vehicle = db.prepare(`SELECT id, plate FROM vehicles WHERE status='work' LIMIT 1`).get();
+  const zones = db.prepare('SELECT id FROM zones LIMIT 2').all();
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  db.prepare(`INSERT INTO trips(id, vehicle_id, customer_name, from_zone_id, to_zone_id,
+      starts_at, ends_at, distance_km, revenue_vat, status, unloaded_at)
+    VALUES(?, ?, 'Коралл ООО', ?, ?, ?, ?, 650, 220000, 'unloaded', ?)`)
+    .run(randomUUID(), vehicle.id, zones[0].id, zones[1]?.id || zones[0].id,
+      `${yesterday}T01:00:00.000Z`, `${yesterday}T09:00:00.000Z`, `${yesterday}T09:30:00.000Z`);
+  const control = tabloControl(db);
+  assert.equal(control.day, yesterday);
+  assert.ok(control.crews.length >= 1, 'топ экипажей не пуст');
+  assert.equal(control.crews[0].plate, vehicle.plate);
+  assert.ok(control.crews[0].net > 0);
+});

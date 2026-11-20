@@ -286,6 +286,61 @@ function tapeHtml(tape) {
     <div class="dash-tape">${items}${items}</div></div>`;
 }
 
+// Контрольные точки + лучшие экипажи (Э3): сторожа передач с таймерами
+// до дедлайнов 17:00/18:00 МСК и топ экипажей по нетто вчера.
+async function controlData(state) {
+  if (state.tabloCtrl && Date.now() - state.tabloCtrl.ts < 120_000) {
+    return state.tabloCtrl.data;
+  }
+  try {
+    const data = await api('/api/tablo-control');
+    state.tabloCtrl = { ts: Date.now(), data };
+  } catch {
+    state.tabloCtrl = state.tabloCtrl || { ts: Date.now(), data: null };
+  }
+  return state.tabloCtrl.data;
+}
+
+// «Осталось 2:23» до дедлайна МСК; после дедлайна — «дедлайн прошёл».
+function deadlineLeft(deadline, nowMs = Date.now()) {
+  if (!deadline) return '';
+  const [hh, mm] = deadline.split(':').map(Number);
+  const msk = nowMs + 3 * 3_600_000;
+  const dayStart = Math.floor(msk / 86_400_000) * 86_400_000;
+  const left = dayStart + (hh * 60 + mm) * 60_000 - msk;
+  if (left <= 0) return 'дедлайн прошёл';
+  const hours = Math.floor(left / 3_600_000);
+  const minutes = Math.floor(left % 3_600_000 / 60_000);
+  return `осталось ${hours}:${String(minutes).padStart(2, '0')}`;
+}
+
+function controlSectionHtml(control) {
+  if (!control) return '';
+  const points = (control.checkpoints || []).map(point => {
+    const left = deadlineLeft(point.deadline);
+    const amount = point.amount ? ` · ${Math.round(point.amount / 1000)} т₽` : '';
+    return `<button class="cp ${point.tone}" data-goview="${point.screen || 'dashboard'}">
+      <span class="cp-l">${escapeHtml(point.label)}</span>
+      <b class="cp-v">${point.count}${amount}</b>
+      ${point.deadline ? `<span class="cp-t">до ${point.deadline} · ${left}</span>` : ''}</button>`;
+  }).join('');
+  const crews = (control.crews || []).map((crew, idx) =>
+    `<div class="crew-row"><span>${idx + 1}. ${escapeHtml(crew.plate)}${crew.driver
+      ? ` · ${escapeHtml(crew.driver)}` : ''}</span>${crew.net != null
+      ? `<b>+${Math.round(crew.net / 1000)} т₽</b>` : ''}</div>`).join('');
+  if (!points && !crews) return '';
+  return `<div class="dash-ctrl-grid">
+    ${points ? `<section class="section dash-cps">
+      <div class="sec-h"><span class="st">⏱ Контрольные точки · до конца дня</span>
+        <span class="hint">сторожа регламента передач · клик — свой экран</span></div>
+      <div class="sec-b dash-cps-b">${points}</div></section>` : ''}
+    ${crews ? `<section class="section dash-crews">
+      <div class="sec-h"><span class="st">🏆 Лучшие экипажи · нетто вчера</span>
+        <span class="hint">по выгрузкам ${control.day || ''}</span></div>
+      <div class="sec-b">${crews}</div></section>` : ''}
+  </div>`;
+}
+
 // Куда ведёт клик по плашке пульса: каждая цифра — дверь в свой экран.
 // Список через пробел — первая вкладка, доступная роли (см. goView).
 const PULSE_VIEWS = {
@@ -826,6 +881,7 @@ export async function renderDashboard(container, context) {
   const metrics = dashboardMetrics(state.data);
   const pulse = await pulseData(state);
   const tape = await tapeData(state);
+  const control = await controlData(state);
   const donePct = Math.min(100, pctOf(metrics.monthFact, metrics.monthPlan));
   const dayPct = pctOf(metrics.dayFact, metrics.dayPlan);
   const monthLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', timeZone: 'UTC' })
@@ -983,6 +1039,7 @@ export async function renderDashboard(container, context) {
     ${(state.data?.user?.access && !state.data.user.access.legacy && state.data.user.access.money !== 'full')
     ? '' : showcaseHtml(metrics, monthLabel)}
     ${pulseSectionHtml(pulse)}
+    ${controlSectionHtml(control)}
     ${tapeHtml(tape)}
     <div class="bi-kpis dash-kpis">
       <div class="metric hero dept-staff" title="Забито на месяц: выгружено + расчётные выгрузки броней до конца месяца">

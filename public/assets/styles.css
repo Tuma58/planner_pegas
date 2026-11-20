@@ -2527,3 +2527,28 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .dash-tv .dash-tape-wrap { position: fixed; left: 10px; right: 10px; bottom: 8px;
   z-index: 40; border-radius: 12px; padding: 12px 0; }
 .dash-tv .dash-tape { font-size: 21px; }
+
+/* Контрольные точки + лучшие экипажи (табло Э3, 20.11) */
+.dash-ctrl-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; margin-bottom: 10px; }
+@media (max-width: 900px) { .dash-ctrl-grid { grid-template-columns: 1fr; } }
+.dash-cps-b { display: flex; flex-direction: column; gap: 8px; }
+.cp { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center;
+  text-align: left; font: inherit; color: var(--ink); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; background: var(--soft); }
+.cp:hover { border-color: var(--accent); }
+.cp.bad { border-color: color-mix(in srgb, var(--bad) 55%, var(--line));
+  background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
+.cp.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.cp .cp-l { font-weight: 700; font-size: 14px; }
+.cp .cp-v { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; grid-row: span 2; }
+.cp.bad .cp-v { color: var(--bad); }
+.cp.good .cp-v { color: var(--ok); }
+.cp .cp-t { font-size: 12.5px; font-weight: 700; color: var(--warn); }
+.crew-row { display: flex; justify-content: space-between; gap: 10px; padding: 6px 2px;
+  font-size: 15px; border-bottom: 1px dashed var(--border2); }
+.crew-row:last-child { border-bottom: 0; }
+.crew-row b { color: var(--drv); font-variant-numeric: tabular-nums; }
+.dash-tv .cp .cp-l { font-size: 18px; }
+.dash-tv .cp .cp-v { font-size: 30px; }
+.dash-tv .cp .cp-t { font-size: 16px; }
+.dash-tv .crew-row { font-size: 20px; }
