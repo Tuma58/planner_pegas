@@ -43,7 +43,10 @@ export const TAPE_WINDOW_MS = 12 * 3_600_000;
 
 const cityOf = point => {
   const head = String(point || '').split(',')[0].trim();
-  return head.replace(/^(г|город|пос|с|д|рп)\.?\s+/i, '').trim();
+  // Тип населённого пункта бывает и префиксом («г. Пенза»), и суффиксом
+  // («Москва г», «Лопатино с\п») — подпись ленты оставляет чистое имя.
+  return head.replace(/^(г|город|пос|с|д|рп|пгт)\.?\s+/i, '')
+    .replace(/\s+(г|город|пос|рп|пгт|с[\\/]п|д)\.?$/i, '').trim();
 };
 
 export function tabloTape(db, { nowMs = Date.now(), limit = 40 } = {}) {

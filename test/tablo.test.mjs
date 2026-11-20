@@ -68,7 +68,7 @@ function seedTrip(db, { customer = 'ЧМПЗ АО Пенза' } = {}) {
     .run(id, vehicle.id, customer, zones[0].id, zones[1]?.id || zones[0].id, now, now, now, now);
   db.prepare(`INSERT INTO trip_stops(id, trip_id, seq, kind, point) VALUES(?,?,1,'P','г. Пенза, Рябова 2')`)
     .run(randomUUID(), id);
-  db.prepare(`INSERT INTO trip_stops(id, trip_id, seq, kind, point) VALUES(?,?,2,'D','Москва, Бирюлёво')`)
+  db.prepare(`INSERT INTO trip_stops(id, trip_id, seq, kind, point) VALUES(?,?,2,'D','Москва г, Бирюлёво')`)
     .run(randomUUID(), id);
   return id;
 }
