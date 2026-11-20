@@ -8190,6 +8190,19 @@ function normalizeTrip(body) {
   };
 }
 
+// Деньги ДАШБОРДА (решение руководителя 20.11): отдел Логистики видит
+// дашборд как руководитель — план месяца, прогноз, выручку в пульсе и
+// точках. Это уровень дашборда, а не полный money-доступ: отчёты,
+// сверка, ТОиР и прографик остаются по уровню набора. Повышается
+// только «ставки»→«все» и только для мелкой части снимка (план/прогноз)
+// и роутов табло; наборы «без денег» не повышаются.
+function dashboardMoneyFull(user) {
+  if (hasPermission(user, 'reports:read')) return true;
+  const access = accessOf(db, user);
+  return access.money === 'full'
+    || (!access.legacy && access.money === 'rates' && access.scope.depts.includes('log'));
+}
+
 let bootstrapCache = { at: 0, shared: '', sharedBuf: Buffer.alloc(0), rev: '' };
 // Тяжёлые разделы полного снимка (trips/orders) — свой короткий кэш:
 // в тиках они едут дельтой, полный нужен входам и часовому рефрешу.
@@ -8829,7 +8842,7 @@ async function api(request, response, url) {
       const prefix = `{"user":${JSON.stringify(publicUser(user))},"rev":${JSON.stringify(compositeRev)},` +
         `"sync":${JSON.stringify(syncInfo)},`;
       return sendJsonParts(request, response,
-        [prefix, smallBufFor(accessOf(db, user).money).subarray(1)]);
+        [prefix, smallBufFor(dashboardMoneyFull(user) ? 'full' : accessOf(db, user).money).subarray(1)]);
     }
     // Дельта тяжёлых разделов: только строки, изменённые с «since»
     // клиента (>= и дедуп по id на клиенте — одновременные правки одной
@@ -8904,7 +8917,7 @@ async function api(request, response, url) {
       };
       const money = accessOf(db, user).money;
       if (money === 'full') return json(response, 200, filtered);
-      return json(response, 200, { ...stripSmall(filtered, money),
+      return json(response, 200, { ...stripSmall(filtered, dashboardMoneyFull(user) ? 'full' : money),
         trips: stripTrips(filtered.trips, money), orders: stripOrders(filtered.orders, money) });
     }
     // Полный снимок (вход, смена справочников, плановый часовой рефреш):
@@ -8920,7 +8933,8 @@ async function api(request, response, url) {
     // subarray(1) срезает «{» мелкой части без копии — куски уходят в
     // сокет (или gzip-поток) по ссылке на общий кэш.
     return sendJsonParts(request, response,
-      [prefix, heavyBufFor(money), ',', smallBufFor(money).subarray(1)]);
+      [prefix, heavyBufFor(money), ',',
+        smallBufFor(dashboardMoneyFull(user) ? 'full' : money).subarray(1)]);
   }
 
   // ── CRM-карточка клиента: сводка, контакты, журнал, реквизиты ──
@@ -11030,8 +11044,8 @@ async function api(request, response, url) {
       tabloPulseCache.value = tabloPulse(db);
       tabloPulseCache.ts = Date.now();
     }
-    // Уровень денег роли: без «полных денег» нетто и ставка не отдаются.
-    const moneyFull = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+    // Уровень денег роли: без «денег дашборда» нетто и ставка не отдаются.
+    const moneyFull = dashboardMoneyFull(user);
     const pulse = tabloPulseCache.value;
     return json(response, 200, moneyFull ? pulse
       : { ...pulse, quotes: pulse.quotes.filter(quote => !['net', 'rate'].includes(quote.key)) });
@@ -11045,7 +11059,7 @@ async function api(request, response, url) {
       tabloTapeCache.value = tabloTape(db);
       tabloTapeCache.ts = Date.now();
     }
-    const moneyFull = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+    const moneyFull = dashboardMoneyFull(user);
     const tape = tabloTapeCache.value;
     return json(response, 200, moneyFull ? tape
       : { ...tape, events: tape.events.map(event => ({ ...event, amount: null })) });
@@ -11059,7 +11073,7 @@ async function api(request, response, url) {
       tabloControlCache.value = tabloControl(db);
       tabloControlCache.ts = Date.now();
     }
-    const moneyFull = hasPermission(user, 'reports:read') || accessOf(db, user).money === 'full';
+    const moneyFull = dashboardMoneyFull(user);
     const control = tabloControlCache.value;
     return json(response, 200, moneyFull ? control : { ...control,
       checkpoints: control.checkpoints.map(point => ({ ...point, amount: null })),

@@ -301,6 +301,17 @@ async function controlData(state) {
   return state.tabloCtrl.data;
 }
 
+// Деньги дашборда (решение руководителя 20.11): видят уровень «все
+// суммы» И наборы отдела Логистики с уровнем «ставки» — сервер отдаёт
+// им план/прогноз и суммы табло (dashboardMoneyFull). Наборы «без
+// денег» и чужие отделы — прежний экран без денег.
+function dashMoneyHidden(state) {
+  const access = state.data?.user?.access;
+  if (!access || access.legacy) return false;
+  if (access.money === 'full') return false;
+  return !(access.money === 'rates' && (access.scope?.depts || []).includes('log'));
+}
+
 // «Осталось 2:23» до дедлайна МСК; после дедлайна — «дедлайн прошёл».
 function deadlineLeft(deadline, nowMs = Date.now()) {
   if (!deadline) return '';
@@ -1031,8 +1042,7 @@ export async function renderDashboard(container, context) {
       </div>
     </div>
     ${boardNotesHtml(context.state.data.boardNotes)}
-    ${(state.data?.user?.access && !state.data.user.access.legacy && state.data.user.access.money !== 'full')
-    ? `<div class="dash-money-note">🔒 Денежные показатели (план, выручка, прогноз) скрыты уровнем вашей
+    ${dashMoneyHidden(state) ? `<div class="dash-money-note">🔒 Денежные показатели (план, выручка, прогноз) скрыты уровнем вашей
         роли — нули здесь не провал плана. Темп видно по рейсам, дням и загрузке парка.</div>` : ''}
     <div class="tablo-layer" id="tabloLayer" hidden></div>
     <div class="tablo-dots" id="tabloDots" hidden></div>
@@ -1040,8 +1050,7 @@ export async function renderDashboard(container, context) {
     // Экран-прототип (решение руководителя 20.11): ОДИН цельный верх в
     // три колонки — цель с графиком | показатели дня | точки+экипажи —
     // и лента под ним. Всё остальное — свёрнутые «Подробности» ниже.
-    const moneyLimited = state.data?.user?.access && !state.data.user.access.legacy
-      && state.data.user.access.money !== 'full';
+    const moneyLimited = dashMoneyHidden(state);
     const col1 = moneyLimited ? ''
       : showcaseHtml(metrics, monthLabel, monthSpark(state.data, metrics, Date.now(), 170));
     const col3 = controlSectionHtml(control);
