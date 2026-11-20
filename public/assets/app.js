@@ -1220,6 +1220,20 @@ function renderViewTabs() {
     renderViewTabs();
     renderMain();
   };
+  const backButton = byId('navBack');
+  if (backButton) {
+    backButton.onclick = goBackView;
+    backButton.disabled = !(state.viewHistory || []).length;
+    if (!backButton.dataset.bound) {
+      backButton.dataset.bound = '1';
+      document.addEventListener('keydown', event => {
+        if (event.altKey && !event.ctrlKey && !event.metaKey && event.key === 'ArrowLeft') {
+          event.preventDefault();
+          goBackView();
+        }
+      });
+    }
+  }
   const search = byId('navSearch');
   if (search && !search.dataset.bound) {
     search.dataset.bound = '1';
@@ -1249,7 +1263,38 @@ document.addEventListener('click', event => {
   trackUsage(`report:${button.id}${kind}`);
 }, true);
 
+// ← Назад на предыдущий экран (заказ руководителя 20.11): история
+// переходов пишется ЗДЕСЬ, в renderMain — единственной точке, через
+// которую проходят все смены экрана (клики меню, data-goview табло,
+// setView из кода). Возврат — кнопка «←» в шапке или Alt+←.
+function trackViewHistory() {
+  if (state.histView && state.histView !== state.view) {
+    if (state.backNav) state.backNav = false;
+    else {
+      state.viewHistory = state.viewHistory || [];
+      if (state.viewHistory.at(-1) !== state.histView) {
+        state.viewHistory.push(state.histView);
+        if (state.viewHistory.length > 30) state.viewHistory.shift();
+      }
+    }
+  }
+  state.histView = state.view;
+  const back = byId('navBack');
+  if (back) back.disabled = !(state.viewHistory || []).length;
+}
+
+function goBackView() {
+  const prev = (state.viewHistory || []).pop();
+  if (!prev || prev === state.view) { if (prev === state.view) goBackView(); return; }
+  state.backNav = true;
+  state.view = prev;
+  try { sessionStorage.setItem('pl_view', state.view); } catch { /* приват-режим */ }
+  renderViewTabs();
+  renderMain();
+}
+
 function renderMain() {
+  trackViewHistory();
   const isGantt = state.view === 'gantt';
   const isResource = state.view === 'resource';
   // Нативный график (сессия 4): перед перерисовкой любого другого вида

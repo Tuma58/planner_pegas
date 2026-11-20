@@ -2566,3 +2566,10 @@ mark.guide-hit { background: var(--warn); color: #1c1c28; border-radius: 3px; pa
 .dash-details > summary:hover { color: var(--accent); }
 .dash-details[open] > summary { margin-bottom: 6px; }
 .dash-tv .dash-details { display: none; }
+
+/* ← Назад на предыдущий экран (20.11): кнопка в шапке у заголовка */
+.nav-back { align-self: center; width: 28px; height: 28px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  font-size: 16px; font-weight: 800; line-height: 1; cursor: pointer; padding: 0; }
+.nav-back:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.nav-back:disabled { opacity: .35; cursor: default; }
